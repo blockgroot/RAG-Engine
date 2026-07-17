@@ -1,32 +1,20 @@
 """Local, in-process embedding provider using sentence-transformers.
 
-Unlike ``EmbeddingProvider`` (which is an HTTP client for an OpenAI-compatible
-endpoint), this loads the model directly into the Python process. No server, no
-API key, no per-token cost, and document text never leaves the machine — which
-matters for multi-tenant policy data.
-
-It exposes the same ``embed(texts) -> list[list[float]]`` method so it is a
-drop-in replacement for the HTTP embedding provider from the caller's side.
+Loads the model directly into the Python process: no server, no API key, no
+per-token cost, and document text never leaves the machine — which matters for
+multi-tenant policy data.
 """
 
 from __future__ import annotations
 
-import os
+from ..core.exceptions import ConfigurationError, EmbeddingProviderError
+from .base import EmbeddingProvider
 
-from .exceptions import ConfigurationError, EmbeddingProviderError
-
-# BGE-M3 default. Overridable via EMBEDDING_MODEL.
 DEFAULT_MODEL = "BAAI/bge-m3"
 
 
-class LocalEmbeddingProvider:
+class LocalEmbeddingProvider(EmbeddingProvider):
     """Embed text locally with a sentence-transformers model.
-
-    Configuration is read from constructor arguments, falling back to
-    environment variables:
-
-    - ``EMBEDDING_MODEL``  (default ``BAAI/bge-m3``)
-    - ``EMBEDDING_DEVICE`` (optional: ``cpu``, ``cuda``, ``mps``; auto if unset)
 
     The model is downloaded once (cached under the Hugging Face cache dir) and
     loaded into memory at construction time.
@@ -38,15 +26,15 @@ class LocalEmbeddingProvider:
         device: str | None = None,
         normalize: bool = True,
     ) -> None:
-        self.model_name = model or os.getenv("EMBEDDING_MODEL") or DEFAULT_MODEL
-        self.device = device or os.getenv("EMBEDDING_DEVICE") or None
+        self.model_name = model or DEFAULT_MODEL
+        self.device = device or None
         self.normalize = normalize
 
         if not self.model_name:
             raise ConfigurationError("Missing required embedding config: EMBEDDING_MODEL")
 
-        # Import lazily so the rest of the app doesn't pay the (heavy) import
-        # cost unless local embeddings are actually used.
+        # Import lazily so the app doesn't pay the (heavy) import cost unless
+        # local embeddings are actually used.
         try:
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:
@@ -64,10 +52,6 @@ class LocalEmbeddingProvider:
             ) from exc
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed a list of texts and return one vector per input, in order.
-
-        Raises ``EmbeddingProviderError`` if encoding fails.
-        """
         if not texts:
             return []
 

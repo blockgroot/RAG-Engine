@@ -1,7 +1,8 @@
-"""Manual smoke test for the provider abstraction layer.
+"""Manual smoke test for the provider layer.
 
-Loads config from `.env`, instantiates both providers, and runs one real call
-against each so you can confirm they are wired correctly before building on top.
+Loads config from `.env`, builds the LLM and embedding providers via their
+factories, and runs one real call against each so you can confirm they are
+wired correctly before building on top.
 
 Run:
     python scripts/verify_providers.py
@@ -17,19 +18,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from dotenv import load_dotenv
 
-from app.providers import (
-    LLMProvider,
-    LocalEmbeddingProvider,
-    ProviderError,
-)
+from app.core import ProviderError
+from app.llm import build_llm_provider
+from app.embeddings import build_embedding_provider
 
 
 def check_llm() -> bool:
     print("== LLM ==")
     try:
-        llm = LLMProvider()
-        print(f"  base_url : {llm.base_url}")
+        llm = build_llm_provider()
         print(f"  model    : {llm.model}")
+        print(f"  base_url : {llm.base_url or 'default OpenAI'}")
         reply = llm.generate("Reply with exactly: provider layer OK")
         print(f"  response : {reply.strip()!r}")
         print("  LLM check passed.\n")
@@ -43,12 +42,11 @@ def check_llm() -> bool:
 
 
 def check_embeddings() -> bool:
-    print("== Embeddings (local sentence-transformers) ==")
+    print("== Embeddings ==")
     try:
-        embedder = LocalEmbeddingProvider()
-        print(f"  model    : {embedder.model_name}")
-        print(f"  device   : {embedder.device or 'auto'}")
-        print("  (first run downloads the model; this can take a minute)")
+        embedder = build_embedding_provider()
+        print(f"  provider : {type(embedder).__name__}")
+        print("  (local backend downloads the model on first run)")
         vectors = embedder.embed(["hello world", "second document"])
         print(f"  inputs   : 2")
         print(f"  vectors  : {len(vectors)} returned")

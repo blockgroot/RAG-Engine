@@ -1,8 +1,7 @@
-"""Custom exceptions for the provider abstraction layer.
+"""Shared exception hierarchy for the whole app.
 
-The rest of the application should only ever have to catch ``ProviderError``
-(or one of its subclasses) instead of dealing with provider-specific error
-types from the underlying ``openai`` client.
+Callers only ever need to catch ``ProviderError`` (or a subclass) instead of
+dealing with provider-specific error types from underlying SDKs.
 """
 
 
@@ -19,7 +18,7 @@ class ProviderError(Exception):
 
 
 class ConfigurationError(ProviderError):
-    """Raised when required configuration (api_key, base_url, model) is missing."""
+    """Raised when required configuration is missing or invalid."""
 
 
 class LLMProviderError(ProviderError):
