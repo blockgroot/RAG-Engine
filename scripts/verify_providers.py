@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 
 from app.providers import (
     LLMProvider,
-    EmbeddingProvider,
+    LocalEmbeddingProvider,
     ProviderError,
 )
 
@@ -43,11 +43,12 @@ def check_llm() -> bool:
 
 
 def check_embeddings() -> bool:
-    print("== Embeddings ==")
+    print("== Embeddings (local sentence-transformers) ==")
     try:
-        embedder = EmbeddingProvider()
-        print(f"  base_url : {embedder.base_url}")
-        print(f"  model    : {embedder.model}")
+        embedder = LocalEmbeddingProvider()
+        print(f"  model    : {embedder.model_name}")
+        print(f"  device   : {embedder.device or 'auto'}")
+        print("  (first run downloads the model; this can take a minute)")
         vectors = embedder.embed(["hello world", "second document"])
         print(f"  inputs   : 2")
         print(f"  vectors  : {len(vectors)} returned")

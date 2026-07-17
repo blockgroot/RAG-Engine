@@ -7,6 +7,7 @@ provider-specific details.
 
 from .llm import LLMProvider
 from .embeddings import EmbeddingProvider
+from .local_embeddings import LocalEmbeddingProvider
 from .exceptions import (
     ProviderError,
     ConfigurationError,
@@ -17,6 +18,7 @@ from .exceptions import (
 __all__ = [
     "LLMProvider",
     "EmbeddingProvider",
+    "LocalEmbeddingProvider",
     "ProviderError",
     "ConfigurationError",
     "LLMProviderError",
