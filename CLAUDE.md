@@ -64,10 +64,11 @@ their policy documents; their employees ask questions and get answers grounded i
   return the fixed fallback *without calling the LLM*. (2) A **strict prompt**
   (`app/rag/prompts.py`) that forbids outside knowledge and orders the model to
   emit the *same* fixed fallback when the context doesn't directly answer — even
-  if it's on the same topic. Both were needed because measured similarity of
-  "answerable" and "related-but-unanswered" questions *overlaps* (see §4), so a
-  threshold alone can't separate them. The gate stops noise cheaply; the prompt
-  handles the fine-grained "on-topic but doesn't answer" judgement.
+  if it's on the same topic. Both were needed because a similarity threshold
+  can't be *trusted* to separate "answerable" from "related-but-unanswered"
+  questions (see §4 — the apparent separation is on far too small a sample to
+  rely on). The gate stops noise cheaply; the prompt handles the fine-grained
+  "on-topic but doesn't answer" judgement.
 
 ## 3. Folder / file structure convention
 
@@ -125,15 +126,19 @@ tests/          # pytest; test_isolation.py (Phase 2) + test_grounding.py (Phase
 - **Preprocessing scope.** We assume text/Markdown input. Layout-aware extraction
   from PDF/DOCX/HTML (Unstructured/Docling) is deliberately deferred to a future
   ingestion-adapters phase.
-- **Similarity scores overlap between "answerable" and "related-but-unanswered".**
-  Measured with BGE-M3 against our own policy chunks: directly-answerable
-  questions score top-1 ≈ 0.54–0.74, topically-related-but-unanswered ≈ 0.46–0.48,
-  and unrelated noise ≈ 0.30. The middle two bands overlap the answerable band, so
-  **no similarity threshold can tell "answers" from "on-topic but doesn't
+- **Don't trust the apparent gap between "answerable" and "related-but-unanswered"
+  scores — it's a tiny sample.** Measured with BGE-M3 against our own policy
+  chunks, from only ~5 hand-picked questions (NOT an evaluation set):
+  directly-answerable ≈ 0.54–0.74, topically-related-but-unanswered ≈ 0.46–0.48,
+  unrelated noise ≈ 0.30. In this sample there's a gap between 0.48 and 0.54, but
+  that is far too little data to rely on: with more questions an unanswered case
+  could score above 0.48 or an answerable one below 0.54, closing it. So **a
+  threshold cannot be trusted to tell "answers" from "on-topic but doesn't
   answer"** — that's why `RAG_SIMILARITY_THRESHOLD` is set low (0.35, just above
   noise) and the strict prompt does the fine discrimination. Don't raise the
   threshold to try to catch the "related-but-unanswered" case; you'll start
-  rejecting real questions. Re-measure these bands if the embedding model changes.
+  rejecting real questions. A golden-set eval (see §6) is what would actually
+  validate 0.35. Re-measure these bands if the embedding model changes.
 - **The fixed fallback string lives in ONE place** (`RagSettings.fallback_response`
   / `RAG_FALLBACK_RESPONSE`). It is consumed in three spots that must agree: the
   confidence gate, the prompt's refusal instruction, and the pipeline's
@@ -180,6 +185,12 @@ Deletes cascade: removing an org removes its documents and chunks. Indexes:
   standalone walkthrough. The productionized path is now `app/rag/`.
 
 **Pending (not started)**
+- Grounding evaluation (near-term priority, not a full phase yet): a RAGAS-style
+  golden set of ~10–15 questions including deliberate unanswerables, run against
+  the pipeline. This is what would actually validate whether `0.35` (and the
+  prompt) hold up — the current threshold is motivated only by a handful of
+  hand-picked questions (see §4), which is enough to choose a starting value but
+  not to trust it. Worth doing before leaning harder on the threshold.
 - RAG enhancements: token-budget-aware context assembly and structured
   (machine-readable) citations. Current pipeline returns `sources` for
   traceability and asks the model to cite `[n]` inline, but does not yet parse

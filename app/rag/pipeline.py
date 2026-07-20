@@ -26,9 +26,9 @@ Two independent layers keep answers grounded:
   ``prompts.py``) forces the model to answer only from context and to emit the
   same fixed fallback when the context does not directly address the question.
 
-**Why a single threshold cannot do the whole job — and why the default is 0.35.**
-Measured cosine similarity (BGE-M3) of a real question against this project's
-policy chunks clusters like this:
+**Why a single threshold cannot be trusted to do the whole job — and why the
+default is 0.35.** Measured cosine similarity (BGE-M3), from only ~5 hand-picked
+questions against this project's policy chunks — NOT a real evaluation set:
 
 ===============================================  ==================
 question type                                    top-1 similarity
@@ -38,14 +38,19 @@ topically related but NOT actually answered      ~0.46 - 0.48
 completely unrelated / noise                     ~0.30
 ===============================================  ==================
 
-The "answerable" and "related-but-unanswered" bands *overlap*, so no threshold
-can separate them without also rejecting genuine questions. We therefore set the
-gate low — at **0.35**, in the empty band just above pure noise (~0.30) and well
-below any genuinely relevant chunk (>=~0.46) — so it only rejects content that is
-not even on-topic. Distinguishing "on-topic but doesn't answer" from "answers" is
-handed to the strict prompt, which is far better at that judgement than a scalar
-cutoff. The value is deliberately conservative (few false refusals) and is tunable
-via ``RAG_SIMILARITY_THRESHOLD`` without touching code.
+In *this* sample there is a gap between the "answerable" (>=~0.54) and
+"related-but-unanswered" (~0.46-0.48) bands — but do NOT trust that gap: it is
+far too little data. With more questions it is entirely plausible an
+on-topic-but-unanswered case scores above 0.48, or a genuine answer below 0.54,
+closing it. So no single threshold can be *relied on* to separate "answers" from
+"on-topic but doesn't answer". We therefore set the gate low — at **0.35**, just
+above pure noise (~0.30) and below the lowest relevant chunk we saw (~0.46) — so
+it only rejects content that is not even on-topic, and hand the "on-topic but
+doesn't answer" judgement to the strict prompt, which is far better at it than a
+scalar cutoff. The value is deliberately conservative (few false refusals) and is
+tunable via ``RAG_SIMILARITY_THRESHOLD`` without touching code. A golden-set
+evaluation is what would actually validate 0.35; these few numbers only motivate
+the choice, they don't confirm it.
 """
 
 from __future__ import annotations
