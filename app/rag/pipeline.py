@@ -1,56 +1,20 @@
 """The RAG query path: question + org_id -> grounded, tenant-scoped answer.
 
-This is where the Phase 1 (LLM + embeddings) and Phase 2 (tenant-isolated vector
-store) pieces are composed into the thing that actually answers a question. It is
-an *orchestrator*, not a swappable provider — it owns no backend of its own, it
-wires the existing interfaces together — which is why this package has a
-``pipeline`` + ``factory`` but no ``base.py`` abstract contract (there is nothing
-to have multiple interchangeable backends of).
+Composes the Phase 1/2 pieces (embed -> org-scoped retrieve -> gate -> generate)
+into the thing that actually answers a question. It is an *orchestrator*, not a
+swappable provider — it owns no backend, just wires the existing interfaces — so
+this package has ``pipeline`` + ``factory`` but no ``base.py`` (nothing to
+abstract over). Two independent layers keep answers grounded:
 
-Flow::
+* **Confidence gate (layer 1).** If the best retrieved chunk doesn't clear
+  ``similarity_threshold``, return the fixed fallback *without calling the LLM*.
+* **Strict prompt (layer 2).** When the gate passes, the prompt (``prompts.py``)
+  forces answering only from context and emitting the same fallback when the
+  context doesn't directly address the question.
 
-    question, org_id
-      -> embed(question)                       (EmbeddingProvider)
-      -> store.query(org_id, ..., top_k)        (VectorStore; WHERE org_id filter)
-      -> confidence gate on the top score       (layer 1 anti-hallucination)
-      -> build_grounded_prompt(...)             (layer 2 anti-hallucination)
-      -> llm.generate(prompt)                   (LLMProvider)
-      -> RagResult(answer, answered, sources)
-
-Two independent layers keep answers grounded:
-
-* **The confidence gate (layer 1).** If the best retrieved chunk does not clear
-  ``similarity_threshold``, we return the fixed fallback *without calling the LLM
-  at all* — saving a call and refusing to reason over irrelevant context.
-* **The strict prompt (layer 2).** When the gate passes, the prompt (see
-  ``prompts.py``) forces the model to answer only from context and to emit the
-  same fixed fallback when the context does not directly address the question.
-
-**Why a single threshold cannot be trusted to do the whole job — and why the
-default is 0.35.** Measured cosine similarity (BGE-M3), from only ~5 hand-picked
-questions against this project's policy chunks — NOT a real evaluation set:
-
-===============================================  ==================
-question type                                    top-1 similarity
-===============================================  ==================
-directly answerable                              ~0.54 - 0.74
-topically related but NOT actually answered      ~0.46 - 0.48
-completely unrelated / noise                     ~0.30
-===============================================  ==================
-
-In *this* sample there is a gap between the "answerable" (>=~0.54) and
-"related-but-unanswered" (~0.46-0.48) bands — but do NOT trust that gap: it is
-far too little data. With more questions it is entirely plausible an
-on-topic-but-unanswered case scores above 0.48, or a genuine answer below 0.54,
-closing it. So no single threshold can be *relied on* to separate "answers" from
-"on-topic but doesn't answer". We therefore set the gate low — at **0.35**, just
-above pure noise (~0.30) and below the lowest relevant chunk we saw (~0.46) — so
-it only rejects content that is not even on-topic, and hand the "on-topic but
-doesn't answer" judgement to the strict prompt, which is far better at it than a
-scalar cutoff. The value is deliberately conservative (few false refusals) and is
-tunable via ``RAG_SIMILARITY_THRESHOLD`` without touching code. A golden-set
-evaluation is what would actually validate 0.35; these few numbers only motivate
-the choice, they don't confirm it.
+The threshold defaults low (0.35) on purpose: it only rejects clear noise, and
+the prompt makes the finer "on-topic but doesn't answer" call. Reasoning for the
+value (and why it isn't yet trustworthy) is in CLAUDE.md §4.
 """
 
 from __future__ import annotations
