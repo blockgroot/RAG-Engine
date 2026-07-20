@@ -1,20 +1,11 @@
 """The RAG query path: question + org_id -> grounded, tenant-scoped answer.
 
-Composes the Phase 1/2 pieces (embed -> org-scoped retrieve -> gate -> generate)
-into the thing that actually answers a question. It is an *orchestrator*, not a
-swappable provider — it owns no backend, just wires the existing interfaces — so
-this package has ``pipeline`` + ``factory`` but no ``base.py`` (nothing to
-abstract over). Two independent layers keep answers grounded:
-
-* **Confidence gate (layer 1).** If the best retrieved chunk doesn't clear
-  ``similarity_threshold``, return the fixed fallback *without calling the LLM*.
-* **Strict prompt (layer 2).** When the gate passes, the prompt (``prompts.py``)
-  forces answering only from context and emitting the same fallback when the
-  context doesn't directly address the question.
-
-The threshold defaults low (0.35) on purpose: it only rejects clear noise, and
-the prompt makes the finer "on-topic but doesn't answer" call. Reasoning for the
-value (and why it isn't yet trustworthy) is in CLAUDE.md §4.
+Composes the Phase 1/2 pieces (embed -> org-scoped retrieve -> gate -> generate).
+An *orchestrator*, not a swappable provider, so this package has ``pipeline`` +
+``factory`` but no ``base.py``. Two layers keep answers grounded: (1) a confidence
+gate — below ``similarity_threshold`` we return the fallback without an LLM call;
+(2) a strict prompt (``prompts.py``) that refuses when the context doesn't answer.
+Threshold + reasoning: CLAUDE.md §2/§4.
 """
 
 from __future__ import annotations

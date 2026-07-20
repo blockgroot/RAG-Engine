@@ -1,20 +1,12 @@
 """Prompt construction for the grounded-generation step.
 
-The prompt is the primary defence against hallucination, so it is written to be
-deliberate and explicit rather than a casual "answer from the context" nudge.
-Its whole job is to make the model do two things reliably:
-
-1. Answer *only* from the supplied context — never from the model's own world
-   knowledge.
-2. Refuse — with a fixed, verbatim sentence — whenever the context does not
-   *directly* answer the question, **even if the context is about a related or
-   adjacent topic**. Topical overlap is explicitly called out as insufficient,
-   because that is the exact failure mode a similarity threshold cannot catch
-   (on-topic chunks score above the gate) and where a lax prompt would let the
-   model reason its way to a plausible but ungrounded answer.
-
-The refusal sentence is passed in (from ``RagSettings.fallback_response``) so the
-gate, the prompt, and the pipeline's refusal detection all use one string.
+The prompt is layer 2 of the anti-hallucination defence, so it is explicit rather
+than a casual "answer from the context" nudge. It forces the model to (1) answer
+*only* from the supplied context, and (2) refuse with a fixed sentence whenever the
+context doesn't directly answer — even when it's on a related topic (the failure
+mode the similarity gate can't catch). The refusal sentence is passed in (from
+``RagSettings.fallback_response``) so gate, prompt, and refusal detection share one
+string. Full reasoning: CLAUDE.md §2/§4.
 """
 
 from __future__ import annotations
