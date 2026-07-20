@@ -1,0 +1,61 @@
+"""The vector store contract the rest of the app depends on.
+
+This is the ONLY surface the application uses to persist and retrieve document
+chunks. It never touches Postgres or pgvector specifics directly — those live in
+concrete implementations (see ``pgvector_store.py``), so the backing store can be
+swapped without changing callers.
+
+Multi-tenant isolation is baked into the contract: every method requires an
+``org_id``. There is no way to insert or query without naming the tenant.
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class RetrievedChunk:
+    """A single search hit returned from the store."""
+
+    content: str
+    score: float  # cosine similarity in [0, 1]; higher is more similar
+    document_id: str
+    chunk_index: int
+    org_id: str
+
+
+class VectorStore(ABC):
+    """Abstract, tenant-scoped store for document chunks and their embeddings."""
+
+    @abstractmethod
+    def create_organization(self, name: str) -> str:
+        """Create a tenant and return its ``org_id``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def add_document(
+        self,
+        org_id: str,
+        title: str,
+        chunks: list[str],
+        embeddings: list[list[float]],
+        source_uri: str | None = None,
+    ) -> str:
+        """Store a document and its chunk embeddings; return the ``document_id``.
+
+        ``chunks`` and ``embeddings`` must be the same length and aligned by
+        index. All rows are written under ``org_id``.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def query(
+        self,
+        org_id: str,
+        query_embedding: list[float],
+        top_k: int = 5,
+    ) -> list[RetrievedChunk]:
+        """Return the ``top_k`` most similar chunks *within ``org_id`` only*."""
+        raise NotImplementedError

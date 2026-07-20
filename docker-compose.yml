@@ -1,0 +1,29 @@
+# Local Postgres + pgvector for development and the Phase 2 isolation tests.
+#
+#   docker compose up -d       # start
+#   python scripts/init_db.py  # create extension + tables
+#   pytest tests/ -v           # run the isolation test
+#   docker compose down        # stop  (add -v to also wipe the data volume)
+#
+# Matches DATABASE_URL=postgresql://postgres:postgres@localhost:5432/rag
+
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: rag-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: rag
+    ports:
+      - "5432:5432"
+    volumes:
+      - rag_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d rag"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  rag_pgdata:

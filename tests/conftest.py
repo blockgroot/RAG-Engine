@@ -1,0 +1,61 @@
+"""Shared pytest fixtures for the Phase 2 vector-store tests.
+
+These tests need a real Postgres+pgvector database (isolation can only be *proven*
+against the real store, not a mock). They are skipped automatically if
+``DATABASE_URL`` is not set. See README / CLAUDE.md for how to start a local DB.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+
+# Allow `pytest` from the project root to import the app package.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+from app.config.settings import DatabaseSettings  # noqa: E402
+from app.db import apply_schema, get_connection  # noqa: E402
+from app.embeddings import build_embedding_provider  # noqa: E402
+from app.vectorstore import build_vector_store  # noqa: E402
+
+
+def _database_available() -> bool:
+    return bool(DatabaseSettings.from_env().url)
+
+
+requires_db = pytest.mark.skipif(
+    not _database_available(),
+    reason="DATABASE_URL not set — start a Postgres+pgvector DB (see README).",
+)
+
+
+@pytest.fixture(scope="session")
+def embedder():
+    """Real local embedding provider (BGE-M3). Loaded once for the session."""
+    return build_embedding_provider()
+
+
+@pytest.fixture(scope="session")
+def store():
+    """The vector store, with schema ensured."""
+    apply_schema()
+    return build_vector_store()
+
+
+@pytest.fixture
+def org_cleanup():
+    """Track org_ids created during a test and cascade-delete them afterwards."""
+    created: list[str] = []
+    yield created
+    if created:
+        with get_connection() as conn:
+            conn.execute(
+                "DELETE FROM organizations WHERE id = ANY(%s::uuid[])",
+                (created,),
+            )

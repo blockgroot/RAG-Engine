@@ -13,6 +13,16 @@ DEFAULT_TIMEOUT = 60.0
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-m3"
 DEFAULT_EMBEDDING_BACKEND = "local"
 
+# Output dimension of the current embedding model (BGE-M3 = 1024). The DB schema
+# declares vector(EMBEDDING_DIM); the two MUST stay in sync — see CLAUDE.md.
+DEFAULT_EMBEDDING_DIM = 1024
+
+# Chunking defaults (characters). Reasoning documented in app/ingestion/chunking.py.
+DEFAULT_CHUNK_SIZE = 1000
+DEFAULT_CHUNK_OVERLAP = 150
+
+DEFAULT_VECTOR_STORE_BACKEND = "pgvector"
+
 
 @dataclass(frozen=True)
 class LLMSettings:
@@ -66,4 +76,53 @@ class EmbeddingSettings:
             api_key=os.getenv("EMBEDDING_API_KEY"),
             base_url=os.getenv("EMBEDDING_BASE_URL"),
             timeout=float(os.getenv("EMBEDDING_TIMEOUT") or DEFAULT_TIMEOUT),
+        )
+
+
+@dataclass(frozen=True)
+class DatabaseSettings:
+    """Configuration for the Postgres/pgvector backing store.
+
+    - ``url``  standard libpq connection string, e.g.
+      ``postgresql://user:pass@host:5432/dbname``
+    - ``embedding_dim``  vector dimension the ``chunks.embedding`` column uses;
+      must match the embedding model's output (BGE-M3 = 1024)
+    """
+
+    url: str | None
+    embedding_dim: int = DEFAULT_EMBEDDING_DIM
+
+    @classmethod
+    def from_env(cls) -> "DatabaseSettings":
+        return cls(
+            url=os.getenv("DATABASE_URL"),
+            embedding_dim=int(os.getenv("EMBEDDING_DIM") or DEFAULT_EMBEDDING_DIM),
+        )
+
+
+@dataclass(frozen=True)
+class ChunkingSettings:
+    """Configuration for document chunking (sizes measured in characters)."""
+
+    chunk_size: int = DEFAULT_CHUNK_SIZE
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
+
+    @classmethod
+    def from_env(cls) -> "ChunkingSettings":
+        return cls(
+            chunk_size=int(os.getenv("CHUNK_SIZE") or DEFAULT_CHUNK_SIZE),
+            chunk_overlap=int(os.getenv("CHUNK_OVERLAP") or DEFAULT_CHUNK_OVERLAP),
+        )
+
+
+@dataclass(frozen=True)
+class VectorStoreSettings:
+    """Configuration for the vector store abstraction layer."""
+
+    backend: str = DEFAULT_VECTOR_STORE_BACKEND
+
+    @classmethod
+    def from_env(cls) -> "VectorStoreSettings":
+        return cls(
+            backend=(os.getenv("VECTOR_STORE_BACKEND") or DEFAULT_VECTOR_STORE_BACKEND).lower(),
         )
