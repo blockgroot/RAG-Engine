@@ -19,9 +19,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from app.config.settings import DatabaseSettings  # noqa: E402
+from app.config.settings import DatabaseSettings, LLMSettings  # noqa: E402
 from app.db import apply_schema, close_pool, get_connection  # noqa: E402
 from app.embeddings import build_embedding_provider  # noqa: E402
+from app.rag import build_rag_pipeline  # noqa: E402
 from app.vectorstore import build_vector_store  # noqa: E402
 
 
@@ -42,6 +43,16 @@ requires_db = pytest.mark.skipif(
 )
 
 
+def _llm_available() -> bool:
+    return bool(LLMSettings.from_env().model)
+
+
+requires_llm = pytest.mark.skipif(
+    not _llm_available(),
+    reason="LLM not configured — set LLM_MODEL/LLM_API_KEY/LLM_BASE_URL (see README).",
+)
+
+
 @pytest.fixture(scope="session")
 def embedder():
     """Real local embedding provider (BGE-M3). Loaded once for the session."""
@@ -53,6 +64,12 @@ def store():
     """The vector store, with schema ensured."""
     apply_schema()
     return build_vector_store()
+
+
+@pytest.fixture(scope="session")
+def rag(embedder, store):
+    """The RAG pipeline, wired to the real LLM + shared embedder/store fixtures."""
+    return build_rag_pipeline(embedder=embedder, store=store)
 
 
 @pytest.fixture

@@ -23,6 +23,14 @@ DEFAULT_CHUNK_OVERLAP = 150
 
 DEFAULT_VECTOR_STORE_BACKEND = "pgvector"
 
+# RAG query-path defaults. See app/rag/pipeline.py for the reasoning behind the
+# similarity threshold value and the two-layer grounding design.
+DEFAULT_RAG_TOP_K = 5
+DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.35
+DEFAULT_RAG_FALLBACK_RESPONSE = (
+    "I don't have information on that in the available policy documents."
+)
+
 # Connection-pool sizing for the Postgres backing store.
 DEFAULT_DB_POOL_MIN_SIZE = 1
 DEFAULT_DB_POOL_MAX_SIZE = 10
@@ -133,4 +141,36 @@ class VectorStoreSettings:
     def from_env(cls) -> "VectorStoreSettings":
         return cls(
             backend=(os.getenv("VECTOR_STORE_BACKEND") or DEFAULT_VECTOR_STORE_BACKEND).lower(),
+        )
+
+
+@dataclass(frozen=True)
+class RagSettings:
+    """Configuration for the RAG query path (retrieve -> gate -> generate).
+
+    - ``top_k``  how many chunks to retrieve per question.
+    - ``similarity_threshold``  minimum cosine similarity (in [0, 1]) the *best*
+      retrieved chunk must clear before the LLM is called at all. Below it, we
+      short-circuit to ``fallback_response`` and never invoke the model. This is
+      the cheap first line of defence against answering from irrelevant context;
+      the strict prompt (see ``app/rag/prompts.py``) is the second. Reasoning for
+      the default value lives in ``app/rag/pipeline.py``.
+    - ``fallback_response``  the single, fixed "I don't know" string. It is used
+      in three places that MUST agree: the confidence gate, the LLM's refusal
+      instruction, and the pipeline's refusal detection — so it lives here as one
+      source of truth rather than being duplicated.
+    """
+
+    top_k: int = DEFAULT_RAG_TOP_K
+    similarity_threshold: float = DEFAULT_RAG_SIMILARITY_THRESHOLD
+    fallback_response: str = DEFAULT_RAG_FALLBACK_RESPONSE
+
+    @classmethod
+    def from_env(cls) -> "RagSettings":
+        return cls(
+            top_k=int(os.getenv("RAG_TOP_K") or DEFAULT_RAG_TOP_K),
+            similarity_threshold=float(
+                os.getenv("RAG_SIMILARITY_THRESHOLD") or DEFAULT_RAG_SIMILARITY_THRESHOLD
+            ),
+            fallback_response=os.getenv("RAG_FALLBACK_RESPONSE") or DEFAULT_RAG_FALLBACK_RESPONSE,
         )
