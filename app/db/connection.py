@@ -1,11 +1,21 @@
-"""Postgres connection helpers.
+"""Postgres connection helpers, backed by a psycopg connection pool.
 
-One place that knows how to open a connection from ``DatabaseSettings`` and
-register the pgvector type adapters. Everything else (migrations, the pgvector
-store) goes through here rather than calling ``psycopg.connect`` directly.
+One place that knows how to talk to Postgres. Everything else (the pgvector
+store, test cleanup) goes through ``get_connection()`` rather than calling
+``psycopg.connect`` directly, so pooling is transparent to callers.
 
-A simple per-call connection is used for now; a pool can be introduced here later
-without touching callers.
+Lifecycle
+---------
+The pool is created lazily on first use and lives at module scope. Every process
+that uses the DB should close it at its own boundary via ``close_pool()`` (see
+``scripts/*`` mains and the test teardown) so connections are released cleanly —
+this matters more once a long-running API server exists, but we wire it now so it
+isn't a loose end later.
+
+Note: schema migration (``migrate.apply_schema``) deliberately does NOT use this
+pool — it opens a direct connection, because it may run against a brand-new
+database where the ``vector`` extension (and thus the pgvector adapters
+registered here) does not exist yet.
 """
 
 from __future__ import annotations
@@ -15,6 +25,7 @@ from typing import Iterator
 
 import psycopg
 from pgvector.psycopg import register_vector
+from psycopg_pool import ConnectionPool
 
 from ..config.settings import DatabaseSettings
 from ..core.exceptions import ConfigurationError, ProviderError
@@ -24,37 +35,72 @@ class DatabaseError(ProviderError):
     """Raised when a database connection or query fails."""
 
 
-@contextmanager
-def get_connection(settings: DatabaseSettings | None = None) -> Iterator["psycopg.Connection"]:
-    """Yield an open psycopg connection with pgvector registered.
+# Module-level singleton pool, keyed by the URL it was opened for.
+_pool: ConnectionPool | None = None
+_pool_url: str | None = None
 
-    Commits on clean exit, rolls back on exception, and always closes.
+
+def _configure(conn: "psycopg.Connection") -> None:
+    """Run once per pooled connection: register pgvector type adapters.
+
+    Registering needs the ``vector`` extension to exist. In normal operation the
+    schema is applied (extension created) before the pool is ever used, so this
+    succeeds. It is kept tolerant only as defense against a fresh-DB edge case.
     """
+    try:
+        register_vector(conn)
+    except psycopg.ProgrammingError:
+        conn.rollback()
+
+
+def get_pool(settings: DatabaseSettings | None = None) -> ConnectionPool:
+    """Return the shared connection pool, creating it on first call."""
+    global _pool, _pool_url
     settings = settings or DatabaseSettings.from_env()
     if not settings.url:
         raise ConfigurationError("Missing required database configuration: DATABASE_URL")
 
-    try:
-        conn = psycopg.connect(settings.url)
-    except psycopg.Error as exc:
-        raise DatabaseError(
-            f"Could not connect to the database: {exc}", cause=exc
-        ) from exc
+    # If asked for a different URL than the open pool (e.g. tests), reset.
+    if _pool is not None and _pool_url != settings.url:
+        close_pool()
 
-    try:
-        # Registering the pgvector adapters needs the extension to already exist.
-        # During the very first migration it won't yet — that's fine, migrations
-        # don't pass vector params. Store operations run on later connections
-        # (after the schema is applied) where registration succeeds.
+    if _pool is None:
         try:
-            register_vector(conn)
-        except psycopg.ProgrammingError:
-            conn.rollback()  # clear the aborted-transaction state
+            _pool = ConnectionPool(
+                conninfo=settings.url,
+                min_size=settings.pool_min_size,
+                max_size=settings.pool_max_size,
+                configure=_configure,
+                open=True,
+            )
+        except psycopg.Error as exc:
+            raise DatabaseError(
+                f"Could not open the connection pool: {exc}", cause=exc
+            ) from exc
+        _pool_url = settings.url
 
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    return _pool
+
+
+def close_pool() -> None:
+    """Close the shared pool if open. Safe to call multiple times."""
+    global _pool, _pool_url
+    if _pool is not None:
+        _pool.close()
+        _pool = None
+        _pool_url = None
+
+
+@contextmanager
+def get_connection(settings: DatabaseSettings | None = None) -> Iterator["psycopg.Connection"]:
+    """Yield a pooled connection with pgvector registered.
+
+    The pool's context manager commits on clean exit, rolls back on exception,
+    and returns the connection to the pool (it is not closed).
+    """
+    pool = get_pool(settings)
+    try:
+        with pool.connection() as conn:
+            yield conn
+    except psycopg.Error as exc:
+        raise DatabaseError(f"Database operation failed: {exc}", cause=exc) from exc

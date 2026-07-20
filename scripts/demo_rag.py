@@ -36,7 +36,7 @@ from dotenv import load_dotenv
 
 from app.config.settings import ChunkingSettings
 from app.core.exceptions import ProviderError
-from app.db import apply_schema
+from app.db import apply_schema, close_pool
 from app.embeddings import build_embedding_provider
 from app.ingestion import chunk_text, preprocess
 from app.llm import build_llm_provider
@@ -136,6 +136,9 @@ def main() -> int:
         if exc.cause:
             print(f"cause: {exc.cause}")
         return 1
+    finally:
+        # Release pooled DB connections at this process boundary.
+        close_pool()
 
 
 if __name__ == "__main__":

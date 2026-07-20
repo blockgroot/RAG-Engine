@@ -20,9 +20,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.config.settings import DatabaseSettings  # noqa: E402
-from app.db import apply_schema, get_connection  # noqa: E402
+from app.db import apply_schema, close_pool, get_connection  # noqa: E402
 from app.embeddings import build_embedding_provider  # noqa: E402
 from app.vectorstore import build_vector_store  # noqa: E402
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _close_pool_at_session_end():
+    """Release the shared connection pool when the test session finishes."""
+    yield
+    close_pool()
 
 
 def _database_available() -> bool:

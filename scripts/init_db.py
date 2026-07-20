@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 
 from app.config.settings import DatabaseSettings
 from app.core.exceptions import ProviderError
-from app.db import apply_schema
+from app.db import apply_schema, close_pool
 
 
 def main() -> int:
@@ -33,6 +33,10 @@ def main() -> int:
         if exc.cause:
             print(f"cause: {exc.cause}")
         return 1
+    finally:
+        # Migration uses a direct connection, but close the pool defensively so
+        # every script honors the same "release DB resources on exit" boundary.
+        close_pool()
     print("Schema applied (extension + tables ready).")
     return 0
 

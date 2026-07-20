@@ -23,6 +23,10 @@ DEFAULT_CHUNK_OVERLAP = 150
 
 DEFAULT_VECTOR_STORE_BACKEND = "pgvector"
 
+# Connection-pool sizing for the Postgres backing store.
+DEFAULT_DB_POOL_MIN_SIZE = 1
+DEFAULT_DB_POOL_MAX_SIZE = 10
+
 
 @dataclass(frozen=True)
 class LLMSettings:
@@ -91,12 +95,16 @@ class DatabaseSettings:
 
     url: str | None
     embedding_dim: int = DEFAULT_EMBEDDING_DIM
+    pool_min_size: int = DEFAULT_DB_POOL_MIN_SIZE
+    pool_max_size: int = DEFAULT_DB_POOL_MAX_SIZE
 
     @classmethod
     def from_env(cls) -> "DatabaseSettings":
         return cls(
             url=os.getenv("DATABASE_URL"),
             embedding_dim=int(os.getenv("EMBEDDING_DIM") or DEFAULT_EMBEDDING_DIM),
+            pool_min_size=int(os.getenv("DB_POOL_MIN_SIZE") or DEFAULT_DB_POOL_MIN_SIZE),
+            pool_max_size=int(os.getenv("DB_POOL_MAX_SIZE") or DEFAULT_DB_POOL_MAX_SIZE),
         )
 
 

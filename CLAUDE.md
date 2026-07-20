@@ -39,6 +39,13 @@ their policy documents; their employees ask questions and get answers grounded i
   `org_id`, and every read/write in the vector store *requires* one. Retrieval
   filters `WHERE org_id = ...` before ranking, so isolation does not depend on the
   vector index — it's enforced by the query itself. Proven by `tests/test_isolation.py`.
+- **DB access goes through a psycopg connection pool.** `app/db/connection.py`
+  owns a lazily-created module-level `ConnectionPool`; `register_vector` runs in
+  its `configure` hook (once per pooled connection). Callers use
+  `get_connection()` unchanged. Every process boundary must call `close_pool()`
+  on exit (scripts' `main()` do this in `finally`; tests via a session fixture).
+  Pooling ~halved query latency (p50 ~24ms → ~12ms) by amortizing connection
+  setup. Sizing via `DB_POOL_MIN_SIZE` / `DB_POOL_MAX_SIZE`.
 - **Everything is a swappable interface + factory.** Each capability (llm,
   embeddings, vectorstore) has: `base.py` (abstract contract), one or more
   concrete impls, a `factory.py` (`build_*` reads config and returns the impl),
@@ -86,11 +93,12 @@ tests/          # pytest; test_isolation.py is the Phase 2 completion gate
   `vector(1024)` because BGE-M3 outputs 1024 dims. If the embedding model changes,
   update BOTH `app/db/schema.sql` and `DatabaseSettings.embedding_dim` together,
   and re-create the table.
-- **First-run migration + pgvector registration.** `get_connection` registers the
-  pgvector type adapters, which requires the `vector` extension to already exist.
-  On a brand-new database it won't yet, so registration is skipped gracefully
-  during the first `apply_schema` (migrations don't pass vector params); later
-  store connections register fine. Don't "fix" this by forcing registration.
+- **Migration must NOT use the pool.** The pool's `configure` hook runs
+  `register_vector`, which requires the `vector` extension to exist. On a
+  brand-new DB it doesn't yet, so `apply_schema` (in `migrate.py`) opens a
+  *direct* `psycopg.connect` instead of `get_connection`. It only runs plain DDL
+  and passes no vector params, so it needs neither the pool nor the adapters.
+  Keep migration off the pool.
 - **Isolation is enforced by the `WHERE org_id` clause, not the HNSW index.** Keep
   it that way — never expose a query path that omits `org_id`.
 - **Preprocessing scope.** We assume text/Markdown input. Layout-aware extraction
@@ -117,12 +125,16 @@ Deletes cascade: removing an org removes its documents and chunks. Indexes:
 
 **Built**
 - Phase 1 — LLM & embedding provider abstraction (llm, embeddings, config, core).
-- Phase 2 — DB schema (pgvector), preprocessing + chunking, vector store
-  abstraction, and a passing multi-tenant isolation test.
+- Phase 2 — DB schema (pgvector) behind a pooled connection layer, preprocessing
+  + chunking, vector store abstraction. Tests: multi-tenant isolation +
+  numpy→pgvector embedding round-trip, both passing.
+- `scripts/demo_rag.py` — a non-productionized END-TO-END demo (ingest → embed →
+  store → retrieve → grounded LLM answer). Not the real pipeline; see below.
 
 **Pending (not started)**
-- Retrieval/RAG pipeline: query → embed → retrieve → assemble context → LLM answer
-  (with citations).
+- Retrieval/RAG pipeline (productionize the demo into `app/rag/`): query → embed →
+  retrieve → assemble context (token-budget aware) → LLM answer with structured
+  citations, plus a "no relevant context" path and tests.
 - Ingestion adapters: layout-aware extraction from PDF/DOCX/HTML.
 - Users / auth / tenancy management (OAuth, API keys, roles).
 - API layer (HTTP endpoints) and an orchestrator.

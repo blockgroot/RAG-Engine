@@ -5,7 +5,7 @@ not import from here directly — it talks to the vector store abstraction
 (``app.vectorstore``), which uses these helpers internally.
 """
 
-from .connection import get_connection, DatabaseError
+from .connection import get_connection, get_pool, close_pool, DatabaseError
 from .migrate import apply_schema
 
-__all__ = ["get_connection", "DatabaseError", "apply_schema"]
+__all__ = ["get_connection", "get_pool", "close_pool", "DatabaseError", "apply_schema"]
