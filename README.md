@@ -2,9 +2,11 @@
 
 A multi-tenant RAG policy Q&A platform, built in small, reviewable phases.
 
-> **Current phase:** LLM & Embedding provider abstraction layer only.
-> The RAG pipeline, database schema, agents, and orchestrator are future phases
-> and are intentionally **not** built yet.
+> **Phases built so far:** (1) LLM & embedding provider abstraction,
+> (2) database schema + chunking + vector store layer with proven tenant
+> isolation. The retrieval/RAG pipeline, ingestion adapters, auth, and API are
+> future phases and are intentionally **not** built yet. See
+> [CLAUDE.md](CLAUDE.md) for the full project rulebook and current state.
 
 ## Provider abstraction layer
 
@@ -124,3 +126,81 @@ The script builds both providers from your `.env`, sends one test prompt and one
 test embedding call, and prints the results. The first run of the local
 embedding backend downloads the BGE-M3 weights (~2.2 GB), so it may take a
 minute. Exit code `0` means both checks passed.
+
+## Vector store layer (Phase 2)
+
+Durable, **tenant-isolated** storage and retrieval of document chunks and their
+embeddings, backed by Postgres + [pgvector](https://github.com/pgvector/pgvector).
+Same "swappable interface + factory" pattern as the provider layer: the app talks
+to `VectorStore`, never to Postgres directly.
+
+```
+app/
+  db/
+    schema.sql           # organizations, documents, chunks (+ pgvector)
+    connection.py        # get_connection() — opens psycopg conn, registers pgvector
+    migrate.py           # apply_schema() — idempotent
+  ingestion/
+    preprocessing.py     # preprocess(text) — normalize before chunking
+    chunking.py          # chunk_text(text) — structure-aware, size+overlap configurable
+  vectorstore/
+    base.py              # VectorStore interface + RetrievedChunk
+    pgvector_store.py    # PgVectorStore — every read/write requires org_id
+    factory.py           # build_vector_store() -> VectorStore
+scripts/
+  init_db.py             # create extension + apply schema
+tests/
+  test_isolation.py      # PROOF that one org never sees another's data
+```
+
+### Public API
+
+```python
+from app.ingestion import preprocess, chunk_text
+from app.embeddings import build_embedding_provider
+from app.vectorstore import build_vector_store
+
+store = build_vector_store()
+embedder = build_embedding_provider()
+
+org_id = store.create_organization("Acme Corp")
+chunks = chunk_text(preprocess(raw_policy_text))
+store.add_document(org_id, "Leave Policy", chunks, embedder.embed(chunks))
+
+hits = store.query(org_id, embedder.embed(["how many leave days?"])[0], top_k=3)
+# every hit is guaranteed to belong to org_id — no cross-tenant leakage
+```
+
+### Multi-tenant isolation
+
+Every organization-scoped table has an `org_id`, and **every** vector-store
+read/write requires one. Retrieval filters `WHERE org_id = ...` before ranking,
+so isolation is enforced by the query itself — not by the vector index. This is
+verified by `tests/test_isolation.py`, which creates multiple orgs with
+*semantically near-identical* content and asserts that querying one org never
+returns another's rows.
+
+### Database setup & running the tests
+
+You need a Postgres with the `pgvector` extension. A `docker-compose.yml` is
+included for this:
+
+```bash
+# 1) start Postgres + pgvector (uses the DATABASE_URL from .env.example)
+#    on first run give it a few seconds to initialize before the next step
+docker compose up -d
+
+# 2) create the extension + tables (idempotent)
+python scripts/init_db.py
+
+# 3) run the isolation test (needs DATABASE_URL; skipped if unset)
+pytest tests/ -v
+
+# stop it later (add -v to also wipe the data volume)
+docker compose down
+```
+
+Any Postgres with pgvector works — the code only reads `DATABASE_URL`, so a
+managed instance or a local Homebrew `postgresql@17` + `pgvector` are equally
+fine. The embedding column is `vector(1024)` to match BGE-M3 — see
+[CLAUDE.md](CLAUDE.md) if you change models.

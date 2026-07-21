@@ -13,6 +13,28 @@ DEFAULT_TIMEOUT = 60.0
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-m3"
 DEFAULT_EMBEDDING_BACKEND = "local"
 
+# Output dimension of the current embedding model (BGE-M3 = 1024). The DB schema
+# declares vector(EMBEDDING_DIM); the two MUST stay in sync — see CLAUDE.md.
+DEFAULT_EMBEDDING_DIM = 1024
+
+# Chunking defaults (characters). Reasoning documented in app/ingestion/chunking.py.
+DEFAULT_CHUNK_SIZE = 1000
+DEFAULT_CHUNK_OVERLAP = 150
+
+DEFAULT_VECTOR_STORE_BACKEND = "pgvector"
+
+# RAG query-path defaults. See app/rag/pipeline.py for the reasoning behind the
+# similarity threshold value and the two-layer grounding design.
+DEFAULT_RAG_TOP_K = 5
+DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.35
+DEFAULT_RAG_FALLBACK_RESPONSE = (
+    "I don't have information on that in the available policy documents."
+)
+
+# Connection-pool sizing for the Postgres backing store.
+DEFAULT_DB_POOL_MIN_SIZE = 1
+DEFAULT_DB_POOL_MAX_SIZE = 10
+
 
 @dataclass(frozen=True)
 class LLMSettings:
@@ -66,4 +88,89 @@ class EmbeddingSettings:
             api_key=os.getenv("EMBEDDING_API_KEY"),
             base_url=os.getenv("EMBEDDING_BASE_URL"),
             timeout=float(os.getenv("EMBEDDING_TIMEOUT") or DEFAULT_TIMEOUT),
+        )
+
+
+@dataclass(frozen=True)
+class DatabaseSettings:
+    """Configuration for the Postgres/pgvector backing store.
+
+    - ``url``  standard libpq connection string, e.g.
+      ``postgresql://user:pass@host:5432/dbname``
+    - ``embedding_dim``  vector dimension the ``chunks.embedding`` column uses;
+      must match the embedding model's output (BGE-M3 = 1024)
+    """
+
+    url: str | None
+    embedding_dim: int = DEFAULT_EMBEDDING_DIM
+    pool_min_size: int = DEFAULT_DB_POOL_MIN_SIZE
+    pool_max_size: int = DEFAULT_DB_POOL_MAX_SIZE
+
+    @classmethod
+    def from_env(cls) -> "DatabaseSettings":
+        return cls(
+            url=os.getenv("DATABASE_URL"),
+            embedding_dim=int(os.getenv("EMBEDDING_DIM") or DEFAULT_EMBEDDING_DIM),
+            pool_min_size=int(os.getenv("DB_POOL_MIN_SIZE") or DEFAULT_DB_POOL_MIN_SIZE),
+            pool_max_size=int(os.getenv("DB_POOL_MAX_SIZE") or DEFAULT_DB_POOL_MAX_SIZE),
+        )
+
+
+@dataclass(frozen=True)
+class ChunkingSettings:
+    """Configuration for document chunking (sizes measured in characters)."""
+
+    chunk_size: int = DEFAULT_CHUNK_SIZE
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
+
+    @classmethod
+    def from_env(cls) -> "ChunkingSettings":
+        return cls(
+            chunk_size=int(os.getenv("CHUNK_SIZE") or DEFAULT_CHUNK_SIZE),
+            chunk_overlap=int(os.getenv("CHUNK_OVERLAP") or DEFAULT_CHUNK_OVERLAP),
+        )
+
+
+@dataclass(frozen=True)
+class VectorStoreSettings:
+    """Configuration for the vector store abstraction layer."""
+
+    backend: str = DEFAULT_VECTOR_STORE_BACKEND
+
+    @classmethod
+    def from_env(cls) -> "VectorStoreSettings":
+        return cls(
+            backend=(os.getenv("VECTOR_STORE_BACKEND") or DEFAULT_VECTOR_STORE_BACKEND).lower(),
+        )
+
+
+@dataclass(frozen=True)
+class RagSettings:
+    """Configuration for the RAG query path (retrieve -> gate -> generate).
+
+    - ``top_k``  how many chunks to retrieve per question.
+    - ``similarity_threshold``  minimum cosine similarity (in [0, 1]) the *best*
+      retrieved chunk must clear before the LLM is called at all. Below it, we
+      short-circuit to ``fallback_response`` and never invoke the model. This is
+      the cheap first line of defence against answering from irrelevant context;
+      the strict prompt (see ``app/rag/prompts.py``) is the second. Reasoning for
+      the default value lives in ``app/rag/pipeline.py``.
+    - ``fallback_response``  the single, fixed "I don't know" string. It is used
+      in three places that MUST agree: the confidence gate, the LLM's refusal
+      instruction, and the pipeline's refusal detection — so it lives here as one
+      source of truth rather than being duplicated.
+    """
+
+    top_k: int = DEFAULT_RAG_TOP_K
+    similarity_threshold: float = DEFAULT_RAG_SIMILARITY_THRESHOLD
+    fallback_response: str = DEFAULT_RAG_FALLBACK_RESPONSE
+
+    @classmethod
+    def from_env(cls) -> "RagSettings":
+        return cls(
+            top_k=int(os.getenv("RAG_TOP_K") or DEFAULT_RAG_TOP_K),
+            similarity_threshold=float(
+                os.getenv("RAG_SIMILARITY_THRESHOLD") or DEFAULT_RAG_SIMILARITY_THRESHOLD
+            ),
+            fallback_response=os.getenv("RAG_FALLBACK_RESPONSE") or DEFAULT_RAG_FALLBACK_RESPONSE,
         )
