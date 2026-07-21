@@ -35,6 +35,9 @@ DEFAULT_RAG_FALLBACK_RESPONSE = (
 DEFAULT_DB_POOL_MIN_SIZE = 1
 DEFAULT_DB_POOL_MAX_SIZE = 10
 
+# External content sources (Phase 4). Only "notion" exists so far.
+DEFAULT_SOURCE_TYPE = "notion"
+
 
 @dataclass(frozen=True)
 class LLMSettings:
@@ -173,4 +176,31 @@ class RagSettings:
                 os.getenv("RAG_SIMILARITY_THRESHOLD") or DEFAULT_RAG_SIMILARITY_THRESHOLD
             ),
             fallback_response=os.getenv("RAG_FALLBACK_RESPONSE") or DEFAULT_RAG_FALLBACK_RESPONSE,
+        )
+
+
+@dataclass(frozen=True)
+class NotionSettings:
+    """Configuration for the Notion content source (Phase 4).
+
+    - ``token``  the auth token the adapter uses. For this phase that is a Notion
+      *internal integration secret* (a single static token) — the simplest viable
+      auth given there is no web app yet to host an OAuth consent redirect.
+    - ``client_id`` / ``client_secret`` / ``redirect_uri``  OAuth app credentials,
+      read here so they aren't hardcoded and are ready for the later multi-tenant
+      OAuth phase. They are NOT used by the adapter yet — ``token`` is.
+    """
+
+    token: str | None
+    client_id: str | None = None
+    client_secret: str | None = None
+    redirect_uri: str | None = None
+
+    @classmethod
+    def from_env(cls) -> "NotionSettings":
+        return cls(
+            token=os.getenv("NOTION_TOKEN"),
+            client_id=os.getenv("NOTION_CLIENT_ID"),
+            client_secret=os.getenv("NOTION_CLIENT_SECRET"),
+            redirect_uri=os.getenv("NOTION_REDIRECT_URI"),
         )

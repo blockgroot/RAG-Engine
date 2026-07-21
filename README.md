@@ -4,8 +4,9 @@ A multi-tenant RAG policy Q&A platform, built in small, reviewable phases.
 
 > **Phases built so far:** (1) LLM & embedding provider abstraction,
 > (2) database schema + chunking + vector store layer with proven tenant
-> isolation. The retrieval/RAG pipeline, ingestion adapters, auth, and API are
-> future phases and are intentionally **not** built yet. See
+> isolation, (3) the RAG query path (retrieve → gate → grounded generate),
+> (4) the first real external source — Notion — ingested end to end. Auth/API
+> and more source adapters (Drive, GitHub, Slack) are future phases. See
 > [CLAUDE.md](CLAUDE.md) for the full project rulebook and current state.
 
 ## Provider abstraction layer
@@ -204,3 +205,70 @@ Any Postgres with pgvector works — the code only reads `DATABASE_URL`, so a
 managed instance or a local Homebrew `postgresql@17` + `pgvector` are equally
 fine. The embedding column is `vector(1024)` to match BGE-M3 — see
 [CLAUDE.md](CLAUDE.md) if you change models.
+
+## RAG query path (Phase 3)
+
+`app/rag/` composes the pieces above into grounded, tenant-scoped Q&A: a question
++ `org_id` → embed → org-scoped retrieve → **confidence gate** → **strict grounded
+prompt** → LLM answer, returned as a `RagResult` (`answer`, `answered`, `sources`,
+`top_score`). Two independent layers keep answers grounded: the gate refuses
+cheaply when nothing retrieved is even on-topic; the prompt refuses when on-topic
+context doesn't actually answer. `tests/test_grounding.py` is the completion gate.
+
+```python
+from app.rag import build_rag_pipeline
+
+rag = build_rag_pipeline()                       # from env
+result = rag.answer("How many leave days do we get?", org_id=org_id)
+print(result.answer, result.answered, result.top_score)
+```
+
+## External sources — Notion (Phase 4)
+
+`app/sources/` fetches real content from external systems behind one interface,
+`SourceAdapter` (`list_documents` / `fetch_document` / `get_last_modified`), so
+Google Drive, GitHub, and Slack can later implement the *same* contract. The
+first implementation is `NotionAdapter`, built on the official
+[`notion-client`](https://github.com/ramnes/notion-sdk-py) SDK (only dep:
+`httpx`) — chosen over `llama-index-readers-notion` to stay dependency-light and
+keep full control of Notion block→text conversion (that conversion lives inside
+the adapter). `app/ingestion/pipeline.py::ingest_source` wires an adapter into the
+existing chunk → embed → store path, scoped to one org.
+
+```
+app/
+  sources/
+    base.py              # SourceAdapter interface + SourceRef / SourceDocument
+    notion.py            # NotionAdapter (notion-client; block -> text)
+    factory.py           # build_source_adapter("notion") -> SourceAdapter
+  ingestion/
+    pipeline.py          # ingest_source(adapter, org_id) -> IngestResult
+scripts/
+  ingest_notion.py       # pull every shared Notion page into a new org
+  ask.py                 # run one grounded question against an org
+```
+
+### Auth (this phase: internal integration token)
+
+Full multi-tenant OAuth needs an app to host the consent redirect (a later
+phase), so this phase uses a Notion **internal integration secret** — a single
+static token. A public integration's client id/secret are OAuth-only and cannot
+be used as an API token; they're read into config but unused for now.
+
+### Setup & run
+
+1. Create a Notion **internal** integration at
+   <https://www.notion.so/my-integrations>, copy its **Internal Integration
+   Secret** into `.env` as `NOTION_TOKEN`.
+2. In Notion, open your page → `•••` → **Connections** → add the integration
+   (without this, the integration sees no pages).
+3. Ingest, then ask:
+
+```bash
+python scripts/ingest_notion.py "Acme Corp"     # prints the new org_id
+python scripts/ask.py <org_id> "How many days of paid annual leave do we get?"
+```
+
+A grounded answer that traces back to your real Notion page confirms the whole
+pipeline (fetch → chunk → embed → store → retrieve → generate) is wired end to
+end.

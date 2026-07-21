@@ -7,5 +7,6 @@ Public API:
 
 from .preprocessing import preprocess
 from .chunking import chunk_text
+from .pipeline import ingest_source, IngestResult
 
-__all__ = ["preprocess", "chunk_text"]
+__all__ = ["preprocess", "chunk_text", "ingest_source", "IngestResult"]

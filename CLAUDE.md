@@ -69,6 +69,20 @@ their policy documents; their employees ask questions and get answers grounded i
   questions (see §4 — the apparent separation is on far too small a sample to
   rely on). The gate stops noise cheaply; the prompt handles the fine-grained
   "on-topic but doesn't answer" judgement.
+- **External sources are adapters behind one interface (`app/sources/`), using a
+  thin official SDK — not a framework.** For Notion we use the official
+  `notion-client` SDK (only dep: `httpx`), NOT `llama-index-readers-notion`. The
+  reader pulls in all of `llama-index-core` (~30 transitive deps: nltk, sqlalchemy,
+  tiktoken, …) and returns LlamaIndex `Document` objects we'd immediately unwrap —
+  yet we already own preprocessing/chunking/embedding/storage and only need the
+  raw-content-fetch piece. The SDK hands us plain API dicts, so we keep full
+  control of block→text conversion and stay dependency-light. This is the *same*
+  reasoning as the plain-OpenAI-client-over-LiteLLM call. Every source implements
+  one `SourceAdapter` contract (`list_documents` / `fetch_document` /
+  `get_last_modified`), so Google Drive/Docs/Sheets, GitHub, and Slack later
+  implement the same interface — the ingestion pipeline never changes. Format
+  conversion (Notion blocks → Markdown-ish text) lives *inside the adapter*, never
+  in the ingestion pipeline.
 
 ## 3. Folder / file structure convention
 
@@ -80,10 +94,15 @@ app/
   embeddings/   # base.py (EmbeddingProvider) + local.py + remote.py + factory.py
   db/           # Postgres plumbing: schema.sql, connection.py, migrate.py. Infra only.
   ingestion/    # preprocessing.py + chunking.py (text -> clean text -> chunks)
+                #   + pipeline.py (ingest_source: adapter -> chunk -> embed -> store).
+                #   Orchestrator like rag/ — composes existing interfaces; no base.py.
   vectorstore/  # base.py (VectorStore) + pgvector_store.py + factory.py
   rag/          # pipeline.py (RagPipeline/RagResult) + prompts.py + factory.py.
                 #   Orchestrator, not a provider — composes the above; no base.py.
-scripts/        # runnable entrypoints: verify_providers.py, init_db.py
+  sources/      # base.py (SourceAdapter) + notion.py + factory.py. External content
+                #   sources (Notion now; Drive/GitHub/Slack later) behind one interface.
+scripts/        # entrypoints: verify_providers.py, init_db.py, demo_rag.py,
+                #   ingest_notion.py (pull Notion -> store), ask.py (query one org)
 tests/          # pytest; test_isolation.py (Phase 2) + test_grounding.py (Phase 3) gates
 ```
 
@@ -126,6 +145,18 @@ tests/          # pytest; test_isolation.py (Phase 2) + test_grounding.py (Phase
 - **Preprocessing scope.** We assume text/Markdown input. Layout-aware extraction
   from PDF/DOCX/HTML (Unstructured/Docling) is deliberately deferred to a future
   ingestion-adapters phase.
+- **Notion auth is an INTERNAL integration token this phase, not OAuth.** The
+  adapter authenticates with `NOTION_TOKEN` (a Notion *Internal Integration
+  Secret*, `ntn_...`). A *Public* integration's client id/secret are OAuth-only
+  and CANNOT be used as an API token — that path needs a web app to catch the
+  consent redirect, which is a later phase. `NOTION_CLIENT_ID/SECRET/REDIRECT_URI`
+  are read into `NotionSettings` but unused for now (reserved, not hardcoded).
+  The same `notion-client` accepts an OAuth token later via the same interface.
+- **A Notion page must be explicitly shared with the integration** (page → `•••`
+  → Connections → add it), separate from having a valid token. Without sharing,
+  `list_documents()` returns zero pages even with a good token. `child_page`
+  blocks are treated as separate documents (not inlined) since each Notion page
+  is its own document.
 - **Don't trust the apparent gap between "answerable" and "related-but-unanswered"
   scores — it's a tiny sample.** Measured with BGE-M3 against our own policy
   chunks, from only ~5 hand-picked questions (NOT an evaluation set):
@@ -157,7 +188,7 @@ Defined in `app/db/schema.sql`. Current tables:
 | Table           | Responsibility                                                        |
 | --------------- | -------------------------------------------------------------------- |
 | `organizations` | Tenants. Everything else hangs off an org. Columns: `id`, `name`, `created_at`. |
-| `documents`     | A source policy file/upload, scoped to one org. `id`, `org_id`, `title`, `source_uri`, `created_at`. |
+| `documents`     | A source policy file/upload, scoped to one org. `id`, `org_id`, `title`, `source_uri`, `created_at`. As of Phase 4, `source_uri` is populated with the origin URL (e.g. the Notion page URL) at ingest. |
 | `chunks`        | Text chunks + their `vector(1024)` embedding, scoped to one org. `id`, `org_id`, `document_id`, `chunk_index`, `content`, `embedding`, `created_at`. |
 
 Deletes cascade: removing an org removes its documents and chunks. Indexes:
@@ -180,6 +211,13 @@ Deletes cascade: removing an org removes its documents and chunks. Indexes:
   answerable question is grounded + traceable to one org's chunks, a no-match
   question falls back for both orgs, and a topically-related-but-unanswered
   question falls back via the prompt (top chunk cleared the gate). All passing.
+- Phase 4 — First real external source: Notion (`app/sources/`). `SourceAdapter`
+  interface (`list_documents` / `fetch_document` / `get_last_modified`) with a
+  `NotionAdapter` (official `notion-client` SDK; block→text conversion inside the
+  adapter). `app/ingestion/pipeline.py::ingest_source` wires adapter → preprocess
+  → chunk → embed → store, scoped to a real org. Verified end-to-end against a
+  real Notion page: an answerable question returns a grounded answer traceable to
+  the page; an unanswered one falls back. Scripts: `ingest_notion.py`, `ask.py`.
 - `scripts/demo_rag.py` — a non-productionized END-TO-END demo (ingest → embed →
   store → retrieve → grounded LLM answer). Predates `app/rag/`; kept as a simple
   standalone walkthrough. The productionized path is now `app/rag/`.
@@ -195,8 +233,15 @@ Deletes cascade: removing an org removes its documents and chunks. Indexes:
   (machine-readable) citations. Current pipeline returns `sources` for
   traceability and asks the model to cite `[n]` inline, but does not yet parse
   citations out or trim context to a token budget.
+- More source adapters, implementing the same `SourceAdapter` interface: Google
+  Drive/Docs/Sheets, GitHub, Slack. (Notion done in Phase 4.)
+- Incremental sync: use `SourceAdapter.get_last_modified` to re-ingest only
+  changed documents instead of always re-adding (today each run creates a fresh
+  org / re-adds documents; no dedup or update-in-place yet).
 - Ingestion adapters: layout-aware extraction from PDF/DOCX/HTML.
-- Users / auth / tenancy management (OAuth, API keys, roles).
+- Users / auth / tenancy management, incl. full multi-tenant Notion OAuth
+  (consent screen) once there's an app to host the redirect — client id/secret
+  are already read into `NotionSettings`.
 - API layer (HTTP endpoints) and an orchestrator.
 - Packaging the self-hosted Docker image.
 
