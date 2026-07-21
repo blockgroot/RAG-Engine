@@ -83,6 +83,32 @@ their policy documents; their employees ask questions and get answers grounded i
   implement the same interface — the ingestion pipeline never changes. Format
   conversion (Notion blocks → Markdown-ish text) lives *inside the adapter*, never
   in the ingestion pipeline.
+- **Conversation memory rewrites before retrieval; it never changes the gate/prompt
+  (`app/memory/` + pipeline).** A follow-up ("what about part-timers?") is
+  meaningless to embed on its own, so with a `conversation_id` the pipeline first
+  does a *cheap* `generate` call to rewrite it into a standalone question using the
+  running summary + recent turns, then feeds that into the *unchanged* Phase 3
+  retrieve→gate→generate path. History is Postgres-backed and org-scoped
+  (`conversations` + `conversation_turns`). To bound prompt size/cost, the most
+  recent `MEMORY_RECENT_TURNS` (=4) turns are kept verbatim and older turns are
+  compressed into a running summary once the count exceeds `MEMORY_SUMMARIZE_AFTER`
+  (=6); summarization is best-effort (skipped on LLM error). `RagResult` exposes
+  `resolved_question` so the rewrite is observable/testable.
+- **Web-search fallback uses real tool-calling, single-step, clearly labelled
+  (`app/websearch/` + pipeline).** When internal retrieval fails the gate, the LLM
+  is offered a `web_search` function (proper tool-calling — FreeLLMAPI supports it,
+  verified) whose description tells it to call it ONLY for real, named, *external*
+  entities (a specific insurer/product/company), and to NOT call it for internal
+  company info (which stays the fixed fallback). If it calls the tool: exactly one
+  bounded search runs, results are fed back, and the model composes one answer —
+  no multi-step agent loop. The answer is prefixed with an unmistakable banner
+  (`RagResult.source == "web"`) so a web answer never blends with a policy answer.
+  Any failure/timeout/empty-result degrades to the fixed internal fallback.
+  Default provider is **DuckDuckGo via `ddgs`** — keyless, free, matching §1's
+  "no external paid dependency" principle (verified working); **Tavily** is the
+  documented production-grade swap behind the same `WebSearchProvider` interface
+  (LLM-native, 1000/mo free tier, no card). DDG is unofficial and rate-limits
+  aggressively — fine for a fallback, not for bulk use.
 
 ## 3. Folder / file structure convention
 
@@ -99,11 +125,16 @@ app/
   vectorstore/  # base.py (VectorStore) + pgvector_store.py + factory.py
   rag/          # pipeline.py (RagPipeline/RagResult) + prompts.py + factory.py.
                 #   Orchestrator, not a provider — composes the above; no base.py.
+                #   Phase 5: also does query-rewrite (memory) + web-search fallback.
   sources/      # base.py (SourceAdapter) + notion.py + factory.py. External content
                 #   sources (Notion now; Drive/GitHub/Slack later) behind one interface.
+  memory/       # base.py (ConversationStore) + pg_store.py + factory.py. Org-scoped
+                #   conversation history (turns + running summary) for follow-ups.
+  websearch/    # base.py (WebSearchProvider) + duckduckgo.py + factory.py. The
+                #   web-search tool used as the external-entity fallback.
 scripts/        # entrypoints: verify_providers.py, init_db.py, demo_rag.py,
-                #   ingest_notion.py (pull Notion -> store), ask.py (query one org)
-tests/          # pytest; test_isolation.py (Phase 2) + test_grounding.py (Phase 3) gates
+                #   ingest_notion.py, ask.py (query one org), chat.py (multi-turn)
+tests/          # pytest; isolation (P2), grounding (P3), conversation + websearch (P5)
 ```
 
 **Conventions to follow (match, don't reinvent):**
@@ -157,6 +188,31 @@ tests/          # pytest; test_isolation.py (Phase 2) + test_grounding.py (Phase
   `list_documents()` returns zero pages even with a good token. `child_page`
   blocks are treated as separate documents (not inlined) since each Notion page
   is its own document.
+- **Summarization threshold reasoning (Phase 5).** `MEMORY_RECENT_TURNS`=4 kept
+  verbatim, summarize once total > `MEMORY_SUMMARIZE_AFTER`=6. Follow-ups almost
+  always reference the last 1–2 turns, so 4 verbatim is ample headroom; triggering
+  only above 6 leaves a 2-turn buffer so we're not summarizing every turn (each
+  summary is an extra LLM call). The running summary preserves concrete facts a
+  later turn might reference, so context survives pruning. Tune via env if needed.
+- **Web search decides internal-vs-external via the tool description, not
+  keywords.** The `web_search` tool is only offered when the gate fails; the model
+  chooses to call it for real external named entities and declines (→ fixed
+  fallback) for internal-company questions. This is a model judgement — keep the
+  tool description explicit about the distinction; don't add keyword hacks.
+- **Tool-calling is an optional LLM capability.** `LLMProvider.generate_with_tools`
+  raises `NotImplementedError` by default; only `OpenAICompatProvider` implements
+  it. It needs a backend model that supports function-calling (FreeLLMAPI does —
+  verified; it routed to a tool-capable model and returned `tool_calls`).
+- **The Phase 3 `rag` test fixture disables memory + web search** (passes
+  `memory=None, web_search=None`) so grounding tests stay deterministic. Phase 5
+  tests use dedicated fixtures (`rag_convo`, `rag_web`). `build_rag_pipeline` uses
+  a sentinel so an explicit `None` means "capability off" vs omitted "build from
+  config". Don't make the grounding fixture pick up web search, or its
+  no-match/unanswered cases could wander off to a web query.
+- **`RagResult.source` (`"policy"|"web"|"none"`) is how callers tell a
+  policy-grounded answer from a web-sourced one from a refusal.** Web answers also
+  carry the visible `WEB_ANSWER_LABEL` banner. `answered` is `True` for both
+  policy and web answers; branch on `source` when the distinction matters.
 - **Don't trust the apparent gap between "answerable" and "related-but-unanswered"
   scores — it's a tiny sample.** Measured with BGE-M3 against our own policy
   chunks, from only ~5 hand-picked questions (NOT an evaluation set):
@@ -190,8 +246,11 @@ Defined in `app/db/schema.sql`. Current tables:
 | `organizations` | Tenants. Everything else hangs off an org. Columns: `id`, `name`, `created_at`. |
 | `documents`     | A source policy file/upload, scoped to one org. `id`, `org_id`, `title`, `source_uri`, `created_at`. As of Phase 4, `source_uri` is populated with the origin URL (e.g. the Notion page URL) at ingest. |
 | `chunks`        | Text chunks + their `vector(1024)` embedding, scoped to one org. `id`, `org_id`, `document_id`, `chunk_index`, `content`, `embedding`, `created_at`. |
+| `conversations` | (Phase 5) A conversation, scoped to one org. `id`, `org_id`, `summary` (running compression of pruned older turns), `created_at`. |
+| `conversation_turns` | (Phase 5) One question+answer within a conversation. `id`, `conversation_id`, `org_id`, `turn_index`, `question`, `answer`, `created_at`. Older turns are pruned once summarized. |
 
-Deletes cascade: removing an org removes its documents and chunks. Indexes:
+Deletes cascade: removing an org removes its documents and chunks (and its
+conversations + turns); removing a conversation removes its turns. Indexes:
 `org_id` on documents and chunks (tenant filter) + an HNSW cosine index on
 `chunks.embedding` (ranking speed).
 
@@ -218,6 +277,18 @@ Deletes cascade: removing an org removes its documents and chunks. Indexes:
   → chunk → embed → store, scoped to a real org. Verified end-to-end against a
   real Notion page: an answerable question returns a grounded answer traceable to
   the page; an unanswered one falls back. Scripts: `ingest_notion.py`, `ask.py`.
+- Phase 5 — Two independent additions to the RAG path. (A) Conversation memory
+  (`app/memory/`): a `conversation_id` groups turns; a cheap LLM rewrite resolves
+  follow-ups into standalone questions before retrieval; older turns compress into
+  a running summary (recent 4 verbatim, summarize past 6). (B) Web-search fallback
+  (`app/websearch/`): on gate failure the model may call a `web_search` tool (real
+  function-calling) for real external named entities — single-step, bounded
+  timeout, graceful degradation, answers labelled `source="web"`. Default provider
+  DuckDuckGo (keyless); Tavily is the documented production swap. Tests
+  (`test_conversation.py`, `test_websearch.py`): follow-up rewrite + retrieval,
+  summarization + early-context resolution, external→web, internal→fallback,
+  and a deterministic search-failure→fallback. Verified live against real Notion
+  data. Scripts: `chat.py` (multi-turn), `ask.py` (shows `source`).
 - `scripts/demo_rag.py` — a non-productionized END-TO-END demo (ingest → embed →
   store → retrieve → grounded LLM answer). Predates `app/rag/`; kept as a simple
   standalone walkthrough. The productionized path is now `app/rag/`.

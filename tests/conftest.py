@@ -22,8 +22,10 @@ load_dotenv()
 from app.config.settings import DatabaseSettings, LLMSettings  # noqa: E402
 from app.db import apply_schema, close_pool, get_connection  # noqa: E402
 from app.embeddings import build_embedding_provider  # noqa: E402
+from app.memory import build_conversation_store  # noqa: E402
 from app.rag import build_rag_pipeline  # noqa: E402
 from app.vectorstore import build_vector_store  # noqa: E402
+from app.websearch import build_web_search_provider  # noqa: E402
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -68,8 +70,34 @@ def store():
 
 @pytest.fixture(scope="session")
 def rag(embedder, store):
-    """The RAG pipeline, wired to the real LLM + shared embedder/store fixtures."""
-    return build_rag_pipeline(embedder=embedder, store=store)
+    """Phase 3 pipeline: pure retrieve-gate-generate (memory + web search OFF), so
+    the grounding tests stay deterministic and unaffected by Phase 5."""
+    return build_rag_pipeline(embedder=embedder, store=store, memory=None, web_search=None)
+
+
+@pytest.fixture(scope="session")
+def memory():
+    """Conversation store (Postgres-backed)."""
+    return build_conversation_store()
+
+
+@pytest.fixture(scope="session")
+def rag_convo(embedder, store, memory):
+    """Phase 5 pipeline with conversation memory ON, web search OFF."""
+    return build_rag_pipeline(
+        embedder=embedder, store=store, memory=memory, web_search=None
+    )
+
+
+@pytest.fixture(scope="session")
+def rag_web(embedder, store):
+    """Phase 5 pipeline with the real web-search tool ON, memory OFF."""
+    return build_rag_pipeline(
+        embedder=embedder,
+        store=store,
+        memory=None,
+        web_search=build_web_search_provider(),
+    )
 
 
 @pytest.fixture

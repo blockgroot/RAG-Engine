@@ -6,8 +6,14 @@ Public API:
     reply = llm.generate("hello")
 """
 
-from .base import LLMProvider
+from .base import LLMProvider, ChatResult, ToolCall
 from .openai_provider import OpenAICompatProvider
 from .factory import build_llm_provider
 
-__all__ = ["LLMProvider", "OpenAICompatProvider", "build_llm_provider"]
+__all__ = [
+    "LLMProvider",
+    "ChatResult",
+    "ToolCall",
+    "OpenAICompatProvider",
+    "build_llm_provider",
+]

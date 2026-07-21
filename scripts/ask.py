@@ -42,6 +42,7 @@ def main() -> int:
         print(result.answer.strip())
         print("=" * 70)
         print(f"answered   : {result.answered}")
+        print(f"source     : {result.source}  (policy = internal docs, web = web search, none = fallback)")
         print(f"top_score  : {result.top_score}")
         if result.sources:
             print(f"grounded on {len(result.sources)} chunk(s):")

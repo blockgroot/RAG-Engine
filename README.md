@@ -272,3 +272,33 @@ python scripts/ask.py <org_id> "How many days of paid annual leave do we get?"
 A grounded answer that traces back to your real Notion page confirms the whole
 pipeline (fetch → chunk → embed → store → retrieve → generate) is wired end to
 end.
+
+## Conversation memory & web-search fallback (Phase 5)
+
+Two independent additions to the query path, both off by default in the Phase 3
+`rag` fixture but on via `build_rag_pipeline()`:
+
+- **Conversation memory** (`app/memory/`) — pass a `conversation_id` and a
+  context-dependent follow-up ("what about part-timers?") is rewritten into a
+  standalone question (a cheap LLM call) using recent turns + a running summary,
+  *before* the unchanged retrieve→gate→generate path. History is Postgres-backed
+  and org-scoped; recent turns stay verbatim, older turns compress into a summary
+  (`MEMORY_RECENT_TURNS`=4, `MEMORY_SUMMARIZE_AFTER`=6).
+- **Web-search fallback** (`app/websearch/`) — when internal retrieval fails the
+  gate, the model is offered a `web_search` tool (real function-calling). For a
+  real, named *external* entity it runs exactly one bounded search and composes an
+  answer clearly labelled as web-sourced (`RagResult.source == "web"`); internal
+  questions still get the fixed fallback; timeouts/failures degrade to it too.
+  Default provider is keyless **DuckDuckGo** (`WEB_SEARCH_PROVIDER`); **Tavily** is
+  the documented production swap behind the same interface.
+
+```bash
+# multi-turn conversation (follow-ups resolved against prior turns)
+python scripts/chat.py <org_id> "How many annual leave days do we get?" "and how many carry over?"
+
+# a question about an external entity not in the docs -> labelled web answer
+python scripts/ask.py <org_id> "What does Cigna health insurance generally cover?"
+```
+
+`RagResult.source` is `"policy"` (internal docs), `"web"` (web search), or
+`"none"` (the fixed "I don't have information" fallback).

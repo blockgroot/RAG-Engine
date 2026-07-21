@@ -38,6 +38,26 @@ DEFAULT_DB_POOL_MAX_SIZE = 10
 # External content sources (Phase 4). Only "notion" exists so far.
 DEFAULT_SOURCE_TYPE = "notion"
 
+# Conversation memory (Phase 5). A "turn" is one question + its answer.
+# recent_turns are kept verbatim; older turns are compressed once the total
+# exceeds summarize_after. See app/rag/pipeline.py for the reasoning.
+DEFAULT_MEMORY_RECENT_TURNS = 4
+DEFAULT_MEMORY_SUMMARIZE_AFTER = 6
+
+# Web search tool (Phase 5). Keyless DuckDuckGo by default (no paid dependency);
+# set WEB_SEARCH_PROVIDER=tavily + WEB_SEARCH_API_KEY for production quality.
+DEFAULT_WEB_SEARCH_ENABLED = True
+DEFAULT_WEB_SEARCH_PROVIDER = "duckduckgo"
+DEFAULT_WEB_SEARCH_MAX_RESULTS = 5
+DEFAULT_WEB_SEARCH_TIMEOUT = 8.0
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
 
 @dataclass(frozen=True)
 class LLMSettings:
@@ -203,4 +223,55 @@ class NotionSettings:
             client_id=os.getenv("NOTION_CLIENT_ID"),
             client_secret=os.getenv("NOTION_CLIENT_SECRET"),
             redirect_uri=os.getenv("NOTION_REDIRECT_URI"),
+        )
+
+
+@dataclass(frozen=True)
+class MemorySettings:
+    """Conversation-memory sizing (Phase 5).
+
+    - ``recent_turns``     how many recent turns to keep verbatim in context.
+    - ``summarize_after``  once a conversation exceeds this many turns, the older
+      ones (all but ``recent_turns``) are compressed into a running summary.
+    """
+
+    recent_turns: int = DEFAULT_MEMORY_RECENT_TURNS
+    summarize_after: int = DEFAULT_MEMORY_SUMMARIZE_AFTER
+
+    @classmethod
+    def from_env(cls) -> "MemorySettings":
+        return cls(
+            recent_turns=int(os.getenv("MEMORY_RECENT_TURNS") or DEFAULT_MEMORY_RECENT_TURNS),
+            summarize_after=int(
+                os.getenv("MEMORY_SUMMARIZE_AFTER") or DEFAULT_MEMORY_SUMMARIZE_AFTER
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class WebSearchSettings:
+    """Web-search tool configuration (Phase 5).
+
+    - ``enabled``      whether the RAG pipeline offers the web-search tool at all.
+    - ``provider``     ``duckduckgo`` (keyless, default) or ``tavily`` (needs key).
+    - ``api_key``      required only by providers that need one (e.g. Tavily).
+    - ``max_results``  how many results to fetch and feed back to the model.
+    - ``timeout``      hard cap (seconds) on the search call; on timeout the
+      pipeline degrades to the fixed internal fallback.
+    """
+
+    enabled: bool = DEFAULT_WEB_SEARCH_ENABLED
+    provider: str = DEFAULT_WEB_SEARCH_PROVIDER
+    api_key: str | None = None
+    max_results: int = DEFAULT_WEB_SEARCH_MAX_RESULTS
+    timeout: float = DEFAULT_WEB_SEARCH_TIMEOUT
+
+    @classmethod
+    def from_env(cls) -> "WebSearchSettings":
+        return cls(
+            enabled=_env_bool("WEB_SEARCH_ENABLED", DEFAULT_WEB_SEARCH_ENABLED),
+            provider=(os.getenv("WEB_SEARCH_PROVIDER") or DEFAULT_WEB_SEARCH_PROVIDER).lower(),
+            api_key=os.getenv("WEB_SEARCH_API_KEY"),
+            max_results=int(os.getenv("WEB_SEARCH_MAX_RESULTS") or DEFAULT_WEB_SEARCH_MAX_RESULTS),
+            timeout=float(os.getenv("WEB_SEARCH_TIMEOUT") or DEFAULT_WEB_SEARCH_TIMEOUT),
         )
