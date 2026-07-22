@@ -150,10 +150,19 @@ def resolve_org(store: VectorStore, console: Console, arg_org: str | None) -> st
         table.add_row(str(i), org.name, org.id, str(org.document_count))
     console.print(table)
 
-    choice = console.input("Pick an org [number or paste an org_id]: ").strip()
-    if choice.isdigit() and 1 <= int(choice) <= len(orgs):
-        return orgs[int(choice) - 1].id
-    return choice or None
+    # Accept a row number or a full org_id from the table; re-prompt on anything
+    # else (a name, a typo) instead of passing junk down to the DB as an org_id.
+    # NB: parentheses, not [brackets] — rich would parse [...] as console markup.
+    valid_ids = {org.id for org in orgs}
+    while True:
+        choice = console.input("Pick an org (row number, or paste an org_id; blank to cancel): ").strip()
+        if not choice:
+            return None
+        if choice.isdigit() and 1 <= int(choice) <= len(orgs):
+            return orgs[int(choice) - 1].id
+        if choice in valid_ids:
+            return choice
+        console.print("[red]Not a valid choice — enter a row number or an org_id from the table above.[/]")
 
 
 def main() -> int:
