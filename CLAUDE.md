@@ -143,8 +143,8 @@ their policy documents; their employees ask questions and get answers grounded i
   there genuinely is a second backend coming, so the abstraction earns its keep.
   `PolicyAgent` is a **thin adapter** over the unchanged `RagPipeline` (it maps
   `RagResult`→`AgentResponse`); the pipeline, gate, prompt, and every test outcome
-  are byte-for-byte unchanged. `ask.py`/`chat.py` now call the agent, so the logic
-  lives in exactly one place.
+  are byte-for-byte unchanged. The CLI (`scripts/cli.py`, Phase 9) calls the agent,
+  so the logic lives in exactly one place.
 - **Golden-set evaluation is a two-tier regression gate, split by cost, not one
   monolith (`evaluation/` + CI).** ~17 hand-picked cases (10 answerable, 4 fallback,
   2 web, 1 conversation) against a deterministic corpus that *reproduces the real
@@ -203,6 +203,44 @@ their policy documents; their employees ask questions and get answers grounded i
   **Threshold = 0.72, deliberately conservative** — see §4 for the empirical
   reasoning and the finding that cosine cannot cleanly separate "same fact" from
   "adjacent topic" on this corpus.
+- **One interactive CLI over the PolicyAgent, not a pile of scripts (`scripts/cli.py`,
+  Phase 9).** The old one-shot `ask.py` + multi-turn `chat.py` were *retired* and
+  replaced by a single interactive session: pick/pass an org, then a back-and-forth
+  loop until `/exit`. It is a **thin shell** — it calls `PolicyAgent.answer` and only
+  *formats* the result; it contains no retrieval/gate/generation logic (that stays in
+  exactly one place, per Phase 7). Each turn surfaces the meaningful internals —
+  query rewrite (`resolved_question`), retrieval reuse (`retrieval_reused`), answer
+  provenance (`source`: policy/web/fallback, colour-coded), and grounding citations —
+  so the behaviour built across Phases 3–8 is *visible* rather than a black box. The
+  loop, per-turn rendering, and org resolution are split into pure functions
+  (`converse` / `render_turn` / `resolve_org`) taking an injected agent + prompt
+  callable, so the wiring is unit-testable offline without a real agent/DB/LLM.
+  **`rich` is the chosen library**: a clean, glanceable terminal UI (panels,
+  colour-coded provenance, aligned citations, width-aware wrapping) would otherwise
+  be a lot of hand-rolled ANSI. It's a small, pure-Python, **presentation-only**
+  dependency confined to `scripts/cli.py` — nothing under `app/` imports it, so the
+  core runtime and the eventual self-hosted image stay dependency-light (§1). A tiny
+  optional `VectorStore.list_organizations` was added (default `NotImplementedError`,
+  like `keyword_search`) purely to power a friendly org picker.
+- **Per-organization Notion credentials: one integration secret PER org, discovered
+  from config, never a shared token (Phase 9).** Going forward each real org gets its
+  OWN Notion internal integration + secret, expressed as a distinctly-named env var
+  `NOTION_TOKEN_<NAME>`. `NotionSettings.from_env` discovers *all* of them generically
+  (scan env for the prefix → `{name: secret}` map), so **nothing hardcodes how many
+  orgs exist or their names** — adding an org later is one new env var + one ingestion
+  run (`ingest_notion.py --org "Name" --token <name>`), never a code change.
+  `NotionSettings.resolve_token(name)` returns *only* that org's secret and raises if
+  it's missing — it will **never silently fall back** to another org's token or the
+  global `NOTION_TOKEN` (that default is used only when a run names no token, e.g. the
+  single Phase 4 test org). Why this shape: because a Notion integration can only see
+  pages explicitly shared with it, a per-org secret makes the tenant boundary a *real,
+  external* access boundary enforced by Notion itself — not merely something our code
+  keeps straight — matching how isolation is enforced everywhere else here, and a
+  faithful stand-in for the per-customer OAuth that replaces it later (same
+  `SourceAdapter`, only how the token is obtained changes). **Deferred on purpose:**
+  no frontend, HTTP API, OAuth flow, or admin/user-role handling this phase — that is
+  the *next* stage. Real multi-org data entry + ingestion also happens later; Phase 9
+  only lays the credential plumbing.
 
 ## 3. Folder / file structure convention
 
@@ -240,9 +278,11 @@ evaluation/     # P7 golden-set eval (peer to scripts/tests). golden_set.py (cas
                 #   corpus mirroring real Notion data), harness.py (seed + run + path
                 #   verdict), ragas_scoring.py (optional [eval] dep), report.py,
                 #   run_eval.py (CLI). reports/ holds latest.md + GATE_FINDINGS.md (P7 Part 3).
-scripts/        # entrypoints: verify_providers.py, init_db.py, demo_rag.py, ingest_notion.py,
-                #   ask.py, chat.py (multi-turn), compare_retrieval.py (P6 before/after).
-                #   ask.py/chat.py call the PolicyAgent (P7); logic lives only in app/agent.
+scripts/        # entrypoints: verify_providers.py, init_db.py, demo_rag.py, ingest_notion.py
+                #   (P9: --org/--token per-org ingestion), cli.py (P9: the single
+                #   interactive chat), compare_retrieval.py + demo_phase8.py (before/after
+                #   demos). cli.py calls the PolicyAgent (P7); logic lives only in app/agent.
+                #   (P9 retired ask.py + chat.py — cli.py replaces both.)
 tests/          # pytest; isolation (P2), grounding (P3), conversation+websearch (P5),
                 #   retrieval (P6), golden-set path-firing (P7, test_golden_set.py)
 .github/workflows/eval.yml  # P7 CI: fast path-firing tier every push + nightly RAGAS tier
@@ -288,12 +328,20 @@ tests/          # pytest; isolation (P2), grounding (P3), conversation+websearch
   from PDF/DOCX/HTML (Unstructured/Docling) is deliberately deferred to a future
   ingestion-adapters phase.
 - **Notion auth is an INTERNAL integration token this phase, not OAuth.** The
-  adapter authenticates with `NOTION_TOKEN` (a Notion *Internal Integration
-  Secret*, `ntn_...`). A *Public* integration's client id/secret are OAuth-only
-  and CANNOT be used as an API token — that path needs a web app to catch the
-  consent redirect, which is a later phase. `NOTION_CLIENT_ID/SECRET/REDIRECT_URI`
-  are read into `NotionSettings` but unused for now (reserved, not hardcoded).
-  The same `notion-client` accepts an OAuth token later via the same interface.
+  adapter authenticates with a Notion *Internal Integration Secret* (`ntn_...`). A
+  *Public* integration's client id/secret are OAuth-only and CANNOT be used as an
+  API token — that path needs a web app to catch the consent redirect, which is a
+  later phase. `NOTION_CLIENT_ID/SECRET/REDIRECT_URI` are read into `NotionSettings`
+  but unused for now (reserved, not hardcoded). The same `notion-client` accepts an
+  OAuth token later via the same interface.
+- **Notion tokens are per-org and must NOT fall back (Phase 9).** Each org has its
+  own `NOTION_TOKEN_<NAME>` secret; `NotionSettings.resolve_token(name)` returns
+  *only* that org's token and raises `ConfigurationError` if it's missing — it must
+  never silently substitute another org's token or the global `NOTION_TOKEN`, or the
+  Notion-enforced tenant boundary would leak. The bare `NOTION_TOKEN` is the default
+  used *only* when a run names no token (the Phase 4 test org). Discovery is
+  generic (scan env for the `NOTION_TOKEN_` prefix) — don't hardcode org names/count
+  anywhere. `build_source_adapter("notion", token_name=...)` is how a run selects one.
 - **A Notion page must be explicitly shared with the integration** (page → `•••`
   → Connections → add it), separate from having a valid token. Without sharing,
   `list_documents()` returns zero pages even with a good token. `child_page`
@@ -495,7 +543,8 @@ application/tooling layers over the existing schema. **Phase 8 added one table**
   adapter). `app/ingestion/pipeline.py::ingest_source` wires adapter → preprocess
   → chunk → embed → store, scoped to a real org. Verified end-to-end against a
   real Notion page: an answerable question returns a grounded answer traceable to
-  the page; an unanswered one falls back. Scripts: `ingest_notion.py`, `ask.py`.
+  the page; an unanswered one falls back. Scripts: `ingest_notion.py` (+ `ask.py`,
+  retired in Phase 9 → `cli.py`).
 - Phase 5 — Two independent additions to the RAG path. (A) Conversation memory
   (`app/memory/`): a `conversation_id` groups turns; a cheap LLM rewrite resolves
   follow-ups into standalone questions before retrieval; older turns compress into
@@ -507,7 +556,8 @@ application/tooling layers over the existing schema. **Phase 8 added one table**
   (`test_conversation.py`, `test_websearch.py`): follow-up rewrite + retrieval,
   summarization + early-context resolution, external→web, internal→fallback,
   and a deterministic search-failure→fallback. Verified live against real Notion
-  data. Scripts: `chat.py` (multi-turn), `ask.py` (shows `source`).
+  data. Scripts: `chat.py` (multi-turn) + `ask.py` — both retired in Phase 9,
+  replaced by the single interactive `cli.py`.
 - Phase 6 — Better retrieval under the unchanged Phase 3 gate: (1) contextual
   retrieval at ingest (`app/ingestion/contextualize.py`), (2) hybrid vector +
   keyword search fused with RRF (`app/rag/retrieval.py`, `VectorStore.keyword_search`
@@ -560,8 +610,32 @@ application/tooling layers over the existing schema. **Phase 8 added one table**
   fact" from "adjacent topic" (a same-chunk follow-up ≈0.63 can score *below* a
   new-topic one ≈0.67), so reuse is deliberately conservative and fires rarely —
   correctness over the optimization (see §4).
+- Phase 9 — The closing phase of this build stage: a clean interface + per-org
+  credential plumbing, no new RAG behaviour. (A) **Single interactive CLI**
+  (`scripts/cli.py`): pick/pass an org, then a back-and-forth loop until `/exit`,
+  built with `rich` (presentation-only dep, isolated to the script). A thin shell
+  over the Phase 7 `PolicyAgent` — it drives `agent.answer` and formats the result,
+  surfacing each turn's internals (rewrite / retrieval reuse / provenance / grounding
+  citations). Retired `ask.py` + `chat.py` (it replaces both). Added a small optional
+  `VectorStore.list_organizations` for the org picker. (B) **Per-organization Notion
+  credentials**: each org gets its own `NOTION_TOKEN_<NAME>` secret; `NotionSettings`
+  discovers them generically and `resolve_token(name)` returns only that org's token
+  with **no** fallback, so the org boundary is enforced by Notion (an integration
+  only sees pages shared with it), not just our code. `ingest_notion.py` gained
+  `--org`/`--token`; adding an org later is one env var + one run, no code change.
+  Tests: `test_cli.py` (CLI drives the agent with a stable conversation id, stops on
+  exit, renders internals) + `test_notion_credentials.py` (a run uses the specific
+  token, never another org's or the global one) — 10 new, offline/deterministic; full
+  suite green (49 passing, 2 network deselected). Verified the CLI live against the
+  existing Phase 4 Notion org. **Explicitly NOT in this phase / next stage:** frontend,
+  HTTP API, OAuth flow, admin/user-role handling — and the real multi-org Notion data
+  entry + ingestion (this phase only lays the credential foundation for it).
 
 **Pending (not started)**
+- **Next stage (the deliberate follow-on to Phase 9):** real multi-organization data
+  entry + ingestion (create a Notion integration + secret per org, share that org's
+  pages with it, add each `NOTION_TOKEN_<NAME>`, run `ingest_notion.py --org … --token …`);
+  then a frontend / HTTP API layer, per-customer Notion OAuth, and users/roles.
 - Validate the Phase 8 reuse threshold (0.72) against logged production similarities
   + a reuse hit/miss audit before treating it as final — same discipline as the 0.35
   gate. A richer signal than a single query-vs-chunk cosine (e.g. also comparing the

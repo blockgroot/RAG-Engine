@@ -12,7 +12,7 @@ import numpy as np
 from ..config.settings import DatabaseSettings
 from ..core.exceptions import EmbeddingProviderError, ProviderError
 from ..db.connection import get_connection
-from .base import RetrievedChunk, VectorStore
+from .base import OrganizationRef, RetrievedChunk, VectorStore
 
 
 class PgVectorStore(VectorStore):
@@ -28,6 +28,19 @@ class PgVectorStore(VectorStore):
                 (name,),
             ).fetchone()
         return str(row[0])
+
+    def list_organizations(self) -> list[OrganizationRef]:
+        with get_connection(self._settings) as conn:
+            rows = conn.execute(
+                """
+                SELECT o.id::text, o.name, count(DISTINCT d.id) AS docs
+                FROM organizations o
+                LEFT JOIN documents d ON d.org_id = o.id
+                GROUP BY o.id, o.name, o.created_at
+                ORDER BY o.created_at DESC
+                """
+            ).fetchall()
+        return [OrganizationRef(id=r[0], name=r[1], document_count=int(r[2])) for r in rows]
 
     def add_document(
         self,

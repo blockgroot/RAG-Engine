@@ -26,6 +26,15 @@ class RetrievedChunk:
     org_id: str
 
 
+@dataclass(frozen=True)
+class OrganizationRef:
+    """A tenant, for listing/selection (e.g. the CLI org picker, Phase 9)."""
+
+    id: str
+    name: str
+    document_count: int = 0
+
+
 class VectorStore(ABC):
     """Abstract, tenant-scoped store for document chunks and their embeddings."""
 
@@ -33,6 +42,15 @@ class VectorStore(ABC):
     def create_organization(self, name: str) -> str:
         """Create a tenant and return its ``org_id``."""
         raise NotImplementedError
+
+    def list_organizations(self) -> list["OrganizationRef"]:
+        """List existing tenants (newest first), for selection UIs like the CLI.
+
+        Optional capability: the default raises ``NotImplementedError``; stores
+        that support it (``PgVectorStore``) override it. Not tenant-scoped — it is
+        an operator-facing listing, not a per-tenant read.
+        """
+        raise NotImplementedError("this vector store does not support listing organizations")
 
     @abstractmethod
     def add_document(

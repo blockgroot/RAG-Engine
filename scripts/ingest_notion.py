@@ -2,20 +2,28 @@
 
 Lists every page the Notion integration has been shared with, converts each to
 clean text, chunks + embeds it, and stores it under a freshly-created org. Prints
-the org_id so you can immediately query it with scripts/ask.py.
+the org_id so you can immediately chat with it via scripts/cli.py.
 
-Setup (see the Phase 4 notes / README):
-    1. Create a Notion internal integration, copy its secret into NOTION_TOKEN.
-    2. Share your test page(s) with that integration in Notion.
-    3. python scripts/ingest_notion.py ["Org Name"]
+Per-organization credentials (Phase 9): each real org has its OWN Notion internal
+integration + secret, stored as ``NOTION_TOKEN_<NAME>`` in ``.env``. Point a run
+at one with ``--token <name>``; the integration can only see pages shared with it,
+so the org boundary is enforced by Notion, not just our code. With no ``--token``
+the default ``NOTION_TOKEN`` is used (the single Phase 4 test org).
+
+Setup (see the Phase 4/9 notes / README):
+    1. Create a Notion internal integration per org; put each secret in
+       ``NOTION_TOKEN_<NAME>`` (e.g. NOTION_TOKEN_ACME=ntn_...).
+    2. Share that org's page(s) with that org's integration in Notion.
+    3. python scripts/ingest_notion.py --org "Acme Corp" --token acme
 
 Run:
-    python scripts/ingest_notion.py
-    python scripts/ingest_notion.py "Acme Corp"
+    python scripts/ingest_notion.py                              # default token, default name
+    python scripts/ingest_notion.py --org "Acme Corp" --token acme
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -35,11 +43,24 @@ DEFAULT_ORG_NAME = "Notion Import (demo)"
 
 def main() -> int:
     load_dotenv()
-    org_name = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_ORG_NAME
+    parser = argparse.ArgumentParser(description="Ingest Notion pages into an org.")
+    parser.add_argument(
+        "--org", default=DEFAULT_ORG_NAME, help="Organization name to create/ingest into."
+    )
+    parser.add_argument(
+        "--token",
+        default=None,
+        metavar="NAME",
+        help="Which per-org Notion token to use, i.e. the <NAME> in NOTION_TOKEN_<NAME> "
+        "(case-insensitive). Omit to use the default NOTION_TOKEN.",
+    )
+    args = parser.parse_args()
+    org_name = args.org
 
     try:
-        print("Connecting to Notion and preparing the store...")
-        adapter = build_source_adapter("notion")
+        which = f"NOTION_TOKEN_{args.token.upper()}" if args.token else "NOTION_TOKEN (default)"
+        print(f"Connecting to Notion using {which} and preparing the store...")
+        adapter = build_source_adapter("notion", token_name=args.token)
         store = build_vector_store()
         apply_schema()
 
@@ -66,8 +87,8 @@ def main() -> int:
             f"{result.chunks_stored} chunk(s) stored, "
             f"{result.documents_skipped} skipped (empty)."
         )
-        print("\nNow ask a question against this org:")
-        print(f'  python scripts/ask.py {org_id} "your question here"')
+        print("\nNow chat with this org:")
+        print(f"  python scripts/cli.py {org_id}")
         return 0
 
     except ProviderError as exc:

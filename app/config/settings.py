@@ -7,7 +7,7 @@ these settings objects, so there is a single, documented source of truth.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 DEFAULT_TIMEOUT = 60.0
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-m3"
@@ -219,28 +219,77 @@ class RagSettings:
 
 @dataclass(frozen=True)
 class NotionSettings:
-    """Configuration for the Notion content source (Phase 4).
+    """Configuration for the Notion content source (Phase 4, per-org since Phase 9).
 
-    - ``token``  the auth token the adapter uses. For this phase that is a Notion
-      *internal integration secret* (a single static token) — the simplest viable
-      auth given there is no web app yet to host an OAuth consent redirect.
+    - ``token``  the *default* / legacy single integration secret (``NOTION_TOKEN``).
+      Still used when an ingestion run names no specific org token — e.g. the single
+      Phase 4 test org. For this phase auth is a Notion *internal integration
+      secret* (a static token), the simplest viable auth given there is no web app
+      yet to host an OAuth consent redirect.
+    - ``tokens``  a name→secret map of *per-organization* integration secrets, one
+      per real org, discovered generically from every ``NOTION_TOKEN_<NAME>`` env
+      var (Phase 9). Nothing hardcodes how many orgs exist or their names — adding
+      an org later is one new env var, no code change. Each org gets its OWN Notion
+      integration, so an org's token can only see pages shared with *that*
+      integration: the tenant boundary is enforced by Notion itself, not just our
+      code. This is the static-token stand-in for real per-customer OAuth later.
     - ``client_id`` / ``client_secret`` / ``redirect_uri``  OAuth app credentials,
       read here so they aren't hardcoded and are ready for the later multi-tenant
-      OAuth phase. They are NOT used by the adapter yet — ``token`` is.
+      OAuth phase. They are NOT used by the adapter yet.
     """
 
     token: str | None
+    tokens: dict[str, str] = field(default_factory=dict)
     client_id: str | None = None
     client_secret: str | None = None
     redirect_uri: str | None = None
 
+    _TOKEN_PREFIX = "NOTION_TOKEN_"
+
     @classmethod
     def from_env(cls) -> "NotionSettings":
+        # Discover per-org tokens generically: every NOTION_TOKEN_<NAME> becomes
+        # an entry keyed by <name> (lower-cased), so orgs are data, not code.
+        tokens = {
+            key[len(cls._TOKEN_PREFIX):].lower(): value
+            for key, value in os.environ.items()
+            if key.startswith(cls._TOKEN_PREFIX)
+            and len(key) > len(cls._TOKEN_PREFIX)
+            and value
+        }
         return cls(
             token=os.getenv("NOTION_TOKEN"),
+            tokens=tokens,
             client_id=os.getenv("NOTION_CLIENT_ID"),
             client_secret=os.getenv("NOTION_CLIENT_SECRET"),
             redirect_uri=os.getenv("NOTION_REDIRECT_URI"),
+        )
+
+    def resolve_token(self, name: str | None = None) -> str:
+        """Return the integration secret for ``name`` (or the default token).
+
+        With a ``name`` we return *only* that org's token — never silently falling
+        back to another org's or the global one, so an ingestion run can't cross a
+        tenant boundary by accident. Without a name we use the default
+        ``NOTION_TOKEN``. Raises ``ConfigurationError`` if the requested token is
+        not configured.
+        """
+        from ..core.exceptions import ConfigurationError
+
+        if name:
+            token = self.tokens.get(name.lower())
+            if not token:
+                available = ", ".join(sorted(self.tokens)) or "(none configured)"
+                raise ConfigurationError(
+                    f"No Notion token named {name!r}. Set NOTION_TOKEN_{name.upper()} "
+                    f"in your .env. Configured org tokens: {available}."
+                )
+            return token
+        if self.token:
+            return self.token
+        raise ConfigurationError(
+            "No Notion token configured. Set NOTION_TOKEN (default) or a per-org "
+            "NOTION_TOKEN_<NAME> and pass its name to the ingestion run."
         )
 
 

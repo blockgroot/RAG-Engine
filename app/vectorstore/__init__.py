@@ -8,8 +8,14 @@ Public API:
     hits = store.query(org_id, query_embedding, top_k=3)
 """
 
-from .base import VectorStore, RetrievedChunk
+from .base import VectorStore, RetrievedChunk, OrganizationRef
 from .pgvector_store import PgVectorStore
 from .factory import build_vector_store
 
-__all__ = ["VectorStore", "RetrievedChunk", "PgVectorStore", "build_vector_store"]
+__all__ = [
+    "VectorStore",
+    "RetrievedChunk",
+    "OrganizationRef",
+    "PgVectorStore",
+    "build_vector_store",
+]

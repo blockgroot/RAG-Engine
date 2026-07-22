@@ -245,7 +245,7 @@ app/
     pipeline.py          # ingest_source(adapter, org_id) -> IngestResult
 scripts/
   ingest_notion.py       # pull every shared Notion page into a new org
-  ask.py                 # run one grounded question against an org
+  cli.py                 # interactive chat over the PolicyAgent (Phase 9)
 ```
 
 ### Auth (this phase: internal integration token)
@@ -265,8 +265,8 @@ be used as an API token; they're read into config but unused for now.
 3. Ingest, then ask:
 
 ```bash
-python scripts/ingest_notion.py "Acme Corp"     # prints the new org_id
-python scripts/ask.py <org_id> "How many days of paid annual leave do we get?"
+python scripts/ingest_notion.py --org "Acme Corp"   # prints the new org_id
+python scripts/cli.py <org_id>                       # chat with it (Phase 9 CLI)
 ```
 
 A grounded answer that traces back to your real Notion page confirms the whole
@@ -294,11 +294,10 @@ Two independent additions to the query path, both off by default in the Phase 3
   the documented production swap behind the same interface.
 
 ```bash
-# multi-turn conversation (follow-ups resolved against prior turns)
-python scripts/chat.py <org_id> "How many annual leave days do we get?" "and how many carry over?"
-
-# a question about an external entity not in the docs -> labelled web answer
-python scripts/ask.py <org_id> "What does Cigna health insurance generally cover?"
+# both are exercised interactively in the single CLI (Phase 9): ask a follow-up
+# in the same session (resolved against prior turns), or ask about an external
+# entity not in the docs to get a clearly-labelled web answer.
+python scripts/cli.py <org_id>
 ```
 
 `RagResult.source` is `"policy"` (internal docs), `"web"` (web search), or
@@ -368,3 +367,46 @@ RETRIEVAL_REUSE_ENABLED=false python scripts/demo_phase8.py <org_id>  # reuse OF
 
 Config (all optional): `MEMORY_RECENT_TURNS`, `RETRIEVAL_REUSE_ENABLED`,
 `RETRIEVAL_REUSE_THRESHOLD`.
+
+## Interactive CLI + per-organization Notion credentials (Phase 9)
+
+The closing phase of this build stage — a clean interface over everything above,
+plus credential plumbing for genuinely separate organizations. No new RAG
+behaviour. (Frontend, HTTP API, OAuth, and user/role handling are the *next*
+stage, deliberately not built here.)
+
+**One interactive CLI** (`scripts/cli.py`) replaces the old `ask.py`/`chat.py`. It
+is a thin shell over the Phase 7 `PolicyAgent`: pick an org (or pass its id), then
+chat in a loop until `/exit`. Each turn shows the internals behind the answer —
+whether the question was rewritten from context, whether retrieval was reused,
+whether the answer came from policy docs / web / the fallback, and the source
+chunks that grounded it — formatted with `rich` (a presentation-only dependency
+confined to this script; nothing in `app/` imports it).
+
+```bash
+python scripts/cli.py                 # pick an org from a list
+python scripts/cli.py <org_id>        # chat as a specific org
+```
+
+**Per-organization Notion credentials.** Each real organization gets its *own*
+Notion internal integration + secret, set as a distinctly-named env var
+`NOTION_TOKEN_<NAME>`. Because a Notion integration can only see pages explicitly
+shared with it, this makes each org's boundary a real access boundary enforced by
+Notion — not just something the app keeps straight (and a faithful stand-in for
+the per-customer OAuth that replaces it later). Config discovers the tokens
+generically, so adding an org is one new env var + one ingestion run — never a
+code change:
+
+```bash
+# .env
+NOTION_TOKEN_ACME=ntn_...
+NOTION_TOKEN_GLOBEX=ntn_...
+
+# ingest each org with its own token (case-insensitive <name>)
+python scripts/ingest_notion.py --org "Acme Corp"  --token acme
+python scripts/ingest_notion.py --org "Globex Inc" --token globex
+```
+
+A named token resolves to *only* that org's secret — it never falls back to
+another org's token or the default `NOTION_TOKEN` (which is used only when a run
+names no token). Real multi-org data entry + ingestion happens after this phase.

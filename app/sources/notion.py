@@ -60,12 +60,23 @@ def _page_title(page: dict) -> str:
 class NotionAdapter(SourceAdapter):
     """Fetches Notion pages the integration has been shared with."""
 
-    def __init__(self, settings: NotionSettings | None = None) -> None:
+    def __init__(
+        self, settings: NotionSettings | None = None, token: str | None = None
+    ) -> None:
+        """Build an adapter authenticated with a specific integration secret.
+
+        ``token`` is the exact secret to use for this run (one organization's own
+        integration). When omitted, the default ``NOTION_TOKEN`` from ``settings``
+        is used — preserving the single-token Phase 4 behaviour. Passing ``token``
+        is how Phase 9 points ingestion at a specific org's credential without any
+        global/shared fallback (see ``NotionSettings.resolve_token``).
+        """
         settings = settings or NotionSettings.from_env()
-        if not settings.token:
+        resolved = token or settings.token
+        if not resolved:
             raise ConfigurationError(
-                "Missing required Notion configuration: NOTION_TOKEN "
-                "(the integration's Internal Integration Secret)"
+                "Missing required Notion configuration: a NOTION_TOKEN (or a per-org "
+                "NOTION_TOKEN_<NAME>) Internal Integration Secret"
             )
 
         try:
@@ -77,7 +88,8 @@ class NotionAdapter(SourceAdapter):
             ) from exc
 
         self._settings = settings
-        self._client = Client(auth=settings.token)
+        self._token = resolved  # the exact secret this adapter authenticates with
+        self._client = Client(auth=resolved)
 
     # -- interface ---------------------------------------------------------
 
