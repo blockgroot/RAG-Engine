@@ -106,3 +106,51 @@ class PgVectorStore(VectorStore):
             )
             for row in rows
         ]
+
+    def keyword_search(
+        self,
+        org_id: str,
+        query_text: str,
+        query_embedding: list[float],
+        top_k: int = 30,
+    ) -> list[RetrievedChunk]:
+        """Full-text keyword search within ``org_id`` (Phase 6 hybrid retrieval).
+
+        Ordered by ``ts_rank`` (keyword relevance), but each row still carries its
+        cosine similarity vs ``query_embedding`` in ``score`` — so a keyword hit
+        flows through the same cosine-based confidence gate as a vector hit, and
+        RRF fusion can use the keyword *rank order* independently.
+        """
+        if not query_embedding:
+            raise EmbeddingProviderError("query_embedding is empty")
+        if not query_text.strip():
+            return []
+
+        vector = np.asarray(query_embedding, dtype=np.float32)
+        with get_connection(self._settings) as conn:
+            rows = conn.execute(
+                """
+                SELECT content,
+                       1 - (embedding <=> %s) AS score,
+                       document_id::text,
+                       chunk_index,
+                       org_id::text
+                FROM chunks
+                WHERE org_id = %s::uuid
+                  AND content_tsv @@ websearch_to_tsquery('english', %s)
+                ORDER BY ts_rank(content_tsv, websearch_to_tsquery('english', %s)) DESC
+                LIMIT %s
+                """,
+                (vector, org_id, query_text, query_text, top_k),
+            ).fetchall()
+
+        return [
+            RetrievedChunk(
+                content=row[0],
+                score=float(row[1]),
+                document_id=row[2],
+                chunk_index=row[3],
+                org_id=row[4],
+            )
+            for row in rows
+        ]

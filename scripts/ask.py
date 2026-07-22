@@ -1,8 +1,9 @@
 """Ask one grounded question against a single organization's stored content.
 
-Runs the Phase 3 RAG pipeline (embed → org-scoped retrieve → gate → grounded
-generate) against whatever was ingested for the given org_id — e.g. the org that
-scripts/ingest_notion.py just created.
+Runs the Policy Agent (embed → org-scoped retrieve → gate → grounded generate,
+with the Phase 5 web-search fallback) against whatever was ingested for the given
+org_id — e.g. the org that scripts/ingest_notion.py just created. The
+retrieve/gate/generate logic itself lives in the agent (Phase 7), not here.
 
 Run:
     python scripts/ask.py <org_id> "How many days of annual leave do we get?"
@@ -18,9 +19,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from dotenv import load_dotenv
 
+from app.agent import build_policy_agent
 from app.core.exceptions import ProviderError
 from app.db import close_pool
-from app.rag import build_rag_pipeline
 
 
 def main() -> int:
@@ -33,21 +34,23 @@ def main() -> int:
     question = " ".join(sys.argv[2:])
 
     try:
-        rag = build_rag_pipeline()
-        result = rag.answer(question, org_id=org_id)
+        agent = build_policy_agent()
+        response = agent.answer(question, org_id=org_id)
 
         print(f"\nQuestion: {question}")
         print("=" * 70)
-        print("ANSWER:" if result.answered else "ANSWER (fallback — not grounded):")
-        print(result.answer.strip())
+        print("ANSWER:" if response.grounded else "ANSWER (fallback — not grounded):")
+        print(response.answer.strip())
         print("=" * 70)
-        print(f"answered   : {result.answered}")
-        print(f"top_score  : {result.top_score}")
-        if result.sources:
-            print(f"grounded on {len(result.sources)} chunk(s):")
-            for i, src in enumerate(result.sources, 1):
-                preview = src.content.replace("\n", " ").strip()[:80]
-                print(f"  [{i}] score={src.score:.3f}  {preview}...")
+        print(f"grounded   : {response.grounded}")
+        print(f"source     : {response.source}  (policy = internal docs, web = web search, none = fallback)")
+        print(f"top_score  : {response.top_score}")
+        if response.citations:
+            print(f"grounded on {len(response.citations)} chunk(s):")
+            for i, cit in enumerate(response.citations, 1):
+                preview = cit.content.replace("\n", " ").strip()[:80]
+                score = f"{cit.score:.3f}" if cit.score is not None else "n/a"
+                print(f"  [{i}] score={score}  {preview}...")
         return 0
 
     except ProviderError as exc:
