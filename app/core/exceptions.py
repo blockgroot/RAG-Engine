@@ -27,3 +27,11 @@ class LLMProviderError(ProviderError):
 
 class EmbeddingProviderError(ProviderError):
     """Raised when an embedding call fails."""
+
+
+class SourceError(ProviderError):
+    """Raised when an external content source (Notion, Drive, ...) fails."""
+
+
+class WebSearchError(ProviderError):
+    """Raised when a web-search tool call fails or times out."""

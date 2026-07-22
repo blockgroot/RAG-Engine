@@ -20,7 +20,7 @@ from __future__ import annotations
 from openai import OpenAI, APIError, APITimeoutError, APIConnectionError
 
 from ..core.exceptions import ConfigurationError, LLMProviderError
-from .base import LLMProvider
+from .base import ChatResult, LLMProvider, ToolCall
 
 DEFAULT_TIMEOUT = 60.0
 
@@ -78,3 +78,46 @@ class OpenAICompatProvider(LLMProvider):
             raise LLMProviderError("LLM returned an empty message content")
 
         return content
+
+    def generate_with_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        tool_choice: str | None = None,
+        timeout: float | None = None,
+    ) -> ChatResult:
+        kwargs: dict = {"model": self.model, "messages": messages}
+        if tools is not None:
+            kwargs["tools"] = tools
+        if tool_choice is not None:
+            kwargs["tool_choice"] = tool_choice
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+
+        try:
+            response = self._client.chat.completions.create(**kwargs)
+        except APITimeoutError as exc:
+            raise LLMProviderError(
+                f"LLM tool request timed out after {timeout or self.timeout}s", cause=exc
+            ) from exc
+        except APIConnectionError as exc:
+            raise LLMProviderError(
+                f"Could not connect to LLM endpoint at {self.base_url or 'default OpenAI'}",
+                cause=exc,
+            ) from exc
+        except APIError as exc:
+            raise LLMProviderError(f"LLM API error: {exc}", cause=exc) from exc
+
+        if not response.choices:
+            raise LLMProviderError("LLM returned no choices in the response")
+
+        message = response.choices[0].message
+        tool_calls = [
+            ToolCall(id=tc.id, name=tc.function.name, arguments=tc.function.arguments)
+            for tc in (message.tool_calls or [])
+        ]
+        return ChatResult(
+            text=message.content,
+            tool_calls=tool_calls,
+            raw_message=message.model_dump(),
+        )

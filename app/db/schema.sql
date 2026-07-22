@@ -47,3 +47,38 @@ CREATE INDEX IF NOT EXISTS idx_chunks_org ON chunks (org_id);
 -- clause guarantees it; the index only speeds up ranking within a tenant.
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding
     ON chunks USING hnsw (embedding vector_cosine_ops);
+
+-- Full-text search column for hybrid (keyword/BM25-style) retrieval (Phase 6).
+-- GENERATED from content so it stays in sync automatically (existing rows get it
+-- backfilled when this runs); the GIN index makes keyword lookups fast. Used
+-- alongside vector search and fused via Reciprocal Rank Fusion — see
+-- app/rag/retrieval.py.
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS
+    content_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED;
+CREATE INDEX IF NOT EXISTS idx_chunks_content_tsv ON chunks USING gin (content_tsv);
+
+-- Conversations (Phase 5): group a sequence of question/answer turns so a
+-- follow-up can be resolved against prior context. Org-scoped like everything
+-- else, so one tenant's conversation history is isolated from another's.
+-- `summary` holds the running compression of older turns (see app/rag/pipeline).
+CREATE TABLE IF NOT EXISTS conversations (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id     UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    summary    TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_conversations_org ON conversations (org_id);
+
+-- One question + its answer within a conversation. `org_id` is denormalized for
+-- the same tenant-filter reason as chunks. Older turns may be pruned once
+-- compressed into conversations.summary.
+CREATE TABLE IF NOT EXISTS conversation_turns (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    conversation_id UUID NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
+    org_id          UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    turn_index      INT  NOT NULL,
+    question        TEXT NOT NULL,
+    answer          TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_turns_conversation ON conversation_turns (conversation_id);

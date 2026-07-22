@@ -4,8 +4,9 @@ A multi-tenant RAG policy Q&A platform, built in small, reviewable phases.
 
 > **Phases built so far:** (1) LLM & embedding provider abstraction,
 > (2) database schema + chunking + vector store layer with proven tenant
-> isolation. The retrieval/RAG pipeline, ingestion adapters, auth, and API are
-> future phases and are intentionally **not** built yet. See
+> isolation, (3) the RAG query path (retrieve → gate → grounded generate),
+> (4) the first real external source — Notion — ingested end to end. Auth/API
+> and more source adapters (Drive, GitHub, Slack) are future phases. See
 > [CLAUDE.md](CLAUDE.md) for the full project rulebook and current state.
 
 ## Provider abstraction layer
@@ -204,3 +205,131 @@ Any Postgres with pgvector works — the code only reads `DATABASE_URL`, so a
 managed instance or a local Homebrew `postgresql@17` + `pgvector` are equally
 fine. The embedding column is `vector(1024)` to match BGE-M3 — see
 [CLAUDE.md](CLAUDE.md) if you change models.
+
+## RAG query path (Phase 3)
+
+`app/rag/` composes the pieces above into grounded, tenant-scoped Q&A: a question
++ `org_id` → embed → org-scoped retrieve → **confidence gate** → **strict grounded
+prompt** → LLM answer, returned as a `RagResult` (`answer`, `answered`, `sources`,
+`top_score`). Two independent layers keep answers grounded: the gate refuses
+cheaply when nothing retrieved is even on-topic; the prompt refuses when on-topic
+context doesn't actually answer. `tests/test_grounding.py` is the completion gate.
+
+```python
+from app.rag import build_rag_pipeline
+
+rag = build_rag_pipeline()                       # from env
+result = rag.answer("How many leave days do we get?", org_id=org_id)
+print(result.answer, result.answered, result.top_score)
+```
+
+## External sources — Notion (Phase 4)
+
+`app/sources/` fetches real content from external systems behind one interface,
+`SourceAdapter` (`list_documents` / `fetch_document` / `get_last_modified`), so
+Google Drive, GitHub, and Slack can later implement the *same* contract. The
+first implementation is `NotionAdapter`, built on the official
+[`notion-client`](https://github.com/ramnes/notion-sdk-py) SDK (only dep:
+`httpx`) — chosen over `llama-index-readers-notion` to stay dependency-light and
+keep full control of Notion block→text conversion (that conversion lives inside
+the adapter). `app/ingestion/pipeline.py::ingest_source` wires an adapter into the
+existing chunk → embed → store path, scoped to one org.
+
+```
+app/
+  sources/
+    base.py              # SourceAdapter interface + SourceRef / SourceDocument
+    notion.py            # NotionAdapter (notion-client; block -> text)
+    factory.py           # build_source_adapter("notion") -> SourceAdapter
+  ingestion/
+    pipeline.py          # ingest_source(adapter, org_id) -> IngestResult
+scripts/
+  ingest_notion.py       # pull every shared Notion page into a new org
+  ask.py                 # run one grounded question against an org
+```
+
+### Auth (this phase: internal integration token)
+
+Full multi-tenant OAuth needs an app to host the consent redirect (a later
+phase), so this phase uses a Notion **internal integration secret** — a single
+static token. A public integration's client id/secret are OAuth-only and cannot
+be used as an API token; they're read into config but unused for now.
+
+### Setup & run
+
+1. Create a Notion **internal** integration at
+   <https://www.notion.so/my-integrations>, copy its **Internal Integration
+   Secret** into `.env` as `NOTION_TOKEN`.
+2. In Notion, open your page → `•••` → **Connections** → add the integration
+   (without this, the integration sees no pages).
+3. Ingest, then ask:
+
+```bash
+python scripts/ingest_notion.py "Acme Corp"     # prints the new org_id
+python scripts/ask.py <org_id> "How many days of paid annual leave do we get?"
+```
+
+A grounded answer that traces back to your real Notion page confirms the whole
+pipeline (fetch → chunk → embed → store → retrieve → generate) is wired end to
+end.
+
+## Conversation memory & web-search fallback (Phase 5)
+
+Two independent additions to the query path, both off by default in the Phase 3
+`rag` fixture but on via `build_rag_pipeline()`:
+
+- **Conversation memory** (`app/memory/`) — pass a `conversation_id` and a
+  context-dependent follow-up ("what about part-timers?") is rewritten into a
+  standalone question (a cheap LLM call) using recent turns + a running summary,
+  *before* the unchanged retrieve→gate→generate path. History is Postgres-backed
+  and org-scoped; recent turns stay verbatim, older turns compress into a summary
+  (`MEMORY_RECENT_TURNS`=4, `MEMORY_SUMMARIZE_AFTER`=6).
+- **Web-search fallback** (`app/websearch/`) — when internal retrieval fails the
+  gate, the model is offered a `web_search` tool (real function-calling). For a
+  real, named *external* entity it runs exactly one bounded search and composes an
+  answer clearly labelled as web-sourced (`RagResult.source == "web"`); internal
+  questions still get the fixed fallback; timeouts/failures degrade to it too.
+  Default provider is keyless **DuckDuckGo** (`WEB_SEARCH_PROVIDER`); **Tavily** is
+  the documented production swap behind the same interface.
+
+```bash
+# multi-turn conversation (follow-ups resolved against prior turns)
+python scripts/chat.py <org_id> "How many annual leave days do we get?" "and how many carry over?"
+
+# a question about an external entity not in the docs -> labelled web answer
+python scripts/ask.py <org_id> "What does Cigna health insurance generally cover?"
+```
+
+`RagResult.source` is `"policy"` (internal docs), `"web"` (web search), or
+`"none"` (the fixed "I don't have information" fallback).
+
+## Better retrieval: contextual + hybrid + reranking (Phase 6)
+
+Plain top-k vector search ranks each chunk independently and can leave a relevant
+chunk just outside the cutoff. Three techniques address this, all sitting *under*
+the unchanged Phase 3 confidence gate:
+
+1. **Contextual retrieval** (`app/ingestion/contextualize.py`, ingest-time) —
+   prepend a short LLM-generated context to each chunk before embedding/storing,
+   so it carries its situating meaning into both the vector and keyword indexes.
+   One LLM call per chunk at ingest; zero query-time cost.
+2. **Hybrid search** (`app/rag/retrieval.py`) — run vector *and* Postgres
+   full-text (BM25-style) search and fuse them with **Reciprocal Rank Fusion**
+   (rank-based, so no score normalization between cosine and `ts_rank`). Catches
+   an exact term ("part-time", a form code, a product name) even when semantic
+   similarity under-weights it.
+3. **Cross-encoder reranking** (`app/reranker/`) — over-retrieve a 30-candidate
+   pool then rerank with `BAAI/bge-reranker-v2-m3` (same family as BGE-M3, local,
+   no new dependency) and take the final `top_k`.
+
+These only change *which chunks, in what order* reach the prompt — the gate still
+uses the best cosine similarity, so its threshold logic is unchanged. (MMR was
+considered and deliberately not implemented.) See a before/after directly:
+
+```bash
+python scripts/compare_retrieval.py <org_id> "which internal form is used for reimbursement?"
+```
+
+Config (all optional, sensible defaults): `INGEST_CONTEXTUAL_ENABLED`,
+`RETRIEVAL_HYBRID_ENABLED`, `RETRIEVAL_RERANK_ENABLED`, `RETRIEVAL_CANDIDATE_POOL`,
+`RERANKER_MODEL`. The reranker downloads ~2.2GB on first use, then is cached.
