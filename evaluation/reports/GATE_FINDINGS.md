@@ -38,8 +38,8 @@ its `top_score` was 0.652 (cleared the gate), it retrieved its exact chunk
 ("Sick leave is 10 days per year…"), and re-running it in isolation answered
 correctly **4/4 times**. So that refusal came from **downstream LLM/prompt variance
 on the free endpoint, not the gate**. The gate did its job; the generation step had
-a one-off blip (which is why the eval harness retries answerable cases once — see
-`harness._RETRYABLE`).
+a one-off blip (which is why the eval harness retries answerable cases — see
+`harness._RETRYABLE` / `DEFAULT_ATTEMPTS`; the same blip later hit `health-plan`).
 
 ## Question 2 — Did the gate let through questions the prompt then had to catch?
 

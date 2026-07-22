@@ -127,14 +127,20 @@ def run_case(
     )
 
 
-# Categories whose "pass" is a positive answer the LLM must generate. On a
-# non-deterministic endpoint (e.g. the free "auto" router) these can suffer a
-# one-off stochastic refusal even when retrieval + gate are correct (observed:
-# sick-leave retrieved its exact chunk at top_score 0.652 yet was refused once in
-# ~5 runs). A single retry lets a genuine regression fail twice while a lone blip
-# passes. Fallback/web verdicts are NOT retried: a fallback that wrongly answered
-# won't self-correct, and web is network-dependent (handled as advisory).
+# Categories whose "pass" is a positive answer the LLM must GENERATE. On a
+# non-deterministic endpoint (e.g. the free "auto" router) these suffer one-off
+# stochastic refusals even when retrieval + gate are correct — observed on both
+# `sick-leave-days` (top_score 0.652) and `health-plan` (0.672): the exact chunk is
+# retrieved and the gate cleared, yet the model occasionally returns the refusal.
+# Re-running the same case answers it correctly, so this is generation variance,
+# not a regression. `DEFAULT_ATTEMPTS` retries absorb it: a genuine regression fails
+# *every* attempt, a lone blip passes on a later one. This is a mitigation, not a
+# guarantee — for a hard gate, point CI at a deterministic model (temperature 0) via
+# secrets; the free dev endpoint is inherently flaky. Fallback/web verdicts are NOT
+# retried: a fallback that wrongly answered won't self-correct, and web is
+# network-dependent (handled as advisory).
 _RETRYABLE = {"answerable", "conversation"}
+DEFAULT_ATTEMPTS = 3
 
 
 def run_case_stable(
@@ -142,7 +148,7 @@ def run_case_stable(
     org_id: str,
     case: GoldenCase,
     memory: ConversationStore | None = None,
-    attempts: int = 2,
+    attempts: int = DEFAULT_ATTEMPTS,
 ) -> CaseResult:
     """Run a case, retrying retryable categories up to ``attempts`` times until pass.
 
@@ -163,7 +169,7 @@ def run_golden_set(
     org_id: str,
     memory: ConversationStore | None = None,
     cases: list[GoldenCase] | None = None,
-    attempts: int = 2,
+    attempts: int = DEFAULT_ATTEMPTS,
 ) -> list[CaseResult]:
     """Run every case (or a supplied subset), with the documented retry, in order."""
     return [

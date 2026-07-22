@@ -1,8 +1,8 @@
 # Golden-Set Evaluation Report
 
-_Generated: 2026-07-22 12:40_
+_Generated: 2026-07-22 15:45_
 
-**Path-firing (gating): 14/15 cases passed** (gate threshold = 0.35). Web cases are advisory (network-dependent — see below).
+**Path-firing (gating): 15/15 cases passed** (gate threshold = 0.35). Web cases are advisory (network-dependent — see below).
 
 ## 1. Path-firing checks (deterministic)
 
@@ -17,7 +17,7 @@ Did the correct path fire, and are the expected facts present?
 | `public-holidays` | answerable | policy | policy | ✓ | — | PASS |
 | `sick-leave-days` | answerable | policy | policy | ✓ | — | PASS |
 | `sick-note` | answerable | policy | policy | ✓ | — | PASS |
-| `health-plan` | answerable | policy | none | ✗ | — | **FAIL** |
+| `health-plan` | answerable | policy | policy | ✓ | — | PASS |
 | `remote-work` | answerable | policy | policy | ✓ | — | PASS |
 | `expense-limit` | answerable | policy | policy | ✓ | — | PASS |
 | `gym-discount` | fallback | none | none | — | — | PASS |
@@ -50,23 +50,24 @@ Did the correct path fire, and are the expected facts present?
 | `dress-code` | fallback | 0.396 | cleared gate → prompt refused |
 | `cigna-coverage` | web | 0.404 | n/a (web path) |
 | `bamboohr-what-is` | web | 0.271 | n/a (web path) |
-| `followup-part-timers` | conversation | 0.797 | cleared gate (correct) |
+| `followup-part-timers` | conversation | 0.803 | cleared gate (correct) |
 
 ## 3. RAGAS scores (answerable cases)
 
 | Case | faithfulness | answer_relevancy | context_precision | context_recall |
 |------|------|------|------|------|
-| `annual-leave-days` | 1.000 | 0.998 | 1.000 | 1.000 |
-| `carry-over` | 1.000 | 0.993 | 1.000 | 1.000 |
-| `leave-notice` | 0.000 | 0.900 | 1.000 | 1.000 |
-| `part-time-leave` | 1.000 | 0.949 | nan | 1.000 |
-| `public-holidays` | 1.000 | 0.998 | nan | 1.000 |
-| `sick-leave-days` | nan | 0.956 | 1.000 | 1.000 |
-| `sick-note` | nan | nan | 1.000 | 1.000 |
-| `remote-work` | 1.000 | 0.827 | nan | 1.000 |
-| `expense-limit` | 1.000 | 0.721 | nan | nan |
-| `followup-part-timers` | 1.000 | 0.805 | nan | nan |
-| **mean** | 0.875 | 0.905 | 1.000 | 1.000 |
+| `annual-leave-days` | 1.000 | 0.506 | 1.000 | 1.000 |
+| `carry-over` | 1.000 | 0.986 | 1.000 | 1.000 |
+| `leave-notice` | 1.000 | 0.935 | nan | 1.000 |
+| `part-time-leave` | 1.000 | 0.950 | 1.000 | 1.000 |
+| `public-holidays` | 1.000 | 0.998 | 1.000 | 1.000 |
+| `sick-leave-days` | 1.000 | 0.997 | 1.000 | 1.000 |
+| `sick-note` | 1.000 | 0.750 | 1.000 | 1.000 |
+| `health-plan` | 1.000 | nan | 1.000 | 1.000 |
+| `remote-work` | 1.000 | 1.000 | 1.000 | 1.000 |
+| `expense-limit` | 1.000 | 0.718 | 1.000 | 1.000 |
+| `followup-part-timers` | nan | 0.676 | 1.000 | 1.000 |
+| **mean** | 1.000 | 0.852 | 1.000 | 1.000 |
 | _baseline_ | 0.800 | 0.800 | 0.800 | 0.800 |
 
 **RAGAS: all metric means ≥ baseline.** ✓
@@ -77,7 +78,7 @@ Did the correct path fire, and are the expected facts present?
 - **Question:** How many days of paid annual leave do full-time employees get per year?
 - **Source / grounded:** policy / True
 - **top_score:** 0.773
-- **Answer:** Full-time employees receive 25 days of paid annual leave per year [1].
+- **Answer:** 25 days [1]
 - **Why in the set:** Core single-fact lookup; the most common real question.
 
 ### `carry-over` (answerable)
@@ -98,7 +99,7 @@ Did the correct path fire, and are the expected facts present?
 - **Question:** How much paid annual leave do part-time employees receive?
 - **Source / grounded:** policy / True
 - **top_score:** 0.806
-- **Answer:** Part-time employees receive 12 days of paid annual leave per year, pro-rated by the number of hours they work each week. [1]
+- **Answer:** Part‑time employees receive 12 days of paid annual leave per year, pro‑rated by the number of hours they work each week. [1]
 - **Why in the set:** Must retrieve the PART-TIME chunk, not the full-time one — the disambiguation hybrid retrieval targets.
 
 ### `public-holidays` (answerable)
@@ -112,7 +113,7 @@ Did the correct path fire, and are the expected facts present?
 - **Question:** How many paid sick days do employees get per year?
 - **Source / grounded:** policy / True
 - **top_score:** 0.652
-- **Answer:** 10 paid sick days per year.[1]
+- **Answer:** Employees receive 10 paid sick days per year. [1]
 - **Why in the set:** Separate leave type; checks it is not conflated with annual leave.
 
 ### `sick-note` (answerable)
@@ -124,23 +125,23 @@ Did the correct path fire, and are the expected facts present?
 
 ### `health-plan` (answerable)
 - **Question:** What health and dental insurance plan does the company provide?
-- **Source / grounded:** none / False
+- **Source / grounded:** policy / True
 - **top_score:** 0.672
-- **Answer:** I don't have information on that in the available policy documents.
+- **Answer:** Health and dental cover is provided through the ZephyrCare Platinum group plan. [1]
 - **Why in the set:** A named entity that IS in the docs — must be answered from policy (contrast with the web cases).
 
 ### `remote-work` (answerable)
 - **Question:** How many days per week can employees work remotely?
 - **Source / grounded:** policy / True
 - **top_score:** 0.781
-- **Answer:** Employees may work remotely up to 3 days per week with manager approval. [1]
+- **Answer:** Employees may work remotely up to 3 days per week [1].
 - **Why in the set:** Non-leave policy; broadens topic coverage beyond leave.
 
 ### `expense-limit` (answerable)
 - **Question:** What is the reimbursement limit for business travel expenses per trip?
 - **Source / grounded:** policy / True
 - **top_score:** 0.771
-- **Answer:** $500 per trip [1]
+- **Answer:** $500 per trip [1]
 - **Why in the set:** Monetary fact; another distinct topic.
 
 ### `gym-discount` (fallback)
@@ -182,13 +183,13 @@ Did the correct path fire, and are the expected facts present?
 - **Question:** What is BambooHR and what is it typically used for?
 - **Source / grounded:** web / True
 - **top_score:** 0.271
-- **Answer:** 🌐 From a web search (NOT your organization's policy documents):  BambooHR is a cloud‑based human‑resources software platform designed for small‑ to medium‑size businesses. It centralizes all employee data—personal details, contact information, job history, performance records, and benefits—and provi…
+- **Answer:** 🌐 From a web search (NOT your organization's policy documents):  **BambooHR** is an American software‑as‑a‑service (SaaS) company that delivers a cloud‑based human‑resources management platform.    It is used mainly by small and medium‑sized businesses to:  - Store and manage employee records   - Tr…
 - **Why in the set:** A real external product; second web case so a single flaky search does not decide the path check.
 
 ### `followup-part-timers` (conversation)
 - **Question:** what about for part-timers?
-- **Rewritten to:** How many annual leave days do part-time employees get?
+- **Rewritten to:** How many days of paid annual leave do part-time employees get per year?
 - **Source / grounded:** policy / True
-- **top_score:** 0.797
-- **Answer:** 12 days per year (pro-rated by hours worked) [1]
+- **top_score:** 0.803
+- **Answer:** 12 days per year [1]
 - **Why in the set:** A follow-up meaningless on its own. Proves the memory rewrite turns it into a standalone part-time question and retrieves the part-time (not full-time) chunk.

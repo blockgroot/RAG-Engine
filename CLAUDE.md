@@ -162,8 +162,9 @@ their policy documents; their employees ask questions and get answers grounded i
   all because faithfulness is the direct anti-hallucination measure worth watching
   over time. Web cases are **advisory** (DuckDuckGo rate-limits; graceful
   degradation to the internal fallback is by-design), and answerable/conversation
-  path checks **retry once** to absorb one-off LLM-generation variance on the free
-  endpoint — a genuine regression fails both attempts.
+  path checks **retry (3 attempts)** to absorb one-off LLM-generation variance on
+  the free endpoint — a genuine regression fails every attempt. (Mitigation, not a
+  guarantee: a hard gate should point at a deterministic model via secrets.)
 
 ## 3. Folder / file structure convention
 
@@ -352,8 +353,10 @@ tests/          # pytest; isolation (P2), grounding (P3), conversation+websearch
 - **Answerable path checks retry once; web checks are advisory (Phase 7).** The free
   "auto" LLM is non-deterministic and can refuse a clearly-answerable question ~1 in
   5 (observed on `sick-leave-days`: correct chunk retrieved, gate cleared at 0.652,
-  yet refused once — answered correctly 4/4 on retry). So `harness.run_case_stable`
-  retries `answerable`/`conversation` cases once (a real regression fails both).
+  yet refused once — answered correctly 4/4 on retry; `health-plan` 0.672 behaved
+  the same). So `harness.run_case_stable` retries `answerable`/`conversation` cases
+  (`DEFAULT_ATTEMPTS`=3; a real regression fails every attempt — a mitigation, not a
+  guarantee: point a hard gate at a deterministic model via secrets).
   `web` cases never gate CI (DuckDuckGo rate-limits; degrading to the internal
   fallback is by design) — only a web case answered as `policy` (fabrication) fails.
 - **Part 3 gate evidence (Phase 7): the 0.35 gate is working as designed — do not
