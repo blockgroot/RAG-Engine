@@ -82,3 +82,17 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_turns_conversation ON conversation_turns (conversation_id);
+
+-- Last-turn retrieved chunks (Phase 8): one row per conversation (upserted each
+-- turn) holding the chunks retrieved on the most recent turn, as a JSON array of
+-- {content, document_id, chunk_index, org_id}. The pipeline reads this to decide,
+-- via a cheap non-LLM embedding-similarity check, whether the previous chunks
+-- still cover the next question — if so it reuses them and skips retrieval.
+-- Embeddings are NOT stored here (no vector column): they are recomputed from
+-- `content` on demand, keeping the schema simple. Cascades with its conversation.
+CREATE TABLE IF NOT EXISTS conversation_last_retrieval (
+    conversation_id UUID PRIMARY KEY REFERENCES conversations (id) ON DELETE CASCADE,
+    org_id          UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    chunks          TEXT NOT NULL,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);

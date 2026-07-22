@@ -18,6 +18,7 @@ from ..config.settings import (
     MemorySettings,
     RagSettings,
     RetrievalSettings,
+    ReuseSettings,
     WebSearchSettings,
 )
 from ..core.exceptions import ProviderError
@@ -90,4 +91,5 @@ def build_rag_pipeline(
         memory_settings=MemorySettings.from_env(),
         web_search_settings=web_settings,
         retriever=retriever,
+        reuse_settings=ReuseSettings.from_env(),
     )

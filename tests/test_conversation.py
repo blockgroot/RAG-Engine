@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import uuid
 
-from app.config.settings import MemorySettings
+from app.config.settings import MemorySettings, ReuseSettings
 from app.ingestion import chunk_text, preprocess
 from app.llm import build_llm_provider
 from app.rag.pipeline import RagPipeline
@@ -87,16 +87,19 @@ def test_followup_is_rewritten_and_retrieves_right_content(rag_convo, store, emb
 
 @requires_db
 @requires_llm
-def test_summarization_compresses_old_turns_but_early_context_still_resolves(
+def test_incremental_summary_compresses_old_turns_but_early_context_still_resolves(
     store, embedder, memory, org_cleanup
 ):
-    # Small thresholds so summarization triggers quickly and cheaply.
+    # Phase 8: incremental summarization. Window of 2 verbatim turns; every turn
+    # beyond that is folded into the running summary one at a time. Reuse is off so
+    # this test isolates the memory/summarization behaviour.
     pipe = RagPipeline(
         llm=build_llm_provider(),
         embedder=embedder,
         store=store,
         memory=memory,
-        memory_settings=MemorySettings(recent_turns=2, summarize_after=3),
+        memory_settings=MemorySettings(recent_turns=2),
+        reuse_settings=ReuseSettings(enabled=False),
     )
     org_id = _seed(
         store, embedder, org_cleanup,
@@ -110,14 +113,15 @@ def test_summarization_compresses_old_turns_but_early_context_still_resolves(
 
     # Turn 1 establishes the "annual leave" topic (25 days, carry over 5).
     pipe.answer("How many paid annual leave days do full-time employees get?", org_id, conversation_id=cid)
-    # A few unrelated turns to push past the summarization threshold.
+    # Several more turns; each one beyond the window is incrementally summarized.
     pipe.answer("How many paid sick days do we get?", org_id, conversation_id=cid)
     pipe.answer("Can we work remotely?", org_id, conversation_id=cid)
     pipe.answer("How far in advance must leave be requested?", org_id, conversation_id=cid)
 
-    # After 4 turns (> summarize_after=3): older turns compressed, recent kept.
-    assert memory.get_summary(cid) is not None, "expected older turns to be summarized"
-    assert len(memory.get_turns(cid)) == 2, "expected verbatim turns pruned to recent_turns"
+    # The verbatim window stayed capped at 2, and a running summary was built up
+    # continuously (turn 1's content now lives only in that summary).
+    assert memory.get_summary(cid) is not None, "expected a continuously-built running summary"
+    assert len(memory.get_turns(cid)) == 2, "expected verbatim turns capped at the window"
 
     # Turn 5 depends on turn 1 (now only in the summary): "those annual leave days".
     r5 = pipe.answer(

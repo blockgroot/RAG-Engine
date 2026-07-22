@@ -45,6 +45,9 @@ def main() -> int:
             print(f"you       : {question}")
             if response.resolved_question and response.resolved_question != question:
                 print(f"rewritten : {response.resolved_question}")
+            retrieval = "reused prev chunks" if response.retrieval_reused else "fresh retrieval"
+            score = f"{response.top_score:.3f}" if response.top_score is not None else "n/a"
+            print(f"retrieval : {retrieval} (top_score {score})")
             tag = {"policy": "[policy]", "web": "[web]", "none": "[no answer]"}.get(
                 response.source, response.source
             )

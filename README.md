@@ -282,8 +282,9 @@ Two independent additions to the query path, both off by default in the Phase 3
   context-dependent follow-up ("what about part-timers?") is rewritten into a
   standalone question (a cheap LLM call) using recent turns + a running summary,
   *before* the unchanged retrieve→gate→generate path. History is Postgres-backed
-  and org-scoped; recent turns stay verbatim, older turns compress into a summary
-  (`MEMORY_RECENT_TURNS`=4, `MEMORY_SUMMARIZE_AFTER`=6).
+  and org-scoped; the most recent `MEMORY_RECENT_TURNS` (=3) turns stay verbatim,
+  and each turn that falls out of that window is folded into the running summary
+  *incrementally* (Phase 8 — one turn per update, no bulk threshold).
 - **Web-search fallback** (`app/websearch/`) — when internal retrieval fails the
   gate, the model is offered a `web_search` tool (real function-calling). For a
   real, named *external* entity it runs exactly one bounded search and composes an
@@ -333,3 +334,37 @@ python scripts/compare_retrieval.py <org_id> "which internal form is used for re
 Config (all optional, sensible defaults): `INGEST_CONTEXTUAL_ENABLED`,
 `RETRIEVAL_HYBRID_ENABLED`, `RETRIEVAL_RERANK_ENABLED`, `RETRIEVAL_CANDIDATE_POOL`,
 `RERANKER_MODEL`. The reranker downloads ~2.2GB on first use, then is cached.
+
+## Cheaper multi-turn: incremental summaries + retrieval reuse (Phase 8)
+
+Two refinements to the conversation path — the confidence gate, grounded
+generation, and web-search fallback are all untouched:
+
+1. **Incremental summarization** (`app/rag/pipeline.py`) — instead of keeping
+   turns verbatim until a threshold trips and then bulk-summarizing, the running
+   summary is updated after *every* turn by folding in only the single turn that
+   just fell out of the verbatim window (`MEMORY_RECENT_TURNS`=3). Each update is
+   one small LLM call over `existing summary + one turn`, so its cost stays
+   roughly constant however long the conversation gets, and the summary is always
+   current. (`MEMORY_SUMMARIZE_AFTER` no longer exists.)
+2. **Retrieval reuse** (`app/rag/pipeline.py`) — before retrieval runs on a
+   follow-up, a cheap **non-LLM** cosine check compares the rewritten question
+   against the *previous* turn's retrieved chunks. If they clearly still cover it
+   (`RETRIEVAL_REUSE_THRESHOLD`=0.72), those chunks are reused and hybrid
+   search + rerank are skipped; otherwise retrieval runs as normal. The reuse
+   similarity becomes the gate score, so reused chunks still pass through the
+   unchanged gate → strict-prompt → generate path — reuse never bypasses grounding.
+   The threshold is set high on purpose (a wrong reuse gives a wrong "I don't
+   know"; a missed reuse only costs one retrieval), so on a small corpus it fires
+   only for near-verbatim repeats — a starting point to validate against logged
+   behaviour, like the 0.35 gate.
+
+See both directly on ingested data (run twice for before/after):
+
+```bash
+python scripts/demo_phase8.py <org_id>                          # reuse ON
+RETRIEVAL_REUSE_ENABLED=false python scripts/demo_phase8.py <org_id>  # reuse OFF
+```
+
+Config (all optional): `MEMORY_RECENT_TURNS`, `RETRIEVAL_REUSE_ENABLED`,
+`RETRIEVAL_REUSE_THRESHOLD`.

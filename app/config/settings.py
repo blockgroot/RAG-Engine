@@ -38,11 +38,12 @@ DEFAULT_DB_POOL_MAX_SIZE = 10
 # External content sources (Phase 4). Only "notion" exists so far.
 DEFAULT_SOURCE_TYPE = "notion"
 
-# Conversation memory (Phase 5). A "turn" is one question + its answer.
-# recent_turns are kept verbatim; older turns are compressed once the total
-# exceeds summarize_after. See app/rag/pipeline.py for the reasoning.
-DEFAULT_MEMORY_RECENT_TURNS = 4
-DEFAULT_MEMORY_SUMMARIZE_AFTER = 6
+# Conversation memory (Phase 5, revised Phase 8). A "turn" is one question + its
+# answer. ``recent_turns`` is the size of the verbatim window kept in full; every
+# turn that falls out of that window is *incrementally* folded into a running
+# summary (Phase 8 — no bulk threshold). See app/rag/pipeline.py for the reasoning
+# behind the window size.
+DEFAULT_MEMORY_RECENT_TURNS = 3
 
 # Retrieval improvements (Phase 6): contextual retrieval (ingest-time),
 # hybrid search + cross-encoder reranking (query-time). See app/rag/retrieval.py
@@ -53,6 +54,13 @@ DEFAULT_RETRIEVAL_RERANK_ENABLED = True    # cross-encoder rerank of the candida
 DEFAULT_RETRIEVAL_CANDIDATE_POOL = 30      # how many candidates to fetch/rerank before top_k
 DEFAULT_RETRIEVAL_RRF_K = 60               # Reciprocal Rank Fusion constant (standard default)
 DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
+
+# Retrieval reuse across conversation turns (Phase 8). Before retrieval runs, the
+# rewritten question's embedding is compared (plain cosine, NO LLM) against the
+# previous turn's retrieved chunks; if the best similarity clears the threshold we
+# reuse those chunks and skip a fresh retrieval. Threshold reasoning: CLAUDE.md §4.
+DEFAULT_RETRIEVAL_REUSE_ENABLED = True
+DEFAULT_RETRIEVAL_REUSE_THRESHOLD = 0.72
 
 # Web search tool (Phase 5). Keyless DuckDuckGo by default (no paid dependency);
 # set WEB_SEARCH_PROVIDER=tavily + WEB_SEARCH_API_KEY for production quality.
@@ -238,22 +246,63 @@ class NotionSettings:
 
 @dataclass(frozen=True)
 class MemorySettings:
-    """Conversation-memory sizing (Phase 5).
+    """Conversation-memory sizing (Phase 5, revised Phase 8).
 
-    - ``recent_turns``     how many recent turns to keep verbatim in context.
-    - ``summarize_after``  once a conversation exceeds this many turns, the older
-      ones (all but ``recent_turns``) are compressed into a running summary.
+    - ``recent_turns``  the verbatim window: how many of the most recent turns are
+      kept in full (and shown to the query-rewriter). Every turn that falls out of
+      this window is folded into the running summary *incrementally* — one turn per
+      update, after every turn — so there is no separate bulk-summarize threshold.
+      See ``app/rag/pipeline.py`` (``_update_running_summary``) for the reasoning.
     """
 
     recent_turns: int = DEFAULT_MEMORY_RECENT_TURNS
-    summarize_after: int = DEFAULT_MEMORY_SUMMARIZE_AFTER
 
     @classmethod
     def from_env(cls) -> "MemorySettings":
         return cls(
             recent_turns=int(os.getenv("MEMORY_RECENT_TURNS") or DEFAULT_MEMORY_RECENT_TURNS),
-            summarize_after=int(
-                os.getenv("MEMORY_SUMMARIZE_AFTER") or DEFAULT_MEMORY_SUMMARIZE_AFTER
+        )
+
+
+@dataclass(frozen=True)
+class ReuseSettings:
+    """Retrieval-reuse gate for conversation follow-ups (Phase 8).
+
+    A cheap, deterministic, *non-LLM* check that runs BEFORE retrieval on a
+    follow-up turn: it compares the rewritten question's embedding against the
+    previous turn's retrieved chunks and, if the best cosine similarity clears
+    ``threshold``, reuses those chunks instead of running retrieval again.
+
+    - ``enabled``    whether the reuse check runs at all (needs a conversation).
+    - ``threshold``  minimum cosine similarity (in [0, 1]) between the new question
+      and the *best* previously-retrieved chunk before we trust the old chunks to
+      still cover it. Deliberately well ABOVE the confidence gate (0.35): reuse
+      demands strong "same-fact" similarity, not mere answerability.
+
+      Chosen HIGH (0.72) on purpose. Measured on BGE-M3 (CLAUDE.md §4), a genuinely
+      new-info follow-up on an adjacent topic still scores high against the old
+      chunk (e.g. "how many sick days?" vs the annual-leave chunk ≈ 0.67), and can
+      even outscore a legitimate same-chunk follow-up ("...carried over?" ≈ 0.63) —
+      so no threshold cleanly separates the two. The costs are asymmetric: a wrong
+      reuse skips the chunk that actually answers the question and forces a wrong
+      "I don't know", whereas a missed reuse only costs one redundant retrieval. So
+      we set the bar above the highest observed new-topic score (~0.67): only
+      near-verbatim repeats/clarifications of the *same* fact (~0.75+) reuse; when
+      in doubt we retrieve. Like the 0.35 gate this is a *starting point* to be
+      validated against logged production similarities, NOT a final value. It never
+      bypasses the gate: when reuse fires, the reused chunks still pass through the
+      unchanged retrieve→gate→generate path.
+    """
+
+    enabled: bool = DEFAULT_RETRIEVAL_REUSE_ENABLED
+    threshold: float = DEFAULT_RETRIEVAL_REUSE_THRESHOLD
+
+    @classmethod
+    def from_env(cls) -> "ReuseSettings":
+        return cls(
+            enabled=_env_bool("RETRIEVAL_REUSE_ENABLED", DEFAULT_RETRIEVAL_REUSE_ENABLED),
+            threshold=float(
+                os.getenv("RETRIEVAL_REUSE_THRESHOLD") or DEFAULT_RETRIEVAL_REUSE_THRESHOLD
             ),
         )
 

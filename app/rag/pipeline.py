@@ -18,6 +18,19 @@ logic itself:
   the model composes an answer clearly labelled as web-sourced. Anything the model
   deems internal-but-missing still returns the fixed fallback, and a search
   timeout/failure degrades to that same fallback.
+
+Phase 8 refines two earlier pieces, again without touching the gate/prompt:
+- **Incremental summarization** — the running summary is updated after *every*
+  turn by folding in only the single turn that just fell out of the verbatim
+  window (``_update_running_summary``), instead of bulk-summarizing older turns
+  once a threshold is crossed. Each update's input is the existing summary + one
+  turn, so its cost stays small and roughly constant however long the chat gets.
+- **Retrieval reuse** — before retrieval runs on a follow-up, a cheap *non-LLM*
+  cosine check (``_try_reuse``) compares the rewritten question against the
+  previous turn's retrieved chunks; if they still cover it, those chunks are reused
+  and retrieval is skipped. The reused chunks then flow through the *unchanged*
+  gate → generate path, so this only avoids redundant retrieval — it never
+  weakens or bypasses the confidence gate.
 """
 
 from __future__ import annotations
@@ -25,14 +38,16 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field, replace
 
-from ..config.settings import MemorySettings, RagSettings, WebSearchSettings
+import numpy as np
+
+from ..config.settings import MemorySettings, RagSettings, ReuseSettings, WebSearchSettings
 from ..core.exceptions import LLMProviderError, WebSearchError
 from ..embeddings.base import EmbeddingProvider
 from ..llm.base import LLMProvider
-from ..memory.base import ConversationContext, ConversationStore
+from ..memory.base import ConversationContext, ConversationStore, RetrievedChunkRecord
 from ..vectorstore.base import RetrievedChunk, VectorStore
 from ..websearch.base import SearchResult, WebSearchProvider
-from .retrieval import HybridRetriever
+from .retrieval import HybridRetriever, RetrievalResult
 from .prompts import (
     WEB_SEARCH_TOOL,
     build_grounded_prompt,
@@ -63,6 +78,9 @@ class RagResult:
       was retrieved), for logging / debugging / threshold tuning.
     - ``resolved_question``  the standalone question actually used for retrieval
       after conversation-aware rewriting (``None`` outside a conversation).
+    - ``retrieval_reused``  ``True`` when this turn skipped retrieval and reused the
+      previous turn's chunks (Phase 8). A diagnostic for logging/tests; the answer
+      itself is produced by the same gate → generate path either way.
     """
 
     answer: str
@@ -71,6 +89,7 @@ class RagResult:
     sources: list[RetrievedChunk] = field(default_factory=list)
     top_score: float | None = None
     resolved_question: str | None = None
+    retrieval_reused: bool = False
 
 
 class RagPipeline:
@@ -93,6 +112,7 @@ class RagPipeline:
         memory_settings: MemorySettings | None = None,
         web_search_settings: WebSearchSettings | None = None,
         retriever: "HybridRetriever | None" = None,
+        reuse_settings: ReuseSettings | None = None,
     ) -> None:
         self._llm = llm
         self._embedder = embedder
@@ -102,6 +122,9 @@ class RagPipeline:
         self._web_search = web_search
         self._memory_settings = memory_settings or MemorySettings.from_env()
         self._web_search_settings = web_search_settings or WebSearchSettings.from_env()
+        # Phase 8: retrieval-reuse gate (a cheap non-LLM cosine check). Only active
+        # inside a conversation (needs a previous turn's chunks) and when enabled.
+        self._reuse_settings = reuse_settings or ReuseSettings.from_env()
         # Phase 6: hybrid + reranking retriever. When None, fall back to plain
         # vector search (the Phase 3 behaviour), keeping this pipeline usable
         # without the retrieval upgrades.
@@ -126,36 +149,57 @@ class RagPipeline:
             if not context.is_empty():
                 resolved = self._rewrite_question(question, context)
 
-        result = self._run(resolved, org_id)  # Phase 3 path (+ web fallback)
+        # Phase 3 path (+ Phase 8 retrieval reuse + web fallback).
+        result = self._run(resolved, org_id, conversation_id=conversation_id)
 
         if conversation_id is not None and self._memory is not None:
             result = replace(result, resolved_question=resolved)
             self._memory.append_turn(conversation_id, question, result.answer)
-            self._maybe_summarize(conversation_id)
+            # Remember this turn's policy chunks so the next turn can try to reuse
+            # them (web/fallback answers have no reusable policy chunks -> cleared).
+            self._remember_retrieval(conversation_id, org_id, result)
+            self._update_running_summary(conversation_id)
 
         return result
 
     # -- retrieval / gate / generation (Phase 3 logic, unchanged) ----------
 
-    def _run(self, question: str, org_id: str) -> RagResult:
-        # 1) Retrieve org-scoped candidates. With a HybridRetriever this is
-        #    vector + keyword (RRF-fused) then cross-encoder reranked; without one
-        #    it's plain vector search (Phase 3). Either way `top_score` is the best
-        #    cosine similarity, so the confidence gate below is unchanged.
+    def _run(
+        self, question: str, org_id: str, *, conversation_id: str | None = None
+    ) -> RagResult:
+        # We embed the question once and use that vector for both the (Phase 8)
+        # reuse check and, if we do retrieve, the vector search — no extra cost.
         query_vec = self._embedder.embed([question])[0]
-        if self._retriever is not None:
-            retrieval = self._retriever.retrieve(org_id, question, query_vec)
-            hits = retrieval.hits
-            top_score = retrieval.gate_score
+
+        # 0) Phase 8 retrieval reuse: if the previous turn's chunks still cover this
+        #    question (cheap cosine check, no LLM, no retrieval), reuse them. The
+        #    `reuse_score` it returns is a genuine cosine similarity of THIS question
+        #    vs the best reused chunk, so it feeds the unchanged gate below exactly
+        #    like a fresh `top_score` would.
+        reused = self._try_reuse(question, org_id, query_vec, conversation_id)
+        if reused is not None:
+            hits, top_score = reused.hits, reused.gate_score
+            retrieval_reused = True
         else:
-            hits = self._store.query(org_id, query_vec, top_k=self._settings.top_k)
-            top_score = hits[0].score if hits else None
+            retrieval_reused = False
+            # 1) Retrieve org-scoped candidates. With a HybridRetriever this is
+            #    vector + keyword (RRF-fused) then cross-encoder reranked; without one
+            #    it's plain vector search (Phase 3). Either way `top_score` is the best
+            #    cosine similarity, so the confidence gate below is unchanged.
+            if self._retriever is not None:
+                retrieval = self._retriever.retrieve(org_id, question, query_vec)
+                hits = retrieval.hits
+                top_score = retrieval.gate_score
+            else:
+                hits = self._store.query(org_id, query_vec, top_k=self._settings.top_k)
+                top_score = hits[0].score if hits else None
 
         # Nothing stored/matched for this tenant -> gate failed.
         if not hits or top_score is None:
             return self._gate_failed(question, hits=[], top_score=None)
 
-        # 2) Confidence gate (layer 1).
+        # 2) Confidence gate (layer 1) — runs identically whether hits were freshly
+        #    retrieved or reused, so reuse never bypasses or weakens the gate.
         if top_score < self._settings.similarity_threshold:
             return self._gate_failed(question, hits=hits, top_score=top_score)
 
@@ -174,6 +218,7 @@ class RagPipeline:
             source="policy" if answered else "none",
             sources=hits,
             top_score=top_score,
+            retrieval_reused=retrieval_reused,
         )
 
     def _gate_failed(
@@ -191,6 +236,87 @@ class RagPipeline:
             sources=hits,
             top_score=top_score,
         )
+
+    # -- Phase 8: retrieval reuse (a cheap, deterministic, non-LLM check) ---
+
+    def _try_reuse(
+        self,
+        question: str,
+        org_id: str,
+        query_vec: list[float],
+        conversation_id: str | None,
+    ) -> RetrievalResult | None:
+        """Decide whether to reuse the previous turn's chunks instead of retrieving.
+
+        Purely a similarity comparison in code — no LLM call, the same kind of
+        deterministic gate as the Phase 3 confidence threshold. Returns a
+        ``RetrievalResult`` (reused chunks re-scored against THIS question, best
+        first) when the best cosine similarity clears ``reuse.threshold``, else
+        ``None`` so the caller retrieves normally.
+        """
+        if (
+            conversation_id is None
+            or self._memory is None
+            or not self._reuse_settings.enabled
+        ):
+            return None
+
+        prev = self._memory.get_last_retrieval(conversation_id)
+        prev = [r for r in prev if r.org_id == org_id]  # never cross a tenant boundary
+        if not prev:
+            return None
+
+        # Recompute embeddings for the handful of previous chunks (cheap, local,
+        # deterministic) rather than storing 1024-dim vectors in the DB.
+        prev_vecs = self._embedder.embed([r.content for r in prev])
+        sims = [self._cosine(query_vec, v) for v in prev_vecs]
+        best = max(sims)
+        if best < self._reuse_settings.threshold:
+            return None  # not confidently covered -> retrieve fresh
+
+        order = sorted(range(len(prev)), key=lambda i: sims[i], reverse=True)
+        hits = [
+            RetrievedChunk(
+                content=prev[i].content,
+                score=sims[i],  # fresh cosine of THIS question vs the reused chunk
+                document_id=prev[i].document_id,
+                chunk_index=prev[i].chunk_index,
+                org_id=prev[i].org_id,
+            )
+            for i in order
+        ][: self._settings.top_k]
+        # gate_score == best cosine among reused chunks, mirroring fresh retrieval.
+        return RetrievalResult(hits=hits, gate_score=best)
+
+    def _remember_retrieval(
+        self, conversation_id: str, org_id: str, result: RagResult
+    ) -> None:
+        """Persist this turn's policy chunks for the next turn's reuse check."""
+        records = [
+            RetrievedChunkRecord(
+                content=c.content,
+                document_id=c.document_id,
+                chunk_index=c.chunk_index,
+                org_id=c.org_id,
+            )
+            for c in result.sources
+        ]
+        self._memory.set_last_retrieval(conversation_id, org_id, records)
+
+    @staticmethod
+    def _cosine(a: list[float], b: list[float]) -> float:
+        """Cosine similarity in [-1, 1], matching pgvector's ``1 - cosine_distance``.
+
+        Embeddings are already L2-normalized (BGE-M3), so this reduces to a dot
+        product — but we compute the full form so a non-normalizing backend still
+        yields a comparable score on the same scale as the confidence gate.
+        """
+        va = np.asarray(a, dtype=np.float32)
+        vb = np.asarray(b, dtype=np.float32)
+        denom = float(np.linalg.norm(va) * np.linalg.norm(vb))
+        if denom == 0.0:
+            return 0.0
+        return float(np.dot(va, vb) / denom)
 
     # -- Capability B: single-step web-search tool use ---------------------
 
@@ -275,25 +401,34 @@ class RagPipeline:
             return question  # unreliable rewrite -> fall back to the original
         return first_line
 
-    def _maybe_summarize(self, conversation_id: str) -> None:
-        ms = self._memory_settings
+    def _update_running_summary(self, conversation_id: str) -> None:
+        """Incrementally fold the turn(s) that just left the verbatim window into
+        the running summary (Phase 8).
+
+        Called after *every* turn. Once the number of verbatim turns exceeds the
+        window, exactly one turn (the oldest) has fallen out; we merge just that
+        turn with the existing summary — so each update's input is the summary plus
+        a single turn, never the full history, and its cost stays ~constant no
+        matter how long the conversation gets. (If a previous update was skipped on
+        an LLM error, a small backlog is folded in on the next turn — still bounded,
+        never the whole history.)
+        """
+        window = self._memory_settings.recent_turns
         turns = self._memory.get_turns(conversation_id)
-        if len(turns) <= ms.summarize_after:
-            return
-        keep = ms.recent_turns
-        to_compress = turns[:-keep] if keep > 0 else turns
-        if not to_compress:
-            return
+        if len(turns) <= window:
+            return  # window not full yet: everything is still kept verbatim
+
+        falling_out = turns[:-window] if window > 0 else turns
         existing = self._memory.get_summary(conversation_id)
         prompt = build_summary_prompt(
-            existing, [(t.question, t.answer) for t in to_compress]
+            existing, [(t.question, t.answer) for t in falling_out]
         )
         try:
             summary = self._llm.generate(prompt).strip()
         except LLMProviderError:
-            return  # summarization is best-effort; skip on failure
+            return  # best-effort; the turn stays verbatim and is folded in next time
         if summary:
-            self._memory.set_summary_and_prune(conversation_id, summary, keep)
+            self._memory.set_summary_and_prune(conversation_id, summary, window)
 
     @staticmethod
     def _is_refusal(text: str, fallback_response: str) -> bool:

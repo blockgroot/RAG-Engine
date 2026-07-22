@@ -59,6 +59,9 @@ class AgentResponse:
       follow-up's rewrite is observable/testable.
     - ``top_score``  best retrieval similarity seen (``None`` if nothing retrieved).
       A diagnostic for logging / gate analysis; not part of the user-facing answer.
+    - ``retrieval_reused``  ``True`` when the turn reused the previous turn's chunks
+      instead of retrieving afresh (Phase 8). A diagnostic; the answer is produced
+      by the same gate → generate path regardless.
     """
 
     answer: str
@@ -67,6 +70,7 @@ class AgentResponse:
     citations: list[Citation] = field(default_factory=list)
     resolved_question: str | None = None
     top_score: float | None = None
+    retrieval_reused: bool = False
 
 
 class Agent(ABC):

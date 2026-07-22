@@ -55,6 +55,7 @@ class PolicyAgent(Agent):
             citations=[PolicyAgent._to_citation(c) for c in result.sources],
             resolved_question=result.resolved_question,
             top_score=result.top_score,
+            retrieval_reused=result.retrieval_reused,
         )
 
     @staticmethod

@@ -89,11 +89,11 @@ their policy documents; their employees ask questions and get answers grounded i
   does a *cheap* `generate` call to rewrite it into a standalone question using the
   running summary + recent turns, then feeds that into the *unchanged* Phase 3
   retrieve→gate→generate path. History is Postgres-backed and org-scoped
-  (`conversations` + `conversation_turns`). To bound prompt size/cost, the most
-  recent `MEMORY_RECENT_TURNS` (=4) turns are kept verbatim and older turns are
-  compressed into a running summary once the count exceeds `MEMORY_SUMMARIZE_AFTER`
-  (=6); summarization is best-effort (skipped on LLM error). `RagResult` exposes
-  `resolved_question` so the rewrite is observable/testable.
+  (`conversations` + `conversation_turns`). The most recent `MEMORY_RECENT_TURNS`
+  turns are kept verbatim; older turns live in a running summary. **Phase 8 changed
+  *how* that summary is maintained** (see the incremental-summarization bullet
+  below) but not the rewrite path. `RagResult` exposes `resolved_question` so the
+  rewrite is observable/testable.
 - **Web-search fallback uses real tool-calling, single-step, clearly labelled
   (`app/websearch/` + pipeline).** When internal retrieval fails the gate, the LLM
   is offered a `web_search` function (proper tool-calling — FreeLLMAPI supports it,
@@ -165,6 +165,44 @@ their policy documents; their employees ask questions and get answers grounded i
   path checks **retry (3 attempts)** to absorb one-off LLM-generation variance on
   the free endpoint — a genuine regression fails every attempt. (Mitigation, not a
   guarantee: a hard gate should point at a deterministic model via secrets.)
+- **Conversation summaries are now updated INCREMENTALLY, not in bulk (Phase 8,
+  supersedes the Phase 5 threshold).** Before: history was kept verbatim until the
+  turn count crossed `MEMORY_SUMMARIZE_AFTER`, then older turns were bulk-summarized
+  at once. Now: after *every* turn, the single turn that just fell out of the
+  verbatim window (`MEMORY_RECENT_TURNS`) is folded into the running summary via one
+  LLM call whose input is *only* `existing summary + that one turn`
+  (`RagPipeline._update_running_summary` + `build_summary_prompt`). So each update's
+  cost is small and ~constant no matter how long the chat gets, and the summary is
+  continuously current instead of lagging until a threshold trips. **Window size =
+  3** (was 4): with incremental folding there's no threshold-lag to buffer against,
+  so a smaller verbatim window is enough (follow-ups almost always reference the
+  last 1–2 turns) and it keeps the rewrite prompt small. `MEMORY_SUMMARIZE_AFTER`
+  was **removed** (no threshold exists any more). Storage is unchanged — it still
+  uses `set_summary_and_prune` on the same `conversations.summary` +
+  `conversation_turns` tables. Summarization stays best-effort (skipped on LLM
+  error; the turn is folded in on the next turn instead).
+- **Retrieval is reused across turns when the previous chunks still cover the
+  follow-up — a cheap, deterministic, NON-LLM check before retrieval (Phase 8,
+  `RagPipeline._try_reuse`).** On a follow-up, after the query-rewrite, the
+  rewritten question is embedded (the same embedding retrieval would need anyway)
+  and compared by **plain cosine** against the *previous turn's* retrieved chunks.
+  If the best similarity clears `RETRIEVAL_REUSE_THRESHOLD`, those chunks are reused
+  and retrieval (hybrid search + the cross-encoder rerank) is skipped; otherwise
+  retrieval runs as normal. It is the *same kind of deterministic gate* as the
+  Phase 3 confidence threshold — no LLM decides it. Crucially it **does not weaken
+  the confidence gate**: the reuse similarity is a genuine cosine of *this* question
+  vs the reused chunk, so it becomes `top_score` and the reused chunks flow through
+  the **unchanged** gate → strict-prompt → generate path (if they don't actually
+  clear the gate/answer the question, they're refused exactly as a fresh retrieval
+  would be). The previous turn's chunks are persisted per-conversation
+  (`conversation_last_retrieval`, one upserted row) storing chunk *text + locator
+  only* — **not** embeddings, which are cheaply recomputed locally on the next turn
+  (BGE-M3, ~ms for a handful of chunks; the tradeoff is a tiny recompute vs a DB
+  vector column and it keeps the reuse decision deterministic). Reuse is org-scoped
+  (never crosses a tenant boundary) and observable via `RagResult.retrieval_reused`.
+  **Threshold = 0.72, deliberately conservative** — see §4 for the empirical
+  reasoning and the finding that cosine cannot cleanly separate "same fact" from
+  "adjacent topic" on this corpus.
 
 ## 3. Folder / file structure convention
 
@@ -184,12 +222,15 @@ app/
                 #   + retrieval.py (P6: HybridRetriever — vector+keyword RRF + rerank).
                 #   Orchestrator, not a provider — composes the above; no base.py.
                 #   Phase 5: also does query-rewrite (memory) + web-search fallback.
+                #   Phase 8: incremental summary update + pre-retrieval reuse check.
   reranker/     # base.py (Reranker) + local.py (CrossEncoder) + factory.py. P6
                 #   cross-encoder reranking of the candidate pool (bge-reranker-v2-m3).
   sources/      # base.py (SourceAdapter) + notion.py + factory.py. External content
                 #   sources (Notion now; Drive/GitHub/Slack later) behind one interface.
   memory/       # base.py (ConversationStore) + pg_store.py + factory.py. Org-scoped
                 #   conversation history (turns + running summary) for follow-ups.
+                #   P8: incremental summary update + set_last_retrieval/get_last_retrieval
+                #   (last turn's chunks, for the retrieval-reuse check).
   websearch/    # base.py (WebSearchProvider) + duckduckgo.py + factory.py. The
                 #   web-search tool used as the external-entity fallback.
   agent/        # base.py (Agent + AgentResponse + Citation) + policy_agent.py +
@@ -258,12 +299,51 @@ tests/          # pytest; isolation (P2), grounding (P3), conversation+websearch
   `list_documents()` returns zero pages even with a good token. `child_page`
   blocks are treated as separate documents (not inlined) since each Notion page
   is its own document.
-- **Summarization threshold reasoning (Phase 5).** `MEMORY_RECENT_TURNS`=4 kept
-  verbatim, summarize once total > `MEMORY_SUMMARIZE_AFTER`=6. Follow-ups almost
-  always reference the last 1–2 turns, so 4 verbatim is ample headroom; triggering
-  only above 6 leaves a 2-turn buffer so we're not summarizing every turn (each
-  summary is an extra LLM call). The running summary preserves concrete facts a
-  later turn might reference, so context survives pruning. Tune via env if needed.
+- **Summarization is incremental as of Phase 8 (this supersedes the Phase 5
+  threshold reasoning).** `MEMORY_RECENT_TURNS`=3 kept verbatim; every turn that
+  falls out of that window is folded into the running summary immediately, one turn
+  per update. There is **no** `MEMORY_SUMMARIZE_AFTER` any more — it was removed.
+  Window went 4→3 because incremental folding removed the threshold-lag a larger
+  buffer used to hide (older turns are now *always* current in the summary, not
+  stale until a trigger). Each update is one LLM call over `summary + one turn`, so
+  cost is ~constant regardless of length (vs the old bulk call that grew with the
+  batch). Best-effort still holds: on an LLM error the fold is skipped and retried
+  on the next turn (a small bounded backlog, never the full history). The running
+  summary preserves concrete facts a later turn might reference. Tune the window via
+  `MEMORY_RECENT_TURNS`.
+- **Retrieval-reuse threshold reasoning (Phase 8) — 0.72, and why cosine can't do
+  better here.** Measured on BGE-M3 (query-vs-chunk cosine, same modality as the
+  §-below gate bands): a legitimate *same-chunk* follow-up ("...and how many of
+  those carry over?" vs the annual-leave chunk) scores ≈ **0.63**, yet a genuinely
+  *new-info* adjacent-topic follow-up ("how many sick days?" vs that same leave
+  chunk) scores ≈ **0.67** — i.e. the case we MUST retrieve fresh for outscores a
+  case we'd have been happy to reuse. **No single cosine threshold separates them**
+  (this is the same tiny-margin trap as the 0.35 gate, below). The costs are
+  asymmetric: a *wrong* reuse skips the chunk that actually answers the question and
+  forces a wrong "I don't know", while a *missed* reuse only costs one redundant
+  retrieval. So the threshold is set ABOVE the highest observed new-topic score
+  (~0.67) at **0.72**: only near-verbatim repeats/clarifications of the same fact
+  (~0.72–0.77, e.g. an observed live reuse at 0.724) fire; everything else retrieves
+  fresh. Consequence to expect: **reuse fires rarely on a small policy corpus** —
+  that's by design (correctness over the optimization), not a bug. Like 0.35 this is
+  a *starting point* to validate against logged production similarities + a reuse
+  hit/miss audit, NOT a final value; do not lower it to force more reuse without
+  that data. Re-measure if the embedding model changes.
+- **The reuse check stores chunk TEXT, not embeddings, and recomputes them
+  (Phase 8).** `conversation_last_retrieval` holds only `{content, document_id,
+  chunk_index, org_id}` as JSON — no vector column. The next turn re-embeds those
+  few chunk texts locally (BGE-M3, deterministic, ~ms) to score them against the new
+  question. Tradeoff chosen deliberately: a tiny recompute avoids adding a
+  vector-array column and keeps the decision reproducible. Only the *latest* turn's
+  chunks are kept (one upserted row per conversation) — the check only ever looks
+  one turn back. Web/fallback answers store an empty list, so they're never reused.
+- **The reuse check must never bypass the confidence gate (Phase 8).** `_try_reuse`
+  returns a `gate_score` that is a real cosine of *this* question vs the reused
+  chunk, and the reused hits go through the identical gate → strict-prompt → generate
+  path. Don't "shortcut" a reused turn straight to an answer — if the reused chunks
+  don't actually clear 0.35 / answer the question, they must be refused exactly as a
+  fresh retrieval would be. Reuse only ever *saves the retrieval work*, never the
+  grounding checks.
 - **Web search decides internal-vs-external via the tool description, not
   keywords.** The `web_search` tool is only offered when the gate fails; the model
   chooses to call it for real external named entities and declines (→ fixed
@@ -380,16 +460,20 @@ Defined in `app/db/schema.sql`. Current tables:
 | `documents`     | A source policy file/upload, scoped to one org. `id`, `org_id`, `title`, `source_uri`, `created_at`. As of Phase 4, `source_uri` is populated with the origin URL (e.g. the Notion page URL) at ingest. |
 | `chunks`        | Text chunks + their `vector(1024)` embedding, scoped to one org. `id`, `org_id`, `document_id`, `chunk_index`, `content`, `embedding`, `created_at`. Phase 6: `content_tsv` (a `tsvector` GENERATED from `content`, GIN-indexed) powers keyword/hybrid search; `content` may include a prepended contextual-retrieval prefix. |
 | `conversations` | (Phase 5) A conversation, scoped to one org. `id`, `org_id`, `summary` (running compression of pruned older turns), `created_at`. |
-| `conversation_turns` | (Phase 5) One question+answer within a conversation. `id`, `conversation_id`, `org_id`, `turn_index`, `question`, `answer`, `created_at`. Older turns are pruned once summarized. |
+| `conversation_turns` | (Phase 5) One question+answer within a conversation. `id`, `conversation_id`, `org_id`, `turn_index`, `question`, `answer`, `created_at`. Older turns are pruned once folded into the summary (Phase 8: incrementally, one at a time). |
+| `conversation_last_retrieval` | (Phase 8) The chunks retrieved on a conversation's most recent turn, for the pre-retrieval reuse check. One upserted row per conversation: `conversation_id` (PK), `org_id`, `chunks` (TEXT holding a JSON array of `{content, document_id, chunk_index, org_id}` — no embeddings), `updated_at`. |
 
 Deletes cascade: removing an org removes its documents and chunks (and its
-conversations + turns); removing a conversation removes its turns. Indexes:
+conversations + turns + last-retrieval row); removing a conversation removes its
+turns and its last-retrieval row. Indexes:
 `org_id` on documents and chunks (tenant filter) + an HNSW cosine index on
 `chunks.embedding` (ranking speed).
 
 **No `users`, `auth`, or OAuth tables yet** — deliberately deferred to a later phase.
 **Phase 7 added no tables** — the PolicyAgent and golden-set eval are pure
-application/tooling layers over the existing schema.
+application/tooling layers over the existing schema. **Phase 8 added one table**
+(`conversation_last_retrieval`) for the retrieval-reuse check and removed the
+`MEMORY_SUMMARIZE_AFTER` setting (summarization is now incremental).
 
 ## 6. Current state: built vs. pending
 
@@ -451,8 +535,38 @@ application/tooling layers over the existing schema.
   evidence** (`evaluation/reports/GATE_FINDINGS.md`): the 0.35 gate produced zero
   false negatives and correctly deferred all 4 unanswerable cases to the prompt —
   working as designed; recommendation is to NOT change it (a finding, not a change).
+- Phase 8 — Two refinements to the conversation/retrieval path, gate + grounding +
+  web-search untouched. (A) **Incremental summarization** (`app/rag/pipeline.py`
+  `_update_running_summary`): the running summary is updated after *every* turn by
+  folding in only the single turn that just left the verbatim window
+  (`existing summary + one turn` → one small LLM call), replacing Phase 5's
+  bulk-at-threshold summarize. Window `MEMORY_RECENT_TURNS` 4→3; `MEMORY_SUMMARIZE_AFTER`
+  removed. Same `conversations.summary` + `conversation_turns` storage. (B) **Retrieval
+  reuse** (`_try_reuse`): a cheap, deterministic, *non-LLM* cosine check before
+  retrieval — if the rewritten question is close enough (`RETRIEVAL_REUSE_THRESHOLD`
+  = 0.72) to the previous turn's chunks, reuse them and skip hybrid search + rerank;
+  else retrieve fresh. The reuse similarity becomes `top_score`, so reused chunks pass
+  through the **unchanged** gate → strict-prompt → generate path (never bypassing it).
+  Previous chunks persist in a new `conversation_last_retrieval` table (text + locator,
+  no embeddings — recomputed on demand). Observable via `RagResult.retrieval_reused` /
+  `AgentResponse.retrieval_reused`. Tests: `test_incremental_summary.py` +
+  `test_reuse.py` (deterministic unit fakes for the decision logic + a real-BGE-M3
+  threshold-separation check) and an updated incremental integration test in
+  `test_conversation.py`; full suite green (39 passing, 2 network deselected). Verified
+  live against real Notion data (`scripts/demo_phase8.py`): incremental summary set
+  from turn 4 and updated each turn (verbatim capped at 3, early-turn context resolved
+  from the summary), and a reuse firing at 0.724 while lower-similarity turns retrieved
+  fresh. **Finding:** on a small policy corpus cosine cannot cleanly separate "same
+  fact" from "adjacent topic" (a same-chunk follow-up ≈0.63 can score *below* a
+  new-topic one ≈0.67), so reuse is deliberately conservative and fires rarely —
+  correctness over the optimization (see §4).
 
 **Pending (not started)**
+- Validate the Phase 8 reuse threshold (0.72) against logged production similarities
+  + a reuse hit/miss audit before treating it as final — same discipline as the 0.35
+  gate. A richer signal than a single query-vs-chunk cosine (e.g. also comparing the
+  rewritten question to the previous question) is the natural next experiment if reuse
+  needs to fire more often without losing correctness.
 - Act on the Part 3 gate findings — a *decision*, not a default: the evidence says
   keep `0.35` and the two-layer design as-is (`evaluation/reports/GATE_FINDINGS.md`).
   Any future recalibration must be driven by an *expanded* golden set + production
