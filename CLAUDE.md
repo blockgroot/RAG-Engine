@@ -133,6 +133,37 @@ their policy documents; their employees ask questions and get answers grounded i
   implemented this phase.** Note: on a small corpus BGE-M3 already ranks the top
   chunk well, so these techniques are insurance for scale / exact-term recall /
   crowded ambiguous queries — the deterministic tests prove each mechanism.
+- **The RAG logic is now a formal `PolicyAgent` behind a generic `Agent` interface
+  (`app/agent/`).** Phase 7 extracted the retrieve→gate→generate→memory→web-fallback
+  behavior out of the CLI scripts into one reusable unit. `Agent.answer(question,
+  org_id, conversation_id) -> AgentResponse` is deliberately generic (answer,
+  `grounded`, `source`, `citations`, `resolved_question`, `top_score`) — it says
+  nothing about Notion/policies/retrieval, because a future GitHub agent will
+  implement the *same* contract. Unlike `rag/`, this package *does* get a `base.py`:
+  there genuinely is a second backend coming, so the abstraction earns its keep.
+  `PolicyAgent` is a **thin adapter** over the unchanged `RagPipeline` (it maps
+  `RagResult`→`AgentResponse`); the pipeline, gate, prompt, and every test outcome
+  are byte-for-byte unchanged. `ask.py`/`chat.py` now call the agent, so the logic
+  lives in exactly one place.
+- **Golden-set evaluation is a two-tier regression gate, split by cost, not one
+  monolith (`evaluation/` + CI).** ~17 hand-picked cases (10 answerable, 4 fallback,
+  2 web, 1 conversation) against a deterministic corpus that *reproduces the real
+  "Acme HR Policies" Notion data* — so it runs identically on a laptop and in CI
+  (which can't reach Notion). The split follows the real cost asymmetry: **(1) fast
+  tier, every push** — deterministic *path-firing* checks (did the right path fire;
+  are known facts present; did the follow-up get rewritten), one LLM *generation*
+  per case, plain asserts, no judge; this is the build gate. **(2) RAGAS tier,
+  nightly + manual** — LLM-as-judge scoring (faithfulness / answer relevancy /
+  context precision / recall), several judge calls per metric per case, gated
+  against a baseline. RAGAS is wired to *our own* LLM endpoint + local BGE-M3
+  embeddings (still $0 / self-hostable, §1) and is an **optional `[eval]` dependency**
+  so the core runtime stays minimal. Chosen over a per-push RAGAS run because the
+  judge cost buys little marginal signal at push cadence; chosen over no scoring at
+  all because faithfulness is the direct anti-hallucination measure worth watching
+  over time. Web cases are **advisory** (DuckDuckGo rate-limits; graceful
+  degradation to the internal fallback is by-design), and answerable/conversation
+  path checks **retry once** to absorb one-off LLM-generation variance on the free
+  endpoint — a genuine regression fails both attempts.
 
 ## 3. Folder / file structure convention
 
@@ -160,9 +191,19 @@ app/
                 #   conversation history (turns + running summary) for follow-ups.
   websearch/    # base.py (WebSearchProvider) + duckduckgo.py + factory.py. The
                 #   web-search tool used as the external-entity fallback.
+  agent/        # base.py (Agent + AgentResponse + Citation) + policy_agent.py +
+                #   factory.py. P7: the formal PolicyAgent (thin adapter over the RAG
+                #   pipeline). HAS a base.py — a GitHub agent will implement it later.
+evaluation/     # P7 golden-set eval (peer to scripts/tests). golden_set.py (cases +
+                #   corpus mirroring real Notion data), harness.py (seed + run + path
+                #   verdict), ragas_scoring.py (optional [eval] dep), report.py,
+                #   run_eval.py (CLI). reports/ holds latest.md + GATE_FINDINGS.md (P7 Part 3).
 scripts/        # entrypoints: verify_providers.py, init_db.py, demo_rag.py, ingest_notion.py,
-                #   ask.py, chat.py (multi-turn), compare_retrieval.py (P6 before/after)
-tests/          # pytest; isolation (P2), grounding (P3), conversation+websearch (P5), retrieval (P6)
+                #   ask.py, chat.py (multi-turn), compare_retrieval.py (P6 before/after).
+                #   ask.py/chat.py call the PolicyAgent (P7); logic lives only in app/agent.
+tests/          # pytest; isolation (P2), grounding (P3), conversation+websearch (P5),
+                #   retrieval (P6), golden-set path-firing (P7, test_golden_set.py)
+.github/workflows/eval.yml  # P7 CI: fast path-firing tier every push + nightly RAGAS tier
 ```
 
 **Conventions to follow (match, don't reinvent):**
@@ -286,6 +327,45 @@ tests/          # pytest; isolation (P2), grounding (P3), conversation+websearch
   exact-term recall (keyword index) / crowded ambiguous queries. The deterministic
   `test_retrieval.py` cases prove each mechanism rather than relying on a dramatic
   small-corpus demo. **MMR was considered and deliberately not implemented.**
+- **`PolicyAgent` must not add behavior — it's an adapter (Phase 7).** It maps
+  `RagResult`→`AgentResponse` and nothing else; all retrieve/gate/generate logic
+  stays in `RagPipeline`. If you're tempted to add answering logic to the agent,
+  it belongs in the pipeline. The `Agent` interface is intentionally source-agnostic
+  (no Notion/retrieval terms) so the future GitHub agent implements the same shape;
+  don't leak policy specifics into `app/agent/base.py`.
+- **The golden-set eval seeds a deterministic corpus, it does NOT read live Notion
+  (Phase 7).** `evaluation/golden_set.py::CORPUS` reproduces the real Acme HR Notion
+  facts inline so the eval runs anywhere (CI has no Notion token/DB access to the
+  page). It ingests *plainly* (preprocess→chunk→embed, **no** contextual prefix) for
+  determinism/speed — the hybrid+rerank+gate *retrieval* path is still fully
+  exercised. If the real Notion page's facts change, update `CORPUS` to match.
+- **RAGAS pins langchain to the 0.3 line (Phase 7).** `ragas 0.2.x` imports modules
+  removed in langchain 1.x, so a plain `pip install ragas` breaks. The `[eval]`
+  extra pins `langchain>=0.3,<0.4` (+ community/core/openai). RAGAS also downgrades
+  `openai` to <2.0 — still `>=1.40`, so the app is unaffected. RAGAS is optional and
+  never imported by the core runtime or the fast-tier path checks.
+- **CI needs LLM secrets; the free dev endpoint is localhost-only (Phase 7).** Both
+  eval tiers need an OpenAI-compatible LLM. `.github/workflows/eval.yml` reads it from
+  repo secrets (`LLM_MODEL`/`LLM_API_KEY`/`LLM_BASE_URL`); with them absent (fork PRs)
+  the LLM-gating step is skipped with a notice and only no-LLM structural checks run —
+  so gating requires the secrets set. Postgres is a CI service; HF models are cached.
+- **Answerable path checks retry once; web checks are advisory (Phase 7).** The free
+  "auto" LLM is non-deterministic and can refuse a clearly-answerable question ~1 in
+  5 (observed on `sick-leave-days`: correct chunk retrieved, gate cleared at 0.652,
+  yet refused once — answered correctly 4/4 on retry). So `harness.run_case_stable`
+  retries `answerable`/`conversation` cases once (a real regression fails both).
+  `web` cases never gate CI (DuckDuckGo rate-limits; degrading to the internal
+  fallback is by design) — only a web case answered as `policy` (fabrication) fails.
+- **Part 3 gate evidence (Phase 7): the 0.35 gate is working as designed — do not
+  raise it.** Across the golden set the gate produced **zero** false negatives
+  (lowest answerable top_score 0.652, nearly 2× the threshold), and all four
+  unanswerable cases cleared the gate (0.40–0.52) and were correctly refused by the
+  strict prompt — the intended two-layer split. The apparent gap between the top
+  unanswerable (0.523) and lowest answerable (0.652) is the tiny-sample trap of §4;
+  raising the threshold into it would risk blocking real questions
+  (`sick-leave-days` 0.652, `health-plan` 0.672 sit just above). Full write-up:
+  `evaluation/reports/GATE_FINDINGS.md`. This is a *finding*, not a change — the gate
+  is untouched.
 
 ## 5. Database tables (keep this in sync as the schema evolves)
 
@@ -305,6 +385,8 @@ conversations + turns); removing a conversation removes its turns. Indexes:
 `chunks.embedding` (ranking speed).
 
 **No `users`, `auth`, or OAuth tables yet** — deliberately deferred to a later phase.
+**Phase 7 added no tables** — the PolicyAgent and golden-set eval are pure
+application/tooling layers over the existing schema.
 
 ## 6. Current state: built vs. pending
 
@@ -351,14 +433,27 @@ conversations + turns); removing a conversation removes its turns. Indexes:
 - `scripts/demo_rag.py` — a non-productionized END-TO-END demo (ingest → embed →
   store → retrieve → grounded LLM answer). Predates `app/rag/`; kept as a simple
   standalone walkthrough. The productionized path is now `app/rag/`.
+- Phase 7 — (A) Formal **Policy Agent** (`app/agent/`): a generic `Agent` interface
+  + `PolicyAgent` thin adapter over the unchanged `RagPipeline`; `ask.py`/`chat.py`
+  refactored onto it. No behavior change — all 15 prior tests still green. (B)
+  **Golden-set evaluation** (`evaluation/`): ~17 cases (answerable/fallback/web/
+  conversation) over a deterministic corpus mirroring the real Notion data, scored
+  two ways — deterministic path-firing (every push) + RAGAS faithfulness/answer-
+  relevancy/context-precision/recall (nightly + manual). Wired into CI
+  (`.github/workflows/eval.yml`) with a fast gating tier and a scheduled RAGAS tier;
+  fails the build on a path regression or a below-baseline score. First baseline
+  run: path-firing 15/15 gating (web advisory), RAGAS means faithfulness 1.00 /
+  answer-relevancy 0.905 / context-precision 1.00 / context-recall 1.00. Tests:
+  `test_golden_set.py` (path-firing, `-m "not network"`). (C) **Part 3 gate
+  evidence** (`evaluation/reports/GATE_FINDINGS.md`): the 0.35 gate produced zero
+  false negatives and correctly deferred all 4 unanswerable cases to the prompt —
+  working as designed; recommendation is to NOT change it (a finding, not a change).
 
 **Pending (not started)**
-- Grounding evaluation (near-term priority, not a full phase yet): a RAGAS-style
-  golden set of ~10–15 questions including deliberate unanswerables, run against
-  the pipeline. This is what would actually validate whether `0.35` (and the
-  prompt) hold up — the current threshold is motivated only by a handful of
-  hand-picked questions (see §4), which is enough to choose a starting value but
-  not to trust it. Worth doing before leaning harder on the threshold.
+- Act on the Part 3 gate findings — a *decision*, not a default: the evidence says
+  keep `0.35` and the two-layer design as-is (`evaluation/reports/GATE_FINDINGS.md`).
+  Any future recalibration must be driven by an *expanded* golden set + production
+  `top_score` logging, never the current ~17-case sample. Awaiting explicit sign-off.
 - RAG enhancements: token-budget-aware context assembly and structured
   (machine-readable) citations. Current pipeline returns `sources` for
   traceability and asks the model to cite `[n]` inline, but does not yet parse

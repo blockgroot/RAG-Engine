@@ -16,6 +16,22 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0.0"]
+# Golden-set RAGAS scoring (Phase 7) — the expensive, LLM-judged eval tier. Kept
+# out of the core deps so the runtime stays minimal (CLAUDE.md §1); only the
+# scheduled/manual eval needs it. langchain is pinned to the 0.3 line because
+# ragas 0.2.x is incompatible with langchain 1.x (imports removed modules).
+eval = [
+    "ragas>=0.2,<0.3",
+    "langchain>=0.3,<0.4",
+    "langchain-core>=0.3,<0.4",
+    "langchain-community>=0.3,<0.4",
+    "langchain-openai>=0.2,<0.3",
+]
+
+[tool.pytest.ini_options]
+markers = [
+    "network: test needs outbound network (e.g. DuckDuckGo web search); deselect in CI fast tier with -m 'not network'",
+]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

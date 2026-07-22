@@ -1,0 +1,151 @@
+# Golden-set evaluation CI (Phase 7).
+#
+# COST / COVERAGE SPLIT (deliberate — see evaluation/README.md for the reasoning):
+#
+#   * fast-tier  (every push + PR): the DETERMINISTIC path-firing checks + the full
+#     existing test suite, minus network (web-search) cases. One LLM *generation*
+#     call per case, plain assertions, no LLM-as-judge. This is what gates the
+#     build: it fails if a known-answerable question stops being answered, a
+#     known-unanswerable one stops falling back, or grounding/conversation regress.
+#
+#   * ragas-tier (nightly schedule + manual dispatch): the EXPENSIVE LLM-judged
+#     RAGAS scoring (faithfulness / answer relevancy / context precision / recall).
+#     Each metric costs several judge calls per case, so running it per-push would
+#     multiply cost for little marginal signal — a nightly regression check against
+#     the established baseline is the right cadence. It uploads the report artifact
+#     and fails if a metric mean drops below baseline.
+#
+# LLM ACCESS: both tiers need an OpenAI-compatible LLM. The project's dev endpoint
+# (FreeLLMAPI) is localhost-only, so CI reads it from repo *secrets*
+# (LLM_MODEL / LLM_API_KEY / LLM_BASE_URL) pointing at any reachable OpenAI-compatible
+# endpoint. When those secrets are absent (e.g. a fork PR), the LLM-dependent step is
+# skipped with a notice and only the no-LLM structural checks run — so the workflow
+# stays green without leaking the gate. Gating therefore requires the secrets set.
+
+name: golden-set-eval
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 3 * * *"   # 03:00 UTC nightly — RAGAS tier
+  workflow_dispatch: {}    # manual RAGAS run on demand
+
+env:
+  # Local BGE-M3 embeddings + pgvector, matching the app defaults.
+  DATABASE_URL: postgresql://postgres:postgres@localhost:5432/rag
+  EMBEDDING_BACKEND: local
+  EMBEDDING_MODEL: BAAI/bge-m3
+  EMBEDDING_DIM: "1024"
+  # LLM endpoint comes from secrets (see header). Empty on forks without secrets.
+  LLM_MODEL: ${{ secrets.LLM_MODEL }}
+  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+  LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+
+jobs:
+  fast-tier:
+    name: Fast tier (deterministic path-firing)
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rag
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('pyproject.toml') }}
+
+      - name: Cache HuggingFace models (BGE-M3 + reranker)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-${{ hashFiles('app/config/settings.py') }}
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Initialise DB schema
+        run: python scripts/init_db.py
+
+      - name: No-LLM structural checks (always run)
+        # Well-formedness of the golden set + the deterministic no-real-LLM test.
+        run: |
+          python -c "from evaluation.golden_set import GOLDEN_CASES; assert len(GOLDEN_CASES) >= 15"
+          pytest -q tests/test_websearch.py::test_web_search_failure_degrades_to_fixed_fallback
+
+      - name: Golden-set path-firing + full suite (needs LLM secrets)
+        if: env.LLM_MODEL != ''
+        # -m "not network" excludes the DDG web cases; everything else must pass.
+        run: pytest -q -m "not network"
+
+      - name: Notice when LLM checks are skipped
+        if: env.LLM_MODEL == ''
+        run: echo "::warning::LLM secrets not set — skipped the gating path-firing checks. Set LLM_MODEL/LLM_API_KEY/LLM_BASE_URL to enable."
+
+  ragas-tier:
+    name: RAGAS tier (LLM-judged scoring)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rag
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache HuggingFace models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-models-${{ hashFiles('app/config/settings.py') }}
+
+      - name: Install (with eval extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,eval]"
+
+      - name: Initialise DB schema
+        run: python scripts/init_db.py
+
+      - name: Run RAGAS eval (fails if below baseline)
+        if: env.LLM_MODEL != ''
+        run: python -m evaluation.run_eval --ragas --skip-web
+
+      - name: Upload eval report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-set-report
+          path: evaluation/reports/latest.md
+          if-no-files-found: ignore

@@ -17,10 +17,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from dotenv import load_dotenv
 
+from app.agent import build_policy_agent
 from app.core.exceptions import ProviderError
 from app.db import close_pool
 from app.memory import build_conversation_store
-from app.rag import build_rag_pipeline
 
 
 def main() -> int:
@@ -34,20 +34,21 @@ def main() -> int:
 
     try:
         memory = build_conversation_store()
-        rag = build_rag_pipeline(memory=memory)  # memory + web search from config
+        # PolicyAgent wraps the same pipeline; memory + web search come from config.
+        agent = build_policy_agent(memory=memory)
         conversation_id = memory.create_conversation(org_id)
         print(f"conversation {conversation_id} (org {org_id})\n")
 
         for i, question in enumerate(questions, 1):
-            result = rag.answer(question, org_id, conversation_id=conversation_id)
+            response = agent.answer(question, org_id, conversation_id=conversation_id)
             print(f"── Turn {i} " + "─" * 50)
             print(f"you       : {question}")
-            if result.resolved_question and result.resolved_question != question:
-                print(f"rewritten : {result.resolved_question}")
+            if response.resolved_question and response.resolved_question != question:
+                print(f"rewritten : {response.resolved_question}")
             tag = {"policy": "[policy]", "web": "[web]", "none": "[no answer]"}.get(
-                result.source, result.source
+                response.source, response.source
             )
-            print(f"assistant {tag}: {result.answer.strip()}\n")
+            print(f"assistant {tag}: {response.answer.strip()}\n")
         return 0
 
     except ProviderError as exc:
