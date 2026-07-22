@@ -59,3 +59,20 @@ class VectorStore(ABC):
     ) -> list[RetrievedChunk]:
         """Return the ``top_k`` most similar chunks *within ``org_id`` only*."""
         raise NotImplementedError
+
+    def keyword_search(
+        self,
+        org_id: str,
+        query_text: str,
+        query_embedding: list[float],
+        top_k: int = 30,
+    ) -> list[RetrievedChunk]:
+        """Full-text (BM25-style) search within ``org_id``, ordered by keyword
+        relevance (Phase 6 hybrid retrieval).
+
+        Optional capability: the default raises ``NotImplementedError``; stores
+        that support it (``PgVectorStore``) override it. Each returned chunk still
+        carries its cosine ``score`` (computed against ``query_embedding``) so a
+        keyword-only hit can flow through the same confidence gate as a vector hit.
+        """
+        raise NotImplementedError("this vector store does not support keyword search")

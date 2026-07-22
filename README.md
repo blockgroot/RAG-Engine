@@ -302,3 +302,34 @@ python scripts/ask.py <org_id> "What does Cigna health insurance generally cover
 
 `RagResult.source` is `"policy"` (internal docs), `"web"` (web search), or
 `"none"` (the fixed "I don't have information" fallback).
+
+## Better retrieval: contextual + hybrid + reranking (Phase 6)
+
+Plain top-k vector search ranks each chunk independently and can leave a relevant
+chunk just outside the cutoff. Three techniques address this, all sitting *under*
+the unchanged Phase 3 confidence gate:
+
+1. **Contextual retrieval** (`app/ingestion/contextualize.py`, ingest-time) —
+   prepend a short LLM-generated context to each chunk before embedding/storing,
+   so it carries its situating meaning into both the vector and keyword indexes.
+   One LLM call per chunk at ingest; zero query-time cost.
+2. **Hybrid search** (`app/rag/retrieval.py`) — run vector *and* Postgres
+   full-text (BM25-style) search and fuse them with **Reciprocal Rank Fusion**
+   (rank-based, so no score normalization between cosine and `ts_rank`). Catches
+   an exact term ("part-time", a form code, a product name) even when semantic
+   similarity under-weights it.
+3. **Cross-encoder reranking** (`app/reranker/`) — over-retrieve a 30-candidate
+   pool then rerank with `BAAI/bge-reranker-v2-m3` (same family as BGE-M3, local,
+   no new dependency) and take the final `top_k`.
+
+These only change *which chunks, in what order* reach the prompt — the gate still
+uses the best cosine similarity, so its threshold logic is unchanged. (MMR was
+considered and deliberately not implemented.) See a before/after directly:
+
+```bash
+python scripts/compare_retrieval.py <org_id> "which internal form is used for reimbursement?"
+```
+
+Config (all optional, sensible defaults): `INGEST_CONTEXTUAL_ENABLED`,
+`RETRIEVAL_HYBRID_ENABLED`, `RETRIEVAL_RERANK_ENABLED`, `RETRIEVAL_CANDIDATE_POOL`,
+`RERANKER_MODEL`. The reranker downloads ~2.2GB on first use, then is cached.

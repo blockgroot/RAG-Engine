@@ -15,11 +15,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ..config.settings import ChunkingSettings
+from ..config.settings import ChunkingSettings, ContextualSettings
 from ..embeddings import build_embedding_provider
 from ..embeddings.base import EmbeddingProvider
 from ..ingestion.chunking import chunk_text
+from ..ingestion.contextualize import contextualize_chunks
 from ..ingestion.preprocessing import preprocess
+from ..llm import build_llm_provider
+from ..llm.base import LLMProvider
 from ..sources.base import SourceAdapter
 from ..vectorstore import build_vector_store
 from ..vectorstore.base import VectorStore
@@ -42,14 +45,21 @@ def ingest_source(
     embedder: EmbeddingProvider | None = None,
     store: VectorStore | None = None,
     chunking: ChunkingSettings | None = None,
+    llm: LLMProvider | None = None,
+    contextual: ContextualSettings | None = None,
 ) -> IngestResult:
     """Ingest every document the ``adapter`` exposes into ``org_id``.
 
-    Each document is preprocessed, chunked, embedded, and stored. Documents that
-    produce no chunks (e.g. an empty page) are counted as skipped, not stored.
+    Each document is preprocessed and chunked; when contextual retrieval is
+    enabled (Phase 6) a short LLM-generated context is prepended to each chunk
+    before it is embedded and stored. Documents that produce no chunks (e.g. an
+    empty page) are counted as skipped, not stored.
     """
     embedder = embedder or build_embedding_provider()
     store = store or build_vector_store()
+    contextual = contextual or ContextualSettings.from_env()
+    if contextual.enabled and llm is None:
+        llm = build_llm_provider()
 
     documents = 0
     chunks_total = 0
@@ -58,10 +68,16 @@ def ingest_source(
 
     for ref in adapter.list_documents():
         doc = adapter.fetch_document(ref.external_id)
-        chunks = chunk_text(preprocess(doc.content), chunking)
+        clean = preprocess(doc.content)
+        chunks = chunk_text(clean, chunking)
         if not chunks:
             skipped += 1
             continue
+
+        # Phase 6: prepend per-chunk context so each chunk carries its meaning
+        # into the embedding + keyword index (best-effort; falls back on error).
+        if contextual.enabled and llm is not None:
+            chunks = contextualize_chunks(llm, clean, chunks)
 
         embeddings = embedder.embed(chunks)
         document_id = store.add_document(

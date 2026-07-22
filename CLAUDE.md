@@ -109,6 +109,30 @@ their policy documents; their employees ask questions and get answers grounded i
   documented production-grade swap behind the same `WebSearchProvider` interface
   (LLM-native, 1000/mo free tier, no card). DDG is unofficial and rate-limits
   aggressively — fine for a fallback, not for bulk use.
+- **Better retrieval = contextual chunks + hybrid search + reranking, under the
+  UNCHANGED Phase 3 gate (`app/rag/retrieval.py`, `app/reranker/`, ingest).**
+  Three techniques attack plain top-k's blind spots from different angles:
+  (1) **Contextual retrieval** (ingest-time) — a short LLM-generated context is
+  prepended to each chunk before embedding/storing, so a chunk carries its
+  situating meaning into both the vector *and* the keyword index (Anthropic's
+  idea; runs once per chunk at ingest, zero query latency). (2) **Hybrid search** —
+  vector + Postgres full-text (BM25-style `ts_rank`) results fused with
+  **Reciprocal Rank Fusion (k=60)**; RRF is rank-based so it needs no score
+  normalization between cosine and ts_rank (totally different scales) — the
+  settled default. This guarantees an exact term (a name, "part-time", a form
+  code) is caught even when semantic similarity under-weights it. (3)
+  **Cross-encoder reranking** — over-retrieve a `candidate_pool` (=30) then rerank
+  with `BAAI/bge-reranker-v2-m3` (same family as BGE-M3, in-process via the
+  `sentence-transformers` `CrossEncoder` we already depend on — no new dep, $0,
+  local) and take the final `top_k`. Candidate pool 30 balances recall vs
+  cross-encoder latency (~0.3s for 30 pairs after warmup). **The confidence gate
+  is unchanged**: the retriever's `gate_score` is the best cosine similarity among
+  candidates (== the vector top-1 the gate always used), so hybrid/reranking only
+  change *which chunks in what order* reach the prompt, never the threshold logic.
+  **MMR (Maximal Marginal Relevance) was considered and deliberately NOT
+  implemented this phase.** Note: on a small corpus BGE-M3 already ranks the top
+  chunk well, so these techniques are insurance for scale / exact-term recall /
+  crowded ambiguous queries — the deterministic tests prove each mechanism.
 
 ## 3. Folder / file structure convention
 
@@ -120,21 +144,25 @@ app/
   embeddings/   # base.py (EmbeddingProvider) + local.py + remote.py + factory.py
   db/           # Postgres plumbing: schema.sql, connection.py, migrate.py. Infra only.
   ingestion/    # preprocessing.py + chunking.py (text -> clean text -> chunks)
-                #   + pipeline.py (ingest_source: adapter -> chunk -> embed -> store).
+                #   + contextualize.py (P6: LLM context prefix per chunk at ingest)
+                #   + pipeline.py (ingest_source: adapter -> chunk -> [context] -> embed -> store).
                 #   Orchestrator like rag/ — composes existing interfaces; no base.py.
-  vectorstore/  # base.py (VectorStore) + pgvector_store.py + factory.py
-  rag/          # pipeline.py (RagPipeline/RagResult) + prompts.py + factory.py.
+  vectorstore/  # base.py (VectorStore: query + keyword_search) + pgvector_store.py + factory.py
+  rag/          # pipeline.py (RagPipeline/RagResult) + prompts.py + factory.py
+                #   + retrieval.py (P6: HybridRetriever — vector+keyword RRF + rerank).
                 #   Orchestrator, not a provider — composes the above; no base.py.
                 #   Phase 5: also does query-rewrite (memory) + web-search fallback.
+  reranker/     # base.py (Reranker) + local.py (CrossEncoder) + factory.py. P6
+                #   cross-encoder reranking of the candidate pool (bge-reranker-v2-m3).
   sources/      # base.py (SourceAdapter) + notion.py + factory.py. External content
                 #   sources (Notion now; Drive/GitHub/Slack later) behind one interface.
   memory/       # base.py (ConversationStore) + pg_store.py + factory.py. Org-scoped
                 #   conversation history (turns + running summary) for follow-ups.
   websearch/    # base.py (WebSearchProvider) + duckduckgo.py + factory.py. The
                 #   web-search tool used as the external-entity fallback.
-scripts/        # entrypoints: verify_providers.py, init_db.py, demo_rag.py,
-                #   ingest_notion.py, ask.py (query one org), chat.py (multi-turn)
-tests/          # pytest; isolation (P2), grounding (P3), conversation + websearch (P5)
+scripts/        # entrypoints: verify_providers.py, init_db.py, demo_rag.py, ingest_notion.py,
+                #   ask.py, chat.py (multi-turn), compare_retrieval.py (P6 before/after)
+tests/          # pytest; isolation (P2), grounding (P3), conversation+websearch (P5), retrieval (P6)
 ```
 
 **Conventions to follow (match, don't reinvent):**
@@ -236,6 +264,28 @@ tests/          # pytest; isolation (P2), grounding (P3), conversation + websear
   text. The LLM interface is single-prompt (`generate(prompt)`), so the "system"
   instructions are the top of that one prompt; if we later add a real system-role
   message, do it behind the same `LLMProvider` interface.
+- **Hybrid/reranking only reorder — the gate still uses cosine top-1 (Phase 6).**
+  `HybridRetriever` returns `gate_score` = best cosine among candidates (RRF/rerank
+  never overwrite a chunk's cosine `.score`), so the confidence gate needs no
+  recalibration. Don't feed RRF scores or reranker logits into the gate — the
+  0.35 threshold is calibrated for cosine. `keyword_search` is an optional
+  `VectorStore` capability (raises `NotImplementedError` by default; `PgVectorStore`
+  implements it via a generated `content_tsv` + `websearch_to_tsquery`/`ts_rank`).
+- **Contextual retrieval changes stored `content` (Phase 6).** With
+  `INGEST_CONTEXTUAL_ENABLED` (default on), a chunk is stored as
+  `"<LLM context>\n\n<original chunk>"`, so `RagResult.sources` / displayed chunks
+  include the context prefix, and both the embedding and the keyword index benefit.
+  It's best-effort (falls back to the raw chunk on LLM error) and adds one LLM call
+  per chunk *at ingest only* — never at query time.
+- **The reranker downloads ~2.2GB on first use** (`bge-reranker-v2-m3`), then is
+  cached; inference is ~0.3s for 30 candidates after warmup. Swap to
+  `bge-reranker-base` / `cross-encoder/ms-marco-MiniLM-L-6-v2` via `RERANKER_MODEL`
+  if latency matters more than quality. Shared as one session fixture in tests.
+- **On a small corpus BGE-M3 already ranks the top chunk well**, so a before/after
+  rarely flips top-1 — the Phase 6 techniques are insurance for scale / guaranteed
+  exact-term recall (keyword index) / crowded ambiguous queries. The deterministic
+  `test_retrieval.py` cases prove each mechanism rather than relying on a dramatic
+  small-corpus demo. **MMR was considered and deliberately not implemented.**
 
 ## 5. Database tables (keep this in sync as the schema evolves)
 
@@ -245,7 +295,7 @@ Defined in `app/db/schema.sql`. Current tables:
 | --------------- | -------------------------------------------------------------------- |
 | `organizations` | Tenants. Everything else hangs off an org. Columns: `id`, `name`, `created_at`. |
 | `documents`     | A source policy file/upload, scoped to one org. `id`, `org_id`, `title`, `source_uri`, `created_at`. As of Phase 4, `source_uri` is populated with the origin URL (e.g. the Notion page URL) at ingest. |
-| `chunks`        | Text chunks + their `vector(1024)` embedding, scoped to one org. `id`, `org_id`, `document_id`, `chunk_index`, `content`, `embedding`, `created_at`. |
+| `chunks`        | Text chunks + their `vector(1024)` embedding, scoped to one org. `id`, `org_id`, `document_id`, `chunk_index`, `content`, `embedding`, `created_at`. Phase 6: `content_tsv` (a `tsvector` GENERATED from `content`, GIN-indexed) powers keyword/hybrid search; `content` may include a prepended contextual-retrieval prefix. |
 | `conversations` | (Phase 5) A conversation, scoped to one org. `id`, `org_id`, `summary` (running compression of pruned older turns), `created_at`. |
 | `conversation_turns` | (Phase 5) One question+answer within a conversation. `id`, `conversation_id`, `org_id`, `turn_index`, `question`, `answer`, `created_at`. Older turns are pruned once summarized. |
 
@@ -289,6 +339,15 @@ conversations + turns); removing a conversation removes its turns. Indexes:
   summarization + early-context resolution, external→web, internal→fallback,
   and a deterministic search-failure→fallback. Verified live against real Notion
   data. Scripts: `chat.py` (multi-turn), `ask.py` (shows `source`).
+- Phase 6 — Better retrieval under the unchanged Phase 3 gate: (1) contextual
+  retrieval at ingest (`app/ingestion/contextualize.py`), (2) hybrid vector +
+  keyword search fused with RRF (`app/rag/retrieval.py`, `VectorStore.keyword_search`
+  + `content_tsv`), (3) cross-encoder reranking of a 30-candidate pool
+  (`app/reranker/`, `bge-reranker-v2-m3`). Wired into `RagPipeline` via an injected
+  `HybridRetriever`; gate/generation and Phase 5 memory + web-search all unchanged
+  underneath. MMR deliberately excluded. Tests (`test_retrieval.py`): exact-term
+  via keyword, rerank promotes an out-of-cutoff chunk, multi-part coverage,
+  contextual prefix; full suite (15) green. Script: `compare_retrieval.py`.
 - `scripts/demo_rag.py` — a non-productionized END-TO-END demo (ingest → embed →
   store → retrieve → grounded LLM answer). Predates `app/rag/`; kept as a simple
   standalone walkthrough. The productionized path is now `app/rag/`.

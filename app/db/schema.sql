@@ -48,6 +48,15 @@ CREATE INDEX IF NOT EXISTS idx_chunks_org ON chunks (org_id);
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding
     ON chunks USING hnsw (embedding vector_cosine_ops);
 
+-- Full-text search column for hybrid (keyword/BM25-style) retrieval (Phase 6).
+-- GENERATED from content so it stays in sync automatically (existing rows get it
+-- backfilled when this runs); the GIN index makes keyword lookups fast. Used
+-- alongside vector search and fused via Reciprocal Rank Fusion — see
+-- app/rag/retrieval.py.
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS
+    content_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED;
+CREATE INDEX IF NOT EXISTS idx_chunks_content_tsv ON chunks USING gin (content_tsv);
+
 -- Conversations (Phase 5): group a sequence of question/answer turns so a
 -- follow-up can be resolved against prior context. Org-scoped like everything
 -- else, so one tenant's conversation history is isolated from another's.

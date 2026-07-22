@@ -24,6 +24,8 @@ from app.db import apply_schema, close_pool, get_connection  # noqa: E402
 from app.embeddings import build_embedding_provider  # noqa: E402
 from app.memory import build_conversation_store  # noqa: E402
 from app.rag import build_rag_pipeline  # noqa: E402
+from app.rag.retrieval import HybridRetriever  # noqa: E402
+from app.reranker import build_reranker  # noqa: E402
 from app.vectorstore import build_vector_store  # noqa: E402
 from app.websearch import build_web_search_provider  # noqa: E402
 
@@ -69,10 +71,26 @@ def store():
 
 
 @pytest.fixture(scope="session")
-def rag(embedder, store):
-    """Phase 3 pipeline: pure retrieve-gate-generate (memory + web search OFF), so
-    the grounding tests stay deterministic and unaffected by Phase 5."""
-    return build_rag_pipeline(embedder=embedder, store=store, memory=None, web_search=None)
+def reranker():
+    """Cross-encoder reranker (bge-reranker-v2-m3). Loaded once for the session."""
+    return build_reranker()
+
+
+@pytest.fixture(scope="session")
+def retriever(store, reranker):
+    """Phase 6 hybrid + reranking retriever, shared across pipeline fixtures so the
+    reranker model is only loaded once."""
+    return HybridRetriever(store=store, reranker=reranker)
+
+
+@pytest.fixture(scope="session")
+def rag(embedder, store, retriever):
+    """Phase 3 pipeline: retrieve-gate-generate with the Phase 6 hybrid+rerank
+    retriever underneath (memory + web search OFF), so grounding tests stay
+    deterministic while exercising the improved retrieval path."""
+    return build_rag_pipeline(
+        embedder=embedder, store=store, memory=None, web_search=None, retriever=retriever
+    )
 
 
 @pytest.fixture(scope="session")
@@ -82,21 +100,22 @@ def memory():
 
 
 @pytest.fixture(scope="session")
-def rag_convo(embedder, store, memory):
+def rag_convo(embedder, store, memory, retriever):
     """Phase 5 pipeline with conversation memory ON, web search OFF."""
     return build_rag_pipeline(
-        embedder=embedder, store=store, memory=memory, web_search=None
+        embedder=embedder, store=store, memory=memory, web_search=None, retriever=retriever
     )
 
 
 @pytest.fixture(scope="session")
-def rag_web(embedder, store):
+def rag_web(embedder, store, retriever):
     """Phase 5 pipeline with the real web-search tool ON, memory OFF."""
     return build_rag_pipeline(
         embedder=embedder,
         store=store,
         memory=None,
         web_search=build_web_search_provider(),
+        retriever=retriever,
     )
 
 

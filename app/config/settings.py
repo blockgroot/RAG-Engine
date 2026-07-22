@@ -44,6 +44,16 @@ DEFAULT_SOURCE_TYPE = "notion"
 DEFAULT_MEMORY_RECENT_TURNS = 4
 DEFAULT_MEMORY_SUMMARIZE_AFTER = 6
 
+# Retrieval improvements (Phase 6): contextual retrieval (ingest-time),
+# hybrid search + cross-encoder reranking (query-time). See app/rag/retrieval.py
+# and CLAUDE.md §2/§4 for the reasoning behind each value.
+DEFAULT_CONTEXTUAL_ENABLED = True          # prepend LLM context to each chunk at ingest
+DEFAULT_RETRIEVAL_HYBRID_ENABLED = True    # fuse vector + keyword (BM25-style) search
+DEFAULT_RETRIEVAL_RERANK_ENABLED = True    # cross-encoder rerank of the candidate pool
+DEFAULT_RETRIEVAL_CANDIDATE_POOL = 30      # how many candidates to fetch/rerank before top_k
+DEFAULT_RETRIEVAL_RRF_K = 60               # Reciprocal Rank Fusion constant (standard default)
+DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
+
 # Web search tool (Phase 5). Keyless DuckDuckGo by default (no paid dependency);
 # set WEB_SEARCH_PROVIDER=tavily + WEB_SEARCH_API_KEY for production quality.
 DEFAULT_WEB_SEARCH_ENABLED = True
@@ -274,4 +284,62 @@ class WebSearchSettings:
             api_key=os.getenv("WEB_SEARCH_API_KEY"),
             max_results=int(os.getenv("WEB_SEARCH_MAX_RESULTS") or DEFAULT_WEB_SEARCH_MAX_RESULTS),
             timeout=float(os.getenv("WEB_SEARCH_TIMEOUT") or DEFAULT_WEB_SEARCH_TIMEOUT),
+        )
+
+
+@dataclass(frozen=True)
+class ContextualSettings:
+    """Contextual-retrieval config (Phase 6, ingest-time).
+
+    When enabled, a short LLM-generated context is prepended to each chunk before
+    it is embedded and stored, so the chunk carries its surrounding meaning.
+    """
+
+    enabled: bool = DEFAULT_CONTEXTUAL_ENABLED
+
+    @classmethod
+    def from_env(cls) -> "ContextualSettings":
+        return cls(enabled=_env_bool("INGEST_CONTEXTUAL_ENABLED", DEFAULT_CONTEXTUAL_ENABLED))
+
+
+@dataclass(frozen=True)
+class RetrievalSettings:
+    """Query-time retrieval config (Phase 6).
+
+    - ``hybrid_enabled``   fuse keyword (BM25-style) results with vector results.
+    - ``rerank_enabled``   cross-encoder rerank the fused candidate pool.
+    - ``candidate_pool``   how many candidates to fetch (per signal) and rerank
+      before selecting the final ``RagSettings.top_k``.
+    - ``rrf_k``            Reciprocal Rank Fusion constant.
+    """
+
+    hybrid_enabled: bool = DEFAULT_RETRIEVAL_HYBRID_ENABLED
+    rerank_enabled: bool = DEFAULT_RETRIEVAL_RERANK_ENABLED
+    candidate_pool: int = DEFAULT_RETRIEVAL_CANDIDATE_POOL
+    rrf_k: int = DEFAULT_RETRIEVAL_RRF_K
+
+    @classmethod
+    def from_env(cls) -> "RetrievalSettings":
+        return cls(
+            hybrid_enabled=_env_bool("RETRIEVAL_HYBRID_ENABLED", DEFAULT_RETRIEVAL_HYBRID_ENABLED),
+            rerank_enabled=_env_bool("RETRIEVAL_RERANK_ENABLED", DEFAULT_RETRIEVAL_RERANK_ENABLED),
+            candidate_pool=int(
+                os.getenv("RETRIEVAL_CANDIDATE_POOL") or DEFAULT_RETRIEVAL_CANDIDATE_POOL
+            ),
+            rrf_k=int(os.getenv("RETRIEVAL_RRF_K") or DEFAULT_RETRIEVAL_RRF_K),
+        )
+
+
+@dataclass(frozen=True)
+class RerankerSettings:
+    """Cross-encoder reranker config (Phase 6)."""
+
+    model: str = DEFAULT_RERANKER_MODEL
+    device: str | None = None
+
+    @classmethod
+    def from_env(cls) -> "RerankerSettings":
+        return cls(
+            model=os.getenv("RERANKER_MODEL") or DEFAULT_RERANKER_MODEL,
+            device=os.getenv("RERANKER_DEVICE") or None,
         )

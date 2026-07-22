@@ -32,6 +32,7 @@ from ..llm.base import LLMProvider
 from ..memory.base import ConversationContext, ConversationStore
 from ..vectorstore.base import RetrievedChunk, VectorStore
 from ..websearch.base import SearchResult, WebSearchProvider
+from .retrieval import HybridRetriever
 from .prompts import (
     WEB_SEARCH_TOOL,
     build_grounded_prompt,
@@ -91,6 +92,7 @@ class RagPipeline:
         web_search: WebSearchProvider | None = None,
         memory_settings: MemorySettings | None = None,
         web_search_settings: WebSearchSettings | None = None,
+        retriever: "HybridRetriever | None" = None,
     ) -> None:
         self._llm = llm
         self._embedder = embedder
@@ -100,6 +102,10 @@ class RagPipeline:
         self._web_search = web_search
         self._memory_settings = memory_settings or MemorySettings.from_env()
         self._web_search_settings = web_search_settings or WebSearchSettings.from_env()
+        # Phase 6: hybrid + reranking retriever. When None, fall back to plain
+        # vector search (the Phase 3 behaviour), keeping this pipeline usable
+        # without the retrieval upgrades.
+        self._retriever = retriever
 
     # -- public API --------------------------------------------------------
 
@@ -132,15 +138,22 @@ class RagPipeline:
     # -- retrieval / gate / generation (Phase 3 logic, unchanged) ----------
 
     def _run(self, question: str, org_id: str) -> RagResult:
-        # 1) Embed the question and retrieve org-scoped candidates.
+        # 1) Retrieve org-scoped candidates. With a HybridRetriever this is
+        #    vector + keyword (RRF-fused) then cross-encoder reranked; without one
+        #    it's plain vector search (Phase 3). Either way `top_score` is the best
+        #    cosine similarity, so the confidence gate below is unchanged.
         query_vec = self._embedder.embed([question])[0]
-        hits = self._store.query(org_id, query_vec, top_k=self._settings.top_k)
+        if self._retriever is not None:
+            retrieval = self._retriever.retrieve(org_id, question, query_vec)
+            hits = retrieval.hits
+            top_score = retrieval.gate_score
+        else:
+            hits = self._store.query(org_id, query_vec, top_k=self._settings.top_k)
+            top_score = hits[0].score if hits else None
 
         # Nothing stored/matched for this tenant -> gate failed.
-        if not hits:
+        if not hits or top_score is None:
             return self._gate_failed(question, hits=[], top_score=None)
-
-        top_score = hits[0].score
 
         # 2) Confidence gate (layer 1).
         if top_score < self._settings.similarity_threshold:
