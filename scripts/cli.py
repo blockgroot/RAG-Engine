@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from dotenv import load_dotenv
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -50,6 +51,13 @@ _SOURCE_STYLE = {
     "none": ("no grounded answer — internal fallback", "yellow"),
 }
 
+# How each Phase 10 evidence classification is presented (only shown when it
+# isn't the "ordinary" explicit case, to keep the common path uncluttered).
+_CLASSIFICATION_STYLE = {
+    "implicit": ("inferred, not explicitly stated", "yellow"),
+    "partial": ("partial answer — some info missing", "yellow"),
+}
+
 
 def render_turn(console: Console, question: str, response: AgentResponse) -> None:
     """Render one Q&A turn: the answer, its provenance, and the internals.
@@ -58,11 +66,19 @@ def render_turn(console: Console, question: str, response: AgentResponse) -> Non
     be exercised directly in tests.
     """
     label, colour = _SOURCE_STYLE.get(response.source, (response.source, "white"))
+    # Phase 10: surface implicit/partial evidence support distinctly (explicit —
+    # the ordinary case — uses the plain "grounded" label above).
+    cls_note = _CLASSIFICATION_STYLE.get(response.evidence_classification or "")
+    if cls_note:
+        cls_label, cls_colour = cls_note
+        label, colour = f"{label} — {cls_label}", cls_colour
 
-    # The answer, in a colour-coded panel titled by its provenance.
+    # The answer, in a colour-coded panel titled by its provenance. Rendered as
+    # Markdown so lists, **bold**, and headings the model emits display formatted
+    # instead of showing raw "-"/"**" markup.
     console.print(
         Panel(
-            Text(response.answer.strip()),
+            Markdown(response.answer.strip()),
             title=f"[bold {colour}]{label}[/]",
             border_style=colour,
             padding=(1, 2),
