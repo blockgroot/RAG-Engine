@@ -23,7 +23,8 @@ def build_grounded_prompt(question: str, contexts: list[str], fallback_response:
     Three response modes only:
     1. Explicitly Supported — context directly answers; answer + citations.
     2. Related but Not Explicit — report what docs say; state they do not
-       explicitly answer; no unsupported conclusions.
+       explicitly answer; optionally add a document-grounded contact next step
+       when the user needs a definitive decision and a contact appears in CONTEXT.
     3. No Supporting Evidence — exact ``fallback_response`` only.
     """
     numbered = "\n\n".join(f"[{i + 1}] {c.strip()}" for i, c in enumerate(contexts))
@@ -37,12 +38,29 @@ def build_grounded_prompt(question: str, contexts: list[str], fallback_response:
         "2. Choose exactly one of these three response modes:\n"
         "   A. Explicitly Supported — the CONTEXT directly and explicitly answers "
         "the QUESTION. Answer concisely from the CONTEXT and cite the context "
-        "numbers you used in square brackets, e.g. [1] or [2].\n"
+        "numbers you used in square brackets, e.g. [1] or [2]. Do NOT add a "
+        "contact / escalate recommendation in this mode.\n"
         "   B. Related but Not Explicit — the CONTEXT is about a related topic but "
         "does NOT explicitly answer the QUESTION. Report what the documents "
         "actually say (with citations). Clearly state that the documents do not "
-        "explicitly answer the question. Do NOT invent a yes/no conclusion, legal "
-        "interpretation, or any claim that is not written in the CONTEXT.\n"
+        "explicitly answer the question and that you cannot give a definitive "
+        "yes/no from the available documents. Do NOT invent a yes/no conclusion, "
+        "legal interpretation, or any claim that is not written in the CONTEXT.\n"
+        "      Contact next-step (mode B only, optional): If — and only if — "
+        "(i) the QUESTION asks for a definitive policy decision, approval, "
+        "eligibility, reimbursement, claim, exception, permission, or "
+        "interpretation, AND (ii) the CONTEXT contains a concrete contact "
+        "(email, phone, named team such as HR / Benefits / Payroll / Finance / "
+        "IT Helpdesk / Security / Legal / or another designated support contact) "
+        "relevant to that topic, then end with ONE short sentence directing the "
+        "user to that contact for definitive clarification, citing the chunk. "
+        "Pick the most relevant contact for the QUESTION; do not always default "
+        "to HR if another contact fits better. Copy the contact EXACTLY as written "
+        "in the CONTEXT — never invent, guess, or hardcode an email/phone/team. "
+        "If no suitable contact appears in the CONTEXT, omit any contact line.\n"
+        "      Do NOT add a contact line for purely informational questions "
+        "(e.g. 'what is the maternity leave policy?', definitions, how a process "
+        "works when the docs already explain it).\n"
         "   C. No Supporting Evidence — the CONTEXT is irrelevant or empty of "
         "useful related information. Reply with exactly this sentence and nothing "
         f"else:\n   {fallback_response}\n"
@@ -50,7 +68,7 @@ def build_grounded_prompt(question: str, contexts: list[str], fallback_response:
         "with what is 'probably' true. Every claim must be supported by the "
         "CONTEXT. Unsupported conclusions are forbidden in every mode.\n"
         "4. When using mode C, return ONLY the exact sentence from rule 2C — no "
-        "apology, no explanation, no extra text.\n\n"
+        "apology, no explanation, no contact recommendation, no extra text.\n\n"
         f"CONTEXT:\n{numbered}\n\n"
         f"QUESTION: {question}\n\n"
         "ANSWER:"

@@ -265,3 +265,22 @@ def test_recovery_disabled_keeps_normal_path():
     assert result.recovery_used is False
     assert llm.recovery_calls == 0
     assert result.answered is False
+
+def test_related_mode_contact_next_step_guidance():
+    """Mode B may add a document-grounded contact; never invent; not for mode A/C."""
+    prompt = build_grounded_prompt(
+        "Can I get protein supplements reimbursed?",
+        [
+            "Health Allowance covers wellness. Non-permissible: cosmetic products. "
+            "For clarifications contact HR at hr@example.com."
+        ],
+        FALLBACK,
+    )
+    assert "Contact next-step" in prompt or "contact" in prompt.lower()
+    assert "never invent" in prompt.lower() or "Never invent" in prompt
+    assert "Do NOT add a contact" in prompt or "omit any contact" in prompt.lower()
+    assert "definitive policy decision" in prompt.lower() or "reimbursement" in prompt.lower()
+    # Mode A and C must not get blanket contact advice.
+    assert "Do NOT add a contact / escalate recommendation in this mode" in prompt
+    assert "no contact recommendation" in prompt.lower()
+
