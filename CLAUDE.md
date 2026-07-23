@@ -241,13 +241,112 @@ their policy documents; their employees ask questions and get answers grounded i
   no frontend, HTTP API, OAuth flow, or admin/user-role handling this phase — that is
   the *next* stage. Real multi-org data entry + ingestion also happens later; Phase 9
   only lays the credential plumbing.
+- **Vocabulary-mismatch fix: a bounded retrieval RETRY, not unconditional query
+  expansion (Phase 10).** Real usage surfaced a gap the 0.35 gate + strict prompt
+  couldn't catch: a user's phrasing ("protein supplements reimbursed") and a
+  document's own wording ("health-related products", "permissible expenses") often
+  diverge, so a question with a real answer could retrieve weak evidence and fall
+  back needlessly — purely a *vocabulary* gap, not a hallucination risk. The first
+  design draft ran query normalization + expansion unconditionally on every
+  question; this was **deliberately overridden** in favor of a strictly
+  conditional retry, because the normal (already-working) path must cost nothing
+  extra. The final design: **the first retrieval attempt always uses the
+  question exactly as given** — zero LLM calls, identical to pre-Phase-10
+  behavior. A **single bounded retry** (`RagPipeline._attempt_retrieval_retry`,
+  `app/rag/query_understanding.py`) engages ONLY when (a) the confidence gate
+  fails, or (b) the gate passes but evidence classification (below) still comes
+  back `"none"` — the second condition is a guardrail for the case cosine
+  similarity alone can't reveal: a chunk that "looks" related enough to clear
+  0.35 but isn't the right one. On retry, ONE LLM call proposes up to 2
+  alternate phrasings (bounded via `QueryUnderstandingSettings.max_expansions`
+  *and* `UnderstoodQuery.all_queries(max_total=2)` as a hard safety cap
+  regardless of what the LLM returns); retrieval re-runs including the
+  **original question plus those alternates** — Phase 6's RRF fusion already
+  generalizes to N ranked lists (`HybridRetriever.retrieve_expanded`), so no
+  change was needed there. **Never recursive** — capped at exactly one retry,
+  ever, enforced by a single `retried` flag. Verified the retry can only
+  match-or-improve the gate score, never regress it (a query's own top-1
+  candidate is always re-included in the fused pool, since a query's top-1 is
+  always within any `per_query_pool ≥ 1`). The query-understanding LLM call
+  **only ever improves retrieval** — normalizes typos/abbreviations and
+  proposes vocabulary alternates — it never answers the question, never
+  summarizes it, never infers what a policy says, and (after a review finding)
+  must never let an expansion silently replace a specific named term (a
+  mechanism, form, product, or policy name) with only a broader category
+  (`"carry forward leave"` must not become `"annual leave entitlement"` alone) —
+  every expansion must preserve the specific term or add vocabulary *alongside*
+  it, never as a silent replacement.
+- **Evidence classification replaces the old binary "answer or refuse" prompt
+  (Phase 10, `build_classified_grounded_prompt`).** The strict Phase 3 prompt
+  only had two outcomes: answer, or emit the exact refusal. This meant a
+  question with genuinely *related-but-not-explicit* evidence was refused just
+  as hard as a genuinely unrelated one — correct for safety, but needlessly
+  unhelpful. ONE LLM call (same cost as the old strict-prompt call it replaces
+  — no extra round trip) now classifies the evidence as `explicit` (states the
+  answer directly), `implicit` (doesn't state it but clearly implies/lets you
+  infer it — and the answer must EXPLICITLY say so, distinguishing inference
+  from stated fact), `partial` (answers part of the question, states what's
+  missing, never guesses at the gap), or `none` (genuinely unrelated — the
+  *same* bar as the old prompt's refusal condition; still returns the exact
+  fixed fallback string). `RagResult.evidence_classification` /
+  `AgentResponse.evidence_classification` expose this as a diagnostic — `source`
+  itself stays `"policy"` for all three answered classifications, so nothing
+  downstream that branches on `source` needed to change.
+- **Deterministic (non-LLM) answer verification, with one bounded regeneration
+  retry (Phase 10, `app/verification/`).** After a non-`none` classification,
+  every sentence of the drafted answer is checked for semantic support in the
+  retrieved evidence via cosine similarity against the *already-loaded*
+  embedding model — zero new LLM calls, zero new model downloads. Chosen over
+  an LLM-judge verifier because, in the common case, a similarity check already
+  catches fabrication at a fraction of the cost; the documented upgrade path
+  (if precision proves insufficient) is a dedicated NLI cross-encoder behind the
+  same `Verifier` interface — a swap, not a rewrite. **Threshold = 0.65**,
+  empirically calibrated on BGE-M3 (small sample): genuinely-supported sentences
+  scored 0.75–0.86 cosine similarity; fabricated claims sharing the evidence's
+  formal register (but stating something absent) scored 0.51–0.57 — 0.65 sits in
+  that gap. A starting point like the 0.35 gate and 0.72 reuse threshold —
+  validate against logged outcomes before treating it final. **Two verifier bugs
+  found and fixed during implementation, both worth remembering:** (1) a
+  markdown section heading (`"## Health Allowance"`) was initially treated as a
+  claim needing evidentiary support and flagged as unsupported — headings are
+  section titles, not claims, and are now skipped entirely. (2) Hedging/
+  meta-statements the classified prompt *itself* instructs the model to produce
+  for implicit/partial answers ("the policy does not explicitly mention X") were
+  flagged as unsupported, since a statement about an *absence* naturally has low
+  similarity to text that doesn't contain the absent thing — checking it is
+  nonsensical by construction. Fixed with a `_HEDGE_RE` exemption pattern
+  covering common hedge phrasings (`does not mention/state/list/cover/permit/
+  reimburse/...`); this is inherently a losing whack-a-mole game with plain
+  regex (documented as such), not a permanent solution. An unsupported claim
+  triggers exactly ONE stricter regeneration attempt (shown the specific
+  flagged sentences); if still unsupported, the pipeline returns the fixed
+  fallback rather than let an ungrounded claim through.
+- **Structured retry telemetry, stdlib `logging` only (Phase 10,
+  `app/core/telemetry.py`).** No new dependency (no `structlog`) — matches the
+  project's dependency-light philosophy. One `RetryTelemetry` record is built
+  and emitted per `RagPipeline._run()` call (`trigger`, `original_query`,
+  `generated_retry_queries`, `retry_success`, `retry_latency_ms`, top scores
+  before/after, `retrieval_improved`, `final_answer_source`), via
+  `logging.getLogger("app.rag.retry")` with the full record also attached under
+  `extra={"rag_retry": {...}}` for structured log processors. Purely
+  observational — cannot affect any pipeline decision. **A real bug was found
+  and fixed while adding this**: an early version emitted TWO records for a
+  single `_run()` call whenever a low-similarity retry succeeded and fell
+  through to classification (the "no retry attempted" catch-all at the bottom
+  fired unconditionally, on top of the retry's own emission). Fixed by
+  collecting telemetry state through the whole method and emitting exactly once,
+  at a single point, reflecting the call's true final outcome — verified via 4
+  scripted fake-based scenarios (no retry / retry-succeeds / retry-fails-gate /
+  retry-clears-gate-but-still-none), each now emitting exactly one record with
+  correct fields.
 
 ## 3. Folder / file structure convention
 
 ```
 app/
   config/       # typed settings (dataclasses w/ .from_env()). ONLY place that reads env.
-  core/         # cross-cutting basics — the ProviderError exception hierarchy.
+  core/         # cross-cutting basics — the ProviderError exception hierarchy,
+                #   + telemetry.py (P10: RetryTelemetry, stdlib logging only).
   llm/          # base.py (LLMProvider) + openai_provider.py + factory.py
   embeddings/   # base.py (EmbeddingProvider) + local.py + remote.py + factory.py
   db/           # Postgres plumbing: schema.sql, connection.py, migrate.py. Infra only.
@@ -258,11 +357,18 @@ app/
   vectorstore/  # base.py (VectorStore: query + keyword_search) + pgvector_store.py + factory.py
   rag/          # pipeline.py (RagPipeline/RagResult) + prompts.py + factory.py
                 #   + retrieval.py (P6: HybridRetriever — vector+keyword RRF + rerank).
+                #   + query_understanding.py (P10: QueryUnderstander — retry-only
+                #   normalize+expand, never runs unconditionally).
                 #   Orchestrator, not a provider — composes the above; no base.py.
                 #   Phase 5: also does query-rewrite (memory) + web-search fallback.
                 #   Phase 8: incremental summary update + pre-retrieval reuse check.
+                #   Phase 10: bounded retrieval retry + evidence classification +
+                #   verification + retry telemetry — see §2/§4.
   reranker/     # base.py (Reranker) + local.py (CrossEncoder) + factory.py. P6
                 #   cross-encoder reranking of the candidate pool (bge-reranker-v2-m3).
+  verification/ # base.py (Verifier + VerificationResult + ClaimVerdict) +
+                #   embedding_similarity.py (EmbeddingSimilarityVerifier, deterministic,
+                #   no LLM) + factory.py. P10: post-generation faithfulness check.
   sources/      # base.py (SourceAdapter) + notion.py + factory.py. External content
                 #   sources (Notion now; Drive/GitHub/Slack later) behind one interface.
   memory/       # base.py (ConversationStore) + pg_store.py + factory.py. Org-scoped
@@ -284,7 +390,9 @@ scripts/        # entrypoints: verify_providers.py, init_db.py, demo_rag.py, ing
                 #   demos). cli.py calls the PolicyAgent (P7); logic lives only in app/agent.
                 #   (P9 retired ask.py + chat.py — cli.py replaces both.)
 tests/          # pytest; isolation (P2), grounding (P3), conversation+websearch (P5),
-                #   retrieval (P6), golden-set path-firing (P7, test_golden_set.py)
+                #   retrieval (P6), golden-set path-firing (P7, test_golden_set.py),
+                #   incremental-summary+reuse (P8), CLI+notion-credentials (P9),
+                #   query-understanding+verification+vocabulary-mismatch (P10)
 .github/workflows/eval.yml  # P7 CI: fast path-firing tier every push + nightly RAGAS tier
 ```
 
@@ -497,6 +605,75 @@ tests/          # pytest; isolation (P2), grounding (P3), conversation+websearch
   (`sick-leave-days` 0.652, `health-plan` 0.672 sit just above). Full write-up:
   `evaluation/reports/GATE_FINDINGS.md`. This is a *finding*, not a change — the gate
   is untouched.
+- **The retrieval retry is conditional, NOT unconditional — this was a deliberate
+  correction mid-Phase-10, not the original design.** The first draft ran query
+  normalization + expansion on every question. This was overridden: the FIRST
+  retrieval attempt must always use the question exactly as given, at zero extra
+  cost, because most questions already succeed without help. A single retry
+  engages only on the two documented trigger conditions (§2) and is capped at
+  exactly one attempt, never recursive. Verified empirically: a call-counting spy
+  showed a normal, clearly-answerable question makes **exactly 1 LLM call total**
+  (same as pre-Phase-10) — if you're touching this path, preserve that invariant.
+- **`RagPipeline._attempt_retrieval_retry` proves — not just asserts — that a
+  retry can never regress the gate score.** The original question is always one
+  of the fused queries in `retrieve_expanded`, and a query's own top-1 candidate
+  is, by definition, always within any `per_query_pool ≥ 1` (the pool is floored
+  at 10). So `gate_score` after retry is provably ≥ the pre-retry `top_score`.
+  Don't "optimize" the per-query pool division without re-checking this
+  invariant holds.
+- **Query-understanding expansions must preserve specific terminology — a real
+  bug was caught before shipping, not just theorized.** The first version of the
+  expansion prompt actively encouraged generalizing to category-level terms
+  (e.g. its own worked example dropped "protein"/"supplements" from every single
+  expansion). A reviewer caught the general failure mode: `"carry forward
+  leave"` must never become `"annual leave entitlement"` alone, since that drops
+  the specific mechanism the user asked about and can retrieve the wrong
+  (same-category-but-wrong) chunk. Fixed by requiring every expansion to either
+  preserve the specific term or add vocabulary *alongside* it, with worked
+  bad/good examples embedded directly in the prompt. If you touch
+  `build_query_understanding_prompt`, keep this rule and its examples — it's
+  the difference between vocabulary expansion and silent intent drift.
+- **LLM non-determinism affects evidence classification the same way it affects
+  golden-set answerable checks (Phase 7's finding, confirmed again here).** The
+  free/auto endpoint can classify the identical prompt as `"none"` on one call
+  and `"partial"` with a good answer on the next — observed directly during
+  Phase 10 testing (5 identical calls against one health-allowance scenario
+  split roughly 60/40 between a good "partial" answer and a fallback). Tests
+  that assert a specific classification against a live LLM should retry (3
+  attempts, matching `evaluation/harness.DEFAULT_ATTEMPTS`) — see
+  `tests/test_vocabulary_mismatch.py`. This is inherent to the endpoint, not a
+  Phase 10 regression, and not fully fixable by prompt tuning alone.
+- **The embedding-similarity verifier has two documented failure modes — both
+  found and fixed empirically, not anticipated in advance.** (1) Markdown
+  section headings (`"## Health Allowance"`) were initially checked as claims
+  and flagged unsupported — headings are titles, not claims; now skipped
+  entirely via `_HEADING_RE`. (2) Hedging/meta-statements the classified prompt
+  *itself* instructs the model to produce for implicit/partial answers (`"the
+  policy does not explicitly mention X"`) were flagged unsupported, since a
+  statement about an absence has low similarity to text that doesn't contain
+  the absent thing by construction — exempted via a `_HEDGE_RE` pattern. This
+  pattern-matching approach is inherently incomplete (a losing whack-a-mole
+  game against arbitrary phrasing) — if new false-positive unsupported flags
+  turn up on legitimate hedges, extend `_HEDGE_RE` rather than lowering
+  `VERIFICATION_SIMILARITY_THRESHOLD` globally, which would weaken real
+  fabrication detection.
+- **Telemetry emission had a real double-emit bug, caught only by direct
+  verification with fakes, not by inspection.** An early version of
+  `RagPipeline._emit_retry_telemetry` fired at the moment a low-similarity retry
+  succeeded AND again at the method's final "no retry attempted" catch-all,
+  because that catch-all didn't check whether a retry had actually run earlier
+  in the same call. Fixed by threading telemetry state through the whole method
+  and emitting exactly once, at a single point, using the call's true final
+  outcome. If you touch `_run()`'s control flow, re-verify with a log-capturing
+  test (or by hand, as done here) that exactly one `RetryTelemetry` record comes
+  out per call — don't assume it from reading the code.
+- **`app/core/telemetry.py` uses stdlib `logging`, not a new dependency.** No
+  `structlog` or similar was added — matches the project's dependency-light
+  philosophy (§1). Fields go out via `extra={"rag_retry": {...}}` so a
+  structured log processor can index them; the message string also carries the
+  high-signal fields inline for plain-text log readability. If a real
+  structured-logging framework is adopted later, only `RetryTelemetry.emit()`
+  needs to change — nothing in `pipeline.py` should need to.
 
 ## 5. Database tables (keep this in sync as the schema evolves)
 
@@ -521,7 +698,9 @@ turns and its last-retrieval row. Indexes:
 **Phase 7 added no tables** — the PolicyAgent and golden-set eval are pure
 application/tooling layers over the existing schema. **Phase 8 added one table**
 (`conversation_last_retrieval`) for the retrieval-reuse check and removed the
-`MEMORY_SUMMARIZE_AFTER` setting (summarization is now incremental).
+`MEMORY_SUMMARIZE_AFTER` setting (summarization is now incremental). **Phase 10
+added no tables** — query understanding, evidence classification, verification,
+and telemetry are all query-time/generation-time logic over the existing schema.
 
 ## 6. Current state: built vs. pending
 
@@ -630,6 +809,54 @@ application/tooling layers over the existing schema. **Phase 8 added one table**
   existing Phase 4 Notion org. **Explicitly NOT in this phase / next stage:** frontend,
   HTTP API, OAuth flow, admin/user-role handling — and the real multi-org Notion data
   entry + ingestion (this phase only lays the credential foundation for it).
+- Phase 10 — Fixed a vocabulary-mismatch problem found in live use: a user's
+  phrasing ("protein supplements reimbursed") and a document's own wording
+  ("health-related products", "permissible expenses") often diverge, so a
+  question with a real answer could retrieve weak evidence and fall back
+  needlessly. Also fixed a real-usage finding that the model could over-assert
+  a firm "yes/no" from ambiguous evidence, presenting an inference as if it
+  were an explicit policy statement. (A) **Bounded retrieval retry**
+  (`RagPipeline._attempt_retrieval_retry`, `app/rag/query_understanding.py`):
+  the first retrieval attempt always uses the question exactly as given (zero
+  extra LLM calls, identical to pre-Phase-10 cost); a single retry engages only
+  when the confidence gate fails or when it passes but evidence classification
+  still returns `"none"`, proposing up to 2 alternate phrasings and
+  re-retrieving with the original question plus those alternates via the
+  existing (unchanged) `HybridRetriever`/RRF fusion. Never recursive — capped
+  at exactly one attempt. **This was deliberately corrected mid-phase**: the
+  first draft ran normalization/expansion unconditionally on every question;
+  it was overridden in favor of the conditional design so the already-working
+  normal path costs nothing extra (verified: exactly 1 LLM call for a normal
+  question, same as before). (B) **Evidence classification + graded
+  generation** (`build_classified_grounded_prompt`): replaces the old binary
+  "answer or refuse" prompt with explicit/implicit/partial/none, so
+  related-but-not-explicit evidence gets an honest, clearly-labelled answer
+  (distinguishing what's stated from what's inferred) instead of a blind
+  fallback — only `"none"` (genuinely unrelated, the same bar as before) still
+  falls back. (C) **Deterministic answer verification**
+  (`app/verification/`): every sentence of a drafted answer is checked for
+  semantic support in the retrieved evidence via the already-loaded embedding
+  model — no LLM call, no new model. An unsupported claim triggers one
+  stricter regeneration attempt; still-unsupported falls back. Threshold
+  (0.65) empirically calibrated (see §2/§4). (D) **Structured retry
+  telemetry** (`app/core/telemetry.py`): one `RetryTelemetry` record per
+  `RagPipeline._run()` call via stdlib `logging` (no new dependency) — trigger,
+  generated queries, success, latency, scores before/after, final source.
+  Tests: `test_query_understanding.py` (parsing/degradation, no LLM),
+  `test_verification.py` (real embedder, no LLM), a new expansion-retrieval
+  test in `test_retrieval.py`, and `test_vocabulary_mismatch.py` (the exact
+  reported scenario end-to-end against real DB+LLM, with the same 3-attempt
+  retry discipline as the Phase 7 golden-set checks for known LLM
+  non-determinism) — full suite green (67 passing, all live). Verified live
+  against real Notion-ingested Syvora HR data: the retry fired only when
+  needed (some questions succeeded in exactly 1 LLM call, others needed the
+  full retry cycle), and the POSH-ambiguity case now correctly says the
+  evidence doesn't explicitly confirm the answer instead of asserting a firm
+  "yes" from an inference. **Two design decisions were externally reviewed and
+  refined before being accepted** (see §2/§4 for what changed and why): the
+  retry was made conditional rather than unconditional, and the
+  query-understanding prompt was hardened to preserve specific terminology
+  rather than allowing silent category-level generalization.
 
 **Pending (not started)**
 - **Next stage (the deliberate follow-on to Phase 9):** real multi-organization data
@@ -651,6 +878,22 @@ application/tooling layers over the existing schema. **Phase 8 added one table**
   citations out or trim context to a token budget.
 - More source adapters, implementing the same `SourceAdapter` interface: Google
   Drive/Docs/Sheets, GitHub, Slack. (Notion done in Phase 4.)
+- Validate the Phase 10 verification threshold (0.65) against logged production
+  verification outcomes before treating it as final — same discipline as 0.35
+  and 0.72. If false-positive "unsupported" flags on legitimate hedges prove
+  frequent, the documented upgrade path is a dedicated NLI cross-encoder behind
+  the same `Verifier` interface (a swap, not a rewrite) rather than lowering the
+  threshold globally.
+- Open design question from Phase 10 review, deliberately deferred: should the
+  retrieval retry ALSO trigger on a "partial" classification when `top_score`
+  is only marginally above the gate (not on every partial, which is often a
+  correct, non-retrieval-related outcome)? A narrow, zero-extra-cost version
+  (using the already-computed `top_score` as a proxy, no new LLM call) was
+  proposed but not implemented — awaiting a decision on the exact margin.
+- Query-understanding retry-query deduplication is currently only an exact
+  case-insensitive match against the original question; a near-duplicate LLM
+  suggestion (a punctuation/whitespace variant) can silently consume one of the
+  2 retry-query slots without adding real diversity. Minor, low-priority.
 - Incremental sync: use `SourceAdapter.get_last_modified` to re-ingest only
   changed documents instead of always re-adding (today each run creates a fresh
   org / re-adds documents; no dedup or update-in-place yet).
