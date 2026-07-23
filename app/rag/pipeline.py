@@ -282,6 +282,7 @@ class RagPipeline:
             recovery_queries = list(attempt.queries)
             hits, top_score = attempt.hits, attempt.gate_score
             if self._gate_miss(hits, top_score):
+                # Internal recovery exhausted; web (if enabled) then fallback.
                 return _finalize(
                     self._gate_failed(question, hits=hits, top_score=top_score)
                 )
@@ -289,12 +290,10 @@ class RagPipeline:
                 question, hits, top_score, retrieval_reused=False
             )
 
-        # Internal path exhausted with insufficient evidence: offer web search for
-        # real external named entities (same decision tool as gate-miss). The model
-        # still declines for internal-company questions → fixed fallback. This
-        # covers Retrieval Discovery / Grounding cases where weak neighbors clear
-        # the gate (e.g. Niva Bupa day-care, external political events) but the
-        # chunks do not answer.
+        # Internal path exhausted (retrieve + optional recovery + generate) with
+        # insufficient evidence → offer web search (when enabled) before fallback.
+        # Web is not another retrieval retry; it is the final external stage.
+        # The web tool still decides external vs internal (no blind search).
         if self._generation_found_evidence_insufficient(result):
             return _finalize(
                 self._gate_failed(question, hits=hits, top_score=top_score)
@@ -455,11 +454,12 @@ class RagPipeline:
     def _gate_failed(
         self, question: str, hits: list[RetrievedChunk], top_score: float | None
     ) -> RagResult:
-        """Internal evidence insufficient: try web-search fallback, else fixed fallback.
+        """Internal evidence insufficient: try web search (if enabled), else fallback.
 
-        Used on gate miss *and* when generation finds the retrieved context
-        insufficient after recovery — so external named-entity questions can still
-        reach the web tool when weak internal neighbors cleared the cosine gate.
+        Used after a gate miss (including post-recovery) and after the full
+        internal path (retrieve → optional recovery → generate) still finds
+        evidence insufficient. Web search remains optional and tool-gated —
+        the model only searches for real external named entities.
         """
         if self._web_search is not None and self._web_search_settings.enabled:
             web = self._try_web_search(question, top_score)
