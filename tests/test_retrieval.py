@@ -99,6 +99,51 @@ def test_complete_question_surfaces_all_relevant_chunks(store, embedder, reranke
     assert "12" in contents, f"part-time leave chunk missing from top-{len(hits)}"
 
 
+@requires_db
+def test_expanded_retrieval_surfaces_vocabulary_mismatched_chunk(store, embedder, reranker, org_cleanup):
+    """Phase 10: a query using vocabulary NOT in the target chunk (the exact
+    "protein supplements" vs "health-related products" mismatch reported in
+    production) is missed by a tight single-query top-k, but is surfaced when
+    the SAME query is expanded with alternate phrasings closer to the document's
+    own wording. Expansions are supplied directly here (no LLM call) so this
+    isolates the retrieval-merging logic (RRF fusion across N queries + rerank)
+    from query-understanding's LLM-based generation, which is tested separately.
+    """
+    health_chunk = (
+        "Permissible expenses under the Health Allowance include fitness "
+        "equipment, wellness services, and other health-related products such "
+        "as ergonomic chairs and standing desks."
+    )
+    org_id = _seed(store, embedder, org_cleanup, [health_chunk, PART_TIME, RARE_TERM, *DISTRACTORS])
+
+    retr = HybridRetriever(
+        store=store,
+        reranker=reranker,
+        settings=RetrievalSettings(candidate_pool=30, hybrid_enabled=True, rerank_enabled=True),
+        rag_settings=RagSettings(top_k=3, similarity_threshold=0.35, fallback_response="x"),
+    )
+    query = "Can I get protein supplements reimbursed?"
+    qvec = embedder.embed([query])[0]
+
+    single = retr.retrieve(org_id, query, qvec)
+    single_gate = single.gate_score or 0.0
+
+    expansions = [
+        "health allowance permissible expenses",
+        "health-related products",
+        "wellness expenses reimbursement",
+    ]
+    exp_vecs = embedder.embed(expansions)
+    query_pairs = [(query, qvec)] + list(zip(expansions, exp_vecs))
+    expanded = retr.retrieve_expanded(org_id, query, query_pairs)
+
+    assert any(health_chunk in h.content for h in expanded.hits), (
+        "expansion should surface the vocabulary-mismatched chunk in the final top-k"
+    )
+    # The gate signal should be at least as good with expansion as without.
+    assert (expanded.gate_score or 0.0) >= single_gate
+
+
 @requires_llm
 def test_contextual_retrieval_prepends_context():
     llm = build_llm_provider()

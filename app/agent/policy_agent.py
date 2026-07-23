@@ -56,6 +56,7 @@ class PolicyAgent(Agent):
             resolved_question=result.resolved_question,
             top_score=result.top_score,
             retrieval_reused=result.retrieval_reused,
+            evidence_classification=result.evidence_classification,
         )
 
     @staticmethod

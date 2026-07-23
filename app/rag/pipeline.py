@@ -31,27 +31,68 @@ Phase 8 refines two earlier pieces, again without touching the gate/prompt:
   and retrieval is skipped. The reused chunks then flow through the *unchanged*
   gate → generate path, so this only avoids redundant retrieval — it never
   weakens or bypasses the confidence gate.
+
+Phase 10 fixes a vocabulary-mismatch problem: a user's phrasing ("protein
+supplements reimbursed") and a document's own wording ("health-related
+products", "permissible expenses") often diverge, so a question with a real
+answer could retrieve weak evidence and fall back needlessly. The normal path
+is UNCHANGED and costs nothing extra — the fixes below are conditional, only
+engaging when the normal path is already about to fail:
+- **Bounded retrieval retry** (``_attempt_retrieval_retry``) — the FIRST
+  retrieval attempt always uses the question exactly as given (or, in a
+  conversation, exactly as Phase 5's rewrite already resolved it) — no
+  normalization, no LLM call, identical to pre-Phase-10 behavior and zero added
+  latency/cost on the common path. A retry engages ONLY when (a) the confidence
+  gate fails, or (b) the gate passes but evidence classification (below) still
+  comes back ``none``. On retry, ONE LLM call (``query_understanding.py``)
+  proposes up to a couple of document-vocabulary-style alternate phrasings
+  (fix typos/abbreviations/vague wording; never answers, never invents facts);
+  retrieval re-runs including the ORIGINAL question plus those alternates
+  (Phase 6's RRF fusion already generalizes to N ranked lists). Capped at ONE
+  retry total, never recursive — if it still doesn't clear the gate or still
+  classifies ``none``, the pipeline returns the ordinary fallback.
+- **Evidence classification + graded generation** (``_generate_and_verify``) —
+  the old strict "answer or emit the exact refusal" prompt is replaced by ONE
+  call that both classifies how well the evidence supports the question
+  (explicit / implicit / partial / none) and drafts a style-appropriate answer,
+  so genuinely related-but-not-explicit evidence produces a clearly-labelled,
+  honest answer instead of a blind fallback. Only ``none`` still returns the
+  fixed fallback — the "none" bar (genuinely unrelated evidence) is unchanged
+  from the old prompt. This still runs on every gate-passing question, exactly
+  as the old strict-prompt call did — it replaces one LLM call with another,
+  adding no extra round trip on the normal path.
+- **Answer verification** (``app/verification/``) — deterministic, no LLM call:
+  every sentence of the drafted answer is checked for semantic support in the
+  retrieved evidence via the already-loaded embedding model. An unsupported claim
+  triggers ONE stricter regeneration attempt; if still unsupported, the pipeline
+  falls back rather than let an ungrounded claim through.
 """
 
 from __future__ import annotations
 
 import json
+import re
+import time
 from dataclasses import dataclass, field, replace
 
 import numpy as np
 
 from ..config.settings import MemorySettings, RagSettings, ReuseSettings, WebSearchSettings
 from ..core.exceptions import LLMProviderError, WebSearchError
+from ..core.telemetry import RetryTelemetry
 from ..embeddings.base import EmbeddingProvider
 from ..llm.base import LLMProvider
 from ..memory.base import ConversationContext, ConversationStore, RetrievedChunkRecord
 from ..vectorstore.base import RetrievedChunk, VectorStore
+from ..verification.base import Verifier
 from ..websearch.base import SearchResult, WebSearchProvider
+from .query_understanding import QueryUnderstander
 from .retrieval import HybridRetriever, RetrievalResult
 from .prompts import (
     WEB_SEARCH_TOOL,
-    build_grounded_prompt,
+    build_classified_grounded_prompt,
     build_rewrite_prompt,
+    build_stricter_regeneration_prompt,
     build_summary_prompt,
     build_web_answer_prompt,
     build_web_decision_prompt,
@@ -81,6 +122,14 @@ class RagResult:
     - ``retrieval_reused``  ``True`` when this turn skipped retrieval and reused the
       previous turn's chunks (Phase 8). A diagnostic for logging/tests; the answer
       itself is produced by the same gate → generate path either way.
+    - ``evidence_classification``  (Phase 10) how well the retrieved evidence
+      supported the question — ``"explicit"``, ``"implicit"``, ``"partial"``, or
+      ``"none"``. ``None`` when the gate short-circuited before classification
+      ran (nothing retrieved, or below the similarity threshold). This is an
+      orthogonal diagnostic to ``source``: ``source`` stays ``"policy"`` for all
+      three answered classifications (explicit/implicit/partial) — it is the
+      branch signal everything else already depends on — while
+      ``evidence_classification`` carries the finer distinction.
     """
 
     answer: str
@@ -90,6 +139,7 @@ class RagResult:
     top_score: float | None = None
     resolved_question: str | None = None
     retrieval_reused: bool = False
+    evidence_classification: str | None = None
 
 
 class RagPipeline:
@@ -113,6 +163,8 @@ class RagPipeline:
         web_search_settings: WebSearchSettings | None = None,
         retriever: "HybridRetriever | None" = None,
         reuse_settings: ReuseSettings | None = None,
+        query_understander: "QueryUnderstander | None" = None,
+        verifier: Verifier | None = None,
     ) -> None:
         self._llm = llm
         self._embedder = embedder
@@ -129,6 +181,12 @@ class RagPipeline:
         # vector search (the Phase 3 behaviour), keeping this pipeline usable
         # without the retrieval upgrades.
         self._retriever = retriever
+        # Phase 10: query understanding/expansion + answer verification. Both
+        # default to None, so any caller constructing RagPipeline directly
+        # (unit tests, fakes) gets EXACTLY the pre-Phase-10 behaviour unless it
+        # explicitly opts in — only build_rag_pipeline() wires them by default.
+        self._query_understander = query_understander
+        self._verifier = verifier
 
     # -- public API --------------------------------------------------------
 
@@ -167,59 +225,358 @@ class RagPipeline:
     def _run(
         self, question: str, org_id: str, *, conversation_id: str | None = None
     ) -> RagResult:
-        # We embed the question once and use that vector for both the (Phase 8)
-        # reuse check and, if we do retrieve, the vector search — no extra cost.
+        # 1) Phase 8 retrieval reuse + first retrieval attempt — UNCHANGED from
+        #    pre-Phase-10 behavior: the question is used EXACTLY as given (or, in
+        #    a conversation, exactly as Phase 5's rewrite resolved it). No LLM
+        #    call happens here, so the normal path costs nothing extra.
         query_vec = self._embedder.embed([question])[0]
 
-        # 0) Phase 8 retrieval reuse: if the previous turn's chunks still cover this
-        #    question (cheap cosine check, no LLM, no retrieval), reuse them. The
-        #    `reuse_score` it returns is a genuine cosine similarity of THIS question
-        #    vs the best reused chunk, so it feeds the unchanged gate below exactly
-        #    like a fresh `top_score` would.
         reused = self._try_reuse(question, org_id, query_vec, conversation_id)
         if reused is not None:
             hits, top_score = reused.hits, reused.gate_score
             retrieval_reused = True
         else:
             retrieval_reused = False
-            # 1) Retrieve org-scoped candidates. With a HybridRetriever this is
-            #    vector + keyword (RRF-fused) then cross-encoder reranked; without one
-            #    it's plain vector search (Phase 3). Either way `top_score` is the best
-            #    cosine similarity, so the confidence gate below is unchanged.
             if self._retriever is not None:
                 retrieval = self._retriever.retrieve(org_id, question, query_vec)
-                hits = retrieval.hits
-                top_score = retrieval.gate_score
+                hits, top_score = retrieval.hits, retrieval.gate_score
             else:
                 hits = self._store.query(org_id, query_vec, top_k=self._settings.top_k)
                 top_score = hits[0].score if hits else None
 
-        # Nothing stored/matched for this tenant -> gate failed.
-        if not hits or top_score is None:
-            return self._gate_failed(question, hits=[], top_score=None)
+        # Telemetry state (Phase 10, observability only — none of this is read by
+        # any decision below; it only feeds the SINGLE emission at the very end
+        # of this method, so exactly one record is emitted per _run() call).
+        top_score_before_retry = top_score
+        retried = False
+        retry_trigger: str | None = None
+        retry_latency_ms = 0.0
+        generated_queries: list[str] = []
+        retry_top_score: float | None = None
+        retry_narrow_success = False  # did the retry achieve ITS OWN goal (gate cleared / verdict flipped)?
 
-        # 2) Confidence gate (layer 1) — runs identically whether hits were freshly
-        #    retrieved or reused, so reuse never bypasses or weakens the gate.
-        if top_score < self._settings.similarity_threshold:
-            return self._gate_failed(question, hits=hits, top_score=top_score)
+        # 2) Confidence gate (layer 1) — unchanged threshold logic. If it fails,
+        #    try ONE bounded retrieval retry (Phase 10) before falling back: ask
+        #    the LLM to improve the query for retrieval only, then re-retrieve
+        #    including the ORIGINAL question plus its suggestions. This is the
+        #    only way retrieval differs from pre-Phase-10 behavior, and it never
+        #    fires when the plain retrieval already found strong-enough evidence.
+        if not hits or top_score is None or top_score < self._settings.similarity_threshold:
+            retry_trigger = "low_similarity"
+            retry_start = time.perf_counter()
+            retry = self._attempt_retrieval_retry(question, org_id)
+            retry_latency_ms = (time.perf_counter() - retry_start) * 1000
+            retried = retry is not None
+            if retry is not None:
+                retry_hits, retry_top_score, generated_queries = retry
+                if (
+                    retry_hits
+                    and retry_top_score is not None
+                    and retry_top_score >= self._settings.similarity_threshold
+                ):
+                    hits, top_score = retry_hits, retry_top_score
+                    retry_narrow_success = True
+                    # fall through to classification below — the FINAL source
+                    # (retry vs. fallback) depends on what classification says.
+                else:
+                    self._emit_retry_telemetry(
+                        question, retry_trigger, generated_queries, retried,
+                        success=False, latency_ms=retry_latency_ms,
+                        score_before=top_score_before_retry, score_after=retry_top_score,
+                        source="fallback",
+                    )
+                    return self._gate_failed(
+                        question, hits=retry_hits or [], top_score=retry_top_score
+                    )
+            else:
+                self._emit_retry_telemetry(
+                    question, retry_trigger, [], False,
+                    success=False, latency_ms=retry_latency_ms,
+                    score_before=top_score_before_retry, score_after=None,
+                    source="fallback",
+                )
+                return self._gate_failed(question, hits=hits or [], top_score=top_score)
 
-        # 3) Grounded generation (layer 2) — unchanged strict-prompt logic.
-        prompt = build_grounded_prompt(
+        # 3) Evidence classification + graded grounded generation (layer 2,
+        #    Phase 10) — replaces the old binary strict-refuse prompt with
+        #    explicit/implicit/partial/none. Runs once per gate-passing question,
+        #    exactly as the old strict-prompt call did (one LLM call either way).
+        result = self._generate_and_verify(question, hits, top_score, retrieval_reused)
+
+        # 4) Second retry trigger: the gate passed, but the model still couldn't
+        #    answer confidently ("none") from this evidence. This guardrail
+        #    catches cases where cosine similarity alone doesn't reveal a
+        #    vocabulary mismatch (the chunk "looks" related enough to clear 0.35
+        #    but isn't the RIGHT chunk). Bounded to the SAME single retry budget
+        #    as step 2 — never fires if a retry already happened.
+        if result.evidence_classification == "none" and not retried:
+            retry_trigger = "llm_fallback"
+            retry_start = time.perf_counter()
+            retry = self._attempt_retrieval_retry(question, org_id)
+            retry_latency_ms = (time.perf_counter() - retry_start) * 1000
+            retried = retry is not None
+            if retry is not None:
+                retry_hits, retry_top_score, generated_queries = retry
+                if (
+                    retry_hits
+                    and retry_top_score is not None
+                    and retry_top_score >= self._settings.similarity_threshold
+                ):
+                    retried_result = self._generate_and_verify(
+                        question, retry_hits, retry_top_score, retrieval_reused=False
+                    )
+                    if retried_result.evidence_classification != "none":
+                        retry_narrow_success = True
+                        self._emit_retry_telemetry(
+                            question, retry_trigger, generated_queries, retried,
+                            success=True, latency_ms=retry_latency_ms,
+                            score_before=top_score_before_retry, score_after=retry_top_score,
+                            source="retry",
+                        )
+                        return retried_result
+            # Retry (trigger 2) ran but did not flip the verdict — falls through
+            # to the single emission below with source="fallback", returning the
+            # ORIGINAL `result` unchanged (never the retry's own draft), exactly
+            # as before this instrumentation was added.
+
+        # Single emission point for every remaining path: no retry was ever
+        # needed ("first_attempt"), a low_similarity retry succeeded and
+        # classification then confirmed an answer ("retry"), or a retry ran but
+        # the final verdict is still "none" ("fallback").
+        if retry_trigger is None:
+            source = "first_attempt"
+        elif result.evidence_classification != "none":
+            source = "retry"
+        else:
+            source = "fallback"
+
+        self._emit_retry_telemetry(
+            question, retry_trigger, generated_queries, retried,
+            success=retry_narrow_success, latency_ms=retry_latency_ms,
+            score_before=top_score_before_retry, score_after=retry_top_score,
+            source=source,
+        )
+        return result
+
+    @staticmethod
+    def _emit_retry_telemetry(
+        question: str,
+        trigger: str | None,
+        generated_queries: list[str],
+        attempted: bool,
+        *,
+        success: bool,
+        latency_ms: float,
+        score_before: float | None,
+        score_after: float | None,
+        source: str,
+    ) -> None:
+        """Build and emit one structured retry-observability record (Phase 10).
+
+        Pure observation — this cannot affect any decision the pipeline makes.
+        See ``app/core/telemetry.py`` for the field definitions.
+        """
+        RetryTelemetry(
+            retry_trigger=trigger,
+            original_query=question,
+            generated_retry_queries=generated_queries,
+            retry_attempt_number=1 if attempted else 0,
+            retry_success=success,
+            retry_latency_ms=latency_ms,
+            top_score_before_retry=score_before,
+            top_score_after_retry=score_after,
+            retrieval_improved=(
+                attempted
+                and score_before is not None
+                and score_after is not None
+                and score_after > score_before
+            ),
+            final_answer_source=source,
+        ).emit()
+
+    def _attempt_retrieval_retry(
+        self, question: str, org_id: str
+    ) -> tuple[list[RetrievedChunk], float | None, list[str]] | None:
+        """ONE bounded retrieval retry (Phase 10) — never recursive.
+
+        Asks the LLM to improve the query for RETRIEVAL ONLY (fix typos/
+        abbreviations/vague wording, propose document-vocabulary-style
+        alternates) and re-retrieves including the ORIGINAL question alongside
+        up to a couple of its suggestions (``QueryUnderstandingSettings.
+        max_expansions``, capped again here via ``all_queries(max_total=2)`` as
+        a hard safety limit regardless of what the LLM returns). The LLM never
+        answers the question and never invents facts — its only output is a
+        short list of alternate search phrases.
+
+        Returns ``None`` when no query-understanding capability is configured
+        (nothing to retry with — the caller then just uses what it already
+        has); otherwise ``(hits, gate_score, generated_queries)`` from
+        re-retrieving with the expanded query set — ``generated_queries`` is the
+        (possibly empty) list of NEW alternate phrasings actually tried, purely
+        for observability (``app/core/telemetry.py``), and does not affect the
+        retry's own decision-making. The retry may still fail the gate; the
+        caller decides what to do with that.
+        """
+        if self._query_understander is None:
+            return None
+
+        understood = self._query_understander.understand(question)
+        candidates = understood.all_queries(max_total=2)
+        alt_texts = [
+            t for t in candidates if t.strip().lower() != question.strip().lower()
+        ]
+
+        original_vec = self._embedder.embed([question])[0]
+        if not alt_texts:
+            # Nothing new to try (e.g. the LLM just echoed the question back).
+            if self._retriever is not None:
+                retrieval = self._retriever.retrieve(org_id, question, original_vec)
+                return retrieval.hits, retrieval.gate_score, []
+            hits = self._store.query(org_id, original_vec, top_k=self._settings.top_k)
+            return hits, (hits[0].score if hits else None), []
+
+        if self._retriever is not None:
+            alt_vecs = self._embedder.embed(alt_texts)
+            query_pairs = [(question, original_vec)] + list(zip(alt_texts, alt_vecs))
+            retrieval = self._retriever.retrieve_expanded(org_id, question, query_pairs)
+            return retrieval.hits, retrieval.gate_score, alt_texts
+
+        # No hybrid retriever configured: fall back to a single richer query
+        # (the LLM's normalized text) via plain vector search.
+        hits = self._store.query(org_id, original_vec, top_k=self._settings.top_k)
+        return hits, (hits[0].score if hits else None), alt_texts
+
+    def _generate_and_verify(
+        self,
+        question: str,
+        hits: list[RetrievedChunk],
+        top_score: float,
+        retrieval_reused: bool,
+    ) -> RagResult:
+        """Classify evidence support + draft an answer, then verify it (Phase 10).
+
+        ONE LLM call classifies (explicit/implicit/partial/none) and drafts a
+        style-matching answer; a genuinely unrelated "none" still returns the
+        exact fixed fallback (identical bar to the old strict prompt). Any other
+        classification passes through deterministic verification before reaching
+        the user — an unsupported claim gets one stricter regeneration attempt,
+        and only falls back if that retry is STILL unsupported.
+        """
+        evidence = [h.content for h in hits]
+        prompt = build_classified_grounded_prompt(
             question=question,
-            contexts=[h.content for h in hits],
+            contexts=evidence,
             fallback_response=self._settings.fallback_response,
         )
         raw = self._llm.generate(prompt).strip()
-        answered = not self._is_refusal(raw, self._settings.fallback_response)
-        answer = raw if answered else self._settings.fallback_response
+        classification, drafted = self._parse_classified_response(raw)
+
+        if classification == "none":
+            return RagResult(
+                answer=self._settings.fallback_response,
+                answered=False,
+                source="none",
+                sources=hits,
+                top_score=top_score,
+                retrieval_reused=retrieval_reused,
+                evidence_classification="none",
+            )
+
+        final_answer, final_classification = self._verify_and_maybe_regenerate(
+            question, drafted, classification, evidence
+        )
+        if final_answer is None:
+            return RagResult(
+                answer=self._settings.fallback_response,
+                answered=False,
+                source="none",
+                sources=hits,
+                top_score=top_score,
+                retrieval_reused=retrieval_reused,
+                evidence_classification="none",
+            )
+
         return RagResult(
-            answer=answer,
-            answered=answered,
-            source="policy" if answered else "none",
+            answer=final_answer,
+            answered=True,
+            source="policy",
             sources=hits,
             top_score=top_score,
             retrieval_reused=retrieval_reused,
+            evidence_classification=final_classification,
         )
+
+    # -- Phase 10: classification parsing + deterministic verification -----
+
+    _CLASSIFICATION_RE = re.compile(
+        r"CLASSIFICATION:\s*(explicit|implicit|partial|none)\b", re.IGNORECASE
+    )
+    _ANSWER_RE = re.compile(r"ANSWER:\s*(.*)", re.IGNORECASE | re.DOTALL)
+
+    def _parse_classified_response(self, raw: str) -> tuple[str, str]:
+        """Parse a classified-generation reply into ``(classification, answer)``.
+
+        Falls back gracefully when the reply doesn't follow the
+        ``CLASSIFICATION:``/``ANSWER:`` format (a model deviating from
+        instructions, or a plain test fake that just returns fixed text): treats
+        the whole reply as the answer, classified ``"none"`` if it IS
+        (essentially) the fixed fallback sentence, else ``"explicit"`` — this
+        preserves the old plain-answer behavior exactly for such replies.
+        """
+        cls_match = self._CLASSIFICATION_RE.search(raw)
+        ans_match = self._ANSWER_RE.search(raw)
+        if cls_match and ans_match:
+            classification = cls_match.group(1).lower()
+            if classification == "none":
+                # The fallback sentence must be the exact canonical string
+                # (gate/prompt/detection all agree on one string), regardless of
+                # whatever free text the model produced after the label.
+                return "none", self._settings.fallback_response
+            return classification, ans_match.group(1).strip()
+
+        if self._is_refusal(raw, self._settings.fallback_response):
+            return "none", self._settings.fallback_response
+        return "explicit", raw
+
+    def _verify_and_maybe_regenerate(
+        self, question: str, drafted: str, classification: str, evidence: list[str]
+    ) -> tuple[str | None, str | None]:
+        """Verify ``drafted``'s claims against ``evidence``; regenerate once if
+        any are unsupported. Returns ``(None, None)`` if the retry is still
+        unsupported (the caller then returns the fixed fallback) — an
+        unsupported claim is never allowed through, per Phase 10's requirement.
+
+        Deterministic verification (no LLM call) unless a regeneration is
+        actually needed, so the common case (a well-supported draft) costs
+        nothing extra beyond the classification/generation call already made.
+        """
+        if self._verifier is None:
+            return drafted, classification
+
+        result = self._verifier.verify(drafted, evidence)
+        if result.supported:
+            return drafted, classification
+
+        retry_prompt = build_stricter_regeneration_prompt(
+            question=question,
+            contexts=evidence,
+            fallback_response=self._settings.fallback_response,
+            previous_answer=drafted,
+            unsupported_sentences=result.unsupported,
+        )
+        try:
+            raw2 = self._llm.generate(retry_prompt).strip()
+        except LLMProviderError:
+            return None, None
+
+        classification2, drafted2 = self._parse_classified_response(raw2)
+        if classification2 == "none":
+            return None, None
+
+        result2 = self._verifier.verify(drafted2, evidence)
+        if result2.supported:
+            return drafted2, classification2
+        return None, None
 
     def _gate_failed(
         self, question: str, hits: list[RetrievedChunk], top_score: float | None

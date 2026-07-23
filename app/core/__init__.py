@@ -1,4 +1,4 @@
-"""Cross-cutting building blocks shared across the app (errors, etc.)."""
+"""Cross-cutting building blocks shared across the app (errors, telemetry, etc.)."""
 
 from .exceptions import (
     ProviderError,
@@ -6,10 +6,12 @@ from .exceptions import (
     LLMProviderError,
     EmbeddingProviderError,
 )
+from .telemetry import RetryTelemetry
 
 __all__ = [
     "ProviderError",
     "ConfigurationError",
     "LLMProviderError",
     "EmbeddingProviderError",
+    "RetryTelemetry",
 ]

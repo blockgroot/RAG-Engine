@@ -62,6 +62,11 @@ class AgentResponse:
     - ``retrieval_reused``  ``True`` when the turn reused the previous turn's chunks
       instead of retrieving afresh (Phase 8). A diagnostic; the answer is produced
       by the same gate → generate path regardless.
+    - ``evidence_classification``  (Phase 10) how well the evidence supported the
+      question: ``"explicit"``, ``"implicit"``, ``"partial"``, or ``"none"``
+      (``None`` if the gate short-circuited before classification ran). An
+      orthogonal diagnostic to ``source`` — ``source`` stays ``"policy"`` for all
+      three answered classifications.
     """
 
     answer: str
@@ -71,6 +76,7 @@ class AgentResponse:
     resolved_question: str | None = None
     top_score: float | None = None
     retrieval_reused: bool = False
+    evidence_classification: str | None = None
 
 
 class Agent(ABC):

@@ -69,6 +69,40 @@ DEFAULT_WEB_SEARCH_PROVIDER = "duckduckgo"
 DEFAULT_WEB_SEARCH_MAX_RESULTS = 5
 DEFAULT_WEB_SEARCH_TIMEOUT = 8.0
 
+# Query-understanding RETRY (Phase 10). NOT run unconditionally — the first
+# retrieval attempt always uses the question exactly as given, at zero extra
+# cost. This only engages as a single bounded retry when the confidence gate
+# fails, or when the gate passes but evidence classification still comes back
+# "none": one LLM call normalizes spelling/grammar/abbreviations for retrieval
+# only (never answers, never invents facts) and proposes a couple of
+# document-vocabulary-style alternate phrasings so a chunk using different
+# vocabulary than the user's question can still be found on retry. Never
+# recursive — capped at one retry, ever. See app/rag/query_understanding.py.
+DEFAULT_QUERY_UNDERSTANDING_ENABLED = True
+DEFAULT_QUERY_UNDERSTANDING_MAX_EXPANSIONS = 2
+# Optional distinct (typically smaller/cheaper) model for this stage. Falls back
+# to the main LLM_MODEL when unset — this is a bounded, structured task (produce
+# a normalized query + a short list of phrasings), far less demanding than final
+# grounded generation, so a lighter/faster model is a reasonable cost/latency win.
+DEFAULT_QUERY_UNDERSTANDING_MODEL = None
+
+# Evidence classification + answer verification (Phase 10). Classification
+# (explicit/implicit/partial/none) is folded into the SAME LLM call as generation
+# (no extra round trip). Verification is deterministic: a per-sentence semantic
+# support check against the retrieved evidence using the already-loaded embedding
+# model (no LLM call, no new model download). See app/verification/.
+# Threshold reasoning (empirical, same discipline as the 0.35 gate / 0.72 reuse
+# threshold — see CLAUDE.md §4): on BGE-M3, sentences directly supported by real
+# evidence scored 0.75-0.86 cosine similarity, while fabricated claims sharing the
+# evidence's formal HR/policy register (but stating something absent, e.g. "free
+# flights to the moon") scored 0.51-0.57 — clearly separated, but NOT at 0.50 (a
+# fabricated claim at 0.567 would slip past 0.50). 0.65 sits in that gap, above
+# every observed fabrication score and below every observed supported score. A
+# starting point from a small sample — validate against logged verification
+# outcomes before treating it as final, exactly like the other thresholds here.
+DEFAULT_ANSWER_VERIFICATION_ENABLED = True
+DEFAULT_VERIFICATION_SIMILARITY_THRESHOLD = 0.65
+
 
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
@@ -440,4 +474,80 @@ class RerankerSettings:
         return cls(
             model=os.getenv("RERANKER_MODEL") or DEFAULT_RERANKER_MODEL,
             device=os.getenv("RERANKER_DEVICE") or None,
+        )
+
+
+@dataclass(frozen=True)
+class QueryUnderstandingSettings:
+    """Query-understanding RETRY config (Phase 10) — NOT run unconditionally.
+
+    The first retrieval attempt always uses the question exactly as given
+    (identical to pre-Phase-10 behavior, zero extra cost). This only configures
+    the single bounded RETRY that engages when the confidence gate fails, or
+    when the gate passes but evidence classification still returns "none".
+
+    - ``enabled``         whether the retry capability exists at all. When off,
+      a failing gate/classification goes straight to the fixed fallback, exactly
+      as Phase 3-8 did.
+    - ``max_expansions``  upper bound on alternate retrieval-oriented phrasings
+      the LLM may propose on a retry. Kept small (default 2) — this is a bounded
+      guardrail, not a general expansion mechanism; ``RagPipeline`` additionally
+      hard-caps the total at 2 via ``UnderstoodQuery.all_queries(max_total=2)``
+      regardless of what the LLM returns.
+    - ``model``           optional distinct (typically smaller/cheaper) LLM model
+      for this stage only. ``None`` reuses the main ``LLM_MODEL`` instance (no
+      extra provider construction). This is a bounded, structured task (produce a
+      normalized query + a short phrase list) that needs far less reasoning than
+      final grounded generation, so a lighter/faster model is a reasonable
+      cost/latency win where the provider offers one.
+    """
+
+    enabled: bool = DEFAULT_QUERY_UNDERSTANDING_ENABLED
+    max_expansions: int = DEFAULT_QUERY_UNDERSTANDING_MAX_EXPANSIONS
+    model: str | None = DEFAULT_QUERY_UNDERSTANDING_MODEL
+
+    @classmethod
+    def from_env(cls) -> "QueryUnderstandingSettings":
+        return cls(
+            enabled=_env_bool("QUERY_UNDERSTANDING_ENABLED", DEFAULT_QUERY_UNDERSTANDING_ENABLED),
+            max_expansions=int(
+                os.getenv("QUERY_UNDERSTANDING_MAX_EXPANSIONS")
+                or DEFAULT_QUERY_UNDERSTANDING_MAX_EXPANSIONS
+            ),
+            model=os.getenv("QUERY_UNDERSTANDING_MODEL") or DEFAULT_QUERY_UNDERSTANDING_MODEL,
+        )
+
+
+@dataclass(frozen=True)
+class VerificationSettings:
+    """Post-generation answer verification (Phase 10).
+
+    Deterministic — NOT an LLM call. Each sentence of a drafted answer is embedded
+    (reusing the already-loaded embedding provider) and compared by cosine
+    similarity against the retrieved evidence chunks; a sentence whose best match
+    falls below ``similarity_threshold`` is flagged unsupported. See
+    ``app/verification/embedding_similarity.py`` for the full reasoning and its
+    documented limitations (a semantic-overlap heuristic, not true logical
+    entailment) and the noted upgrade path (a dedicated NLI cross-encoder behind
+    the same ``Verifier`` interface).
+
+    - ``enabled``               whether verification (and the regenerate-once /
+      fallback path) runs at all.
+    - ``similarity_threshold``  minimum cosine similarity a sentence needs against
+      its best-matching evidence chunk to count as supported. Deliberately a
+      starting point (like the 0.35 retrieval gate) — validate against logged
+      verification outcomes before treating it as final.
+    """
+
+    enabled: bool = DEFAULT_ANSWER_VERIFICATION_ENABLED
+    similarity_threshold: float = DEFAULT_VERIFICATION_SIMILARITY_THRESHOLD
+
+    @classmethod
+    def from_env(cls) -> "VerificationSettings":
+        return cls(
+            enabled=_env_bool("ANSWER_VERIFICATION_ENABLED", DEFAULT_ANSWER_VERIFICATION_ENABLED),
+            similarity_threshold=float(
+                os.getenv("VERIFICATION_SIMILARITY_THRESHOLD")
+                or DEFAULT_VERIFICATION_SIMILARITY_THRESHOLD
+            ),
         )

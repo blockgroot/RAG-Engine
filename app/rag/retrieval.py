@@ -90,6 +90,62 @@ class HybridRetriever:
 
         return RetrievalResult(hits=final, gate_score=gate_score)
 
+    def retrieve_expanded(
+        self,
+        org_id: str,
+        primary_query_text: str,
+        queries: list[tuple[str, list[float]]],
+    ) -> RetrievalResult:
+        """Retrieve using MULTIPLE query variants (Phase 10: vocabulary expansion).
+
+        ``queries`` is ``[(text, embedding), ...]`` — typically the normalized
+        query first, followed by alternate phrasings from ``QueryUnderstander``.
+        Each variant runs its own vector (+ keyword, if enabled) search; ALL
+        result lists are fused together with the SAME Reciprocal Rank Fusion used
+        by ``retrieve()`` (it already generalizes to any number of ranked lists —
+        no change needed there), so a chunk that only one phrasing's vocabulary
+        matches still has a chance to surface. Reranking then runs against
+        ``primary_query_text`` only (a cross-encoder needs one canonical query),
+        so expansions only widen RECALL — they never change what "relevant"
+        means for the final ranking.
+
+        Falls back to plain ``retrieve()`` when only one query variant is given,
+        so callers don't pay any fan-out cost on a single-query call.
+        """
+        if len(queries) <= 1:
+            text, vec = queries[0] if queries else (primary_query_text, [])
+            return self.retrieve(org_id, text, vec)
+
+        top_k = self._rag_settings.top_k
+        pool = self._settings.candidate_pool
+        # Bound the per-query fan-out so total DB round trips stay predictable
+        # regardless of how many expansions were generated.
+        per_query_pool = max(pool // len(queries), 10)
+
+        ranked_lists: list[list[RetrievedChunk]] = []
+        for text, vec in queries:
+            ranked_lists.append(self._store.query(org_id, vec, top_k=per_query_pool))
+            if self._settings.hybrid_enabled:
+                try:
+                    ranked_lists.append(
+                        self._store.keyword_search(org_id, text, vec, top_k=per_query_pool)
+                    )
+                except NotImplementedError:
+                    pass
+
+        candidates = self._rrf_fuse(ranked_lists, self._settings.rrf_k)
+        if not candidates:
+            return RetrievalResult(hits=[], gate_score=None)
+
+        gate_score = max(c.score for c in candidates)
+        pool_candidates = candidates[:pool]
+        if self._reranker is not None and self._settings.rerank_enabled:
+            final = self._reranker.rerank(primary_query_text, pool_candidates, top_k)
+        else:
+            final = pool_candidates[:top_k]
+
+        return RetrievalResult(hits=final, gate_score=gate_score)
+
     @staticmethod
     def _rrf_fuse(
         ranked_lists: list[list[RetrievedChunk]], k: int

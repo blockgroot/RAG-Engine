@@ -8,6 +8,8 @@ Notion ``Client`` is monkeypatched to record the auth it was constructed with.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from app.config.settings import NotionSettings
@@ -30,7 +32,15 @@ def _fake_notion_client(monkeypatch):
 
 @pytest.fixture
 def _tokens(monkeypatch):
-    """A default token plus two distinct per-org tokens."""
+    """A default token plus two distinct per-org tokens.
+
+    Clears any real NOTION_TOKEN_* already in the environment (e.g. from a
+    developer's .env used for live ingestion) so this test's discovery assertion
+    isn't polluted by unrelated real tokens.
+    """
+    for key in list(os.environ):
+        if key.startswith("NOTION_TOKEN_"):
+            monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("NOTION_TOKEN", "GLOBAL-DEFAULT")
     monkeypatch.setenv("NOTION_TOKEN_ACME", "tok-acme")
     monkeypatch.setenv("NOTION_TOKEN_GLOBEX", "tok-globex")
