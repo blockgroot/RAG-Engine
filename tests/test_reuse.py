@@ -16,7 +16,7 @@ that similarity fully controllable so each case is unambiguous.
 
 from __future__ import annotations
 
-from app.config.settings import MemorySettings, RagSettings, ReuseSettings
+from app.config.settings import MemorySettings, RagSettings, RecoverySettings, ReuseSettings
 from app.rag.pipeline import RagPipeline
 from .conftest import requires_db
 from .fakes import (
@@ -41,6 +41,7 @@ def _pipeline(llm, store, memory, *, reuse_threshold=0.6):
         memory_settings=MemorySettings(recent_turns=3),
         retriever=None,  # plain vector search, so query() call-count is the reuse signal
         reuse_settings=ReuseSettings(enabled=True, threshold=reuse_threshold),
+        recovery_settings=RecoverySettings(enabled=False),
     )
 
 

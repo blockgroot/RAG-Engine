@@ -56,6 +56,13 @@ class PolicyAgent(Agent):
             resolved_question=result.resolved_question,
             top_score=result.top_score,
             retrieval_reused=result.retrieval_reused,
+            recovery_used=result.recovery_used,
+            recovery_reason=result.recovery_reason,
+            recovery_queries=list(result.recovery_queries),
+            retrieval_improved=result.retrieval_improved,
+            top_score_before=result.top_score_before,
+            top_score_after=result.top_score_after,
+            latency_ms=result.latency_ms,
         )
 
     @staticmethod

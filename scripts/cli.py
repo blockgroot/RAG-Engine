@@ -51,13 +51,6 @@ _SOURCE_STYLE = {
     "none": ("no grounded answer — internal fallback", "yellow"),
 }
 
-# How each Phase 10 evidence classification is presented (only shown when it
-# isn't the "ordinary" explicit case, to keep the common path uncluttered).
-_CLASSIFICATION_STYLE = {
-    "implicit": ("inferred, not explicitly stated", "yellow"),
-    "partial": ("partial answer — some info missing", "yellow"),
-}
-
 
 def render_turn(console: Console, question: str, response: AgentResponse) -> None:
     """Render one Q&A turn: the answer, its provenance, and the internals.
@@ -66,12 +59,6 @@ def render_turn(console: Console, question: str, response: AgentResponse) -> Non
     be exercised directly in tests.
     """
     label, colour = _SOURCE_STYLE.get(response.source, (response.source, "white"))
-    # Phase 10: surface implicit/partial evidence support distinctly (explicit —
-    # the ordinary case — uses the plain "grounded" label above).
-    cls_note = _CLASSIFICATION_STYLE.get(response.evidence_classification or "")
-    if cls_note:
-        cls_label, cls_colour = cls_note
-        label, colour = f"{label} — {cls_label}", cls_colour
 
     # The answer, in a colour-coded panel titled by its provenance. Rendered as
     # Markdown so lists, **bold**, and headings the model emits display formatted
@@ -96,6 +83,26 @@ def render_turn(console: Console, question: str, response: AgentResponse) -> Non
         internals.append("◆ retrieval: fresh search")
     score = f"{response.top_score:.3f}" if response.top_score is not None else "n/a"
     internals.append(f"   ·   top score: {score}")
+    if response.recovery_used:
+        reason = response.recovery_reason or "unknown"
+        improved = "improved" if response.retrieval_improved else "no score gain"
+        internals.append(f"\n◆ recovery: {reason} ({improved})")
+        if response.top_score_before is not None or response.top_score_after is not None:
+            before = (
+                f"{response.top_score_before:.3f}"
+                if response.top_score_before is not None
+                else "n/a"
+            )
+            after = (
+                f"{response.top_score_after:.3f}"
+                if response.top_score_after is not None
+                else "n/a"
+            )
+            internals.append(f"   ·   score {before} → {after}")
+        if response.recovery_queries:
+            internals.append(f"\n◆ recovery queries: {'; '.join(response.recovery_queries)}")
+    if response.latency_ms is not None:
+        internals.append(f"\n◆ latency: {response.latency_ms:.0f} ms")
     console.print(internals)
 
     # The chunks that grounded the answer (none for web/fallback). One compact

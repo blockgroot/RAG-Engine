@@ -62,6 +62,11 @@ DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
 DEFAULT_RETRIEVAL_REUSE_ENABLED = True
 DEFAULT_RETRIEVAL_REUSE_THRESHOLD = 0.72
 
+# Bounded retrieval recovery (Retrieval Discovery Gap). First retrieve stays as
+# today; at most one optional recovery when evidence looks insufficient.
+DEFAULT_RECOVERY_ENABLED = True
+DEFAULT_RECOVERY_MAX_QUERIES = 2
+
 # Web search tool (Phase 5). Keyless DuckDuckGo by default (no paid dependency);
 # set WEB_SEARCH_PROVIDER=tavily + WEB_SEARCH_API_KEY for production quality.
 DEFAULT_WEB_SEARCH_ENABLED = True
@@ -353,6 +358,34 @@ class ReuseSettings:
             threshold=float(
                 os.getenv("RETRIEVAL_REUSE_THRESHOLD") or DEFAULT_RETRIEVAL_REUSE_THRESHOLD
             ),
+        )
+
+
+@dataclass(frozen=True)
+class RecoverySettings:
+    """Bounded retrieval recovery for Retrieval Discovery Gaps.
+
+    The normal retrieve → gate → generate path is unchanged. When the pipeline
+    determines available evidence is insufficient (gate miss, or generation finds
+    the context insufficient), at most **one** recovery attempt may run: an LLM
+    produces alternative retrieval-oriented search expressions (preserving user
+    intent), those are retrieved and RRF-fused with the first-pass hits, then the
+    unchanged gate + grounded prompt apply again. Recovery never answers the
+    question and never weakens grounding. On expander failure the existing path
+    continues (graceful degradation).
+
+    - ``enabled``      kill-switch; when false, behaviour matches the pre-recovery pipeline.
+    - ``max_queries``  cap on alternate retrieval expressions per recovery attempt.
+    """
+
+    enabled: bool = DEFAULT_RECOVERY_ENABLED
+    max_queries: int = DEFAULT_RECOVERY_MAX_QUERIES
+
+    @classmethod
+    def from_env(cls) -> "RecoverySettings":
+        return cls(
+            enabled=_env_bool("RECOVERY_ENABLED", DEFAULT_RECOVERY_ENABLED),
+            max_queries=int(os.getenv("RECOVERY_MAX_QUERIES") or DEFAULT_RECOVERY_MAX_QUERIES),
         )
 
 

@@ -31,16 +31,31 @@ Phase 8 refines two earlier pieces, again without touching the gate/prompt:
   and retrieval is skipped. The reused chunks then flow through the *unchanged*
   gate → generate path, so this only avoids redundant retrieval — it never
   weakens or bypasses the confidence gate.
+
+Bounded retrieval recovery addresses **Retrieval Discovery Gaps**: the first
+retrieve runs exactly as today; only when available evidence looks insufficient
+(gate miss, or generation finds the context insufficient) may one optional
+recovery attempt produce alternative retrieval-oriented search expressions,
+re-retrieve, and RRF-merge — then the same gate + grounded prompt apply again.
+Recovery never answers the question, never replaces user intent, and never
+reduces grounding guarantees. Expander failure degrades to the existing path.
 """
 
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field, replace
 
 import numpy as np
 
-from ..config.settings import MemorySettings, RagSettings, ReuseSettings, WebSearchSettings
+from ..config.settings import (
+    MemorySettings,
+    RagSettings,
+    RecoverySettings,
+    ReuseSettings,
+    WebSearchSettings,
+)
 from ..core.exceptions import LLMProviderError, WebSearchError
 from ..embeddings.base import EmbeddingProvider
 from ..llm.base import LLMProvider
@@ -51,6 +66,7 @@ from .retrieval import HybridRetriever, RetrievalResult
 from .prompts import (
     WEB_SEARCH_TOOL,
     build_grounded_prompt,
+    build_recovery_queries_prompt,
     build_rewrite_prompt,
     build_summary_prompt,
     build_web_answer_prompt,
@@ -59,6 +75,12 @@ from .prompts import (
 
 # Unmistakable banner so a web-sourced answer never blends with a policy answer.
 WEB_ANSWER_LABEL = "🌐 From a web search (NOT your organization's policy documents):"
+
+# Architectural recovery reasons (implementation of "evidence insufficient").
+RECOVERY_REASON_GATE_MISS = "gate_miss"
+RECOVERY_REASON_INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+
+_MAX_RECOVERY_QUERY_LEN = 200
 
 
 @dataclass(frozen=True)
@@ -81,6 +103,10 @@ class RagResult:
     - ``retrieval_reused``  ``True`` when this turn skipped retrieval and reused the
       previous turn's chunks (Phase 8). A diagnostic for logging/tests; the answer
       itself is produced by the same gate → generate path either way.
+    - Recovery diagnostics (Retrieval Discovery Gap): ``recovery_used``,
+      ``recovery_reason``, ``recovery_queries``, ``retrieval_improved``,
+      ``top_score_before``, ``top_score_after``, ``final_answer_source``,
+      ``latency_ms``.
     """
 
     answer: str
@@ -90,6 +116,23 @@ class RagResult:
     top_score: float | None = None
     resolved_question: str | None = None
     retrieval_reused: bool = False
+    recovery_used: bool = False
+    recovery_reason: str | None = None
+    recovery_queries: list[str] = field(default_factory=list)
+    retrieval_improved: bool = False
+    top_score_before: float | None = None
+    top_score_after: float | None = None
+    final_answer_source: str | None = None
+    latency_ms: float | None = None
+
+
+@dataclass(frozen=True)
+class _RecoveryAttempt:
+    """Internal result of one bounded recovery attempt."""
+
+    hits: list[RetrievedChunk]
+    gate_score: float | None
+    queries: list[str]
 
 
 class RagPipeline:
@@ -113,6 +156,7 @@ class RagPipeline:
         web_search_settings: WebSearchSettings | None = None,
         retriever: "HybridRetriever | None" = None,
         reuse_settings: ReuseSettings | None = None,
+        recovery_settings: RecoverySettings | None = None,
     ) -> None:
         self._llm = llm
         self._embedder = embedder
@@ -125,6 +169,8 @@ class RagPipeline:
         # Phase 8: retrieval-reuse gate (a cheap non-LLM cosine check). Only active
         # inside a conversation (needs a previous turn's chunks) and when enabled.
         self._reuse_settings = reuse_settings or ReuseSettings.from_env()
+        # Bounded retrieval recovery (optional; at most one attempt per answer).
+        self._recovery_settings = recovery_settings or RecoverySettings.from_env()
         # Phase 6: hybrid + reranking retriever. When None, fall back to plain
         # vector search (the Phase 3 behaviour), keeping this pipeline usable
         # without the retrieval upgrades.
@@ -149,7 +195,7 @@ class RagPipeline:
             if not context.is_empty():
                 resolved = self._rewrite_question(question, context)
 
-        # Phase 3 path (+ Phase 8 retrieval reuse + web fallback).
+        # Phase 3 path (+ Phase 8 retrieval reuse + recovery + web fallback).
         result = self._run(resolved, org_id, conversation_id=conversation_id)
 
         if conversation_id is not None and self._memory is not None:
@@ -162,48 +208,138 @@ class RagPipeline:
 
         return result
 
-    # -- retrieval / gate / generation (Phase 3 logic, unchanged) ----------
+    # -- retrieval / gate / generation / recovery --------------------------
 
     def _run(
         self, question: str, org_id: str, *, conversation_id: str | None = None
     ) -> RagResult:
-        # We embed the question once and use that vector for both the (Phase 8)
-        # reuse check and, if we do retrieve, the vector search — no extra cost.
+        """First retrieve as today; recover at most once if evidence is insufficient."""
+        t0 = time.perf_counter()
+
         query_vec = self._embedder.embed([question])[0]
 
-        # 0) Phase 8 retrieval reuse: if the previous turn's chunks still cover this
-        #    question (cheap cosine check, no LLM, no retrieval), reuse them. The
-        #    `reuse_score` it returns is a genuine cosine similarity of THIS question
-        #    vs the best reused chunk, so it feeds the unchanged gate below exactly
-        #    like a fresh `top_score` would.
         reused = self._try_reuse(question, org_id, query_vec, conversation_id)
         if reused is not None:
             hits, top_score = reused.hits, reused.gate_score
             retrieval_reused = True
         else:
             retrieval_reused = False
-            # 1) Retrieve org-scoped candidates. With a HybridRetriever this is
-            #    vector + keyword (RRF-fused) then cross-encoder reranked; without one
-            #    it's plain vector search (Phase 3). Either way `top_score` is the best
-            #    cosine similarity, so the confidence gate below is unchanged.
-            if self._retriever is not None:
-                retrieval = self._retriever.retrieve(org_id, question, query_vec)
-                hits = retrieval.hits
-                top_score = retrieval.gate_score
-            else:
-                hits = self._store.query(org_id, query_vec, top_k=self._settings.top_k)
-                top_score = hits[0].score if hits else None
+            hits, top_score = self._retrieve_once(org_id, question, query_vec)
 
-        # Nothing stored/matched for this tenant -> gate failed.
-        if not hits or top_score is None:
-            return self._gate_failed(question, hits=[], top_score=None)
+        top_score_before = top_score
+        recovery_used = False
+        recovery_reason: str | None = None
+        recovery_queries: list[str] = []
 
-        # 2) Confidence gate (layer 1) — runs identically whether hits were freshly
-        #    retrieved or reused, so reuse never bypasses or weakens the gate.
-        if top_score < self._settings.similarity_threshold:
-            return self._gate_failed(question, hits=hits, top_score=top_score)
+        def _finalize(result: RagResult) -> RagResult:
+            after = result.top_score if result.top_score is not None else top_score
+            improved = False
+            if recovery_used and after is not None:
+                # None before (empty first pass) → any positive after counts as improved.
+                before = 0.0 if top_score_before is None else top_score_before
+                improved = after > before
+            return replace(
+                result,
+                recovery_used=recovery_used,
+                recovery_reason=recovery_reason,
+                recovery_queries=list(recovery_queries),
+                retrieval_improved=improved,
+                top_score_before=top_score_before,
+                top_score_after=after if recovery_used else top_score_before,
+                final_answer_source=result.source,
+                latency_ms=round((time.perf_counter() - t0) * 1000.0, 1),
+            )
 
-        # 3) Grounded generation (layer 2) — unchanged strict-prompt logic.
+        # Gate miss → optional recovery before web/fallback.
+        if self._gate_miss(hits, top_score):
+            if self._recovery_available(recovery_used):
+                attempt = self._recover_once(
+                    question, org_id, hits, reason=RECOVERY_REASON_GATE_MISS
+                )
+                recovery_used = True
+                recovery_reason = RECOVERY_REASON_GATE_MISS
+                recovery_queries = list(attempt.queries)
+                hits, top_score = attempt.hits, attempt.gate_score
+            if self._gate_miss(hits, top_score):
+                return _finalize(
+                    self._gate_failed(question, hits=hits, top_score=top_score)
+                )
+
+        # Grounded generation (same question — never replaced by recovery queries).
+        result = self._generate(
+            question, hits, top_score, retrieval_reused=retrieval_reused
+        )
+
+        # Generation found evidence insufficient → one recovery if not yet used.
+        if self._generation_found_evidence_insufficient(
+            result
+        ) and self._recovery_available(recovery_used):
+            attempt = self._recover_once(
+                question, org_id, hits, reason=RECOVERY_REASON_INSUFFICIENT_EVIDENCE
+            )
+            recovery_used = True
+            recovery_reason = RECOVERY_REASON_INSUFFICIENT_EVIDENCE
+            recovery_queries = list(attempt.queries)
+            hits, top_score = attempt.hits, attempt.gate_score
+            if self._gate_miss(hits, top_score):
+                return _finalize(
+                    self._gate_failed(question, hits=hits, top_score=top_score)
+                )
+            result = self._generate(
+                question, hits, top_score, retrieval_reused=False
+            )
+            if self._generation_found_evidence_insufficient(result):
+                result = RagResult(
+                    answer=self._settings.fallback_response,
+                    answered=False,
+                    source="none",
+                    sources=hits,
+                    top_score=top_score,
+                    retrieval_reused=False,
+                )
+
+        return _finalize(result)
+
+    def _gate_miss(
+        self, hits: list[RetrievedChunk], top_score: float | None
+    ) -> bool:
+        return (
+            not hits
+            or top_score is None
+            or top_score < self._settings.similarity_threshold
+        )
+
+    def _recovery_available(self, recovery_used: bool) -> bool:
+        return self._recovery_settings.enabled and not recovery_used
+
+    def _generation_found_evidence_insufficient(self, result: RagResult) -> bool:
+        """True when the generation stage judges available evidence insufficient.
+
+        Architectural trigger — not tied to a specific detector. Current
+        implementation: the model emitted the fixed fallback (``_is_refusal``).
+        """
+        return (not result.answered) or self._is_refusal(
+            result.answer, self._settings.fallback_response
+        )
+
+    def _retrieve_once(
+        self, org_id: str, query_text: str, query_vec: list[float]
+    ) -> tuple[list[RetrievedChunk], float | None]:
+        if self._retriever is not None:
+            retrieval = self._retriever.retrieve(org_id, query_text, query_vec)
+            return retrieval.hits, retrieval.gate_score
+        hits = self._store.query(org_id, query_vec, top_k=self._settings.top_k)
+        top_score = hits[0].score if hits else None
+        return hits, top_score
+
+    def _generate(
+        self,
+        question: str,
+        hits: list[RetrievedChunk],
+        top_score: float | None,
+        *,
+        retrieval_reused: bool,
+    ) -> RagResult:
         prompt = build_grounded_prompt(
             question=question,
             contexts=[h.content for h in hits],
@@ -220,6 +356,99 @@ class RagPipeline:
             top_score=top_score,
             retrieval_reused=retrieval_reused,
         )
+
+    def _recover_once(
+        self,
+        question: str,
+        org_id: str,
+        prior_hits: list[RetrievedChunk],
+        *,
+        reason: str,
+    ) -> _RecoveryAttempt:
+        """One bounded recovery: expand retrieval expressions → re-retrieve → fuse.
+
+        On any expander/retrieve failure, returns the prior hits unchanged
+        (graceful degradation — never fails the request).
+        """
+        del reason  # logged by caller via recovery_reason; kept for call-site clarity
+        queries = self._expand_recovery_queries(question, prior_hits)
+        if not queries:
+            return _RecoveryAttempt(
+                hits=list(prior_hits),
+                gate_score=prior_hits[0].score if prior_hits else None,
+                queries=[],
+            )
+
+        ranked_lists: list[list[RetrievedChunk]] = []
+        if prior_hits:
+            ranked_lists.append(list(prior_hits))
+
+        try:
+            vectors = self._embedder.embed(queries)
+        except Exception:
+            return _RecoveryAttempt(
+                hits=list(prior_hits),
+                gate_score=prior_hits[0].score if prior_hits else None,
+                queries=queries,
+            )
+
+        for q_text, q_vec in zip(queries, vectors):
+            try:
+                hits, _ = self._retrieve_once(org_id, q_text, q_vec)
+            except Exception:
+                continue
+            if hits:
+                ranked_lists.append(hits)
+
+        if not ranked_lists:
+            return _RecoveryAttempt(hits=[], gate_score=None, queries=queries)
+
+        if len(ranked_lists) == 1:
+            fused = ranked_lists[0]
+        else:
+            fused = HybridRetriever._rrf_fuse(ranked_lists, k=60)
+
+        # Gate signal = best cosine among fused candidates (RRF never overwrites .score).
+        gate_score = max((c.score for c in fused), default=None)
+        fused = fused[: self._settings.top_k]
+        return _RecoveryAttempt(hits=fused, gate_score=gate_score, queries=queries)
+
+    def _expand_recovery_queries(
+        self, question: str, hits: list[RetrievedChunk]
+    ) -> list[str]:
+        """Ask the LLM for alternate retrieval expressions; never fails the request."""
+        snippets = [h.content for h in hits[:3]]
+        prompt = build_recovery_queries_prompt(question, snippets)
+        try:
+            raw = self._llm.generate(prompt)
+        except LLMProviderError:
+            return []
+        except Exception:
+            return []
+        return self._parse_recovery_queries(raw, question)
+
+    def _parse_recovery_queries(self, raw: str, original_question: str) -> list[str]:
+        """Validate expander output into ≤ max_queries distinct search expressions."""
+        if not raw or not raw.strip():
+            return []
+        original_norm = " ".join(original_question.lower().split())
+        out: list[str] = []
+        seen: set[str] = set()
+        for line in raw.splitlines():
+            line = line.strip().lstrip("-•*").strip()
+            # Drop numbering like "1." / "1)"
+            if len(line) >= 2 and line[0].isdigit() and line[1] in ".)":
+                line = line[2:].strip()
+            if not line or len(line) > _MAX_RECOVERY_QUERY_LEN:
+                continue
+            norm = " ".join(line.lower().split())
+            if not norm or norm == original_norm or norm in seen:
+                continue
+            seen.add(norm)
+            out.append(line)
+            if len(out) >= self._recovery_settings.max_queries:
+                break
+        return out
 
     def _gate_failed(
         self, question: str, hits: list[RetrievedChunk], top_score: float | None
@@ -436,6 +665,9 @@ class RagPipeline:
 
         Robust to trailing punctuation / whitespace / case and to the model
         wrapping the sentence, so a refusal is never mistaken for a real answer.
+
+        Current implementation of "generation found evidence insufficient" —
+        not the architectural definition of that trigger.
         """
         core = fallback_response.rstrip(".").strip().lower()
         return core in text.strip().lower()

@@ -115,3 +115,24 @@ def test_render_turn_labels_fallback_and_web_sources():
         buf = StringIO()
         cli.render_turn(Console(file=buf, width=100), "q?", _response(source=source, grounded=(source == "web")))
         assert needle in buf.getvalue()
+
+
+
+def test_render_turn_surfaces_recovery():
+    buf = StringIO()
+    console = Console(file=buf, width=100)
+    response = _response(
+        recovery_used=True,
+        recovery_reason="gate_miss",
+        recovery_queries=["leave wellness allowance"],
+        retrieval_improved=True,
+        top_score=0.71,
+        top_score_before=0.20,
+        top_score_after=0.71,
+        latency_ms=42.0,
+    )
+    cli.render_turn(console, "protein supplements?", response)
+    out = buf.getvalue()
+    assert "recovery" in out.lower()
+    assert "gate_miss" in out
+    assert "leave wellness allowance" in out

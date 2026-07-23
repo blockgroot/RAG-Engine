@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import uuid
 
-from app.config.settings import RagSettings, WebSearchSettings
+from app.config.settings import RagSettings, RecoverySettings, WebSearchSettings
 from app.core.exceptions import WebSearchError
 from app.ingestion import chunk_text, preprocess
 from app.llm.base import ChatResult, LLMProvider, ToolCall
@@ -107,6 +107,7 @@ def test_web_search_failure_degrades_to_fixed_fallback(embedder, store, org_clea
         memory=None,
         web_search=_FailingWebSearch(),
         web_search_settings=WebSearchSettings(enabled=True, provider="duckduckgo", api_key=None, max_results=5, timeout=1.0),
+        recovery_settings=RecoverySettings(enabled=False),
     )
 
     result = pipe.answer("What does Acme External Insurance Corp cover?", org_id)

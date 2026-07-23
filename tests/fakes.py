@@ -1,4 +1,4 @@
-"""Deterministic in-memory fakes for Phase 8 unit tests.
+"""Deterministic in-memory fakes for Phase 8+ unit tests.
 
 The Phase 8 mechanisms — incremental summarization and the retrieval-reuse gate —
 are pure control-flow decisions, so they can (and should) be proven without a real
@@ -6,8 +6,8 @@ DB, LLM, or embedding model, exactly like the golden-set's deterministic path
 checks. These fakes make the decisions observable and reproducible:
 
 - ``RecordingLLM``   records every prompt and returns a canned reply per prompt
-  kind (rewrite / summary / grounded answer), so we can inspect the *input* to the
-  summarization call and assert its size never grows.
+  kind (rewrite / summary / recovery / grounded answer), so we can inspect the
+  *input* to the summarization call and assert its size never grows.
 - ``KeywordEmbedder``  maps text to a vector over a fixed set of topic keywords, so
   cosine similarity between two texts is fully controllable (same topic → 1.0,
   disjoint topics → 0.0). This lets a test dictate whether the reuse gate fires.
@@ -15,12 +15,16 @@ checks. These fakes make the decisions observable and reproducible:
   the Phase 8 ``set_last_retrieval`` / ``get_last_retrieval`` methods.
 - ``RecordingVectorStore``  a minimal ``VectorStore`` whose ``query`` returns a
   distinctive chunk and counts calls, so a test can tell fresh retrieval from reuse.
+- ``TopicAwareVectorStore``  scores stored chunks against the query embedding via
+  the same keyword axes, so recovery expansions that introduce a topic keyword
+  can retrieve a previously-missed chunk.
 """
 
 from __future__ import annotations
 
 import math
 
+from app.core.exceptions import LLMProviderError
 from app.llm.base import LLMProvider
 from app.embeddings.base import EmbeddingProvider
 from app.memory.base import (
@@ -32,7 +36,18 @@ from app.memory.base import (
 from app.vectorstore.base import RetrievedChunk, VectorStore
 
 # Fixed topic axes; a text's vector has a 1 on each topic keyword it contains.
-TOPICS = ["leave", "sick", "remote", "parking", "dental"]
+TOPICS = ["leave", "sick", "remote", "parking", "dental", "wellness", "allowance"]
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    if len(a) != len(b):
+        n = max(len(a), len(b))
+        a = a + [0.0] * (n - len(a))
+        b = b + [0.0] * (n - len(b))
+    denom = math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(x * x for x in b))
+    if denom == 0.0:
+        return 0.0
+    return sum(x * y for x, y in zip(a, b)) / denom
 
 
 class KeywordEmbedder(EmbeddingProvider):
@@ -65,27 +80,52 @@ class RecordingLLM(LLMProvider):
         self,
         *,
         answer: str = "The answer is 25 days. [1]",
+        answers: list[str] | None = None,
         summary: str = "Running summary of earlier turns.",
         rewrite: str | None = None,
+        recovery_queries: list[str] | None = None,
+        raise_on_recovery: bool = False,
     ) -> None:
         self.prompts: list[str] = []
         self._answer = answer
+        self._answers = list(answers) if answers is not None else None
+        self._answer_idx = 0
         self._summary = summary
         self._rewrite = rewrite
+        self._recovery_queries = recovery_queries
+        self._raise_on_recovery = raise_on_recovery
+        self.recovery_calls = 0
+        self.grounded_calls = 0
 
     def generate(self, prompt: str) -> str:
         self.prompts.append(prompt)
         if "STANDALONE QUESTION:" in prompt:
-            # Echo a fixed standalone question (tests that need a specific rewrite
-            # pass one in); default keeps the same topic as turn 1.
             return self._rewrite or "How many paid annual leave days do we get?"
         if "UPDATED SUMMARY:" in prompt:
             return self._summary
+        if "RETRIEVAL EXPRESSIONS:" in prompt:
+            self.recovery_calls += 1
+            if self._raise_on_recovery:
+                raise LLMProviderError("simulated recovery expander failure")
+            if self._recovery_queries is None:
+                return ""
+            return "\n".join(self._recovery_queries)
+        self.grounded_calls += 1
+        if self._answers is not None:
+            if self._answer_idx < len(self._answers):
+                text = self._answers[self._answer_idx]
+                self._answer_idx += 1
+                return text
+            return self._answers[-1] if self._answers else self._answer
         return self._answer
 
     @property
     def summary_prompts(self) -> list[str]:
         return [p for p in self.prompts if "UPDATED SUMMARY:" in p]
+
+    @property
+    def recovery_prompts(self) -> list[str]:
+        return [p for p in self.prompts if "RETRIEVAL EXPRESSIONS:" in p]
 
 
 class InMemoryConversationStore(ConversationStore):
@@ -167,3 +207,67 @@ class RecordingVectorStore(VectorStore):
                 org_id=org_id,
             )
         ]
+
+
+class TopicAwareVectorStore(VectorStore):
+    """Scores stored chunks against the query embedding on KeywordEmbedder axes.
+
+    A first-pass query with no overlapping topic keywords scores ~0 (gate miss).
+    A recovery expression that introduces a matching topic keyword retrieves the
+    chunk with a high cosine — modelling a Retrieval Discovery Gap.
+    """
+
+    def __init__(
+        self,
+        org_id: str,
+        chunks: list[tuple[str, str]] | None = None,
+        *,
+        weak_fallback_content: str | None = None,
+        weak_fallback_score: float = 0.2,
+    ) -> None:
+        self._org_id = org_id
+        self._chunks = list(chunks or [("doc-1", "leave wellness allowance: health benefits")])
+        self._embedder = KeywordEmbedder()
+        self._chunk_vecs = self._embedder.embed([c for _, c in self._chunks])
+        self._weak_fallback_content = weak_fallback_content
+        self._weak_fallback_score = weak_fallback_score
+        self.query_calls = 0
+        self.query_texts_via_embedding: list[list[float]] = []
+
+    def create_organization(self, name: str) -> str:  # pragma: no cover - unused
+        return self._org_id
+
+    def add_document(self, *args, **kwargs) -> str:  # pragma: no cover - unused
+        return "doc-1"
+
+    def query(
+        self, org_id: str, query_embedding: list[float], top_k: int = 5
+    ) -> list[RetrievedChunk]:
+        self.query_calls += 1
+        self.query_texts_via_embedding.append(list(query_embedding))
+        scored: list[RetrievedChunk] = []
+        for (doc_id, content), vec in zip(self._chunks, self._chunk_vecs):
+            score = _cosine(query_embedding, vec)
+            scored.append(
+                RetrievedChunk(
+                    content=content,
+                    score=score,
+                    document_id=doc_id,
+                    chunk_index=0,
+                    org_id=org_id,
+                )
+            )
+        scored.sort(key=lambda c: c.score, reverse=True)
+        if scored and scored[0].score > 0.0:
+            return scored[:top_k]
+        if self._weak_fallback_content is not None:
+            return [
+                RetrievedChunk(
+                    content=self._weak_fallback_content,
+                    score=self._weak_fallback_score,
+                    document_id="doc-weak",
+                    chunk_index=0,
+                    org_id=org_id,
+                )
+            ]
+        return []

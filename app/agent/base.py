@@ -62,6 +62,9 @@ class AgentResponse:
     - ``retrieval_reused``  ``True`` when the turn reused the previous turn's chunks
       instead of retrieving afresh (Phase 8). A diagnostic; the answer is produced
       by the same gate → generate path regardless.
+    - Recovery diagnostics (Retrieval Discovery Gap): ``recovery_used``,
+      ``recovery_reason``, ``recovery_queries``, ``retrieval_improved``,
+      ``top_score_before``, ``top_score_after``, ``latency_ms``.
     """
 
     answer: str
@@ -71,6 +74,13 @@ class AgentResponse:
     resolved_question: str | None = None
     top_score: float | None = None
     retrieval_reused: bool = False
+    recovery_used: bool = False
+    recovery_reason: str | None = None
+    recovery_queries: list[str] = field(default_factory=list)
+    retrieval_improved: bool = False
+    top_score_before: float | None = None
+    top_score_after: float | None = None
+    latency_ms: float | None = None
 
 
 class Agent(ABC):

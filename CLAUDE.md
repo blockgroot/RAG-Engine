@@ -222,6 +222,26 @@ their policy documents; their employees ask questions and get answers grounded i
   core runtime and the eventual self-hosted image stay dependency-light (§1). A tiny
   optional `VectorStore.list_organizations` was added (default `NotImplementedError`,
   like `keyword_search`) purely to power a friendly org picker.
+- **Bounded retrieval recovery for Retrieval Discovery Gaps (extends Phase 3 path).**
+  The first retrieve runs exactly as today. Only when available evidence looks
+  insufficient — gate miss, or the generation stage finds the context insufficient
+  (currently implemented via ``_is_refusal``, not defined as such architecturally) —
+  may **at most one** recovery attempt run: an LLM produces alternative
+  retrieval-oriented search expressions (synonyms, abbreviations, spelling
+  corrections, document terminology, alternate phrasings, related vocabulary)
+  while **preserving user intent**, those are retrieved and RRF-fused with
+  first-pass hits, then the **unchanged** gate + grounded prompt apply again.
+  Recovery never answers the question and must never reduce grounding guarantees.
+  Expander failure degrades to the existing path. Internal recovery runs *before*
+  web search on gate miss. Config: ``RecoverySettings`` / ``RECOVERY_ENABLED`` /
+  ``RECOVERY_MAX_QUERIES``. Observability on ``RagResult``:
+  ``recovery_used``, ``recovery_reason`` (``gate_miss`` | ``insufficient_evidence``),
+  ``recovery_queries``, ``retrieval_improved``, ``top_score_before`` /
+  ``top_score_after``, ``final_answer_source``, ``latency_ms``.
+- **Grounding prompt has three response modes (Grounding Gap).** Explicitly
+  Supported / Related but Not Explicit / No Supporting Evidence. Related mode
+  may report what documents say while distinguishing that they do not explicitly
+  answer — unsupported conclusions remain forbidden.
 - **Per-organization Notion credentials: one integration secret PER org, discovered
   from config, never a shared token (Phase 9).** Going forward each real org gets its
   OWN Notion internal integration + secret, expressed as a distinctly-named env var
@@ -334,6 +354,12 @@ tests/          # pytest; isolation (P2), grounding (P3), conversation+websearch
   later phase. `NOTION_CLIENT_ID/SECRET/REDIRECT_URI` are read into `NotionSettings`
   but unused for now (reserved, not hardcoded). The same `notion-client` accepts an
   OAuth token later via the same interface.
+- **Recovery is bounded and optional; expander failure never fails the request.**
+  At most one expand per ``answer()``. Happy path (gate pass + sufficient generation)
+  adds zero recovery LLM calls. On expander timeout/parse failure, continue with
+  the existing gate/web/fallback path. Kill-switch: ``RECOVERY_ENABLED=false``.
+  Recovery queries are retrieval-only — generation always uses the original
+  (conversation-resolved) question. Do not introduce domain-specific synonym rules.
 - **Notion tokens are per-org and must NOT fall back (Phase 9).** Each org has its
   own `NOTION_TOKEN_<NAME>` secret; `NotionSettings.resolve_token(name)` returns
   *only* that org's token and raises `ConfigurationError` if it's missing — it must
@@ -630,6 +656,15 @@ application/tooling layers over the existing schema. **Phase 8 added one table**
   existing Phase 4 Notion org. **Explicitly NOT in this phase / next stage:** frontend,
   HTTP API, OAuth flow, admin/user-role handling — and the real multi-org Notion data
   entry + ingestion (this phase only lays the credential foundation for it).
+
+- Bounded retrieval recovery + Grounding Gap prompt — Extends ``RagPipeline``
+  without replacing hybrid/RRF/rerank/gate/memory/web. First retrieve unchanged;
+  at most one recovery when evidence is insufficient (``gate_miss`` or generation
+  insufficiency). ``build_recovery_queries_prompt`` + three-mode
+  ``build_grounded_prompt``. ``RecoverySettings``; diagnostics on ``RagResult`` /
+  ``AgentResponse`` / CLI. Tests: ``tests/test_recovery.py`` (generic categories,
+  fakes) + adjusted grounding related-but-not-explicit case. Existing fixtures
+  disable recovery so prior suites stay deterministic.
 
 **Pending (not started)**
 - **Next stage (the deliberate follow-on to Phase 9):** real multi-organization data
