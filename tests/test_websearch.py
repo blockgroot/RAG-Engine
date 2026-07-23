@@ -116,3 +116,99 @@ def test_web_search_failure_degrades_to_fixed_fallback(embedder, store, org_clea
     assert result.source == "none"
     assert not result.answered
     assert result.answer == RagSettings.from_env().fallback_response
+
+
+# --- web after gate-pass + insufficient evidence (deterministic fakes) -----
+
+class _RefuseThenWebLLM(LLMProvider):
+    """Grounded generate always refuses; tool-calling always requests web_search."""
+
+    def __init__(self) -> None:
+        self.generate_calls = 0
+        self.tool_calls = 0
+
+    def generate(self, prompt: str) -> str:
+        self.generate_calls += 1
+        # Recovery expander or web answer composition.
+        if "RETRIEVAL EXPRESSIONS:" in prompt:
+            return "external protest participation laws India"
+        if "SEARCH RESULTS:" in prompt or "web SEARCH RESULTS" in prompt.lower():
+            return "Public reporting describes CJP as a civil-rights campaign; participation rules depend on local law."
+        # Grounded policy prompt → refuse (insufficient internal evidence).
+        return RagSettings.from_env().fallback_response
+
+    def generate_with_tools(self, messages, tools=None, tool_choice=None, timeout=None):
+        self.tool_calls += 1
+        return ChatResult(
+            text=None,
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    name="web_search",
+                    arguments='{"query": "CJP protest corporate employees India"}',
+                )
+            ],
+            raw_message={"role": "assistant"},
+        )
+
+
+class _OkWebSearch(WebSearchProvider):
+    def search(self, query, max_results=5, timeout=8.0):
+        from app.websearch.base import SearchResult
+
+        return [
+            SearchResult(
+                title="Example news",
+                snippet="Background on political protests in India.",
+                url="https://example.com/protest",
+            )
+        ]
+
+
+def test_web_after_insufficient_evidence_when_gate_passed():
+    """Gate can clear on weak neighbors; after refuse (+ optional recovery) still offer web.
+
+    Models the Niva Bupa / CJP case: top_score above threshold, generation finds
+    evidence insufficient, then web is offered for an external named entity.
+    """
+    from tests.fakes import KeywordEmbedder, TopicAwareVectorStore
+
+    org = "org-web-insuf"
+    # Chunk shares a loose topic so first retrieve clears a low gate; content does
+    # not answer the external protest question.
+    # No topic overlap with the question → weak neighbor still returned above the
+    # real 0.35 gate (same shape as office-parties chunks for a protest question).
+    store = TopicAwareVectorStore(
+        org,
+        chunks=[("doc-1", "leave wellness unrelated handbook filler")],
+        weak_fallback_content="office parties and complaint mechanism guidelines",
+        weak_fallback_score=0.50,
+    )
+    llm = _RefuseThenWebLLM()
+    pipe = RagPipeline(
+        llm=llm,
+        embedder=KeywordEmbedder(),
+        store=store,
+        settings=RagSettings(
+            top_k=3,
+            similarity_threshold=0.35,
+            fallback_response=RagSettings.from_env().fallback_response,
+        ),
+        memory=None,
+        web_search=_OkWebSearch(),
+        web_search_settings=WebSearchSettings(
+            enabled=True, provider="duckduckgo", api_key=None, max_results=3, timeout=2.0
+        ),
+        retriever=None,
+        recovery_settings=RecoverySettings(enabled=True, max_queries=1),
+    )
+
+    result = pipe.answer(
+        "Can corporate employees participate in recent CJP protests in India?",
+        org_id=org,
+    )
+
+    assert result.source == "web", result
+    assert result.answered
+    assert WEB_ANSWER_LABEL in result.answer
+    assert llm.tool_calls >= 1

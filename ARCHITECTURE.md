@@ -198,7 +198,7 @@ flowchart TD
 
 6. **Grounded generation (layer 2).** `build_grounded_prompt` uses three modes only: **Explicitly Supported** / **Related but Not Explicit** / **No Supporting Evidence**. Related mode may report what docs say while stating they do not explicitly answer; unsupported conclusions remain forbidden. `_is_refusal()` detects the fixed fallback. If generation finds evidence insufficient and recovery has not yet run → step 5b once, then generate again.
 
-7. **Web-search fallback (Phase 5) — only when the gate still fails after recovery.** `_gate_failed()` → `_try_web_search()`:
+7. **Web-search fallback (Phase 5) — when internal evidence is insufficient** (gate still fails after recovery, *or* generation refuses after gate-pass + recovery). `_gate_failed()` → `_try_web_search()`:
    - One LLM **decision call** offering a `web_search` *tool* (real function-calling). The tool description says: call it ONLY for real, named, *external* entities (an insurer/product/company); do NOT call it for internal company info.
    - If the model calls it: exactly **one bounded search** runs (DuckDuckGo), results are fed back, one answer call composes the reply.
    - The answer is prefixed with an unmistakable banner (`WEB_ANSWER_LABEL`) and `source="web"`, `answered=True`.

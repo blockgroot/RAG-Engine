@@ -288,15 +288,17 @@ class RagPipeline:
             result = self._generate(
                 question, hits, top_score, retrieval_reused=False
             )
-            if self._generation_found_evidence_insufficient(result):
-                result = RagResult(
-                    answer=self._settings.fallback_response,
-                    answered=False,
-                    source="none",
-                    sources=hits,
-                    top_score=top_score,
-                    retrieval_reused=False,
-                )
+
+        # Internal path exhausted with insufficient evidence: offer web search for
+        # real external named entities (same decision tool as gate-miss). The model
+        # still declines for internal-company questions → fixed fallback. This
+        # covers Retrieval Discovery / Grounding cases where weak neighbors clear
+        # the gate (e.g. Niva Bupa day-care, external political events) but the
+        # chunks do not answer.
+        if self._generation_found_evidence_insufficient(result):
+            return _finalize(
+                self._gate_failed(question, hits=hits, top_score=top_score)
+            )
 
         return _finalize(result)
 
@@ -453,7 +455,12 @@ class RagPipeline:
     def _gate_failed(
         self, question: str, hits: list[RetrievedChunk], top_score: float | None
     ) -> RagResult:
-        """Gate failed: try the web-search fallback, else the fixed fallback."""
+        """Internal evidence insufficient: try web-search fallback, else fixed fallback.
+
+        Used on gate miss *and* when generation finds the retrieved context
+        insufficient after recovery — so external named-entity questions can still
+        reach the web tool when weak internal neighbors cleared the cosine gate.
+        """
         if self._web_search is not None and self._web_search_settings.enabled:
             web = self._try_web_search(question, top_score)
             if web is not None:

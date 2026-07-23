@@ -161,12 +161,12 @@ WEB_SEARCH_TOOL = {
         "description": (
             "Search the public web for information about a REAL, NAMED, external "
             "entity — a specific company, product, service, insurance provider, "
-            "law, or public organization — that would NOT be found in an internal "
-            "company policy document. Only call this when the question is clearly "
-            "about such a public, external, named thing. Do NOT call it for "
-            "questions about the company's own internal policies, benefits, or "
-            "procedures (e.g. 'our leave policy', 'do we offer X') — those are "
-            "internal and should not trigger a web search."
+            "law, public organization, news event, or campaign — that would NOT be "
+            "fully answered by an internal company policy document. Only call this "
+            "when the question is clearly about such a public, external, named "
+            "thing. Do NOT call it for questions about the company's own internal "
+            "policies, benefits, or procedures (e.g. 'our leave policy', 'do we "
+            "offer X') — those are internal and should not trigger a web search."
         ),
         "parameters": {
             "type": "object",
@@ -185,16 +185,18 @@ WEB_SEARCH_TOOL = {
 def build_web_decision_prompt(question: str, fallback_response: str) -> str:
     """System/user prompt for the single-step web-search decision.
 
-    Internal retrieval already failed the confidence gate. The model must decide:
-    is this about a public, external, named entity (→ call web_search), or is it
-    internal-company info that simply isn't in our docs (→ do NOT search)?
+    Called when internal evidence is insufficient (gate miss, or generation
+    refused after retrieve/recovery). The model must decide: public external
+    named entity (→ call web_search), or internal-company info (→ do NOT search)?
     """
     return (
-        "The company's internal policy documents did not contain an answer to the "
-        "user's question. Decide what to do:\n"
+        "The company's internal policy documents did not answer the user's "
+        "question (either nothing relevant was found, or retrieved passages were "
+        "related but did not explicitly answer it). Decide what to do:\n"
         "- If the question is about a REAL, NAMED, EXTERNAL entity with plausible "
         "public information (a specific company, product, insurer, law, public "
-        "service), call the web_search tool exactly once.\n"
+        "organization, news event, or campaign), call the web_search tool exactly "
+        "once.\n"
         "- If the question is about the company's OWN internal policies/benefits/"
         "procedures that simply aren't in the docs, do NOT call any tool and "
         f"reply with exactly this sentence: {fallback_response}\n\n"

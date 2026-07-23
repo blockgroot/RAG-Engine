@@ -232,8 +232,9 @@ their policy documents; their employees ask questions and get answers grounded i
   while **preserving user intent**, those are retrieved and RRF-fused with
   first-pass hits, then the **unchanged** gate + grounded prompt apply again.
   Recovery never answers the question and must never reduce grounding guarantees.
-  Expander failure degrades to the existing path. Internal recovery runs *before*
-  web search on gate miss. Config: ``RecoverySettings`` / ``RECOVERY_ENABLED`` /
+  Expander failure degrades to the existing path. Internal recovery runs *before* web search on gate miss. Web is also
+  offered when generation finds evidence insufficient after a cleared gate
+  (weak neighbors) — the model still declines for internal-only questions. Config: ``RecoverySettings`` / ``RECOVERY_ENABLED`` /
   ``RECOVERY_MAX_QUERIES``. Observability on ``RagResult``:
   ``recovery_used``, ``recovery_reason`` (``gate_miss`` | ``insufficient_evidence``),
   ``recovery_queries``, ``retrieval_improved``, ``top_score_before`` /
