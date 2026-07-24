@@ -16,6 +16,8 @@ byte-for-byte unchanged, because the pipeline underneath is untouched.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from ..rag import RagPipeline
 from ..rag.pipeline import RagResult
 from ..vectorstore.base import RetrievedChunk
@@ -45,6 +47,23 @@ class PolicyAgent(Agent):
             question, org_id=org_id, conversation_id=conversation_id
         )
         return self._to_response(result)
+
+    def answer_stream(
+        self, question: str, org_id: str, *, conversation_id: str | None = None
+    ) -> tuple[Iterator[str], AgentResponse]:
+        """Like ``answer``, but the text arrives as a chunk iterator.
+
+        Not part of the abstract ``Agent`` contract — it's a PolicyAgent-specific
+        convenience for callers that want progressive display (the CLI, an SSE
+        endpoint), not a capability every future agent must implement. See
+        ``RagPipeline.answer_stream`` for why this chunks an already-fully-decided
+        answer rather than streaming raw LLM tokens through the gate/recovery/
+        tone-retry logic.
+        """
+        chunks, result = self._pipeline.answer_stream(
+            question, org_id, conversation_id=conversation_id
+        )
+        return chunks, self._to_response(result)
 
     @staticmethod
     def _to_response(result: RagResult) -> AgentResponse:

@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from dotenv import load_dotenv
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
@@ -52,27 +53,36 @@ _SOURCE_STYLE = {
 }
 
 
+def _answer_panel(response: AgentResponse, text: str | None = None) -> Panel:
+    """Build the colour-coded, Markdown-rendered answer panel.
+
+    ``text`` overrides ``response.answer`` (used while streaming, when only a
+    prefix of the final answer has arrived so far); omit it to render the full
+    final answer. Markdown rendering means lists, **bold**, and headings the
+    model emits (see prompts.py rule 6 — bullet lists for multi-fact answers)
+    display formatted instead of showing raw "-"/"**" markup.
+    """
+    label, colour = _SOURCE_STYLE.get(response.source, (response.source, "white"))
+    return Panel(
+        Markdown((text if text is not None else response.answer).strip() or " "),
+        title=f"[bold {colour}]{label}[/]",
+        border_style=colour,
+        padding=(1, 2),
+    )
+
+
 def render_turn(console: Console, question: str, response: AgentResponse) -> None:
     """Render one Q&A turn: the answer, its provenance, and the internals.
 
     Pure formatting over an ``AgentResponse`` — no agent/network here — so it can
     be exercised directly in tests.
     """
-    label, colour = _SOURCE_STYLE.get(response.source, (response.source, "white"))
+    console.print(_answer_panel(response))
+    render_internals(console, question, response)
 
-    # The answer, in a colour-coded panel titled by its provenance. Rendered as
-    # Markdown so lists, **bold**, and headings the model emits display formatted
-    # instead of showing raw "-"/"**" markup.
-    console.print(
-        Panel(
-            Markdown(response.answer.strip()),
-            title=f"[bold {colour}]{label}[/]",
-            border_style=colour,
-            padding=(1, 2),
-        )
-    )
 
-    # Behind-the-scenes internals for this turn, compact and dim.
+def render_internals(console: Console, question: str, response: AgentResponse) -> None:
+    """Render the behind-the-scenes internals + citations for a turn (no answer)."""
     internals = Text(style="dim")
     if response.resolved_question and response.resolved_question != question:
         internals.append("↻ rewritten to: ", style="dim italic")
@@ -120,6 +130,36 @@ def render_turn(console: Console, question: str, response: AgentResponse) -> Non
     console.print()
 
 
+def stream_turn(
+    console: Console, question: str, agent: Agent, org_id: str, conversation_id: str
+) -> AgentResponse:
+    """Run one turn, showing the answer progressively if the agent supports it.
+
+    ``PolicyAgent.answer_stream`` (not part of the abstract ``Agent`` contract —
+    see its docstring) has already fully resolved the answer — gate, recovery,
+    tone-compliance retry, everything — before this function ever runs; only
+    the *reveal* to the terminal changes, from "the whole panel pops in at
+    once" to "the panel grows chunk by chunk" via ``rich``'s ``Live`` display.
+    Falls back to the plain blocking ``agent.answer`` for any ``Agent`` that
+    doesn't implement streaming (e.g. a test fake, or a future non-policy agent
+    that only implements the abstract contract).
+    """
+    answer_stream = getattr(agent, "answer_stream", None)
+    if answer_stream is None:
+        response = agent.answer(question, org_id, conversation_id=conversation_id)
+        render_turn(console, question, response)
+        return response
+
+    chunks, response = answer_stream(question, org_id, conversation_id=conversation_id)
+    text = ""
+    with Live(_answer_panel(response, text), console=console, refresh_per_second=12) as live:
+        for chunk in chunks:
+            text += chunk
+            live.update(_answer_panel(response, text))
+    render_internals(console, question, response)
+    return response
+
+
 def converse(
     agent: Agent,
     org_id: str,
@@ -146,8 +186,7 @@ def converse(
             continue
         if text.lower() in _EXIT_WORDS:
             break
-        response = agent.answer(text, org_id, conversation_id=conversation_id)
-        render_turn(console, text, response)
+        stream_turn(console, text, agent, org_id, conversation_id)
         turns += 1
     console.print("[dim]Session ended.[/]")
     return turns
