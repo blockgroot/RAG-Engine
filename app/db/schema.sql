@@ -137,6 +137,7 @@ CREATE TABLE IF NOT EXISTS oauth_connections (
     org_id                  UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
     provider                TEXT NOT NULL,
     external_workspace_id   TEXT NOT NULL,
+    external_workspace_name TEXT,
     access_token_encrypted  TEXT NOT NULL,
     refresh_token_encrypted TEXT,
     expires_at              TIMESTAMPTZ,
@@ -145,6 +146,7 @@ CREATE TABLE IF NOT EXISTS oauth_connections (
     UNIQUE (org_id, provider)
 );
 CREATE INDEX IF NOT EXISTS idx_oauth_connections_org ON oauth_connections (org_id);
+ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS external_workspace_name TEXT;
 
 -- Admin-triggered ingestion jobs (Phase 10/12). A durable, pollable record of a
 -- background fetch->chunk->embed->store run so an admin sees progress instead
