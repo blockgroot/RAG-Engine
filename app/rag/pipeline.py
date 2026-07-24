@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
 
 import numpy as np
@@ -207,6 +208,43 @@ class RagPipeline:
             self._update_running_summary(conversation_id)
 
         return result
+
+    def answer_stream(
+        self,
+        question: str,
+        org_id: str,
+        *,
+        conversation_id: str | None = None,
+        chunk_chars: int = 40,
+    ) -> tuple[Iterator[str], RagResult]:
+        """Answer, then hand back the text as a chunk iterator instead of one string.
+
+        Why this does NOT stream token-by-token from the LLM: whether a given
+        ``_generate`` call is even the FINAL one is only known after inspecting
+        its output — a gate pass can still trigger recovery-then-regenerate if
+        ``_generation_found_evidence_insufficient`` fires (see ``_run``), and a
+        recovery-exhausted miss can still fall through to the web-search tool
+        (a different call shape entirely, ``generate_with_tools``). Streaming
+        tokens as they arrive from a call that might get thrown away and
+        replaced would either leak a discarded draft to the client or require
+        buffering anyway — so there is no correctness win, only risk, in
+        threading a streaming callback through the gate/recovery/web branches.
+
+        Instead this runs the complete, UNCHANGED ``answer()`` — every gate,
+        recovery, and grounding decision is resolved exactly as it always is —
+        and only then chunks the final, already-decided answer text for
+        progressive delivery. From the caller's side (e.g. an SSE endpoint)
+        this still avoids sending the whole answer in one go; it just never
+        streams a token that could later be discarded.
+        """
+        result = self.answer(question, org_id, conversation_id=conversation_id)
+
+        def _chunks() -> Iterator[str]:
+            text = result.answer
+            for i in range(0, len(text), chunk_chars):
+                yield text[i : i + chunk_chars]
+
+        return _chunks(), result
 
     # -- retrieval / gate / generation / recovery --------------------------
 
