@@ -192,11 +192,13 @@ flowchart TD
    - **Cross-encoder rerank** the fused pool → final `top_k` (=5).
    - `gate_score` = **best cosine** among candidates (== the vector top-1 the gate always used). Hybrid/rerank only reorder; they never change the gate signal.
 
-5. **Confidence gate (layer 1, Phase 3).** If `top_score < similarity_threshold` (**0.35**), skip the LLM entirely → go to fallback (step 7). This is the cheap first defense against answering from irrelevant context.
+5. **Confidence gate (layer 1, Phase 3).** If `top_score < similarity_threshold` (**0.35**), evidence is insufficient for generation. Before web/fallback, **bounded retrieval recovery** may run once (see step 5b).
 
-6. **Grounded generation (layer 2, Phase 3).** `build_grounded_prompt(question, contexts, fallback)` produces a **strict** prompt that forbids outside knowledge and orders the model to emit the *exact fallback string* if the context doesn't directly answer (even if on-topic). `llm.generate(prompt)` runs. `_is_refusal()` detects whether the model returned the fallback (robust to case/punctuation/wrapping). Result: `source="policy"`, `answered=True` with `sources` = the chunks; or a refusal → fallback.
+5b. **Bounded retrieval recovery (Retrieval Discovery Gap) — at most once.** Triggered when available evidence looks insufficient: gate miss, *or* generation finds the context insufficient (current detector: `_is_refusal`; architectural definition is generation insufficiency, not that helper). An LLM produces alternative **retrieval-oriented search expressions** (preserving user intent — never answering). Re-retrieve + RRF-merge with first-pass hits; same gate applies. Recovery never reduces grounding guarantees. Expander failure → continue existing path. Happy path: zero recovery LLM calls.
 
-7. **Web-search fallback (Phase 5) — only when the gate fails.** `_gate_failed()` → `_try_web_search()`:
+6. **Grounded generation (layer 2).** `build_grounded_prompt` uses three modes only: **Explicitly Supported** / **Related but Not Explicit** / **No Supporting Evidence**. Related mode may report what docs say while stating they do not explicitly answer; unsupported conclusions remain forbidden. `_is_refusal()` detects the fixed fallback. If generation finds evidence insufficient and recovery has not yet run → step 5b once, then generate again. If evidence is still insufficient after the internal path (retrieve → optional recovery → generate), call the existing web-search stage (when enabled; tool-gated for external entities) before the fixed fallback.
+
+7. **Web-search fallback (Phase 5) — when internal evidence is insufficient** (gate still fails after recovery, *or* generation refuses after gate-pass + recovery). `_gate_failed()` → `_try_web_search()`:
    - One LLM **decision call** offering a `web_search` *tool* (real function-calling). The tool description says: call it ONLY for real, named, *external* entities (an insurer/product/company); do NOT call it for internal company info.
    - If the model calls it: exactly **one bounded search** runs (DuckDuckGo), results are fed back, one answer call composes the reply.
    - The answer is prefixed with an unmistakable banner (`WEB_ANSWER_LABEL`) and `source="web"`, `answered=True`.
@@ -210,9 +212,9 @@ flowchart TD
 
 ### 6.3 The result object
 
-`RagResult(answer, answered, source, sources, top_score, resolved_question, retrieval_reused)`
+`RagResult(..., retrieval_reused, recovery_used, recovery_reason, recovery_queries, retrieval_improved, top_score_before, top_score_after, final_answer_source, latency_ms)`
 → mapped by `PolicyAgent` to
-`AgentResponse(answer, grounded, source, citations, resolved_question, top_score, retrieval_reused)`.
+`AgentResponse` (same recovery diagnostics surfaced for CLI/logging).
 
 - **`source`** is the branch signal: `"policy"` | `"web"` | `"none"`.
 - **`answered`/`grounded`** is `True` for policy AND web answers; `False` only for the fixed fallback. **Branch on the bool / `source`, never on string-matching the answer.**
@@ -240,7 +242,7 @@ flowchart TD
 **Other top-level:**
 - `evaluation/` — golden-set eval (deterministic path-firing tier + RAGAS tier). Peer to `scripts/`/`tests/`.
 - `scripts/` — entrypoints: `cli.py`, `ingest_notion.py`, `verify_providers.py`, `init_db.py`, `demo_rag.py`, `compare_retrieval.py`, `demo_phase8.py`.
-- `tests/` — pytest suite (isolation, grounding, conversation, websearch, retrieval, golden-set path-firing, incremental summary, reuse, CLI, notion credentials).
+- `tests/` — pytest suite (isolation, grounding, conversation, websearch, retrieval, golden-set path-firing, incremental summary, reuse, recovery, CLI, notion credentials).
 
 ---
 

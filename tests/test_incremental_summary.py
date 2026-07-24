@@ -16,7 +16,7 @@ proven end-to-end against the real LLM + Notion data in test_conversation.py.
 
 from __future__ import annotations
 
-from app.config.settings import MemorySettings, RagSettings, ReuseSettings
+from app.config.settings import MemorySettings, RagSettings, RecoverySettings, ReuseSettings
 from app.rag.pipeline import RagPipeline
 from .fakes import (
     InMemoryConversationStore,
@@ -52,6 +52,7 @@ def _drive(n_turns: int):
         memory_settings=MemorySettings(recent_turns=WINDOW),
         retriever=None,
         reuse_settings=ReuseSettings(enabled=False),  # isolate summarization behaviour
+        recovery_settings=RecoverySettings(enabled=False),
     )
     cid = memory.create_conversation(ORG)
     for i in range(n_turns):

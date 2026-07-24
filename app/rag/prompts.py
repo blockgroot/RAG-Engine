@@ -2,11 +2,12 @@
 
 The prompt is layer 2 of the anti-hallucination defence, so it is explicit rather
 than a casual "answer from the context" nudge. It forces the model to (1) answer
-*only* from the supplied context, and (2) refuse with a fixed sentence whenever the
-context doesn't directly answer — even when it's on a related topic (the failure
-mode the similarity gate can't catch). The refusal sentence is passed in (from
-``RagSettings.fallback_response``) so gate, prompt, and refusal detection share one
-string. Full reasoning: CLAUDE.md §2/§4.
+*only* from the supplied context, and (2) refuse with a fixed sentence whenever
+there is no supporting evidence. When context is related but not explicit, the
+model may report what the documents actually say while clearly distinguishing
+that from an explicit answer — never inventing unsupported conclusions.
+The refusal sentence is passed in (from ``RagSettings.fallback_response``) so
+gate, prompt, and refusal detection share one string. Full reasoning: CLAUDE.md.
 """
 
 from __future__ import annotations
@@ -18,6 +19,13 @@ def build_grounded_prompt(question: str, contexts: list[str], fallback_response:
     ``contexts`` are the retrieved chunk texts, most-relevant first. They are
     numbered so the model can cite them and so a human can trace the answer back
     to specific chunks.
+
+    Three response modes only:
+    1. Explicitly Supported — context directly answers; answer + citations.
+    2. Related but Not Explicit — report what docs say; state they do not
+       explicitly answer; optionally add a document-grounded contact next step
+       when the user needs a definitive decision and a contact appears in CONTEXT.
+    3. No Supporting Evidence — exact ``fallback_response`` only.
     """
     numbered = "\n\n".join(f"[{i + 1}] {c.strip()}" for i, c in enumerate(contexts))
 
@@ -27,21 +35,81 @@ def build_grounded_prompt(question: str, contexts: list[str], fallback_response:
         "Follow these rules exactly:\n"
         "1. Use ONLY the information in the CONTEXT. Do not use outside knowledge, "
         "prior training, assumptions, or general world knowledge of any kind.\n"
-        "2. If the CONTEXT does not directly and explicitly answer the QUESTION, "
-        "you MUST reply with exactly this sentence and nothing else:\n"
-        f"   {fallback_response}\n"
-        "3. This rule holds EVEN IF the context is about a related, similar, or "
-        "adjacent topic. Being on the same general subject is NOT enough — the "
-        "context must directly answer the specific question asked. If it only "
-        "touches a neighbouring topic, refuse using the exact sentence above.\n"
-        "4. Never guess, infer beyond what is written, extrapolate, or fill gaps "
-        "with what is 'probably' true. When refusing, return ONLY the exact "
-        "sentence from rule 2 — no apology, no explanation, no extra text.\n"
-        "5. When the context does answer the question, respond concisely and cite "
-        "the context numbers you used in square brackets, e.g. [1] or [2].\n\n"
+        "2. Choose exactly one of these three response modes:\n"
+        "   A. Explicitly Supported — the CONTEXT directly and explicitly answers "
+        "the QUESTION. Answer concisely from the CONTEXT and cite the context "
+        "numbers you used in square brackets, e.g. [1] or [2]. Do NOT add a "
+        "contact / escalate recommendation in this mode.\n"
+        "   B. Related but Not Explicit — the CONTEXT is about a related topic but "
+        "does NOT explicitly answer the QUESTION. Report what the documents "
+        "actually say (with citations). Clearly state that the documents do not "
+        "explicitly answer the question and that you cannot give a definitive "
+        "yes/no from the available documents. Do NOT invent a yes/no conclusion, "
+        "legal interpretation, or any claim that is not written in the CONTEXT.\n"
+        "      Contact next-step (mode B only, optional): If — and only if — "
+        "(i) the QUESTION asks for a definitive policy decision, approval, "
+        "eligibility, reimbursement, claim, exception, permission, or "
+        "interpretation, AND (ii) the CONTEXT contains a concrete contact "
+        "(email, phone, named team such as HR / Benefits / Payroll / Finance / "
+        "IT Helpdesk / Security / Legal / or another designated support contact) "
+        "relevant to that topic, then end with ONE short sentence directing the "
+        "user to that contact for definitive clarification, citing the chunk. "
+        "Pick the most relevant contact for the QUESTION; do not always default "
+        "to HR if another contact fits better. Copy the contact EXACTLY as written "
+        "in the CONTEXT — never invent, guess, or hardcode an email/phone/team. "
+        "If no suitable contact appears in the CONTEXT, omit any contact line.\n"
+        "      Do NOT add a contact line for purely informational questions "
+        "(e.g. 'what is the maternity leave policy?', definitions, how a process "
+        "works when the docs already explain it).\n"
+        "   C. No Supporting Evidence — the CONTEXT is irrelevant or empty of "
+        "useful related information. Reply with exactly this sentence and nothing "
+        f"else:\n   {fallback_response}\n"
+        "3. Never guess, infer beyond what is written, extrapolate, or fill gaps "
+        "with what is 'probably' true. Every claim must be supported by the "
+        "CONTEXT. Unsupported conclusions are forbidden in every mode.\n"
+        "4. When using mode C, return ONLY the exact sentence from rule 2C — no "
+        "apology, no explanation, no contact recommendation, no extra text.\n\n"
         f"CONTEXT:\n{numbered}\n\n"
         f"QUESTION: {question}\n\n"
         "ANSWER:"
+    )
+
+
+def build_recovery_queries_prompt(question: str, hit_snippets: list[str]) -> str:
+    """Build the retrieval-recovery prompt (Retrieval Discovery Gap).
+
+    Produces alternative *retrieval-oriented search expressions* that preserve
+    the user's intent. This must NOT answer the question. Expressions may include
+    synonyms, abbreviations, spelling corrections, document terminology, alternate
+    phrasings, and related vocabulary — only to help retrieval discover better
+    evidence.
+    """
+    if hit_snippets:
+        snippets = "\n".join(
+            f"- {s.strip()[:240]}" for s in hit_snippets if s and s.strip()
+        )
+        evidence_block = f"CURRENT TOP RETRIEVED SNIPPETS (may be weak or off):\n{snippets}"
+    else:
+        evidence_block = "CURRENT TOP RETRIEVED SNIPPETS: (none)"
+
+    return (
+        "You help a document-search system recover from a Retrieval Discovery Gap.\n"
+        "The user's question may use different vocabulary than the documents "
+        "(synonyms, abbreviations, typos, alternate phrasing, related terms).\n\n"
+        "Your ONLY job: propose alternative retrieval-oriented search expressions "
+        "that preserve the user's original intent and may help find the right "
+        "passages. You must NOT answer the question, change the intent, or invent "
+        "facts.\n\n"
+        "Rules:\n"
+        "- Output ONE search expression per line, nothing else.\n"
+        "- Do not number lines or add commentary.\n"
+        "- Preserve the user's intent; never replace it with a different question.\n"
+        "- Expressions may include: synonyms, abbreviations, spelling corrections, "
+        "document terminology, alternate phrasings, related vocabulary.\n"
+        "- Prefer short search-like phrases over full sentences.\n\n"
+        f"USER QUESTION (intent to preserve):\n{question}\n\n"
+        f"{evidence_block}\n\n"
+        "RETRIEVAL EXPRESSIONS:"
     )
 
 

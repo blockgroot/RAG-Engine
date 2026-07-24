@@ -20,6 +20,7 @@ import uuid
 import pytest
 
 from app.agent import build_policy_agent
+from app.config.settings import RecoverySettings
 from app.db import get_connection
 from app.websearch import build_web_search_provider
 from evaluation.golden_set import cases_by_category
@@ -49,7 +50,12 @@ def golden_agent(embedder, store, memory, retriever):
     """Production-config agent for the deterministic tier: memory ON, web OFF (no
     network), reusing the shared hybrid+rerank retriever."""
     return build_policy_agent(
-        embedder=embedder, store=store, memory=memory, web_search=None, retriever=retriever
+        embedder=embedder,
+        store=store,
+        memory=memory,
+        web_search=None,
+        retriever=retriever,
+        recovery_settings=RecoverySettings(enabled=False),
     )
 
 
@@ -62,6 +68,7 @@ def golden_web_agent(embedder, store, retriever):
         memory=None,
         web_search=build_web_search_provider(),
         retriever=retriever,
+        recovery_settings=RecoverySettings(enabled=False),
     )
 
 

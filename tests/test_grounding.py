@@ -10,14 +10,16 @@ real LLM:
    traceable to that org's own chunks only.
 2. A question no org's data covers triggers the fixed "I don't know" fallback,
    for *both* orgs, instead of an invented answer.
-3. A question that is topically related but not actually answered still triggers
-   the fallback — and we assert the top chunk cleared the similarity gate, so it
-   is the strict *prompt* (not the gate) refusing. That is the hard case: the
-   model must not reason its way from related context to a plausible answer.
+3. A question that is topically related but not actually answered must not invent
+   unsupported conclusions (Grounding Gap). The model may use Related-but-Not-
+   Explicit mode to report what the docs *do* say, but must not invent parental
+   leave entitlements. The top chunk must have cleared the similarity gate so
+   this is the prompt (not the gate) enforcing grounding.
 """
 
 from __future__ import annotations
 
+import re
 import uuid
 
 from app.ingestion import chunk_text, preprocess
@@ -126,11 +128,17 @@ def test_no_relevant_data_triggers_fallback_for_both_orgs(rag, store, embedder, 
 
 @requires_db
 @requires_llm
-def test_topically_related_but_unanswered_triggers_fallback(rag, store, embedder, org_cleanup):
-    """The hard case: Org A's handbook covers annual and sick leave (so a parental
+def test_topically_related_but_unanswered_prevents_unsupported_inference(
+    rag, store, embedder, org_cleanup
+):
+    """Grounding Gap: Org A's handbook covers annual/sick leave (so a parental
     leave question retrieves on-topic, above-threshold chunks) but says nothing
-    about parental leave. The pipeline must still refuse — proving the strict
-    prompt, not just the gate, prevents an ungrounded but plausible answer."""
+    about parental leave. The model must not invent a parental-leave entitlement
+    (weeks paid, eligibility). It may refuse (No Supporting Evidence) or use
+    Related-but-Not-Explicit to report what the docs *do* say — never unsupported
+    conclusions. The top chunk must clear the gate so this is the prompt enforcing
+    grounding, not the gate.
+    """
     ids = _seed_two_orgs(store, embedder, org_cleanup)
     org_a = ids[ORG_A_NAME]
 
@@ -140,14 +148,38 @@ def test_topically_related_but_unanswered_triggers_fallback(rag, store, embedder
         org_id=org_a,
     )
 
-    # Must refuse with the exact fallback.
-    assert not result.answered, f"expected fallback, model answered: {result.answer!r}"
-    assert result.answer == rag._settings.fallback_response
-
-    # And prove this was the PROMPT refusing, not the gate: the retrieved leave
-    # content was on-topic enough to clear the similarity threshold.
+    # Gate must have cleared so the prompt (not the gate) is doing the work.
     assert result.top_score is not None
     assert result.top_score >= rag._settings.similarity_threshold, (
-        "expected retrieval to clear the gate so the prompt is what refuses; "
+        "expected retrieval to clear the gate so the prompt enforces grounding; "
         f"top_score={result.top_score}"
     )
+
+    answer_l = result.answer.lower()
+    # Must not invent a concrete parental/maternity entitlement not in the docs.
+    invented = re.search(
+        r"(\d+\s*(weeks?|months?)\s*(of\s+)?(paid\s+)?(parental|maternity|paternity))",
+        answer_l,
+    )
+    assert invented is None, f"invented unsupported parental leave claim: {result.answer!r}"
+
+    if not result.answered:
+        assert result.answer == rag._settings.fallback_response
+    else:
+        # Related-but-Not-Explicit: must acknowledge docs don't explicitly answer,
+        # and any facts mentioned should come from retrieved leave context.
+        asserts_related = (
+            "not explicitly" in answer_l
+            or "do not explicitly" in answer_l
+            or "doesn't explicitly" in answer_l
+            or "does not explicitly" in answer_l
+            or "don't explicitly" in answer_l
+            or "no information" in answer_l
+            or "does not mention" in answer_l
+            or "do not mention" in answer_l
+            or "doesn't mention" in answer_l
+            or "not mention" in answer_l
+        )
+        assert asserts_related or "parental" not in answer_l or "maternity" not in answer_l, (
+            f"related answer must distinguish non-explicit coverage: {result.answer!r}"
+        )

@@ -17,6 +17,7 @@ from __future__ import annotations
 from ..config.settings import (
     MemorySettings,
     RagSettings,
+    RecoverySettings,
     RetrievalSettings,
     ReuseSettings,
     WebSearchSettings,
@@ -47,6 +48,7 @@ def build_rag_pipeline(
     memory: ConversationStore | None = _UNSET,  # type: ignore[assignment]
     web_search: WebSearchProvider | None = _UNSET,  # type: ignore[assignment]
     retriever: HybridRetriever | None = _UNSET,  # type: ignore[assignment]
+    recovery_settings: RecoverySettings | None = None,
 ) -> RagPipeline:
     """Build the RAG pipeline, defaulting each dependency from configuration."""
     web_settings = WebSearchSettings.from_env()
@@ -92,4 +94,5 @@ def build_rag_pipeline(
         web_search_settings=web_settings,
         retriever=retriever,
         reuse_settings=ReuseSettings.from_env(),
+        recovery_settings=recovery_settings or RecoverySettings.from_env(),
     )

@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from app.config.settings import DatabaseSettings, LLMSettings  # noqa: E402
+from app.config.settings import DatabaseSettings, LLMSettings, RecoverySettings  # noqa: E402
 from app.db import apply_schema, close_pool, get_connection  # noqa: E402
 from app.embeddings import build_embedding_provider  # noqa: E402
 from app.memory import build_conversation_store  # noqa: E402
@@ -28,6 +28,9 @@ from app.rag.retrieval import HybridRetriever  # noqa: E402
 from app.reranker import build_reranker  # noqa: E402
 from app.vectorstore import build_vector_store  # noqa: E402
 from app.websearch import build_web_search_provider  # noqa: E402
+
+# Keep pre-recovery fixtures deterministic; recovery is covered in test_recovery.py.
+_RECOVERY_OFF = RecoverySettings(enabled=False)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -86,10 +89,15 @@ def retriever(store, reranker):
 @pytest.fixture(scope="session")
 def rag(embedder, store, retriever):
     """Phase 3 pipeline: retrieve-gate-generate with the Phase 6 hybrid+rerank
-    retriever underneath (memory + web search OFF), so grounding tests stay
-    deterministic while exercising the improved retrieval path."""
+    retriever underneath (memory + web search + recovery OFF), so grounding tests
+    stay deterministic while exercising the improved retrieval path."""
     return build_rag_pipeline(
-        embedder=embedder, store=store, memory=None, web_search=None, retriever=retriever
+        embedder=embedder,
+        store=store,
+        memory=None,
+        web_search=None,
+        retriever=retriever,
+        recovery_settings=_RECOVERY_OFF,
     )
 
 
@@ -103,7 +111,12 @@ def memory():
 def rag_convo(embedder, store, memory, retriever):
     """Phase 5 pipeline with conversation memory ON, web search OFF."""
     return build_rag_pipeline(
-        embedder=embedder, store=store, memory=memory, web_search=None, retriever=retriever
+        embedder=embedder,
+        store=store,
+        memory=memory,
+        web_search=None,
+        retriever=retriever,
+        recovery_settings=_RECOVERY_OFF,
     )
 
 
@@ -116,6 +129,7 @@ def rag_web(embedder, store, retriever):
         memory=None,
         web_search=build_web_search_provider(),
         retriever=retriever,
+        recovery_settings=_RECOVERY_OFF,
     )
 
 
