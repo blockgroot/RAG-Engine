@@ -62,7 +62,7 @@ def request_magic_link(body: dict, settings: ApiSettings = Depends(ApiSettings.f
 
 
 @router.get("/magic-link/verify")
-def verify_magic_link(token: str):
+def verify_magic_link(token: str, settings: ApiSettings = Depends(ApiSettings.from_env)):
     try:
         email = consume_magic_link_token(token)
     except AuthError as exc:
@@ -80,7 +80,12 @@ def verify_magic_link(token: str):
     except (AuthError, ConfigurationError) as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    response = RedirectResponse(url="/")
+    # Redirect to the FRONTEND (not this API's own host) — this endpoint is
+    # reached by a real browser navigation from the emailed link, so the
+    # Set-Cookie below is what actually lands the session; the redirect target
+    # is purely where the user ends up next.
+    base = (settings.frontend_url or "").rstrip("/")
+    response = RedirectResponse(url=f"{base}/chat" if base else "/chat")
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=session_token,
