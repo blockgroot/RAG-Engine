@@ -262,6 +262,91 @@ their policy documents; their employees ask questions and get answers grounded i
   no frontend, HTTP API, OAuth flow, or admin/user-role handling this phase — that is
   the *next* stage. Real multi-org data entry + ingestion also happens later; Phase 9
   only lays the credential plumbing.
+- **Phases 10-14 build the product layer this was always heading toward: real
+  per-org OAuth (replacing the env-var token), an admin panel, a durable ingestion
+  job queue, an HTTP API, streaming chat, and a frontend portal — all wired
+  *around* the RAG engine, never replacing its gate/prompt/isolation logic.**
+  - **Identity is new, additive, and never bypasses `org_id` scoping (Phase 10).**
+    Four new tables (`users`, `org_domains`, `oauth_connections`, `ingestion_jobs`)
+    follow the exact existing schema conventions (UUID PK, `org_id` FK +
+    `idx_<table>_org`, idempotent `IF NOT EXISTS`). `oauth_connections` has
+    `UNIQUE (org_id, provider)` so a lookup can never be ambiguous across tenants.
+    `app/security/crypto.py` encrypts OAuth tokens at rest with `MultiFernet`
+    (`AUTH_ENCRYPTION_KEYS`, comma-separated, first key encrypts/all keys tried on
+    decrypt) — key rotation with **no external KMS dependency**, keeping the
+    self-hosted principle in §1.
+  - **OAuth is a new `app/auth/` provider interface, the same shape as every other
+    capability (Phase 11).** `OAuthProvider` (`authorize_url`/`exchange_code`/
+    optional `refresh`) + `NotionOAuthProvider` (Notion's public OAuth2 endpoints,
+    reusing the `NotionSettings.client_id/secret/redirect_uri` scaffolded-but-unused
+    since Phase 4) + `factory.py`. Credentials move from env vars to
+    `oauth_connections` (`app/auth/credentials.py`), but the **legacy
+    `NOTION_TOKEN_<NAME>` env path is kept fully independent, with NO fallback
+    between the two** — a design review flagged that a shared/ambiguous credential
+    source is exactly how a cross-org leak would happen, so the two paths never
+    touch. `build_source_adapter` gained an optional `token` param (an
+    already-resolved secret) alongside the existing `token_name` env lookup.
+  - **Ingestion is now a durable, admin-triggered Postgres-backed queue, not a
+    blocking script (Phase 12).** `app/jobs/queue.py`: `claim_next()` atomically
+    claims the oldest queued job via `UPDATE ... WHERE id = (SELECT ... FOR UPDATE
+    SKIP LOCKED)` — safe for concurrent workers, no double-claim. `reap_stuck()`
+    flips a job stuck `running` past a timeout back to `failed`, so a crashed
+    worker doesn't leave it running forever. `app/jobs/worker.py` runs the
+    **existing, unchanged** `ingest_source()` pipeline; failures are caught and
+    recorded on the job, never left to crash the worker. Deliberately **no new
+    infra** (no Redis/Celery) — reuses the Postgres pool already everywhere else.
+    `scripts/run_worker.py` is its own long-lived process, separate from the API,
+    so a crashed worker never takes the API down and vice versa.
+  - **Chat "streaming" chunks an already-fully-decided answer; it does not stream
+    raw LLM tokens (Phase 13a).** Tracing `RagPipeline._run()`'s control flow showed
+    a gate-passing `_generate()` call is not necessarily final — evidence-
+    insufficiency can still trigger a recovery-and-regenerate, and a
+    recovery-exhausted miss can still fall through to the web-search tool (a
+    different call shape, `generate_with_tools`). Streaming tokens from a call that
+    might get discarded and replaced would leak a draft or require buffering
+    anyway — no correctness win, only risk to grounding. So
+    `RagPipeline.answer_stream()` / `PolicyAgent.answer_stream()` run the complete
+    **unchanged** `answer()` (every gate/recovery/grounding decision resolved
+    exactly as always) and only then chunk the final text for progressive
+    delivery. This is a deliberate deviation from an earlier sketch that proposed
+    a raw `generate_stream()` passthrough — discovered during implementation, not
+    a design assumed up front.
+  - **The HTTP API (`app/api/`, FastAPI) is the ONLY place `org_id` enters a
+    request, always from the signed session, never from client input (Phase
+    13b-d).** `deps.get_session`/`require_admin` decode the session JWT
+    (`app/auth/session.py`) from an httpOnly cookie; every router downstream takes
+    `org_id`/`role` from there exclusively. **Employee login is magic-link only**
+    (`app/api/auth.py`): a link is emailed only when the email's domain is BOTH
+    DNS-verified (an HMAC-derived TXT record the org must actually publish —
+    proves DNS control, not just "an admin typed a domain in") AND has
+    `auto_join_enabled` explicitly toggled by an admin — verifying a domain never
+    grants access by itself. Public email providers (gmail.com et al.) can never
+    be registered. The response to a magic-link request is **always the same
+    generic message**, whether or not the domain is eligible — this endpoint must
+    never be usable to enumerate which companies are registered. Magic-link
+    tokens and OAuth `state` values are single-use and server-side (only a
+    SHA-256 hash of a magic-link token is ever stored), consumed atomically on
+    lookup so a captured link/URL can't be replayed. **A session is never issued
+    for a user with no resolved `org_id`** — there is no authenticated state that
+    lacks a tenant. Admin OAuth connect (`/auth/{provider}/authorize` +
+    `/callback`) is fully independent of magic-link auth and only ever produces an
+    `oauth_connections` row. A client-supplied `conversation_id` on
+    `POST /chat/stream` is explicitly checked against the caller's `org_id` before
+    ever reaching the agent — `ConversationStore.get_context`/`append_turn` take
+    only a `conversation_id` with no org check by design (fine for the CLI's
+    trusted internal calls; not fine once exposed to arbitrary HTTP clients), so
+    the router is the one place that closes that gap.
+  - **The frontend (`frontend/`, Next.js 15 App Router) is a separate app calling
+    the API with `credentials: "include"` — the session lives only in the httpOnly
+    cookie, never JS-accessible storage (Phase 14).** No Tailwind/UI-kit
+    dependency; plain CSS variables implement a "Technical Editorial" design
+    (serif display + monospace data pairing, system font stacks — no network font
+    fetch). Citations render as first-class bordered source cards with a
+    color-coded provenance stripe (policy/web/fallback), mirroring the existing
+    CLI's `_SOURCE_STYLE`. `ConnectionCard` is provider-agnostic from day one
+    (Google/GitHub render "coming soon" through the *same* component the Notion
+    button uses) — mirrors the backend factory's extension pattern. SSE streaming
+    uses `fetch` + `ReadableStream` (not `EventSource`, which can't POST a body).
 
 ## 3. Folder / file structure convention
 
@@ -295,6 +380,27 @@ app/
   agent/        # base.py (Agent + AgentResponse + Citation) + policy_agent.py +
                 #   factory.py. P7: the formal PolicyAgent (thin adapter over the RAG
                 #   pipeline). HAS a base.py — a GitHub agent will implement it later.
+                #   P13: policy_agent.py also has answer_stream() (chunks the
+                #   already-decided answer; not on the abstract Agent base).
+  security/     # P10: crypto.py (encrypt/decrypt via MultiFernet) for OAuth tokens
+                #   at rest. A tiny utility module, not an interface+factory package
+                #   (only one real capability, no second backend to abstract over).
+  auth/         # P10-13: identity + OAuth "Connect X" + sessions. base.py
+                #   (OAuthProvider) + notion_oauth.py + factory.py (same
+                #   interface/impl/factory shape as every other capability) +
+                #   credentials.py (oauth_connections storage) + users.py +
+                #   domains.py (DNS-verified, opt-in auto-join) + magic_link.py +
+                #   oauth_state.py (single-use, server-side, atomic-consume tokens)
+                #   + session.py (JWT) + email.py (pluggable magic-link delivery).
+  jobs/         # P12: Postgres-backed durable ingestion job queue. queue.py
+                #   (enqueue/claim_next/reap_stuck/get_job, SELECT ... FOR UPDATE
+                #   SKIP LOCKED) + worker.py (runs the unchanged ingest_source()).
+                #   No base.py — one queue implementation, no second backend.
+  api/          # P13: the HTTP layer (FastAPI). main.py (app + CORS) + deps.py
+                #   (get_session/require_admin — the ONLY place org_id enters a
+                #   request) + auth.py (magic-link + OAuth connect routes) +
+                #   admin.py (domains/connections/jobs, all org-scoped from the
+                #   session) + chat.py (SSE streaming) + orgs.py (/me).
 evaluation/     # P7 golden-set eval (peer to scripts/tests). golden_set.py (cases +
                 #   corpus mirroring real Notion data), harness.py (seed + run + path
                 #   verdict), ragas_scoring.py (optional [eval] dep), report.py,
@@ -302,10 +408,20 @@ evaluation/     # P7 golden-set eval (peer to scripts/tests). golden_set.py (cas
 scripts/        # entrypoints: verify_providers.py, init_db.py, demo_rag.py, ingest_notion.py
                 #   (P9: --org/--token per-org ingestion), cli.py (P9: the single
                 #   interactive chat), compare_retrieval.py + demo_phase8.py (before/after
-                #   demos). cli.py calls the PolicyAgent (P7); logic lives only in app/agent.
+                #   demos), run_worker.py (P12: long-lived ingestion job worker process).
+                #   cli.py calls the PolicyAgent (P7); logic lives only in app/agent.
                 #   (P9 retired ask.py + chat.py — cli.py replaces both.)
+frontend/       # P14: Next.js 15 App Router portal, separate app calling app/api/
+                #   over HTTP with credentials: "include" (session cookie only,
+                #   never JS-accessible storage). (auth)/login + (auth)/verify
+                #   (magic-link), chat/ (streaming SSE + citations), admin/
+                #   domains|connections|jobs. No Tailwind/UI-kit — plain CSS vars.
 tests/          # pytest; isolation (P2), grounding (P3), conversation+websearch (P5),
-                #   retrieval (P6), golden-set path-firing (P7, test_golden_set.py)
+                #   retrieval (P6), golden-set path-firing (P7, test_golden_set.py),
+                #   security/auth/jobs/streaming/api_* (P10-13, test_security.py,
+                #   test_auth.py, test_domains_and_identity.py, test_jobs.py,
+                #   test_streaming.py, test_api_auth.py, test_api_admin.py,
+                #   test_api_chat.py)
 .github/workflows/eval.yml  # P7 CI: fast path-firing tier every push + nightly RAGAS tier
 ```
 
@@ -537,18 +653,25 @@ Defined in `app/db/schema.sql`. Current tables:
 | `conversations` | (Phase 5) A conversation, scoped to one org. `id`, `org_id`, `summary` (running compression of pruned older turns), `created_at`. |
 | `conversation_turns` | (Phase 5) One question+answer within a conversation. `id`, `conversation_id`, `org_id`, `turn_index`, `question`, `answer`, `created_at`. Older turns are pruned once folded into the summary (Phase 8: incrementally, one at a time). |
 | `conversation_last_retrieval` | (Phase 8) The chunks retrieved on a conversation's most recent turn, for the pre-retrieval reuse check. One upserted row per conversation: `conversation_id` (PK), `org_id`, `chunks` (TEXT holding a JSON array of `{content, document_id, chunk_index, org_id}` — no embeddings), `updated_at`. |
+| `org_domains` | (Phase 10) A company email domain claimed by an org, for employee auto-join. `id`, `org_id`, `domain` (UNIQUE), `verified_at` (set only after a DNS TXT check passes), `auto_join_enabled` (admin opt-in, independent of verification), `created_at`. |
+| `users` | (Phase 10) An application user. `id`, `email` (UNIQUE), `org_id` (nullable — but never issued a session while null), `role` (`admin`\|`member`), `created_at`. |
+| `oauth_connections` | (Phase 10) One org's OAuth credential for one provider. `id`, `org_id`, `provider`, `external_workspace_id`, `external_workspace_name`, `access_token_encrypted`, `refresh_token_encrypted`, `expires_at`, `connected_by_user_id`, `created_at`. `UNIQUE (org_id, provider)` — one row per org per provider, so a lookup can never be cross-tenant-ambiguous. Tokens are encrypted via `app/security/crypto.py`; this table never stores plaintext. |
+| `ingestion_jobs` | (Phase 10/12) A durable, pollable record of an admin-triggered fetch→chunk→embed→store run. `id`, `org_id`, `connection_id`, `status` (`queued`\|`running`\|`succeeded`\|`failed`), `doc_count`, `error`, `started_at`, `finished_at`, `created_at`. Consumed by a Postgres-backed worker (`SELECT ... FOR UPDATE SKIP LOCKED`), not an in-process background task. |
+| `magic_link_tokens` | (Phase 13) Single-use employee login tokens. `token_hash` (PK — only a SHA-256 hash is ever stored, never the token), `email`, `expires_at`, `consumed_at`, `created_at`. |
+| `oauth_states` | (Phase 13) Single-use, server-side OAuth `state` values for CSRF/replay protection on the admin connect flow. `state` (PK), `org_id`, `provider`, `expires_at`, `consumed_at`, `created_at`. |
 
-Deletes cascade: removing an org removes its documents and chunks (and its
-conversations + turns + last-retrieval row); removing a conversation removes its
-turns and its last-retrieval row. Indexes:
-`org_id` on documents and chunks (tenant filter) + an HNSW cosine index on
-`chunks.embedding` (ranking speed).
+Deletes cascade: removing an org removes its documents, chunks, domains, users,
+oauth_connections, and ingestion_jobs (and its conversations + turns +
+last-retrieval row); removing a conversation removes its turns and its
+last-retrieval row. Indexes: `org_id` on every org-scoped table (tenant filter) +
+an HNSW cosine index on `chunks.embedding` (ranking speed).
 
-**No `users`, `auth`, or OAuth tables yet** — deliberately deferred to a later phase.
 **Phase 7 added no tables** — the PolicyAgent and golden-set eval are pure
 application/tooling layers over the existing schema. **Phase 8 added one table**
 (`conversation_last_retrieval`) for the retrieval-reuse check and removed the
-`MEMORY_SUMMARIZE_AFTER` setting (summarization is now incremental).
+`MEMORY_SUMMARIZE_AFTER` setting (summarization is now incremental). **Phases
+10-13 added the six tables above** — the first `users`/`auth`/OAuth tables in
+the project, closing the gap Phase 9 explicitly deferred.
 
 ## 6. Current state: built vs. pending
 
@@ -666,12 +789,58 @@ application/tooling layers over the existing schema. **Phase 8 added one table**
   ``AgentResponse`` / CLI. Tests: ``tests/test_recovery.py`` (generic categories,
   fakes) + adjusted grounding related-but-not-explicit case. Existing fixtures
   disable recovery so prior suites stay deterministic.
+- Phases 10-14 — The product layer Phase 9 explicitly deferred: real per-org OAuth,
+  an admin panel, a durable ingestion queue, an HTTP API, streaming chat, and a
+  frontend portal. See §2 for the full architectural reasoning; summary per phase:
+  - **Phase 10** (identity/OAuth schema + encryption): `users`, `org_domains`,
+    `oauth_connections`, `ingestion_jobs` tables; `app/security/crypto.py`
+    (MultiFernet token encryption, key rotation, no external KMS);
+    `AuthSettings`/`ApiSettings`/`EmailSettings`. Tests: `test_security.py`.
+  - **Phase 11** (OAuth provider abstraction): `app/auth/` `OAuthProvider` +
+    `NotionOAuthProvider` + factory + DB-backed connection credentials
+    (`credentials.py`), kept fully independent of the legacy env-var token path
+    (no fallback between them). Tests: `test_auth.py`.
+  - **Phase 12** (ingestion job queue): `app/jobs/` Postgres-backed durable queue
+    (`FOR UPDATE SKIP LOCKED` claim, stuck-job reaper) + worker running the
+    unchanged `ingest_source()`; `scripts/run_worker.py`. Tests: `test_jobs.py`.
+  - **Phase 13** (streaming + HTTP API, four sub-phases a-d): `RagPipeline.answer_stream`
+    / `PolicyAgent.answer_stream` (chunks an already-decided answer — see §2 for why
+    NOT raw token streaming); `app/api/` FastAPI app — magic-link auth with
+    DNS-verified opt-in domain auto-join, admin OAuth connect, admin domains/
+    connections/jobs endpoints (every route org-scoped from the session, never
+    client input), SSE chat streaming with client-supplied `conversation_id`
+    verified against the caller's org. Tests: `test_streaming.py`, `test_api_auth.py`,
+    `test_domains_and_identity.py`, `test_api_admin.py`, `test_api_chat.py`.
+  - **Phase 14** (frontend): `frontend/` Next.js 15 App Router portal — magic-link
+    login/verify, streaming chat with provenance-coded citations, admin
+    domains/connections/jobs panels. Provider-agnostic `ConnectionCard` (Google/
+    GitHub render "coming soon" through the same component Notion uses).
+  - Full suite after Phase 14: 128/129 passing, 2 network deselected (the one
+    failure is pre-existing environmental `NOTION_TOKEN_SYVORA` pollution in a
+    developer's local `.env`, reproduced identically on the pre-Phase-10 commit —
+    not a regression from this work).
+  - **Not done in this stage** (see Pending below): a live end-to-end walkthrough
+    against a real sandbox Notion OAuth app + deployed frontend/backend (needs
+    real OAuth app credentials this environment doesn't have); production secrets
+    (`AUTH_JWT_SECRET`, `AUTH_ENCRYPTION_KEYS`) are config knobs, not generated/
+    provisioned by this work.
 
 **Pending (not started)**
-- **Next stage (the deliberate follow-on to Phase 9):** real multi-organization data
-  entry + ingestion (create a Notion integration + secret per org, share that org's
-  pages with it, add each `NOTION_TOKEN_<NAME>`, run `ingest_notion.py --org … --token …`);
-  then a frontend / HTTP API layer, per-customer Notion OAuth, and users/roles.
+- **Live end-to-end verification of Phases 10-14** against a real sandbox Notion
+  OAuth app (create one, set `NOTION_CLIENT_ID`/`SECRET`/`REDIRECT_URI`), a deployed
+  frontend + API, and a real employee domain DNS TXT record — everything above was
+  verified via the automated test suite + local `npm run build`, not a live walkthrough.
+- Real multi-organization data entry now has TWO paths: the Phase 9 manual
+  `NOTION_TOKEN_<NAME>` + `ingest_notion.py --org … --token …` script (still works,
+  unchanged), or the new Phase 10-14 self-serve flow (admin signs up, connects
+  Notion via OAuth, clicks "Ingest" in the portal). Neither has been run against
+  real production company data yet.
+- Production secrets management: `AUTH_JWT_SECRET` and `AUTH_ENCRYPTION_KEYS` must
+  be generated and provisioned per environment (e.g. a secrets manager) before any
+  real deployment — this work defines the config surface, not the provisioning.
+- Email delivery is `console` (prints the link) by default; a real deployment needs
+  `EMAIL_SENDER=smtp` configured, or a transactional-email provider swapped in
+  behind `app/auth/email.py`.
 - Validate the Phase 8 reuse threshold (0.72) against logged production similarities
   + a reuse hit/miss audit before treating it as final — same discipline as the 0.35
   gate. A richer signal than a single query-vs-chunk cosine (e.g. also comparing the
