@@ -6,6 +6,7 @@ psycopg-pool>=3.2.0
 pgvector>=0.3.0
 notion-client>=2.2.1
 ddgs>=6.0.0
+cryptography>=42.0.0
 # CLI presentation only (scripts/cli.py) — never imported by the app/ core runtime.
 rich>=13.0.0
 
