@@ -35,3 +35,15 @@ class SourceError(ProviderError):
 
 class WebSearchError(ProviderError):
     """Raised when a web-search tool call fails or times out."""
+
+
+class EncryptionError(ProviderError):
+    """Raised when encrypting/decrypting stored credentials fails."""
+
+
+class OAuthError(ProviderError):
+    """Raised when an OAuth authorize/exchange/refresh call fails."""
+
+
+class AuthError(ProviderError):
+    """Raised when session/magic-link authentication fails or is invalid."""

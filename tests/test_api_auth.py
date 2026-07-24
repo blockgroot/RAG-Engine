@@ -1,0 +1,195 @@
+"""Phase 13b: FastAPI auth router (magic-link login + OAuth connect + /me).
+
+Uses FastAPI's TestClient (real DB required — same requires_db convention as
+the rest of the suite). DNS verification is bypassed in tests by writing
+``verified_at``/``auto_join_enabled`` directly, since a real DNS TXT record
+can't be published for a throwaway test domain.
+"""
+
+from __future__ import annotations
+
+import uuid
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.auth import ROLE_ADMIN, create_admin
+from app.db.connection import get_connection
+
+from .conftest import requires_db
+
+
+@pytest.fixture(autouse=True)
+def _auth_env(monkeypatch):
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("AUTH_ENCRYPTION_KEYS", Fernet.generate_key().decode())
+    monkeypatch.setenv("AUTH_JWT_SECRET", "test-jwt-secret-do-not-use-in-prod")
+    monkeypatch.setenv("EMAIL_SENDER", "console")
+    monkeypatch.setenv("FRONTEND_URL", "https://portal.example.com")
+    monkeypatch.setenv("API_CORS_ORIGINS", "https://portal.example.com")
+
+
+@pytest.fixture
+def client():
+    # Import after env vars are set so ApiSettings.from_env() picks them up.
+    from app.api.main import create_app
+
+    return TestClient(create_app())
+
+
+@pytest.fixture
+def _verified_domain(store, org_cleanup):
+    """An org with a verified, auto-join-enabled domain (DNS check bypassed)."""
+    org_id = store.create_organization("API Auth Test Org")
+    org_cleanup.append(org_id)
+    domain = f"apitest-{uuid.uuid4().hex[:8]}.example.com"
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO org_domains (org_id, domain, verified_at, auto_join_enabled) "
+            "VALUES (%s, %s, now(), true)",
+            (org_id, domain),
+        )
+    return org_id, domain
+
+
+@requires_db
+def test_magic_link_request_for_eligible_domain_returns_generic_message(
+    client, _verified_domain
+):
+    org_id, domain = _verified_domain
+    response = client.post("/auth/magic-link", json={"email": f"alice@{domain}"})
+    assert response.status_code == 200
+    assert "sign-in link" in response.json()["message"].lower()
+
+
+@requires_db
+def test_magic_link_request_for_ineligible_domain_returns_same_generic_message(client):
+    response = client.post("/auth/magic-link", json={"email": "alice@not-registered.example"})
+    assert response.status_code == 200
+    assert "sign-in link" in response.json()["message"].lower()
+
+
+@requires_db
+def test_magic_link_request_rejects_malformed_email(client):
+    response = client.post("/auth/magic-link", json={"email": "not-an-email"})
+    assert response.status_code == 400
+
+
+@requires_db
+def test_magic_link_full_login_flow_issues_session_scoped_to_correct_org(
+    client, _verified_domain
+):
+    # Passing the response's httpx.Cookies object straight through to the next
+    # request silently drops it (a TestClient cookie-domain quirk); extracting
+    # the value and passing a plain {"session": ...} dict works and still
+    # exercises the real decode_session_token() path a browser cookie would.
+    org_id, domain = _verified_domain
+    email = f"bob@{domain}"
+
+    client.post("/auth/magic-link", json={"email": email})
+
+    # Extract the raw token the same way the console sender "delivered" it:
+    # request the token directly via the auth module (equivalent to reading it
+    # off the printed console link in dev).
+    from app.auth import create_magic_link_token
+
+    token = create_magic_link_token(email)
+    verify_response = client.get(
+        f"/auth/magic-link/verify?token={token}", follow_redirects=False
+    )
+    assert verify_response.status_code in (302, 307)
+    session_token = verify_response.cookies.get("session")
+    assert session_token
+
+    me_response = client.get("/me", cookies={"session": session_token})
+    assert me_response.status_code == 200
+    body = me_response.json()
+    assert body["org_id"] == org_id
+    assert body["role"] == "member"
+
+
+@requires_db
+def test_magic_link_verify_rejects_reused_token(client, _verified_domain):
+    org_id, domain = _verified_domain
+    email = f"carol@{domain}"
+    client.post("/auth/magic-link", json={"email": email})  # creates the user
+
+    from app.auth import create_magic_link_token
+
+    token = create_magic_link_token(email)
+    first = client.get(f"/auth/magic-link/verify?token={token}", follow_redirects=False)
+    assert first.status_code in (302, 307)
+
+    second = client.get(f"/auth/magic-link/verify?token={token}", follow_redirects=False)
+    assert second.status_code == 401
+
+
+@requires_db
+def test_magic_link_verify_rejects_unknown_token(client):
+    response = client.get("/auth/magic-link/verify?token=not-a-real-token")
+    assert response.status_code == 401
+
+
+@requires_db
+def test_me_requires_a_session(client):
+    response = client.get("/me")
+    assert response.status_code == 401
+
+
+@requires_db
+def test_oauth_authorize_requires_admin_role(client, store, org_cleanup):
+    org_id = store.create_organization("API Auth Non-Admin Org")
+    org_cleanup.append(org_id)
+    member = create_admin(f"nonadmin-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    # Force member role for this check (create_admin always makes an admin —
+    # flip it directly to prove a non-admin session is rejected).
+    with get_connection() as conn:
+        conn.execute("UPDATE users SET role = 'member' WHERE id = %s", (member.id,))
+
+    from app.auth import create_session_token
+    from app.auth.users import get_user
+
+    session_token = create_session_token(get_user(member.id))
+
+    response = client.get(
+        "/auth/notion/authorize",
+        cookies={"session": session_token},
+        follow_redirects=False,
+    )
+    assert response.status_code == 403
+
+
+@requires_db
+def test_oauth_authorize_redirects_admin_to_provider(
+    client, store, org_cleanup, monkeypatch
+):
+    org_id = store.create_organization("API Auth Admin Org")
+    org_cleanup.append(org_id)
+    admin = create_admin(f"admin-{uuid.uuid4().hex[:8]}@example.com", org_id)
+
+    monkeypatch.setenv("NOTION_CLIENT_ID", "client-123")
+    monkeypatch.setenv("NOTION_CLIENT_SECRET", "secret-456")
+    monkeypatch.setenv("NOTION_REDIRECT_URI", "https://portal.example.com/auth/notion/callback")
+
+    from app.auth import create_session_token
+
+    session_token = create_session_token(admin)
+    response = client.get(
+        "/auth/notion/authorize",
+        cookies={"session": session_token},
+        follow_redirects=False,
+    )
+    assert response.status_code in (302, 307)
+    assert response.headers["location"].startswith("https://api.notion.com/v1/oauth/authorize")
+    assert f"org_id" not in response.headers["location"]  # org never leaks into the URL
+
+
+@requires_db
+def test_oauth_callback_rejects_unknown_state(client, monkeypatch):
+    monkeypatch.setenv("NOTION_CLIENT_ID", "client-123")
+    monkeypatch.setenv("NOTION_CLIENT_SECRET", "secret-456")
+    monkeypatch.setenv("NOTION_REDIRECT_URI", "https://portal.example.com/auth/notion/callback")
+
+    response = client.get("/auth/notion/callback?code=abc&state=not-a-real-state")
+    assert response.status_code == 400

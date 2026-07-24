@@ -74,6 +74,18 @@ DEFAULT_WEB_SEARCH_PROVIDER = "duckduckgo"
 DEFAULT_WEB_SEARCH_MAX_RESULTS = 5
 DEFAULT_WEB_SEARCH_TIMEOUT = 8.0
 
+# Auth / session (Phase 10). Session and magic-link TTLs are minutes.
+DEFAULT_SESSION_TTL_MINUTES = 60
+DEFAULT_MAGIC_LINK_TTL_MINUTES = 10
+
+# HTTP API (Phase 10+).
+DEFAULT_API_HOST = "0.0.0.0"
+DEFAULT_API_PORT = 8000
+
+# Outbound email for magic links (Phase 10). "console" (default, dev) prints the
+# link instead of sending it — no external dependency required to run locally.
+DEFAULT_EMAIL_SENDER = "console"
+
 
 def _env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
@@ -473,4 +485,99 @@ class RerankerSettings:
         return cls(
             model=os.getenv("RERANKER_MODEL") or DEFAULT_RERANKER_MODEL,
             device=os.getenv("RERANKER_DEVICE") or None,
+        )
+
+
+@dataclass(frozen=True)
+class AuthSettings:
+    """Auth/session/credential-encryption configuration (Phase 10).
+
+    - ``encryption_keys``  Fernet key(s) used to encrypt/decrypt stored OAuth
+      tokens (see ``app/security/crypto.py``). Read as a comma-separated list so
+      a key can be rotated by prepending a new one — the first key is used to
+      encrypt new values, every key is tried on decrypt. Each entry must be a
+      valid ``Fernet.generate_key()`` value.
+    - ``jwt_secret``  signs the session cookie issued after magic-link/OAuth
+      login. Required in any real deployment; no default (must not silently run
+      with a well-known key).
+    - ``session_ttl_minutes``  session cookie lifetime.
+    - ``magic_link_ttl_minutes``  how long a login link stays valid/single-use.
+    """
+
+    encryption_keys: list[str] = field(default_factory=list)
+    jwt_secret: str | None = None
+    session_ttl_minutes: int = DEFAULT_SESSION_TTL_MINUTES
+    magic_link_ttl_minutes: int = DEFAULT_MAGIC_LINK_TTL_MINUTES
+
+    @classmethod
+    def from_env(cls) -> "AuthSettings":
+        raw_keys = os.getenv("AUTH_ENCRYPTION_KEYS") or ""
+        keys = [key.strip() for key in raw_keys.split(",") if key.strip()]
+        return cls(
+            encryption_keys=keys,
+            jwt_secret=os.getenv("AUTH_JWT_SECRET"),
+            session_ttl_minutes=int(
+                os.getenv("AUTH_SESSION_TTL_MINUTES") or DEFAULT_SESSION_TTL_MINUTES
+            ),
+            magic_link_ttl_minutes=int(
+                os.getenv("AUTH_MAGIC_LINK_TTL_MINUTES") or DEFAULT_MAGIC_LINK_TTL_MINUTES
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ApiSettings:
+    """HTTP API server configuration (Phase 10+).
+
+    - ``cors_origins``  exact frontend origin(s) allowed to call the API with
+      credentials (cookies). No wildcard default — an empty list means CORS is
+      not configured yet, which the API layer should treat as "reject", not
+      "allow all".
+    - ``frontend_url``  base URL of the deployed frontend, used to build the
+      magic-link login URL and the post-OAuth-connect redirect destination.
+    """
+
+    cors_origins: list[str] = field(default_factory=list)
+    host: str = DEFAULT_API_HOST
+    port: int = DEFAULT_API_PORT
+    frontend_url: str | None = None
+
+    @classmethod
+    def from_env(cls) -> "ApiSettings":
+        raw_origins = os.getenv("API_CORS_ORIGINS") or ""
+        origins = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+        return cls(
+            cors_origins=origins,
+            host=os.getenv("API_HOST") or DEFAULT_API_HOST,
+            port=int(os.getenv("API_PORT") or DEFAULT_API_PORT),
+            frontend_url=os.getenv("FRONTEND_URL"),
+        )
+
+
+@dataclass(frozen=True)
+class EmailSettings:
+    """Outbound email configuration for magic-link delivery (Phase 10).
+
+    - ``sender``  ``"console"`` (default; prints the link, no dependency — dev
+      and self-hosted-without-SMTP path) or ``"smtp"``.
+    - ``smtp_*``  only read/required when ``sender == "smtp"``.
+    """
+
+    sender: str = DEFAULT_EMAIL_SENDER
+    smtp_host: str | None = None
+    smtp_port: int | None = None
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str | None = None
+
+    @classmethod
+    def from_env(cls) -> "EmailSettings":
+        smtp_port = os.getenv("EMAIL_SMTP_PORT")
+        return cls(
+            sender=(os.getenv("EMAIL_SENDER") or DEFAULT_EMAIL_SENDER).lower(),
+            smtp_host=os.getenv("EMAIL_SMTP_HOST"),
+            smtp_port=int(smtp_port) if smtp_port else None,
+            smtp_username=os.getenv("EMAIL_SMTP_USERNAME"),
+            smtp_password=os.getenv("EMAIL_SMTP_PASSWORD"),
+            smtp_from=os.getenv("EMAIL_SMTP_FROM"),
         )
