@@ -1,7 +1,7 @@
-"""Phase 13: RagPipeline.answer_stream / PolicyAgent.answer_stream.
+"""RagPipeline.answer_stream / PolicyAgent.answer_stream.
 
 Deterministic unit tests with fakes — no DB, real LLM, or embedding model
-(same convention as tests/test_recovery.py). Proves that streaming: (1) yields
+(same convention as test_recovery.py). Proves that streaming: (1) yields
 the identical text ``answer()`` would return, just chunked, (2) never streams
 a fallback/refusal any differently than a normal answer, and (3) the agent
 layer's citations/metadata match a plain ``answer()`` call for the same
@@ -13,7 +13,6 @@ from __future__ import annotations
 from app.agent.policy_agent import PolicyAgent
 from app.config.settings import RagSettings, RecoverySettings, ReuseSettings
 from app.rag.pipeline import RagPipeline
-from app.vectorstore.base import RetrievedChunk
 
 from .fakes import KeywordEmbedder, RecordingLLM, TopicAwareVectorStore
 
@@ -105,3 +104,21 @@ def test_policy_agent_answer_stream_matches_answer_citations():
     assert "".join(chunks) == direct.answer == streamed.answer
     assert [c.reference for c in streamed.citations] == [c.reference for c in direct.citations]
     assert streamed.grounded == direct.grounded
+
+
+def test_answer_stream_with_tagged_mode_b_still_chunks_correctly():
+    """A tagged MODE: B reply that already passes tone compliance streams the
+    parsed answer text (tag stripped), matching the non-streaming path."""
+    tagged = "MODE: B\n\nYou have annual leave (25 days) [1]. Check with HR for parental leave."
+    llm = RecordingLLM(answer=tagged)
+    pipeline = _pipeline(llm, _store_with_hit())
+
+    direct = pipeline.answer("What about parental leave?", ORG)
+
+    llm2 = RecordingLLM(answer=tagged)
+    pipeline2 = _pipeline(llm2, _store_with_hit())
+    chunks, streamed = pipeline2.answer_stream("What about parental leave?", ORG)
+
+    assert "".join(chunks) == direct.answer == streamed.answer
+    assert "MODE:" not in streamed.answer
+    assert streamed.response_mode == "B"

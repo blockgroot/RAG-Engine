@@ -168,6 +168,15 @@ def test_topically_related_but_unanswered_prevents_unsupported_inference(
     else:
         # Related-but-Not-Explicit: must acknowledge docs don't explicitly answer,
         # and any facts mentioned should come from retrieved leave context.
+        #
+        # The Grounding Gap tone fix (prompts.py) deliberately FORBIDS the old
+        # meta-language phrasing this list originally checked for ("the
+        # documents do not explicitly answer", "I cannot give a definitive
+        # answer") in favor of a natural, empathetic voice — so the acceptable
+        # phrase list below includes the natural-voice equivalents a compliant
+        # Mode B answer now uses (e.g. "doesn't include a specific ... policy")
+        # alongside the original meta-language forms, which a model may still
+        # produce on an off run given known LLM non-determinism.
         asserts_related = (
             "not explicitly" in answer_l
             or "do not explicitly" in answer_l
@@ -179,6 +188,17 @@ def test_topically_related_but_unanswered_prevents_unsupported_inference(
             or "do not mention" in answer_l
             or "doesn't mention" in answer_l
             or "not mention" in answer_l
+            or "doesn't include a specific" in answer_l
+            or "does not include a specific" in answer_l
+            or "no specific" in answer_l
+            or "isn't a specific" in answer_l
+            or "is not a specific" in answer_l
+            or "doesn't have a specific" in answer_l
+            or "don't have a specific" in answer_l
+            or "does not have a specific" in answer_l
+            or "no dedicated" in answer_l
+            or "doesn't include" in answer_l
+            or "does not include" in answer_l
         )
         assert asserts_related or "parental" not in answer_l or "maternity" not in answer_l, (
             f"related answer must distinguish non-explicit coverage: {result.answer!r}"

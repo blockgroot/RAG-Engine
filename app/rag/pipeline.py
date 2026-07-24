@@ -44,6 +44,7 @@ reduces grounding guarantees. Expander failure degrades to the existing path.
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
@@ -65,6 +66,7 @@ from ..vectorstore.base import RetrievedChunk, VectorStore
 from ..websearch.base import SearchResult, WebSearchProvider
 from .retrieval import HybridRetriever, RetrievalResult
 from .prompts import (
+    MODE_B_FORBIDDEN_PHRASES,
     WEB_SEARCH_TOOL,
     build_grounded_prompt,
     build_recovery_queries_prompt,
@@ -82,6 +84,40 @@ RECOVERY_REASON_GATE_MISS = "gate_miss"
 RECOVERY_REASON_INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 
 _MAX_RECOVERY_QUERY_LEN = 200
+
+# Parses the "MODE: A|B|C\n\n<answer>" tag the grounded prompt now requires
+# (see prompts.py rule 5). Case-insensitive; tolerant of extra whitespace.
+_MODE_TAG_RE = re.compile(r"^\s*MODE:\s*([ABC])\s*\n+(.*)", re.IGNORECASE | re.DOTALL)
+
+# Appended to the grounded prompt on the one bounded tone-compliance retry.
+_MODE_B_TONE_RETRY_ADDENDUM = (
+    "\n\nIMPORTANT CORRECTION: your previous answer declared Mode B but used "
+    "forbidden meta-language about sources (e.g. naming 'the document(s)'/"
+    "'handbook' directly, or saying you cannot give a definitive answer). "
+    "Rewrite it: natural conversational voice, no meta-language about sources, "
+    "an empathetic opening if the question expresses distress — following ALL "
+    "of Mode B's rules above exactly. Still begin with 'MODE: B'."
+)
+
+
+def _parse_tagged_mode(raw: str) -> tuple[str | None, str]:
+    """Split a ``MODE: A|B|C`` tag off the front of a generation, if present.
+
+    Returns ``(mode, answer_text)``. If the model didn't include a parseable
+    tag (e.g. any test/fake that returns plain text with no tag), returns
+    ``(None, raw)`` unchanged — callers must treat a missing tag as "unknown",
+    never as an error, so behavior degrades gracefully instead of breaking.
+    """
+    match = _MODE_TAG_RE.match(raw)
+    if not match:
+        return None, raw
+    return match.group(1).upper(), match.group(2).strip()
+
+
+def _violates_mode_b_tone(text: str) -> bool:
+    """True if ``text`` uses any of the meta-language phrases Mode B forbids."""
+    low = text.lower()
+    return any(phrase in low for phrase in MODE_B_FORBIDDEN_PHRASES)
 
 
 @dataclass(frozen=True)
@@ -108,6 +144,13 @@ class RagResult:
       ``recovery_reason``, ``recovery_queries``, ``retrieval_improved``,
       ``top_score_before``, ``top_score_after``, ``final_answer_source``,
       ``latency_ms``.
+    - ``response_mode``  the ``A``/``B``/``C`` tag the model declared for this
+      answer (``None`` if it didn't include a parseable tag — the pipeline
+      degrades gracefully rather than failing the request). A diagnostic.
+    - ``tone_retry_used``  ``True`` when a declared Mode B answer used forbidden
+      meta-language and the pipeline retried the generation once with a
+      corrective reminder (see ``RagPipeline._generate``). A diagnostic; never
+      loops more than once.
     """
 
     answer: str
@@ -125,6 +168,8 @@ class RagResult:
     top_score_after: float | None = None
     final_answer_source: str | None = None
     latency_ms: float | None = None
+    response_mode: str | None = None
+    tone_retry_used: bool = False
 
 
 @dataclass(frozen=True)
@@ -234,19 +279,20 @@ class RagPipeline:
         ``_generate`` call is even the FINAL one is only known after inspecting
         its output — a gate pass can still trigger recovery-then-regenerate if
         ``_generation_found_evidence_insufficient`` fires (see ``_run``), and a
-        recovery-exhausted miss can still fall through to the web-search tool
-        (a different call shape entirely, ``generate_with_tools``). Streaming
-        tokens as they arrive from a call that might get thrown away and
-        replaced would either leak a discarded draft to the client or require
-        buffering anyway — so there is no correctness win, only risk, in
-        threading a streaming callback through the gate/recovery/web branches.
+        recovery-exhausted miss can still fall through to the web-search tool (a
+        different call shape entirely, ``generate_with_tools``). A declared Mode
+        B answer can also trigger the one bounded tone-compliance retry. Streaming
+        tokens as they arrive from a call that might get thrown away and replaced
+        would either leak a discarded draft to the caller or require buffering
+        anyway — so there is no correctness win, only risk, in threading a
+        streaming callback through the gate/recovery/tone-retry/web branches.
 
         Instead this runs the complete, UNCHANGED ``answer()`` — every gate,
-        recovery, and grounding decision is resolved exactly as it always is —
-        and only then chunks the final, already-decided answer text for
-        progressive delivery. From the caller's side (e.g. an SSE endpoint)
-        this still avoids sending the whole answer in one go; it just never
-        streams a token that could later be discarded.
+        recovery, tone-compliance, and grounding decision is resolved exactly as
+        it always is — and only then chunks the final, already-decided answer
+        text for progressive delivery. From the caller's side (e.g. the CLI or
+        an SSE endpoint) this still avoids showing the whole answer in one go;
+        it just never displays a token that could later be discarded.
         """
         result = self.answer(question, org_id, conversation_id=conversation_id)
 
@@ -396,8 +442,24 @@ class RagPipeline:
             fallback_response=self._settings.fallback_response,
         )
         raw = self._llm.generate(prompt).strip()
-        answered = not self._is_refusal(raw, self._settings.fallback_response)
-        answer = raw if answered else self._settings.fallback_response
+        mode, text = _parse_tagged_mode(raw)
+
+        # Deterministic tone-compliance guard (Grounding Gap follow-up):
+        # instructions alone didn't reliably stop Mode B from using forbidden
+        # meta-language, so a declared-but-violating answer gets exactly ONE
+        # retry with a corrective reminder — mirroring the existing "at most
+        # one recovery attempt" pattern used for retrieval, applied to tone
+        # instead. If the retry still violates, we accept it anyway (graceful
+        # degradation — never loop, never fail the request).
+        tone_retry_used = False
+        if mode == "B" and _violates_mode_b_tone(text):
+            retry_raw = self._llm.generate(prompt + _MODE_B_TONE_RETRY_ADDENDUM).strip()
+            tone_retry_used = True
+            retry_mode, retry_text = _parse_tagged_mode(retry_raw)
+            mode, text = retry_mode, retry_text
+
+        answered = not self._is_refusal(text, self._settings.fallback_response)
+        answer = text if answered else self._settings.fallback_response
         return RagResult(
             answer=answer,
             answered=answered,
@@ -405,6 +467,8 @@ class RagPipeline:
             sources=hits,
             top_score=top_score,
             retrieval_reused=retrieval_reused,
+            response_mode=mode,
+            tone_retry_used=tone_retry_used,
         )
 
     def _recover_once(

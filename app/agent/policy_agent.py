@@ -51,14 +51,14 @@ class PolicyAgent(Agent):
     def answer_stream(
         self, question: str, org_id: str, *, conversation_id: str | None = None
     ) -> tuple[Iterator[str], AgentResponse]:
-        """Like ``answer``, but the text arrives as a chunk iterator (Phase 13).
+        """Like ``answer``, but the text arrives as a chunk iterator.
 
         Not part of the abstract ``Agent`` contract — it's a PolicyAgent-specific
-        convenience for the streaming chat endpoint (``app/api/chat.py``), not a
-        capability every future agent must implement. See
-        ``RagPipeline.answer_stream`` for why this chunks an already-fully-decided
-        answer rather than streaming raw LLM tokens through the gate/recovery
-        logic.
+        convenience for callers that want progressive display (the CLI,
+        ``app/api/chat.py``'s streaming chat endpoint), not a capability every
+        future agent must implement. See ``RagPipeline.answer_stream`` for why
+        this chunks an already-fully-decided answer rather than streaming raw
+        LLM tokens through the gate/recovery/tone-retry logic.
         """
         chunks, result = self._pipeline.answer_stream(
             question, org_id, conversation_id=conversation_id
@@ -82,6 +82,8 @@ class PolicyAgent(Agent):
             top_score_before=result.top_score_before,
             top_score_after=result.top_score_after,
             latency_ms=result.latency_ms,
+            response_mode=result.response_mode,
+            tone_retry_used=result.tone_retry_used,
         )
 
     @staticmethod

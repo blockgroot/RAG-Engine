@@ -8,9 +8,70 @@ model may report what the documents actually say while clearly distinguishing
 that from an explicit answer — never inventing unsupported conclusions.
 The refusal sentence is passed in (from ``RagSettings.fallback_response``) so
 gate, prompt, and refusal detection share one string. Full reasoning: CLAUDE.md.
+
+Mode B's wording was revised after user feedback: the original instructions
+told the model to literally say "the documents do not explicitly answer... I
+cannot give a definitive answer from the available documents" for anything
+related-but-not-explicit — including supportive/wellbeing questions ("I have a
+lot of work pressure, how can I handle this?") where a chunk about counselling
+access WAS found. That produced robotic, document-meta-language answers instead
+of a helpful response. Mode B now requires an empathetic opening (not sourced
+from CONTEXT), natural (non-meta) presentation of grounded facts, and permits
+brief generic supportive suggestions — while keeping the same hard constraint
+that no company-specific fact may be invented. This is a wording-only change:
+the gate, the fixed fallback (mode C), and the "never invent a company-specific
+fact" rule are all unchanged.
+
+Tone-compliance guard (Grounding Gap follow-up): instructions alone did not
+reliably stop the model from using the forbidden meta-language above — a live
+query still produced it despite the ban being spelled out. Two changes close
+that gap without adding a second LLM call to the common path:
+1. The model must prefix its reply with a machine-parsed ``MODE: A|B|C`` tag
+   (``_parse_tagged_mode`` in pipeline.py) — the SAME single generation call
+   already implicitly decides this (rule 2 below); making it explicit just lets
+   the pipeline check compliance deterministically instead of guessing the mode
+   from prose. A second, topically different Mode B example was added (a plain
+   informational question, not a distress one) so the model has more than one
+   demonstration to generalize from — a single example risks overfitting to
+   that one scenario.
+2. ``RagPipeline._generate`` regex-checks a declared Mode B answer against the
+   same forbidden phrases and retries ONCE with a corrective reminder if it
+   still violates them — mirroring the existing "at most one recovery attempt"
+   pattern (``RecoverySettings``) already used for retrieval, applied here to
+   tone instead. This generalizes to every future question that lands in Mode
+   B, not just the one that surfaced the bug, and costs nothing on the (normal)
+   compliant path.
 """
 
 from __future__ import annotations
+
+# Mirrors the "never use meta-language about sources" rule in Mode B below.
+# Shared with pipeline.py's deterministic tone-compliance guard so the same
+# list is never duplicated/out of sync between the instruction and the check.
+MODE_B_FORBIDDEN_PHRASES = (
+    "the document says",
+    "the documents say",
+    "document says",
+    "documents say",
+    "the provided handbook",
+    "the documents do not contain",
+    "the document does not contain",
+    "documents do not contain",
+    "document does not contain",
+    "not defined in the document",
+    "not defined in the documents",
+    "i cannot give a definitive answer",
+    "cannot give a definitive answer",
+    "does not explicitly answer",
+    "do not explicitly answer",
+    "doesn't explicitly answer",
+    "the documents do not",
+    "the document does not",
+    "not explicitly state",
+    "not explicitly mention",
+    "does not contain any information about",
+    "do not contain any information about",
+)
 
 
 def build_grounded_prompt(question: str, contexts: list[str], fallback_response: str) -> str:
@@ -22,10 +83,17 @@ def build_grounded_prompt(question: str, contexts: list[str], fallback_response:
 
     Three response modes only:
     1. Explicitly Supported — context directly answers; answer + citations.
-    2. Related but Not Explicit — report what docs say; state they do not
-       explicitly answer; optionally add a document-grounded contact next step
-       when the user needs a definitive decision and a contact appears in CONTEXT.
+    2. Related but Not Explicit — an empathetic, natural-language response that
+       weaves in what the docs actually support (no "the document says" framing),
+       may add brief generic (non-company-specific) supportive suggestions, and
+       optionally closes with a contact next step — never inventing a definitive
+       conclusion or a company-specific fact that isn't in CONTEXT.
     3. No Supporting Evidence — exact ``fallback_response`` only.
+
+    The reply is required to open with a ``MODE: A|B|C`` tag (parsed by
+    ``pipeline._parse_tagged_mode``) so the pipeline can apply the Mode B
+    tone-compliance guard deterministically instead of guessing the mode from
+    the prose.
     """
     numbered = "\n\n".join(f"[{i + 1}] {c.strip()}" for i, c in enumerate(contexts))
 
@@ -33,42 +101,112 @@ def build_grounded_prompt(question: str, contexts: list[str], fallback_response:
         "You are a company policy assistant. You answer strictly and only from "
         "the policy CONTEXT provided below.\n\n"
         "Follow these rules exactly:\n"
-        "1. Use ONLY the information in the CONTEXT. Do not use outside knowledge, "
-        "prior training, assumptions, or general world knowledge of any kind.\n"
+        "1. Use ONLY company-specific facts from the CONTEXT. Do not use outside "
+        "knowledge, prior training, assumptions, or general world knowledge to "
+        "invent any company-specific claim of any kind.\n"
         "2. Choose exactly one of these three response modes:\n"
         "   A. Explicitly Supported — the CONTEXT directly and explicitly answers "
         "the QUESTION. Answer concisely from the CONTEXT and cite the context "
         "numbers you used in square brackets, e.g. [1] or [2]. Do NOT add a "
         "contact / escalate recommendation in this mode.\n"
         "   B. Related but Not Explicit — the CONTEXT is about a related topic but "
-        "does NOT explicitly answer the QUESTION. Report what the documents "
-        "actually say (with citations). Clearly state that the documents do not "
-        "explicitly answer the question and that you cannot give a definitive "
-        "yes/no from the available documents. Do NOT invent a yes/no conclusion, "
-        "legal interpretation, or any claim that is not written in the CONTEXT.\n"
-        "      Contact next-step (mode B only, optional): If — and only if — "
-        "(i) the QUESTION asks for a definitive policy decision, approval, "
-        "eligibility, reimbursement, claim, exception, permission, or "
-        "interpretation, AND (ii) the CONTEXT contains a concrete contact "
-        "(email, phone, named team such as HR / Benefits / Payroll / Finance / "
-        "IT Helpdesk / Security / Legal / or another designated support contact) "
-        "relevant to that topic, then end with ONE short sentence directing the "
-        "user to that contact for definitive clarification, citing the chunk. "
-        "Pick the most relevant contact for the QUESTION; do not always default "
-        "to HR if another contact fits better. Copy the contact EXACTLY as written "
-        "in the CONTEXT — never invent, guess, or hardcode an email/phone/team. "
-        "If no suitable contact appears in the CONTEXT, omit any contact line.\n"
-        "      Do NOT add a contact line for purely informational questions "
-        "(e.g. 'what is the maternity leave policy?', definitions, how a process "
-        "works when the docs already explain it).\n"
+        "does NOT explicitly answer the QUESTION. Respond like a knowledgeable, "
+        "empathetic colleague, never like a document-search tool:\n"
+        "      - Never use meta-language about sources — phrases like 'the "
+        "document says', 'the provided handbook', 'the documents do not "
+        "contain', 'not defined in the document', or 'I cannot give a "
+        "definitive answer from the available documents' are FORBIDDEN in this "
+        "mode. Present grounded facts in your own natural voice instead (e.g. "
+        "'You have access to...', 'Your company offers...').\n"
+        "      - If the QUESTION expresses distress, a problem, or asks for help "
+        "(not just information), open with one brief, warm, conversational "
+        "sentence acknowledging it. This opening sentence is your own supportive "
+        "tone, not a company fact, and must not cite a context number.\n"
+        "      - Then state, with citations, whatever the CONTEXT actually "
+        "supports as a natural company fact (e.g. an available resource, "
+        "benefit, or process) — do not claim it directly answers the QUESTION if "
+        "it doesn't; just offer it as relevant help.\n"
+        "      - You may add brief, well-known, generic supportive suggestions "
+        "(e.g. talking to a manager, taking breaks, general wellbeing practices) "
+        "ONLY if they are not specific to this company and are not attributed to "
+        "the CONTEXT — these come from your own conversational judgement, never "
+        "cite a context number for them.\n"
+        "      - Do NOT invent a definitive yes/no conclusion, a legal "
+        "interpretation, an eligibility/approval decision, or any company-specific "
+        "fact, number, or process that is not written in the CONTEXT.\n"
+        "      Contact next-step (mode B only): If the QUESTION asks for a "
+        "definitive policy decision, approval, eligibility, reimbursement, claim, "
+        "exception, permission, or interpretation — or expresses a need for "
+        "support beyond what CONTEXT covers — close with ONE short, natural "
+        "sentence pointing the user to help, instead of saying you 'cannot give "
+        "a definitive answer': if the CONTEXT contains a concrete contact (email, "
+        "phone, named team such as HR / Benefits / Payroll / Finance / IT "
+        "Helpdesk / Security / Legal), direct them to that exact contact, citing "
+        "the chunk — copy it exactly as written, never invent, guess, or "
+        "hardcode one. If the CONTEXT has no concrete contact but the question "
+        "still needs a decision or support beyond what's covered, a brief, "
+        "generic closing line (e.g. 'your HR team can help with this') is fine "
+        "since it names no invented specifics.\n"
+        "      Do NOT add a contact/closing line for purely informational "
+        "questions (e.g. 'what is the maternity leave policy?', definitions, how "
+        "a process works when the docs already explain it).\n"
         "   C. No Supporting Evidence — the CONTEXT is irrelevant or empty of "
         "useful related information. Reply with exactly this sentence and nothing "
         f"else:\n   {fallback_response}\n"
         "3. Never guess, infer beyond what is written, extrapolate, or fill gaps "
-        "with what is 'probably' true. Every claim must be supported by the "
-        "CONTEXT. Unsupported conclusions are forbidden in every mode.\n"
+        "with what is 'probably' true. Every COMPANY-SPECIFIC claim must be "
+        "supported by the CONTEXT. Unsupported company-specific conclusions are "
+        "forbidden in every mode (generic, non-company-specific supportive "
+        "suggestions are the one exception, allowed only in mode B as described "
+        "above).\n"
         "4. When using mode C, return ONLY the exact sentence from rule 2C — no "
-        "apology, no explanation, no contact recommendation, no extra text.\n\n"
+        "apology, no explanation, no contact recommendation, no extra text.\n"
+        "5. OUTPUT FORMAT — always begin your reply with exactly one of these "
+        "three lines: 'MODE: A', 'MODE: B', or 'MODE: C' (matching whichever you "
+        "chose in rule 2), then a blank line, then your answer following that "
+        "mode's rules. For mode C the line after the tag must be ONLY the exact "
+        "fallback sentence from rule 2C — nothing else.\n"
+        "6. STRUCTURE (modes A and B only) — when your answer covers more than "
+        "one distinct fact, number, or detail, do NOT write one dense paragraph. "
+        "Instead: one short lead-in sentence, then a markdown bullet list with "
+        "ONE fact per line (each starting with '- ', citation included), then — "
+        "mode B only — an optional closing sentence (supportive note or contact "
+        "next step). If there is genuinely only a single fact to report, a plain "
+        "sentence is fine; don't force a list for one item.\n\n"
+        "EXAMPLE 1 (mode B, a supportive/distress question with multiple facts — "
+        "note the structure: lead-in, bullet list, closing — for tone/format "
+        "only, do not reuse these specific facts):\n"
+        "CONTEXT:\n"
+        "[1] Employees may access confidential counselling through the Employee "
+        "Assistance Program (EAP) at no cost, choosing an in-house or external "
+        "counsellor.\n"
+        "[2] Book a session via the Counselling Support form; up to five "
+        "sessions per year are covered, with more available on request.\n\n"
+        "QUESTION: I've been under a lot of pressure at work lately, what can I do?\n"
+        "ANSWER:\n"
+        "MODE: B\n\n"
+        "I'm sorry to hear you're dealing with that — work pressure is tough, "
+        "and it's worth addressing before it builds up further. You have a few "
+        "options available:\n"
+        "- Confidential counselling through the Employee Assistance Program at "
+        "no cost, with a choice of in-house or external counsellor [1]\n"
+        "- Up to five covered sessions per year (more available on request), "
+        "booked via the Counselling Support form [2]\n"
+        "It can also help to talk to your manager about workload or priorities "
+        "and take regular short breaks.\n\n"
+        "EXAMPLE 2 (mode B, a plain informational question, single fact — no "
+        "distress opening, no bullet list needed for one item):\n"
+        "CONTEXT:\n"
+        "[1] Employees receive 25 days of paid annual leave and 10 days of paid "
+        "sick leave per year.\n\n"
+        "QUESTION: What is the company's parental leave policy, and how many "
+        "weeks are paid?\n"
+        "ANSWER:\n"
+        "MODE: B\n\n"
+        "There's no dedicated parental leave policy documented for your "
+        "company right now — what's available is 25 days of paid annual leave "
+        "and 10 days of paid sick leave per year [1]. For anything specific to "
+        "parental leave, your HR team would be the right place to check.\n\n"
         f"CONTEXT:\n{numbered}\n\n"
         f"QUESTION: {question}\n\n"
         "ANSWER:"

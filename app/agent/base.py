@@ -65,6 +65,9 @@ class AgentResponse:
     - Recovery diagnostics (Retrieval Discovery Gap): ``recovery_used``,
       ``recovery_reason``, ``recovery_queries``, ``retrieval_improved``,
       ``top_score_before``, ``top_score_after``, ``latency_ms``.
+    - ``response_mode``  the ``A``/``B``/``C`` tag the model declared (``None``
+      if unparseable). ``tone_retry_used``  ``True`` if a declared Mode B
+      answer needed the one bounded tone-compliance retry. Both diagnostics.
     """
 
     answer: str
@@ -81,6 +84,8 @@ class AgentResponse:
     top_score_before: float | None = None
     top_score_after: float | None = None
     latency_ms: float | None = None
+    response_mode: str | None = None
+    tone_retry_used: bool = False
 
 
 class Agent(ABC):

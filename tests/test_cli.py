@@ -44,6 +44,25 @@ class FakeAgent(Agent):
         return self._response
 
 
+class FakeStreamingAgent(FakeAgent):
+    """Also implements answer_stream (like PolicyAgent), chunking the canned answer."""
+
+    def __init__(self, response: AgentResponse, chunk_size: int = 5) -> None:
+        super().__init__(response)
+        self.stream_calls: list[tuple[str, str, str | None]] = []
+        self._chunk_size = chunk_size
+
+    def answer_stream(self, question, org_id, *, conversation_id=None):
+        self.stream_calls.append((question, org_id, conversation_id))
+        text = self._response.answer
+
+        def _chunks():
+            for i in range(0, len(text), self._chunk_size):
+                yield text[i : i + self._chunk_size]
+
+        return _chunks(), self._response
+
+
 def _prompts(*lines):
     """A prompt_fn that yields each line then signals end-of-session."""
     it = iter(lines)
@@ -136,3 +155,46 @@ def test_render_turn_surfaces_recovery():
     assert "recovery" in out.lower()
     assert "gate_miss" in out
     assert "leave wellness allowance" in out
+
+
+def test_converse_uses_answer_stream_when_agent_supports_it():
+    agent = FakeStreamingAgent(_response())
+    console = Console(file=StringIO())
+
+    turns = cli.converse(
+        agent, "org-xyz", "conv-1", _prompts("first question?"), console
+    )
+
+    assert turns == 1
+    assert agent.stream_calls == [("first question?", "org-xyz", "conv-1")]
+    assert agent.calls == []  # the blocking answer() path was never used
+
+
+def test_converse_falls_back_to_answer_when_agent_has_no_answer_stream():
+    agent = FakeAgent(_response())  # no answer_stream — plain Agent contract only
+    console = Console(file=StringIO())
+
+    turns = cli.converse(
+        agent, "org-xyz", "conv-1", _prompts("first question?"), console
+    )
+
+    assert turns == 1
+    assert agent.calls == [("first question?", "org-xyz", "conv-1")]
+
+
+def test_stream_turn_reassembles_chunks_and_renders_full_answer():
+    buf = StringIO()
+    console = Console(file=buf, width=100)
+    response = _response(
+        answer="Full-time staff get 25 days. [1]",
+        citations=[Citation(content="Full-time employees get 25 days.", reference="docA#0", score=0.81)],
+    )
+    agent = FakeStreamingAgent(response, chunk_size=6)
+
+    result = cli.stream_turn(console, "how many days?", agent, "org-xyz", "conv-1")
+    out = buf.getvalue()
+
+    assert result is response
+    assert "Full-time staff get 25 days." in out
+    assert "grounded in policy documents" in out  # provenance label still shown
+    assert "docA#0" in out  # citations still rendered after streaming completes
