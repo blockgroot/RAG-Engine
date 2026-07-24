@@ -124,6 +124,19 @@ class GoldenCase:
       the follow-up; ``prior_turns`` holds the turns asked before it.
     - ``prior_turns``      earlier turns to establish context (``conversation`` only).
     - ``expected_source``  the path that MUST fire: ``policy`` | ``none`` | ``web``.
+      When ``acceptable_sources`` is set, this is just the "primary"/documented
+      expectation shown in reports; the actual pass/fail check uses
+      ``acceptable_sources`` instead (see ``CaseResult.path_ok``).
+    - ``acceptable_sources``  optional set of sources that ALL count as passing,
+      for a case where more than one grounding-safe outcome is legitimate (e.g.
+      a topically-adjacent-but-unanswered question may either hard-refuse
+      (``none``) or use a non-hallucinating Related-but-Not-Explicit answer
+      (``policy``) — both are safe; only an invented conclusion is not). Leave
+      ``None`` for the normal single-correct-path case.
+    - ``forbidden_answer_pattern``  optional regex; if it matches the (lowercased)
+      answer, the case fails regardless of which acceptable source fired. Used
+      to keep the actual safety property (never invent a specific entitlement)
+      enforced even when multiple response paths are accepted.
     - ``expected_facts``   substrings a correct answer must contain (answerable /
       conversation). Case-insensitive check.
     - ``reference_answer`` ground-truth answer, used by RAGAS for the answerable
@@ -137,6 +150,8 @@ class GoldenCase:
     category: str
     question: str
     expected_source: str
+    acceptable_sources: tuple[str, ...] | None = None
+    forbidden_answer_pattern: str | None = None
     prior_turns: list[str] = field(default_factory=list)
     expected_facts: list[str] = field(default_factory=list)
     reference_answer: str | None = None
@@ -249,9 +264,19 @@ GOLDEN_CASES: list[GoldenCase] = [
         category="fallback",
         question="What is the company's parental and maternity leave policy, and how many weeks are paid?",
         expected_source="none",
+        # Grounding Gap tone fix: the strict prompt's Mode B ("Related but Not
+        # Explicit") was made deliberately more natural/helpful, which makes it
+        # more likely to be chosen over a hard refusal for exactly this shape of
+        # question — a non-hallucinating "we don't have a specific policy for
+        # that, check with HR" is just as safe as a flat refusal, so both count.
+        # The actual safety property (never invent a concrete entitlement) is
+        # enforced by forbidden_answer_pattern below regardless of which fires.
+        acceptable_sources=("none", "policy"),
+        forbidden_answer_pattern=r"\d+\s*(weeks?|months?)\s*(of\s+)?(paid\s+)?(parental|maternity|paternity)",
         rationale=(
             "THE HARD CASE. Topically adjacent to the leave docs, so retrieval scores it "
-            "above the gate threshold; the strict PROMPT (not the gate) must refuse. Central "
+            "above the gate threshold; the strict PROMPT (not the gate) must refuse OR "
+            "gracefully decline without inventing a specific entitlement. Central "
             "to the Part 3 gate analysis."
         ),
     ),

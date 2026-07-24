@@ -18,6 +18,7 @@ The more expensive RAGAS metrics are layered on top separately (``ragas_scoring`
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from app.agent.base import Agent
@@ -59,12 +60,29 @@ class CaseResult:
     # -- derived verdicts --
     @property
     def path_ok(self) -> bool:
-        """Did the expected path fire (source matches, grounded flag consistent)?"""
-        if self.source != self.case.expected_source:
+        """Did an acceptable path fire, with the grounded flag internally consistent,
+        and (when set) no forbidden-pattern match in the answer?
+
+        Most cases have exactly one correct path (``expected_source``). A few
+        (see ``GoldenCase.acceptable_sources``) legitimately accept more than
+        one grounding-safe outcome — e.g. a topically-adjacent-but-unanswered
+        question may either hard-refuse or gracefully decline without
+        inventing a conclusion. Either way, ``grounded`` must still agree with
+        ``source`` (``grounded is False`` iff ``source == "none"``), and if the
+        case defines ``forbidden_answer_pattern`` it must not match — that's
+        the actual safety property being enforced, independent of which
+        acceptable path fired.
+        """
+        acceptable = self.case.acceptable_sources or (self.case.expected_source,)
+        if self.source not in acceptable:
             return False
-        if self.case.expected_source == "none":
-            return not self.grounded
-        return self.grounded
+        if self.grounded != (self.source != "none"):
+            return False
+        if self.case.forbidden_answer_pattern and re.search(
+            self.case.forbidden_answer_pattern, self.answer.lower()
+        ):
+            return False
+        return True
 
     @property
     def facts_ok(self) -> bool | None:

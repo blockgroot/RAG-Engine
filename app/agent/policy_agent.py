@@ -63,6 +63,8 @@ class PolicyAgent(Agent):
             top_score_before=result.top_score_before,
             top_score_after=result.top_score_after,
             latency_ms=result.latency_ms,
+            response_mode=result.response_mode,
+            tone_retry_used=result.tone_retry_used,
         )
 
     @staticmethod
