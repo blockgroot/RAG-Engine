@@ -533,11 +533,14 @@ class ApiSettings:
       credentials (cookies). No wildcard default — an empty list means CORS is
       not configured yet, which the API layer should treat as "reject", not
       "allow all".
+    - ``frontend_url``  base URL of the deployed frontend, used to build the
+      magic-link login URL and the post-OAuth-connect redirect destination.
     """
 
     cors_origins: list[str] = field(default_factory=list)
     host: str = DEFAULT_API_HOST
     port: int = DEFAULT_API_PORT
+    frontend_url: str | None = None
 
     @classmethod
     def from_env(cls) -> "ApiSettings":
@@ -547,6 +550,7 @@ class ApiSettings:
             cors_origins=origins,
             host=os.getenv("API_HOST") or DEFAULT_API_HOST,
             port=int(os.getenv("API_PORT") or DEFAULT_API_PORT),
+            frontend_url=os.getenv("FRONTEND_URL"),
         )
 
 
