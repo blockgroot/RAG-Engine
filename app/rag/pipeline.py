@@ -222,6 +222,17 @@ class RagPipeline:
         # without the retrieval upgrades.
         self._retriever = retriever
 
+    @property
+    def memory(self) -> ConversationStore | None:
+        """The configured conversation store, or ``None`` if memory is off.
+
+        Exposed (like ``PolicyAgent.pipeline``) so a caller that needs to
+        create a conversation up front — e.g. the chat API's
+        ``POST /chat/conversations`` — can reach it without duplicating
+        construction logic.
+        """
+        return self._memory
+
     # -- public API --------------------------------------------------------
 
     def answer(

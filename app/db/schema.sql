@@ -96,3 +96,101 @@ CREATE TABLE IF NOT EXISTS conversation_last_retrieval (
     chunks          TEXT NOT NULL,
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Verified company email domains for an org (Phase 10). A domain only grants
+-- automatic employee access once `verified_at` is set (DNS TXT check passed)
+-- AND an admin has explicitly flipped `auto_join_enabled` — verification alone
+-- never grants access, and there is no way to infer org membership from an
+-- unverified domain claim. UNIQUE on domain: one org owns a given domain.
+CREATE TABLE IF NOT EXISTS org_domains (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id            UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    domain            TEXT NOT NULL UNIQUE,
+    verified_at       TIMESTAMPTZ,
+    auto_join_enabled BOOLEAN NOT NULL DEFAULT false,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_org_domains_org ON org_domains (org_id);
+
+-- Application users (Phase 10). `org_id` is nullable only for the brief window
+-- before an org is resolved (domain match at signup); a user in that state is
+-- NEVER issued a session (see app/api/auth.py) so a null-org row can't act on
+-- any tenant's data. `role` gates admin-only endpoints.
+CREATE TABLE IF NOT EXISTS users (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email      TEXT NOT NULL UNIQUE,
+    org_id     UUID REFERENCES organizations (id) ON DELETE CASCADE,
+    role       TEXT NOT NULL DEFAULT 'member',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_users_org ON users (org_id);
+
+-- Per-org, per-provider OAuth credentials (Phase 10) — replaces hand-set
+-- NOTION_TOKEN_<NAME> env vars with an admin-driven OAuth connect flow.
+-- Tokens are encrypted at rest (see app/security/crypto.py); this table never
+-- stores plaintext. UNIQUE (org_id, provider) makes cross-tenant ambiguity
+-- structurally impossible: every lookup MUST filter by org_id, and there is
+-- at most one row per org per provider, so a query can never accidentally
+-- return another org's connection by provider or workspace id alone.
+CREATE TABLE IF NOT EXISTS oauth_connections (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id                  UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    provider                TEXT NOT NULL,
+    external_workspace_id   TEXT NOT NULL,
+    external_workspace_name TEXT,
+    access_token_encrypted  TEXT NOT NULL,
+    refresh_token_encrypted TEXT,
+    expires_at              TIMESTAMPTZ,
+    connected_by_user_id    UUID REFERENCES users (id),
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (org_id, provider)
+);
+CREATE INDEX IF NOT EXISTS idx_oauth_connections_org ON oauth_connections (org_id);
+ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS external_workspace_name TEXT;
+
+-- Admin-triggered ingestion jobs (Phase 10/12). A durable, pollable record of a
+-- background fetch->chunk->embed->store run so an admin sees progress instead
+-- of a blocking script. Consumed by a Postgres-backed worker (app/jobs/), not
+-- an in-process background task, so a crashed worker never loses the job.
+CREATE TABLE IF NOT EXISTS ingestion_jobs (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id        UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    connection_id UUID NOT NULL REFERENCES oauth_connections (id) ON DELETE CASCADE,
+    status        TEXT NOT NULL DEFAULT 'queued',
+    doc_count     INT,
+    error         TEXT,
+    started_at    TIMESTAMPTZ,
+    finished_at   TIMESTAMPTZ,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_org ON ingestion_jobs (org_id);
+CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_status ON ingestion_jobs (status);
+
+-- Single-use magic-link login tokens (Phase 13). Only a HASH of the token is
+-- stored (never the token itself), so a DB read can't be used to log in as
+-- someone. `consumed_at` makes a token single-use even if it leaks (e.g. in a
+-- mail server log) before it expires; `expires_at` bounds its lifetime
+-- regardless. A session is only ever issued from a verify call that
+-- successfully consumes one of these rows (see app/api/auth.py).
+CREATE TABLE IF NOT EXISTS magic_link_tokens (
+    token_hash  TEXT PRIMARY KEY,
+    email       TEXT NOT NULL,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    consumed_at TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_magic_link_tokens_email ON magic_link_tokens (email);
+
+-- Single-use OAuth `state` values (Phase 13) — CSRF/replay protection for the
+-- admin "Connect X" flow. Stored server-side (not just a signed JWT) so a
+-- state can be validated AND immediately consumed on lookup in the callback;
+-- scoped to the admin's org_id at issue time so the callback resolves the
+-- right tenant without trusting anything client-supplied.
+CREATE TABLE IF NOT EXISTS oauth_states (
+    state       TEXT PRIMARY KEY,
+    org_id      UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    provider    TEXT NOT NULL,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    consumed_at TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);

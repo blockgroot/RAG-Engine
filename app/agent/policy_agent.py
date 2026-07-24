@@ -54,11 +54,11 @@ class PolicyAgent(Agent):
         """Like ``answer``, but the text arrives as a chunk iterator.
 
         Not part of the abstract ``Agent`` contract — it's a PolicyAgent-specific
-        convenience for callers that want progressive display (the CLI, an SSE
-        endpoint), not a capability every future agent must implement. See
-        ``RagPipeline.answer_stream`` for why this chunks an already-fully-decided
-        answer rather than streaming raw LLM tokens through the gate/recovery/
-        tone-retry logic.
+        convenience for callers that want progressive display (the CLI,
+        ``app/api/chat.py``'s streaming chat endpoint), not a capability every
+        future agent must implement. See ``RagPipeline.answer_stream`` for why
+        this chunks an already-fully-decided answer rather than streaming raw
+        LLM tokens through the gate/recovery/tone-retry logic.
         """
         chunks, result = self._pipeline.answer_stream(
             question, org_id, conversation_id=conversation_id
