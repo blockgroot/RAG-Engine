@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from ..config.settings import ApiSettings
 from . import admin as admin_router
 from . import auth as auth_router
+from . import chat as chat_router
 from . import orgs as orgs_router
 
 
@@ -37,6 +38,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router.router)
     app.include_router(orgs_router.router)
     app.include_router(admin_router.router)
+    app.include_router(chat_router.router)
 
     @app.get("/health")
     def health():
