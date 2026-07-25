@@ -1,18 +1,18 @@
-"""Auth router: self-serve signup, employee magic-link login, admin OAuth
-"Connect" flow (Phase 13, simplified post-Phase-14).
+"""Auth router: self-serve signup, admin-invited member login, admin OAuth
+"Connect" flow (Phase 13, simplified — domain auto-join removed).
 
 Three entry points, all converging on the same passwordless magic-link
 session issuance — there is exactly one way to log in, admin or employee:
 1. Signup (``/auth/signup``) — a brand-new company's first user. Creates the
    org, makes this user its admin, and emails them a magic link. No password
    to set, no separate "admin login" flow.
-2. Magic link (``/auth/magic-link`` + ``/auth/magic-link/verify``) — an
-   existing user's (admin or employee) normal path back in. For a new email
-   at an already-registered, auto-join-enabled domain
-   (``app.auth.domains.resolve_org_for_email``) this also transparently
-   creates their member account. There is deliberately no response-content
-   difference between "domain not eligible" and "email sent" so this endpoint
-   can't be used to enumerate which companies are registered.
+2. Magic link (``/auth/magic-link`` + ``/auth/magic-link/verify``) — the
+   normal way back in for anyone who ALREADY has an account (an admin, or a
+   member an admin invited via ``/admin/members``). An email with no existing
+   account has no path to a first login here — only an admin invite (or
+   signup, for a brand-new org) creates one. There is deliberately no
+   response-content difference between "no account" and "email sent" so this
+   endpoint can't be used to enumerate registered accounts.
 3. OAuth connect (``/auth/{provider}/authorize`` + ``/auth/{provider}/callback``)
    — admin-only, requires an existing session, used to link an org's Notion
    (etc.) workspace. Fully separate from magic-link auth; it never issues a
@@ -32,13 +32,11 @@ from ..auth import (
     create_magic_link_token,
     create_session_token,
     create_state,
-    get_or_create_member,
     get_user_by_email,
-    resolve_org_for_email,
     save_connection,
     send_magic_link_email,
 )
-from ..config.settings import ApiSettings, EmailSettings
+from ..config.settings import ApiSettings, AuthSettings, EmailSettings
 from ..core.exceptions import AuthError, ConfigurationError, OAuthError
 from ..vectorstore.base import VectorStore
 from .deps import SESSION_COOKIE_NAME, get_session, get_vector_store
@@ -96,28 +94,24 @@ def request_magic_link(body: dict, settings: ApiSettings = Depends(ApiSettings.f
     if not email or "@" not in email:
         raise HTTPException(status_code=400, detail="A valid email is required")
 
-    # An existing account can always request its own login link — auto-join
-    # only gates a NEW email joining an org; it must never lock out someone
-    # who already has an account there (e.g. an admin who registered the
-    # domain and later turned auto-join off shouldn't lock themselves out).
-    existing_user = get_user_by_email(email)
-    org_id = existing_user.org_id if existing_user is not None else resolve_org_for_email(email)
+    # Only an EXISTING account (created at signup, or by an admin invite via
+    # /admin/members) ever gets a link — there is no auto-join path left that
+    # creates a first account here. An unknown email is a silent no-op.
+    user = get_user_by_email(email)
     dev_link = None
-    if org_id is not None:
-        user = existing_user or get_or_create_member(email, org_id)
+    if user is not None and user.org_id is not None:
         token = create_magic_link_token(email)
         base = (settings.frontend_url or "").rstrip("/")
         link = f"{base}/verify?token={token}"
         send_magic_link_email(email, link)
         dev_link = _dev_link(link)
-        _ = user  # created/reused; nothing further needed before the link is clicked
 
-    # The "message" text is always identical — never reveal whether the domain
-    # is registered. "dev_link" DOES vary with eligibility, but it's only ever
-    # non-None in console-email mode (no SMTP configured, i.e. local dev with
-    # no real inbox and no real attacker) — in any deployment where the
-    # anti-enumeration guarantee actually matters, EMAIL_SENDER=smtp and this
-    # is always None, so the response is identical either way.
+    # The "message" text is always identical — never reveal whether the email
+    # is known. "dev_link" DOES vary with whether an account exists, but it's
+    # only ever non-None in console-email mode (no SMTP configured, i.e. local
+    # dev with no real inbox and no real attacker) — in any deployment where
+    # the anti-enumeration guarantee actually matters, EMAIL_SENDER=smtp and
+    # this is always None, so the response is identical either way.
     return {"message": "If that email is eligible, a sign-in link has been sent.", "dev_link": dev_link}
 
 
@@ -152,6 +146,12 @@ def verify_magic_link(token: str, settings: ApiSettings = Depends(ApiSettings.fr
         httponly=True,
         secure=True,
         samesite="lax",
+        # Without max_age this is a browser-session cookie (cleared on
+        # browser close) regardless of how long the JWT itself is valid for
+        # — that would silently defeat the point of a long-lived session TTL.
+        # Keep it tied to the same setting so the cookie's lifetime always
+        # matches the token's.
+        max_age=AuthSettings.from_env().session_ttl_minutes * 60,
     )
     return response
 

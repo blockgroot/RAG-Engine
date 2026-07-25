@@ -1,10 +1,10 @@
 """Application users (Phase 13).
 
 A user is always looked up/created by email. ``org_id`` is only ever set when
-an org has already been resolved (via an auto-join-enabled domain, or by an
-admin's own org at signup) — a user with no ``org_id`` exists but is NEVER
-issued a session (see ``app/api/auth.py``), so there is no authenticated
-state that lacks a tenant.
+an org has already been resolved — either an admin's own org at signup, or a
+specific email an admin directly invited into their org (``invite_member``) —
+a user with no ``org_id`` exists but is NEVER issued a session (see
+``app/api/auth.py``), so there is no authenticated state that lacks a tenant.
 """
 
 from __future__ import annotations
@@ -60,21 +60,27 @@ def create_user(email: str, *, org_id: str | None = None, role: str = ROLE_MEMBE
     return _row_to_user(row)
 
 
-def get_or_create_member(email: str, org_id: str) -> User:
-    """Return the existing user for ``email``, or create one scoped to ``org_id``.
-
-    Used by the magic-link request flow once an auto-join-enabled domain has
-    resolved which org this email belongs to. Never changes an
-    existing user's ``org_id`` — an email is bound to its first-resolved org
-    for good, so a later domain change can't silently move someone's account
-    into a different tenant.
-    """
-    existing = get_user_by_email(email)
-    if existing is not None:
-        return existing
-    return create_user(email, org_id=org_id, role=ROLE_MEMBER)
-
-
 def create_admin(email: str, org_id: str) -> User:
     """Create the first admin user for a freshly-created org (Phase 13/14 signup)."""
     return create_user(email, org_id=org_id, role=ROLE_ADMIN)
+
+
+def invite_member(email: str, org_id: str) -> User:
+    """Create a member account for ``email``, scoped directly to ``org_id``.
+
+    Replaces domain-based auto-join: an admin names the exact email to invite,
+    no domain matching involved. Doesn't check for an existing account —
+    callers (the invite endpoint) do that, mirroring signup's duplicate check,
+    so the "already exists" message stays consistent across both entry points.
+    """
+    return create_user(email, org_id=org_id, role=ROLE_MEMBER)
+
+
+def list_members(org_id: str) -> list[User]:
+    """All users (admin + invited members) belonging to ``org_id``."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT {_SELECT_COLUMNS} FROM users WHERE org_id = %s ORDER BY created_at",
+            (org_id,),
+        ).fetchall()
+    return [_row_to_user(row) for row in rows]

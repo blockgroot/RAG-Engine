@@ -75,7 +75,15 @@ DEFAULT_WEB_SEARCH_MAX_RESULTS = 5
 DEFAULT_WEB_SEARCH_TIMEOUT = 8.0
 
 # Auth / session (Phase 10). Session and magic-link TTLs are minutes.
-DEFAULT_SESSION_TTL_MINUTES = 60
+# Session default is long-lived (30 days) rather than a typical short web
+# session: this is a low-risk internal tool (not banking/finance), the cookie
+# is already httpOnly+Secure+SameSite=Lax, and there's no refresh-token flow
+# to silently keep a short-lived session alive — so the TTL itself has to be
+# the thing that keeps a user logged in across normal day-to-day use instead
+# of re-requesting a magic link every hour. Revisit with a proper refresh
+# mechanism if the risk profile changes (e.g. more sensitive data, external
+# users).
+DEFAULT_SESSION_TTL_MINUTES = 60 * 24 * 30  # 30 days
 DEFAULT_MAGIC_LINK_TTL_MINUTES = 10
 
 # HTTP API (Phase 10+).
@@ -500,7 +508,10 @@ class AuthSettings:
     - ``jwt_secret``  signs the session cookie issued after magic-link/OAuth
       login. Required in any real deployment; no default (must not silently run
       with a well-known key).
-    - ``session_ttl_minutes``  session cookie lifetime.
+    - ``session_ttl_minutes``  session cookie lifetime. Defaults to 30 days
+      (long-lived, not a short web session) — deliberate given this is a
+      low-risk internal tool with an already-hardened cookie
+      (httpOnly+Secure+SameSite=Lax) and no refresh-token mechanism.
     - ``magic_link_ttl_minutes``  how long a login link stays valid/single-use.
     """
 

@@ -1,60 +1,46 @@
-"""Admin router: domain allowlist, OAuth connections, ingestion jobs (Phase 13c).
+"""Admin router: member invites, OAuth connections, ingestion jobs (Phase 13c).
 
 Every route requires an admin session (``require_admin``) and takes ``org_id``
 exclusively from that session — never from the URL or body — so an admin can
-only ever manage their OWN organization's domains, connections, and jobs.
+only ever manage their OWN organization's members, connections, and jobs.
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..auth import list_connections
-from ..auth import domains as domains_mod
-from ..core.exceptions import ConfigurationError
+from ..auth import get_user_by_email, invite_member, list_connections, list_members
 from ..jobs import enqueue, get_job, list_jobs
 from .deps import SessionClaims, require_admin
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
-@router.post("/domains")
-def register_domain(body: dict, session: SessionClaims = Depends(require_admin)):
-    domain = (body.get("domain") or "").strip().lower()
-    if not domain:
-        raise HTTPException(status_code=400, detail="A domain is required")
-    try:
-        record = domains_mod.register_domain(session.org_id, domain)
-    except ConfigurationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {
-        "id": record.id,
-        "domain": record.domain,
-        "auto_join_enabled": record.auto_join_enabled,
-    }
+@router.post("/members")
+def invite(body: dict, session: SessionClaims = Depends(require_admin)):
+    """Directly add a specific email as a member of the caller's org.
+
+    Replaces domain-based auto-join: no domain matching, no eligibility
+    resolution — the admin names the exact email. Rejects an email that
+    already has an account anywhere, same as signup, since an email is bound
+    to its first-resolved org for good.
+    """
+    email = (body.get("email") or "").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="A valid email is required")
+    if get_user_by_email(email) is not None:
+        raise HTTPException(status_code=400, detail="An account already exists for this email")
+
+    user = invite_member(email, session.org_id)
+    return {"id": user.id, "email": user.email, "role": user.role}
 
 
-@router.get("/domains")
-def list_domains(session: SessionClaims = Depends(require_admin)):
+@router.get("/members")
+def get_members(session: SessionClaims = Depends(require_admin)):
     return [
-        {
-            "id": d.id,
-            "domain": d.domain,
-            "auto_join_enabled": d.auto_join_enabled,
-        }
-        for d in domains_mod.list_domains(session.org_id)
+        {"id": u.id, "email": u.email, "role": u.role, "created_at": u.created_at.isoformat()}
+        for u in list_members(session.org_id)
     ]
-
-
-@router.post("/domains/{domain_id}/auto-join")
-def set_auto_join(
-    domain_id: str, body: dict, session: SessionClaims = Depends(require_admin)
-):
-    enabled = bool(body.get("enabled", False))
-    ok = domains_mod.set_auto_join(session.org_id, domain_id, enabled)
-    if not ok:
-        raise HTTPException(status_code=404, detail="No such domain for this organization")
-    return {"auto_join_enabled": enabled}
 
 
 @router.get("/connections")

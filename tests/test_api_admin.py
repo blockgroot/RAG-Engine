@@ -1,8 +1,8 @@
-"""Phase 13c: admin router (domains, connections, jobs).
+"""Phase 13c: admin router (members, connections, jobs).
 
 Focus of these tests: every endpoint is admin-only AND scoped to the caller's
 own org_id — a second org's admin must never see or act on the first org's
-domains/connections/jobs, even by guessing an id.
+members/connections/jobs, even by guessing an id.
 """
 
 from __future__ import annotations
@@ -47,68 +47,67 @@ def admin_org(store, org_cleanup):
 
 @requires_db
 def test_admin_routes_require_a_session(client):
-    assert client.get("/admin/domains").status_code == 401
+    assert client.get("/admin/members").status_code == 401
     assert client.get("/admin/connections").status_code == 401
     assert client.get("/admin/jobs").status_code == 401
 
 
 @requires_db
-def test_register_and_list_domain(client, admin_org):
+def test_invite_and_list_member(client, admin_org):
     org_id, cookies = admin_org
-    domain = f"admin-{uuid.uuid4().hex[:8]}.example.com"
+    email = f"invitee-{uuid.uuid4().hex[:8]}@example.com"
 
-    response = client.post("/admin/domains", json={"domain": domain}, cookies=cookies)
+    response = client.post("/admin/members", json={"email": email}, cookies=cookies)
     assert response.status_code == 200
     body = response.json()
-    assert body["domain"] == domain
-    assert body["auto_join_enabled"] is True  # live immediately, no DNS step
+    assert body["email"] == email
+    assert body["role"] == "member"
 
-    listed = client.get("/admin/domains", cookies=cookies).json()
-    assert len(listed) == 1
-    assert listed[0]["domain"] == domain
-    assert listed[0]["auto_join_enabled"] is True
+    listed = client.get("/admin/members", cookies=cookies).json()
+    emails = {m["email"] for m in listed}
+    assert email in emails
+    # The admin themself is also a member of the list.
+    assert len(listed) == 2
 
 
 @requires_db
-def test_register_domain_rejects_public_provider(client, admin_org):
+def test_invite_rejects_malformed_email(client, admin_org):
     _, cookies = admin_org
-    response = client.post("/admin/domains", json={"domain": "gmail.com"}, cookies=cookies)
+    response = client.post("/admin/members", json={"email": "not-an-email"}, cookies=cookies)
     assert response.status_code == 400
 
 
 @requires_db
-def test_auto_join_can_be_toggled_off_and_on(client, admin_org):
+def test_invite_rejects_email_that_already_has_an_account(client, admin_org, store, org_cleanup):
     org_id, cookies = admin_org
-    domain = f"admin-{uuid.uuid4().hex[:8]}.example.com"
-    reg = client.post("/admin/domains", json={"domain": domain}, cookies=cookies).json()
+    email = f"dup-{uuid.uuid4().hex[:8]}@example.com"
+    first = client.post("/admin/members", json={"email": email}, cookies=cookies)
+    assert first.status_code == 200
 
-    response = client.post(
-        f"/admin/domains/{reg['id']}/auto-join",
-        json={"enabled": False},
-        cookies=cookies,
-    )
-    assert response.status_code == 200
-    assert response.json()["auto_join_enabled"] is False
+    other_org = store.create_organization(f"Admin API Invite Other Org {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(other_org)
+    other_admin = create_admin(f"other-admin-{uuid.uuid4().hex[:8]}@example.com", other_org)
+    other_cookies = {"session": create_session_token(other_admin)}
 
-    listed = client.get("/admin/domains", cookies=cookies).json()
-    assert listed[0]["auto_join_enabled"] is False
+    second = client.post("/admin/members", json={"email": email}, cookies=other_cookies)
+    assert second.status_code == 400
 
 
 @requires_db
-def test_auto_join_rejects_another_orgs_domain_id(client, admin_org, store, org_cleanup):
+def test_members_list_scoped_to_own_org(client, admin_org, store, org_cleanup):
     org_id, cookies = admin_org
-    other_org = store.create_organization(f"Admin API Domain Other Org {uuid.uuid4().hex[:8]}")
+    other_org = store.create_organization(f"Admin API Members Other Org {uuid.uuid4().hex[:8]}")
     org_cleanup.append(other_org)
-    from app.auth import domains as domains_mod
-
-    other_domain = domains_mod.register_domain(other_org, f"other-{uuid.uuid4().hex[:8]}.example.com")
-
-    response = client.post(
-        f"/admin/domains/{other_domain.id}/auto-join",
-        json={"enabled": False},
-        cookies=cookies,
+    other_admin = create_admin(f"other-admin2-{uuid.uuid4().hex[:8]}@example.com", other_org)
+    other_cookies = {"session": create_session_token(other_admin)}
+    client.post(
+        "/admin/members",
+        json={"email": f"other-member-{uuid.uuid4().hex[:8]}@example.com"},
+        cookies=other_cookies,
     )
-    assert response.status_code == 404
+
+    listed = client.get("/admin/members", cookies=cookies).json()
+    assert all(m["email"] != other_admin.email for m in listed)
 
 
 @requires_db
@@ -231,5 +230,5 @@ def test_non_admin_cannot_access_admin_routes(client, store, org_cleanup):
 
     token = create_session_token(get_user(member.id))
 
-    response = client.get("/admin/domains", cookies={"session": token})
+    response = client.get("/admin/members", cookies={"session": token})
     assert response.status_code == 403

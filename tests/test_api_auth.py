@@ -37,17 +37,15 @@ def client():
 
 
 @pytest.fixture
-def _verified_domain(store, org_cleanup):
-    """An org with an auto-join-enabled domain."""
+def _invited_member(store, org_cleanup):
+    """(org_id, email) for a member an admin has already invited into a fresh org."""
+    from app.auth import invite_member
+
     org_id = store.create_organization("API Auth Test Org")
     org_cleanup.append(org_id)
-    domain = f"apitest-{uuid.uuid4().hex[:8]}.example.com"
-    with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO org_domains (org_id, domain, auto_join_enabled) VALUES (%s, %s, true)",
-            (org_id, domain),
-        )
-    return org_id, domain
+    email = f"invited-{uuid.uuid4().hex[:8]}@example.com"
+    invite_member(email, org_id)
+    return org_id, email
 
 
 @requires_db
@@ -97,20 +95,27 @@ def test_signup_rejects_missing_fields(client):
 
 
 @requires_db
-def test_magic_link_request_for_eligible_domain_returns_generic_message(
-    client, _verified_domain
+def test_magic_link_request_for_invited_member_returns_generic_message(
+    client, _invited_member
 ):
-    org_id, domain = _verified_domain
-    response = client.post("/auth/magic-link", json={"email": f"alice@{domain}"})
+    org_id, email = _invited_member
+    response = client.post("/auth/magic-link", json={"email": email})
     assert response.status_code == 200
     assert "sign-in link" in response.json()["message"].lower()
 
 
 @requires_db
-def test_magic_link_request_for_ineligible_domain_returns_same_generic_message(client):
-    response = client.post("/auth/magic-link", json={"email": "alice@not-registered.example"})
+def test_magic_link_request_for_unknown_email_returns_same_generic_message_but_creates_nothing(
+    client,
+):
+    email = "alice@never-invited.example"
+    response = client.post("/auth/magic-link", json={"email": email})
     assert response.status_code == 200
     assert "sign-in link" in response.json()["message"].lower()
+
+    from app.auth.users import get_user_by_email
+
+    assert get_user_by_email(email) is None  # no account was ever created for it
 
 
 @requires_db
@@ -120,15 +125,54 @@ def test_magic_link_request_rejects_malformed_email(client):
 
 
 @requires_db
+def test_admin_invite_then_magic_link_then_login_lands_in_admins_org(
+    client, store, org_cleanup
+):
+    """The full flow this simplification exists for: an admin invites a
+    specific email over HTTP, that email requests + consumes a magic link,
+    and lands in exactly the inviting admin's org as a member."""
+    from app.auth import create_session_token
+
+    org_id = store.create_organization(f"API Auth Invite Flow Org {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+    admin = create_admin(f"admin-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    admin_cookies = {"session": create_session_token(admin)}
+
+    invitee_email = f"teammate-{uuid.uuid4().hex[:8]}@example.com"
+    invite_response = client.post(
+        "/admin/members", json={"email": invitee_email}, cookies=admin_cookies
+    )
+    assert invite_response.status_code == 200
+
+    login_response = client.post("/auth/magic-link", json={"email": invitee_email})
+    assert login_response.status_code == 200
+
+    from app.auth import create_magic_link_token
+
+    token = create_magic_link_token(invitee_email)
+    verify_response = client.get(
+        f"/auth/magic-link/verify?token={token}", follow_redirects=False
+    )
+    assert verify_response.status_code in (302, 307)
+    session_token = verify_response.cookies.get("session")
+    assert session_token
+
+    me_response = client.get("/me", cookies={"session": session_token})
+    assert me_response.status_code == 200
+    body = me_response.json()
+    assert body["org_id"] == org_id
+    assert body["role"] == "member"
+
+
+@requires_db
 def test_magic_link_full_login_flow_issues_session_scoped_to_correct_org(
-    client, _verified_domain
+    client, _invited_member
 ):
     # Passing the response's httpx.Cookies object straight through to the next
     # request silently drops it (a TestClient cookie-domain quirk); extracting
     # the value and passing a plain {"session": ...} dict works and still
     # exercises the real decode_session_token() path a browser cookie would.
-    org_id, domain = _verified_domain
-    email = f"bob@{domain}"
+    org_id, email = _invited_member
 
     client.post("/auth/magic-link", json={"email": email})
 
@@ -153,10 +197,9 @@ def test_magic_link_full_login_flow_issues_session_scoped_to_correct_org(
 
 
 @requires_db
-def test_magic_link_verify_rejects_reused_token(client, _verified_domain):
-    org_id, domain = _verified_domain
-    email = f"carol@{domain}"
-    client.post("/auth/magic-link", json={"email": email})  # creates the user
+def test_magic_link_verify_rejects_reused_token(client, _invited_member):
+    org_id, email = _invited_member
+    client.post("/auth/magic-link", json={"email": email})
 
     from app.auth import create_magic_link_token
 

@@ -97,26 +97,18 @@ CREATE TABLE IF NOT EXISTS conversation_last_retrieval (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Company email domains allowed to auto-join an org (simplified in the
--- post-Phase-14 auth simplification — no DNS TXT verification: an admin just
--- types in their company's domain and it's live immediately, gated only by
--- `auto_join_enabled` so it can still be switched off). UNIQUE on domain: one
--- org owns a given domain claim.
-CREATE TABLE IF NOT EXISTS org_domains (
-    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    org_id            UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
-    domain            TEXT NOT NULL UNIQUE,
-    auto_join_enabled BOOLEAN NOT NULL DEFAULT true,
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_org_domains_org ON org_domains (org_id);
-ALTER TABLE org_domains DROP COLUMN IF EXISTS verified_at;
-ALTER TABLE org_domains ALTER COLUMN auto_join_enabled SET DEFAULT true;
+-- Domain-based auto-join (org_domains: admin-typed domain + auto_join_enabled,
+-- no DNS proof) was removed in favor of direct admin-invited members — see
+-- CLAUDE.md §2/§4. Dropped rather than left unused since nothing reads it any
+-- more; revive by restoring this table + app/auth/domains.py from git history
+-- if/when self-serve multi-company onboarding is actually needed.
+DROP TABLE IF EXISTS org_domains;
 
 -- Application users (Phase 10). `org_id` is nullable only for the brief window
--- before an org is resolved (domain match at signup); a user in that state is
--- NEVER issued a session (see app/api/auth.py) so a null-org row can't act on
--- any tenant's data. `role` gates admin-only endpoints.
+-- before an org is resolved (an admin's own org at signup, or a specific
+-- email an admin invites directly); a user in that state is NEVER issued a
+-- session (see app/api/auth.py) so a null-org row can't act on any tenant's
+-- data. `role` gates admin-only endpoints.
 CREATE TABLE IF NOT EXISTS users (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email      TEXT NOT NULL UNIQUE,

@@ -16,13 +16,16 @@ from .credentials import (
     get_connection_token,
     list_connections,
 )
-from .users import User, ROLE_ADMIN, ROLE_MEMBER, get_user, get_user_by_email, create_user, get_or_create_member, create_admin
-from .domains import (
-    OrgDomain,
-    register_domain,
-    set_auto_join,
-    list_domains,
-    resolve_org_for_email,
+from .users import (
+    User,
+    ROLE_ADMIN,
+    ROLE_MEMBER,
+    get_user,
+    get_user_by_email,
+    create_user,
+    create_admin,
+    invite_member,
+    list_members,
 )
 from .magic_link import create_magic_link_token, consume_magic_link_token
 from .oauth_state import create_state, consume_state
@@ -44,13 +47,9 @@ __all__ = [
     "get_user",
     "get_user_by_email",
     "create_user",
-    "get_or_create_member",
     "create_admin",
-    "OrgDomain",
-    "register_domain",
-    "set_auto_join",
-    "list_domains",
-    "resolve_org_for_email",
+    "invite_member",
+    "list_members",
     "create_magic_link_token",
     "consume_magic_link_token",
     "create_state",

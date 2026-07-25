@@ -42,10 +42,11 @@ export interface Me {
   role: "admin" | "member";
 }
 
-export interface DomainRecord {
+export interface MemberRecord {
   id: string;
-  domain: string;
-  auto_join_enabled: boolean;
+  email: string;
+  role: "admin" | "member";
+  created_at: string;
 }
 
 export interface ConnectionRecord {
@@ -92,16 +93,11 @@ export const api = {
 
   connectUrl: (provider: string) => `${API_BASE_URL}/auth/${provider}/authorize`,
 
-  listDomains: () => request<DomainRecord[]>("/admin/domains"),
-  registerDomain: (domain: string) =>
-    request<DomainRecord>("/admin/domains", {
+  listMembers: () => request<MemberRecord[]>("/admin/members"),
+  inviteMember: (email: string) =>
+    request<{ id: string; email: string; role: string }>("/admin/members", {
       method: "POST",
-      body: JSON.stringify({ domain }),
-    }),
-  setAutoJoin: (domainId: string, enabled: boolean) =>
-    request<{ auto_join_enabled: boolean }>(`/admin/domains/${domainId}/auto-join`, {
-      method: "POST",
-      body: JSON.stringify({ enabled }),
+      body: JSON.stringify({ email }),
     }),
 
   listConnections: () => request<ConnectionRecord[]>("/admin/connections"),

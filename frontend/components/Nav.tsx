@@ -7,7 +7,7 @@ import { Me } from "@/lib/api";
 const LINKS = [
   { href: "/chat", label: "Ask" },
   { href: "/admin/connections", label: "Connections", adminOnly: true },
-  { href: "/admin/domains", label: "Domains", adminOnly: true },
+  { href: "/admin/members", label: "Members", adminOnly: true },
 ];
 
 export function Nav({ me }: { me: Me | null }) {

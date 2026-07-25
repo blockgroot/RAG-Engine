@@ -315,15 +315,14 @@ their policy documents; their employees ask questions and get answers grounded i
     request, always from the signed session, never from client input (Phase
     13b-d).** `deps.get_session`/`require_admin` decode the session JWT
     (`app/auth/session.py`) from an httpOnly cookie; every router downstream takes
-    `org_id`/`role` from there exclusively. **Employee login is magic-link only**
-    (`app/api/auth.py`): a link is emailed only when the email's domain is BOTH
-    DNS-verified (an HMAC-derived TXT record the org must actually publish —
-    proves DNS control, not just "an admin typed a domain in") AND has
-    `auto_join_enabled` explicitly toggled by an admin — verifying a domain never
-    grants access by itself. Public email providers (gmail.com et al.) can never
-    be registered. The response to a magic-link request is **always the same
-    generic message**, whether or not the domain is eligible — this endpoint must
-    never be usable to enumerate which companies are registered. Magic-link
+    `org_id`/`role` from there exclusively. **Login is magic-link only**
+    (`app/api/auth.py`): originally an email got a link only when its domain was
+    DNS-verified AND had auto-join explicitly enabled by an admin; **this domain
+    auto-join mechanism was removed in a later simplification pass — see the
+    bullet below — and replaced by direct admin-invited members.** The response
+    to a magic-link request is **always the same generic message**, whether or
+    not the email is known — this endpoint must never be usable to enumerate
+    registered accounts. Magic-link
     tokens and OAuth `state` values are single-use and server-side (only a
     SHA-256 hash of a magic-link token is ever stored), consumed atomically on
     lookup so a captured link/URL can't be replayed. **A session is never issued
@@ -347,6 +346,37 @@ their policy documents; their employees ask questions and get answers grounded i
     (Google/GitHub render "coming soon" through the *same* component the Notion
     button uses) — mirrors the backend factory's extension pattern. SSE streaming
     uses `fetch` + `ReadableStream` (not `EventSource`, which can't POST a body).
+- **Domain-based auto-join was removed in favor of direct admin-invited
+  members — deferred, not wrong.** Phase 13 originally gated employee login on
+  a per-org `org_domains` claim (an admin typed a domain, toggled
+  `auto_join_enabled`) resolved via `resolve_org_for_email`. That machinery was
+  built correctly — it's the right shape *for onboarding many self-serve
+  companies at once* — but it's solving a problem this deployment doesn't have
+  yet: a small number of known users, not open self-serve signup across many
+  tenants. Carrying `org_domains`, the eligibility-resolution path, and the
+  admin domain-management UI was more complexity than the current need
+  justified, so it was **removed** (table dropped via `DROP TABLE IF EXISTS
+  org_domains` in `schema.sql`, `app/auth/domains.py` deleted) rather than left
+  half-wired. **What replaced it:** `POST /admin/members` — an admin names a
+  specific email directly (`app.auth.users.invite_member`), which creates a
+  `users` row scoped to their own `org_id` with no domain matching of any
+  kind. `request_magic_link` now only ever sends a link to an email that
+  *already has an account* (created at signup, or via an admin invite) —
+  there is no path left that creates a first account from an unrecognized
+  email. The signup flow (a brand-new org's first admin) is untouched. **To
+  revive self-serve domain auto-join later** (e.g. once onboarding many
+  companies without manual admin invites is an actual need): restore the
+  `org_domains` table and `app/auth/domains.py` from git history (the commit
+  that removed them), and re-wire `resolve_org_for_email` back into
+  `request_magic_link` alongside the invite path (the two aren't mutually
+  exclusive — an admin invite and a domain claim could both resolve an org for
+  an email). Don't rebuild it from scratch; the DNS-verification design was
+  already reasoned through once.
+- **Session TTL defaults to 30 days, not a typical short web session** (`AUTH_SESSION_TTL_MINUTES`,
+  `app/auth/session.py` + the `max_age` on the session cookie in `app/api/auth.py`) —
+  deliberate given this is a low-risk internal tool with an already-hardened cookie
+  (httpOnly+Secure+SameSite=Lax) and no refresh-token flow; revisit with a proper
+  refresh mechanism if the risk profile changes.
 
 ## 3. Folder / file structure convention
 
@@ -388,10 +418,12 @@ app/
   auth/         # P10-13: identity + OAuth "Connect X" + sessions. base.py
                 #   (OAuthProvider) + notion_oauth.py + factory.py (same
                 #   interface/impl/factory shape as every other capability) +
-                #   credentials.py (oauth_connections storage) + users.py +
-                #   domains.py (DNS-verified, opt-in auto-join) + magic_link.py +
-                #   oauth_state.py (single-use, server-side, atomic-consume tokens)
-                #   + session.py (JWT) + email.py (pluggable magic-link delivery).
+                #   credentials.py (oauth_connections storage) + users.py
+                #   (get_user_by_email/create_admin/invite_member/list_members)
+                #   + magic_link.py + oauth_state.py (single-use, server-side,
+                #   atomic-consume tokens) + session.py (JWT) + email.py
+                #   (pluggable magic-link delivery). domains.py (DNS-verified
+                #   auto-join) was REMOVED — see the simplification bullet in §2.
   jobs/         # P12: Postgres-backed durable ingestion job queue. queue.py
                 #   (enqueue/claim_next/reap_stuck/get_job, SELECT ... FOR UPDATE
                 #   SKIP LOCKED) + worker.py (runs the unchanged ingest_source()).
@@ -399,7 +431,7 @@ app/
   api/          # P13: the HTTP layer (FastAPI). main.py (app + CORS) + deps.py
                 #   (get_session/require_admin — the ONLY place org_id enters a
                 #   request) + auth.py (magic-link + OAuth connect routes) +
-                #   admin.py (domains/connections/jobs, all org-scoped from the
+                #   admin.py (members/connections/jobs, all org-scoped from the
                 #   session) + chat.py (SSE streaming) + orgs.py (/me).
 evaluation/     # P7 golden-set eval (peer to scripts/tests). golden_set.py (cases +
                 #   corpus mirroring real Notion data), harness.py (seed + run + path
@@ -415,11 +447,11 @@ frontend/       # P14: Next.js 15 App Router portal, separate app calling app/ap
                 #   over HTTP with credentials: "include" (session cookie only,
                 #   never JS-accessible storage). (auth)/login + (auth)/verify
                 #   (magic-link), chat/ (streaming SSE + citations), admin/
-                #   domains|connections|jobs. No Tailwind/UI-kit — plain CSS vars.
+                #   members|connections|jobs. No Tailwind/UI-kit — plain CSS vars.
 tests/          # pytest; isolation (P2), grounding (P3), conversation+websearch (P5),
                 #   retrieval (P6), golden-set path-firing (P7, test_golden_set.py),
                 #   security/auth/jobs/streaming/api_* (P10-13, test_security.py,
-                #   test_auth.py, test_domains_and_identity.py, test_jobs.py,
+                #   test_auth.py, test_identity.py, test_jobs.py,
                 #   test_streaming.py, test_api_auth.py, test_api_admin.py,
                 #   test_api_chat.py)
 .github/workflows/eval.yml  # P7 CI: fast path-firing tier every push + nightly RAGAS tier
@@ -653,14 +685,20 @@ Defined in `app/db/schema.sql`. Current tables:
 | `conversations` | (Phase 5) A conversation, scoped to one org. `id`, `org_id`, `summary` (running compression of pruned older turns), `created_at`. |
 | `conversation_turns` | (Phase 5) One question+answer within a conversation. `id`, `conversation_id`, `org_id`, `turn_index`, `question`, `answer`, `created_at`. Older turns are pruned once folded into the summary (Phase 8: incrementally, one at a time). |
 | `conversation_last_retrieval` | (Phase 8) The chunks retrieved on a conversation's most recent turn, for the pre-retrieval reuse check. One upserted row per conversation: `conversation_id` (PK), `org_id`, `chunks` (TEXT holding a JSON array of `{content, document_id, chunk_index, org_id}` — no embeddings), `updated_at`. |
-| `org_domains` | (Phase 10) A company email domain claimed by an org, for employee auto-join. `id`, `org_id`, `domain` (UNIQUE), `verified_at` (set only after a DNS TXT check passes), `auto_join_enabled` (admin opt-in, independent of verification), `created_at`. |
 | `users` | (Phase 10) An application user. `id`, `email` (UNIQUE), `org_id` (nullable — but never issued a session while null), `role` (`admin`\|`member`), `created_at`. |
 | `oauth_connections` | (Phase 10) One org's OAuth credential for one provider. `id`, `org_id`, `provider`, `external_workspace_id`, `external_workspace_name`, `access_token_encrypted`, `refresh_token_encrypted`, `expires_at`, `connected_by_user_id`, `created_at`. `UNIQUE (org_id, provider)` — one row per org per provider, so a lookup can never be cross-tenant-ambiguous. Tokens are encrypted via `app/security/crypto.py`; this table never stores plaintext. |
 | `ingestion_jobs` | (Phase 10/12) A durable, pollable record of an admin-triggered fetch→chunk→embed→store run. `id`, `org_id`, `connection_id`, `status` (`queued`\|`running`\|`succeeded`\|`failed`), `doc_count`, `error`, `started_at`, `finished_at`, `created_at`. Consumed by a Postgres-backed worker (`SELECT ... FOR UPDATE SKIP LOCKED`), not an in-process background task. |
 | `magic_link_tokens` | (Phase 13) Single-use employee login tokens. `token_hash` (PK — only a SHA-256 hash is ever stored, never the token), `email`, `expires_at`, `consumed_at`, `created_at`. |
 | `oauth_states` | (Phase 13) Single-use, server-side OAuth `state` values for CSRF/replay protection on the admin connect flow. `state` (PK), `org_id`, `provider`, `expires_at`, `consumed_at`, `created_at`. |
 
-Deletes cascade: removing an org removes its documents, chunks, domains, users,
+**`org_domains` (Phase 10) was dropped** in the domain-auto-join simplification
+(see §2) — `DROP TABLE IF EXISTS org_domains` in `schema.sql`. It held a
+company email domain claimed by an org (`domain` UNIQUE, `auto_join_enabled`,
+plus a `verified_at` DNS-check column removed even earlier); nothing reads it
+any more. Restore it from git history if self-serve domain auto-join is
+revived.
+
+Deletes cascade: removing an org removes its documents, chunks, users,
 oauth_connections, and ingestion_jobs (and its conversations + turns +
 last-retrieval row); removing a conversation removes its turns and its
 last-retrieval row. Indexes: `org_id` on every org-scoped table (tenant filter) +
@@ -805,16 +843,19 @@ the project, closing the gap Phase 9 explicitly deferred.
     unchanged `ingest_source()`; `scripts/run_worker.py`. Tests: `test_jobs.py`.
   - **Phase 13** (streaming + HTTP API, four sub-phases a-d): `RagPipeline.answer_stream`
     / `PolicyAgent.answer_stream` (chunks an already-decided answer — see §2 for why
-    NOT raw token streaming); `app/api/` FastAPI app — magic-link auth with
-    DNS-verified opt-in domain auto-join, admin OAuth connect, admin domains/
+    NOT raw token streaming); `app/api/` FastAPI app — magic-link auth
+    (originally DNS-verified opt-in domain auto-join, **since replaced by
+    direct admin-invited members, see §2/§5**), admin OAuth connect, admin
     connections/jobs endpoints (every route org-scoped from the session, never
     client input), SSE chat streaming with client-supplied `conversation_id`
     verified against the caller's org. Tests: `test_streaming.py`, `test_api_auth.py`,
-    `test_domains_and_identity.py`, `test_api_admin.py`, `test_api_chat.py`.
+    `test_identity.py`, `test_api_admin.py`, `test_api_chat.py`.
   - **Phase 14** (frontend): `frontend/` Next.js 15 App Router portal — magic-link
     login/verify, streaming chat with provenance-coded citations, admin
-    domains/connections/jobs panels. Provider-agnostic `ConnectionCard` (Google/
-    GitHub render "coming soon" through the same component Notion uses).
+    members/connections/jobs panels (originally domains/connections/jobs — the
+    domains panel was replaced by a member-invite panel, see §2). Provider-agnostic
+    `ConnectionCard` (Google/GitHub render "coming soon" through the same
+    component Notion uses).
   - Full suite after Phase 14: 128/129 passing, 2 network deselected (the one
     failure is pre-existing environmental `NOTION_TOKEN_SYVORA` pollution in a
     developer's local `.env`, reproduced identically on the pre-Phase-10 commit —
@@ -825,11 +866,28 @@ the project, closing the gap Phase 9 explicitly deferred.
     (`AUTH_JWT_SECRET`, `AUTH_ENCRYPTION_KEYS`) are config knobs, not generated/
     provisioned by this work.
 
+**Auth simplification (post-Phase-14) — domain auto-join removed, replaced by
+admin-invited members.** See §2 for the full reasoning (deferred as premature
+for the current small-known-user-base stage, not a design mistake) and §5 for
+the dropped `org_domains` table. Changes: `app/auth/domains.py` deleted;
+`app/auth/users.py` gained `invite_member`/`list_members`; `POST /admin/members`
++ `GET /admin/members` replace the domain endpoints; `request_magic_link`
+now only ever links an email with an existing account (signup or invite),
+never auto-creates one; frontend `admin/domains` page replaced by
+`admin/members` (invite-by-email form); `tests/test_domains_and_identity.py`
+replaced by `tests/test_identity.py`. Verified live end-to-end against the
+real dev DB (signup → invite → magic-link → login lands in the inviting
+admin's org as `role=member`; an uninvited email gets the same generic
+response but no account is ever created; a second org's admin never sees the
+first org's invited members). Full suite green (144 passing, 1 pre-existing
+unrelated `NOTION_TOKEN_SYVORA` environmental failure, 2 network deselected).
+
 **Pending (not started)**
 - **Live end-to-end verification of Phases 10-14** against a real sandbox Notion
-  OAuth app (create one, set `NOTION_CLIENT_ID`/`SECRET`/`REDIRECT_URI`), a deployed
-  frontend + API, and a real employee domain DNS TXT record — everything above was
-  verified via the automated test suite + local `npm run build`, not a live walkthrough.
+  OAuth app (create one, set `NOTION_CLIENT_ID`/`SECRET`/`REDIRECT_URI`) and a
+  deployed frontend + API — everything above was verified via the automated
+  test suite + local `npm run build`, not a live walkthrough (domain-based
+  employee onboarding no longer applies — see the auth simplification above).
 - Real multi-organization data entry now has TWO paths: the Phase 9 manual
   `NOTION_TOKEN_<NAME>` + `ingest_notion.py --org … --token …` script (still works,
   unchanged), or the new Phase 10-14 self-serve flow (admin signs up, connects
