@@ -19,9 +19,7 @@ from .credentials import (
 from .users import User, ROLE_ADMIN, ROLE_MEMBER, get_user, get_user_by_email, create_user, get_or_create_member, create_admin
 from .domains import (
     OrgDomain,
-    DomainVerificationInstructions,
     register_domain,
-    verify_domain,
     set_auto_join,
     list_domains,
     resolve_org_for_email,
@@ -49,9 +47,7 @@ __all__ = [
     "get_or_create_member",
     "create_admin",
     "OrgDomain",
-    "DomainVerificationInstructions",
     "register_domain",
-    "verify_domain",
     "set_auto_join",
     "list_domains",
     "resolve_org_for_email",

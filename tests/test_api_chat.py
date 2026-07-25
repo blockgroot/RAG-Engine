@@ -116,7 +116,7 @@ def test_chat_stream_returns_tokens_then_done_event(client_and_session):
     assert len(token_events) > 0
     assert len(done_events) == 1
 
-    reassembled = "".join(data for _, data in token_events)
+    reassembled = "".join(json.loads(data) for _, data in token_events)
     done_payload = json.loads(done_events[0][1])
     assert reassembled == done_payload["answer"] == "You get 25 days of annual leave. [1]"
     assert done_payload["grounded"] is True

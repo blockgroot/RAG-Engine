@@ -1,20 +1,28 @@
+"use client";
+
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { Me } from "@/lib/api";
 
+const LINKS = [
+  { href: "/chat", label: "Ask" },
+  { href: "/admin/connections", label: "Connections", adminOnly: true },
+  { href: "/admin/domains", label: "Domains", adminOnly: true },
+];
+
 export function Nav({ me }: { me: Me | null }) {
+  const pathname = usePathname();
+
   return (
     <nav className="nav">
-      <div>
-        <Link href="/chat">Ask</Link>
-        {me?.role === "admin" && (
-          <>
-            <Link href="/admin/connections">Connections</Link>
-            <Link href="/admin/domains">Domains</Link>
-            <Link href="/admin/jobs">Jobs</Link>
-          </>
-        )}
+      <div className="nav-links">
+        {LINKS.filter((link) => !link.adminOnly || me?.role === "admin").map((link) => (
+          <Link key={link.href} href={link.href} data-active={pathname.startsWith(link.href)}>
+            {link.label}
+          </Link>
+        ))}
       </div>
-      <span className="muted">{me?.org_name}</span>
+      {me?.org_name && <span className="nav-org">{me.org_name}</span>}
     </nav>
   );
 }

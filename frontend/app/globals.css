@@ -1,72 +1,67 @@
 /*
-  Design direction: "Technical Editorial" — a sober, high-trust enterprise
-  tone. This is where an employee goes to get an authoritative, sourced
-  answer about their own company's policy, not a consumer chat toy.
-
-  Fonts: a serif display face (ui-serif stack) paired with a monospace for
-  data/citations/provenance — deliberately NOT Inter/Roboto/Arial or a
-  generic sans-only stack. Kept to system font stacks (no @font-face) so the
-  portal renders identically with zero network font fetch, matching the
-  self-hosted principle elsewhere in this project.
-
-  The memorable anchor: every answer renders as a card with a left-edge
-  PROVENANCE STRIPE — color-coded exactly like the existing CLI's citation
-  rendering (policy / web / fallback) — so where an answer came from is
-  never ambiguous, and citations are a first-class object, not a footnote.
+  Design direction: clean, calm, "consumer-simple" — an employee should be able
+  to ask a question and read the answer without any RAG/retrieval internals
+  leaking into the UI (no chunk ids, similarity scores, or raw markdown). One
+  legible sans-serif family throughout; a small color-coded provenance pill
+  is the only "system" cue we keep, because knowing whether an answer came
+  from company policy vs. the web is genuinely useful to a reader.
 */
 
 :root {
-  --font-display: ui-serif, Georgia, Cambria, "Times New Roman", serif;
   --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
-  --bg: #faf9f6;
+  --bg: #f6f7f9;
   --surface: #ffffff;
-  --ink: #1a1815;
-  --ink-muted: #5c574e;
-  --border: #e2ddd2;
-  --accent: #9a5b13;
+  --surface-muted: #f0f1f4;
+  --ink: #1c1e21;
+  --ink-muted: #656b73;
+  --border: #e3e5e9;
+  --accent: #2f6feb;
   --accent-ink: #ffffff;
 
-  --provenance-policy: #2f6b4f;
-  --provenance-web: #2a5a94;
-  --provenance-none: #8a6d1f;
+  --provenance-policy: #1f8a56;
+  --provenance-web: #2f6feb;
+  --provenance-none: #b7791f;
 
-  --radius: 6px;
+  --radius: 12px;
+  --radius-sm: 8px;
   --space-1: 0.4rem;
   --space-2: 0.8rem;
-  --space-3: 1.4rem;
-  --space-4: 2.2rem;
-  --space-5: 3.6rem;
+  --space-3: 1.25rem;
+  --space-4: 2rem;
+  --space-5: 3rem;
 }
 
 :root[data-theme="dark"] {
-  --bg: #14130f;
-  --surface: #1d1b16;
-  --ink: #ede9e0;
-  --ink-muted: #a39c8b;
-  --border: #34301f;
-  --accent: #d99b4e;
-  --accent-ink: #14130f;
+  --bg: #16171a;
+  --surface: #1e2024;
+  --surface-muted: #26282d;
+  --ink: #eceef1;
+  --ink-muted: #9aa0a8;
+  --border: #33363b;
+  --accent: #5b8dfd;
+  --accent-ink: #0d1117;
 
-  --provenance-policy: #5aa17e;
-  --provenance-web: #6a9bd1;
-  --provenance-none: #cfa94e;
+  --provenance-policy: #46b980;
+  --provenance-web: #6f9dfd;
+  --provenance-none: #dba14c;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #14130f;
-    --surface: #1d1b16;
-    --ink: #ede9e0;
-    --ink-muted: #a39c8b;
-    --border: #34301f;
-    --accent: #d99b4e;
-    --accent-ink: #14130f;
+    --bg: #16171a;
+    --surface: #1e2024;
+    --surface-muted: #26282d;
+    --ink: #eceef1;
+    --ink-muted: #9aa0a8;
+    --border: #33363b;
+    --accent: #5b8dfd;
+    --accent-ink: #0d1117;
 
-    --provenance-policy: #5aa17e;
-    --provenance-web: #6a9bd1;
-    --provenance-none: #cfa94e;
+    --provenance-policy: #46b980;
+    --provenance-web: #6f9dfd;
+    --provenance-none: #dba14c;
   }
 }
 
@@ -91,10 +86,18 @@ body {
 h1,
 h2,
 h3 {
-  font-family: var(--font-display);
-  font-weight: 600;
+  font-family: var(--font-body);
+  font-weight: 700;
   letter-spacing: -0.01em;
   margin: 0;
+}
+
+h1 {
+  font-size: 1.6rem;
+}
+
+p {
+  line-height: 1.55;
 }
 
 a {
@@ -108,13 +111,13 @@ button {
 .page {
   max-width: 640px;
   margin: 0 auto;
-  padding: var(--space-5) var(--space-3);
+  padding: var(--space-4) var(--space-3);
 }
 
 .page-wide {
-  max-width: 900px;
+  max-width: 880px;
   margin: 0 auto;
-  padding: var(--space-5) var(--space-3);
+  padding: var(--space-4) var(--space-3);
 }
 
 .card {
@@ -142,9 +145,9 @@ button {
 .input {
   font-family: inherit;
   font-size: 1rem;
-  padding: var(--space-2);
+  padding: var(--space-2) 0.9rem;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--ink);
 }
@@ -158,12 +161,20 @@ button {
   font-family: inherit;
   font-size: 0.95rem;
   font-weight: 600;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius);
+  padding: 0.65rem 1.1rem;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--accent);
   background: var(--accent);
   color: var(--accent-ink);
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  text-decoration: none;
+}
+
+.button:hover:not(:disabled) {
+  filter: brightness(1.06);
 }
 
 .button:disabled {
@@ -188,42 +199,67 @@ button {
   word-break: break-all;
 }
 
+/* --- Top navigation ---------------------------------------------------- */
+
 .nav {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border);
+  background: var(--surface);
 }
 
-.nav a {
-  color: var(--ink);
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.nav-links a {
+  color: var(--ink-muted);
   text-decoration: none;
-  margin-right: var(--space-3);
   font-size: 0.9rem;
+  font-weight: 600;
+  padding: 0.4rem 0.75rem;
+  border-radius: var(--radius-sm);
 }
 
-.nav a:hover {
+.nav-links a:hover {
+  color: var(--ink);
+  background: var(--surface-muted);
+}
+
+.nav-links a[data-active="true"] {
   color: var(--accent);
+  background: var(--surface-muted);
+}
+
+.nav-org {
+  font-size: 0.85rem;
+  color: var(--ink-muted);
+  font-weight: 600;
 }
 
 .badge {
   display: inline-block;
   font-size: 0.75rem;
-  font-family: var(--font-mono);
-  padding: 0.15rem 0.5rem;
+  padding: 0.2rem 0.6rem;
   border-radius: 999px;
   border: 1px solid var(--border);
+  color: var(--ink-muted);
 }
 
 .badge-verified {
   color: var(--provenance-policy);
   border-color: var(--provenance-policy);
+  background: color-mix(in srgb, var(--provenance-policy) 12%, transparent);
 }
 
 .badge-pending {
   color: var(--provenance-none);
   border-color: var(--provenance-none);
+  background: color-mix(in srgb, var(--provenance-none) 12%, transparent);
 }
 
 table {
@@ -242,7 +278,171 @@ td {
 th {
   color: var(--ink-muted);
   font-weight: 600;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.03em;
+}
+
+/* --- Chat --------------------------------------------------------------- */
+
+.chat-page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--space-3);
+  height: calc(100vh - 57px);
+  display: flex;
+  flex-direction: column;
+}
+
+.chat-log {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-2) 0.1rem var(--space-3);
+}
+
+.chat-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: var(--space-3);
+}
+
+.suggested-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  justify-content: center;
+  max-width: 520px;
+}
+
+.suggested-chip {
+  font-family: inherit;
+  font-size: 0.88rem;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+}
+
+.suggested-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.chat-composer {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.4rem 0.4rem 0.4rem 1.1rem;
+  flex: none;
+}
+
+.chat-composer:focus-within {
+  border-color: var(--accent);
+}
+
+.chat-composer-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 1rem;
+  color: var(--ink);
+  padding: 0.55rem 0;
+}
+
+.chat-composer-send {
+  flex: none;
+  width: 2.4rem;
+  height: 2.4rem;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 1.1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.chat-composer-send:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.chat-bubble {
+  border-radius: var(--radius);
+  padding: 0.9rem 1.1rem;
+  max-width: 100%;
+}
+
+.chat-bubble-user {
+  align-self: flex-end;
+  background: var(--accent);
+  color: var(--accent-ink);
+  max-width: 80%;
+}
+
+.chat-bubble-assistant {
+  align-self: flex-start;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  width: 100%;
+}
+
+.chat-answer {
+  line-height: 1.6;
+}
+
+.answer-paragraph {
+  margin: 0;
+}
+
+.answer-paragraph + .answer-paragraph,
+.answer-paragraph + .answer-list,
+.answer-list + .answer-paragraph {
+  margin-top: 0.9rem;
+}
+
+.answer-list {
+  margin: 0;
+  padding-left: 1.3rem;
+}
+
+.answer-list li + li {
+  margin-top: 0.4rem;
+}
+
+/* --- Provenance ----------------------------------------------------------- */
+
+.provenance-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.2rem 0.6rem 0.2rem 0.45rem;
+  border-radius: 999px;
+  margin-bottom: 0.7rem;
+}
+
+.provenance-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
 }

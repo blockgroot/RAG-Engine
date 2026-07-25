@@ -1,9 +1,7 @@
-"""Phase 13b: FastAPI auth router (magic-link login + OAuth connect + /me).
+"""Phase 13b: FastAPI auth router (signup + magic-link login + OAuth connect + /me).
 
 Uses FastAPI's TestClient (real DB required — same requires_db convention as
-the rest of the suite). DNS verification is bypassed in tests by writing
-``verified_at``/``auto_join_enabled`` directly, since a real DNS TXT record
-can't be published for a throwaway test domain.
+the rest of the suite).
 """
 
 from __future__ import annotations
@@ -40,17 +38,62 @@ def client():
 
 @pytest.fixture
 def _verified_domain(store, org_cleanup):
-    """An org with a verified, auto-join-enabled domain (DNS check bypassed)."""
+    """An org with an auto-join-enabled domain."""
     org_id = store.create_organization("API Auth Test Org")
     org_cleanup.append(org_id)
     domain = f"apitest-{uuid.uuid4().hex[:8]}.example.com"
     with get_connection() as conn:
         conn.execute(
-            "INSERT INTO org_domains (org_id, domain, verified_at, auto_join_enabled) "
-            "VALUES (%s, %s, now(), true)",
+            "INSERT INTO org_domains (org_id, domain, auto_join_enabled) VALUES (%s, %s, true)",
             (org_id, domain),
         )
     return org_id, domain
+
+
+@requires_db
+def test_signup_creates_org_and_admin_and_sends_link(client, org_cleanup):
+    email = f"founder-{uuid.uuid4().hex[:8]}@newco.example.com"
+    response = client.post(
+        "/auth/signup", json={"email": email, "company_name": f"NewCo {uuid.uuid4().hex[:8]}"}
+    )
+    assert response.status_code == 200
+
+    from app.auth.users import get_user_by_email
+
+    user = get_user_by_email(email)
+    assert user is not None
+    org_cleanup.append(user.org_id)
+    assert user.role == "admin"
+
+    from app.auth import create_magic_link_token
+
+    token = create_magic_link_token(email)
+    verify_response = client.get(
+        f"/auth/magic-link/verify?token={token}", follow_redirects=False
+    )
+    assert verify_response.status_code in (302, 307)
+    session_token = verify_response.cookies.get("session")
+    me_response = client.get("/me", cookies={"session": session_token})
+    assert me_response.json()["role"] == "admin"
+
+
+@requires_db
+def test_signup_rejects_duplicate_email(client, org_cleanup):
+    email = f"dup-{uuid.uuid4().hex[:8]}@newco.example.com"
+    first = client.post("/auth/signup", json={"email": email, "company_name": "First Co"})
+    assert first.status_code == 200
+    from app.auth.users import get_user_by_email
+
+    org_cleanup.append(get_user_by_email(email).org_id)
+
+    second = client.post("/auth/signup", json={"email": email, "company_name": "Second Co"})
+    assert second.status_code == 400
+
+
+@requires_db
+def test_signup_rejects_missing_fields(client):
+    assert client.post("/auth/signup", json={"email": "not-an-email"}).status_code == 400
+    assert client.post("/auth/signup", json={"company_name": "Acme"}).status_code == 400
 
 
 @requires_db

@@ -1,13 +1,19 @@
-"""Auth router: employee magic-link login + admin OAuth "Connect" flow (Phase 13).
+"""Auth router: self-serve signup, employee magic-link login, admin OAuth
+"Connect" flow (Phase 13, simplified post-Phase-14).
 
-Two independent entry points into a session:
-1. Magic link (``/auth/magic-link`` + ``/auth/magic-link/verify``) — an
-   employee's normal path in. Only ever issues a session for an email whose
-   org has already been resolved via a verified, auto-join-enabled domain
-   (``app.auth.domains.resolve_org_for_email``); there is deliberately no
-   response-content difference between "domain not eligible" and "email sent"
-   so this endpoint can't be used to enumerate which companies are registered.
-2. OAuth connect (``/auth/{provider}/authorize`` + ``/auth/{provider}/callback``)
+Three entry points, all converging on the same passwordless magic-link
+session issuance — there is exactly one way to log in, admin or employee:
+1. Signup (``/auth/signup``) — a brand-new company's first user. Creates the
+   org, makes this user its admin, and emails them a magic link. No password
+   to set, no separate "admin login" flow.
+2. Magic link (``/auth/magic-link`` + ``/auth/magic-link/verify``) — an
+   existing user's (admin or employee) normal path back in. For a new email
+   at an already-registered, auto-join-enabled domain
+   (``app.auth.domains.resolve_org_for_email``) this also transparently
+   creates their member account. There is deliberately no response-content
+   difference between "domain not eligible" and "email sent" so this endpoint
+   can't be used to enumerate which companies are registered.
+3. OAuth connect (``/auth/{provider}/authorize`` + ``/auth/{provider}/callback``)
    — admin-only, requires an existing session, used to link an org's Notion
    (etc.) workspace. Fully separate from magic-link auth; it never issues a
    session itself, only an ``oauth_connections`` row.
@@ -22,6 +28,7 @@ from ..auth import (
     build_oauth_provider,
     consume_magic_link_token,
     consume_state,
+    create_admin,
     create_magic_link_token,
     create_session_token,
     create_state,
@@ -31,15 +38,56 @@ from ..auth import (
     save_connection,
     send_magic_link_email,
 )
-from ..config.settings import ApiSettings
+from ..config.settings import ApiSettings, EmailSettings
 from ..core.exceptions import AuthError, ConfigurationError, OAuthError
-from .deps import SESSION_COOKIE_NAME, get_session
+from ..vectorstore.base import VectorStore
+from .deps import SESSION_COOKIE_NAME, get_session, get_vector_store
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-_GENERIC_MAGIC_LINK_RESPONSE = {
-    "message": "If that email is eligible, a sign-in link has been sent."
-}
+
+def _dev_link(link: str) -> str | None:
+    """Echo the magic link back in the response when in ``console`` email mode.
+
+    Only ever set when no real email is actually going out (local dev / a
+    self-hosted deployment that hasn't configured SMTP yet) — in that mode
+    there is no inbox to check, so hiding the link would just mean digging it
+    out of server logs. The moment ``EMAIL_SENDER=smtp`` is configured, this
+    is always ``None`` and the link only ever exists in the sent email.
+    """
+    return link if EmailSettings.from_env().sender == "console" else None
+
+
+@router.post("/signup")
+def signup(
+    body: dict,
+    settings: ApiSettings = Depends(ApiSettings.from_env),
+    store: VectorStore = Depends(get_vector_store),
+):
+    """Create a brand-new org + its first admin user, then email a login link.
+
+    Self-serve: no manual org-creation step on our side. An email that's
+    already a user anywhere is rejected rather than silently creating a
+    second, disconnected account for it.
+    """
+    email = (body.get("email") or "").strip().lower()
+    company_name = (body.get("company_name") or "").strip()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="A valid email is required")
+    if not company_name:
+        raise HTTPException(status_code=400, detail="A company name is required")
+    if get_user_by_email(email) is not None:
+        raise HTTPException(status_code=400, detail="An account already exists for this email")
+
+    org_id = store.create_organization(company_name)
+    create_admin(email, org_id)
+
+    token = create_magic_link_token(email)
+    base = (settings.frontend_url or "").rstrip("/")
+    link = f"{base}/verify?token={token}"
+    send_magic_link_email(email, link)
+
+    return {"message": "Check your email for a sign-in link.", "dev_link": _dev_link(link)}
 
 
 @router.post("/magic-link")
@@ -48,17 +96,29 @@ def request_magic_link(body: dict, settings: ApiSettings = Depends(ApiSettings.f
     if not email or "@" not in email:
         raise HTTPException(status_code=400, detail="A valid email is required")
 
-    org_id = resolve_org_for_email(email)
+    # An existing account can always request its own login link — auto-join
+    # only gates a NEW email joining an org; it must never lock out someone
+    # who already has an account there (e.g. an admin who registered the
+    # domain and later turned auto-join off shouldn't lock themselves out).
+    existing_user = get_user_by_email(email)
+    org_id = existing_user.org_id if existing_user is not None else resolve_org_for_email(email)
+    dev_link = None
     if org_id is not None:
-        user = get_or_create_member(email, org_id)
+        user = existing_user or get_or_create_member(email, org_id)
         token = create_magic_link_token(email)
         base = (settings.frontend_url or "").rstrip("/")
         link = f"{base}/verify?token={token}"
         send_magic_link_email(email, link)
+        dev_link = _dev_link(link)
         _ = user  # created/reused; nothing further needed before the link is clicked
 
-    # Always the same response — never reveal whether the domain is registered.
-    return _GENERIC_MAGIC_LINK_RESPONSE
+    # The "message" text is always identical — never reveal whether the domain
+    # is registered. "dev_link" DOES vary with eligibility, but it's only ever
+    # non-None in console-email mode (no SMTP configured, i.e. local dev with
+    # no real inbox and no real attacker) — in any deployment where the
+    # anti-enumeration guarantee actually matters, EMAIL_SENDER=smtp and this
+    # is always None, so the response is identical either way.
+    return {"message": "If that email is eligible, a sign-in link has been sent.", "dev_link": dev_link}
 
 
 @router.get("/magic-link/verify")

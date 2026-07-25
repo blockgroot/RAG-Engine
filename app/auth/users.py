@@ -1,9 +1,9 @@
 """Application users (Phase 13).
 
 A user is always looked up/created by email. ``org_id`` is only ever set when
-an org has already been resolved (via a verified, auto-join-enabled domain, or
-by an admin's own org at signup) — a user with no ``org_id`` exists but is
-NEVER issued a session (see ``app/api/auth.py``), so there is no authenticated
+an org has already been resolved (via an auto-join-enabled domain, or by an
+admin's own org at signup) — a user with no ``org_id`` exists but is NEVER
+issued a session (see ``app/api/auth.py``), so there is no authenticated
 state that lacks a tenant.
 """
 
@@ -63,8 +63,8 @@ def create_user(email: str, *, org_id: str | None = None, role: str = ROLE_MEMBE
 def get_or_create_member(email: str, org_id: str) -> User:
     """Return the existing user for ``email``, or create one scoped to ``org_id``.
 
-    Used by the magic-link request flow once a verified, auto-join-enabled
-    domain has resolved which org this email belongs to. Never changes an
+    Used by the magic-link request flow once an auto-join-enabled domain has
+    resolved which org this email belongs to. Never changes an
     existing user's ``org_id`` — an email is bound to its first-resolved org
     for good, so a later domain change can't silently move someone's account
     into a different tenant.

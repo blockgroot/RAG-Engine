@@ -69,7 +69,7 @@ export async function streamChat(
       const data = dataLine.slice("data: ".length);
 
       if (event === "token") {
-        handlers.onToken(data);
+        handlers.onToken(JSON.parse(data) as string);
       } else if (event === "done") {
         handlers.onDone(JSON.parse(data) as ChatDonePayload);
       }

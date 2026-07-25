@@ -45,15 +45,7 @@ export interface Me {
 export interface DomainRecord {
   id: string;
   domain: string;
-  verified: boolean;
   auto_join_enabled: boolean;
-}
-
-export interface DomainRegistration {
-  domain_id: string;
-  dns_record_name: string;
-  dns_record_value: string;
-  instructions: string;
 }
 
 export interface ConnectionRecord {
@@ -74,9 +66,24 @@ export interface JobRecord {
   created_at: string;
 }
 
+export interface MagicLinkResponse {
+  message: string;
+  // Only ever set when the backend has no real email sender configured
+  // (EMAIL_SENDER=console, i.e. local dev) — lets the UI offer a direct link
+  // instead of "go check the server terminal". Always null once SMTP is
+  // configured for a real deployment.
+  dev_link: string | null;
+}
+
 export const api = {
+  signup: (email: string, companyName: string) =>
+    request<MagicLinkResponse>("/auth/signup", {
+      method: "POST",
+      body: JSON.stringify({ email, company_name: companyName }),
+    }),
+
   requestMagicLink: (email: string) =>
-    request<{ message: string }>("/auth/magic-link", {
+    request<MagicLinkResponse>("/auth/magic-link", {
       method: "POST",
       body: JSON.stringify({ email }),
     }),
@@ -87,12 +94,10 @@ export const api = {
 
   listDomains: () => request<DomainRecord[]>("/admin/domains"),
   registerDomain: (domain: string) =>
-    request<DomainRegistration>("/admin/domains", {
+    request<DomainRecord>("/admin/domains", {
       method: "POST",
       body: JSON.stringify({ domain }),
     }),
-  verifyDomain: (domainId: string) =>
-    request<{ verified: boolean }>(`/admin/domains/${domainId}/verify`, { method: "POST" }),
   setAutoJoin: (domainId: string, enabled: boolean) =>
     request<{ auto_join_enabled: boolean }>(`/admin/domains/${domainId}/auto-join`, {
       method: "POST",

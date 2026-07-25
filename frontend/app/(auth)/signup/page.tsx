@@ -4,8 +4,9 @@ import { useState } from "react";
 import Link from "next/link";
 import { api, ApiError } from "@/lib/api";
 
-export default function LoginPage() {
+export default function SignupPage() {
   const [email, setEmail] = useState("");
+  const [companyName, setCompanyName] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [devLink, setDevLink] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -16,7 +17,7 @@ export default function LoginPage() {
     setError(null);
     setLoading(true);
     try {
-      const { dev_link } = await api.requestMagicLink(email);
+      const { dev_link } = await api.signup(email, companyName);
       setDevLink(dev_link);
       setSubmitted(true);
     } catch (err) {
@@ -30,13 +31,16 @@ export default function LoginPage() {
     <main className="page">
       <div className="stack">
         <div>
-          <h1>Policy Portal</h1>
-          <p className="muted">Sign in with your work email to ask questions grounded in your company&rsquo;s policies.</p>
+          <h1>Set up your company</h1>
+          <p className="muted">
+            Create your organization and become its first admin — no password to set, we&rsquo;ll
+            email you a sign-in link.
+          </p>
         </div>
 
         {submitted ? (
           <div className="card stack">
-            <p>If that email is eligible, we&rsquo;ve sent a sign-in link. Check your inbox &mdash; it expires shortly and works once.</p>
+            <p>Check your inbox for a sign-in link to finish setting up {companyName}.</p>
             {devLink && (
               <p className="muted">
                 Dev mode (no email sender configured):{" "}
@@ -47,7 +51,18 @@ export default function LoginPage() {
         ) : (
           <form className="card stack" onSubmit={handleSubmit}>
             <div className="field">
-              <label htmlFor="email">Work email</label>
+              <label htmlFor="companyName">Company name</label>
+              <input
+                id="companyName"
+                className="input"
+                required
+                placeholder="Acme Inc."
+                value={companyName}
+                onChange={(e) => setCompanyName(e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="email">Your work email</label>
               <input
                 id="email"
                 className="input"
@@ -60,13 +75,13 @@ export default function LoginPage() {
             </div>
             {error && <p className="muted" style={{ color: "var(--provenance-none)" }}>{error}</p>}
             <button className="button" type="submit" disabled={loading}>
-              {loading ? "Sending…" : "Send sign-in link"}
+              {loading ? "Creating…" : "Create organization"}
             </button>
           </form>
         )}
 
         <p className="muted">
-          First time here? <Link href="/signup">Set up your company</Link>
+          Already have an account? <Link href="/login">Sign in</Link>
         </p>
       </div>
     </main>

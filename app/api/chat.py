@@ -53,7 +53,11 @@ def create_conversation(
 
 
 def _sse_event(event: str, data: dict | str) -> str:
-    payload = data if isinstance(data, str) else json.dumps(data)
+    # Always JSON-encode, even plain token strings: SSE's "data: <line>\n\n"
+    # framing breaks if the value itself contains a raw newline (e.g. a
+    # markdown bullet list in the answer), which silently truncated token
+    # chunks on the client. JSON-encoding guarantees a single-line payload.
+    payload = json.dumps(data)
     return f"event: {event}\ndata: {payload}\n\n"
 
 

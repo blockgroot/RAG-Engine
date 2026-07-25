@@ -97,20 +97,21 @@ CREATE TABLE IF NOT EXISTS conversation_last_retrieval (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Verified company email domains for an org (Phase 10). A domain only grants
--- automatic employee access once `verified_at` is set (DNS TXT check passed)
--- AND an admin has explicitly flipped `auto_join_enabled` — verification alone
--- never grants access, and there is no way to infer org membership from an
--- unverified domain claim. UNIQUE on domain: one org owns a given domain.
+-- Company email domains allowed to auto-join an org (simplified in the
+-- post-Phase-14 auth simplification — no DNS TXT verification: an admin just
+-- types in their company's domain and it's live immediately, gated only by
+-- `auto_join_enabled` so it can still be switched off). UNIQUE on domain: one
+-- org owns a given domain claim.
 CREATE TABLE IF NOT EXISTS org_domains (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id            UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
     domain            TEXT NOT NULL UNIQUE,
-    verified_at       TIMESTAMPTZ,
-    auto_join_enabled BOOLEAN NOT NULL DEFAULT false,
+    auto_join_enabled BOOLEAN NOT NULL DEFAULT true,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_org_domains_org ON org_domains (org_id);
+ALTER TABLE org_domains DROP COLUMN IF EXISTS verified_at;
+ALTER TABLE org_domains ALTER COLUMN auto_join_enabled SET DEFAULT true;
 
 -- Application users (Phase 10). `org_id` is nullable only for the brief window
 -- before an org is resolved (domain match at signup); a user in that state is

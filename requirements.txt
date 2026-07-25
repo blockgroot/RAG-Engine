@@ -9,7 +9,6 @@ ddgs>=6.0.0
 cryptography>=42.0.0
 httpx>=0.27.0
 pyjwt>=2.8.0
-dnspython>=2.6.0
 # CLI presentation only (scripts/cli.py) — never imported by the app/ core runtime.
 rich>=13.0.0
 

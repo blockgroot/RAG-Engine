@@ -13,6 +13,7 @@ a wildcard.
 
 from __future__ import annotations
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -21,6 +22,14 @@ from . import admin as admin_router
 from . import auth as auth_router
 from . import chat as chat_router
 from . import orgs as orgs_router
+
+# Every scripts/*.py entrypoint calls this before reading settings; the ASGI
+# app has no equivalent entrypoint of its own (uvicorn just imports this
+# module), so it must load .env here, at import time, before ApiSettings.from_env()
+# and every other from_env() call below it runs — otherwise every setting
+# silently falls back to its default (e.g. an empty CORS origin list, which
+# makes the browser's preflight fail with no useful error).
+load_dotenv()
 
 
 def create_app() -> FastAPI:

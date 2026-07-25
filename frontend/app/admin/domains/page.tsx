@@ -3,13 +3,12 @@
 import { useEffect, useState } from "react";
 import { Nav } from "@/components/Nav";
 import { useMe } from "@/lib/useMe";
-import { api, DomainRecord, DomainRegistration } from "@/lib/api";
+import { api, DomainRecord } from "@/lib/api";
 
 export default function DomainsPage() {
   const { me, loading } = useMe();
   const [domains, setDomains] = useState<DomainRecord[]>([]);
   const [newDomain, setNewDomain] = useState("");
-  const [pending, setPending] = useState<DomainRegistration | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   function refresh() {
@@ -24,22 +23,12 @@ export default function DomainsPage() {
     e.preventDefault();
     setError(null);
     try {
-      const instructions = await api.registerDomain(newDomain.trim().toLowerCase());
-      setPending(instructions);
+      await api.registerDomain(newDomain.trim().toLowerCase());
       setNewDomain("");
       refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not register domain.");
     }
-  }
-
-  async function handleVerify(domainId: string) {
-    setError(null);
-    const { verified } = await api.verifyDomain(domainId);
-    if (!verified) {
-      setError("DNS record not found yet — publishing can take a few minutes to propagate.");
-    }
-    refresh();
   }
 
   async function handleAutoJoin(domainId: string, enabled: boolean) {
@@ -55,9 +44,9 @@ export default function DomainsPage() {
       <main className="page-wide stack">
         <h1>Company domains</h1>
         <p className="muted">
-          Verify your company&rsquo;s email domain so employees can sign in with a work email and
-          land in the right organization — automatically, but only once you&rsquo;ve proven you
-          control the domain and explicitly turned auto-join on.
+          Add your company&rsquo;s email domain so anyone with that work email can sign in and
+          land in your organization automatically. No setup on your end beyond typing it in —
+          turn auto-join off any time if you&rsquo;d rather invite people by hand.
         </p>
 
         <form onSubmit={handleRegister} className="card stack" style={{ maxWidth: "480px" }}>
@@ -72,24 +61,15 @@ export default function DomainsPage() {
               required
             />
           </div>
-          <button className="button" type="submit">Register</button>
+          <button className="button" type="submit">Add domain</button>
         </form>
 
         {error && <p style={{ color: "var(--provenance-none)" }}>{error}</p>}
-
-        {pending && (
-          <div className="card stack">
-            <p>Publish a DNS TXT record, then verify:</p>
-            <p className="mono">{pending.dns_record_name}</p>
-            <p className="mono">{pending.dns_record_value}</p>
-          </div>
-        )}
 
         <table>
           <thead>
             <tr>
               <th>Domain</th>
-              <th>Status</th>
               <th>Auto-join</th>
               <th></th>
             </tr>
@@ -98,26 +78,14 @@ export default function DomainsPage() {
             {domains.map((d) => (
               <tr key={d.id}>
                 <td>{d.domain}</td>
-                <td>
-                  <span className={`badge ${d.verified ? "badge-verified" : "badge-pending"}`}>
-                    {d.verified ? "verified" : "unverified"}
-                  </span>
-                </td>
                 <td>{d.auto_join_enabled ? "on" : "off"}</td>
                 <td>
-                  {!d.verified && (
-                    <button className="button button-secondary" onClick={() => handleVerify(d.id)}>
-                      Verify
-                    </button>
-                  )}
-                  {d.verified && (
-                    <button
-                      className="button button-secondary"
-                      onClick={() => handleAutoJoin(d.id, !d.auto_join_enabled)}
-                    >
-                      Turn auto-join {d.auto_join_enabled ? "off" : "on"}
-                    </button>
-                  )}
+                  <button
+                    className="button button-secondary"
+                    onClick={() => handleAutoJoin(d.id, !d.auto_join_enabled)}
+                  >
+                    Turn auto-join {d.auto_join_enabled ? "off" : "on"}
+                  </button>
                 </td>
               </tr>
             ))}

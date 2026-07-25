@@ -7,12 +7,20 @@ import { useMe } from "@/lib/useMe";
 import { streamChat } from "@/lib/sse";
 import { api } from "@/lib/api";
 
+const SUGGESTED_QUESTIONS = [
+  "How many days of paid leave do I get?",
+  "What's the remote work policy?",
+  "How do I claim a medical reimbursement?",
+  "What are the maternity/paternity leave rules?",
+];
+
 export default function ChatPage() {
   const { me, loading } = useMe();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const conversationId = useRef<string | null>(null);
+  const logRef = useRef<HTMLDivElement>(null);
 
   async function ensureConversation() {
     if (conversationId.current) return conversationId.current;
@@ -25,9 +33,7 @@ export default function ChatPage() {
     return conversationId.current;
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    const question = input.trim();
+  async function ask(question: string) {
     if (!question || busy) return;
     setInput("");
     setBusy(true);
@@ -64,6 +70,15 @@ export default function ChatPage() {
         setBusy(false);
       },
     });
+
+    requestAnimationFrame(() => {
+      logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
+    });
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    ask(input.trim());
   }
 
   if (loading) {
@@ -77,29 +92,45 @@ export default function ChatPage() {
   return (
     <>
       <Nav me={me} />
-      <main className="page stack">
-        <h1>Ask a question</h1>
-        <div className="stack">
-          {messages.length === 0 && (
+      <div className="chat-page">
+        {messages.length === 0 ? (
+          <div className="chat-empty">
+            <h1>Ask a question</h1>
             <p className="muted">Ask anything about your company&rsquo;s policies — leave, benefits, remote work, and more.</p>
-          )}
-          {messages.map((m, i) => (
-            <ChatMessageView key={i} message={m} />
-          ))}
-        </div>
-        <form onSubmit={handleSubmit} className="stack">
+            <div className="suggested-chips">
+              {SUGGESTED_QUESTIONS.map((q) => (
+                <button key={q} type="button" className="suggested-chip" onClick={() => ask(q)}>
+                  {q}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="chat-log" ref={logRef}>
+            {messages.map((m, i) => (
+              <ChatMessageView key={i} message={m} />
+            ))}
+          </div>
+        )}
+        <form onSubmit={handleSubmit} className="chat-composer">
           <input
-            className="input"
-            placeholder="How many days of paid leave do I get?"
+            className="chat-composer-input"
+            placeholder="Ask about leave, benefits, remote work…"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             disabled={busy}
+            autoFocus
           />
-          <button className="button" type="submit" disabled={busy || !input.trim()}>
-            {busy ? "Thinking…" : "Ask"}
+          <button
+            className="chat-composer-send"
+            type="submit"
+            disabled={busy || !input.trim()}
+            aria-label="Send"
+          >
+            {busy ? "…" : "↑"}
           </button>
         </form>
-      </main>
+      </div>
     </>
   );
 }

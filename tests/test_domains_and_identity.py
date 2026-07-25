@@ -1,7 +1,7 @@
-"""Phase 13: domain verification/auto-join, users, magic-link tokens, sessions.
+"""Phase 13 (simplified auth): domain allowlist, users, magic-link tokens, sessions.
 
-DB-backed (requires_db). DNS resolution itself is monkeypatched — no network —
-but the HMAC expected-value computation and the DB state machine are real.
+DB-backed (requires_db). No DNS involved — a domain is live for auto-join the
+moment an admin registers it.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ import pytest
 from app.auth import domains as domains_mod
 from app.auth.session import create_session_token, decode_session_token
 from app.auth.users import ROLE_ADMIN, create_admin, create_user, get_or_create_member
-from app.config.settings import AuthSettings
 from app.core.exceptions import AuthError, ConfigurationError
 
 from .conftest import requires_db
@@ -22,13 +21,6 @@ from .conftest import requires_db
 @pytest.fixture(autouse=True)
 def _auth_env(monkeypatch):
     monkeypatch.setenv("AUTH_JWT_SECRET", "test-jwt-secret")
-
-
-def _fake_txt_answer(value: str):
-    class _Rdata:
-        strings = [value.encode()]
-
-    return [_Rdata()]
 
 
 @requires_db
@@ -40,71 +32,38 @@ def test_register_domain_rejects_public_provider(store, org_cleanup):
 
 
 @requires_db
-def test_verify_domain_succeeds_when_dns_matches(store, org_cleanup, monkeypatch):
+def test_register_domain_is_live_immediately(store, org_cleanup):
     org_id = store.create_organization("Domain Test Org 2")
     org_cleanup.append(org_id)
-    domain = f"verify-{uuid.uuid4().hex[:8]}.example.com"
+    domain = f"register-{uuid.uuid4().hex[:8]}.example.com"
 
-    instructions = domains_mod.register_domain(org_id, domain)
-    monkeypatch.setattr(
-        domains_mod.dns.resolver,
-        "resolve",
-        lambda host, kind: _fake_txt_answer(instructions.dns_record_value),
-    )
-
-    assert domains_mod.verify_domain(org_id, instructions.domain_id) is True
-    (record,) = domains_mod.list_domains(org_id)
-    assert record.verified_at is not None
+    record = domains_mod.register_domain(org_id, domain)
+    assert record.auto_join_enabled is True
+    assert domains_mod.resolve_org_for_email(f"alice@{domain}") == org_id
 
 
 @requires_db
-def test_verify_domain_fails_when_dns_does_not_match(store, org_cleanup, monkeypatch):
+def test_auto_join_can_be_disabled(store, org_cleanup):
     org_id = store.create_organization("Domain Test Org 3")
     org_cleanup.append(org_id)
-    domain = f"verify-{uuid.uuid4().hex[:8]}.example.com"
+    domain = f"disable-{uuid.uuid4().hex[:8]}.example.com"
+    record = domains_mod.register_domain(org_id, domain)
 
-    instructions = domains_mod.register_domain(org_id, domain)
-    monkeypatch.setattr(
-        domains_mod.dns.resolver, "resolve", lambda host, kind: _fake_txt_answer("wrong-value")
-    )
-
-    assert domains_mod.verify_domain(org_id, instructions.domain_id) is False
-    (record,) = domains_mod.list_domains(org_id)
-    assert record.verified_at is None
-
-
-@requires_db
-def test_auto_join_cannot_be_enabled_before_verification(store, org_cleanup):
-    org_id = store.create_organization("Domain Test Org 4")
-    org_cleanup.append(org_id)
-    domain = f"verify-{uuid.uuid4().hex[:8]}.example.com"
-    instructions = domains_mod.register_domain(org_id, domain)
-
-    enabled = domains_mod.set_auto_join(org_id, instructions.domain_id, True)
-    assert enabled is False  # rejected: not verified yet
-
-    (record,) = domains_mod.list_domains(org_id)
-    assert record.auto_join_enabled is False
-
-
-@requires_db
-def test_resolve_org_for_email_requires_both_verified_and_auto_join(store, org_cleanup):
-    org_id = store.create_organization("Domain Test Org 5")
-    org_cleanup.append(org_id)
-    domain = f"resolve-{uuid.uuid4().hex[:8]}.example.com"
-    instructions = domains_mod.register_domain(org_id, domain)
-
-    # Verified but auto-join not yet enabled -> no resolution.
-    from app.db.connection import get_connection
-
-    with get_connection() as conn:
-        conn.execute(
-            "UPDATE org_domains SET verified_at = now() WHERE id = %s", (instructions.domain_id,)
-        )
+    ok = domains_mod.set_auto_join(org_id, record.id, False)
+    assert ok is True
     assert domains_mod.resolve_org_for_email(f"alice@{domain}") is None
 
-    domains_mod.set_auto_join(org_id, instructions.domain_id, True)
-    assert domains_mod.resolve_org_for_email(f"alice@{domain}") == org_id
+
+@requires_db
+def test_set_auto_join_rejects_another_orgs_domain(store, org_cleanup):
+    org_a = store.create_organization("Domain Test Org 4a")
+    org_b = store.create_organization("Domain Test Org 4b")
+    org_cleanup.extend([org_a, org_b])
+    domain = f"cross-{uuid.uuid4().hex[:8]}.example.com"
+    record = domains_mod.register_domain(org_a, domain)
+
+    ok = domains_mod.set_auto_join(org_b, record.id, False)
+    assert ok is False  # org_b doesn't own this domain
 
 
 @requires_db

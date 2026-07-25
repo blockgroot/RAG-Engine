@@ -60,12 +60,13 @@ def test_register_and_list_domain(client, admin_org):
     response = client.post("/admin/domains", json={"domain": domain}, cookies=cookies)
     assert response.status_code == 200
     body = response.json()
-    assert body["dns_record_name"] == f"_ragverify.{domain}"
+    assert body["domain"] == domain
+    assert body["auto_join_enabled"] is True  # live immediately, no DNS step
 
     listed = client.get("/admin/domains", cookies=cookies).json()
     assert len(listed) == 1
     assert listed[0]["domain"] == domain
-    assert listed[0]["verified"] is False
+    assert listed[0]["auto_join_enabled"] is True
 
 
 @requires_db
@@ -76,17 +77,38 @@ def test_register_domain_rejects_public_provider(client, admin_org):
 
 
 @requires_db
-def test_auto_join_rejected_before_verification(client, admin_org):
+def test_auto_join_can_be_toggled_off_and_on(client, admin_org):
     org_id, cookies = admin_org
     domain = f"admin-{uuid.uuid4().hex[:8]}.example.com"
     reg = client.post("/admin/domains", json={"domain": domain}, cookies=cookies).json()
 
     response = client.post(
-        f"/admin/domains/{reg['domain_id']}/auto-join",
-        json={"enabled": True},
+        f"/admin/domains/{reg['id']}/auto-join",
+        json={"enabled": False},
         cookies=cookies,
     )
-    assert response.status_code == 400
+    assert response.status_code == 200
+    assert response.json()["auto_join_enabled"] is False
+
+    listed = client.get("/admin/domains", cookies=cookies).json()
+    assert listed[0]["auto_join_enabled"] is False
+
+
+@requires_db
+def test_auto_join_rejects_another_orgs_domain_id(client, admin_org, store, org_cleanup):
+    org_id, cookies = admin_org
+    other_org = store.create_organization(f"Admin API Domain Other Org {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(other_org)
+    from app.auth import domains as domains_mod
+
+    other_domain = domains_mod.register_domain(other_org, f"other-{uuid.uuid4().hex[:8]}.example.com")
+
+    response = client.post(
+        f"/admin/domains/{other_domain.id}/auto-join",
+        json={"enabled": False},
+        cookies=cookies,
+    )
+    assert response.status_code == 404
 
 
 @requires_db

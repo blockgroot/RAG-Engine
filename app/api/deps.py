@@ -17,6 +17,8 @@ from ..agent import build_policy_agent
 from ..agent.policy_agent import PolicyAgent
 from ..auth.session import SessionClaims, decode_session_token
 from ..core.exceptions import AuthError
+from ..vectorstore import build_vector_store
+from ..vectorstore.base import VectorStore
 
 SESSION_COOKIE_NAME = "session"
 
@@ -31,6 +33,12 @@ def get_policy_agent() -> PolicyAgent:
     builds it once per session rather than once per turn.
     """
     return build_policy_agent()
+
+
+@lru_cache(maxsize=1)
+def get_vector_store() -> VectorStore:
+    """Process-wide singleton vector store (just a pooled DB connection)."""
+    return build_vector_store()
 
 
 def get_session(request: Request) -> SessionClaims:

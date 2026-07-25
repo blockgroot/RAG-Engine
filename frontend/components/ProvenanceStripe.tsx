@@ -1,6 +1,6 @@
 const LABELS: Record<string, string> = {
-  policy: "From your policy documents",
-  web: "From a web search — not your organization's policies",
+  policy: "Company policy",
+  web: "Web search",
   none: "No answer found",
 };
 
@@ -10,24 +10,17 @@ const COLORS: Record<string, string> = {
   none: "var(--provenance-none)",
 };
 
-/** Color-coded left-edge stripe on every answer card — mirrors the CLI's
- * source-provenance styling so an answer's origin is never ambiguous. */
+/** Small color-coded pill so a reader can tell at a glance whether an answer
+ * came from company policy, a web search, or wasn't found at all. */
 export function ProvenanceStripe({ source }: { source: string }) {
   const color = COLORS[source] || COLORS.none;
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.6rem" }}>
-      <span
-        style={{
-          display: "inline-block",
-          width: "10px",
-          height: "10px",
-          borderRadius: "50%",
-          background: color,
-        }}
-      />
-      <span className="muted" style={{ fontSize: "0.8rem" }}>
-        {LABELS[source] || LABELS.none}
-      </span>
-    </div>
+    <span
+      className="provenance-pill"
+      style={{ color, background: `color-mix(in srgb, ${color} 14%, transparent)` }}
+    >
+      <span className="provenance-dot" style={{ background: color }} />
+      {LABELS[source] || LABELS.none}
+    </span>
   );
 }

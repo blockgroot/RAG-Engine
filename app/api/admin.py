@@ -1,4 +1,4 @@
-"""Admin router: domain verification, OAuth connections, ingestion jobs (Phase 13c).
+"""Admin router: domain allowlist, OAuth connections, ingestion jobs (Phase 13c).
 
 Every route requires an admin session (``require_admin``) and takes ``org_id``
 exclusively from that session — never from the URL or body — so an admin can
@@ -24,17 +24,13 @@ def register_domain(body: dict, session: SessionClaims = Depends(require_admin))
     if not domain:
         raise HTTPException(status_code=400, detail="A domain is required")
     try:
-        instructions = domains_mod.register_domain(session.org_id, domain)
+        record = domains_mod.register_domain(session.org_id, domain)
     except ConfigurationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
-        "domain_id": instructions.domain_id,
-        "dns_record_name": instructions.dns_record_name,
-        "dns_record_value": instructions.dns_record_value,
-        "instructions": (
-            f"Publish a TXT record at {instructions.dns_record_name} with the value "
-            f"{instructions.dns_record_value!r}, then call verify."
-        ),
+        "id": record.id,
+        "domain": record.domain,
+        "auto_join_enabled": record.auto_join_enabled,
     }
 
 
@@ -44,20 +40,10 @@ def list_domains(session: SessionClaims = Depends(require_admin)):
         {
             "id": d.id,
             "domain": d.domain,
-            "verified": d.verified_at is not None,
             "auto_join_enabled": d.auto_join_enabled,
         }
         for d in domains_mod.list_domains(session.org_id)
     ]
-
-
-@router.post("/domains/{domain_id}/verify")
-def verify_domain(domain_id: str, session: SessionClaims = Depends(require_admin)):
-    try:
-        verified = domains_mod.verify_domain(session.org_id, domain_id)
-    except ConfigurationError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {"verified": verified}
 
 
 @router.post("/domains/{domain_id}/auto-join")
@@ -67,10 +53,7 @@ def set_auto_join(
     enabled = bool(body.get("enabled", False))
     ok = domains_mod.set_auto_join(session.org_id, domain_id, enabled)
     if not ok:
-        raise HTTPException(
-            status_code=400,
-            detail="Domain must be verified before auto-join can be enabled",
-        )
+        raise HTTPException(status_code=404, detail="No such domain for this organization")
     return {"auto_join_enabled": enabled}
 
 
