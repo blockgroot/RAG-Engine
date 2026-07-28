@@ -67,13 +67,13 @@ export function ConnectionCard({
           {ACTIVE.has(lastJob.status)
             ? "Updating changed policies…"
             : lastJob.status === "succeeded"
-              ? `Last update ${
+              ? `Last sync completed ${
                   lastJob.finished_at
                     ? new Date(lastJob.finished_at).toLocaleString()
                     : new Date(lastJob.created_at).toLocaleString()
                 }${
                   lastJob.doc_count != null && lastJob.doc_count > 0
-                    ? ` · ${lastJob.doc_count} page${lastJob.doc_count === 1 ? "" : "s"} written`
+                    ? ` · ${lastJob.doc_count} page${lastJob.doc_count === 1 ? "" : "s"} refreshed`
                     : " · already up to date"
                 }`
               : lastJob.status === "failed"

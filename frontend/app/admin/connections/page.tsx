@@ -21,6 +21,15 @@ function latestJobByConnection(jobs: JobRecord[]): Record<string, JobRecord> {
   return latest;
 }
 
+function updateCompleteMessage(docCount: number | null | undefined): string {
+  if (docCount != null && docCount > 0) {
+    return `Sync complete — ${docCount} policy page${
+      docCount === 1 ? "" : "s"
+    } updated to match Notion. Ask can use the new policies now.`;
+  }
+  return "Sync complete — your policies already matched Notion. Nothing needed rewriting.";
+}
+
 export default function ConnectionsPage() {
   const { me, loading } = useMe({ requireAdmin: true });
   const [connections, setConnections] = useState<ConnectionRecord[]>([]);
@@ -29,8 +38,11 @@ export default function ConnectionsPage() {
   const [checking, setChecking] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Bumped when an update starts so job polling resumes (it stops when idle). */
+  const [pollToken, setPollToken] = useState(0);
   const prevStatuses = useRef<Record<string, string>>({});
   const loaded = useRef(false);
+  const bannerRef = useRef<HTMLDivElement | null>(null);
 
   const refreshChanges = useCallback(async (list: ConnectionRecord[]) => {
     setChecking(true);
@@ -58,6 +70,7 @@ export default function ConnectionsPage() {
     api.listJobs().then(setJobs);
   }, [me, refreshChanges]);
 
+  // Poll while a job is active. pollToken restarts the loop after "Update policies".
   useEffect(() => {
     if (!me) return;
     let cancelled = false;
@@ -77,7 +90,7 @@ export default function ConnectionsPage() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [me?.user_id]);
+  }, [me?.user_id, pollToken]);
 
   useEffect(() => {
     const latest = latestJobByConnection(jobs);
@@ -86,16 +99,15 @@ export default function ConnectionsPage() {
       const curr = job.status;
       if (prev && ACTIVE_STATUSES.has(prev) && !ACTIVE_STATUSES.has(curr)) {
         if (curr === "succeeded") {
-          const n = job.doc_count;
-          setMessage(
-            n != null && n > 0
-              ? `Updated ${n} policy page${n === 1 ? "" : "s"}.`
-              : "Policies are already up to date."
-          );
+          setMessage(updateCompleteMessage(job.doc_count));
           setError(null);
           refreshChanges(connections);
+          // Bring the completion prompt into view without a manual refresh.
+          requestAnimationFrame(() => {
+            bannerRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          });
         } else if (curr === "failed") {
-          setError(job.error || "Update failed.");
+          setError(job.error || "Update failed. Please try again.");
           setMessage(null);
         }
       }
@@ -107,11 +119,12 @@ export default function ConnectionsPage() {
     const latest = latestJobByConnection(jobs)[connectionId];
     if (latest && ACTIVE_STATUSES.has(latest.status)) return;
     setError(null);
-    setMessage("Updating changed policies…");
+    setMessage("Updating changed policies… Keep this page open — we’ll confirm when it’s done.");
     try {
       await api.triggerIngest(connectionId);
       const list = await api.listJobs();
       setJobs(list);
+      setPollToken((n) => n + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start the update.");
       setMessage(null);
@@ -138,7 +151,25 @@ export default function ConnectionsPage() {
             Connected workspaces stay in sync — we only refresh pages that changed.
           </p>
         </div>
-        {message && <div className="banner banner-ok">{message}</div>}
+        {message && (
+          <div
+            ref={bannerRef}
+            className={
+              message.startsWith("Sync complete") ? "banner banner-ok" : "banner banner-wait"
+            }
+            role="status"
+            aria-live="polite"
+          >
+            {message.startsWith("Sync complete") ? (
+              <>
+                <strong>Update finished</strong>
+                <p style={{ margin: "0.35rem 0 0" }}>{message}</p>
+              </>
+            ) : (
+              message
+            )}
+          </div>
+        )}
         {error && <div className="banner banner-warn">{error}</div>}
         <div className="stack">
           {PROVIDERS.map((provider) => {
