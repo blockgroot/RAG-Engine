@@ -9,15 +9,29 @@ frontend origin(s) (``API_CORS_ORIGINS``) with credentials allowed (the
 session cookie); an empty configured origin list means no cross-origin
 frontend can call this API with credentials, which is the safe default, not
 a wildcard.
+
+Ingestion jobs use the Postgres ``ingestion_jobs`` queue (``SELECT … FOR
+UPDATE SKIP LOCKED``). By default a daemon thread inside this process drains
+that queue (``INGEST_WORKER_IN_API=true``) so local/dev needs no second
+terminal. Set ``INGEST_WORKER_IN_API=false`` and run
+``python scripts/run_worker.py`` when you want the worker in its own process
+(heavier ingest loads, multi-replica API).
 """
 
 from __future__ import annotations
+
+import logging
+import os
+import threading
+import time
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from ..config.settings import ApiSettings
+from ..db import close_pool
 from . import admin as admin_router
 from . import auth as auth_router
 from . import chat as chat_router
@@ -31,10 +45,68 @@ from . import orgs as orgs_router
 # makes the browser's preflight fail with no useful error).
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
+
+def _env_flag(name: str, default: bool = True) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
+    """Drain ``ingestion_jobs`` in-process so Sync works without run_worker.py."""
+    from ..jobs import queue
+    from ..jobs.worker import run_once
+
+    poll_interval = float(os.getenv("INGEST_WORKER_POLL_SECONDS", "2"))
+    reap_interval = float(os.getenv("INGEST_WORKER_REAP_SECONDS", "60"))
+
+    def _loop() -> None:
+        logger.info(
+            "In-API ingestion worker started (poll=%.1fs). "
+            "Set INGEST_WORKER_IN_API=false to use scripts/run_worker.py instead.",
+            poll_interval,
+        )
+        last_reap = 0.0
+        while not stop.is_set():
+            try:
+                now = time.monotonic()
+                if now - last_reap >= reap_interval:
+                    queue.reap_stuck()
+                    last_reap = now
+                job = run_once()
+                if job is None:
+                    stop.wait(poll_interval)
+            except Exception:  # noqa: BLE001 — worker must survive one bad tick
+                logger.exception("In-API ingestion worker tick failed")
+                stop.wait(min(5.0, poll_interval * 2))
+        logger.info("In-API ingestion worker stopped")
+
+    thread = threading.Thread(target=_loop, name="ingest-worker", daemon=True)
+    thread.start()
+    return thread
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    stop = threading.Event()
+    worker: threading.Thread | None = None
+    if _env_flag("INGEST_WORKER_IN_API", default=True):
+        worker = _start_in_api_worker(stop)
+    try:
+        yield
+    finally:
+        stop.set()
+        if worker is not None:
+            worker.join(timeout=8)
+        close_pool()
+
 
 def create_app() -> FastAPI:
     settings = ApiSettings.from_env()
-    app = FastAPI(title="RAG Engine API")
+    app = FastAPI(title="RAG Engine API", lifespan=lifespan)
 
     app.add_middleware(
         CORSMiddleware,

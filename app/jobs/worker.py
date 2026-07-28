@@ -40,11 +40,11 @@ def run_once() -> queue.IngestionJob | None:
 def run_forever(*, poll_interval: float = 5.0, reap_interval: int = 60) -> None:
     """Poll for queued jobs forever, reaping stuck ``running`` jobs periodically.
 
-    Intended to run as a standalone long-lived process — see
-    ``scripts/run_worker.py``. Not imported by the API layer, which only ever
-    enqueues; running the queue and the worker as separate processes is what
-    makes a crashed worker recoverable (the reaper, run by the *next* worker
-    that starts, flips its stuck job back to failed).
+    Used by ``scripts/run_worker.py`` and by the optional in-API daemon thread
+    (``app/api/main.py``, ``INGEST_WORKER_IN_API``). The API only *enqueues*;
+    this loop claims and runs jobs. A separate process is still the better
+    choice under heavy ingest load; the in-API thread is the simple local
+    default. Stuck ``running`` jobs are reaped periodically.
     """
     import time
 

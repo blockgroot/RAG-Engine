@@ -68,14 +68,14 @@ export function AppShell({
             <Step
               n={2}
               label="Sync policies"
-              done={me.has_documents}
-              active={me.has_connection && !me.has_documents}
+              done={me.ready_to_ask}
+              active={me.has_connection && !me.ready_to_ask}
             />
             <Step
               n={3}
               label="Invite team"
               done={false}
-              active={me.has_connection && me.has_documents}
+              active={me.has_connection && me.ready_to_ask}
             />
           </div>
         )}

@@ -54,17 +54,17 @@ function OnboardingInner() {
   );
   const displayJob = useMemo(() => {
     if (!notion) return undefined;
-    return pickDisplayJob(jobs, notion.id, Boolean(effectiveMe?.has_documents));
-  }, [jobs, notion, effectiveMe?.has_documents]);
+    return pickDisplayJob(jobs, notion.id, Boolean(effectiveMe?.ready_to_ask));
+  }, [jobs, notion, effectiveMe?.ready_to_ask]);
 
   const activeJob = useMemo(() => {
     if (!notion) return undefined;
-    // Ignore leftover queued/running rows once documents already exist.
-    if (effectiveMe?.has_documents) return undefined;
+    // Ignore leftover queued/running rows once sync is fully ready.
+    if (effectiveMe?.ready_to_ask) return undefined;
     return jobs
       .filter((j) => j.connection_id === notion.id && ACTIVE.has(j.status))
       .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
-  }, [jobs, notion, effectiveMe?.has_documents]);
+  }, [jobs, notion, effectiveMe?.ready_to_ask]);
 
   const syncInProgress = busy || activeJob != null;
 
@@ -93,7 +93,9 @@ function OnboardingInner() {
       if (
         prev &&
         prev.has_documents === fresh.has_documents &&
-        prev.has_connection === fresh.has_connection
+        prev.has_connection === fresh.has_connection &&
+        prev.ready_to_ask === fresh.ready_to_ask &&
+        prev.sync_in_progress === fresh.sync_in_progress
       ) {
         return prev;
       }
@@ -101,7 +103,7 @@ function OnboardingInner() {
     });
   }, []);
 
-  // Stable job poller — runs until documents exist (not until every job settles).
+  // Stable job poller — runs until ready_to_ask (full ingest finished).
   // Depends on pollToken so a new Sync click restarts polling if needed.
   useEffect(() => {
     if (!me || me.role !== "admin") return;
@@ -118,23 +120,23 @@ function OnboardingInner() {
         if (cancelled) return;
         if (fresh) {
           applyMeSnapshot(fresh);
-          if (fresh.has_documents && !announcedSuccess.current) {
+          // Only celebrate when the job finished — not when the first page lands.
+          if (fresh.ready_to_ask && !announcedSuccess.current) {
             announcedSuccess.current = true;
             const succeeded = list.find((j) => j.status === "succeeded");
             const n = succeeded?.doc_count;
             setMessage(
               n != null
-                ? `Sync complete — ${n} document${n === 1 ? "" : "s"} ready.`
-                : "Sync complete — your policies are ready."
+                ? `Sync complete — ${n} document${n === 1 ? "" : "s"} ready. You can ask questions now.`
+                : "Sync complete — your policies are ready. You can ask questions now."
             );
             setError(null);
             refresh().catch(() => undefined);
           }
         }
 
-        // Stop once documents exist — don't wait forever on a stuck "queued" job
-        // (that was the log flood when combined with effect restarts).
-        const done = Boolean(fresh?.has_documents);
+        // Stay on this step until ingest finishes (ready_to_ask).
+        const done = Boolean(fresh?.ready_to_ask);
         if (!cancelled && !done) {
           timer = setTimeout(tick, POLL_MS);
         }
@@ -222,10 +224,10 @@ function OnboardingInner() {
     );
   }
 
-  // Prefer documents-in-DB over a leftover "queued" badge so the wizard advances.
+  // Stay on Sync until the ingest job finishes — partial docs must not unlock Ask.
   const step: 1 | 2 | 3 = !effectiveMe.has_connection
     ? 1
-    : !effectiveMe.has_documents
+    : !effectiveMe.ready_to_ask
       ? 2
       : 3;
 
@@ -294,8 +296,9 @@ function OnboardingInner() {
                   : "Start sync"}
             </button>
             <p className="muted" style={{ fontSize: "0.85rem" }}>
-              Keep the worker running in another terminal:{" "}
-              <code className="mono">python scripts/run_worker.py</code>
+              Sync runs inside the API server — keep{" "}
+              <code className="mono">uvicorn</code> running until it finishes. Stay on this page;
+              Ask unlocks only after every shared page is ingested.
             </p>
           </section>
         )}

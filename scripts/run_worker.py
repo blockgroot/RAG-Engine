@@ -7,6 +7,10 @@ This is what turns an admin's "Ingest" click (``app/api/admin.py``, enqueues
 a row) into an actual fetch->chunk->embed->store run, without blocking the
 API request.
 
+By default the API process already drains this queue
+(``INGEST_WORKER_IN_API=true``). Use this script when you want a separate
+worker process (set ``INGEST_WORKER_IN_API=false`` on the API).
+
 Run:
     python scripts/run_worker.py
     python scripts/run_worker.py --poll-interval 2 --reap-interval 30

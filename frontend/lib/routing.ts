@@ -1,8 +1,8 @@
 import type { Me } from "./api";
 
-/** Admin org is ready when a source is connected and at least one doc ingested. */
+/** Admin org is ready only after a finished sync (not mid-ingest). */
 export function isSetupComplete(me: Me): boolean {
-  return me.has_connection && me.has_documents;
+  return me.has_connection && me.ready_to_ask;
 }
 
 /** Where a signed-in user should land after login / visiting `/`. */

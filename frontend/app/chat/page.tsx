@@ -24,22 +24,22 @@ export default function ChatPage() {
   const conversationId = useRef<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
-  const [hasDocuments, setHasDocuments] = useState<boolean | null>(null);
+  const [readyToAsk, setReadyToAsk] = useState<boolean | null>(null);
   const [justSynced, setJustSynced] = useState(false);
 
   useEffect(() => {
     if (!me) return;
-    setHasDocuments(me.has_documents);
+    setReadyToAsk(me.ready_to_ask);
   }, [me]);
 
   useEffect(() => {
-    if (hasDocuments !== false) return;
+    if (readyToAsk !== false) return;
     let cancelled = false;
     const interval = setInterval(async () => {
       const fresh = await api.me().catch(() => null);
       if (cancelled || !fresh) return;
-      if (fresh.has_documents) {
-        setHasDocuments(true);
+      if (fresh.ready_to_ask) {
+        setReadyToAsk(true);
         setJustSynced(true);
         refresh();
       }
@@ -48,7 +48,7 @@ export default function ChatPage() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [hasDocuments, refresh]);
+  }, [readyToAsk, refresh]);
 
   async function ensureConversation() {
     if (conversationId.current) return conversationId.current;
@@ -117,7 +117,7 @@ export default function ChatPage() {
     );
   }
 
-  if (hasDocuments === false) {
+  if (readyToAsk === false) {
     return (
       <AppShell me={me} variant="app">
         <main className="page">
@@ -137,7 +137,9 @@ export default function ChatPage() {
             )}
             <div className="pulse-dot" aria-hidden />
             <p className="muted" style={{ fontSize: "0.85rem" }}>
-              Waiting for the first successful sync…
+              {me.sync_in_progress
+                ? "Sync in progress — Ask unlocks when every policy page is ingested…"
+                : "Waiting for a completed policy sync…"}
             </p>
           </div>
         </main>
@@ -150,7 +152,7 @@ export default function ChatPage() {
       <div className="chat-page">
         {justSynced && (
           <div className="banner banner-ok" style={{ margin: "0 0 1rem" }}>
-            Sync complete — you can ask questions now.
+            Sync complete — all policies are ready. You can ask questions now.
           </div>
         )}
         {messages.length === 0 ? (

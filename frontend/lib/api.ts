@@ -41,7 +41,12 @@ export interface Me {
   org_name: string | null;
   role: "admin" | "member";
   has_connection: boolean;
+  /** True once any document row exists (may still be mid-ingest). */
   has_documents: boolean;
+  /** Queued or running ingestion job for this org. */
+  sync_in_progress: boolean;
+  /** Safe to open Ask: documents exist and no ingest job is still running. */
+  ready_to_ask: boolean;
 }
 
 export interface MemberRecord {
