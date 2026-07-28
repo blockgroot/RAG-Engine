@@ -93,7 +93,7 @@ export function ConnectionCard({
             ]
               .filter(Boolean)
               .join(" · ")}
-            . Only those pages will be refreshed — nothing is duplicated.
+            
           </p>
         </div>
       )}

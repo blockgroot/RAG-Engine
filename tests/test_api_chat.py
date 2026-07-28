@@ -142,6 +142,45 @@ def test_chat_stream_rejects_conversation_id_from_another_org(
 
 
 @requires_db
+def test_chat_stream_emits_error_event_when_llm_is_rate_limited(client_and_session):
+    """FreeLLMAPI 429 must not crash the ASGI stream — surface a chat error."""
+    from app.api.deps import get_policy_agent
+    from app.core.exceptions import LLMProviderError
+
+    client, cookies, _org_id, _ = client_and_session
+
+    class _BoomAgent:
+        def answer_stream(self, question, org_id, conversation_id=None):
+            raise LLMProviderError(
+                "LLM API error: Error code: 429 - All models exhausted"
+            )
+
+    client.app.dependency_overrides[get_policy_agent] = lambda: _BoomAgent()
+
+    response = client.post(
+        "/chat/stream",
+        json={"question": "How many leave days?"},
+        cookies=cookies,
+    )
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    assert events, "expected an SSE error event"
+    assert events[0][0] == "error"
+    payload = json.loads(events[0][1])
+    assert "rate-limited" in payload["message"].lower()
+
+
+def test_user_facing_llm_error_detects_exhausted_routes():
+    from app.api.chat import _user_facing_llm_error
+    from app.core.exceptions import LLMProviderError
+
+    msg = _user_facing_llm_error(
+        LLMProviderError("Error code: 429 - All models exhausted: 60 routes checked")
+    )
+    assert "rate-limited" in msg.lower()
+
+
+@requires_db
 def test_create_conversation_scoped_to_session_org(client_and_session):
     client, cookies, org_id, memory = client_and_session
     response = client.post("/chat/conversations", cookies=cookies)
