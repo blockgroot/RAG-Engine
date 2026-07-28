@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
+import { homePathFor } from "@/lib/routing";
 
 export default function RootPage() {
   const router = useRouter();
@@ -10,7 +11,7 @@ export default function RootPage() {
   useEffect(() => {
     api
       .me()
-      .then(() => router.replace("/chat"))
+      .then((me) => router.replace(homePathFor(me)))
       .catch(() => router.replace("/login"));
   }, [router]);
 

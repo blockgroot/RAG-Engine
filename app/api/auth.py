@@ -138,8 +138,10 @@ def verify_magic_link(token: str, settings: ApiSettings = Depends(ApiSettings.fr
     # reached by a real browser navigation from the emailed link, so the
     # Set-Cookie below is what actually lands the session; the redirect target
     # is purely where the user ends up next.
+    # Land on `/` so the frontend can route by role + setup status
+    # (admin → onboarding if incomplete, else chat; member → chat/waiting).
     base = (settings.frontend_url or "").rstrip("/")
-    response = RedirectResponse(url=f"{base}/chat" if base else "/chat")
+    response = RedirectResponse(url=f"{base}/" if base else "/")
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=session_token,
@@ -184,5 +186,8 @@ def callback(
     except (OAuthError, ConfigurationError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # Resume admin onboarding at the ingest step after OAuth returns.
     base = (settings.frontend_url or "").rstrip("/")
-    return RedirectResponse(url=f"{base}/admin/connections?connected={provider}")
+    return RedirectResponse(
+        url=f"{base}/onboarding?connected={provider}" if base else f"/onboarding?connected={provider}"
+    )

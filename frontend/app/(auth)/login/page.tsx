@@ -30,8 +30,9 @@ export default function LoginPage() {
     <main className="page">
       <div className="stack">
         <div>
-          <h1>Policy Portal</h1>
-          <p className="muted">Sign in with your work email to ask questions grounded in your company&rsquo;s policies.</p>
+          <p className="eyebrow">Policy Portal</p>
+          <h1>Sign in</h1>
+          <p className="muted">Use your work email — we&rsquo;ll send a one-time link. No password.</p>
         </div>
 
         {submitted ? (

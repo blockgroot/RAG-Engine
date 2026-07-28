@@ -7,16 +7,13 @@ const PROVIDER_LABELS: Record<string, string> = {
   github: "GitHub",
 };
 
+const ACTIVE = new Set(["queued", "running"]);
+
 /**
  * Provider-agnostic from day one: only "notion" is wired to a real connect
  * button today, but Google/GitHub render as "coming soon" through the SAME
  * component — adding them later is a config entry, not a new component,
  * mirroring the backend's factory.py extension pattern (app/auth/factory.py).
- *
- * ``lastJob`` shows the most recent sync's outcome inline (status, doc count,
- * error) so a failed/queued sync is never silently invisible — without a
- * dedicated "sync history" page cluttering the nav for something that's
- * genuinely a once-in-a-while admin action.
  */
 export function ConnectionCard({
   provider,
@@ -30,6 +27,7 @@ export function ConnectionCard({
   onIngest: (connectionId: string) => void;
 }) {
   const available = provider === "notion";
+  const syncInProgress = lastJob != null && ACTIVE.has(lastJob.status);
 
   return (
     <div className="card">
@@ -52,11 +50,16 @@ export function ConnectionCard({
       {lastJob && (
         <p className="muted" style={{ marginTop: "0.4rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
           <JobStatusBadge status={lastJob.status} />
-          Last synced{" "}
-          {lastJob.finished_at
-            ? new Date(lastJob.finished_at).toLocaleString()
-            : new Date(lastJob.created_at).toLocaleString()}
-          {lastJob.status === "succeeded" && lastJob.doc_count !== null && ` · ${lastJob.doc_count} documents`}
+          {ACTIVE.has(lastJob.status)
+            ? "Sync in progress…"
+            : `Last synced ${
+                lastJob.finished_at
+                  ? new Date(lastJob.finished_at).toLocaleString()
+                  : new Date(lastJob.created_at).toLocaleString()
+              }`}
+          {lastJob.status === "succeeded" &&
+            lastJob.doc_count !== null &&
+            ` · ${lastJob.doc_count} documents`}
           {lastJob.status === "failed" && lastJob.error && ` · ${lastJob.error}`}
         </p>
       )}
@@ -68,8 +71,12 @@ export function ConnectionCard({
           </a>
         )}
         {connection && (
-          <button className="button button-secondary" onClick={() => onIngest(connection.id)}>
-            Sync now
+          <button
+            className="button button-secondary"
+            onClick={() => onIngest(connection.id)}
+            disabled={syncInProgress}
+          >
+            {syncInProgress ? "Syncing…" : "Sync now"}
           </button>
         )}
       </div>

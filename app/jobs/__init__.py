@@ -9,6 +9,7 @@ Public API:
 from .queue import (
     IngestionJob,
     enqueue,
+    has_active_job,
     claim_next,
     mark_succeeded,
     mark_failed,
@@ -22,6 +23,7 @@ from .worker import run_once, run_forever
 __all__ = [
     "IngestionJob",
     "enqueue",
+    "has_active_job",
     "claim_next",
     "mark_succeeded",
     "mark_failed",

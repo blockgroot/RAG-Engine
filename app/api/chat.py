@@ -20,10 +20,21 @@ caller's ``org_id`` before ever handing it to the agent.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterator
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+
+# Chunks are sliced from an already-fully-generated answer (see module
+# docstring) with no natural gap between them, so without an artificial pace
+# they all arrive over the wire back-to-back — indistinguishable from a bulk
+# response despite being "streamed". This is purely a transport-layer delay
+# (StreamingResponse runs this sync generator in a worker thread, so
+# time.sleep here doesn't block the event loop or other requests) — it does
+# not touch RagPipeline.answer_stream, which stays instant/deterministic for
+# tests and the CLI.
+_CHUNK_DELAY_SECONDS = 0.02
 
 from ..agent.policy_agent import PolicyAgent
 from ..db.connection import get_connection
@@ -67,6 +78,7 @@ def _stream_answer(
     chunks, result = agent.answer_stream(question, org_id, conversation_id=conversation_id)
     for chunk in chunks:
         yield _sse_event("token", chunk)
+        time.sleep(_CHUNK_DELAY_SECONDS)
     yield _sse_event(
         "done",
         {

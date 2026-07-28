@@ -31,10 +31,10 @@ export default function SignupPage() {
     <main className="page">
       <div className="stack">
         <div>
-          <h1>Set up your company</h1>
+          <p className="eyebrow">Get started</p>
+          <h1>Create your organization</h1>
           <p className="muted">
-            Create your organization and become its first admin — no password to set, we&rsquo;ll
-            email you a sign-in link.
+            You&rsquo;ll be the admin. Next you&rsquo;ll connect Notion, sync policies, then invite your team.
           </p>
         </div>
 

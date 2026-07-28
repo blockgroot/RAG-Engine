@@ -10,7 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..auth import get_user_by_email, invite_member, list_connections, list_members
-from ..jobs import enqueue, get_job, list_jobs
+from ..jobs import enqueue, get_job, has_active_job, list_jobs
 from .deps import SessionClaims, require_admin
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -65,6 +65,12 @@ def trigger_ingest(connection_id: str, session: SessionClaims = Depends(require_
     owned_ids = {c.id for c in list_connections(session.org_id)}
     if connection_id not in owned_ids:
         raise HTTPException(status_code=404, detail="No such connection for this organization")
+
+    if has_active_job(session.org_id, connection_id):
+        raise HTTPException(
+            status_code=409,
+            detail="A sync is already in progress for this connection",
+        )
 
     job_id = enqueue(session.org_id, connection_id)
     return {"job_id": job_id, "status": "queued"}
