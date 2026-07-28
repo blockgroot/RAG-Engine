@@ -27,21 +27,27 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="page">
-      <div className="stack">
-        <div>
-          <p className="eyebrow">Policy Portal</p>
-          <h1>Sign in</h1>
-          <p className="muted">Use your work email — we&rsquo;ll send a one-time link. No password.</p>
+    <main className="auth-stage">
+      <div className="auth-panel">
+        <div className="brand-lockup">
+          <span className="brand-mark" aria-hidden />
+          <span className="brand" style={{ fontSize: "1.2rem" }}>
+            Policy Portal
+          </span>
         </div>
+        <p className="eyebrow">Welcome back</p>
+        <h1>Sign in</h1>
+        <p className="muted">Use your work email — we&rsquo;ll send a one-time link. No password.</p>
 
         {submitted ? (
           <div className="card stack">
-            <p>If that email is eligible, we&rsquo;ve sent a sign-in link. Check your inbox &mdash; it expires shortly and works once.</p>
+            <p>
+              If that email is eligible, we&rsquo;ve sent a sign-in link. Check your inbox &mdash; it
+              expires shortly and works once.
+            </p>
             {devLink && (
               <p className="muted">
-                Dev mode (no email sender configured):{" "}
-                <a href={devLink}>Continue to sign in</a>
+                Dev mode: <a href={devLink}>Continue to sign in</a>
               </p>
             )}
           </div>
@@ -59,14 +65,18 @@ export default function LoginPage() {
                 onChange={(e) => setEmail(e.target.value)}
               />
             </div>
-            {error && <p className="muted" style={{ color: "var(--provenance-none)" }}>{error}</p>}
+            {error && (
+              <p className="muted" style={{ color: "var(--provenance-none)" }}>
+                {error}
+              </p>
+            )}
             <button className="button" type="submit" disabled={loading}>
               {loading ? "Sending…" : "Send sign-in link"}
             </button>
           </form>
         )}
 
-        <p className="muted">
+        <p className="muted" style={{ marginTop: "1.25rem" }}>
           First time here? <Link href="/signup">Set up your company</Link>
         </p>
       </div>
