@@ -11,6 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from ..auth import (
     create_magic_link_token,
+    get_connection_token,
     get_user_by_email,
     invite_member,
     list_connections,
@@ -18,7 +19,9 @@ from ..auth import (
     send_magic_link_email_safe,
 )
 from ..config.settings import ApiSettings, EmailSettings
+from ..ingestion import detect_source_changes
 from ..jobs import enqueue, get_job, has_active_job, list_jobs
+from ..sources import build_source_adapter
 from .deps import SessionClaims, require_admin
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -81,6 +84,31 @@ def get_connections(session: SessionClaims = Depends(require_admin)):
         for c in list_connections(session.org_id)
     ]
 
+
+
+@router.get("/connections/{connection_id}/changes")
+def connection_changes(connection_id: str, session: SessionClaims = Depends(require_admin)):
+    """Metadata-only: which remote pages are new/updated/removed vs our store.
+
+    Does not download page bodies or embed — safe to call on Sources page load.
+    """
+    owned = {c.id: c for c in list_connections(session.org_id)}
+    conn = owned.get(connection_id)
+    if conn is None:
+        raise HTTPException(status_code=404, detail="No such connection for this organization")
+
+    token = get_connection_token(session.org_id, conn.provider)
+    adapter = build_source_adapter(conn.provider, token=token)
+    report = detect_source_changes(adapter, session.org_id)
+    return {
+        "connection_id": connection_id,
+        "new_count": report.new_count,
+        "updated_count": report.updated_count,
+        "removed_count": report.removed_count,
+        "unchanged_count": report.unchanged_count,
+        "remote_total": report.remote_total,
+        "has_changes": report.has_changes,
+    }
 
 @router.post("/connections/{connection_id}/ingest")
 def trigger_ingest(connection_id: str, session: SessionClaims = Depends(require_admin)):

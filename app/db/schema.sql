@@ -27,6 +27,15 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 CREATE INDEX IF NOT EXISTS idx_documents_org ON documents (org_id);
 
+-- Incremental sync (source page id + last_edited): lets re-sync upsert only
+-- changed pages instead of appending duplicates.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_external_id TEXT;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_last_modified TIMESTAMPTZ;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_org_external
+    ON documents (org_id, source_external_id)
+    WHERE source_external_id IS NOT NULL;
+
+
 -- Chunks of a document + their embedding vector. Org-scoped (denormalized org_id
 -- so every retrieval query can filter by tenant without a join).
 CREATE TABLE IF NOT EXISTS chunks (

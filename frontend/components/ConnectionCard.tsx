@@ -1,4 +1,4 @@
-import { api, ConnectionRecord, JobRecord } from "@/lib/api";
+import { api, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
 import { JobStatusBadge } from "./JobStatusBadge";
 
 const PROVIDER_LABELS: Record<string, string> = {
@@ -10,28 +10,39 @@ const PROVIDER_LABELS: Record<string, string> = {
 const ACTIVE = new Set(["queued", "running"]);
 
 /**
- * Provider-agnostic from day one: only "notion" is wired to a real connect
- * button today, but Google/GitHub render as "coming soon" through the SAME
- * component — adding them later is a config entry, not a new component,
- * mirroring the backend's factory.py extension pattern (app/auth/factory.py).
+ * Provider card: connected sources no longer show a blunt "Sync now" that
+ * re-dumps everything. Instead we surface a change notice when remote pages
+ * differ, and "Update policies" runs an incremental upsert.
  */
 export function ConnectionCard({
   provider,
   connection,
   lastJob,
-  onIngest,
+  changes,
+  checkingChanges,
+  onUpdate,
 }: {
   provider: "notion" | "google" | "github";
   connection: ConnectionRecord | undefined;
   lastJob?: JobRecord;
-  onIngest: (connectionId: string) => void;
+  changes?: SyncChanges | null;
+  checkingChanges?: boolean;
+  onUpdate: (connectionId: string) => void;
 }) {
   const available = provider === "notion";
   const syncInProgress = lastJob != null && ACTIVE.has(lastJob.status);
+  const needsUpdate = Boolean(changes?.has_changes);
 
   return (
     <div className="card">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "1rem" }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: "1rem",
+        }}
+      >
         <h3 style={{ fontSize: "1.05rem" }}>{PROVIDER_LABELS[provider]}</h3>
         {connection ? (
           <span className="badge badge-verified">Connected</span>
@@ -48,19 +59,54 @@ export function ConnectionCard({
       )}
 
       {lastJob && (
-        <p className="muted" style={{ marginTop: "0.4rem", display: "flex", alignItems: "center", gap: "0.5rem" }}>
+        <p
+          className="muted"
+          style={{ marginTop: "0.4rem", display: "flex", alignItems: "center", gap: "0.5rem" }}
+        >
           <JobStatusBadge status={lastJob.status} />
           {ACTIVE.has(lastJob.status)
-            ? "Sync in progress…"
-            : `Last synced ${
-                lastJob.finished_at
-                  ? new Date(lastJob.finished_at).toLocaleString()
-                  : new Date(lastJob.created_at).toLocaleString()
-              }`}
-          {lastJob.status === "succeeded" &&
-            lastJob.doc_count !== null &&
-            ` · ${lastJob.doc_count} documents`}
-          {lastJob.status === "failed" && lastJob.error && ` · ${lastJob.error}`}
+            ? "Updating changed policies…"
+            : lastJob.status === "succeeded"
+              ? `Last update ${
+                  lastJob.finished_at
+                    ? new Date(lastJob.finished_at).toLocaleString()
+                    : new Date(lastJob.created_at).toLocaleString()
+                }${
+                  lastJob.doc_count != null && lastJob.doc_count > 0
+                    ? ` · ${lastJob.doc_count} page${lastJob.doc_count === 1 ? "" : "s"} written`
+                    : " · already up to date"
+                }`
+              : lastJob.status === "failed"
+                ? lastJob.error || "Update failed"
+                : null}
+        </p>
+      )}
+
+      {connection && needsUpdate && !syncInProgress && (
+        <div className="banner banner-wait" style={{ marginTop: "0.9rem" }}>
+          <strong>We noticed changes in your policies</strong>
+          <p className="muted" style={{ margin: "0.35rem 0 0" }}>
+            {[
+              changes!.new_count > 0 ? `${changes!.new_count} new` : null,
+              changes!.updated_count > 0 ? `${changes!.updated_count} updated` : null,
+              changes!.removed_count > 0 ? `${changes!.removed_count} removed` : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+            . Only those pages will be refreshed — nothing is duplicated.
+          </p>
+        </div>
+      )}
+
+      {connection && !needsUpdate && !syncInProgress && !checkingChanges && (
+        <p className="muted" style={{ marginTop: "0.75rem" }}>
+          Policies look up to date. We&rsquo;ll let you know when Notion changes.
+        </p>
+      )}
+
+      {connection && checkingChanges && (
+        <p className="muted" style={{ marginTop: "0.75rem" }}>
+          Checking for policy updates…
         </p>
       )}
 
@@ -70,13 +116,14 @@ export function ConnectionCard({
             Connect {PROVIDER_LABELS[provider]}
           </a>
         )}
-        {connection && (
+        {connection && needsUpdate && (
           <button
-            className="button button-secondary"
-            onClick={() => onIngest(connection.id)}
+            className="button"
+            type="button"
+            onClick={() => onUpdate(connection.id)}
             disabled={syncInProgress}
           >
-            {syncInProgress ? "Syncing…" : "Sync now"}
+            {syncInProgress ? "Updating…" : "Update policies"}
           </button>
         )}
       </div>

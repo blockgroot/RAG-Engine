@@ -1,8 +1,8 @@
 """Ingestion job worker (Phase 12).
 
-Claims one queued job at a time and runs the existing, UNCHANGED
-``ingest_source`` pipeline against it — this module only adds durability and
-progress tracking around ingestion, never touches how ingestion itself works.
+Claims one queued job at a time and runs ``ingest_source`` (incremental by
+default) against it — durability and progress tracking only; the pipeline owns
+how pages are fetched and upserted.
 """
 
 from __future__ import annotations
@@ -29,7 +29,8 @@ def run_once() -> queue.IngestionJob | None:
         provider = queue.get_connection_provider(job.connection_id, job.org_id)
         token = get_connection_token(job.org_id, provider)
         adapter = build_source_adapter(provider, token=token)
-        result = ingest_source(adapter, job.org_id)
+        result = ingest_source(adapter, job.org_id, incremental=True)
+        # doc_count = pages written this run (added + updated), not remote total.
         queue.mark_succeeded(job.id, result.documents_ingested)
     except Exception as exc:  # noqa: BLE001 - a job failure must never crash the worker
         queue.mark_failed(job.id, str(exc))
@@ -38,14 +39,7 @@ def run_once() -> queue.IngestionJob | None:
 
 
 def run_forever(*, poll_interval: float = 5.0, reap_interval: int = 60) -> None:
-    """Poll for queued jobs forever, reaping stuck ``running`` jobs periodically.
-
-    Used by ``scripts/run_worker.py`` and by the optional in-API daemon thread
-    (``app/api/main.py``, ``INGEST_WORKER_IN_API``). The API only *enqueues*;
-    this loop claims and runs jobs. A separate process is still the better
-    choice under heavy ingest load; the in-API thread is the simple local
-    default. Stuck ``running`` jobs are reaped periodically.
-    """
+    """Poll for queued jobs forever, reaping stuck ``running`` jobs periodically."""
     import time
 
     last_reap = 0.0

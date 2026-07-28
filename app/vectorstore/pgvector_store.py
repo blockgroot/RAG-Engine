@@ -12,7 +12,9 @@ import numpy as np
 from ..config.settings import DatabaseSettings
 from ..core.exceptions import EmbeddingProviderError, ProviderError
 from ..db.connection import get_connection
-from .base import OrganizationRef, RetrievedChunk, VectorStore
+from datetime import datetime
+
+from .base import OrganizationRef, RetrievedChunk, StoredSourceDocument, VectorStore
 
 
 class PgVectorStore(VectorStore):
@@ -167,3 +169,111 @@ class PgVectorStore(VectorStore):
             )
             for row in rows
         ]
+
+    def list_source_documents(self, org_id: str) -> list[StoredSourceDocument]:
+        with get_connection(self._settings) as conn:
+            rows = conn.execute(
+                """
+                SELECT id::text, source_external_id, title, source_uri, source_last_modified
+                FROM documents
+                WHERE org_id = %s::uuid
+                  AND source_external_id IS NOT NULL
+                """,
+                (org_id,),
+            ).fetchall()
+        return [
+            StoredSourceDocument(
+                document_id=r[0],
+                external_id=r[1],
+                title=r[2],
+                source_uri=r[3],
+                last_modified=r[4],
+            )
+            for r in rows
+        ]
+
+    def upsert_source_document(
+        self,
+        org_id: str,
+        *,
+        external_id: str,
+        title: str,
+        chunks: list[str],
+        embeddings: list[list[float]],
+        source_uri: str | None = None,
+        last_modified: datetime | None = None,
+    ) -> str:
+        if len(chunks) != len(embeddings):
+            raise ProviderError(
+                f"chunks ({len(chunks)}) and embeddings ({len(embeddings)}) "
+                "must be the same length"
+            )
+        if not chunks:
+            raise ProviderError("Cannot add a document with no chunks")
+        if not external_id:
+            raise ProviderError("external_id is required for upsert_source_document")
+
+        with get_connection(self._settings) as conn:
+            # Drop prior copy of this page + legacy URI duplicates (no external id).
+            if source_uri:
+                conn.execute(
+                    """
+                    DELETE FROM documents
+                    WHERE org_id = %s::uuid
+                      AND (
+                        source_external_id = %s
+                        OR (source_uri = %s AND source_external_id IS NULL)
+                      )
+                    """,
+                    (org_id, external_id, source_uri),
+                )
+            else:
+                conn.execute(
+                    """
+                    DELETE FROM documents
+                    WHERE org_id = %s::uuid AND source_external_id = %s
+                    """,
+                    (org_id, external_id),
+                )
+
+            doc_row = conn.execute(
+                """
+                INSERT INTO documents (
+                    org_id, title, source_uri, source_external_id, source_last_modified
+                )
+                VALUES (%s::uuid, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (org_id, title, source_uri, external_id, last_modified),
+            ).fetchone()
+            document_id = doc_row[0]
+
+            rows = [
+                (org_id, document_id, index, content, np.asarray(embedding, dtype=np.float32))
+                for index, (content, embedding) in enumerate(zip(chunks, embeddings))
+            ]
+            conn.cursor().executemany(
+                """
+                INSERT INTO chunks (org_id, document_id, chunk_index, content, embedding)
+                VALUES (%s::uuid, %s, %s, %s, %s)
+                """,
+                rows,
+            )
+
+        return str(document_id)
+
+    def delete_source_documents(self, org_id: str, external_ids: list[str]) -> int:
+        if not external_ids:
+            return 0
+        with get_connection(self._settings) as conn:
+            rows = conn.execute(
+                """
+                DELETE FROM documents
+                WHERE org_id = %s::uuid
+                  AND source_external_id = ANY(%s)
+                RETURNING id
+                """,
+                (org_id, list(external_ids)),
+            ).fetchall()
+        return len(rows)
+

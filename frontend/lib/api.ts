@@ -58,6 +58,16 @@ export interface MemberRecord {
   created_at: string;
 }
 
+export interface SyncChanges {
+  connection_id: string;
+  new_count: number;
+  updated_count: number;
+  removed_count: number;
+  unchanged_count: number;
+  remote_total: number;
+  has_changes: boolean;
+}
+
 export interface ConnectionRecord {
   id: string;
   provider: "notion" | "google" | "github";
@@ -113,6 +123,8 @@ export const api = {
     ),
 
   listConnections: () => request<ConnectionRecord[]>("/admin/connections"),
+  checkConnectionChanges: (connectionId: string) =>
+    request<SyncChanges>(`/admin/connections/${connectionId}/changes`),
   triggerIngest: (connectionId: string) =>
     request<{ job_id: string; status: string }>(`/admin/connections/${connectionId}/ingest`, {
       method: "POST",

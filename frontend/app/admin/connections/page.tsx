@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { ConnectionCard } from "@/components/ConnectionCard";
 import { useMe } from "@/lib/useMe";
-import { api, ConnectionRecord, JobRecord } from "@/lib/api";
+import { api, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
 
 const PROVIDERS: ("notion" | "google" | "github")[] = ["notion", "google", "github"];
 const ACTIVE_STATUSES = new Set(["queued", "running"]);
@@ -25,17 +25,38 @@ export default function ConnectionsPage() {
   const { me, loading } = useMe({ requireAdmin: true });
   const [connections, setConnections] = useState<ConnectionRecord[]>([]);
   const [jobs, setJobs] = useState<JobRecord[]>([]);
+  const [changesById, setChangesById] = useState<Record<string, SyncChanges>>({});
+  const [checking, setChecking] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const prevStatuses = useRef<Record<string, string>>({});
   const loaded = useRef(false);
 
+  const refreshChanges = useCallback(async (list: ConnectionRecord[]) => {
+    setChecking(true);
+    const next: Record<string, SyncChanges> = {};
+    await Promise.all(
+      list.map(async (c) => {
+        try {
+          next[c.id] = await api.checkConnectionChanges(c.id);
+        } catch {
+          // Notion blip — leave prior state; don't block the page.
+        }
+      })
+    );
+    setChangesById(next);
+    setChecking(false);
+  }, []);
+
   useEffect(() => {
     if (!me || loaded.current) return;
     loaded.current = true;
-    api.listConnections().then(setConnections);
+    api.listConnections().then((list) => {
+      setConnections(list);
+      refreshChanges(list);
+    });
     api.listJobs().then(setJobs);
-  }, [me]);
+  }, [me, refreshChanges]);
 
   useEffect(() => {
     if (!me) return;
@@ -51,7 +72,6 @@ export default function ConnectionsPage() {
       }
     }
 
-    // Start polling only when there is (or may be) an active job.
     tick();
     return () => {
       cancelled = true;
@@ -68,31 +88,32 @@ export default function ConnectionsPage() {
         if (curr === "succeeded") {
           const n = job.doc_count;
           setMessage(
-            n != null
-              ? `Sync complete — ${n} document${n === 1 ? "" : "s"} ready.`
-              : "Sync complete."
+            n != null && n > 0
+              ? `Updated ${n} policy page${n === 1 ? "" : "s"}.`
+              : "Policies are already up to date."
           );
           setError(null);
+          refreshChanges(connections);
         } else if (curr === "failed") {
-          setError(job.error || "Sync failed.");
+          setError(job.error || "Update failed.");
           setMessage(null);
         }
       }
       prevStatuses.current[connectionId] = curr;
     }
-  }, [jobs]);
+  }, [jobs, connections, refreshChanges]);
 
-  async function handleIngest(connectionId: string) {
+  async function handleUpdate(connectionId: string) {
     const latest = latestJobByConnection(jobs)[connectionId];
     if (latest && ACTIVE_STATUSES.has(latest.status)) return;
     setError(null);
-    setMessage("Sync started — status will update below.");
+    setMessage("Updating changed policies…");
     try {
       await api.triggerIngest(connectionId);
       const list = await api.listJobs();
       setJobs(list);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not start the sync.");
+      setError(err instanceof Error ? err.message : "Could not start the update.");
       setMessage(null);
     }
   }
@@ -113,23 +134,27 @@ export default function ConnectionsPage() {
         <div>
           <p className="eyebrow">Admin</p>
           <h1>Data sources</h1>
-          <p className="muted">Manage connected workspaces and re-sync when policies change.</p>
+          <p className="muted">
+            Connected workspaces stay in sync — we only refresh pages that changed.
+          </p>
         </div>
         {message && <div className="banner banner-ok">{message}</div>}
         {error && <div className="banner banner-warn">{error}</div>}
         <div className="stack">
-          {PROVIDERS.map((provider) => (
-            <ConnectionCard
-              key={provider}
-              provider={provider}
-              connection={connections.find((c) => c.provider === provider)}
-              lastJob={
-                connections.find((c) => c.provider === provider) &&
-                lastJobs[connections.find((c) => c.provider === provider)!.id]
-              }
-              onIngest={handleIngest}
-            />
-          ))}
+          {PROVIDERS.map((provider) => {
+            const connection = connections.find((c) => c.provider === provider);
+            return (
+              <ConnectionCard
+                key={provider}
+                provider={provider}
+                connection={connection}
+                lastJob={connection ? lastJobs[connection.id] : undefined}
+                changes={connection ? changesById[connection.id] : null}
+                checkingChanges={Boolean(connection) && checking}
+                onUpdate={handleUpdate}
+              />
+            );
+          })}
         </div>
       </main>
     </AppShell>

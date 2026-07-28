@@ -1,12 +1,18 @@
-"""Document ingestion helpers: preprocessing and chunking.
+"""Document ingestion helpers: preprocessing, chunking, and source ingest.
 
 Public API:
-    from app.ingestion import preprocess, chunk_text
-    chunks = chunk_text(preprocess(raw_text))
+    from app.ingestion import preprocess, chunk_text, ingest_source, detect_source_changes
 """
 
 from .preprocessing import preprocess
 from .chunking import chunk_text
-from .pipeline import ingest_source, IngestResult
+from .pipeline import ChangeReport, IngestResult, detect_source_changes, ingest_source
 
-__all__ = ["preprocess", "chunk_text", "ingest_source", "IngestResult"]
+__all__ = [
+    "preprocess",
+    "chunk_text",
+    "ingest_source",
+    "detect_source_changes",
+    "IngestResult",
+    "ChangeReport",
+]
