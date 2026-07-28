@@ -45,7 +45,9 @@ export interface Me {
   has_documents: boolean;
   /** Queued or running ingestion job for this org. */
   sync_in_progress: boolean;
-  /** Safe to open Ask: documents exist and no ingest job is still running. */
+  latest_job_status: string | null;
+  latest_doc_count: number | null;
+  /** Safe to open Ask only after a full ingest job has succeeded. */
   ready_to_ask: boolean;
 }
 

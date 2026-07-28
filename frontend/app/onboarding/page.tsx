@@ -14,17 +14,22 @@ const POLL_MS = 2500;
 function pickDisplayJob(
   jobs: JobRecord[],
   connectionId: string,
-  preferFinishedWhenDocsReady: boolean
+  preferSucceeded: boolean
 ): JobRecord | undefined {
   const mine = jobs
     .filter((j) => j.connection_id === connectionId)
     .sort((a, b) => b.created_at.localeCompare(a.created_at));
-  // Once docs are in the DB, prefer a succeeded job over a leftover queued row
-  // so the UI doesn't look stuck while the wizard already advanced.
-  if (preferFinishedWhenDocsReady) {
+  if (preferSucceeded) {
     return mine.find((j) => j.status === "succeeded") ?? mine[0];
   }
   return mine.find((j) => ACTIVE.has(j.status)) ?? mine[0];
+}
+
+function syncCompleteMessage(docCount: number | null | undefined): string {
+  if (docCount != null) {
+    return `Sync complete for your policy documents (${docCount} synced). You can now ask questions.`;
+  }
+  return "Sync complete for your policy documents. You can now ask questions.";
 }
 
 function OnboardingInner() {
@@ -38,9 +43,7 @@ function OnboardingInner() {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  /** Bumped on Sync click so the poller restarts if it had already stopped. */
   const [pollToken, setPollToken] = useState(0);
-  /** Local mirror so we can advance the wizard without thrashing useMe. */
   const [localMe, setLocalMe] = useState<Me | null>(null);
   const prevJobStatus = useRef<string | null>(null);
   const announcedSuccess = useRef(false);
@@ -59,27 +62,24 @@ function OnboardingInner() {
 
   const activeJob = useMemo(() => {
     if (!notion) return undefined;
-    // Ignore leftover queued/running rows once sync is fully ready.
     if (effectiveMe?.ready_to_ask) return undefined;
     return jobs
       .filter((j) => j.connection_id === notion.id && ACTIVE.has(j.status))
       .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
   }, [jobs, notion, effectiveMe?.ready_to_ask]);
 
-  const syncInProgress = busy || activeJob != null;
+  const syncInProgress = busy || activeJob != null || Boolean(effectiveMe?.sync_in_progress);
 
-  // Sync localMe when session first loads / refresh returns new flags.
   useEffect(() => {
     if (me) setLocalMe(me);
   }, [me]);
 
   useEffect(() => {
     if (searchParams.get("connected")) {
-      setMessage("Notion connected — next, sync your policy pages.");
+      setMessage("Notion connected — next, sync all shared policy pages (one-time setup).");
     }
   }, [searchParams]);
 
-  // One-shot bootstrap of connections + members (do NOT re-run on every me refresh).
   useEffect(() => {
     if (!me || me.role !== "admin" || bootstrapped.current) return;
     bootstrapped.current = true;
@@ -95,7 +95,9 @@ function OnboardingInner() {
         prev.has_documents === fresh.has_documents &&
         prev.has_connection === fresh.has_connection &&
         prev.ready_to_ask === fresh.ready_to_ask &&
-        prev.sync_in_progress === fresh.sync_in_progress
+        prev.sync_in_progress === fresh.sync_in_progress &&
+        prev.latest_job_status === fresh.latest_job_status &&
+        prev.latest_doc_count === fresh.latest_doc_count
       ) {
         return prev;
       }
@@ -103,8 +105,18 @@ function OnboardingInner() {
     });
   }, []);
 
-  // Stable job poller — runs until ready_to_ask (full ingest finished).
-  // Depends on pollToken so a new Sync click restarts polling if needed.
+  const announceReady = useCallback(
+    (docCount: number | null | undefined) => {
+      if (announcedSuccess.current) return;
+      announcedSuccess.current = true;
+      setMessage(syncCompleteMessage(docCount));
+      setError(null);
+      refresh().catch(() => undefined);
+    },
+    [refresh]
+  );
+
+  // Poll until a full sync has succeeded (ready_to_ask). Never unlock mid-ingest.
   useEffect(() => {
     if (!me || me.role !== "admin") return;
     let cancelled = false;
@@ -120,28 +132,16 @@ function OnboardingInner() {
         if (cancelled) return;
         if (fresh) {
           applyMeSnapshot(fresh);
-          // Only celebrate when the job finished — not when the first page lands.
-          if (fresh.ready_to_ask && !announcedSuccess.current) {
-            announcedSuccess.current = true;
+          if (fresh.ready_to_ask) {
             const succeeded = list.find((j) => j.status === "succeeded");
-            const n = succeeded?.doc_count;
-            setMessage(
-              n != null
-                ? `Sync complete — ${n} document${n === 1 ? "" : "s"} ready. You can ask questions now.`
-                : "Sync complete — your policies are ready. You can ask questions now."
-            );
-            setError(null);
-            refresh().catch(() => undefined);
+            announceReady(succeeded?.doc_count ?? fresh.latest_doc_count);
           }
         }
 
-        // Stay on this step until ingest finishes (ready_to_ask).
-        const done = Boolean(fresh?.ready_to_ask);
-        if (!cancelled && !done) {
+        if (!cancelled && !fresh?.ready_to_ask) {
           timer = setTimeout(tick, POLL_MS);
         }
       } catch {
-        // API restart mid-poll → "Failed to fetch"; keep trying quietly.
         if (!cancelled) {
           timer = setTimeout(tick, POLL_MS * 2);
         }
@@ -156,28 +156,25 @@ function OnboardingInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me?.user_id, pollToken]);
 
-  // Banner when an active job transitions to succeeded/failed.
   useEffect(() => {
     if (!displayJob) return;
     const prev = prevJobStatus.current;
     const curr = displayJob.status;
     if (prev && ACTIVE.has(prev) && curr === "succeeded") {
-      announcedSuccess.current = true;
-      const n = displayJob.doc_count;
-      setMessage(
-        n != null
-          ? `Sync complete — ${n} document${n === 1 ? "" : "s"} ready.`
-          : "Sync complete — your policies are ready."
-      );
-      setError(null);
-      api.me().then(applyMeSnapshot).catch(() => undefined);
-      refresh().catch(() => undefined);
+      // Wait for /me.ready_to_ask on the next poll tick — don't unlock on job
+      // status alone if documents haven't committed yet.
+      api.me().then((fresh) => {
+        applyMeSnapshot(fresh);
+        if (fresh.ready_to_ask) {
+          announceReady(displayJob.doc_count ?? fresh.latest_doc_count);
+        }
+      }).catch(() => undefined);
     } else if (prev && ACTIVE.has(prev) && curr === "failed") {
-      setError(displayJob.error || "Sync failed. Try again.");
+      setError(displayJob.error || "Sync failed. Try again — Ask stays locked until sync succeeds.");
       setMessage(null);
     }
     prevJobStatus.current = curr;
-  }, [displayJob, applyMeSnapshot, refresh]);
+  }, [displayJob, applyMeSnapshot, announceReady]);
 
   async function handleIngest() {
     if (!notion || syncInProgress) return;
@@ -185,7 +182,9 @@ function OnboardingInner() {
     setError(null);
     announcedSuccess.current = false;
     setPollToken((n) => n + 1);
-    setMessage("Sync started — this can take a minute. Keep this page open.");
+    setMessage(
+      "Sync started — please wait on this page until every shared policy page is ingested. Ask unlocks only when sync is fully complete."
+    );
     try {
       await api.triggerIngest(notion.id);
       const list = await api.listJobs();
@@ -224,12 +223,17 @@ function OnboardingInner() {
     );
   }
 
-  // Stay on Sync until the ingest job finishes — partial docs must not unlock Ask.
+  // Step 2 until a full succeeded sync — never advance mid-ingest.
   const step: 1 | 2 | 3 = !effectiveMe.has_connection
     ? 1
     : !effectiveMe.ready_to_ask
       ? 2
       : 3;
+
+  const docCount =
+    displayJob?.status === "succeeded"
+      ? displayJob.doc_count
+      : effectiveMe.latest_doc_count;
 
   return (
     <AppShell me={effectiveMe} variant="onboarding">
@@ -240,11 +244,12 @@ function OnboardingInner() {
           </p>
           <h1>Set up your policy portal</h1>
           <p className="muted">
-            Three short steps. Your team can ask questions only after policies are synced.
+            One-time setup. Ask stays locked until every shared policy document is fully synced —
+            answering from a partial sync can be wrong.
           </p>
         </div>
 
-        {message && <div className="banner banner-ok">{message}</div>}
+        {message && !syncInProgress && <div className="banner banner-ok">{message}</div>}
         {error && <div className="banner banner-warn">{error}</div>}
 
         {step === 1 && (
@@ -262,25 +267,46 @@ function OnboardingInner() {
 
         {step === 2 && (
           <section className="card stack">
-            <h2>2. Sync policy documents</h2>
+            <h2>2. Sync all policy documents</h2>
             <p className="muted">
               {notion?.external_workspace_name
                 ? `Connected to “${notion.external_workspace_name}”. `
                 : "Notion is connected. "}
-              Run a sync to pull shared pages into your organization.
+              Start sync and stay on this page until it finishes. We will not open Ask until the
+              full sync succeeds.
             </p>
+
+            {syncInProgress && (
+              <div className="banner banner-wait" role="status" aria-live="polite">
+                <div className="sync-wait-row">
+                  <span className="sync-spinner" aria-hidden />
+                  <div>
+                    <strong>Please wait — syncing all policy documents</strong>
+                    <p className="muted" style={{ margin: "0.35rem 0 0" }}>
+                      This is a one-time setup and can take a few minutes. Keep this page open.
+                      Do not ask questions yet — the portal unlocks only when every shared page
+                      is ingested.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {displayJob && (
               <p className="muted" style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
                 <JobStatusBadge status={displayJob.status} />
-                {displayJob.status === "succeeded" && displayJob.doc_count != null
-                  ? `${displayJob.doc_count} documents synced`
-                  : displayJob.status === "failed"
-                    ? displayJob.error || "Sync failed"
-                    : displayJob.status === "queued"
-                      ? "Queued — waiting for the ingestion worker…"
-                      : "Sync in progress…"}
+                {displayJob.status === "failed"
+                  ? displayJob.error || "Sync failed"
+                  : displayJob.status === "queued"
+                    ? "Queued — starting full sync…"
+                    : displayJob.status === "running"
+                      ? "Ingesting shared policy pages — please wait…"
+                      : displayJob.status === "succeeded"
+                        ? `${displayJob.doc_count ?? "All"} documents synced`
+                        : "Preparing sync…"}
               </p>
             )}
+
             <button
               className="button"
               type="button"
@@ -289,33 +315,46 @@ function OnboardingInner() {
             >
               {syncInProgress
                 ? activeJob?.status === "queued"
-                  ? "Waiting for worker…"
-                  : "Syncing…"
-                : displayJob
-                  ? "Sync again"
-                  : "Start sync"}
+                  ? "Waiting to start…"
+                  : "Syncing all policies…"
+                : displayJob?.status === "failed"
+                  ? "Retry full sync"
+                  : displayJob
+                    ? "Sync again"
+                    : "Start full sync"}
             </button>
             <p className="muted" style={{ fontSize: "0.85rem" }}>
-              Sync runs inside the API server — keep{" "}
-              <code className="mono">uvicorn</code> running until it finishes. Stay on this page;
-              Ask unlocks only after every shared page is ingested.
+              Sync runs in the API server. Leave this page open until you see the completion
+              message — then you can invite your team or go to Ask.
             </p>
           </section>
         )}
 
         {step === 3 && (
           <section className="card stack">
-            <h2>3. Invite your team</h2>
+            <div className="banner banner-ok">
+              <strong>Sync complete for your policy documents</strong>
+              <p style={{ margin: "0.4rem 0 0" }}>
+                {docCount != null
+                  ? `${docCount} document${docCount === 1 ? "" : "s"} are ready. You can now ask questions.`
+                  : "Your policies are ready. You can now ask questions."}
+              </p>
+            </div>
+
+            <button
+              className="button"
+              type="button"
+              onClick={() => router.push("/chat")}
+              disabled={!isSetupComplete(effectiveMe)}
+            >
+              Go to Ask →
+            </button>
+
+            <h2>Invite your team (optional)</h2>
             <p className="muted">
-              Policies are ready. Invite adds them to your org and emails a sign-in link — they
-              only see Ask for your organization.
+              Invite adds them to your org and emails a sign-in link — they only see Ask for your
+              organization.
             </p>
-            {displayJob?.status === "succeeded" && displayJob.doc_count != null && (
-              <div className="banner banner-ok">
-                Last sync brought in {displayJob.doc_count} document
-                {displayJob.doc_count === 1 ? "" : "s"}.
-              </div>
-            )}
             <form onSubmit={handleInvite} className="stack" style={{ maxWidth: "420px" }}>
               <div className="field">
                 <label htmlFor="invite">Work email</label>
@@ -329,7 +368,7 @@ function OnboardingInner() {
                   onChange={(e) => setInviteEmail(e.target.value)}
                 />
               </div>
-              <button className="button" type="submit">
+              <button className="button button-secondary" type="submit">
                 Send invite
               </button>
             </form>
@@ -343,14 +382,6 @@ function OnboardingInner() {
                 ))}
               </ul>
             )}
-            <button
-              className="button button-secondary"
-              type="button"
-              onClick={() => router.push("/chat")}
-              disabled={!isSetupComplete(effectiveMe)}
-            >
-              Go to Ask →
-            </button>
           </section>
         )}
       </main>

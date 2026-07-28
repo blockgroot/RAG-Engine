@@ -20,7 +20,9 @@ function sameMe(a: Me | null, b: Me): boolean {
     a.has_connection === b.has_connection &&
     a.has_documents === b.has_documents &&
     a.sync_in_progress === b.sync_in_progress &&
-    a.ready_to_ask === b.ready_to_ask
+    a.ready_to_ask === b.ready_to_ask &&
+    a.latest_job_status === b.latest_job_status &&
+    a.latest_doc_count === b.latest_doc_count
   );
 }
 
