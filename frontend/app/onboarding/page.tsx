@@ -3,7 +3,6 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
-import { JobStatusBadge } from "@/components/JobStatusBadge";
 import { useMe } from "@/lib/useMe";
 import { api, ConnectionRecord, JobRecord, MemberRecord, Me } from "@/lib/api";
 import { isSetupComplete } from "@/lib/routing";
@@ -27,9 +26,9 @@ function pickDisplayJob(
 
 function syncCompleteMessage(docCount: number | null | undefined): string {
   if (docCount != null) {
-    return `Sync complete for your policy documents (${docCount} synced). You can now ask questions.`;
+    return `Sync complete — ${docCount} policy document${docCount === 1 ? "" : "s"} ready. You can ask questions now.`;
   }
-  return "Sync complete for your policy documents. You can now ask questions.";
+  return "Sync complete — your policies are ready. You can ask questions now.";
 }
 
 function OnboardingInner() {
@@ -76,7 +75,7 @@ function OnboardingInner() {
 
   useEffect(() => {
     if (searchParams.get("connected")) {
-      setMessage("Notion connected — next, sync all shared policy pages (one-time setup).");
+      setMessage("Notion connected. Next: sync your policies.");
     }
   }, [searchParams]);
 
@@ -170,7 +169,7 @@ function OnboardingInner() {
         }
       }).catch(() => undefined);
     } else if (prev && ACTIVE.has(prev) && curr === "failed") {
-      setError(displayJob.error || "Sync failed. Try again — Ask stays locked until sync succeeds.");
+      setError(displayJob.error || "Sync failed. Please try again.");
       setMessage(null);
     }
     prevJobStatus.current = curr;
@@ -182,9 +181,7 @@ function OnboardingInner() {
     setError(null);
     announcedSuccess.current = false;
     setPollToken((n) => n + 1);
-    setMessage(
-      "Sync started — please wait on this page until every shared policy page is ingested. Ask unlocks only when sync is fully complete."
-    );
+    setMessage(null);
     try {
       await api.triggerIngest(notion.id);
       const list = await api.listJobs();
@@ -207,7 +204,7 @@ function OnboardingInner() {
       setMessage(
         invited.dev_link
           ? `Added ${who}. Dev link (console email): ${invited.dev_link}`
-          : `Added ${who} and emailed a sign-in link — they can open it to join Ask.`
+          : `Invite sent to ${who}.`
       );
       api.listMembers().then(setMembers);
     } catch (err) {
@@ -243,10 +240,7 @@ function OnboardingInner() {
             Welcome{effectiveMe.org_name ? ` to ${effectiveMe.org_name}` : ""}
           </p>
           <h1>Set up your policy portal</h1>
-          <p className="muted">
-            One-time setup. Ask stays locked until every shared policy document is fully synced —
-            answering from a partial sync can be wrong.
-          </p>
+          <p className="muted">Connect Notion, sync your policies, then invite your team.</p>
         </div>
 
         {message && !syncInProgress && <div className="banner banner-ok">{message}</div>}
@@ -256,8 +250,7 @@ function OnboardingInner() {
           <section className="card stack">
             <h2>1. Connect Notion</h2>
             <p className="muted">
-              Link the workspace that holds your HR / policy docs. You choose which pages to
-              share with the integration on Notion&rsquo;s consent screen.
+              Connect the workspace that holds your company policies.
             </p>
             <a className="button" href={api.connectUrl("notion")}>
               Connect Notion
@@ -267,13 +260,12 @@ function OnboardingInner() {
 
         {step === 2 && (
           <section className="card stack">
-            <h2>2. Sync all policy documents</h2>
+            <h2>2. Sync policies</h2>
             <p className="muted">
               {notion?.external_workspace_name
                 ? `Connected to “${notion.external_workspace_name}”. `
                 : "Notion is connected. "}
-              Start sync and stay on this page until it finishes. We will not open Ask until the
-              full sync succeeds.
+              Sync all shared policy pages, then wait here until it finishes.
             </p>
 
             {syncInProgress && (
@@ -281,30 +273,17 @@ function OnboardingInner() {
                 <div className="sync-wait-row">
                   <span className="sync-spinner" aria-hidden />
                   <div>
-                    <strong>Please wait — syncing all policy documents</strong>
+                    <strong>Syncing your policies…</strong>
                     <p className="muted" style={{ margin: "0.35rem 0 0" }}>
-                      This is a one-time setup and can take a few minutes. Keep this page open.
-                      Do not ask questions yet — the portal unlocks only when every shared page
-                      is ingested.
+                      This can take a few minutes. Keep this page open until sync completes.
                     </p>
                   </div>
                 </div>
               </div>
             )}
 
-            {displayJob && (
-              <p className="muted" style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                <JobStatusBadge status={displayJob.status} />
-                {displayJob.status === "failed"
-                  ? displayJob.error || "Sync failed"
-                  : displayJob.status === "queued"
-                    ? "Queued — starting full sync…"
-                    : displayJob.status === "running"
-                      ? "Ingesting shared policy pages — please wait…"
-                      : displayJob.status === "succeeded"
-                        ? `${displayJob.doc_count ?? "All"} documents synced`
-                        : "Preparing sync…"}
-              </p>
+            {displayJob?.status === "failed" && (
+              <p className="muted">{displayJob.error || "Sync failed. Please try again."}</p>
             )}
 
             <button
@@ -314,30 +293,24 @@ function OnboardingInner() {
               disabled={syncInProgress || !notion}
             >
               {syncInProgress
-                ? activeJob?.status === "queued"
-                  ? "Waiting to start…"
-                  : "Syncing all policies…"
+                ? "Syncing…"
                 : displayJob?.status === "failed"
-                  ? "Retry full sync"
+                  ? "Try again"
                   : displayJob
                     ? "Sync again"
-                    : "Start full sync"}
+                    : "Start sync"}
             </button>
-            <p className="muted" style={{ fontSize: "0.85rem" }}>
-              Sync runs in the API server. Leave this page open until you see the completion
-              message — then you can invite your team or go to Ask.
-            </p>
           </section>
         )}
 
         {step === 3 && (
           <section className="card stack">
             <div className="banner banner-ok">
-              <strong>Sync complete for your policy documents</strong>
+              <strong>Sync complete</strong>
               <p style={{ margin: "0.4rem 0 0" }}>
                 {docCount != null
-                  ? `${docCount} document${docCount === 1 ? "" : "s"} are ready. You can now ask questions.`
-                  : "Your policies are ready. You can now ask questions."}
+                  ? `${docCount} policy document${docCount === 1 ? "" : "s"} ready. You can ask questions now.`
+                  : "Your policies are ready. You can ask questions now."}
               </p>
             </div>
 
@@ -350,38 +323,37 @@ function OnboardingInner() {
               Go to Ask →
             </button>
 
-            <h2>Invite your team (optional)</h2>
-            <p className="muted">
-              Invite adds them to your org and emails a sign-in link — they only see Ask for your
-              organization.
-            </p>
-            <form onSubmit={handleInvite} className="stack" style={{ maxWidth: "420px" }}>
-              <div className="field">
-                <label htmlFor="invite">Work email</label>
-                <input
-                  id="invite"
-                  className="input"
-                  type="email"
-                  required
-                  placeholder="teammate@company.com"
-                  value={inviteEmail}
-                  onChange={(e) => setInviteEmail(e.target.value)}
-                />
-              </div>
-              <button className="button button-secondary" type="submit">
-                Send invite
-              </button>
-            </form>
-            {members.length > 0 && (
-              <ul className="member-list">
-                {members.map((m) => (
-                  <li key={m.id}>
-                    <span>{m.email}</span>
-                    <span className="badge">{m.role}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <div className="invite-section">
+              <h2>Invite your team</h2>
+              <p className="muted">Optional — send a sign-in link by email.</p>
+              <form onSubmit={handleInvite} className="invite-form">
+                <div className="field">
+                  <label htmlFor="invite">Work email</label>
+                  <input
+                    id="invite"
+                    className="input"
+                    type="email"
+                    required
+                    placeholder="teammate@company.com"
+                    value={inviteEmail}
+                    onChange={(e) => setInviteEmail(e.target.value)}
+                  />
+                </div>
+                <button className="button button-secondary" type="submit">
+                  Send invite
+                </button>
+              </form>
+              {members.length > 0 && (
+                <ul className="member-list">
+                  {members.map((m) => (
+                    <li key={m.id}>
+                      <span>{m.email}</span>
+                      <span className="badge">{m.role}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </section>
         )}
       </main>

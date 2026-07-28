@@ -29,8 +29,8 @@ export default function MembersPage() {
       const who = email.trim().toLowerCase();
       setMessage(
         invited.dev_link
-          ? `Added ${who}. Dev link (console email): ${invited.dev_link}`
-          : `Added ${who} and emailed a sign-in link.`
+          ? `Invite sent to ${who}. Dev link: ${invited.dev_link}`
+          : `Invite sent to ${who}.`
       );
       setEmail("");
       refresh();
@@ -54,7 +54,7 @@ export default function MembersPage() {
           <p className="eyebrow">Admin</p>
           <h1>Team members</h1>
           <p className="muted">
-            Invite adds them to your org and emails a sign-in link. They only get Ask access.
+            Invite teammates by email. They get Ask access for your organization.
           </p>
         </div>
 
@@ -72,7 +72,7 @@ export default function MembersPage() {
             />
           </div>
           <button className="button" type="submit">
-            Invite &amp; email link
+            Send invite
           </button>
         </form>
 
