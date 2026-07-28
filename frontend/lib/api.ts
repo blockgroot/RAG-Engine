@@ -40,6 +40,7 @@ export interface Me {
   org_id: string;
   org_name: string | null;
   role: "admin" | "member";
+  has_documents: boolean;
 }
 
 export interface MemberRecord {

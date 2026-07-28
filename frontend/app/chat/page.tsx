@@ -1,11 +1,14 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { Nav } from "@/components/Nav";
 import { ChatMessageView, Message } from "@/components/ChatMessage";
 import { useMe } from "@/lib/useMe";
 import { streamChat } from "@/lib/sse";
 import { api } from "@/lib/api";
+
+const SYNC_POLL_MS = 4000;
 
 const SUGGESTED_QUESTIONS = [
   "How many days of paid leave do I get?",
@@ -21,6 +24,34 @@ export default function ChatPage() {
   const [busy, setBusy] = useState(false);
   const conversationId = useRef<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
+
+  // Nothing pushes ingestion completion to the client — the gate screen has
+  // to poll /me itself so "sync just finished" turns into "you can ask
+  // questions now" without the user having to manually refresh the page.
+  const [hasDocuments, setHasDocuments] = useState<boolean | null>(null);
+  const [justSynced, setJustSynced] = useState(false);
+
+  useEffect(() => {
+    if (!me) return;
+    setHasDocuments(me.has_documents);
+  }, [me]);
+
+  useEffect(() => {
+    if (hasDocuments !== false) return;
+    let cancelled = false;
+    const interval = setInterval(async () => {
+      const fresh = await api.me().catch(() => null);
+      if (cancelled || !fresh) return;
+      if (fresh.has_documents) {
+        setHasDocuments(true);
+        setJustSynced(true);
+      }
+    }, SYNC_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [hasDocuments]);
 
   async function ensureConversation() {
     if (conversationId.current) return conversationId.current;
@@ -89,10 +120,49 @@ export default function ChatPage() {
     );
   }
 
+  if (me && hasDocuments === false) {
+    return (
+      <>
+        <Nav me={me} />
+        <main className="page">
+          <div className="card stack" style={{ maxWidth: "480px" }}>
+            <h1>Nothing to chat about yet</h1>
+            {me.role === "admin" ? (
+              <>
+                <p className="muted">
+                  Connect a data source and run an ingestion before your team can ask
+                  questions here.
+                </p>
+                <Link href="/admin/connections" className="button">
+                  Connect a data source
+                </Link>
+                <p className="muted" style={{ fontSize: "0.85rem" }}>
+                  This page checks automatically — once a sync finishes, you can ask
+                  questions here right away, no refresh needed.
+                </p>
+              </>
+            ) : (
+              <p className="muted">
+                Your organization hasn&rsquo;t connected any documents yet. Ask an admin
+                to connect a data source in the admin panel. This page will update
+                automatically once that&rsquo;s done.
+              </p>
+            )}
+          </div>
+        </main>
+      </>
+    );
+  }
+
   return (
     <>
       <Nav me={me} />
       <div className="chat-page">
+        {justSynced && (
+          <div className="card" style={{ margin: "1rem 1.5rem 0", borderColor: "var(--provenance-policy)" }}>
+            ✓ Sync complete — you can ask questions now.
+          </div>
+        )}
         {messages.length === 0 ? (
           <div className="chat-empty">
             <h1>Ask a question</h1>
