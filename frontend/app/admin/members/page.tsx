@@ -25,8 +25,13 @@ export default function MembersPage() {
     setError(null);
     setMessage(null);
     try {
-      await api.inviteMember(email.trim().toLowerCase());
-      setMessage(`Invited ${email.trim().toLowerCase()}`);
+      const invited = await api.inviteMember(email.trim().toLowerCase());
+      const who = email.trim().toLowerCase();
+      setMessage(
+        invited.dev_link
+          ? `Added ${who}. Dev link (console email): ${invited.dev_link}`
+          : `Added ${who} and emailed a sign-in link.`
+      );
       setEmail("");
       refresh();
     } catch (err) {
@@ -49,7 +54,7 @@ export default function MembersPage() {
           <p className="eyebrow">Admin</p>
           <h1>Team members</h1>
           <p className="muted">
-            Invite teammates by email. They sign in with a magic link and only get Ask access.
+            Invite adds them to your org and emails a sign-in link. They only get Ask access.
           </p>
         </div>
 
@@ -67,7 +72,7 @@ export default function MembersPage() {
             />
           </div>
           <button className="button" type="submit">
-            Invite member
+            Invite &amp; email link
           </button>
         </form>
 

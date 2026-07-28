@@ -97,10 +97,13 @@ export const api = {
 
   listMembers: () => request<MemberRecord[]>("/admin/members"),
   inviteMember: (email: string) =>
-    request<{ id: string; email: string; role: string }>("/admin/members", {
-      method: "POST",
-      body: JSON.stringify({ email }),
-    }),
+    request<{ id: string; email: string; role: string; dev_link?: string | null }>(
+      "/admin/members",
+      {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      }
+    ),
 
   listConnections: () => request<ConnectionRecord[]>("/admin/connections"),
   triggerIngest: (connectionId: string) =>

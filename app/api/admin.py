@@ -7,9 +7,17 @@ only ever manage their OWN organization's members, connections, and jobs.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
-from ..auth import get_user_by_email, invite_member, list_connections, list_members
+from ..auth import (
+    create_magic_link_token,
+    get_user_by_email,
+    invite_member,
+    list_connections,
+    list_members,
+    send_magic_link_email_safe,
+)
+from ..config.settings import ApiSettings, EmailSettings
 from ..jobs import enqueue, get_job, has_active_job, list_jobs
 from .deps import SessionClaims, require_admin
 
@@ -17,13 +25,17 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 
 
 @router.post("/members")
-def invite(body: dict, session: SessionClaims = Depends(require_admin)):
-    """Directly add a specific email as a member of the caller's org.
+def invite(
+    body: dict,
+    background_tasks: BackgroundTasks,
+    session: SessionClaims = Depends(require_admin),
+    settings: ApiSettings = Depends(ApiSettings.from_env),
+):
+    """Add ``email`` as a member of the caller's org and email a magic link.
 
-    Replaces domain-based auto-join: no domain matching, no eligibility
-    resolution — the admin names the exact email. Rejects an email that
-    already has an account anywhere, same as signup, since an email is bound
-    to its first-resolved org for good.
+    Creates the account immediately (so they appear in Team), then sends the
+    same single-use sign-in link used by signup / login. With
+    ``EMAIL_SENDER=console`` the link is also echoed as ``dev_link``.
     """
     email = (body.get("email") or "").strip().lower()
     if not email or "@" not in email:
@@ -32,7 +44,21 @@ def invite(body: dict, session: SessionClaims = Depends(require_admin)):
         raise HTTPException(status_code=400, detail="An account already exists for this email")
 
     user = invite_member(email, session.org_id)
-    return {"id": user.id, "email": user.email, "role": user.role}
+
+    # Account exists even if outbound email fails — don't roll back the invite.
+    token = create_magic_link_token(email)
+    base = (settings.frontend_url or "").rstrip("/")
+    link = f"{base}/verify?token={token}"
+    email_settings = EmailSettings.from_env()
+    background_tasks.add_task(send_magic_link_email_safe, email, link)
+    dev_link = link if email_settings.sender == "console" else None
+
+    return {
+        "id": user.id,
+        "email": user.email,
+        "role": user.role,
+        "dev_link": dev_link,
+    }
 
 
 @router.get("/members")

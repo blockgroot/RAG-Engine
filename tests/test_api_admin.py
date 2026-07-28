@@ -24,6 +24,7 @@ def _auth_env(monkeypatch):
 
     monkeypatch.setenv("AUTH_ENCRYPTION_KEYS", Fernet.generate_key().decode())
     monkeypatch.setenv("AUTH_JWT_SECRET", "test-jwt-secret-do-not-use-in-prod")
+    monkeypatch.setenv("EMAIL_SENDER", "console")
     monkeypatch.setenv("FRONTEND_URL", "https://portal.example.com")
     monkeypatch.setenv("API_CORS_ORIGINS", "https://portal.example.com")
 

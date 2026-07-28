@@ -200,10 +200,13 @@ function OnboardingInner() {
     e.preventDefault();
     setError(null);
     try {
-      await api.inviteMember(inviteEmail.trim().toLowerCase());
+      const invited = await api.inviteMember(inviteEmail.trim().toLowerCase());
+      const who = inviteEmail.trim().toLowerCase();
       setInviteEmail("");
       setMessage(
-        `Invited ${inviteEmail.trim().toLowerCase()} — they can sign in from the login page.`
+        invited.dev_link
+          ? `Added ${who}. Dev link (console email): ${invited.dev_link}`
+          : `Added ${who} and emailed a sign-in link — they can open it to join Ask.`
       );
       api.listMembers().then(setMembers);
     } catch (err) {
@@ -301,7 +304,7 @@ function OnboardingInner() {
           <section className="card stack">
             <h2>3. Invite your team</h2>
             <p className="muted">
-              Policies are ready. Invite teammates by email — they sign in with a magic link and
+              Policies are ready. Invite adds them to your org and emails a sign-in link — they
               only see Ask for your organization.
             </p>
             {displayJob?.status === "succeeded" && displayJob.doc_count != null && (
