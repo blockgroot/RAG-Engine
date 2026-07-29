@@ -205,7 +205,9 @@ def test_worker_run_once_marks_job_succeeded(_connected_org, monkeypatch):
         documents_ingested = 3
 
     monkeypatch.setattr(worker, "get_live_connection_token", lambda org, provider: "ntn_fake")
-    monkeypatch.setattr(worker, "build_source_adapter", lambda provider, token: object())
+    monkeypatch.setattr(
+        worker, "build_source_adapter", lambda provider, token=None, config=None, **kw: object()
+    )
     monkeypatch.setattr(
         worker, "ingest_source", lambda adapter, org, provider, **kw: FakeIngestResult()
     )
@@ -228,7 +230,9 @@ def test_worker_run_once_marks_job_failed_on_ingestion_error(_connected_org, mon
         raise RuntimeError("ingestion exploded")
 
     monkeypatch.setattr(worker, "get_live_connection_token", lambda org, provider: "ntn_fake")
-    monkeypatch.setattr(worker, "build_source_adapter", lambda provider, token: object())
+    monkeypatch.setattr(
+        worker, "build_source_adapter", lambda provider, token=None, config=None, **kw: object()
+    )
     monkeypatch.setattr(worker, "ingest_source", _boom)
 
     result = worker.run_once()
@@ -236,6 +240,55 @@ def test_worker_run_once_marks_job_failed_on_ingestion_error(_connected_org, mon
     assert result.id == job_id
     assert result.status == "failed"
     assert "ingestion exploded" in result.error
+
+
+@requires_db
+def test_worker_google_job_passes_folder_config(store, org_cleanup, monkeypatch):
+    """A Google job must build the adapter with the connection's folder config."""
+    from app.auth import set_connection_config
+    from app.jobs import worker
+
+    org_id = store.create_organization("Jobs Google Config Org")
+    org_cleanup.append(org_id)
+    connection_id = save_connection(
+        org_id,
+        "google",
+        OAuthTokens(
+            access_token="goog_access",
+            refresh_token=None,
+            expires_at=None,
+            external_workspace_id="drive-user@example.com",
+        ),
+    )
+    set_connection_config(
+        org_id, "google", {"folder_id": "1GoogleFolderId", "folder_name": "Policies"}
+    )
+    job_id = queue.enqueue(org_id, connection_id)
+
+    captured: dict = {}
+
+    def fake_build(provider, *, token=None, config=None, **kwargs):
+        captured["provider"] = provider
+        captured["token"] = token
+        captured["config"] = config
+        return object()
+
+    class FakeIngestResult:
+        documents_ingested = 2
+
+    monkeypatch.setattr(worker, "get_live_connection_token", lambda org, provider: "goog_live")
+    monkeypatch.setattr(worker, "build_source_adapter", fake_build)
+    monkeypatch.setattr(
+        worker, "ingest_source", lambda adapter, org, provider, **kw: FakeIngestResult()
+    )
+
+    result = worker.run_once()
+    assert result is not None
+    assert result.id == job_id
+    assert result.status == "succeeded"
+    assert captured["provider"] == "google"
+    assert captured["token"] == "goog_live"
+    assert captured["config"]["folder_id"] == "1GoogleFolderId"
 
 
 @requires_db

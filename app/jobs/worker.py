@@ -7,7 +7,7 @@ how pages are fetched and upserted.
 
 from __future__ import annotations
 
-from ..auth import get_live_connection_token
+from ..auth import get_connection_config, get_live_connection_token
 from ..ingestion.pipeline import ingest_source
 from ..sources import build_source_adapter
 from . import queue
@@ -28,7 +28,8 @@ def run_once() -> queue.IngestionJob | None:
     try:
         provider = queue.get_connection_provider(job.connection_id, job.org_id)
         token = get_live_connection_token(job.org_id, provider)
-        adapter = build_source_adapter(provider, token=token)
+        config = get_connection_config(job.org_id, provider)
+        adapter = build_source_adapter(provider, token=token, config=config)
         result = ingest_source(adapter, job.org_id, provider=provider, incremental=True)
         # doc_count = pages written this run (added + updated), not remote total.
         queue.mark_succeeded(job.id, result.documents_ingested)

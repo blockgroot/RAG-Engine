@@ -42,6 +42,9 @@ class OAuthConnectionInfo:
     external_workspace_id: str
     external_workspace_name: str | None
     created_at: datetime
+    # Provider-specific ingestion scope (e.g. Google's folder_id/folder_name).
+    # Never secrets — safe to return on the admin connections list.
+    source_config: dict | None = None
 
 
 def save_connection(
@@ -216,7 +219,8 @@ def list_connections(org_id: str) -> list[OAuthConnectionInfo]:
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT id::text, provider, external_workspace_id, "
-            "external_workspace_name, created_at FROM oauth_connections "
+            "external_workspace_name, created_at, source_config "
+            "FROM oauth_connections "
             "WHERE org_id = %s ORDER BY created_at DESC",
             (org_id,),
         ).fetchall()
@@ -227,6 +231,7 @@ def list_connections(org_id: str) -> list[OAuthConnectionInfo]:
             external_workspace_id=r[2],
             external_workspace_name=r[3],
             created_at=r[4],
+            source_config=r[5],
         )
         for r in rows
     ]

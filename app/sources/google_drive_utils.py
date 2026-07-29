@@ -1,22 +1,26 @@
-"""Parse a Google Drive folder URL/ID into the bare folder id (Phase 4 of the
-Google Integration Plan).
+"""Parse / validate a Google Drive folder URL/ID (Phase 4 of the Google
+Integration Plan).
 
 Google Drive has no equivalent of Notion's "whatever's shared with the
 integration" model — a Drive OAuth grant that isn't scoped down to a specific
 folder is both a tenant-isolation risk and broader than Google's OAuth scope
 policy expects. The settled design (see CLAUDE.md / GOOGLE_INTEGRATION_PLAN.md)
 is: the admin pastes a folder URL or raw id into the Sources page, and we parse
-it into a folder id here, once, so both the admin API (Phase 6) and the Drive
-adapter (Phase 5) work from the same normalized id. Kept as a standalone pure
-function (no adapter import) so it has no dependency on the not-yet-built
-``app/sources/google_drive.py`` adapter module.
+it into a folder id here, once, so both the admin API and the Drive adapter
+work from the same normalized id. Kept as a standalone module (no adapter
+import) so URL parsing stays usable without pulling in the full adapter.
 """
 
 from __future__ import annotations
 
 import re
 
-from ..core.exceptions import ConfigurationError
+import httpx
+
+from ..core.exceptions import ConfigurationError, SourceError
+
+_FOLDER_MIME = "application/vnd.google-apps.folder"
+_DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files"
 
 # A Drive folder URL: https://drive.google.com/drive/folders/<id>[/...][?...]
 # or the "switch account" variant with /u/<n>/ before "folders/". Google does
@@ -72,3 +76,62 @@ def extract_drive_folder_id(value: str) -> str:
         "'https://drive.google.com/drive/folders/<id>') or a raw folder id, "
         f"got: {value!r}"
     )
+
+
+def validate_drive_folder(token: str, folder_id: str, *, timeout: float = 15.0) -> dict:
+    """Confirm ``folder_id`` is accessible and is actually a Drive folder.
+
+    Calls ``files.get`` with the admin's live OAuth token so a pasted Doc/Sheet
+    id or an inaccessible folder fails immediately with an actionable message,
+    rather than silently producing an empty ingest later.
+
+    Returns:
+        ``{"folder_id": ..., "folder_name": ...}`` suitable for
+        ``set_connection_config``.
+
+    Raises:
+        ConfigurationError: not a folder, or the id isn't accessible with this
+            token (Drive returns 404 for both missing and invisible files).
+        SourceError: unexpected Drive/HTTP failure.
+    """
+    try:
+        response = httpx.get(
+            f"{_DRIVE_FILES_URL}/{folder_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            params={
+                "fields": "id,name,mimeType",
+                "supportsAllDrives": "true",
+            },
+            timeout=timeout,
+        )
+    except httpx.HTTPError as exc:
+        raise SourceError(
+            f"Google Drive files.get failed for folder {folder_id!r}: {exc}",
+            cause=exc,
+        ) from exc
+
+    if response.status_code == 404:
+        raise ConfigurationError(
+            f"Drive folder {folder_id!r} was not found or is not accessible "
+            "with this Google connection. Share the folder with the connected "
+            "account (or paste a different folder URL)."
+        )
+    if response.status_code >= 400:
+        raise SourceError(
+            f"Google Drive files.get returned HTTP {response.status_code} "
+            f"for folder {folder_id!r}: {response.text}"
+        )
+
+    data = response.json()
+    mime = data.get("mimeType")
+    if mime != _FOLDER_MIME:
+        raise ConfigurationError(
+            f"Expected a Google Drive folder, but {folder_id!r} is "
+            f"{mime!r}. Paste a folder URL (drive.google.com/.../folders/...), "
+            "not a Doc or file link."
+        )
+
+    return {
+        "folder_id": data.get("id") or folder_id,
+        "folder_name": data.get("name") or folder_id,
+    }

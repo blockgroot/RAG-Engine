@@ -1,10 +1,10 @@
 # Google Drive + Google Docs integration — implementation plan
 
 > Branch: `feature/google-integration`, based on `main` @ `876d6f8`.
-> Status: **plan approved, not yet executed.**
-> Companion rulebook: `CLAUDE.md` (§2 architectural decisions, §3 conventions,
-> §4 gotchas, §5 schema, §6 built-vs-pending). **Update CLAUDE.md §2/§3/§4/§5/§6
-> at the end of each phase**, per the project's standing rule.
+> Status: **Phases 1–7 implemented** (provider partition, token refresh,
+> Google OAuth, folder config API, Drive adapter, end-to-end wiring, frontend).
+> Phase 8 live OAuth walkthrough still pending (needs a real internal-use
+> Google Cloud OAuth client). Companion rulebook: `CLAUDE.md`.
 
 ---
 

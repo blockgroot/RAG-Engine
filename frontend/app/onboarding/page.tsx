@@ -10,6 +10,11 @@ import { isSetupComplete } from "@/lib/routing";
 const ACTIVE = new Set(["queued", "running"]);
 const POLL_MS = 2500;
 
+const PROVIDER_LABELS: Record<string, string> = {
+  notion: "Notion",
+  google: "Google Drive",
+};
+
 function pickDisplayJob(
   jobs: JobRecord[],
   connectionId: string,
@@ -44,28 +49,46 @@ function OnboardingInner() {
   const [busy, setBusy] = useState(false);
   const [pollToken, setPollToken] = useState(0);
   const [localMe, setLocalMe] = useState<Me | null>(null);
+  const [folderUrl, setFolderUrl] = useState("");
+  const [savingFolder, setSavingFolder] = useState(false);
   const prevJobStatus = useRef<string | null>(null);
   const announcedSuccess = useRef(false);
   const bootstrapped = useRef(false);
 
   const effectiveMe = localMe ?? me;
 
-  const notion = useMemo(
-    () => connections.find((c) => c.provider === "notion"),
-    [connections]
-  );
+  // Prefer the connection that just completed OAuth; otherwise first connected source.
+  const primary = useMemo(() => {
+    const connectedProvider = searchParams.get("connected");
+    if (connectedProvider) {
+      const match = connections.find((c) => c.provider === connectedProvider);
+      if (match) return match;
+    }
+    return (
+      connections.find((c) => c.provider === "notion" || c.provider === "google") ??
+      connections[0]
+    );
+  }, [connections, searchParams]);
+
+  const providerLabel = primary
+    ? PROVIDER_LABELS[primary.provider] || primary.provider
+    : "source";
+  const needsFolder =
+    primary?.provider === "google" && !primary.source_config?.folder_id;
+  const canSync = Boolean(primary) && !needsFolder;
+
   const displayJob = useMemo(() => {
-    if (!notion) return undefined;
-    return pickDisplayJob(jobs, notion.id, Boolean(effectiveMe?.ready_to_ask));
-  }, [jobs, notion, effectiveMe?.ready_to_ask]);
+    if (!primary) return undefined;
+    return pickDisplayJob(jobs, primary.id, Boolean(effectiveMe?.ready_to_ask));
+  }, [jobs, primary, effectiveMe?.ready_to_ask]);
 
   const activeJob = useMemo(() => {
-    if (!notion) return undefined;
+    if (!primary) return undefined;
     if (effectiveMe?.ready_to_ask) return undefined;
     return jobs
-      .filter((j) => j.connection_id === notion.id && ACTIVE.has(j.status))
+      .filter((j) => j.connection_id === primary.id && ACTIVE.has(j.status))
       .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
-  }, [jobs, notion, effectiveMe?.ready_to_ask]);
+  }, [jobs, primary, effectiveMe?.ready_to_ask]);
 
   const syncInProgress = busy || activeJob != null || Boolean(effectiveMe?.sync_in_progress);
 
@@ -73,11 +96,26 @@ function OnboardingInner() {
     if (me) setLocalMe(me);
   }, [me]);
 
+  // Reconnecting Drive from Sources still lands on /onboarding?connected=…
+  // Send already-setup admins back to Sources instead of the first-run flow.
   useEffect(() => {
-    if (searchParams.get("connected")) {
-      setMessage("Notion connected. Next: sync your policies.");
+    if (!effectiveMe) return;
+    if (searchParams.get("connected") && isSetupComplete(effectiveMe)) {
+      router.replace("/admin/connections");
     }
-  }, [searchParams]);
+  }, [effectiveMe, searchParams, router]);
+
+  useEffect(() => {
+    const connected = searchParams.get("connected");
+    if (!connected) return;
+    if (effectiveMe && isSetupComplete(effectiveMe)) return;
+    const label = PROVIDER_LABELS[connected] || connected;
+    setMessage(
+      connected === "google"
+        ? `${label} connected. Next: choose a Drive folder, then sync.`
+        : `${label} connected. Next: sync your policies.`
+    );
+  }, [searchParams, effectiveMe]);
 
   useEffect(() => {
     if (!me || me.role !== "admin" || bootstrapped.current) return;
@@ -160,8 +198,6 @@ function OnboardingInner() {
     const prev = prevJobStatus.current;
     const curr = displayJob.status;
     if (prev && ACTIVE.has(prev) && curr === "succeeded") {
-      // Wait for /me.ready_to_ask on the next poll tick — don't unlock on job
-      // status alone if documents haven't committed yet.
       api.me().then((fresh) => {
         applyMeSnapshot(fresh);
         if (fresh.ready_to_ask) {
@@ -175,15 +211,36 @@ function OnboardingInner() {
     prevJobStatus.current = curr;
   }, [displayJob, applyMeSnapshot, announceReady]);
 
+  async function handleSaveFolder(e: React.FormEvent) {
+    e.preventDefault();
+    if (!primary || primary.provider !== "google") return;
+    setSavingFolder(true);
+    setError(null);
+    try {
+      const result = await api.setConnectionConfig(primary.id, folderUrl.trim());
+      setConnections((prev) =>
+        prev.map((c) =>
+          c.id === primary.id ? { ...c, source_config: result.config } : c
+        )
+      );
+      setFolderUrl("");
+      setMessage("Folder saved. You can sync your policies now.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save folder.");
+    } finally {
+      setSavingFolder(false);
+    }
+  }
+
   async function handleIngest() {
-    if (!notion || syncInProgress) return;
+    if (!primary || !canSync || syncInProgress) return;
     setBusy(true);
     setError(null);
     announcedSuccess.current = false;
     setPollToken((n) => n + 1);
     setMessage(null);
     try {
-      await api.triggerIngest(notion.id);
+      await api.triggerIngest(primary.id);
       const list = await api.listJobs();
       setJobs(list);
     } catch (err) {
@@ -240,7 +297,9 @@ function OnboardingInner() {
             Welcome{effectiveMe.org_name ? ` to ${effectiveMe.org_name}` : ""}
           </p>
           <h1>Set up your policy portal</h1>
-          <p className="muted">Connect Notion, sync your policies, then invite your team.</p>
+          <p className="muted">
+            Connect Notion or Google Drive, sync your policies, then invite your team.
+          </p>
         </div>
 
         {message && !syncInProgress && <div className="banner banner-ok">{message}</div>}
@@ -248,13 +307,18 @@ function OnboardingInner() {
 
         {step === 1 && (
           <section className="card stack">
-            <h2>1. Connect Notion</h2>
+            <h2>1. Connect a policy source</h2>
             <p className="muted">
-              Connect the workspace that holds your company policies.
+              Connect the workspace or Drive folder that holds your company policies.
             </p>
-            <a className="button" href={api.connectUrl("notion")}>
-              Connect Notion
-            </a>
+            <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
+              <a className="button" href={api.connectUrl("notion")}>
+                Connect Notion
+              </a>
+              <a className="button button-secondary" href={api.connectUrl("google")}>
+                Connect Google Drive
+              </a>
+            </div>
           </section>
         )}
 
@@ -262,11 +326,37 @@ function OnboardingInner() {
           <section className="card stack">
             <h2>2. Sync policies</h2>
             <p className="muted">
-              {notion?.external_workspace_name
-                ? `Connected to “${notion.external_workspace_name}”. `
-                : "Notion is connected. "}
-              Sync all shared policy pages, then wait here until it finishes.
+              {primary?.external_workspace_name
+                ? `Connected to “${primary.external_workspace_name}” (${providerLabel}). `
+                : `${providerLabel} is connected. `}
+              {needsFolder
+                ? "Choose a Drive folder before syncing."
+                : "Sync all shared policy pages, then wait here until it finishes."}
             </p>
+
+            {needsFolder && (
+              <form onSubmit={handleSaveFolder} className="stack">
+                <div className="field">
+                  <label htmlFor="onboarding-folder">Drive folder URL</label>
+                  <input
+                    id="onboarding-folder"
+                    className="input"
+                    type="text"
+                    required
+                    placeholder="https://drive.google.com/drive/folders/…"
+                    value={folderUrl}
+                    onChange={(e) => setFolderUrl(e.target.value)}
+                  />
+                </div>
+                <button
+                  className="button"
+                  type="submit"
+                  disabled={savingFolder || !folderUrl.trim()}
+                >
+                  {savingFolder ? "Saving…" : "Save folder"}
+                </button>
+              </form>
+            )}
 
             {syncInProgress && (
               <div className="banner banner-wait" role="status" aria-live="polite">
@@ -286,20 +376,22 @@ function OnboardingInner() {
               <p className="muted">{displayJob.error || "Sync failed. Please try again."}</p>
             )}
 
-            <button
-              className="button"
-              type="button"
-              onClick={handleIngest}
-              disabled={syncInProgress || !notion}
-            >
-              {syncInProgress
-                ? "Syncing…"
-                : displayJob?.status === "failed"
-                  ? "Try again"
-                  : displayJob
-                    ? "Sync again"
-                    : "Start sync"}
-            </button>
+            {!needsFolder && (
+              <button
+                className="button"
+                type="button"
+                onClick={handleIngest}
+                disabled={syncInProgress || !canSync}
+              >
+                {syncInProgress
+                  ? "Syncing…"
+                  : displayJob?.status === "failed"
+                    ? "Try again"
+                    : displayJob
+                      ? "Sync again"
+                      : "Start sync"}
+              </button>
+            )}
           </section>
         )}
 
