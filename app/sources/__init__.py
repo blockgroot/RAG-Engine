@@ -10,6 +10,7 @@ Public API:
 from .base import SourceAdapter, SourceRef, SourceDocument
 from .notion import NotionAdapter
 from .factory import build_source_adapter
+from .google_drive_utils import extract_drive_folder_id
 
 __all__ = [
     "SourceAdapter",
@@ -17,4 +18,5 @@ __all__ = [
     "SourceDocument",
     "NotionAdapter",
     "build_source_adapter",
+    "extract_drive_folder_id",
 ]

@@ -20,6 +20,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from psycopg.types.json import Json
+
 from ..core.exceptions import ConfigurationError, OAuthReauthRequiredError
 from ..db.connection import get_connection
 from ..security import decrypt, encrypt
@@ -228,3 +230,48 @@ def list_connections(org_id: str) -> list[OAuthConnectionInfo]:
         )
         for r in rows
     ]
+
+
+def set_connection_config(org_id: str, provider: str, config: dict) -> None:
+    """Store this org's provider-specific ingestion scope config.
+
+    Generic on purpose (Google Integration Phase 4): Notion never needs this
+    (an integration token already only sees pages explicitly shared with it),
+    but Google Drive requires the admin to designate an in-scope folder up
+    front, and a future GitHub/Slack adapter will need its own shape (a repo
+    name, a channel list). Rather than one column per provider, this stores
+    whatever dict that provider's admin flow collected as JSONB.
+
+    Requires the ``(org_id, provider)`` connection row to already exist (i.e.
+    the OAuth connect flow has run) — raises ``ConfigurationError`` otherwise,
+    mirroring ``get_connection_token``'s not-connected error, since scope
+    config with no underlying connection is meaningless.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "UPDATE oauth_connections SET source_config = %s "
+            "WHERE org_id = %s AND provider = %s RETURNING id",
+            (Json(config), org_id, provider),
+        ).fetchone()
+    if not row:
+        raise ConfigurationError(
+            f"No {provider!r} connection for this organization. Connect it first."
+        )
+
+
+def get_connection_config(org_id: str, provider: str) -> dict | None:
+    """Return this org's stored provider-specific scope config, or ``None``.
+
+    ``None`` covers both "never connected" and "connected but never
+    configured" — callers that need to distinguish those cases should check
+    ``list_connections``/``get_connection_token`` separately; this is purely
+    about the optional scope config.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT source_config FROM oauth_connections WHERE org_id = %s AND provider = %s",
+            (org_id, provider),
+        ).fetchone()
+    if not row:
+        return None
+    return row[0]

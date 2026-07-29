@@ -17,6 +17,8 @@ from .credentials import (
     get_connection_token,
     get_live_connection_token,
     list_connections,
+    set_connection_config,
+    get_connection_config,
 )
 from .users import (
     User,
@@ -45,6 +47,8 @@ __all__ = [
     "get_connection_token",
     "get_live_connection_token",
     "list_connections",
+    "set_connection_config",
+    "get_connection_config",
     "User",
     "ROLE_ADMIN",
     "ROLE_MEMBER",
