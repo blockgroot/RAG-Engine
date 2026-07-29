@@ -318,6 +318,39 @@ class NotionSettings:
         )
 
 
+DEFAULT_GOOGLE_OAUTH_SCOPES = (
+    "https://www.googleapis.com/auth/drive.readonly "
+    "https://www.googleapis.com/auth/documents.readonly"
+)
+
+
+@dataclass(frozen=True)
+class GoogleSettings:
+    """Configuration for the Google OAuth "Connect" flow (Google Drive/Docs).
+
+    Unlike ``NotionSettings`` there is no legacy static-token path here — per
+    Google Integration Plan decision D3, Google is OAuth-only from the start
+    (no env-var-token fallback), so this is just client credentials + scopes.
+    ``scopes`` is a single space-delimited string (Google's own convention for
+    the ``scope`` request parameter), read as one env var rather than a list so
+    parsing stays in one place (the provider, at request-build time).
+    """
+
+    client_id: str | None
+    client_secret: str | None
+    redirect_uri: str | None
+    scopes: str = DEFAULT_GOOGLE_OAUTH_SCOPES
+
+    @classmethod
+    def from_env(cls) -> "GoogleSettings":
+        return cls(
+            client_id=os.getenv("GOOGLE_CLIENT_ID"),
+            client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
+            redirect_uri=os.getenv("GOOGLE_REDIRECT_URI"),
+            scopes=os.getenv("GOOGLE_OAUTH_SCOPES", DEFAULT_GOOGLE_OAUTH_SCOPES),
+        )
+
+
 @dataclass(frozen=True)
 class MemorySettings:
     """Conversation-memory sizing (Phase 5, revised Phase 8).

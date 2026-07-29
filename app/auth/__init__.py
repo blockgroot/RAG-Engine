@@ -9,11 +9,13 @@ Public API:
 
 from .base import OAuthProvider, OAuthTokens
 from .notion_oauth import NotionOAuthProvider
+from .google_oauth import GoogleOAuthProvider
 from .factory import build_oauth_provider
 from .credentials import (
     OAuthConnectionInfo,
     save_connection,
     get_connection_token,
+    get_live_connection_token,
     list_connections,
 )
 from .users import (
@@ -36,10 +38,12 @@ __all__ = [
     "OAuthProvider",
     "OAuthTokens",
     "NotionOAuthProvider",
+    "GoogleOAuthProvider",
     "build_oauth_provider",
     "OAuthConnectionInfo",
     "save_connection",
     "get_connection_token",
+    "get_live_connection_token",
     "list_connections",
     "User",
     "ROLE_ADMIN",
