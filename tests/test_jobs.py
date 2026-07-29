@@ -204,9 +204,11 @@ def test_worker_run_once_marks_job_succeeded(_connected_org, monkeypatch):
     class FakeIngestResult:
         documents_ingested = 3
 
-    monkeypatch.setattr(worker, "get_connection_token", lambda org, provider: "ntn_fake")
+    monkeypatch.setattr(worker, "get_live_connection_token", lambda org, provider: "ntn_fake")
     monkeypatch.setattr(worker, "build_source_adapter", lambda provider, token: object())
-    monkeypatch.setattr(worker, "ingest_source", lambda adapter, org: FakeIngestResult())
+    monkeypatch.setattr(
+        worker, "ingest_source", lambda adapter, org, provider, **kw: FakeIngestResult()
+    )
 
     result = worker.run_once()
     assert result is not None
@@ -225,7 +227,7 @@ def test_worker_run_once_marks_job_failed_on_ingestion_error(_connected_org, mon
     def _boom(*args, **kwargs):
         raise RuntimeError("ingestion exploded")
 
-    monkeypatch.setattr(worker, "get_connection_token", lambda org, provider: "ntn_fake")
+    monkeypatch.setattr(worker, "get_live_connection_token", lambda org, provider: "ntn_fake")
     monkeypatch.setattr(worker, "build_source_adapter", lambda provider, token: object())
     monkeypatch.setattr(worker, "ingest_source", _boom)
 

@@ -11,7 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from ..auth import (
     create_magic_link_token,
-    get_connection_token,
+    get_live_connection_token,
     get_user_by_email,
     invite_member,
     list_connections,
@@ -97,9 +97,9 @@ def connection_changes(connection_id: str, session: SessionClaims = Depends(requ
     if conn is None:
         raise HTTPException(status_code=404, detail="No such connection for this organization")
 
-    token = get_connection_token(session.org_id, conn.provider)
+    token = get_live_connection_token(session.org_id, conn.provider)
     adapter = build_source_adapter(conn.provider, token=token)
-    report = detect_source_changes(adapter, session.org_id)
+    report = detect_source_changes(adapter, session.org_id, provider=conn.provider)
     return {
         "connection_id": connection_id,
         "new_count": report.new_count,

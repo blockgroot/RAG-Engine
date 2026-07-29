@@ -45,5 +45,17 @@ class OAuthError(ProviderError):
     """Raised when an OAuth authorize/exchange/refresh call fails."""
 
 
+class OAuthReauthRequiredError(OAuthError):
+    """Raised when a token refresh fails terminally (e.g. Google's
+    ``invalid_grant`` from a revoked/expired/rotated-out refresh token).
+
+    Distinct from a generic ``OAuthError`` so callers (the job worker, admin
+    API routes) can surface an actionable "reconnect this provider" message
+    instead of a bare failure, and so they know NOT to retry — a terminal
+    refresh failure will not succeed on a later attempt without the admin
+    re-completing the OAuth consent flow.
+    """
+
+
 class AuthError(ProviderError):
     """Raised when session/magic-link authentication fails or is invalid."""
