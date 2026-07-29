@@ -7,23 +7,38 @@ only ever manage their OWN organization's members, connections, and jobs.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
-from ..auth import get_user_by_email, invite_member, list_connections, list_members
-from ..jobs import enqueue, get_job, list_jobs
+from ..auth import (
+    create_magic_link_token,
+    get_connection_token,
+    get_user_by_email,
+    invite_member,
+    list_connections,
+    list_members,
+    send_magic_link_email_safe,
+)
+from ..config.settings import ApiSettings, EmailSettings
+from ..ingestion import detect_source_changes
+from ..jobs import enqueue, get_job, has_active_job, list_jobs
+from ..sources import build_source_adapter
 from .deps import SessionClaims, require_admin
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
 @router.post("/members")
-def invite(body: dict, session: SessionClaims = Depends(require_admin)):
-    """Directly add a specific email as a member of the caller's org.
+def invite(
+    body: dict,
+    background_tasks: BackgroundTasks,
+    session: SessionClaims = Depends(require_admin),
+    settings: ApiSettings = Depends(ApiSettings.from_env),
+):
+    """Add ``email`` as a member of the caller's org and email a magic link.
 
-    Replaces domain-based auto-join: no domain matching, no eligibility
-    resolution — the admin names the exact email. Rejects an email that
-    already has an account anywhere, same as signup, since an email is bound
-    to its first-resolved org for good.
+    Creates the account immediately (so they appear in Team), then sends the
+    same single-use sign-in link used by signup / login. With
+    ``EMAIL_SENDER=console`` the link is also echoed as ``dev_link``.
     """
     email = (body.get("email") or "").strip().lower()
     if not email or "@" not in email:
@@ -32,7 +47,21 @@ def invite(body: dict, session: SessionClaims = Depends(require_admin)):
         raise HTTPException(status_code=400, detail="An account already exists for this email")
 
     user = invite_member(email, session.org_id)
-    return {"id": user.id, "email": user.email, "role": user.role}
+
+    # Account exists even if outbound email fails — don't roll back the invite.
+    token = create_magic_link_token(email)
+    base = (settings.frontend_url or "").rstrip("/")
+    link = f"{base}/verify?token={token}"
+    email_settings = EmailSettings.from_env()
+    background_tasks.add_task(send_magic_link_email_safe, email, link)
+    dev_link = link if email_settings.sender == "console" else None
+
+    return {
+        "id": user.id,
+        "email": user.email,
+        "role": user.role,
+        "dev_link": dev_link,
+    }
 
 
 @router.get("/members")
@@ -56,6 +85,31 @@ def get_connections(session: SessionClaims = Depends(require_admin)):
     ]
 
 
+
+@router.get("/connections/{connection_id}/changes")
+def connection_changes(connection_id: str, session: SessionClaims = Depends(require_admin)):
+    """Metadata-only: which remote pages are new/updated/removed vs our store.
+
+    Does not download page bodies or embed — safe to call on Sources page load.
+    """
+    owned = {c.id: c for c in list_connections(session.org_id)}
+    conn = owned.get(connection_id)
+    if conn is None:
+        raise HTTPException(status_code=404, detail="No such connection for this organization")
+
+    token = get_connection_token(session.org_id, conn.provider)
+    adapter = build_source_adapter(conn.provider, token=token)
+    report = detect_source_changes(adapter, session.org_id)
+    return {
+        "connection_id": connection_id,
+        "new_count": report.new_count,
+        "updated_count": report.updated_count,
+        "removed_count": report.removed_count,
+        "unchanged_count": report.unchanged_count,
+        "remote_total": report.remote_total,
+        "has_changes": report.has_changes,
+    }
+
 @router.post("/connections/{connection_id}/ingest")
 def trigger_ingest(connection_id: str, session: SessionClaims = Depends(require_admin)):
     # enqueue() doesn't itself check the connection belongs to this org, so
@@ -65,6 +119,12 @@ def trigger_ingest(connection_id: str, session: SessionClaims = Depends(require_
     owned_ids = {c.id for c in list_connections(session.org_id)}
     if connection_id not in owned_ids:
         raise HTTPException(status_code=404, detail="No such connection for this organization")
+
+    if has_active_job(session.org_id, connection_id):
+        raise HTTPException(
+            status_code=409,
+            detail="A sync is already in progress for this connection",
+        )
 
     job_id = enqueue(session.org_id, connection_id)
     return {"job_id": job_id, "status": "queued"}

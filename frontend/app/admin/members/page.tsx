@@ -1,15 +1,16 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Nav } from "@/components/Nav";
+import { AppShell } from "@/components/AppShell";
 import { useMe } from "@/lib/useMe";
 import { api, MemberRecord } from "@/lib/api";
 
 export default function MembersPage() {
-  const { me, loading } = useMe();
+  const { me, loading } = useMe({ requireAdmin: true });
   const [members, setMembers] = useState<MemberRecord[]>([]);
   const [email, setEmail] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
 
   function refresh() {
     api.listMembers().then(setMembers);
@@ -22,8 +23,15 @@ export default function MembersPage() {
   async function handleInvite(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setMessage(null);
     try {
-      await api.inviteMember(email.trim().toLowerCase());
+      const invited = await api.inviteMember(email.trim().toLowerCase());
+      const who = email.trim().toLowerCase();
+      setMessage(
+        invited.dev_link
+          ? `Invite sent to ${who}. Dev link: ${invited.dev_link}`
+          : `Invite sent to ${who}.`
+      );
       setEmail("");
       refresh();
     } catch (err) {
@@ -31,21 +39,28 @@ export default function MembersPage() {
     }
   }
 
-  if (loading) return null;
+  if (loading || !me) {
+    return (
+      <main className="page">
+        <p className="muted">Loading…</p>
+      </main>
+    );
+  }
 
   return (
-    <>
-      <Nav me={me} />
+    <AppShell me={me} variant="admin">
       <main className="page-wide stack">
-        <h1>Team members</h1>
-        <p className="muted">
-          Invite a teammate by their email — they&rsquo;ll be able to request a sign-in link
-          and land directly in your organization. No domain setup needed.
-        </p>
+        <div>
+          <p className="eyebrow">Admin</p>
+          <h1>Team members</h1>
+          <p className="muted">
+            Invite teammates by email. They get Ask access for your organization.
+          </p>
+        </div>
 
         <form onSubmit={handleInvite} className="card stack" style={{ maxWidth: "480px" }}>
           <div className="field">
-            <label htmlFor="email">Email</label>
+            <label htmlFor="email">Work email</label>
             <input
               id="email"
               className="input"
@@ -56,10 +71,13 @@ export default function MembersPage() {
               required
             />
           </div>
-          <button className="button" type="submit">Invite</button>
+          <button className="button" type="submit">
+            Send invite
+          </button>
         </form>
 
-        {error && <p style={{ color: "var(--provenance-none)" }}>{error}</p>}
+        {error && <div className="banner banner-warn">{error}</div>}
+        {message && <div className="banner banner-ok">{message}</div>}
 
         <table>
           <thead>
@@ -73,13 +91,15 @@ export default function MembersPage() {
             {members.map((m) => (
               <tr key={m.id}>
                 <td>{m.email}</td>
-                <td>{m.role}</td>
+                <td>
+                  <span className={`role-chip role-${m.role}`}>{m.role}</span>
+                </td>
                 <td>{new Date(m.created_at).toLocaleDateString()}</td>
               </tr>
             ))}
           </tbody>
         </table>
       </main>
-    </>
+    </AppShell>
   );
 }

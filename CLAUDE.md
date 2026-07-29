@@ -914,9 +914,11 @@ unrelated `NOTION_TOKEN_SYVORA` environmental failure, 2 network deselected).
   citations out or trim context to a token budget.
 - More source adapters, implementing the same `SourceAdapter` interface: Google
   Drive/Docs/Sheets, GitHub, Slack. (Notion done in Phase 4.)
-- Incremental sync: use `SourceAdapter.get_last_modified` to re-ingest only
-  changed documents instead of always re-adding (today each run creates a fresh
-  org / re-adds documents; no dedup or update-in-place yet).
+- Incremental sync is implemented: Sources page change-check
+  (`GET /admin/connections/{id}/changes`) compares Notion `last_edited_time` to
+  stored `documents.source_last_modified`; "Update policies" upserts only
+  new/changed pages (and drops removed ones) via `source_external_id` — no
+  duplicate dumps. First-time onboarding ingest uses the same path.
 - Ingestion adapters: layout-aware extraction from PDF/DOCX/HTML.
 - Users / auth / tenancy management, incl. full multi-tenant Notion OAuth
   (consent screen) once there's an app to host the redirect — client id/secret

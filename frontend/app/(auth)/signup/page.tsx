@@ -28,23 +28,26 @@ export default function SignupPage() {
   }
 
   return (
-    <main className="page">
-      <div className="stack">
-        <div>
-          <h1>Set up your company</h1>
-          <p className="muted">
-            Create your organization and become its first admin — no password to set, we&rsquo;ll
-            email you a sign-in link.
-          </p>
+    <main className="auth-stage">
+      <div className="auth-panel">
+        <div className="brand-lockup">
+          <span className="brand-mark" aria-hidden />
+          <span className="brand" style={{ fontSize: "1.2rem" }}>
+            Policy Portal
+          </span>
         </div>
+        <p className="eyebrow">Get started</p>
+        <h1>Create your organization</h1>
+        <p className="muted">
+          You&rsquo;ll be the admin. Next: connect Notion, sync policies, invite your team.
+        </p>
 
         {submitted ? (
           <div className="card stack">
             <p>Check your inbox for a sign-in link to finish setting up {companyName}.</p>
             {devLink && (
               <p className="muted">
-                Dev mode (no email sender configured):{" "}
-                <a href={devLink}>Continue to sign in</a>
+                Dev mode: <a href={devLink}>Continue to sign in</a>
               </p>
             )}
           </div>
@@ -73,14 +76,18 @@ export default function SignupPage() {
                 onChange={(e) => setEmail(e.target.value)}
               />
             </div>
-            {error && <p className="muted" style={{ color: "var(--provenance-none)" }}>{error}</p>}
+            {error && (
+              <p className="muted" style={{ color: "var(--provenance-none)" }}>
+                {error}
+              </p>
+            )}
             <button className="button" type="submit" disabled={loading}>
               {loading ? "Creating…" : "Create organization"}
             </button>
           </form>
         )}
 
-        <p className="muted">
+        <p className="muted" style={{ marginTop: "1.25rem" }}>
           Already have an account? <Link href="/login">Sign in</Link>
         </p>
       </div>

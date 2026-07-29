@@ -1,9 +1,10 @@
-"""Grounding Gap follow-up: Mode B tone-compliance guard.
+"""Grounding Gap follow-up: Mode A/B tone-compliance guard.
 
 Deterministic unit tests with fakes — no DB, real LLM, or embedding model
 (same convention as test_recovery.py). Proves the pipeline (1) parses the
-``MODE: A|B|C`` tag the prompt now requires, (2) detects Mode B answers that
-still use forbidden meta-language despite the tag, (3) retries exactly once
+``MODE: A|B|C`` tag the prompt now requires, (2) detects Mode A or B answers
+that still use forbidden meta-language despite the tag — including "doc"/
+"docs" shorthand, not just "document"/"documents" — (3) retries exactly once
 with a corrective reminder, (4) degrades gracefully — never loops, never
 fails the request — if the retry still violates or the model omits the tag
 entirely (e.g. any pre-existing fake/test that returns untagged plain text).
@@ -83,6 +84,14 @@ def test_violates_mode_b_tone_false_for_natural_language():
     )
 
 
+def test_violates_mode_b_tone_catches_doc_shorthand_not_just_document():
+    """A live query showed the model routing around the ban by shortening
+    'document(s)' to 'doc(s)' once the longer form was forbidden."""
+    assert _violates_mode_b_tone("The doc mentions employees get 25 days.")
+    assert _violates_mode_b_tone("The docs do not contain that information.")
+    assert _violates_mode_b_tone("According to the doc, leave is 25 days.")
+
+
 # -- pipeline wiring: bounded retry --------------------------------------------
 
 
@@ -131,9 +140,29 @@ def test_generate_gracefully_degrades_if_retry_still_violates():
     assert result.answered is True
 
 
-def test_generate_does_not_retry_mode_a_even_if_it_contained_forbidden_phrase():
-    """The guard is Mode-B-specific; Mode A/C answers are never regenerated."""
-    llm = RecordingLLM(answer="MODE: A\n\nThe document says employees get 25 days. [1]")
+def test_generate_retries_mode_a_when_it_contains_forbidden_phrase():
+    """The guard also covers Mode A now — a fully-supported answer narrating
+    "the document says X" is just as robotic as Mode B doing it."""
+    llm = RecordingLLM(
+        answers=[
+            "MODE: A\n\nThe document says employees get 25 days. [1]",
+            "MODE: A\n\nYou get 25 days of paid annual leave. [1]",
+        ]
+    )
+    store = TopicAwareVectorStore(ORG, [("doc-1", "leave: 25 days annual")])
+    pipeline = _pipeline(llm, store)
+
+    result = pipeline.answer("How many annual leave days do I get?", ORG)
+
+    assert llm.grounded_calls == 2  # exactly one retry
+    assert result.tone_retry_used is True
+    assert result.response_mode == "A"
+    assert "the document says" not in result.answer.lower()
+    assert result.answer == "You get 25 days of paid annual leave. [1]"
+
+
+def test_generate_does_not_retry_mode_a_when_already_compliant():
+    llm = RecordingLLM(answer="MODE: A\n\nYou get 25 days of paid annual leave. [1]")
     store = TopicAwareVectorStore(ORG, [("doc-1", "leave: 25 days annual")])
     pipeline = _pipeline(llm, store)
 

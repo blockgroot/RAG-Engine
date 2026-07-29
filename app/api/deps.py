@@ -17,6 +17,7 @@ from ..agent import build_policy_agent
 from ..agent.policy_agent import PolicyAgent
 from ..auth.session import SessionClaims, decode_session_token
 from ..core.exceptions import AuthError
+from ..db.connection import get_connection
 from ..vectorstore import build_vector_store
 from ..vectorstore.base import VectorStore
 
@@ -42,13 +43,33 @@ def get_vector_store() -> VectorStore:
 
 
 def get_session(request: Request) -> SessionClaims:
+    """Decode the session cookie and confirm the user+org still exist.
+
+    A JWT alone is not enough after a DB wipe / org delete: the signed claims
+    can outlive the rows they point at. Without this check, Connect Notion and
+    other FK-backed writes 500 with foreign-key errors instead of a clean 401.
+    """
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
     try:
-        return decode_session_token(token)
+        claims = decode_session_token(token)
     except AuthError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM users u "
+            "JOIN organizations o ON o.id = u.org_id "
+            "WHERE u.id = %s AND u.org_id = %s",
+            (claims.user_id, claims.org_id),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Session is no longer valid — please sign in again",
+        )
+    return claims
 
 
 def require_admin(session: SessionClaims = Depends(get_session)) -> SessionClaims:

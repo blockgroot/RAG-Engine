@@ -21,7 +21,7 @@ session issuance — there is exactly one way to log in, admin or employee:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from ..auth import (
@@ -34,7 +34,7 @@ from ..auth import (
     create_state,
     get_user_by_email,
     save_connection,
-    send_magic_link_email,
+    send_magic_link_email_safe,
 )
 from ..config.settings import ApiSettings, AuthSettings, EmailSettings
 from ..core.exceptions import AuthError, ConfigurationError, OAuthError
@@ -59,6 +59,7 @@ def _dev_link(link: str) -> str | None:
 @router.post("/signup")
 def signup(
     body: dict,
+    background_tasks: BackgroundTasks,
     settings: ApiSettings = Depends(ApiSettings.from_env),
     store: VectorStore = Depends(get_vector_store),
 ):
@@ -83,13 +84,18 @@ def signup(
     token = create_magic_link_token(email)
     base = (settings.frontend_url or "").rstrip("/")
     link = f"{base}/verify?token={token}"
-    send_magic_link_email(email, link)
+    # Gmail SMTP is multi-second; don't block the signup response on it.
+    background_tasks.add_task(send_magic_link_email_safe, email, link)
 
     return {"message": "Check your email for a sign-in link.", "dev_link": _dev_link(link)}
 
 
 @router.post("/magic-link")
-def request_magic_link(body: dict, settings: ApiSettings = Depends(ApiSettings.from_env)):
+def request_magic_link(
+    body: dict,
+    background_tasks: BackgroundTasks,
+    settings: ApiSettings = Depends(ApiSettings.from_env),
+):
     email = (body.get("email") or "").strip().lower()
     if not email or "@" not in email:
         raise HTTPException(status_code=400, detail="A valid email is required")
@@ -103,7 +109,7 @@ def request_magic_link(body: dict, settings: ApiSettings = Depends(ApiSettings.f
         token = create_magic_link_token(email)
         base = (settings.frontend_url or "").rstrip("/")
         link = f"{base}/verify?token={token}"
-        send_magic_link_email(email, link)
+        background_tasks.add_task(send_magic_link_email_safe, email, link)
         dev_link = _dev_link(link)
 
     # The "message" text is always identical — never reveal whether the email
@@ -138,8 +144,10 @@ def verify_magic_link(token: str, settings: ApiSettings = Depends(ApiSettings.fr
     # reached by a real browser navigation from the emailed link, so the
     # Set-Cookie below is what actually lands the session; the redirect target
     # is purely where the user ends up next.
+    # Land on `/` so the frontend can route by role + setup status
+    # (admin → onboarding if incomplete, else chat; member → chat/waiting).
     base = (settings.frontend_url or "").rstrip("/")
-    response = RedirectResponse(url=f"{base}/chat" if base else "/chat")
+    response = RedirectResponse(url=f"{base}/" if base else "/")
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=session_token,
@@ -184,5 +192,8 @@ def callback(
     except (OAuthError, ConfigurationError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # Resume admin onboarding at the ingest step after OAuth returns.
     base = (settings.frontend_url or "").rstrip("/")
-    return RedirectResponse(url=f"{base}/admin/connections?connected={provider}")
+    return RedirectResponse(
+        url=f"{base}/onboarding?connected={provider}" if base else f"/onboarding?connected={provider}"
+    )

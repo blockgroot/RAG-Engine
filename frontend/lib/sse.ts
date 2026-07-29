@@ -72,7 +72,14 @@ export async function streamChat(
         handlers.onToken(JSON.parse(data) as string);
       } else if (event === "done") {
         handlers.onDone(JSON.parse(data) as ChatDonePayload);
+        return;
+      } else if (event === "error") {
+        const payload = JSON.parse(data) as { message?: string };
+        handlers.onError(payload.message || "Something went wrong.");
+        return;
       }
     }
   }
+
+  handlers.onError("The answer stream ended unexpectedly. Please try again.");
 }

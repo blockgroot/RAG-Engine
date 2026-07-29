@@ -61,6 +61,19 @@ _SELECT_COLUMNS = (
 )
 
 
+def has_active_job(org_id: str, connection_id: str) -> bool:
+    """True if this connection already has a queued or running job."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM ingestion_jobs "
+            "WHERE org_id = %s AND connection_id = %s "
+            "AND status IN ('queued', 'running') "
+            "LIMIT 1",
+            (org_id, connection_id),
+        ).fetchone()
+    return row is not None
+
+
 def enqueue(org_id: str, connection_id: str) -> str:
     """Enqueue an ingestion job for this org's connection. Returns the job id."""
     with get_connection() as conn:

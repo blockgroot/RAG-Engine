@@ -40,7 +40,15 @@ export interface Me {
   org_id: string;
   org_name: string | null;
   role: "admin" | "member";
+  has_connection: boolean;
+  /** True once any document row exists (may still be mid-ingest). */
   has_documents: boolean;
+  /** Queued or running ingestion job for this org. */
+  sync_in_progress: boolean;
+  latest_job_status: string | null;
+  latest_doc_count: number | null;
+  /** Safe to open Ask only after a full ingest job has succeeded. */
+  ready_to_ask: boolean;
 }
 
 export interface MemberRecord {
@@ -48,6 +56,16 @@ export interface MemberRecord {
   email: string;
   role: "admin" | "member";
   created_at: string;
+}
+
+export interface SyncChanges {
+  connection_id: string;
+  new_count: number;
+  updated_count: number;
+  removed_count: number;
+  unchanged_count: number;
+  remote_total: number;
+  has_changes: boolean;
 }
 
 export interface ConnectionRecord {
@@ -96,12 +114,17 @@ export const api = {
 
   listMembers: () => request<MemberRecord[]>("/admin/members"),
   inviteMember: (email: string) =>
-    request<{ id: string; email: string; role: string }>("/admin/members", {
-      method: "POST",
-      body: JSON.stringify({ email }),
-    }),
+    request<{ id: string; email: string; role: string; dev_link?: string | null }>(
+      "/admin/members",
+      {
+        method: "POST",
+        body: JSON.stringify({ email }),
+      }
+    ),
 
   listConnections: () => request<ConnectionRecord[]>("/admin/connections"),
+  checkConnectionChanges: (connectionId: string) =>
+    request<SyncChanges>(`/admin/connections/${connectionId}/changes`),
   triggerIngest: (connectionId: string) =>
     request<{ job_id: string; status: string }>(`/admin/connections/${connectionId}/ingest`, {
       method: "POST",

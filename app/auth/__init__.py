@@ -30,7 +30,7 @@ from .users import (
 from .magic_link import create_magic_link_token, consume_magic_link_token
 from .oauth_state import create_state, consume_state
 from .session import SessionClaims, create_session_token, decode_session_token
-from .email import send_magic_link_email
+from .email import send_magic_link_email, send_magic_link_email_safe
 
 __all__ = [
     "OAuthProvider",
@@ -58,4 +58,5 @@ __all__ = [
     "create_session_token",
     "decode_session_token",
     "send_magic_link_email",
+    "send_magic_link_email_safe",
 ]

@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
-import { Nav } from "@/components/Nav";
+import { AppShell } from "@/components/AppShell";
 import { ChatMessageView, Message } from "@/components/ChatMessage";
 import { useMe } from "@/lib/useMe";
 import { streamChat } from "@/lib/sse";
@@ -18,40 +17,38 @@ const SUGGESTED_QUESTIONS = [
 ];
 
 export default function ChatPage() {
-  const { me, loading } = useMe();
+  const { me, loading, refresh } = useMe();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const conversationId = useRef<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
-  // Nothing pushes ingestion completion to the client — the gate screen has
-  // to poll /me itself so "sync just finished" turns into "you can ask
-  // questions now" without the user having to manually refresh the page.
-  const [hasDocuments, setHasDocuments] = useState<boolean | null>(null);
+  const [readyToAsk, setReadyToAsk] = useState<boolean | null>(null);
   const [justSynced, setJustSynced] = useState(false);
 
   useEffect(() => {
     if (!me) return;
-    setHasDocuments(me.has_documents);
+    setReadyToAsk(me.ready_to_ask);
   }, [me]);
 
   useEffect(() => {
-    if (hasDocuments !== false) return;
+    if (readyToAsk !== false) return;
     let cancelled = false;
     const interval = setInterval(async () => {
       const fresh = await api.me().catch(() => null);
       if (cancelled || !fresh) return;
-      if (fresh.has_documents) {
-        setHasDocuments(true);
+      if (fresh.ready_to_ask) {
+        setReadyToAsk(true);
         setJustSynced(true);
+        refresh();
       }
     }, SYNC_POLL_MS);
     return () => {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [hasDocuments]);
+  }, [readyToAsk, refresh]);
 
   async function ensureConversation() {
     if (conversationId.current) return conversationId.current;
@@ -112,7 +109,7 @@ export default function ChatPage() {
     ask(input.trim());
   }
 
-  if (loading) {
+  if (loading || !me) {
     return (
       <main className="page">
         <p className="muted">Loading…</p>
@@ -120,53 +117,51 @@ export default function ChatPage() {
     );
   }
 
-  if (me && hasDocuments === false) {
+  if (readyToAsk === false) {
     return (
-      <>
-        <Nav me={me} />
+      <AppShell me={me} variant="app">
         <main className="page">
-          <div className="card stack" style={{ maxWidth: "480px" }}>
-            <h1>Nothing to chat about yet</h1>
+          <div className="card stack waiting-card">
+            <p className="eyebrow">Not ready yet</p>
+            <h1>Your organization is still setting up</h1>
             {me.role === "admin" ? (
-              <>
-                <p className="muted">
-                  Connect a data source and run an ingestion before your team can ask
-                  questions here.
-                </p>
-                <Link href="/admin/connections" className="button">
-                  Connect a data source
-                </Link>
-                <p className="muted" style={{ fontSize: "0.85rem" }}>
-                  This page checks automatically — once a sync finishes, you can ask
-                  questions here right away, no refresh needed.
-                </p>
-              </>
+              <p className="muted">
+                Finish connecting Notion and syncing policies in setup. You&rsquo;ll be redirected
+                automatically when documents are ready.
+              </p>
             ) : (
               <p className="muted">
-                Your organization hasn&rsquo;t connected any documents yet. Ask an admin
-                to connect a data source in the admin panel. This page will update
-                automatically once that&rsquo;s done.
+                An admin needs to connect your company&rsquo;s policy documents before you can ask
+                questions. This page updates automatically — no refresh needed.
               </p>
             )}
+            <div className="pulse-dot" aria-hidden />
+            <p className="muted" style={{ fontSize: "0.85rem" }}>
+              {me.sync_in_progress
+                ? "Sync in progress — Ask unlocks when every policy page is ingested…"
+                : "Waiting for a completed policy sync…"}
+            </p>
           </div>
         </main>
-      </>
+      </AppShell>
     );
   }
 
   return (
-    <>
-      <Nav me={me} />
+    <AppShell me={me} variant="app">
       <div className="chat-page">
         {justSynced && (
-          <div className="card" style={{ margin: "1rem 1.5rem 0", borderColor: "var(--provenance-policy)" }}>
-            ✓ Sync complete — you can ask questions now.
+          <div className="banner banner-ok" style={{ margin: "0 0 1rem" }}>
+            Sync complete — all policies are ready. You can ask questions now.
           </div>
         )}
         {messages.length === 0 ? (
           <div className="chat-empty">
             <h1>Ask a question</h1>
-            <p className="muted">Ask anything about your company&rsquo;s policies — leave, benefits, remote work, and more.</p>
+            <p className="muted">
+              Ask anything about your company&rsquo;s policies — leave, benefits, remote work, and
+              more.
+            </p>
             <div className="suggested-chips">
               {SUGGESTED_QUESTIONS.map((q) => (
                 <button key={q} type="button" className="suggested-chip" onClick={() => ask(q)}>
@@ -201,6 +196,6 @@ export default function ChatPage() {
           </button>
         </form>
       </div>
-    </>
+    </AppShell>
   );
 }

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,17 @@ class OrganizationRef:
     id: str
     name: str
     document_count: int = 0
+
+
+@dataclass(frozen=True)
+class StoredSourceDocument:
+    """Sync metadata for one ingested source page (incremental re-sync)."""
+
+    document_id: str
+    external_id: str
+    title: str
+    source_uri: str | None
+    last_modified: datetime | None
 
 
 class VectorStore(ABC):
@@ -94,3 +106,51 @@ class VectorStore(ABC):
         keyword-only hit can flow through the same confidence gate as a vector hit.
         """
         raise NotImplementedError("this vector store does not support keyword search")
+
+    def list_source_documents(self, org_id: str) -> list["StoredSourceDocument"]:
+        """Return ingested source-page metadata for incremental sync.
+
+        Optional: default raises. Rows without ``source_external_id`` are omitted.
+        """
+        raise NotImplementedError("this vector store does not support source document listing")
+
+    def upsert_source_document(
+        self,
+        org_id: str,
+        *,
+        external_id: str,
+        title: str,
+        chunks: list[str],
+        embeddings: list[list[float]],
+        source_uri: str | None = None,
+        last_modified: "datetime | None" = None,
+    ) -> str:
+        """Replace any prior copy of this source page, then store the new chunks.
+
+        Deletes existing rows for the same ``(org_id, external_id)`` and any
+        legacy duplicates that share ``source_uri`` but lack an external id,
+        then inserts one fresh document. Optional capability.
+        """
+        raise NotImplementedError("this vector store does not support source document upsert")
+
+    def acknowledge_source_document(
+        self,
+        org_id: str,
+        *,
+        external_id: str,
+        title: str,
+        source_uri: str | None = None,
+        last_modified: "datetime | None" = None,
+    ) -> str:
+        """Record a source page with no chunks (empty / index-only after fetch).
+
+        Keeps change detection from reporting the same empty page as "new" forever.
+        Optional capability.
+        """
+        raise NotImplementedError(
+            "this vector store does not support source document acknowledge"
+        )
+
+    def delete_source_documents(self, org_id: str, external_ids: list[str]) -> int:
+        """Delete ingested pages by source external id. Returns rows removed."""
+        raise NotImplementedError("this vector store does not support source document delete")
