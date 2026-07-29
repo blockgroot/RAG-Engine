@@ -43,8 +43,10 @@ export default function ConnectionsPage() {
   const prevStatuses = useRef<Record<string, string>>({});
   const loaded = useRef(false);
   const bannerRef = useRef<HTMLDivElement | null>(null);
+  const connectionsRef = useRef<ConnectionRecord[]>([]);
 
   const refreshChanges = useCallback(async (list: ConnectionRecord[]) => {
+    if (list.length === 0) return;
     setChecking(true);
     const next: Record<string, SyncChanges> = {};
     await Promise.all(
@@ -56,9 +58,13 @@ export default function ConnectionsPage() {
         }
       })
     );
-    setChangesById(next);
+    setChangesById((prev) => ({ ...prev, ...next }));
     setChecking(false);
   }, []);
+
+  useEffect(() => {
+    connectionsRef.current = connections;
+  }, [connections]);
 
   useEffect(() => {
     if (!me || loaded.current) return;
@@ -68,6 +74,16 @@ export default function ConnectionsPage() {
       refreshChanges(list);
     });
     api.listJobs().then(setJobs);
+  }, [me, refreshChanges]);
+
+  // Re-check when the tab is focused again (e.g. after editing Notion in another tab).
+  useEffect(() => {
+    if (!me) return;
+    function onFocus() {
+      refreshChanges(connectionsRef.current);
+    }
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   }, [me, refreshChanges]);
 
   // Poll while a job is active. pollToken restarts the loop after "Update policies".
@@ -102,7 +118,6 @@ export default function ConnectionsPage() {
           setMessage(updateCompleteMessage(job.doc_count));
           setError(null);
           refreshChanges(connections);
-          // Bring the completion prompt into view without a manual refresh.
           requestAnimationFrame(() => {
             bannerRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
           });
@@ -148,7 +163,8 @@ export default function ConnectionsPage() {
           <p className="eyebrow">Admin</p>
           <h1>Data sources</h1>
           <p className="muted">
-            Connected workspaces stay in sync — we only refresh pages that changed.
+            We only fetch Notion page timestamps until something actually changed —
+            then you can update just those pages.
           </p>
         </div>
         {message && (
@@ -183,6 +199,9 @@ export default function ConnectionsPage() {
                 changes={connection ? changesById[connection.id] : null}
                 checkingChanges={Boolean(connection) && checking}
                 onUpdate={handleUpdate}
+                onCheckAgain={
+                  connection ? () => refreshChanges(connections) : undefined
+                }
               />
             );
           })}

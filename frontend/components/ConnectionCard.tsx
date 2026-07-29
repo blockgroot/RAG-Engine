@@ -13,6 +13,9 @@ const ACTIVE = new Set(["queued", "running"]);
  * Provider card: connected sources no longer show a blunt "Sync now" that
  * re-dumps everything. Instead we surface a change notice when remote pages
  * differ, and "Update policies" runs an incremental upsert.
+ *
+ * No Notion edit → no Update button (by design). Change check is metadata-only;
+ * the full ingest only runs when the user clicks Update.
  */
 export function ConnectionCard({
   provider,
@@ -21,6 +24,7 @@ export function ConnectionCard({
   changes,
   checkingChanges,
   onUpdate,
+  onCheckAgain,
 }: {
   provider: "notion" | "google" | "github";
   connection: ConnectionRecord | undefined;
@@ -28,6 +32,7 @@ export function ConnectionCard({
   changes?: SyncChanges | null;
   checkingChanges?: boolean;
   onUpdate: (connectionId: string) => void;
+  onCheckAgain?: () => void;
 }) {
   const available = provider === "notion";
   const syncInProgress = lastJob != null && ACTIVE.has(lastJob.status);
@@ -93,14 +98,20 @@ export function ConnectionCard({
             ]
               .filter(Boolean)
               .join(" · ")}
-            
+            . Only those pages will be refreshed — nothing is duplicated.
           </p>
         </div>
       )}
 
       {connection && !needsUpdate && !syncInProgress && !checkingChanges && (
         <p className="muted" style={{ marginTop: "0.75rem" }}>
-          Policies look up to date. We&rsquo;ll let you know when Notion changes.
+          Policies look up to date
+          {changes != null
+            ? ` (${changes.unchanged_count} page${
+                changes.unchanged_count === 1 ? "" : "s"
+              } match Notion)`
+            : ""}
+          . Edit a page in Notion, then check again to update.
         </p>
       )}
 
@@ -110,7 +121,7 @@ export function ConnectionCard({
         </p>
       )}
 
-      <div style={{ marginTop: "1rem", display: "flex", gap: "0.6rem" }}>
+      <div style={{ marginTop: "1rem", display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
         {available && !connection && (
           <a className="button" href={api.connectUrl(provider)}>
             Connect {PROVIDER_LABELS[provider]}
@@ -124,6 +135,16 @@ export function ConnectionCard({
             disabled={syncInProgress}
           >
             {syncInProgress ? "Updating…" : "Update policies"}
+          </button>
+        )}
+        {connection && !syncInProgress && onCheckAgain && (
+          <button
+            className="button-secondary"
+            type="button"
+            onClick={onCheckAgain}
+            disabled={checkingChanges}
+          >
+            {checkingChanges ? "Checking…" : "Check for updates"}
           </button>
         )}
       </div>
