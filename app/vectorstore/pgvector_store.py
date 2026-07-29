@@ -170,24 +170,27 @@ class PgVectorStore(VectorStore):
             for row in rows
         ]
 
-    def list_source_documents(self, org_id: str) -> list[StoredSourceDocument]:
+    def list_source_documents(self, org_id: str, provider: str) -> list[StoredSourceDocument]:
         with get_connection(self._settings) as conn:
             rows = conn.execute(
                 """
-                SELECT id::text, source_external_id, title, source_uri, source_last_modified
+                SELECT id::text, source_provider, source_external_id, title,
+                       source_uri, source_last_modified
                 FROM documents
                 WHERE org_id = %s::uuid
+                  AND source_provider = %s
                   AND source_external_id IS NOT NULL
                 """,
-                (org_id,),
+                (org_id, provider),
             ).fetchall()
         return [
             StoredSourceDocument(
                 document_id=r[0],
-                external_id=r[1],
-                title=r[2],
-                source_uri=r[3],
-                last_modified=r[4],
+                provider=r[1],
+                external_id=r[2],
+                title=r[3],
+                source_uri=r[4],
+                last_modified=r[5],
             )
             for r in rows
         ]
@@ -196,6 +199,7 @@ class PgVectorStore(VectorStore):
         self,
         org_id: str,
         *,
+        provider: str,
         external_id: str,
         title: str,
         chunks: list[str],
@@ -214,37 +218,42 @@ class PgVectorStore(VectorStore):
             raise ProviderError("external_id is required for upsert_source_document")
 
         with get_connection(self._settings) as conn:
-            # Drop prior copy of this page + legacy URI duplicates (no external id).
+            # Drop prior copy of this page + legacy URI duplicates (no external id),
+            # scoped to this provider so another provider's rows are never touched.
             if source_uri:
                 conn.execute(
                     """
                     DELETE FROM documents
                     WHERE org_id = %s::uuid
+                      AND source_provider = %s
                       AND (
                         source_external_id = %s
                         OR (source_uri = %s AND source_external_id IS NULL)
                       )
                     """,
-                    (org_id, external_id, source_uri),
+                    (org_id, provider, external_id, source_uri),
                 )
             else:
                 conn.execute(
                     """
                     DELETE FROM documents
-                    WHERE org_id = %s::uuid AND source_external_id = %s
+                    WHERE org_id = %s::uuid
+                      AND source_provider = %s
+                      AND source_external_id = %s
                     """,
-                    (org_id, external_id),
+                    (org_id, provider, external_id),
                 )
 
             doc_row = conn.execute(
                 """
                 INSERT INTO documents (
-                    org_id, title, source_uri, source_external_id, source_last_modified
+                    org_id, title, source_uri, source_provider, source_external_id,
+                    source_last_modified
                 )
-                VALUES (%s::uuid, %s, %s, %s, %s)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (org_id, title, source_uri, external_id, last_modified),
+                (org_id, title, source_uri, provider, external_id, last_modified),
             ).fetchone()
             document_id = doc_row[0]
 
@@ -266,6 +275,7 @@ class PgVectorStore(VectorStore):
         self,
         org_id: str,
         *,
+        provider: str,
         external_id: str,
         title: str,
         source_uri: str | None = None,
@@ -280,34 +290,38 @@ class PgVectorStore(VectorStore):
                     """
                     DELETE FROM documents
                     WHERE org_id = %s::uuid
+                      AND source_provider = %s
                       AND (
                         source_external_id = %s
                         OR (source_uri = %s AND source_external_id IS NULL)
                       )
                     """,
-                    (org_id, external_id, source_uri),
+                    (org_id, provider, external_id, source_uri),
                 )
             else:
                 conn.execute(
                     """
                     DELETE FROM documents
-                    WHERE org_id = %s::uuid AND source_external_id = %s
+                    WHERE org_id = %s::uuid
+                      AND source_provider = %s
+                      AND source_external_id = %s
                     """,
-                    (org_id, external_id),
+                    (org_id, provider, external_id),
                 )
             row = conn.execute(
                 """
                 INSERT INTO documents (
-                    org_id, title, source_uri, source_external_id, source_last_modified
+                    org_id, title, source_uri, source_provider, source_external_id,
+                    source_last_modified
                 )
-                VALUES (%s::uuid, %s, %s, %s, %s)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (org_id, title, source_uri, external_id, last_modified),
+                (org_id, title, source_uri, provider, external_id, last_modified),
             ).fetchone()
         return str(row[0])
 
-    def delete_source_documents(self, org_id: str, external_ids: list[str]) -> int:
+    def delete_source_documents(self, org_id: str, provider: str, external_ids: list[str]) -> int:
         if not external_ids:
             return 0
         with get_connection(self._settings) as conn:
@@ -315,10 +329,11 @@ class PgVectorStore(VectorStore):
                 """
                 DELETE FROM documents
                 WHERE org_id = %s::uuid
+                  AND source_provider = %s
                   AND source_external_id = ANY(%s)
                 RETURNING id
                 """,
-                (org_id, list(external_ids)),
+                (org_id, provider, list(external_ids)),
             ).fetchall()
         return len(rows)
 

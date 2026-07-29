@@ -31,8 +31,18 @@ CREATE INDEX IF NOT EXISTS idx_documents_org ON documents (org_id);
 -- changed pages instead of appending duplicates.
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_external_id TEXT;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_last_modified TIMESTAMPTZ;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_org_external
-    ON documents (org_id, source_external_id)
+
+-- Sync state is partitioned per provider (Google Integration Phase 1): without
+-- this, a Google sync in an org that also has Notion would compute
+-- removed = every Notion page id and delete the whole Notion corpus. See
+-- CLAUDE.md §4 and GOOGLE_INTEGRATION_PLAN.md §3.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_provider TEXT;
+UPDATE documents SET source_provider = 'notion'
+    WHERE source_provider IS NULL AND source_external_id IS NOT NULL;
+
+DROP INDEX IF EXISTS idx_documents_org_external;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_org_provider_external
+    ON documents (org_id, source_provider, source_external_id)
     WHERE source_external_id IS NOT NULL;
 
 
