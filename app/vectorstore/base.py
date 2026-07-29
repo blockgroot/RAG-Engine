@@ -133,6 +133,24 @@ class VectorStore(ABC):
         """
         raise NotImplementedError("this vector store does not support source document upsert")
 
+    def acknowledge_source_document(
+        self,
+        org_id: str,
+        *,
+        external_id: str,
+        title: str,
+        source_uri: str | None = None,
+        last_modified: "datetime | None" = None,
+    ) -> str:
+        """Record a source page with no chunks (empty / index-only after fetch).
+
+        Keeps change detection from reporting the same empty page as "new" forever.
+        Optional capability.
+        """
+        raise NotImplementedError(
+            "this vector store does not support source document acknowledge"
+        )
+
     def delete_source_documents(self, org_id: str, external_ids: list[str]) -> int:
         """Delete ingested pages by source external id. Returns rows removed."""
         raise NotImplementedError("this vector store does not support source document delete")

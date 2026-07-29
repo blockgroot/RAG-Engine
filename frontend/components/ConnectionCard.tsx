@@ -111,7 +111,7 @@ export function ConnectionCard({
                 changes.unchanged_count === 1 ? "" : "s"
               } match Notion)`
             : ""}
-          . Edit a page in Notion, then check again to update.
+          . Re-sync can be done if any new changes were made to the policies.
         </p>
       )}
 

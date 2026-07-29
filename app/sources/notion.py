@@ -57,6 +57,29 @@ def _page_title(page: dict) -> str:
     return "Untitled"
 
 
+def _exclude_index_parents(pages: list[dict]) -> list[dict]:
+    """Drop folder/index pages whose children are already in the same search result.
+
+    Notion ``search`` returns both a parent (e.g. "Syvora Policies") and each
+    child policy page. We treat ``child_page`` blocks as separate documents and
+    do not inline them into the parent, so the parent usually has *no ingestible
+    text* — yet change detection would forever report it as "1 new". If a listed
+    page is the ``parent.page_id`` of another listed page, skip the parent; the
+    children carry the policy content.
+    """
+    ids = {page["id"] for page in pages}
+    parents_of_listed: set[str] = set()
+    for page in pages:
+        parent = page.get("parent") or {}
+        if parent.get("type") == "page_id":
+            parent_id = parent.get("page_id")
+            if parent_id in ids:
+                parents_of_listed.add(parent_id)
+    if not parents_of_listed:
+        return pages
+    return [page for page in pages if page["id"] not in parents_of_listed]
+
+
 class NotionAdapter(SourceAdapter):
     """Fetches Notion pages the integration has been shared with."""
 
@@ -97,9 +120,11 @@ class NotionAdapter(SourceAdapter):
         from notion_client.helpers import iterate_paginated_api
 
         try:
-            results = iterate_paginated_api(
-                self._client.search,
-                filter={"property": "object", "value": "page"},
+            results = list(
+                iterate_paginated_api(
+                    self._client.search,
+                    filter={"property": "object", "value": "page"},
+                )
             )
             return [
                 SourceRef(
@@ -108,7 +133,7 @@ class NotionAdapter(SourceAdapter):
                     last_modified=_parse_dt(page.get("last_edited_time")),
                     source_uri=page.get("url"),
                 )
-                for page in results
+                for page in _exclude_index_parents(results)
             ]
         except Exception as exc:  # notion APIResponseError / httpx errors
             raise SourceError(f"Notion list_documents failed: {exc}", cause=exc) from exc

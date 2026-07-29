@@ -262,6 +262,51 @@ class PgVectorStore(VectorStore):
 
         return str(document_id)
 
+    def acknowledge_source_document(
+        self,
+        org_id: str,
+        *,
+        external_id: str,
+        title: str,
+        source_uri: str | None = None,
+        last_modified: datetime | None = None,
+    ) -> str:
+        """Upsert metadata-only row so empty pages are not forever "new"."""
+        if not external_id:
+            raise ProviderError("external_id is required for acknowledge_source_document")
+        with get_connection(self._settings) as conn:
+            if source_uri:
+                conn.execute(
+                    """
+                    DELETE FROM documents
+                    WHERE org_id = %s::uuid
+                      AND (
+                        source_external_id = %s
+                        OR (source_uri = %s AND source_external_id IS NULL)
+                      )
+                    """,
+                    (org_id, external_id, source_uri),
+                )
+            else:
+                conn.execute(
+                    """
+                    DELETE FROM documents
+                    WHERE org_id = %s::uuid AND source_external_id = %s
+                    """,
+                    (org_id, external_id),
+                )
+            row = conn.execute(
+                """
+                INSERT INTO documents (
+                    org_id, title, source_uri, source_external_id, source_last_modified
+                )
+                VALUES (%s::uuid, %s, %s, %s, %s)
+                RETURNING id
+                """,
+                (org_id, title, source_uri, external_id, last_modified),
+            ).fetchone()
+        return str(row[0])
+
     def delete_source_documents(self, org_id: str, external_ids: list[str]) -> int:
         if not external_ids:
             return 0

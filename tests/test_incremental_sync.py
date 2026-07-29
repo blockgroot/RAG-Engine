@@ -58,3 +58,30 @@ def test_detect_source_changes_metadata_only():
     assert report.updated_count == 1
     assert report.removed_count == 0
     assert report.has_changes is True
+
+
+def test_exclude_index_parents_drops_folder_pages():
+    """Parent listed alongside its children must not count as a syncable page."""
+    from app.sources.notion import _exclude_index_parents
+
+    parent_id = "parent-1"
+    child_a = "child-a"
+    child_b = "child-b"
+    pages = [
+        {"id": child_a, "parent": {"type": "page_id", "page_id": parent_id}},
+        {"id": parent_id, "parent": {"type": "workspace", "workspace": True}},
+        {"id": child_b, "parent": {"type": "page_id", "page_id": parent_id}},
+        {"id": "lonely", "parent": {"type": "workspace", "workspace": True}},
+    ]
+    kept = _exclude_index_parents(pages)
+    assert {p["id"] for p in kept} == {child_a, child_b, "lonely"}
+
+
+def test_exclude_index_parents_keeps_standalone_pages():
+    from app.sources.notion import _exclude_index_parents
+
+    pages = [
+        {"id": "a", "parent": {"type": "workspace", "workspace": True}},
+        {"id": "b", "parent": {"type": "workspace", "workspace": True}},
+    ]
+    assert _exclude_index_parents(pages) == pages

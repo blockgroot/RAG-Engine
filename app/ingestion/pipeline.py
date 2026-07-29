@@ -178,6 +178,14 @@ def ingest_source(
         clean = preprocess(doc.content)
         chunks = chunk_text(clean, chunking)
         if not chunks:
+            # Remember empty/index pages so change-check does not re-flag them as new.
+            store.acknowledge_source_document(
+                org_id,
+                external_id=doc.external_id,
+                title=doc.title,
+                source_uri=doc.source_uri,
+                last_modified=doc.last_modified or ref.last_modified,
+            )
             skipped += 1
             continue
 
