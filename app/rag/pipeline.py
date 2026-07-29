@@ -89,15 +89,22 @@ _MAX_RECOVERY_QUERY_LEN = 200
 # (see prompts.py rule 5). Case-insensitive; tolerant of extra whitespace.
 _MODE_TAG_RE = re.compile(r"^\s*MODE:\s*([ABC])\s*\n+(.*)", re.IGNORECASE | re.DOTALL)
 
-# Appended to the grounded prompt on the one bounded tone-compliance retry.
-_MODE_B_TONE_RETRY_ADDENDUM = (
-    "\n\nIMPORTANT CORRECTION: your previous answer declared Mode B but used "
-    "forbidden meta-language about sources (e.g. naming 'the document(s)'/"
-    "'handbook' directly, or saying you cannot give a definitive answer). "
-    "Rewrite it: natural conversational voice, no meta-language about sources, "
-    "an empathetic opening if the question expresses distress — following ALL "
-    "of Mode B's rules above exactly. Still begin with 'MODE: B'."
-)
+def _tone_retry_addendum(mode: str) -> str:
+    """Appended to the grounded prompt on the one bounded tone-compliance retry.
+
+    Mode-agnostic (applies to a violating Mode A or Mode B answer) so the
+    correction still names the mode the model actually declared, and asks it
+    to keep declaring the same mode on the corrected answer.
+    """
+    return (
+        f"\n\nIMPORTANT CORRECTION: your previous answer declared Mode {mode} "
+        "but used forbidden meta-language about sources (e.g. naming 'the "
+        "document(s)/doc(s)'/'handbook' directly, saying 'according to the "
+        "document', or saying you cannot give a definitive answer). Rewrite it: "
+        "state facts directly in a natural, conversational voice with no "
+        "meta-language about sources, following ALL of the rules for Mode "
+        f"{mode} above exactly. Still begin with 'MODE: {mode}'."
+    )
 
 
 def _parse_tagged_mode(raw: str) -> tuple[str | None, str]:
@@ -115,7 +122,13 @@ def _parse_tagged_mode(raw: str) -> tuple[str | None, str]:
 
 
 def _violates_mode_b_tone(text: str) -> bool:
-    """True if ``text`` uses any of the meta-language phrases Mode B forbids."""
+    """True if ``text`` uses any forbidden document-meta-language phrase.
+
+    Despite the name (kept for historical/import continuity), this now checks
+    the same phrase list used for BOTH Mode A and Mode B — a fully-supported
+    answer that narrates "the document says X" is just as robotic as Mode B
+    doing it. See ``MODE_B_FORBIDDEN_PHRASES`` in prompts.py.
+    """
     low = text.lower()
     return any(phrase in low for phrase in MODE_B_FORBIDDEN_PHRASES)
 
@@ -147,8 +160,8 @@ class RagResult:
     - ``response_mode``  the ``A``/``B``/``C`` tag the model declared for this
       answer (``None`` if it didn't include a parseable tag — the pipeline
       degrades gracefully rather than failing the request). A diagnostic.
-    - ``tone_retry_used``  ``True`` when a declared Mode B answer used forbidden
-      meta-language and the pipeline retried the generation once with a
+    - ``tone_retry_used``  ``True`` when a declared Mode A or B answer used
+      forbidden meta-language and the pipeline retried the generation once with a
       corrective reminder (see ``RagPipeline._generate``). A diagnostic; never
       loops more than once.
     """
@@ -445,15 +458,16 @@ class RagPipeline:
         mode, text = _parse_tagged_mode(raw)
 
         # Deterministic tone-compliance guard (Grounding Gap follow-up):
-        # instructions alone didn't reliably stop Mode B from using forbidden
-        # meta-language, so a declared-but-violating answer gets exactly ONE
-        # retry with a corrective reminder — mirroring the existing "at most
-        # one recovery attempt" pattern used for retrieval, applied to tone
-        # instead. If the retry still violates, we accept it anyway (graceful
-        # degradation — never loop, never fail the request).
+        # instructions alone didn't reliably stop the model from using
+        # forbidden meta-language, so a declared-but-violating Mode A or B
+        # answer gets exactly ONE retry with a corrective reminder —
+        # mirroring the existing "at most one recovery attempt" pattern used
+        # for retrieval, applied to tone instead. If the retry still
+        # violates, we accept it anyway (graceful degradation — never loop,
+        # never fail the request).
         tone_retry_used = False
-        if mode == "B" and _violates_mode_b_tone(text):
-            retry_raw = self._llm.generate(prompt + _MODE_B_TONE_RETRY_ADDENDUM).strip()
+        if mode in ("A", "B") and _violates_mode_b_tone(text):
+            retry_raw = self._llm.generate(prompt + _tone_retry_addendum(mode)).strip()
             tone_retry_used = True
             retry_mode, retry_text = _parse_tagged_mode(retry_raw)
             mode, text = retry_mode, retry_text

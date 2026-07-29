@@ -34,32 +34,66 @@ that gap without adding a second LLM call to the common path:
    informational question, not a distress one) so the model has more than one
    demonstration to generalize from — a single example risks overfitting to
    that one scenario.
-2. ``RagPipeline._generate`` regex-checks a declared Mode B answer against the
-   same forbidden phrases and retries ONCE with a corrective reminder if it
+2. ``RagPipeline._generate`` regex-checks a declared Mode A or B answer against
+   the same forbidden phrases and retries ONCE with a corrective reminder if it
    still violates them — mirroring the existing "at most one recovery attempt"
    pattern (``RecoverySettings``) already used for retrieval, applied here to
    tone instead. This generalizes to every future question that lands in Mode
-   B, not just the one that surfaced the bug, and costs nothing on the (normal)
-   compliant path.
+   A or B, not just the one that surfaced the bug, and costs nothing on the
+   (normal) compliant path.
+
+Follow-up (still robotic despite the above): a live query showed the model
+routing around the ban by using "doc"/"docs" instead of "document"/"documents"
+(e.g. "the doc mentions...") — the forbidden-phrase list only covered the
+longer form. Fixed by adding "doc"/"docs" variants of every entry, and by
+extending the guard to Mode A too (a fully-supported answer narrating "the
+document says X" is just as robotic as Mode B doing it). Two more asks folded
+in at the same time: (1) fuller, more complete answers when CONTEXT supports
+more than the bare minimum (rule 7), and (2) Mode A's instruction now asks for
+a direct, natural statement of the fact rather than a citation-style "the
+document states" framing — not just Mode B's distress-triggered warmth.
 """
 
 from __future__ import annotations
 
-# Mirrors the "never use meta-language about sources" rule in Mode B below.
-# Shared with pipeline.py's deterministic tone-compliance guard so the same
-# list is never duplicated/out of sync between the instruction and the check.
+# Mirrors the "never use meta-language about sources" rule below. Shared with
+# pipeline.py's deterministic tone-compliance guard so the same list is never
+# duplicated/out of sync between the instruction and the check. Originally
+# Mode-B-only; the guard now also applies to Mode A (see pipeline.py) since a
+# fully-supported answer can be just as robotic if it narrates "the document
+# says X" instead of just stating X. Includes "doc"/"docs" shorthand variants
+# alongside "document"/"documents" — a live query showed the model routing
+# around the ban by using the shorter form once it was forbidden.
 MODE_B_FORBIDDEN_PHRASES = (
     "the document says",
     "the documents say",
+    "the doc says",
+    "the docs say",
     "document says",
     "documents say",
+    "doc says",
+    "docs say",
+    "the document mentions",
+    "the documents mention",
+    "the doc mentions",
+    "the docs mention",
+    "document mentions",
+    "documents mention",
+    "doc mentions",
+    "docs mention",
     "the provided handbook",
     "the documents do not contain",
     "the document does not contain",
+    "the docs do not contain",
+    "the doc does not contain",
     "documents do not contain",
     "document does not contain",
+    "docs do not contain",
+    "doc does not contain",
     "not defined in the document",
     "not defined in the documents",
+    "not defined in the doc",
+    "not defined in the docs",
     "i cannot give a definitive answer",
     "cannot give a definitive answer",
     "does not explicitly answer",
@@ -67,10 +101,18 @@ MODE_B_FORBIDDEN_PHRASES = (
     "doesn't explicitly answer",
     "the documents do not",
     "the document does not",
+    "the docs do not",
+    "the doc does not",
+    "docs do not",
+    "doc does not",
     "not explicitly state",
     "not explicitly mention",
     "does not contain any information about",
     "do not contain any information about",
+    "according to the document",
+    "according to the documents",
+    "according to the doc",
+    "according to the docs",
 )
 
 
@@ -91,9 +133,9 @@ def build_grounded_prompt(question: str, contexts: list[str], fallback_response:
     3. No Supporting Evidence — exact ``fallback_response`` only.
 
     The reply is required to open with a ``MODE: A|B|C`` tag (parsed by
-    ``pipeline._parse_tagged_mode``) so the pipeline can apply the Mode B
-    tone-compliance guard deterministically instead of guessing the mode from
-    the prose.
+    ``pipeline._parse_tagged_mode``) so the pipeline can apply the tone-
+    compliance guard (Modes A and B — see ``MODE_B_FORBIDDEN_PHRASES``)
+    deterministically instead of guessing the mode from the prose.
     """
     numbered = "\n\n".join(f"[{i + 1}] {c.strip()}" for i, c in enumerate(contexts))
 
@@ -106,18 +148,26 @@ def build_grounded_prompt(question: str, contexts: list[str], fallback_response:
         "invent any company-specific claim of any kind.\n"
         "2. Choose exactly one of these three response modes:\n"
         "   A. Explicitly Supported — the CONTEXT directly and explicitly answers "
-        "the QUESTION. Answer concisely from the CONTEXT and cite the context "
-        "numbers you used in square brackets, e.g. [1] or [2]. Do NOT add a "
-        "contact / escalate recommendation in this mode.\n"
+        "the QUESTION. Respond like a knowledgeable colleague stating the fact "
+        "directly (e.g. 'You get 25 days of paid annual leave [1]'), never like a "
+        "document-search tool narrating what it found (e.g. NOT 'According to "
+        "the document, the entitlement is 25 days'). Never use meta-language "
+        "about sources — phrases like 'the document says', 'the doc mentions', "
+        "'according to the document/doc' are FORBIDDEN in this mode too — state "
+        "the fact, then cite the context numbers you used in square brackets, "
+        "e.g. [1] or [2]. Do NOT add a contact / escalate recommendation in this "
+        "mode.\n"
         "   B. Related but Not Explicit — the CONTEXT is about a related topic but "
         "does NOT explicitly answer the QUESTION. Respond like a knowledgeable, "
         "empathetic colleague, never like a document-search tool:\n"
         "      - Never use meta-language about sources — phrases like 'the "
-        "document says', 'the provided handbook', 'the documents do not "
-        "contain', 'not defined in the document', or 'I cannot give a "
-        "definitive answer from the available documents' are FORBIDDEN in this "
-        "mode. Present grounded facts in your own natural voice instead (e.g. "
-        "'You have access to...', 'Your company offers...').\n"
+        "document says', 'the doc mentions', 'the provided handbook', 'the "
+        "documents do not contain', 'not defined in the document', or 'I cannot "
+        "give a definitive answer from the available documents' are FORBIDDEN in "
+        "this mode. This applies no matter how you phrase it — including short "
+        "forms like 'doc'/'docs' instead of 'document'/'documents'. Present "
+        "grounded facts in your own natural voice instead (e.g. 'You have access "
+        "to...', 'Your company offers...').\n"
         "      - If the QUESTION expresses distress, a problem, or asks for help "
         "(not just information), open with one brief, warm, conversational "
         "sentence acknowledging it. This opening sentence is your own supportive "
@@ -172,7 +222,16 @@ def build_grounded_prompt(question: str, contexts: list[str], fallback_response:
         "ONE fact per line (each starting with '- ', citation included), then — "
         "mode B only — an optional closing sentence (supportive note or contact "
         "next step). If there is genuinely only a single fact to report, a plain "
-        "sentence is fine; don't force a list for one item.\n\n"
+        "sentence is fine; don't force a list for one item.\n"
+        "7. COMPLETENESS AND LENGTH (modes A and B) — fully resolve the QUESTION: "
+        "if the CONTEXT contains directly relevant related details beyond the bare "
+        "minimum (eligibility, how to request/claim it, limits, exceptions, related "
+        "entitlements), include them so the user doesn't have to ask a follow-up "
+        "for something already available — don't stop at a one-line fact if more "
+        "relevant, supported detail exists. At the same time, do not pad, repeat "
+        "the same fact twice, add irrelevant CONTEXT, or restate the question. "
+        "Match length to how much the CONTEXT actually supports: a single fact "
+        "gets a short answer, several relevant facts get a fuller one.\n\n"
         "EXAMPLE 1 (mode B, a supportive/distress question with multiple facts — "
         "note the structure: lead-in, bullet list, closing — for tone/format "
         "only, do not reuse these specific facts):\n"
