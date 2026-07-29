@@ -44,7 +44,9 @@ reduces grounding guarantees. Expander failure degrades to the existing path.
 from __future__ import annotations
 
 import json
+import logging
 import re
+import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field, replace
@@ -234,6 +236,11 @@ class RagPipeline:
         # vector search (the Phase 3 behaviour), keeping this pipeline usable
         # without the retrieval upgrades.
         self._retriever = retriever
+        # Handle to the most recently spawned background summary-update thread
+        # (see answer()) — not used by production callers, but lets a test
+        # deterministically wait for it (``pipeline.last_summary_thread.join()``)
+        # instead of racing a fire-and-forget background write.
+        self.last_summary_thread: threading.Thread | None = None
 
     @property
     def memory(self) -> ConversationStore | None:
@@ -274,7 +281,22 @@ class RagPipeline:
             # Remember this turn's policy chunks so the next turn can try to reuse
             # them (web/fallback answers have no reusable policy chunks -> cleared).
             self._remember_retrieval(conversation_id, org_id, result)
-            self._update_running_summary(conversation_id)
+            # Fire-and-forget: this only prepares context for a FUTURE turn, the
+            # current answer never depends on it, so it must never sit on this
+            # turn's response latency. Runs after append_turn (cheap, synchronous)
+            # so the background read of get_turns() always sees this turn included.
+            # Latency measurement (CLAUDE.md perf note): once a conversation passes
+            # MEMORY_RECENT_TURNS, every turn used to pay for a full extra LLM
+            # round-trip here before the caller ever saw an answer — moving it off
+            # the critical path is what actually fixes "fine at first, slow after a
+            # few messages".
+            thread = threading.Thread(
+                target=self._update_running_summary_safe,
+                args=(conversation_id,),
+                daemon=True,
+            )
+            self.last_summary_thread = thread
+            thread.start()
 
         return result
 
@@ -792,6 +814,22 @@ class RagPipeline:
             return  # best-effort; the turn stays verbatim and is folded in next time
         if summary:
             self._memory.set_summary_and_prune(conversation_id, summary, window)
+
+    def _update_running_summary_safe(self, conversation_id: str) -> None:
+        """``_update_running_summary``, but for the background thread ``answer()``
+        fires it on: any exception must never escape (there is no request left
+        to fail), not just the ``LLMProviderError`` the foreground method already
+        handles — e.g. a DB error on ``set_summary_and_prune`` must not crash the
+        thread silently past a useful log line.
+        """
+        try:
+            self._update_running_summary(conversation_id)
+        except Exception:  # noqa: BLE001 - detached background thread, never propagates
+            logging.getLogger(__name__).warning(
+                "Background running-summary update failed for conversation %s",
+                conversation_id,
+                exc_info=True,
+            )
 
     @staticmethod
     def _is_refusal(text: str, fallback_response: str) -> bool:

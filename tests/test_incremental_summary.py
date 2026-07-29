@@ -57,6 +57,12 @@ def _drive(n_turns: int):
     cid = memory.create_conversation(ORG)
     for i in range(n_turns):
         pipe.answer(f"leave question number {i}?", ORG, conversation_id=cid)
+        # The summary update now runs on a background thread (never blocks the
+        # response) — join it before the next turn so each turn's rewrite sees
+        # a fully up-to-date summary/turn list, same as the old synchronous
+        # behavior, and so assertions below aren't racing the background write.
+        if pipe.last_summary_thread is not None:
+            pipe.last_summary_thread.join()
     return llm, memory, cid
 
 

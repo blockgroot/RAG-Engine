@@ -44,6 +44,10 @@ DEFAULT_SOURCE_TYPE = "notion"
 # summary (Phase 8 — no bulk threshold). See app/rag/pipeline.py for the reasoning
 # behind the window size.
 DEFAULT_MEMORY_RECENT_TURNS = 3
+# How long an inactive conversation is kept before a cleanup sweep deletes it
+# (scripts/cleanup_conversations.py). Based on last activity, not creation
+# time, so a long-running but still-active conversation is never deleted.
+DEFAULT_MEMORY_CONVERSATION_RETENTION_DAYS = 90
 
 # Retrieval improvements (Phase 6): contextual retrieval (ingest-time),
 # hybrid search + cross-encoder reranking (query-time). See app/rag/retrieval.py
@@ -327,14 +331,24 @@ class MemorySettings:
       this window is folded into the running summary *incrementally* — one turn per
       update, after every turn — so there is no separate bulk-summarize threshold.
       See ``app/rag/pipeline.py`` (``_update_running_summary``) for the reasoning.
+    - ``conversation_retention_days``  how long an inactive conversation survives
+      before ``scripts/cleanup_conversations.py`` deletes it. Based on the most
+      recent turn's timestamp (falling back to creation time for a conversation
+      with no turns), never plain creation time, so an actively-used conversation
+      is never deleted just because it started long ago.
     """
 
     recent_turns: int = DEFAULT_MEMORY_RECENT_TURNS
+    conversation_retention_days: int = DEFAULT_MEMORY_CONVERSATION_RETENTION_DAYS
 
     @classmethod
     def from_env(cls) -> "MemorySettings":
         return cls(
             recent_turns=int(os.getenv("MEMORY_RECENT_TURNS") or DEFAULT_MEMORY_RECENT_TURNS),
+            conversation_retention_days=int(
+                os.getenv("MEMORY_CONVERSATION_RETENTION_DAYS")
+                or DEFAULT_MEMORY_CONVERSATION_RETENTION_DAYS
+            ),
         )
 
 

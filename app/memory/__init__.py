@@ -9,7 +9,7 @@ Public API:
 """
 
 from .base import ConversationStore, Turn, ConversationContext, RetrievedChunkRecord
-from .pg_store import PgConversationStore
+from .pg_store import PgConversationStore, delete_stale_conversations
 from .factory import build_conversation_store
 
 __all__ = [
@@ -19,4 +19,5 @@ __all__ = [
     "RetrievedChunkRecord",
     "PgConversationStore",
     "build_conversation_store",
+    "delete_stale_conversations",
 ]

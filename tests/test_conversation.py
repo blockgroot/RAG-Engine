@@ -111,12 +111,22 @@ def test_incremental_summary_compresses_old_turns_but_early_context_still_resolv
     )
     cid = memory.create_conversation(org_id)
 
+    def _ask(question: str):
+        result = pipe.answer(question, org_id, conversation_id=cid)
+        # The summary update now runs on a background thread (never blocks the
+        # response). Join it before the next turn so the rewrite/gate below see
+        # a fully up-to-date summary — same effective ordering the old
+        # synchronous call gave, just off the response's critical path.
+        if pipe.last_summary_thread is not None:
+            pipe.last_summary_thread.join()
+        return result
+
     # Turn 1 establishes the "annual leave" topic (25 days, carry over 5).
-    pipe.answer("How many paid annual leave days do full-time employees get?", org_id, conversation_id=cid)
+    _ask("How many paid annual leave days do full-time employees get?")
     # Several more turns; each one beyond the window is incrementally summarized.
-    pipe.answer("How many paid sick days do we get?", org_id, conversation_id=cid)
-    pipe.answer("Can we work remotely?", org_id, conversation_id=cid)
-    pipe.answer("How far in advance must leave be requested?", org_id, conversation_id=cid)
+    _ask("How many paid sick days do we get?")
+    _ask("Can we work remotely?")
+    _ask("How far in advance must leave be requested?")
 
     # The verbatim window stayed capped at 2, and a running summary was built up
     # continuously (turn 1's content now lives only in that summary).
@@ -132,6 +142,10 @@ def test_incremental_summary_compresses_old_turns_but_early_context_still_resolv
     assert r5.resolved_question is not None
     assert "annual leave" in r5.resolved_question.lower() or "carr" in r5.resolved_question.lower(), \
         r5.resolved_question
-    # ...and correctly answered from the full-time doc (5 carry-over days).
+    # ...and correctly answered from the full-time doc (5 carry-over days). The
+    # prompt now asks for a direct, natural statement of the fact rather than a
+    # rigid citation-style one, so the model sometimes spells the number out
+    # ("five") instead of using the digit — both are correct, so accept either.
     assert r5.answered, r5.answer
-    assert "5" in r5.answer, r5.answer
+    answer_lower = r5.answer.lower()
+    assert "5" in answer_lower or "five" in answer_lower, r5.answer

@@ -96,9 +96,14 @@ def test_answerable_question_is_grounded_and_traceable(rag, store, embedder, org
 
     # It answered (did not fall back)...
     assert result.answered, f"expected a grounded answer, got fallback: {result.answer!r}"
-    # ...with the correct facts from Org A's policy.
+    # ...with the correct facts from Org A's policy. The prompt now asks for a
+    # direct, natural statement rather than a rigid citation-style one, so a
+    # small number like the 5-day carry-over is sometimes spelled out
+    # ("five") instead of using the digit — accept either (25 is large enough
+    # that models essentially never spell it out, so that one stays strict).
     assert "25" in result.answer, result.answer
-    assert "5" in result.answer, result.answer
+    answer_lower = result.answer.lower()
+    assert "5" in answer_lower or "five" in answer_lower, result.answer
 
     # Traceability: every source chunk belongs to Org A, and the answer's facts
     # are present in those chunks (so the answer really came from them).

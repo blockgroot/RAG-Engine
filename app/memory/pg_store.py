@@ -169,3 +169,35 @@ class PgConversationStore(ConversationStore):
             )
             for item in items
         ]
+
+
+def delete_stale_conversations(
+    retention_days: int, *, settings: DatabaseSettings | None = None
+) -> int:
+    """Delete conversations inactive for more than ``retention_days``.
+
+    A maintenance sweep across ALL orgs (unlike everything else in this module,
+    which is scoped per-conversation) — intended for a scheduled job
+    (``scripts/cleanup_conversations.py``), not the request path. "Inactive"
+    is based on the most recent turn's timestamp, falling back to the
+    conversation's own creation time only when it has no turns at all — so a
+    conversation that started long ago but is still being used today is never
+    deleted just because of its age. Deleting the ``conversations`` row
+    cascades to its turns and its last-retrieval row (schema.sql FKs), so
+    nothing else needs to be cleaned up separately. Returns the number of
+    conversations deleted.
+    """
+    with get_connection(settings) as conn:
+        rows = conn.execute(
+            """
+            DELETE FROM conversations c
+            WHERE COALESCE(
+                (SELECT MAX(ct.created_at) FROM conversation_turns ct
+                 WHERE ct.conversation_id = c.id),
+                c.created_at
+            ) < now() - make_interval(days => %s)
+            RETURNING c.id
+            """,
+            (retention_days,),
+        ).fetchall()
+    return len(rows)

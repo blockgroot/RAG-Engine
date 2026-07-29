@@ -377,6 +377,26 @@ their policy documents; their employees ask questions and get answers grounded i
   deliberate given this is a low-risk internal tool with an already-hardened cookie
   (httpOnly+Secure+SameSite=Lax) and no refresh-token flow; revisit with a proper
   refresh mechanism if the risk profile changes.
+- **Conversations are still stored in Postgres, not in-process memory — a
+  scheduled cleanup job bounds growth instead.** In-memory conversation state
+  was considered (and rejected) to reduce "unnecessary DB calls": it would
+  break on every process restart (including `uvicorn --reload` during dev),
+  and would silently lose conversation continuity across multiple worker
+  processes, since each has its own separate memory — Postgres is what makes
+  neither of those matter. It also wouldn't have fixed the actual latency
+  complaint that prompted the question — that turned out to be the
+  summarization LLM call blocking the response (see the background-thread fix
+  above), not the (single-digit-ms, pooled) DB writes. Instead,
+  `scripts/cleanup_conversations.py` deletes conversations inactive past
+  `MEMORY_CONVERSATION_RETENTION_DAYS` (default 90) —
+  `app/memory/pg_store.py::delete_stale_conversations` bases "inactive" on the
+  most recent turn's timestamp (falling back to creation time only when a
+  conversation has zero turns), never plain creation time, so a long-running
+  but still-active conversation is never deleted just because it started long
+  ago. Deleting a `conversations` row cascades to its turns and
+  last-retrieval row (existing FKs) — nothing else to clean up. Run via
+  `--once` from external cron/systemd/k8s, or as its own long-lived sweep loop
+  (same shape as `scripts/run_worker.py`) — no new infra either way.
 
 ## 3. Folder / file structure convention
 
@@ -440,7 +460,10 @@ evaluation/     # P7 golden-set eval (peer to scripts/tests). golden_set.py (cas
 scripts/        # entrypoints: verify_providers.py, init_db.py, demo_rag.py, ingest_notion.py
                 #   (P9: --org/--token per-org ingestion), cli.py (P9: the single
                 #   interactive chat), compare_retrieval.py + demo_phase8.py (before/after
-                #   demos), run_worker.py (P12: long-lived ingestion job worker process).
+                #   demos), run_worker.py (P12: long-lived ingestion job worker process),
+                #   cleanup_conversations.py (deletes conversations inactive past
+                #   MEMORY_CONVERSATION_RETENTION_DAYS; --once for cron or a long-lived
+                #   sweep loop, same shape as run_worker.py).
                 #   cli.py calls the PolicyAgent (P7); logic lives only in app/agent.
                 #   (P9 retired ask.py + chat.py — cli.py replaces both.)
 frontend/       # P14: Next.js 15 App Router portal, separate app calling app/api/
@@ -534,6 +557,25 @@ tests/          # pytest; isolation (P2), grounding (P3), conversation+websearch
   on the next turn (a small bounded backlog, never the full history). The running
   summary preserves concrete facts a later turn might reference. Tune the window via
   `MEMORY_RECENT_TURNS`.
+- **The summary update runs on a background thread, off the response's critical
+  path (perf fix, post-Phase-14).** It used to run synchronously inside
+  `RagPipeline.answer()` *before* returning — so every turn past `MEMORY_RECENT_TURNS`
+  paid for a full extra LLM round-trip before the user ever saw an answer (this
+  is what made conversations feel "fine at first, slow after a few messages").
+  Since the update only prepares context for a *future* turn — the current
+  answer never depends on it — `answer()` now spawns it as a daemon thread
+  (`_update_running_summary_safe`) right after the cheap synchronous
+  `append_turn`/`_remember_retrieval` writes, and returns immediately without
+  waiting for it. Tradeoff: this is now *eventually consistent* — if a user
+  sends a very fast follow-up before the previous turn's background fold
+  finishes, that turn's rewrite may read a summary that's one update behind.
+  Accepted because the feature was already best-effort/eventually-consistent
+  (an LLM error already skips a fold and catches up next turn); the previous-N
+  verbatim turns (unaffected by this) are what most follow-ups actually need
+  anyway. Tests that assert on `get_summary`/`get_turns` right after `answer()`
+  join `pipeline.last_summary_thread` first (a test-only handle) instead of
+  racing the background write — see `test_incremental_summary.py` /
+  `test_conversation.py`.
 - **Retrieval-reuse threshold reasoning (Phase 8) — 0.72, and why cosine can't do
   better here.** Measured on BGE-M3 (query-vs-chunk cosine, same modality as the
   §-below gate bands): a legitimate *same-chunk* follow-up ("...and how many of
