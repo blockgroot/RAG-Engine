@@ -15,6 +15,7 @@ from app.config.settings import MemorySettings, ReuseSettings
 from app.ingestion import chunk_text, preprocess
 from app.llm import build_llm_provider
 from app.rag.pipeline import RagPipeline
+from app.rag.summary_fold import wait_for_pending_summary_folds
 from .conftest import requires_db, requires_llm
 
 # Two distinct documents so full-time vs part-time leave are separate chunks and
@@ -117,6 +118,9 @@ def test_incremental_summary_compresses_old_turns_but_early_context_still_resolv
     pipe.answer("How many paid sick days do we get?", org_id, conversation_id=cid)
     pipe.answer("Can we work remotely?", org_id, conversation_id=cid)
     pipe.answer("How far in advance must leave be requested?", org_id, conversation_id=cid)
+
+    # Phase 15: folds are deferred — drain before asserting the summary is set.
+    wait_for_pending_summary_folds(timeout=60.0)
 
     # The verbatim window stayed capped at 2, and a running summary was built up
     # continuously (turn 1's content now lives only in that summary).

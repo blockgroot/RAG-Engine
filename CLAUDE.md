@@ -181,6 +181,22 @@ their policy documents; their employees ask questions and get answers grounded i
   uses `set_summary_and_prune` on the same `conversations.summary` +
   `conversation_turns` tables. Summarization stays best-effort (skipped on LLM
   error; the turn is folded in on the next turn instead).
+- **Summary fold runs off the critical path (Phase 15, `app/rag/summary_fold.py`).**
+  `_update_running_summary` is pure bookkeeping after the answer is already
+  decided — nothing in `RagResult` depends on it — yet it used to run
+  synchronously inside `answer()` before return, so every conversational turn
+  past the verbatim window paid a full LLM round-trip before the caller (and
+  any SSE/CLI stream) saw a character. It is now scheduled on a single-worker
+  background executor; `answer()` returns immediately. **Barrier property
+  (documented, not implicit):** `wait_for_conversation_fold(conversation_id)`
+  waits on `_pending[conversation_id]` — that conversation's own outstanding
+  fold Future — *not* on the shared executor's queue state in general and not
+  on other conversations' folds. (Single-worker FIFO can still delay when that
+  Future *runs* if another conversation's fold was queued earlier; that is
+  scheduler ordering, not barrier keying.) Drain on API/CLI/test shutdown so a
+  mid-exit drop is unlikely without a durable job queue. Measured live: turn-4
+  answer returned in ~1.5s while the fold itself took ~1.7s in the background
+  (before: user waited for both).
 - **Retrieval is reused across turns when the previous chunks still cover the
   follow-up — a cheap, deterministic, NON-LLM check before retrieval (Phase 8,
   `RagPipeline._try_reuse`).** On a follow-up, after the query-rewrite, the
@@ -558,6 +574,13 @@ tests/          # pytest; isolation (P2), grounding (P3), conversation+websearch
   on the next turn (a small bounded backlog, never the full history). The running
   summary preserves concrete facts a later turn might reference. Tune the window via
   `MEMORY_RECENT_TURNS`.
+- **Phase 15 summary-fold barrier is per-conversation, not global.**
+  `wait_for_conversation_fold` looks up `_pending[conversation_id]` and waits on
+  that Future only (`app/rag/summary_fold.py`). Do not "simplify" it into a
+  process-wide drain on every turn — that would couple unrelated conversations.
+  The single-worker executor is only for FIFO ordering / avoiding
+  worker-side `Future.result()` chaining deadlocks; the barrier key remains
+  `conversation_id`.
 - **Retrieval-reuse threshold reasoning (Phase 8) — 0.72, and why cosine can't do
   better here.** Measured on BGE-M3 (query-vs-chunk cosine, same modality as the
   §-below gate bands): a legitimate *same-chunk* follow-up ("...and how many of
@@ -851,6 +874,14 @@ the project, closing the gap Phase 9 explicitly deferred.
   ``AgentResponse`` / CLI. Tests: ``tests/test_recovery.py`` (generic categories,
   fakes) + adjusted grounding related-but-not-explicit case. Existing fixtures
   disable recovery so prior suites stay deterministic.
+- Phase 15 — Deferred running-summary fold off the critical path
+  (`app/rag/summary_fold.py`). Confirmed the review claim: `_update_running_summary`
+  used to block `answer()` after the result was known. Now scheduled in the
+  background; rewrite barrier is **per-`conversation_id`** via
+  `_pending[conversation_id]` (not a global queue wait). Tests:
+  `test_summary_fold_deferral.py` + updated incremental/conversation drains.
+  Live measure: turn-4 answer ~1.5s vs fold ~1.7s in background. Branch:
+  `fix/async-summary-fold`.
 - Phases 10-14 — The product layer Phase 9 explicitly deferred: real per-org OAuth,
   an admin panel, a durable ingestion queue, an HTTP API, streaming chat, and a
   frontend portal. See §2 for the full architectural reasoning; summary per phase:
