@@ -40,6 +40,7 @@ from app.agent.base import Agent, AgentResponse
 from app.core.exceptions import ProviderError
 from app.db import close_pool
 from app.memory import build_conversation_store
+from app.rag import shutdown_summary_folds
 from app.vectorstore import build_vector_store
 from app.vectorstore.base import VectorStore
 
@@ -267,6 +268,7 @@ def main() -> int:
             console.print(f"[dim]cause: {exc.cause}[/]")
         return 1
     finally:
+        shutdown_summary_folds(wait=True, timeout=30.0)
         close_pool()
 
 

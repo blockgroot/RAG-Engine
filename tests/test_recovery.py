@@ -9,7 +9,12 @@ bound enforcement, and graceful degradation.
 
 from __future__ import annotations
 
-from app.config.settings import RagSettings, RecoverySettings, ReuseSettings
+from app.config.settings import (
+    QueryNormSettings,
+    RagSettings,
+    RecoverySettings,
+    ReuseSettings,
+)
 from app.rag.pipeline import (
     RECOVERY_REASON_GATE_MISS,
     RECOVERY_REASON_INSUFFICIENT_EVIDENCE,
@@ -29,6 +34,7 @@ def _pipeline(
     *,
     recovery: RecoverySettings | None = None,
     top_k: int = 3,
+    query_norm: QueryNormSettings | None = None,
 ) -> RagPipeline:
     return RagPipeline(
         llm=llm,
@@ -42,6 +48,10 @@ def _pipeline(
         retriever=None,
         reuse_settings=ReuseSettings(enabled=False),
         recovery_settings=recovery or RecoverySettings(enabled=True, max_queries=2),
+        # Recovery tests model first-pass miss → expand; Phase 17 spelling would
+        # often fix the typo case before recovery fires. Default off here.
+        query_norm_settings=query_norm
+        or QueryNormSettings(enabled=False, max_edit_distance=2, min_word_length=4),
     )
 
 

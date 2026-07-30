@@ -9,12 +9,17 @@ Public API:
 
 from .base import SourceAdapter, SourceRef, SourceDocument
 from .notion import NotionAdapter
+from .google_drive import GoogleDriveAdapter
 from .factory import build_source_adapter
+from .google_drive_utils import extract_drive_folder_id, validate_drive_folder
 
 __all__ = [
     "SourceAdapter",
     "SourceRef",
     "SourceDocument",
     "NotionAdapter",
+    "GoogleDriveAdapter",
     "build_source_adapter",
+    "extract_drive_folder_id",
+    "validate_drive_folder",
 ]

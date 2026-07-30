@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from ..core.exceptions import ConfigurationError
 from .base import OAuthProvider
+from .google_oauth import GoogleOAuthProvider
 from .notion_oauth import NotionOAuthProvider
 
 DEFAULT_OAUTH_PROVIDER = "notion"
@@ -21,5 +22,7 @@ def build_oauth_provider(provider: str = DEFAULT_OAUTH_PROVIDER) -> OAuthProvide
 
     if provider == "notion":
         return NotionOAuthProvider()
+    elif provider == "google":
+        return GoogleOAuthProvider()
 
-    raise ConfigurationError(f"Unknown OAuth provider: {provider!r} (expected 'notion')")
+    raise ConfigurationError(f"Unknown OAuth provider: {provider!r} (expected 'notion' or 'google')")

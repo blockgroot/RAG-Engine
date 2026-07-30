@@ -32,6 +32,17 @@ Phase 8 refines two earlier pieces, again without touching the gate/prompt:
   gate → generate path, so this only avoids redundant retrieval — it never
   weakens or bypasses the confidence gate.
 
+Phase 15 moves the summary fold **off the critical path**: ``answer()`` schedules
+``_update_running_summary`` on a background executor (see ``summary_fold.py``)
+and returns the already-decided ``RagResult`` without waiting. The fold remains
+best-effort. A per-conversation barrier runs before the next turn's rewrite so
+a turn that left the verbatim window is never invisible to both the summary and
+recent turns while a fold is still in flight.
+
+Phase 17 adds a **non-LLM** corpus-vocab SymSpell pass on the retrieval
+query (``query_normalize.py``) so first-time typo'd questions still rank
+the right chunk — without paying an LLM rewrite on every request.
+
 Bounded retrieval recovery addresses **Retrieval Discovery Gaps**: the first
 retrieve runs exactly as today; only when available evidence looks insufficient
 (gate miss, or generation finds the context insufficient) may one optional
@@ -55,6 +66,7 @@ from ..config.settings import (
     DecomposeSettings,
     MemorySettings,
     QueryCacheSettings,
+    QueryNormSettings,
     RagSettings,
     RecoverySettings,
     RequestBudgetSettings,
@@ -73,6 +85,8 @@ from .retrieval import HybridRetriever, RetrievalResult
 from .decompose import looks_compound, parse_sub_questions
 from .query_cache import QueryAnswerCache
 from .request_budget import RequestBudget
+from .summary_fold import schedule_summary_fold, wait_for_conversation_fold
+from .query_normalize import CorpusSpellNormalizer
 from .prompts import (
     MODE_B_FORBIDDEN_PHRASES,
     WEB_SEARCH_TOOL,
@@ -235,6 +249,8 @@ class RagPipeline:
         llm_aux: LLMProvider | None = None,
         budget_settings: RequestBudgetSettings | None = None,
         query_cache: QueryAnswerCache | None = None,
+        query_norm: CorpusSpellNormalizer | None = None,
+        query_norm_settings: QueryNormSettings | None = None,
     ) -> None:
         self._llm = llm
         self._llm_aux = llm_aux or llm
@@ -253,6 +269,10 @@ class RagPipeline:
         self._decompose_settings = decompose_settings or DecomposeSettings.from_env()
         self._budget_settings = budget_settings or RequestBudgetSettings.from_env()
         self._query_cache = query_cache if query_cache is not None else QueryAnswerCache()
+        # Phase 17: cheap corpus-vocab spelling before embed/retrieve.
+        self._query_norm = query_norm or CorpusSpellNormalizer(
+            query_norm_settings or QueryNormSettings.from_env()
+        )
         # Phase 6: hybrid + reranking retriever. When None, fall back to plain
         # vector search (the Phase 3 behaviour), keeping this pipeline usable
         # without the retrieval upgrades.
@@ -298,6 +318,9 @@ class RagPipeline:
         """
         resolved = question
         if conversation_id is not None and self._memory is not None:
+            # Phase 15: wait for any in-flight fold so rewrite sees a consistent
+            # window (turn that left verbatim is either still in turns, or in summary).
+            wait_for_conversation_fold(conversation_id)
             context = self._memory.get_context(
                 conversation_id, self._memory_settings.recent_turns
             )
@@ -333,7 +356,10 @@ class RagPipeline:
             # Remember this turn's policy chunks so the next turn can try to reuse
             # them (web/fallback answers have no reusable policy chunks -> cleared).
             self._remember_retrieval(conversation_id, org_id, result)
-            self._update_running_summary(conversation_id)
+            # Phase 15: pure bookkeeping — nothing in ``result`` depends on it.
+            # Schedule after the answer is known so the caller is not blocked.
+            cid = conversation_id
+            schedule_summary_fold(cid, lambda: self._update_running_summary(cid))
 
         log_query_signal(result, org_id=org_id, conversation_id=conversation_id)
         return result
@@ -392,20 +418,30 @@ class RagPipeline:
         min_stage = self._budget_settings.min_stage_seconds
         budget_exhausted = False
 
-        query_vec = self._embedder.embed([question])[0]
+        # Phase 17: correct OOV query tokens toward this org's chunk vocabulary
+        # before embed/retrieve/keyword. Generation still uses ``question``
+        # (conversation-resolved intent); only the retrieval key is normalized.
+        retrieval_question = self._normalize_for_retrieval(question, org_id)
+        query_vec = self._embedder.embed([retrieval_question])[0]
 
-        sub_questions: list[str] = [question]
+        sub_questions: list[str] = [retrieval_question]
         question_decomposed = False
 
-        reused = self._try_reuse(question, org_id, query_vec, conversation_id)
+        reused = self._try_reuse(retrieval_question, org_id, query_vec, conversation_id)
         if reused is not None:
             hits, top_score = reused.hits, reused.gate_score
             retrieval_reused = True
         else:
             retrieval_reused = False
-            sub_questions, question_decomposed = self._maybe_decompose(
+            raw_subs, question_decomposed = self._maybe_decompose(
                 question, org_id=org_id, conversation_id=conversation_id, budget=budget
             )
+            if question_decomposed:
+                sub_questions = [
+                    self._normalize_for_retrieval(s, org_id) for s in raw_subs
+                ]
+            else:
+                sub_questions = [retrieval_question]
             hits, top_score = self._retrieve_for_subquestions(
                 org_id, question, sub_questions
             )
@@ -982,6 +1018,18 @@ class RagPipeline:
         sources = "\n".join(f"- {r.title} ({r.url})" for r in results if r.url)
         return f"{WEB_ANSWER_LABEL}\n\n{answer}\n\nSources:\n{sources}"
 
+    def _normalize_for_retrieval(self, question: str, org_id: str) -> str:
+        """Cheap corpus-vocab spelling fix for the retrieval key (Phase 17)."""
+        if not self._query_norm.enabled:
+            return question
+        try:
+            texts = self._store.list_chunk_texts(org_id)
+        except NotImplementedError:
+            return question
+        except Exception:  # noqa: BLE001
+            return question
+        return self._query_norm.normalize(question, org_id, texts)
+
     # -- Capability A: conversation memory helpers -------------------------
 
     def _rewrite_question(
@@ -1013,14 +1061,15 @@ class RagPipeline:
 
     def _update_running_summary(self, conversation_id: str) -> None:
         """Incrementally fold the turn(s) that just left the verbatim window into
-        the running summary (Phase 8).
+        the running summary (Phase 8 / 15).
 
-        Called after *every* turn. Once the number of verbatim turns exceeds the
-        window, exactly one turn (the oldest) has fallen out; we merge just that
-        turn with the existing summary — so each update's input is the summary plus
-        a single turn, never the full history, and its cost stays ~constant no
-        matter how long the conversation gets. (If a previous update was skipped on
-        an LLM error, a small backlog is folded in on the next turn — still bounded,
+        Scheduled in the background after *every* turn (Phase 15) — ``answer()``
+        does not wait. Once the number of verbatim turns exceeds the window,
+        exactly one turn (the oldest) has fallen out; we merge just that turn with
+        the existing summary — so each update's input is the summary plus a single
+        turn, never the full history, and its cost stays ~constant no matter how
+        long the conversation gets. (If a previous update was skipped on an LLM
+        error, a small backlog is folded in on the next turn — still bounded,
         never the whole history.)
         """
         window = self._memory_settings.recent_turns

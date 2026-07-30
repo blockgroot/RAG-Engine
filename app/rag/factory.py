@@ -18,6 +18,7 @@ from ..config.settings import (
     DecomposeSettings,
     MemorySettings,
     RagSettings,
+    QueryNormSettings,
     RecoverySettings,
     RetrievalSettings,
     ReuseSettings,
@@ -36,6 +37,7 @@ from ..vectorstore.base import VectorStore
 from ..websearch import build_web_search_provider
 from ..websearch.base import WebSearchProvider
 from .pipeline import RagPipeline
+from .query_normalize import CorpusSpellNormalizer
 from .retrieval import HybridRetriever
 
 _UNSET = object()  # "argument omitted" vs an explicit None ("capability off")
@@ -51,6 +53,7 @@ def build_rag_pipeline(
     web_search: WebSearchProvider | None = _UNSET,  # type: ignore[assignment]
     retriever: HybridRetriever | None = _UNSET,  # type: ignore[assignment]
     recovery_settings: RecoverySettings | None = None,
+    query_norm_settings: QueryNormSettings | None = None,
 ) -> RagPipeline:
     """Build the RAG pipeline, defaulting each dependency from configuration."""
     web_settings = WebSearchSettings.from_env()
@@ -101,4 +104,5 @@ def build_rag_pipeline(
         reuse_settings=ReuseSettings.from_env(),
         recovery_settings=recovery_settings or RecoverySettings.from_env(),
         decompose_settings=DecomposeSettings.from_env(),
+        query_norm_settings=query_norm_settings or QueryNormSettings.from_env(),
     )

@@ -11,21 +11,44 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from ..auth import (
     create_magic_link_token,
-    get_connection_token,
+    get_connection_config,
+    get_live_connection_token,
     get_user_by_email,
     invite_member,
     list_connections,
     list_members,
     revoke_user_sessions,
     send_magic_link_email_safe,
+    set_connection_config,
 )
 from ..config.settings import ApiSettings, EmailSettings
+from ..core.exceptions import ConfigurationError, SourceError
 from ..ingestion import detect_source_changes
 from ..jobs import enqueue, get_job, has_active_job, list_jobs
-from ..sources import build_source_adapter
+from ..sources import (
+    build_source_adapter,
+    extract_drive_folder_id,
+    validate_drive_folder,
+)
 from .deps import SessionClaims, require_admin
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+def _owned_connection(org_id: str, connection_id: str):
+    """Return the connection if it belongs to ``org_id``, else raise 404."""
+    owned = {c.id: c for c in list_connections(org_id)}
+    conn = owned.get(connection_id)
+    if conn is None:
+        raise HTTPException(status_code=404, detail="No such connection for this organization")
+    return conn
+
+
+def _build_connection_adapter(org_id: str, provider: str):
+    """Resolve a live token + source_config into a SourceAdapter."""
+    token = get_live_connection_token(org_id, provider)
+    config = get_connection_config(org_id, provider)
+    return build_source_adapter(provider, token=token, config=config)
 
 
 @router.post("/members")
@@ -91,10 +114,66 @@ def get_connections(session: SessionClaims = Depends(require_admin)):
             "provider": c.provider,
             "external_workspace_name": c.external_workspace_name,
             "created_at": c.created_at.isoformat(),
+            "source_config": c.source_config,
         }
         for c in list_connections(session.org_id)
     ]
 
+
+@router.get("/connections/{connection_id}/config")
+def get_connection_config_route(
+    connection_id: str, session: SessionClaims = Depends(require_admin)
+):
+    """Return this connection's stored ingestion-scope config (non-secret)."""
+    conn = _owned_connection(session.org_id, connection_id)
+    config = get_connection_config(session.org_id, conn.provider)
+    return {"connection_id": connection_id, "provider": conn.provider, "config": config or {}}
+
+
+@router.put("/connections/{connection_id}/config")
+def put_connection_config(
+    connection_id: str,
+    body: dict,
+    session: SessionClaims = Depends(require_admin),
+):
+    """Set Google Drive folder scope for a connection.
+
+    Body: ``{"folder_url": "<Drive folder URL or bare id>"}``. Parses the id,
+    validates via Drive ``files.get`` (accessible + actually a folder), then
+    stores ``{folder_id, folder_name}`` on the connection.
+    """
+    conn = _owned_connection(session.org_id, connection_id)
+    if conn.provider != "google":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Folder configuration is only supported for Google Drive "
+                f"(this connection is {conn.provider!r})."
+            ),
+        )
+
+    folder_url = (body.get("folder_url") or "").strip()
+    if not folder_url:
+        raise HTTPException(
+            status_code=400,
+            detail="folder_url is required (a Drive folder URL or folder id).",
+        )
+
+    try:
+        folder_id = extract_drive_folder_id(folder_url)
+        token = get_live_connection_token(session.org_id, conn.provider)
+        config = validate_drive_folder(token, folder_id)
+        set_connection_config(session.org_id, conn.provider, config)
+    except ConfigurationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except SourceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "connection_id": connection_id,
+        "provider": conn.provider,
+        "config": config,
+    }
 
 
 @router.get("/connections/{connection_id}/changes")
@@ -103,14 +182,14 @@ def connection_changes(connection_id: str, session: SessionClaims = Depends(requ
 
     Does not download page bodies or embed — safe to call on Sources page load.
     """
-    owned = {c.id: c for c in list_connections(session.org_id)}
-    conn = owned.get(connection_id)
-    if conn is None:
-        raise HTTPException(status_code=404, detail="No such connection for this organization")
+    conn = _owned_connection(session.org_id, connection_id)
 
-    token = get_connection_token(session.org_id, conn.provider)
-    adapter = build_source_adapter(conn.provider, token=token)
-    report = detect_source_changes(adapter, session.org_id)
+    try:
+        adapter = _build_connection_adapter(session.org_id, conn.provider)
+        report = detect_source_changes(adapter, session.org_id, provider=conn.provider)
+    except ConfigurationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     return {
         "connection_id": connection_id,
         "new_count": report.new_count,
@@ -121,15 +200,14 @@ def connection_changes(connection_id: str, session: SessionClaims = Depends(requ
         "has_changes": report.has_changes,
     }
 
+
 @router.post("/connections/{connection_id}/ingest")
 def trigger_ingest(connection_id: str, session: SessionClaims = Depends(require_admin)):
     # enqueue() doesn't itself check the connection belongs to this org, so
     # verify via list_connections (already org-scoped) before enqueuing —
     # never let an admin enqueue a job against a connection_id that isn't
     # actually theirs.
-    owned_ids = {c.id for c in list_connections(session.org_id)}
-    if connection_id not in owned_ids:
-        raise HTTPException(status_code=404, detail="No such connection for this organization")
+    _owned_connection(session.org_id, connection_id)
 
     if has_active_job(session.org_id, connection_id):
         raise HTTPException(

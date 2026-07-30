@@ -126,7 +126,7 @@ export default function ChatPage() {
             <h1>Your organization is still setting up</h1>
             {me.role === "admin" ? (
               <p className="muted">
-                Finish connecting Notion and syncing policies in setup. You&rsquo;ll be redirected
+                Finish connecting a policy source and syncing in setup. You&rsquo;ll be redirected
                 automatically when documents are ready.
               </p>
             ) : (

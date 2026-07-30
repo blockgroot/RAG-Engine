@@ -202,6 +202,9 @@ class RecordingVectorStore(VectorStore):
         self._content = content
         self.query_calls = 0
 
+    def list_chunk_texts(self, org_id: str) -> list[str]:
+        return [self._content] if org_id == self._org_id else []
+
     def create_organization(self, name: str) -> str:  # pragma: no cover - unused
         return self._org_id
 
@@ -247,6 +250,9 @@ class TopicAwareVectorStore(VectorStore):
         self._weak_fallback_score = weak_fallback_score
         self.query_calls = 0
         self.query_texts_via_embedding: list[list[float]] = []
+
+    def list_chunk_texts(self, org_id: str) -> list[str]:
+        return [c for _, c in self._chunks]
 
     def create_organization(self, name: str) -> str:  # pragma: no cover - unused
         return self._org_id

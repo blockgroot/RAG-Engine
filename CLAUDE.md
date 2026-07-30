@@ -181,6 +181,55 @@ their policy documents; their employees ask questions and get answers grounded i
   uses `set_summary_and_prune` on the same `conversations.summary` +
   `conversation_turns` tables. Summarization stays best-effort (skipped on LLM
   error; the turn is folded in on the next turn instead).
+- **Summary fold runs off the critical path (Phase 15, `app/rag/summary_fold.py`).**
+  `_update_running_summary` is pure bookkeeping after the answer is already
+  decided — nothing in `RagResult` depends on it — yet it used to run
+  synchronously inside `answer()` before return, so every conversational turn
+  past the verbatim window paid a full LLM round-trip before the caller (and
+  any SSE/CLI stream) saw a character. It is now scheduled on a single-worker
+  background executor; `answer()` returns immediately. **Barrier property
+  (documented, not implicit):** `wait_for_conversation_fold(conversation_id)`
+  waits on `_pending[conversation_id]` — that conversation's own outstanding
+  fold Future — *not* on the shared executor's queue state in general and not
+  on other conversations' folds. (Single-worker FIFO can still delay when that
+  Future *runs* if another conversation's fold was queued earlier; that is
+  scheduler ordering, not barrier keying.) Drain on API/CLI/test shutdown so a
+  mid-exit drop is unlikely without a durable job queue. Measured live: turn-4
+  answer returned in ~1.5s while the fold itself took ~1.7s in the background
+  (before: user waited for both).
+- **Indirect prompt injection hardened, not solved (Phase 16).** Retrieved
+  chunks, contextualize inputs, recovery snippets, and web-search results are
+  now treated as untrusted data: fenced with
+  `<<<UNTRUSTED_DOCUMENT_CONTENT>>>`, explicit "data not instructions" rules
+  (sandwich reminder on grounded/web), plus a narrow heuristic scrubber
+  (`app/security/untrusted.py`) that strips common instruction-shaped spans
+  (`***SYSTEM***` blocks, "ignore previous…", fake `</CONTEXT>` closers,
+  `[ASSISTANT DIRECTIVE]`). Golden cases `injection-sabbatical` /
+  `injection-dev-budget` + structural/output/scrub tests. **Honest limits:**
+  not dual-LLM quarantine, not claim-level NLI, not robust to novel jailbreaks —
+  a 15-run probe showed fencing alone still leaked ~60% on a strong SYSTEM
+  payload; scrub zeroed *measured* leaks on that payload. Delimiting + scrub
+  are partial mitigations.
+- **Corpus-vocab query spelling before retrieval (Phase 17, `app/rag/query_normalize.py`).**
+  First-time / standalone questions were embedded raw (only conversational
+  follow-ups get an LLM rewrite; recovery spelling is reactive). An always-on
+  LLM rewrite would add permanent latency/cost on every request — against the
+  same "cheapest mechanism that works" instinct as retrieval-reuse. Choice:
+  **SymSpell (`symspellpy`) against this org's chunk vocabulary**, plus a small
+  common-query-English seed so clean words like "many" are not mapped onto rare
+  corpus near-misses ("main"). Only the *retrieval key* is normalized;
+  generation / web-decision still use the conversation-resolved question (same
+  reason recovery preserves the original for generation). Defaults:
+  `QUERY_NORM_ENABLED=true`, **max edit distance 1** (distance 2 falsely fixed
+  external entities like Niva→five / Compare→company), min word length 4,
+  Capitalized OOV tokens left alone. `VectorStore.list_chunk_texts(org_id)`
+  feeds the dictionary. Kill-switch: `QUERY_NORM_ENABLED=false`. **Evidence
+  honesty:** ARCHITECTURE.md's ~#18–24 "protien suppliments" finding was on
+  live Notion Acme data; the measure harness uses golden+wellness (optionally
+  `--noisy` distractors) and does *not* replay that corpus — on crowded synthetic
+  pads the typo can stay rank #1 while cosine drops (~0.47→~0.74 after fix).
+  Spelling + score recovery are proven; the exact mid-pool rank flip is not
+  reproduced here.
 - **Retrieval is reused across turns when the previous chunks still cover the
   follow-up — a cheap, deterministic, NON-LLM check before retrieval (Phase 8,
   `RagPipeline._try_reuse`).** On a follow-up, after the query-rewrite, the
@@ -343,9 +392,21 @@ their policy documents; their employees ask questions and get answers grounded i
     fetch). Citations render as first-class bordered source cards with a
     color-coded provenance stripe (policy/web/fallback), mirroring the existing
     CLI's `_SOURCE_STYLE`. `ConnectionCard` is provider-agnostic from day one
-    (Google/GitHub render "coming soon" through the *same* component the Notion
-    button uses) — mirrors the backend factory's extension pattern. SSE streaming
+    (Google/GitHub use the *same* component as Notion — Google is now a live
+    connectable source; GitHub still renders "coming soon") — mirrors the
+    backend factory's extension pattern. SSE streaming
     uses `fetch` + `ReadableStream` (not `EventSource`, which can't POST a body).
+- **Google Drive/Docs is a second `SourceAdapter` + `OAuthProvider` (Google
+  Integration Plan), coexisting with Notion under provider-partitioned sync.**
+  Sync state is keyed on `(org_id, source_provider, source_external_id)` so a
+  Google sync never deletes Notion docs (and vice versa). OAuth-only (no
+  env-var Google token path). Native Google Docs only (Markdown via
+  `files.export`); admin pastes one Drive folder URL stored as JSONB
+  `oauth_connections.source_config`. Token refresh lives in
+  `get_live_connection_token` (provider-agnostic). Drive calls use plain
+  `httpx` (no `google-api-python-client`). Deployment model: **internal-use
+  OAuth client** (exempt from Google verification / 7-day refresh expiry).
+  Gate/prompt/retrieval unchanged — Google chunks are ordinary org-scoped rows.
 - **Domain-based auto-join was removed in favor of direct admin-invited
   members — deferred, not wrong.** Phase 13 originally gated employee login on
   a per-org `org_domains` claim (an admin typed a domain, toggled
@@ -393,14 +454,18 @@ app/
                 #   Orchestrator like rag/ — composes existing interfaces; no base.py.
   vectorstore/  # base.py (VectorStore: query + keyword_search) + pgvector_store.py + factory.py
   rag/          # pipeline.py (RagPipeline/RagResult) + prompts.py + factory.py
-                #   + retrieval.py (P6: HybridRetriever — vector+keyword RRF + rerank).
+                #   + retrieval.py (P6: HybridRetriever — vector+keyword RRF + rerank)
+                #   + query_normalize.py (P17: corpus-vocab SymSpell before retrieve)
+                #   + summary_fold.py (P15: deferred running-summary fold).
                 #   Orchestrator, not a provider — composes the above; no base.py.
                 #   Phase 5: also does query-rewrite (memory) + web-search fallback.
                 #   Phase 8: incremental summary update + pre-retrieval reuse check.
   reranker/     # base.py (Reranker) + local.py (CrossEncoder) + factory.py. P6
                 #   cross-encoder reranking of the candidate pool (bge-reranker-v2-m3).
-  sources/      # base.py (SourceAdapter) + notion.py + factory.py. External content
-                #   sources (Notion now; Drive/GitHub/Slack later) behind one interface.
+  sources/      # base.py (SourceAdapter) + notion.py + google_drive.py +
+                #   google_drive_utils.py (folder URL parse + files.get validate) +
+                #   factory.py. External content sources (Notion + Google Drive;
+                #   GitHub/Slack later) behind one interface.
   memory/       # base.py (ConversationStore) + pg_store.py + factory.py. Org-scoped
                 #   conversation history (turns + running summary) for follow-ups.
                 #   P8: incremental summary update + set_last_retrieval/get_last_retrieval
@@ -415,15 +480,11 @@ app/
   security/     # P10: crypto.py (encrypt/decrypt via MultiFernet) for OAuth tokens
                 #   at rest. A tiny utility module, not an interface+factory package
                 #   (only one real capability, no second backend to abstract over).
-  auth/         # P10-13: identity + OAuth "Connect X" + sessions. base.py
-                #   (OAuthProvider) + notion_oauth.py + factory.py (same
-                #   interface/impl/factory shape as every other capability) +
-                #   credentials.py (oauth_connections storage) + users.py
-                #   (get_user_by_email/create_admin/invite_member/list_members)
-                #   + magic_link.py + oauth_state.py (single-use, server-side,
-                #   atomic-consume tokens) + session.py (JWT) + email.py
-                #   (pluggable magic-link delivery). domains.py (DNS-verified
-                #   auto-join) was REMOVED — see the simplification bullet in §2.
+  auth/         # P10-13 + Google: identity + OAuth "Connect X" + sessions. base.py
+                #   (OAuthProvider) + notion_oauth.py + google_oauth.py + factory.py
+                #   + credentials.py (oauth_connections + live token refresh +
+                #   source_config) + users.py + magic_link.py + oauth_state.py +
+                #   session.py + email.py. domains.py was REMOVED — see §2.
   jobs/         # P12: Postgres-backed durable ingestion job queue. queue.py
                 #   (enqueue/claim_next/reap_stuck/get_job, SELECT ... FOR UPDATE
                 #   SKIP LOCKED) + worker.py (runs the unchanged ingest_source()).
@@ -517,6 +578,20 @@ tests/          # pytest; isolation (P2), grounding (P3), conversation+websearch
   used *only* when a run names no token (the Phase 4 test org). Discovery is
   generic (scan env for the `NOTION_TOKEN_` prefix) — don't hardcode org names/count
   anywhere. `build_source_adapter("notion", token_name=...)` is how a run selects one.
+- **Provider-partitioned sync is mandatory for multi-source orgs.** Every
+  `list_source_documents` / upsert / delete / `detect_source_changes` /
+  `ingest_source` path takes an explicit `provider`. Without it, the first Google
+  sync would treat every Notion page id as "removed" and cascade-delete those
+  chunks. Proven by the coexistence cases in `tests/test_incremental_sync.py`.
+- **Google Drive returns 404 (not 403) for files the token can't see** — treated
+  as inaccessible/removed. Folder config is validated via `files.get` before
+  save. Prefer an **internal-use** Google OAuth client in Workspace (exempt from
+  verification and the testing-mode 7-day refresh expiry); testing-mode clients
+  will silently break weekly when refresh tokens die (`invalid_grant` →
+  `OAuthReauthRequiredError`, actionable "reconnect" — never retry-loop).
+- **Google has no env-var token path** — only `oauth_connections` +
+  `get_live_connection_token`. A Drive connection also requires
+  `source_config.folder_id` before sync/changes (admin pastes a folder URL).
 - **A Notion page must be explicitly shared with the integration** (page → `•••`
   → Connections → add it), separate from having a valid token. Without sharing,
   `list_documents()` returns zero pages even with a good token. `child_page`
@@ -534,6 +609,33 @@ tests/          # pytest; isolation (P2), grounding (P3), conversation+websearch
   on the next turn (a small bounded backlog, never the full history). The running
   summary preserves concrete facts a later turn might reference. Tune the window via
   `MEMORY_RECENT_TURNS`.
+- **Phase 15 summary-fold barrier is per-conversation, not global.**
+  `wait_for_conversation_fold` looks up `_pending[conversation_id]` and waits on
+  that Future only (`app/rag/summary_fold.py`). Do not "simplify" it into a
+  process-wide drain on every turn — that would couple unrelated conversations.
+  The single-worker executor is only for FIFO ordering / avoiding
+  worker-side `Future.result()` chaining deadlocks; the barrier key remains
+  `conversation_id`.
+- **Prompt-injection mitigations are partial — measure with multi-run probes.**
+  A single golden PASS (or 3/3) is not enough on this free LLM endpoint; use
+  `scripts/probe_injection.py --runs 15` (no retry harness) and report
+  `injection_leaks`, not just path_ok. Scrub heuristics are narrow by design —
+  do not expand them into a general content filter that eats legitimate policy
+  prose. Web results get the same fence+scrub as policy chunks
+  (`build_web_answer_prompt`).
+- **Query-norm must not corrupt Phase 5 web-search entities.** Corpus-vocab
+  SymSpell will invent near-misses for OOV tokens (observed: Niva→five,
+  Compare→company at edit distance 2). Keep default max edit distance at **1**,
+  skip Capitalized OOV tokens, and never feed the normalized string into the
+  web decision / tool query — those stay on the original question. Regression:
+  `test_query_norm_preserves_entities_for_web_path` +
+  `test_normalizer_preserves_external_entity_names`. Do not raise
+  `QUERY_NORM_MAX_EDIT_DISTANCE` to 2 without re-running those cases against a
+  vocab that contains "company"/"five"/"rated".
+- **Phase 17 measure harness ≠ ARCHITECTURE #18–24 corpus.**
+  `scripts/measure_query_normalization.py` seeds golden CORPUS + wellness
+  (+ optional `--noisy` pads). It proves spelling fires and can recover cosine;
+  it does not claim to have reproduced the live Notion mid-pool ranking.
 - **Retrieval-reuse threshold reasoning (Phase 8) — 0.72, and why cosine can't do
   better here.** Measured on BGE-M3 (query-vs-chunk cosine, same modality as the
   §-below gate bands): a legitimate *same-chunk* follow-up ("...and how many of
@@ -680,13 +782,13 @@ Defined in `app/db/schema.sql`. Current tables:
 | Table           | Responsibility                                                        |
 | --------------- | -------------------------------------------------------------------- |
 | `organizations` | Tenants. Everything else hangs off an org. Columns: `id`, `name`, `created_at`. |
-| `documents`     | A source policy file/upload, scoped to one org. `id`, `org_id`, `title`, `source_uri`, `created_at`. As of Phase 4, `source_uri` is populated with the origin URL (e.g. the Notion page URL) at ingest. |
+| `documents`     | A source policy file/upload, scoped to one org. `id`, `org_id`, `title`, `source_uri`, `created_at`. As of Phase 4, `source_uri` is populated with the origin URL (e.g. the Notion page URL) at ingest. Incremental sync also carries `source_external_id` / `source_last_modified` / **`source_provider`** (e.g. `notion`\|`google`) — unique on `(org_id, source_provider, source_external_id)` so Notion and Google corpora coexist without wiping each other. |
 | `chunks`        | Text chunks + their `vector(1024)` embedding, scoped to one org. `id`, `org_id`, `document_id`, `chunk_index`, `content`, `embedding`, `created_at`. Phase 6: `content_tsv` (a `tsvector` GENERATED from `content`, GIN-indexed) powers keyword/hybrid search; `content` may include a prepended contextual-retrieval prefix. |
 | `conversations` | (Phase 5) A conversation, scoped to one org. `id`, `org_id`, `summary` (running compression of pruned older turns), `created_at`. |
 | `conversation_turns` | (Phase 5) One question+answer within a conversation. `id`, `conversation_id`, `org_id`, `turn_index`, `question`, `answer`, `created_at`. Older turns are pruned once folded into the summary (Phase 8: incrementally, one at a time). |
 | `conversation_last_retrieval` | (Phase 8) The chunks retrieved on a conversation's most recent turn, for the pre-retrieval reuse check. One upserted row per conversation: `conversation_id` (PK), `org_id`, `chunks` (TEXT holding a JSON array of `{content, document_id, chunk_index, org_id}` — no embeddings), `updated_at`. |
 | `users` | (Phase 10) An application user. `id`, `email` (UNIQUE), `org_id` (nullable — but never issued a session while null), `role` (`admin`\|`member`), `created_at`. Phase 21: `sessions_revoked_at` — sessions with JWT `iat` ≤ this timestamp are rejected. |
-| `oauth_connections` | (Phase 10) One org's OAuth credential for one provider. `id`, `org_id`, `provider`, `external_workspace_id`, `external_workspace_name`, `access_token_encrypted`, `refresh_token_encrypted`, `expires_at`, `connected_by_user_id`, `created_at`. `UNIQUE (org_id, provider)` — one row per org per provider, so a lookup can never be cross-tenant-ambiguous. Tokens are encrypted via `app/security/crypto.py`; this table never stores plaintext. |
+| `oauth_connections` | (Phase 10) One org's OAuth credential for one provider. `id`, `org_id`, `provider`, `external_workspace_id`, `external_workspace_name`, `access_token_encrypted`, `refresh_token_encrypted`, `expires_at`, `connected_by_user_id`, `created_at`. `UNIQUE (org_id, provider)` — one row per org per provider, so a lookup can never be cross-tenant-ambiguous. Tokens are encrypted via `app/security/crypto.py`; this table never stores plaintext. Google Integration: optional **`source_config` JSONB** (e.g. `{folder_id, folder_name}`) — preserved on reconnect (upsert does not clobber it). |
 | `ingestion_jobs` | (Phase 10/12) A durable, pollable record of an admin-triggered fetch→chunk→embed→store run. `id`, `org_id`, `connection_id`, `status` (`queued`\|`running`\|`succeeded`\|`failed`), `doc_count`, `error`, `started_at`, `finished_at`, `created_at`. Consumed by a Postgres-backed worker (`SELECT ... FOR UPDATE SKIP LOCKED`), not an in-process background task. |
 | `magic_link_tokens` | (Phase 13) Single-use employee login tokens. `token_hash` (PK — only a SHA-256 hash is ever stored, never the token), `email`, `expires_at`, `consumed_at`, `created_at`. |
 | `oauth_states` | (Phase 13) Single-use, server-side OAuth `state` values for CSRF/replay protection on the admin connect flow. `state` (PK), `org_id`, `provider`, `expires_at`, `consumed_at`, `created_at`. |
@@ -829,6 +931,29 @@ the project, closing the gap Phase 9 explicitly deferred.
   ``AgentResponse`` / CLI. Tests: ``tests/test_recovery.py`` (generic categories,
   fakes) + adjusted grounding related-but-not-explicit case. Existing fixtures
   disable recovery so prior suites stay deterministic.
+- Phase 15 — Deferred running-summary fold off the critical path
+  (`app/rag/summary_fold.py`). Confirmed the review claim: `_update_running_summary`
+  used to block `answer()` after the result was known. Now scheduled in the
+  background; rewrite barrier is **per-`conversation_id`** via
+  `_pending[conversation_id]` (not a global queue wait). Tests:
+  `test_summary_fold_deferral.py` + updated incremental/conversation drains.
+  Live measure: turn-4 answer ~1.5s vs fold ~1.7s in background. Branch:
+  `fix/async-summary-fold`.
+- Phase 16 — Indirect prompt-injection mitigation (partial). Fence + untrusted
+  rules on grounded / contextualize / recovery / web prompts; heuristic scrub
+  in `app/security/untrusted.py`. Golden injection cases +
+  `test_prompt_injection_structure.py` (incl. contextualize *output* hijack) +
+  `test_untrusted_scrub.py`. 15-run probe: fencing alone ~40% sabbatical pass
+  with leaks; +scrub → 0 measured leaks on that payload. Branch:
+  `fix/prompt-injection-mitigation`.
+- Phase 17 — Corpus-vocab SymSpell query normalization before embed/retrieve
+  (`app/rag/query_normalize.py`, `QueryNormSettings`, `list_chunk_texts`).
+  Generation/web keep the unresolved question. Guards: English seed, inflection
+  skip, max edit distance 1, Capitalized OOV skip (protects Phase 5 entities).
+  Tests: `test_query_normalize.py` + web-path entity interaction; recovery typo
+  test disables query-norm so it stays isolated. Harness:
+  `scripts/measure_query_normalization.py` (honest about #18–24 corpus gap).
+  Branch: `fix/query-normalization`.
 - Phases 10-14 — The product layer Phase 9 explicitly deferred: real per-org OAuth,
   an admin panel, a durable ingestion queue, an HTTP API, streaming chat, and a
   frontend portal. See §2 for the full architectural reasoning; summary per phase:
@@ -915,17 +1040,30 @@ cost/latency decision — not summarized as done below.
 - LLM provider-level prompt caching for the large fixed grounded-prompt prefix —
   lower priority next to query-result cache (Phase 19).
 
+**Google Drive/Docs integration (on `feature/google-integration`).** Second
+external source alongside Notion — Phases 1–7 of `GOOGLE_INTEGRATION_PLAN.md`:
+provider-partitioned sync, live token refresh, `GoogleOAuthProvider`,
+per-connection folder config (storage + admin PUT/GET + Drive `files.get`
+validation), `GoogleDriveAdapter` (native Docs via markdown export + folder
+BFS), factory/worker/changes wiring, and frontend (Sources + onboarding treat
+Google as a first-class connect). Gate/prompt/retrieval untouched. Live OAuth
+walkthrough against a real internal-use Google client is still pending.
+
 **Pending (not started)**
 - **Live end-to-end verification of Phases 10-14** against a real sandbox Notion
   OAuth app (create one, set `NOTION_CLIENT_ID`/`SECRET`/`REDIRECT_URI`) and a
   deployed frontend + API — everything above was verified via the automated
   test suite + local `npm run build`, not a live walkthrough (domain-based
   employee onboarding no longer applies — see the auth simplification above).
-- Real multi-organization data entry now has TWO paths: the Phase 9 manual
+- **Live Google Drive walkthrough** (connect → paste folder → sync → ask →
+  edit Doc → change-check → re-sync; plus Notion+Google coexistence on one org)
+  against an internal-use Google Cloud OAuth client (`GOOGLE_CLIENT_ID` /
+  `SECRET` / `REDIRECT_URI`). Automated tests cover the plumbing offline.
+- Real multi-organization data entry now has THREE paths: the Phase 9 manual
   `NOTION_TOKEN_<NAME>` + `ingest_notion.py --org … --token …` script (still works,
-  unchanged), or the new Phase 10-14 self-serve flow (admin signs up, connects
-  Notion via OAuth, clicks "Ingest" in the portal). Neither has been run against
-  real production company data yet.
+  unchanged), the Phase 10-14 Notion OAuth self-serve flow, or Google Drive
+  OAuth + folder config in the portal. Neither live Google nor production
+  company data has been run end-to-end in this environment yet.
 - Production secrets management: `AUTH_JWT_SECRET` and `AUTH_ENCRYPTION_KEYS` must
   be generated and provisioned per environment (e.g. a secrets manager) before any
   real deployment — this work defines the config surface, not the provisioning.
@@ -947,18 +1085,21 @@ cost/latency decision — not summarized as done below.
   traceability and asks the model to cite `[n]` inline, but does not yet parse
   citations out or trim context to a token budget.
 - More source adapters, implementing the same `SourceAdapter` interface: Google
-  Drive/Docs/Sheets, GitHub, Slack. (Notion done in Phase 4.)
+  Sheets, Drive-hosted PDF/DOCX, GitHub, Slack. (Notion + native Google Docs done.)
 - Incremental sync is implemented: Sources page change-check
-  (`GET /admin/connections/{id}/changes`) compares Notion `last_edited_time` to
-  stored `documents.source_last_modified`; "Update policies" upserts only
-  new/changed pages (and drops removed ones) via `source_external_id` — no
-  duplicate dumps. First-time onboarding ingest uses the same path.
+  (`GET /admin/connections/{id}/changes`) compares remote `last_modified` to
+  stored `documents.source_last_modified` **per provider**; "Update policies"
+  upserts only new/changed pages (and drops removed ones) via
+  `(source_provider, source_external_id)` — no duplicate dumps / no cross-provider
+  wipe. First-time onboarding ingest uses the same path.
 - Ingestion adapters: layout-aware extraction from PDF/DOCX/HTML.
-- Users / auth / tenancy management, incl. full multi-tenant Notion OAuth
-  (consent screen) once there's an app to host the redirect — client id/secret
-  are already read into `NotionSettings`.
-- API layer (HTTP endpoints) and an orchestrator.
 - Packaging the self-hosted Docker image.
+- Still-open items from the hardening review (not in Phases 15–17): global
+  request deadline / cancellation, Postgres RLS as defense-in-depth beyond
+  application `org_id` filters, token-budget-aware context assembly, structured
+  (machine-readable) citation verification, and any model-routing / token-
+  accounting work. Token-budget + structured citations already listed under
+  RAG enhancements above.
 
 ---
 
