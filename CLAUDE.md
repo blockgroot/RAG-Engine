@@ -197,6 +197,19 @@ their policy documents; their employees ask questions and get answers grounded i
   mid-exit drop is unlikely without a durable job queue. Measured live: turn-4
   answer returned in ~1.5s while the fold itself took ~1.7s in the background
   (before: user waited for both).
+- **Indirect prompt injection hardened, not solved (Phase 16).** Retrieved
+  chunks, contextualize inputs, recovery snippets, and web-search results are
+  now treated as untrusted data: fenced with
+  `<<<UNTRUSTED_DOCUMENT_CONTENT>>>`, explicit "data not instructions" rules
+  (sandwich reminder on grounded/web), plus a narrow heuristic scrubber
+  (`app/security/untrusted.py`) that strips common instruction-shaped spans
+  (`***SYSTEM***` blocks, "ignore previous…", fake `</CONTEXT>` closers,
+  `[ASSISTANT DIRECTIVE]`). Golden cases `injection-sabbatical` /
+  `injection-dev-budget` + structural/output/scrub tests. **Honest limits:**
+  not dual-LLM quarantine, not claim-level NLI, not robust to novel jailbreaks —
+  a 15-run probe showed fencing alone still leaked ~60% on a strong SYSTEM
+  payload; scrub zeroed *measured* leaks on that payload. Delimiting + scrub
+  are partial mitigations.
 - **Retrieval is reused across turns when the previous chunks still cover the
   follow-up — a cheap, deterministic, NON-LLM check before retrieval (Phase 8,
   `RagPipeline._try_reuse`).** On a follow-up, after the query-rewrite, the
@@ -581,6 +594,13 @@ tests/          # pytest; isolation (P2), grounding (P3), conversation+websearch
   The single-worker executor is only for FIFO ordering / avoiding
   worker-side `Future.result()` chaining deadlocks; the barrier key remains
   `conversation_id`.
+- **Prompt-injection mitigations are partial — measure with multi-run probes.**
+  A single golden PASS (or 3/3) is not enough on this free LLM endpoint; use
+  `scripts/probe_injection.py --runs 15` (no retry harness) and report
+  `injection_leaks`, not just path_ok. Scrub heuristics are narrow by design —
+  do not expand them into a general content filter that eats legitimate policy
+  prose. Web results get the same fence+scrub as policy chunks
+  (`build_web_answer_prompt`).
 - **Retrieval-reuse threshold reasoning (Phase 8) — 0.72, and why cosine can't do
   better here.** Measured on BGE-M3 (query-vs-chunk cosine, same modality as the
   §-below gate bands): a legitimate *same-chunk* follow-up ("...and how many of
@@ -882,6 +902,13 @@ the project, closing the gap Phase 9 explicitly deferred.
   `test_summary_fold_deferral.py` + updated incremental/conversation drains.
   Live measure: turn-4 answer ~1.5s vs fold ~1.7s in background. Branch:
   `fix/async-summary-fold`.
+- Phase 16 — Indirect prompt-injection mitigation (partial). Fence + untrusted
+  rules on grounded / contextualize / recovery / web prompts; heuristic scrub
+  in `app/security/untrusted.py`. Golden injection cases +
+  `test_prompt_injection_structure.py` (incl. contextualize *output* hijack) +
+  `test_untrusted_scrub.py`. 15-run probe: fencing alone ~40% sabbatical pass
+  with leaks; +scrub → 0 measured leaks on that payload. Branch:
+  `fix/prompt-injection-mitigation`.
 - Phases 10-14 — The product layer Phase 9 explicitly deferred: real per-org OAuth,
   an admin panel, a durable ingestion queue, an HTTP API, streaming chat, and a
   frontend portal. See §2 for the full architectural reasoning; summary per phase:
