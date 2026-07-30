@@ -54,19 +54,24 @@ import numpy as np
 from ..config.settings import (
     DecomposeSettings,
     MemorySettings,
+    QueryCacheSettings,
     RagSettings,
     RecoverySettings,
+    RequestBudgetSettings,
     ReuseSettings,
     WebSearchSettings,
 )
 from ..core.exceptions import LLMProviderError, WebSearchError
 from ..embeddings.base import EmbeddingProvider
 from ..llm.base import LLMProvider
+from ..llm.metering import AUX_LLM_STAGES, log_llm_call
 from ..memory.base import ConversationContext, ConversationStore, RetrievedChunkRecord
 from ..vectorstore.base import RetrievedChunk, VectorStore
 from ..websearch.base import SearchResult, WebSearchProvider
 from .retrieval import HybridRetriever, RetrievalResult
 from .decompose import looks_compound, parse_sub_questions
+from .query_cache import QueryAnswerCache
+from .request_budget import RequestBudget
 from .prompts import (
     MODE_B_FORBIDDEN_PHRASES,
     WEB_SEARCH_TOOL,
@@ -190,6 +195,8 @@ class RagResult:
     tone_retry_used: bool = False
     question_decomposed: bool = False
     sub_questions: list[str] = field(default_factory=list)
+    cache_hit: bool = False
+    budget_exhausted: bool = False
 
 
 @dataclass(frozen=True)
@@ -224,8 +231,12 @@ class RagPipeline:
         reuse_settings: ReuseSettings | None = None,
         recovery_settings: RecoverySettings | None = None,
         decompose_settings: DecomposeSettings | None = None,
+        llm_aux: LLMProvider | None = None,
+        budget_settings: RequestBudgetSettings | None = None,
+        query_cache: QueryAnswerCache | None = None,
     ) -> None:
         self._llm = llm
+        self._llm_aux = llm_aux or llm
         self._embedder = embedder
         self._store = store
         self._settings = settings or RagSettings.from_env()
@@ -239,10 +250,28 @@ class RagPipeline:
         # Bounded retrieval recovery (optional; at most one attempt per answer).
         self._recovery_settings = recovery_settings or RecoverySettings.from_env()
         self._decompose_settings = decompose_settings or DecomposeSettings.from_env()
+        self._budget_settings = budget_settings or RequestBudgetSettings.from_env()
+        self._query_cache = query_cache if query_cache is not None else QueryAnswerCache()
         # Phase 6: hybrid + reranking retriever. When None, fall back to plain
         # vector search (the Phase 3 behaviour), keeping this pipeline usable
         # without the retrieval upgrades.
         self._retriever = retriever
+
+    def _provider_for_stage(self, stage: str) -> LLMProvider:
+        return self._llm_aux if stage in AUX_LLM_STAGES else self._llm
+
+    def _generate_text(
+        self,
+        stage: str,
+        prompt: str,
+        *,
+        org_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> str:
+        provider = self._provider_for_stage(stage)
+        text = provider.generate(prompt)
+        log_llm_call(stage, provider, org_id=org_id, conversation_id=conversation_id)
+        return text
 
     @property
     def memory(self) -> ConversationStore | None:
@@ -272,10 +301,28 @@ class RagPipeline:
                 conversation_id, self._memory_settings.recent_turns
             )
             if not context.is_empty():
-                resolved = self._rewrite_question(question, context)
+                resolved = self._rewrite_question(
+                    question, context, org_id=org_id, conversation_id=conversation_id
+                )
 
-        # Phase 3 path (+ Phase 8 retrieval reuse + recovery + web fallback).
-        result = self._run(resolved, org_id, conversation_id=conversation_id)
+        if conversation_id is None:
+            cached = self._query_cache.get(org_id, resolved)
+            if cached is not None:
+                return replace(
+                    cached,
+                    resolved_question=resolved if resolved != question else None,
+                )
+
+        budget = RequestBudget.from_settings(self._budget_settings)
+        result = self._run(
+            resolved,
+            org_id,
+            conversation_id=conversation_id,
+            budget=budget,
+        )
+
+        if conversation_id is None and not result.cache_hit:
+            self._query_cache.put(org_id, resolved, result)
 
         if conversation_id is not None and self._memory is not None:
             result = replace(result, resolved_question=resolved)
@@ -328,10 +375,18 @@ class RagPipeline:
     # -- retrieval / gate / generation / recovery --------------------------
 
     def _run(
-        self, question: str, org_id: str, *, conversation_id: str | None = None
+        self,
+        question: str,
+        org_id: str,
+        *,
+        conversation_id: str | None = None,
+        budget: RequestBudget | None = None,
     ) -> RagResult:
         """First retrieve as today; recover at most once if evidence is insufficient."""
         t0 = time.perf_counter()
+        budget = budget or RequestBudget.from_settings(self._budget_settings)
+        min_stage = self._budget_settings.min_stage_seconds
+        budget_exhausted = False
 
         query_vec = self._embedder.embed([question])[0]
 
@@ -344,7 +399,9 @@ class RagPipeline:
             retrieval_reused = True
         else:
             retrieval_reused = False
-            sub_questions, question_decomposed = self._maybe_decompose(question)
+            sub_questions, question_decomposed = self._maybe_decompose(
+                question, org_id=org_id, conversation_id=conversation_id, budget=budget
+            )
             hits, top_score = self._retrieve_for_subquestions(
                 org_id, question, sub_questions
             )
@@ -373,35 +430,61 @@ class RagPipeline:
                 latency_ms=round((time.perf_counter() - t0) * 1000.0, 1),
                 question_decomposed=question_decomposed,
                 sub_questions=list(sub_questions) if question_decomposed else [],
+                budget_exhausted=budget_exhausted,
             )
 
         # Gate miss → optional recovery before web/fallback.
         if self._gate_miss(hits, top_score):
-            if self._recovery_available(recovery_used):
+            if self._recovery_available(recovery_used) and budget.can_spend(min_stage):
                 attempt = self._recover_once(
-                    question, org_id, hits, reason=RECOVERY_REASON_GATE_MISS
+                    question,
+                    org_id,
+                    hits,
+                    reason=RECOVERY_REASON_GATE_MISS,
+                    budget=budget,
+                    conversation_id=conversation_id,
                 )
                 recovery_used = True
                 recovery_reason = RECOVERY_REASON_GATE_MISS
                 recovery_queries = list(attempt.queries)
                 hits, top_score = attempt.hits, attempt.gate_score
+            elif self._recovery_available(recovery_used):
+                budget_exhausted = True
             if self._gate_miss(hits, top_score):
                 return _finalize(
-                    self._gate_failed(question, hits=hits, top_score=top_score)
+                    self._gate_failed(
+                        question,
+                        hits=hits,
+                        top_score=top_score,
+                        budget=budget,
+                        conversation_id=conversation_id,
+                        org_id=org_id,
+                    )
                 )
 
-        # Grounded generation (same question — never replaced by recovery queries).
         result = self._generate(
-            question, hits, top_score, retrieval_reused=retrieval_reused
+            question,
+            hits,
+            top_score,
+            retrieval_reused=retrieval_reused,
+            org_id=org_id,
+            conversation_id=conversation_id,
+            budget=budget,
         )
 
         # Generation found evidence insufficient → one recovery if not yet used.
         if self._generation_found_evidence_insufficient(
             result
         ) and self._recovery_available(recovery_used):
-            attempt = self._recover_once(
-                question, org_id, hits, reason=RECOVERY_REASON_INSUFFICIENT_EVIDENCE
-            )
+            if budget.can_spend(min_stage):
+                attempt = self._recover_once(
+                    question,
+                    org_id,
+                    hits,
+                    reason=RECOVERY_REASON_INSUFFICIENT_EVIDENCE,
+                    budget=budget,
+                    conversation_id=conversation_id,
+                )
             recovery_used = True
             recovery_reason = RECOVERY_REASON_INSUFFICIENT_EVIDENCE
             recovery_queries = list(attempt.queries)
@@ -409,19 +492,37 @@ class RagPipeline:
             if self._gate_miss(hits, top_score):
                 # Internal recovery exhausted; web (if enabled) then fallback.
                 return _finalize(
-                    self._gate_failed(question, hits=hits, top_score=top_score)
+                    self._gate_failed(
+                        question,
+                        hits=hits,
+                        top_score=top_score,
+                        budget=budget,
+                        conversation_id=conversation_id,
+                        org_id=org_id,
+                    )
                 )
             result = self._generate(
-                question, hits, top_score, retrieval_reused=False
+                question,
+                hits,
+                top_score,
+                retrieval_reused=False,
+                org_id=org_id,
+                conversation_id=conversation_id,
+                budget=budget,
             )
+        elif not budget.can_spend(min_stage):
+            budget_exhausted = True
 
-        # Internal path exhausted (retrieve + optional recovery + generate) with
-        # insufficient evidence → offer web search (when enabled) before fallback.
-        # Web is not another retrieval retry; it is the final external stage.
-        # The web tool still decides external vs internal (no blind search).
         if self._generation_found_evidence_insufficient(result):
             return _finalize(
-                self._gate_failed(question, hits=hits, top_score=top_score)
+                self._gate_failed(
+                    question,
+                    hits=hits,
+                    top_score=top_score,
+                    budget=budget,
+                    conversation_id=conversation_id,
+                    org_id=org_id,
+                )
             )
 
         return _finalize(result)
@@ -458,11 +559,25 @@ class RagPipeline:
         top_score = hits[0].score if hits else None
         return hits, top_score
 
-    def _maybe_decompose(self, question: str) -> tuple[list[str], bool]:
+    def _maybe_decompose(
+        self,
+        question: str,
+        *,
+        org_id: str,
+        conversation_id: str | None,
+        budget: RequestBudget,
+    ) -> tuple[list[str], bool]:
         if not self._decompose_settings.enabled or not looks_compound(question):
             return [question], False
+        if not budget.can_spend(self._budget_settings.min_stage_seconds):
+            return [question], False
         try:
-            raw = self._llm.generate(build_decompose_prompt(question)).strip()
+            raw = self._generate_text(
+                "decompose",
+                build_decompose_prompt(question),
+                org_id=org_id,
+                conversation_id=conversation_id,
+            ).strip()
             subs = parse_sub_questions(raw, original=question)
         except Exception:
             return [question], False
@@ -511,26 +626,37 @@ class RagPipeline:
         top_score: float | None,
         *,
         retrieval_reused: bool,
+        org_id: str | None = None,
+        conversation_id: str | None = None,
+        budget: RequestBudget | None = None,
     ) -> RagResult:
         prompt = build_grounded_prompt(
             question=question,
             contexts=[h.content for h in hits],
             fallback_response=self._settings.fallback_response,
         )
-        raw = self._llm.generate(prompt).strip()
+        raw = self._generate_text(
+            "generate",
+            prompt,
+            org_id=org_id,
+            conversation_id=conversation_id,
+        ).strip()
         mode, text = _parse_tagged_mode(raw)
 
-        # Deterministic tone-compliance guard (Grounding Gap follow-up):
-        # instructions alone didn't reliably stop the model from using
-        # forbidden meta-language, so a declared-but-violating Mode A or B
-        # answer gets exactly ONE retry with a corrective reminder —
-        # mirroring the existing "at most one recovery attempt" pattern used
-        # for retrieval, applied to tone instead. If the retry still
-        # violates, we accept it anyway (graceful degradation — never loop,
-        # never fail the request).
         tone_retry_used = False
-        if mode in ("A", "B") and _violates_mode_b_tone(text):
-            retry_raw = self._llm.generate(prompt + _tone_retry_addendum(mode)).strip()
+        min_stage = self._budget_settings.min_stage_seconds
+        if (
+            mode in ("A", "B")
+            and _violates_mode_b_tone(text)
+            and budget is not None
+            and budget.can_spend(min_stage)
+        ):
+            retry_raw = self._generate_text(
+                "tone-retry",
+                prompt + _tone_retry_addendum(mode),
+                org_id=org_id,
+                conversation_id=conversation_id,
+            ).strip()
             tone_retry_used = True
             retry_mode, retry_text = _parse_tagged_mode(retry_raw)
             mode, text = retry_mode, retry_text
@@ -555,6 +681,8 @@ class RagPipeline:
         prior_hits: list[RetrievedChunk],
         *,
         reason: str,
+        budget: RequestBudget,
+        conversation_id: str | None = None,
     ) -> _RecoveryAttempt:
         """One bounded recovery: expand retrieval expressions → re-retrieve → fuse.
 
@@ -562,7 +690,9 @@ class RagPipeline:
         (graceful degradation — never fails the request).
         """
         del reason  # logged by caller via recovery_reason; kept for call-site clarity
-        queries = self._expand_recovery_queries(question, prior_hits)
+        queries = self._expand_recovery_queries(
+            question, prior_hits, org_id=org_id, conversation_id=conversation_id
+        )
         if not queries:
             return _RecoveryAttempt(
                 hits=list(prior_hits),
@@ -605,13 +735,23 @@ class RagPipeline:
         return _RecoveryAttempt(hits=fused, gate_score=gate_score, queries=queries)
 
     def _expand_recovery_queries(
-        self, question: str, hits: list[RetrievedChunk]
+        self,
+        question: str,
+        hits: list[RetrievedChunk],
+        *,
+        org_id: str | None = None,
+        conversation_id: str | None = None,
     ) -> list[str]:
         """Ask the LLM for alternate retrieval expressions; never fails the request."""
         snippets = [h.content for h in hits[:3]]
         prompt = build_recovery_queries_prompt(question, snippets)
         try:
-            raw = self._llm.generate(prompt)
+            raw = self._generate_text(
+                "recovery-expand",
+                prompt,
+                org_id=org_id,
+                conversation_id=conversation_id,
+            )
         except LLMProviderError:
             return []
         except Exception:
@@ -642,17 +782,28 @@ class RagPipeline:
         return out
 
     def _gate_failed(
-        self, question: str, hits: list[RetrievedChunk], top_score: float | None
+        self,
+        question: str,
+        hits: list[RetrievedChunk],
+        top_score: float | None,
+        *,
+        budget: RequestBudget,
+        org_id: str | None = None,
+        conversation_id: str | None = None,
     ) -> RagResult:
-        """Internal evidence insufficient: try web search (if enabled), else fallback.
-
-        Used after a gate miss (including post-recovery) and after the full
-        internal path (retrieve → optional recovery → generate) still finds
-        evidence insufficient. Web search remains optional and tool-gated —
-        the model only searches for real external named entities.
-        """
-        if self._web_search is not None and self._web_search_settings.enabled:
-            web = self._try_web_search(question, top_score)
+        """Internal evidence insufficient: try web search (if enabled), else fallback."""
+        min_stage = self._budget_settings.min_stage_seconds
+        if (
+            self._web_search is not None
+            and self._web_search_settings.enabled
+            and budget.can_spend(min_stage * 2)
+        ):
+            web = self._try_web_search(
+                question,
+                top_score,
+                org_id=org_id,
+                conversation_id=conversation_id,
+            )
             if web is not None:
                 return web
         return RagResult(
@@ -661,6 +812,7 @@ class RagPipeline:
             source="none",
             sources=hits,
             top_score=top_score,
+            budget_exhausted=not budget.can_spend(min_stage),
         )
 
     # -- Phase 8: retrieval reuse (a cheap, deterministic, non-LLM check) ---
@@ -746,7 +898,14 @@ class RagPipeline:
 
     # -- Capability B: single-step web-search tool use ---------------------
 
-    def _try_web_search(self, question: str, top_score: float | None) -> RagResult | None:
+    def _try_web_search(
+        self,
+        question: str,
+        top_score: float | None,
+        *,
+        org_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> RagResult | None:
         """One decision call + at most one search + one answer call.
 
         Any failure (model declines, search error/timeout, empty results) returns
@@ -759,6 +918,12 @@ class RagPipeline:
         try:
             decision = self._llm.generate_with_tools(
                 messages, tools=[WEB_SEARCH_TOOL], tool_choice="auto"
+            )
+            log_llm_call(
+                "web-decision",
+                self._llm,
+                org_id=org_id,
+                conversation_id=conversation_id,
             )
         except LLMProviderError:
             return None
@@ -783,8 +948,11 @@ class RagPipeline:
             f"[{i + 1}] {r.title}\n{r.snippet}\n{r.url}" for i, r in enumerate(results)
         )
         try:
-            raw = self._llm.generate(
-                build_web_answer_prompt(question, results_block)
+            raw = self._generate_text(
+                "web-answer",
+                build_web_answer_prompt(question, results_block),
+                org_id=org_id,
+                conversation_id=conversation_id,
             ).strip()
         except LLMProviderError:
             return None
@@ -812,11 +980,23 @@ class RagPipeline:
 
     # -- Capability A: conversation memory helpers -------------------------
 
-    def _rewrite_question(self, question: str, context: ConversationContext) -> str:
+    def _rewrite_question(
+        self,
+        question: str,
+        context: ConversationContext,
+        *,
+        org_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> str:
         recent = [(t.question, t.answer) for t in context.recent_turns]
         prompt = build_rewrite_prompt(question, context.summary, recent)
         try:
-            rewritten = self._llm.generate(prompt).strip()
+            rewritten = self._generate_text(
+                "rewrite",
+                prompt,
+                org_id=org_id,
+                conversation_id=conversation_id,
+            ).strip()
         except LLMProviderError:
             return question  # never let rewriting break the main path
 
@@ -850,7 +1030,11 @@ class RagPipeline:
             existing, [(t.question, t.answer) for t in falling_out]
         )
         try:
-            summary = self._llm.generate(prompt).strip()
+            summary = self._generate_text(
+                "summary-fold",
+                prompt,
+                conversation_id=conversation_id,
+            ).strip()
         except LLMProviderError:
             return  # best-effort; the turn stays verbatim and is folded in next time
         if summary:

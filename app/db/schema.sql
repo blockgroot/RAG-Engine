@@ -196,3 +196,15 @@ CREATE TABLE IF NOT EXISTS oauth_states (
     consumed_at TIMESTAMPTZ,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Short-TTL cache for repeated standalone policy questions (Phase 19).
+CREATE TABLE IF NOT EXISTS query_answer_cache (
+    org_id               UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    question_hash        TEXT NOT NULL,
+    normalized_question  TEXT NOT NULL,
+    payload              JSONB NOT NULL,
+    expires_at           TIMESTAMPTZ NOT NULL,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (org_id, question_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_query_answer_cache_expires ON query_answer_cache (expires_at);
