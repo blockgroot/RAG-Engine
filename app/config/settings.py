@@ -71,6 +71,14 @@ DEFAULT_RECOVERY_MAX_QUERIES = 2
 # the question likely bundles multiple distinct asks.
 DEFAULT_DECOMPOSE_ENABLED = True
 
+# Request-level time budget (Phase 19). Optional stages check remaining time before starting.
+DEFAULT_REQUEST_DEADLINE_SECONDS = 45.0
+DEFAULT_BUDGET_MIN_STAGE_SECONDS = 3.0
+
+# Query→answer cache for standalone questions (Phase 19).
+DEFAULT_QUERY_CACHE_ENABLED = True
+DEFAULT_QUERY_CACHE_TTL_SECONDS = 300
+
 # Web search tool (Phase 5). Keyless DuckDuckGo by default (no paid dependency);
 # set WEB_SEARCH_PROVIDER=tavily + WEB_SEARCH_API_KEY for production quality.
 DEFAULT_WEB_SEARCH_ENABLED = True
@@ -112,11 +120,15 @@ class LLMSettings:
 
     - ``model``    provider/model string, e.g. ``openai/auto`` or
       ``anthropic/claude-sonnet-5`` (required)
+    - ``aux_model`` optional cheaper/faster model for rewrite, decompose,
+      recovery expansion, summarization, and ingest contextualization (Phase 19).
+      When unset, every stage uses ``model``.
     - ``api_key``  optional explicit key (else provider's standard env var)
     - ``base_url`` optional; for OpenAI-compatible / self-hosted endpoints
     """
 
     model: str | None
+    aux_model: str | None
     api_key: str | None
     base_url: str | None
     timeout: float = DEFAULT_TIMEOUT
@@ -125,6 +137,7 @@ class LLMSettings:
     def from_env(cls) -> "LLMSettings":
         return cls(
             model=os.getenv("LLM_MODEL"),
+            aux_model=os.getenv("LLM_AUX_MODEL") or None,
             api_key=os.getenv("LLM_API_KEY"),
             base_url=os.getenv("LLM_BASE_URL"),
             timeout=float(os.getenv("LLM_TIMEOUT") or DEFAULT_TIMEOUT),
@@ -428,6 +441,40 @@ class DecomposeSettings:
     def from_env(cls) -> "DecomposeSettings":
         return cls(
             enabled=_env_bool("DECOMPOSE_ENABLED", DEFAULT_DECOMPOSE_ENABLED),
+        )
+
+
+@dataclass(frozen=True)
+class RequestBudgetSettings:
+    """Global per-request deadline for ``RagPipeline.answer()`` (Phase 19)."""
+
+    deadline_seconds: float = DEFAULT_REQUEST_DEADLINE_SECONDS
+    min_stage_seconds: float = DEFAULT_BUDGET_MIN_STAGE_SECONDS
+
+    @classmethod
+    def from_env(cls) -> "RequestBudgetSettings":
+        return cls(
+            deadline_seconds=float(
+                os.getenv("REQUEST_DEADLINE_SECONDS") or DEFAULT_REQUEST_DEADLINE_SECONDS
+            ),
+            min_stage_seconds=float(
+                os.getenv("REQUEST_BUDGET_MIN_STAGE_SECONDS") or DEFAULT_BUDGET_MIN_STAGE_SECONDS
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class QueryCacheSettings:
+    """Postgres-backed cache for repeated standalone questions (Phase 19)."""
+
+    enabled: bool = DEFAULT_QUERY_CACHE_ENABLED
+    ttl_seconds: int = DEFAULT_QUERY_CACHE_TTL_SECONDS
+
+    @classmethod
+    def from_env(cls) -> "QueryCacheSettings":
+        return cls(
+            enabled=_env_bool("QUERY_CACHE_ENABLED", DEFAULT_QUERY_CACHE_ENABLED),
+            ttl_seconds=int(os.getenv("QUERY_CACHE_TTL_SECONDS") or DEFAULT_QUERY_CACHE_TTL_SECONDS),
         )
 
 

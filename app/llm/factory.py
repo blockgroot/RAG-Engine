@@ -21,3 +21,15 @@ def build_llm_provider(settings: LLMSettings | None = None) -> LLMProvider:
         base_url=settings.base_url,
         timeout=settings.timeout,
     )
+
+
+def build_aux_llm_provider(settings: LLMSettings | None = None) -> LLMProvider:
+    """Build the auxiliary LLM for cheap classification-style stages (Phase 19)."""
+    settings = settings or LLMSettings.from_env()
+    model = settings.aux_model or settings.model
+    return OpenAICompatProvider(
+        model=model,
+        api_key=settings.api_key,
+        base_url=settings.base_url,
+        timeout=settings.timeout,
+    )

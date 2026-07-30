@@ -8,7 +8,7 @@ Public API:
 
 from .base import LLMProvider, ChatResult, ToolCall
 from .openai_provider import OpenAICompatProvider
-from .factory import build_llm_provider
+from .factory import build_aux_llm_provider, build_llm_provider
 
 __all__ = [
     "LLMProvider",
@@ -16,4 +16,5 @@ __all__ = [
     "ToolCall",
     "OpenAICompatProvider",
     "build_llm_provider",
+    "build_aux_llm_provider",
 ]

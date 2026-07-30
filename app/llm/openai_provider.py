@@ -21,6 +21,7 @@ from openai import OpenAI, APIError, APITimeoutError, APIConnectionError
 
 from ..core.exceptions import ConfigurationError, LLMProviderError
 from .base import ChatResult, LLMProvider, ToolCall
+from .usage import TokenUsage
 
 DEFAULT_TIMEOUT = 60.0
 
@@ -49,6 +50,7 @@ class OpenAICompatProvider(LLMProvider):
         self.api_key = api_key
         self.base_url = base_url
         self.timeout = timeout
+        self.last_usage: TokenUsage | None = None
         # base_url=None makes the client use OpenAI's default endpoint.
         self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
 
@@ -72,6 +74,12 @@ class OpenAICompatProvider(LLMProvider):
 
         if not response.choices:
             raise LLMProviderError("LLM returned no choices in the response")
+
+        usage = response.usage
+        self.last_usage = TokenUsage(
+            input_tokens=getattr(usage, "prompt_tokens", None) if usage else None,
+            output_tokens=getattr(usage, "completion_tokens", None) if usage else None,
+        )
 
         content = response.choices[0].message.content
         if content is None:
@@ -110,6 +118,12 @@ class OpenAICompatProvider(LLMProvider):
 
         if not response.choices:
             raise LLMProviderError("LLM returned no choices in the response")
+
+        usage = response.usage
+        self.last_usage = TokenUsage(
+            input_tokens=getattr(usage, "prompt_tokens", None) if usage else None,
+            output_tokens=getattr(usage, "completion_tokens", None) if usage else None,
+        )
 
         message = response.choices[0].message
         tool_calls = [

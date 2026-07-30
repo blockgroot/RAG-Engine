@@ -26,7 +26,7 @@ from ..config.settings import (
 from ..core.exceptions import ProviderError
 from ..embeddings import build_embedding_provider
 from ..embeddings.base import EmbeddingProvider
-from ..llm import build_llm_provider
+from ..llm import build_aux_llm_provider, build_llm_provider
 from ..llm.base import LLMProvider
 from ..memory import build_conversation_store
 from ..memory.base import ConversationStore
@@ -43,6 +43,7 @@ _UNSET = object()  # "argument omitted" vs an explicit None ("capability off")
 
 def build_rag_pipeline(
     llm: LLMProvider | None = None,
+    llm_aux: LLMProvider | None = None,
     embedder: EmbeddingProvider | None = None,
     store: VectorStore | None = None,
     settings: RagSettings | None = None,
@@ -55,6 +56,8 @@ def build_rag_pipeline(
     web_settings = WebSearchSettings.from_env()
     rag_settings = settings or RagSettings.from_env()
     store = store or build_vector_store()
+    llm_main = llm or build_llm_provider()
+    llm_aux_impl = llm_aux or (build_aux_llm_provider() if llm is None else llm_main)
 
     if memory is _UNSET:
         memory = build_conversation_store()
@@ -85,7 +88,8 @@ def build_rag_pipeline(
         )
 
     return RagPipeline(
-        llm=llm or build_llm_provider(),
+        llm=llm_main,
+        llm_aux=llm_aux_impl,
         embedder=embedder or build_embedding_provider(),
         store=store,
         settings=rag_settings,

@@ -76,6 +76,8 @@ class KeywordEmbedder(EmbeddingProvider):
 class RecordingLLM(LLMProvider):
     """Records prompts; returns a canned reply chosen by the prompt's kind."""
 
+    model: str = "recording-test"
+
     def __init__(
         self,
         *,
@@ -98,6 +100,10 @@ class RecordingLLM(LLMProvider):
         self._raise_on_recovery = raise_on_recovery
         self.recovery_calls = 0
         self.decompose_calls = 0
+        self.stages: list[str] = []
+        from app.llm.usage import TokenUsage
+
+        self.last_usage = TokenUsage(input_tokens=10, output_tokens=5)
         self.grounded_calls = 0
 
     def generate(self, prompt: str) -> str:
