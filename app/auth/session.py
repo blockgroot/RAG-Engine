@@ -27,6 +27,7 @@ class SessionClaims:
     user_id: str
     org_id: str
     role: str
+    issued_at: datetime
 
 
 def create_session_token(user: User, *, settings: AuthSettings | None = None) -> str:
@@ -62,4 +63,14 @@ def decode_session_token(token: str, *, settings: AuthSettings | None = None) ->
     org_id = payload.get("org_id")
     if not org_id:
         raise AuthError("Session is missing a resolved organization")
-    return SessionClaims(user_id=payload["sub"], org_id=org_id, role=payload.get("role", "member"))
+    raw_iat = payload.get("iat")
+    if isinstance(raw_iat, (int, float)):
+        issued_at = datetime.fromtimestamp(raw_iat, tz=timezone.utc)
+    else:
+        issued_at = datetime.now(timezone.utc)
+    return SessionClaims(
+        user_id=payload["sub"],
+        org_id=org_id,
+        role=payload.get("role", "member"),
+        issued_at=issued_at,
+    )
