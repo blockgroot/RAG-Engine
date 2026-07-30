@@ -38,9 +38,15 @@ class OrganizationRef:
 
 @dataclass(frozen=True)
 class StoredSourceDocument:
-    """Sync metadata for one ingested source page (incremental re-sync)."""
+    """Sync metadata for one ingested source page (incremental re-sync).
+
+    ``provider`` (e.g. ``"notion"``, ``"google"``) partitions sync state so a
+    sync for one provider never diffs against another provider's rows in the
+    same org — see CLAUDE.md §4 / GOOGLE_INTEGRATION_PLAN.md §3.
+    """
 
     document_id: str
+    provider: str
     external_id: str
     title: str
     source_uri: str | None
@@ -90,6 +96,14 @@ class VectorStore(ABC):
         """Return the ``top_k`` most similar chunks *within ``org_id`` only*."""
         raise NotImplementedError
 
+    def list_chunk_texts(self, org_id: str) -> list[str]:
+        """Return raw chunk ``content`` strings for ``org_id`` (Phase 17 vocab).
+
+        Used to build a per-tenant SymSpell dictionary for query spelling
+        correction. Optional: default raises; ``PgVectorStore`` implements it.
+        """
+        raise NotImplementedError("this vector store does not support listing chunk texts")
+
     def keyword_search(
         self,
         org_id: str,
@@ -107,10 +121,13 @@ class VectorStore(ABC):
         """
         raise NotImplementedError("this vector store does not support keyword search")
 
-    def list_source_documents(self, org_id: str) -> list["StoredSourceDocument"]:
+    def list_source_documents(self, org_id: str, provider: str) -> list["StoredSourceDocument"]:
         """Return ingested source-page metadata for incremental sync.
 
-        Optional: default raises. Rows without ``source_external_id`` are omitted.
+        Scoped to ``provider`` (e.g. ``"notion"``, ``"google"``) as well as
+        ``org_id`` — sync state for one provider must never be diffed against
+        another provider's rows in the same org (see CLAUDE.md §4). Optional:
+        default raises. Rows without ``source_external_id`` are omitted.
         """
         raise NotImplementedError("this vector store does not support source document listing")
 
@@ -118,6 +135,7 @@ class VectorStore(ABC):
         self,
         org_id: str,
         *,
+        provider: str,
         external_id: str,
         title: str,
         chunks: list[str],
@@ -127,9 +145,10 @@ class VectorStore(ABC):
     ) -> str:
         """Replace any prior copy of this source page, then store the new chunks.
 
-        Deletes existing rows for the same ``(org_id, external_id)`` and any
-        legacy duplicates that share ``source_uri`` but lack an external id,
-        then inserts one fresh document. Optional capability.
+        Deletes existing rows for the same ``(org_id, provider, external_id)``
+        and any legacy duplicates that share ``source_uri`` (within the same
+        provider) but lack an external id, then inserts one fresh document.
+        Optional capability.
         """
         raise NotImplementedError("this vector store does not support source document upsert")
 
@@ -137,6 +156,7 @@ class VectorStore(ABC):
         self,
         org_id: str,
         *,
+        provider: str,
         external_id: str,
         title: str,
         source_uri: str | None = None,
@@ -151,6 +171,9 @@ class VectorStore(ABC):
             "this vector store does not support source document acknowledge"
         )
 
-    def delete_source_documents(self, org_id: str, external_ids: list[str]) -> int:
-        """Delete ingested pages by source external id. Returns rows removed."""
+    def delete_source_documents(self, org_id: str, provider: str, external_ids: list[str]) -> int:
+        """Delete ingested pages by source external id, scoped to ``provider``.
+
+        Returns rows removed.
+        """
         raise NotImplementedError("this vector store does not support source document delete")

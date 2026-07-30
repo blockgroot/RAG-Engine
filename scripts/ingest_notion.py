@@ -80,7 +80,7 @@ def main() -> int:
         print(f"\nCreated organization '{org_name}': {org_id}")
 
         print("Ingesting (fetch → chunk → embed → store)...")
-        result = ingest_source(adapter, org_id, store=store)
+        result = ingest_source(adapter, org_id, provider="notion", store=store)
 
         print(
             f"\nDone: {result.documents_ingested} document(s), "

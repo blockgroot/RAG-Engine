@@ -59,8 +59,11 @@ def test_build_oauth_provider_factory_returns_notion(_notion_oauth_settings):
 
 
 def test_build_oauth_provider_rejects_unknown_provider():
+    # "google" used to be unknown/unimplemented; it is now a real provider
+    # (Phase 3 of the Google Integration Plan), so this test now exercises a
+    # genuinely unknown provider name instead.
     with pytest.raises(ConfigurationError):
-        build_oauth_provider("google")
+        build_oauth_provider("github")
 
 
 def test_exchange_code_success(_notion_oauth_settings, monkeypatch):

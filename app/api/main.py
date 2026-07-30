@@ -32,6 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from ..config.settings import ApiSettings
 from ..db import close_pool
+from ..rag import shutdown_summary_folds
 from . import admin as admin_router
 from . import auth as auth_router
 from . import chat as chat_router
@@ -101,6 +102,9 @@ async def lifespan(_app: FastAPI):
         stop.set()
         if worker is not None:
             worker.join(timeout=8)
+        # Phase 15: finish any in-flight summary folds before dropping the pool
+        # so a mid-shutdown request doesn't silently lose bookkeeping.
+        shutdown_summary_folds(wait=True, timeout=30.0)
         close_pool()
 
 

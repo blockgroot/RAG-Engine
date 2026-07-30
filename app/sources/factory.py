@@ -10,6 +10,7 @@ from __future__ import annotations
 from ..config.settings import DEFAULT_SOURCE_TYPE, NotionSettings
 from ..core.exceptions import ConfigurationError
 from .base import SourceAdapter
+from .google_drive import GoogleDriveAdapter
 from .notion import NotionAdapter
 
 
@@ -18,6 +19,7 @@ def build_source_adapter(
     *,
     token_name: str | None = None,
     token: str | None = None,
+    config: dict | None = None,
 ) -> SourceAdapter:
     """Build the configured source adapter (defaults to Notion).
 
@@ -26,12 +28,20 @@ def build_source_adapter(
 
     - ``token``  the exact secret to use, already resolved by the caller. This
       is how Phase 12's job worker points ingestion at an org's *OAuth-connected*
-      credential (``app.auth.get_connection_token``) without touching env vars.
+      credential (``app.auth.get_live_connection_token``) without touching env vars.
     - ``token_name``  selects a ``NOTION_TOKEN_<NAME>`` env var (Phase 9), resolved
       via ``NotionSettings.resolve_token`` with **no** fallback to another org's
       token. Used only when ``token`` is not supplied.
 
     When neither is given, the default ``NOTION_TOKEN`` is used (Phase 4).
+
+    ``config`` is the optional provider-specific ingestion scope from
+    ``oauth_connections.source_config`` (Google Integration Phase 6). Notion
+    ignores it (visibility is already scoped by what was shared with the
+    integration). Google requires ``config["folder_id"]`` — a Drive OAuth
+    grant has no equivalent implicit scoping — and ``token`` must already be
+    an OAuth-resolved access token (never a ``token_name`` env lookup; that
+    plumbing is Notion-Phase-9-specific).
     """
     source_type = (source_type or DEFAULT_SOURCE_TYPE).lower()
 
@@ -40,6 +50,20 @@ def build_source_adapter(
         resolved = token or settings.resolve_token(token_name)
         return NotionAdapter(settings=settings, token=resolved)
 
+    if source_type == "google":
+        if not token:
+            raise ConfigurationError(
+                "build_source_adapter('google', ...) requires an OAuth access "
+                "token (pass token= from get_live_connection_token)."
+            )
+        folder_id = (config or {}).get("folder_id")
+        if not folder_id:
+            raise ConfigurationError(
+                "Google Drive connection has no folder configured. Paste a "
+                "Drive folder URL on the Sources page before syncing."
+            )
+        return GoogleDriveAdapter(token=token, folder_id=folder_id)
+
     raise ConfigurationError(
-        f"Unknown source type: {source_type!r} (expected 'notion')"
+        f"Unknown source type: {source_type!r} (expected 'notion' or 'google')"
     )

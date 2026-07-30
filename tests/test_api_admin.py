@@ -233,3 +233,248 @@ def test_non_admin_cannot_access_admin_routes(client, store, org_cleanup):
 
     response = client.get("/admin/members", cookies={"session": token})
     assert response.status_code == 403
+
+
+# -- Google connection config (Phase 4 gap + Phase 6) -------------------------
+
+
+def _save_google(org_id: str, *, workspace: str = "drive-user@example.com") -> str:
+    return save_connection(
+        org_id,
+        "google",
+        OAuthTokens(
+            access_token="goog_access",
+            refresh_token="goog_refresh",
+            expires_at=None,
+            external_workspace_id=workspace,
+            external_workspace_name=workspace,
+        ),
+    )
+
+
+@requires_db
+def test_put_google_config_parses_url_and_validates_folder(client, admin_org, monkeypatch):
+    org_id, cookies = admin_org
+    connection_id = _save_google(org_id)
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "id": "1AbCdEfGhIjKlMnOpQrStUvWxYz",
+                "name": "HR Policies",
+                "mimeType": "application/vnd.google-apps.folder",
+            }
+
+    monkeypatch.setattr(
+        "app.sources.google_drive_utils.httpx.get", lambda *a, **k: FakeResponse()
+    )
+
+    response = client.put(
+        f"/admin/connections/{connection_id}/config",
+        json={
+            "folder_url": (
+                "https://drive.google.com/drive/folders/"
+                "1AbCdEfGhIjKlMnOpQrStUvWxYz?usp=sharing"
+            )
+        },
+        cookies=cookies,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["config"]["folder_id"] == "1AbCdEfGhIjKlMnOpQrStUvWxYz"
+    assert body["config"]["folder_name"] == "HR Policies"
+
+    listed = client.get("/admin/connections", cookies=cookies).json()
+    assert listed[0]["source_config"]["folder_id"] == "1AbCdEfGhIjKlMnOpQrStUvWxYz"
+
+    got = client.get(f"/admin/connections/{connection_id}/config", cookies=cookies).json()
+    assert got["config"]["folder_name"] == "HR Policies"
+
+
+@requires_db
+def test_put_google_config_rejects_non_folder_mime(client, admin_org, monkeypatch):
+    org_id, cookies = admin_org
+    connection_id = _save_google(org_id)
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "id": "1AbCdEfGhIjKlMnOpQrStUvWxYz",
+                "name": "Leave Policy",
+                "mimeType": "application/vnd.google-apps.document",
+            }
+
+    monkeypatch.setattr(
+        "app.sources.google_drive_utils.httpx.get", lambda *a, **k: FakeResponse()
+    )
+
+    response = client.put(
+        f"/admin/connections/{connection_id}/config",
+        json={"folder_url": "1AbCdEfGhIjKlMnOpQrStUvWxYz"},
+        cookies=cookies,
+    )
+    assert response.status_code == 400
+    assert "folder" in response.json()["detail"].lower()
+
+
+@requires_db
+def test_put_google_config_rejects_inaccessible_folder(client, admin_org, monkeypatch):
+    org_id, cookies = admin_org
+    connection_id = _save_google(org_id)
+
+    class FakeResponse:
+        status_code = 404
+        text = "Not Found"
+
+        def json(self):
+            return {}
+
+    monkeypatch.setattr(
+        "app.sources.google_drive_utils.httpx.get", lambda *a, **k: FakeResponse()
+    )
+
+    response = client.put(
+        f"/admin/connections/{connection_id}/config",
+        json={"folder_url": "1AbCdEfGhIjKlMnOpQrStUvWxYz"},
+        cookies=cookies,
+    )
+    assert response.status_code == 400
+
+
+@requires_db
+def test_put_config_cross_org_returns_404(client, admin_org, store, org_cleanup):
+    _, cookies = admin_org
+    other_org = store.create_organization(f"Admin API Config Other {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(other_org)
+    other_connection_id = _save_google(other_org)
+
+    response = client.put(
+        f"/admin/connections/{other_connection_id}/config",
+        json={"folder_url": "1AbCdEfGhIjKlMnOpQrStUvWxYz"},
+        cookies=cookies,
+    )
+    assert response.status_code == 404
+
+
+@requires_db
+def test_put_config_rejects_notion_connection(client, admin_org):
+    org_id, cookies = admin_org
+    connection_id = save_connection(
+        org_id,
+        "notion",
+        OAuthTokens(
+            access_token="ntn_cfg",
+            refresh_token=None,
+            expires_at=None,
+            external_workspace_id="ws-cfg",
+        ),
+    )
+    response = client.put(
+        f"/admin/connections/{connection_id}/config",
+        json={"folder_url": "1AbCdEfGhIjKlMnOpQrStUvWxYz"},
+        cookies=cookies,
+    )
+    assert response.status_code == 400
+
+
+@requires_db
+def test_google_config_survives_reconnect(client, admin_org, monkeypatch):
+    org_id, cookies = admin_org
+    connection_id = _save_google(org_id)
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "id": "1FolderPersistIdXX",
+                "name": "Policies",
+                "mimeType": "application/vnd.google-apps.folder",
+            }
+
+    monkeypatch.setattr(
+        "app.sources.google_drive_utils.httpx.get", lambda *a, **k: FakeResponse()
+    )
+
+    client.put(
+        f"/admin/connections/{connection_id}/config",
+        json={"folder_url": "1FolderPersistIdXX"},
+        cookies=cookies,
+    )
+
+    # Reconnect (upsert tokens) must not clobber source_config.
+    save_connection(
+        org_id,
+        "google",
+        OAuthTokens(
+            access_token="goog_access_new",
+            refresh_token="goog_refresh_new",
+            expires_at=None,
+            external_workspace_id="drive-user@example.com",
+            external_workspace_name="drive-user@example.com",
+        ),
+    )
+
+    got = client.get(f"/admin/connections/{connection_id}/config", cookies=cookies).json()
+    assert got["config"]["folder_id"] == "1FolderPersistIdXX"
+    assert got["config"]["folder_name"] == "Policies"
+
+
+@requires_db
+def test_google_changes_missing_folder_config_returns_400(client, admin_org):
+    org_id, cookies = admin_org
+    connection_id = _save_google(org_id)
+
+    response = client.get(
+        f"/admin/connections/{connection_id}/changes", cookies=cookies
+    )
+    assert response.status_code == 400
+    assert "folder" in response.json()["detail"].lower()
+
+
+@requires_db
+def test_google_changes_with_config_uses_adapter(client, admin_org, monkeypatch):
+    from app.ingestion.pipeline import ChangeReport
+
+    org_id, cookies = admin_org
+    connection_id = _save_google(org_id)
+
+    from app.auth import set_connection_config
+
+    set_connection_config(
+        org_id, "google", {"folder_id": "1FolderIdXXXXX", "folder_name": "HR"}
+    )
+
+    captured: dict = {}
+
+    def fake_build(provider, *, token=None, config=None, **kwargs):
+        captured["provider"] = provider
+        captured["token"] = token
+        captured["config"] = config
+        return object()
+
+    monkeypatch.setattr("app.api.admin.build_source_adapter", fake_build)
+    monkeypatch.setattr(
+        "app.api.admin.detect_source_changes",
+        lambda adapter, org_id, provider: ChangeReport(
+            new_count=1,
+            updated_count=0,
+            removed_count=0,
+            unchanged_count=2,
+            remote_total=3,
+        ),
+    )
+
+    response = client.get(
+        f"/admin/connections/{connection_id}/changes", cookies=cookies
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["new_count"] == 1
+    assert body["has_changes"] is True
+    assert captured["provider"] == "google"
+    assert captured["config"]["folder_id"] == "1FolderIdXXXXX"

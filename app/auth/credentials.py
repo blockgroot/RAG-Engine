@@ -18,12 +18,19 @@ entirely rather than trying to reconcile it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
-from ..core.exceptions import ConfigurationError
+from psycopg.types.json import Json
+
+from ..core.exceptions import ConfigurationError, OAuthReauthRequiredError
 from ..db.connection import get_connection
 from ..security import decrypt, encrypt
 from .base import OAuthTokens
+
+# How far ahead of actual expiry we proactively refresh. Google access tokens
+# live ~1h; refreshing 5 minutes early absorbs request latency/clock skew
+# without adding a retry loop.
+_REFRESH_SAFETY_MARGIN = timedelta(minutes=5)
 
 
 @dataclass(frozen=True)
@@ -35,6 +42,9 @@ class OAuthConnectionInfo:
     external_workspace_id: str
     external_workspace_name: str | None
     created_at: datetime
+    # Provider-specific ingestion scope (e.g. Google's folder_id/folder_name).
+    # Never secrets — safe to return on the admin connections list.
+    source_config: dict | None = None
 
 
 def save_connection(
@@ -104,12 +114,113 @@ def get_connection_token(org_id: str, provider: str) -> str:
     return decrypt(row[0])
 
 
+def get_live_connection_token(org_id: str, provider: str) -> str:
+    """Return a valid (refreshed if necessary) access token for this connection.
+
+    Provider-agnostic (CLAUDE.md D10): Notion's tokens never expire, Google's
+    expire in ~1h — this is the ONE place that owns "is it still good, and if
+    not, can/should we refresh it" so every caller benefits without knowing
+    which provider it's talking to.
+
+    - No ``expires_at`` (Notion) or still comfortably valid: return the stored
+      access token unchanged, no network call.
+    - Within ``_REFRESH_SAFETY_MARGIN`` of expiry (or already past) and a
+      refresh token is on file: call ``build_oauth_provider(provider).refresh()``.
+      - If refresh isn't supported (``NotImplementedError``), fall back to the
+        stored access token unchanged — this provider doesn't need refresh.
+      - On success, persist the new access/refresh/expiry and return the new
+        access token. A refresh response that omits a new refresh token (Google
+        commonly does on non-first refreshes) must NOT null out the one we
+        already have on file.
+      - On a terminal provider failure (e.g. Google's ``invalid_grant`` from a
+        revoked/expired refresh token), raise ``OAuthReauthRequiredError`` so
+        the caller can surface an actionable "reconnect" message. Never
+        retry-looped — at most one refresh attempt per call.
+    - No refresh token on file: nothing to refresh with, return the stored
+      (possibly stale) access token as-is.
+    """
+    # Imported lazily to avoid a hard import cycle (factory -> providers ->
+    # credentials isn't a cycle today, but this keeps the module import order
+    # from ever mattering here, matching the lazy-import convention used for
+    # optional/heavier deps elsewhere in this codebase).
+    from .factory import build_oauth_provider
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT access_token_encrypted, refresh_token_encrypted, expires_at "
+            "FROM oauth_connections WHERE org_id = %s AND provider = %s",
+            (org_id, provider),
+        ).fetchone()
+    if not row:
+        raise ConfigurationError(
+            f"No {provider!r} connection for this organization. Connect it first."
+        )
+
+    access_encrypted, refresh_encrypted, expires_at = row
+    access_token = decrypt(access_encrypted)
+
+    if expires_at is None:
+        return access_token
+
+    now = datetime.now(timezone.utc)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at - now > _REFRESH_SAFETY_MARGIN:
+        return access_token
+
+    if not refresh_encrypted:
+        # Expiring/expired but nothing to refresh with — hand back what we
+        # have; the caller's downstream API call will fail with its own
+        # provider error if it's actually no longer valid.
+        return access_token
+
+    refresh_token = decrypt(refresh_encrypted)
+
+    try:
+        new_tokens = build_oauth_provider(provider).refresh(refresh_token)
+    except NotImplementedError:
+        # Provider doesn't support/need refresh (e.g. Notion) — stored token
+        # stands unchanged.
+        return access_token
+    except OAuthReauthRequiredError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - map any other refresh failure to a terminal error
+        raise OAuthReauthRequiredError(
+            f"Refreshing the {provider!r} connection failed; reconnect it to continue.",
+            cause=exc,
+        ) from exc
+
+    new_access_encrypted = encrypt(new_tokens.access_token)
+    # Don't overwrite a stored refresh token with None — Google frequently
+    # omits it on refresh responses after the first exchange.
+    new_refresh_encrypted = (
+        encrypt(new_tokens.refresh_token) if new_tokens.refresh_token else refresh_encrypted
+    )
+
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE oauth_connections SET "
+            "access_token_encrypted = %s, refresh_token_encrypted = %s, expires_at = %s "
+            "WHERE org_id = %s AND provider = %s",
+            (
+                new_access_encrypted,
+                new_refresh_encrypted,
+                new_tokens.expires_at,
+                org_id,
+                provider,
+            ),
+        )
+
+    return new_tokens.access_token
+
+
 def list_connections(org_id: str) -> list[OAuthConnectionInfo]:
     """List this org's connections (metadata only — never the decrypted token)."""
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT id::text, provider, external_workspace_id, "
-            "external_workspace_name, created_at FROM oauth_connections "
+            "external_workspace_name, created_at, source_config "
+            "FROM oauth_connections "
             "WHERE org_id = %s ORDER BY created_at DESC",
             (org_id,),
         ).fetchall()
@@ -120,6 +231,52 @@ def list_connections(org_id: str) -> list[OAuthConnectionInfo]:
             external_workspace_id=r[2],
             external_workspace_name=r[3],
             created_at=r[4],
+            source_config=r[5],
         )
         for r in rows
     ]
+
+
+def set_connection_config(org_id: str, provider: str, config: dict) -> None:
+    """Store this org's provider-specific ingestion scope config.
+
+    Generic on purpose (Google Integration Phase 4): Notion never needs this
+    (an integration token already only sees pages explicitly shared with it),
+    but Google Drive requires the admin to designate an in-scope folder up
+    front, and a future GitHub/Slack adapter will need its own shape (a repo
+    name, a channel list). Rather than one column per provider, this stores
+    whatever dict that provider's admin flow collected as JSONB.
+
+    Requires the ``(org_id, provider)`` connection row to already exist (i.e.
+    the OAuth connect flow has run) — raises ``ConfigurationError`` otherwise,
+    mirroring ``get_connection_token``'s not-connected error, since scope
+    config with no underlying connection is meaningless.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "UPDATE oauth_connections SET source_config = %s "
+            "WHERE org_id = %s AND provider = %s RETURNING id",
+            (Json(config), org_id, provider),
+        ).fetchone()
+    if not row:
+        raise ConfigurationError(
+            f"No {provider!r} connection for this organization. Connect it first."
+        )
+
+
+def get_connection_config(org_id: str, provider: str) -> dict | None:
+    """Return this org's stored provider-specific scope config, or ``None``.
+
+    ``None`` covers both "never connected" and "connected but never
+    configured" — callers that need to distinguish those cases should check
+    ``list_connections``/``get_connection_token`` separately; this is purely
+    about the optional scope config.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT source_config FROM oauth_connections WHERE org_id = %s AND provider = %s",
+            (org_id, provider),
+        ).fetchone()
+    if not row:
+        return None
+    return row[0]

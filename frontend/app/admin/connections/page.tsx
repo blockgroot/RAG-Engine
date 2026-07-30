@@ -25,9 +25,9 @@ function updateCompleteMessage(docCount: number | null | undefined): string {
   if (docCount != null && docCount > 0) {
     return `Sync complete — ${docCount} policy page${
       docCount === 1 ? "" : "s"
-    } updated to match Notion. Ask can use the new policies now.`;
+    } updated. Ask can use the new policies now.`;
   }
-  return "Sync complete — your policies already matched Notion. Nothing needed rewriting.";
+  return "Sync complete — your policies already matched the source. Nothing needed rewriting.";
 }
 
 export default function ConnectionsPage() {
@@ -51,10 +51,12 @@ export default function ConnectionsPage() {
     const next: Record<string, SyncChanges> = {};
     await Promise.all(
       list.map(async (c) => {
+        // Google needs a folder before change-check works.
+        if (c.provider === "google" && !c.source_config?.folder_id) return;
         try {
           next[c.id] = await api.checkConnectionChanges(c.id);
         } catch {
-          // Notion blip — leave prior state; don't block the page.
+          // Source blip — leave prior state; don't block the page.
         }
       })
     );
@@ -163,8 +165,8 @@ export default function ConnectionsPage() {
           <p className="eyebrow">Admin</p>
           <h1>Data sources</h1>
           <p className="muted">
-            We only fetch Notion page timestamps until something actually changed —
-            then you can update just those pages.
+            Connect Notion or Google Drive. We only fetch page timestamps until
+            something actually changed — then you can update just those pages.
           </p>
         </div>
         {message && (
@@ -202,6 +204,12 @@ export default function ConnectionsPage() {
                 onCheckAgain={
                   connection ? () => refreshChanges(connections) : undefined
                 }
+                onConfigSaved={(updated) => {
+                  setConnections((prev) =>
+                    prev.map((c) => (c.id === updated.id ? updated : c))
+                  );
+                  refreshChanges([updated]);
+                }}
               />
             );
           })}

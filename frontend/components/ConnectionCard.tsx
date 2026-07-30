@@ -1,9 +1,16 @@
+import { useState } from "react";
 import { api, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
 import { JobStatusBadge } from "./JobStatusBadge";
 
 const PROVIDER_LABELS: Record<string, string> = {
   notion: "Notion",
   google: "Google Drive",
+  github: "GitHub",
+};
+
+const SOURCE_NOUN: Record<string, string> = {
+  notion: "Notion",
+  google: "Drive",
   github: "GitHub",
 };
 
@@ -14,8 +21,8 @@ const ACTIVE = new Set(["queued", "running"]);
  * re-dumps everything. Instead we surface a change notice when remote pages
  * differ, and "Update policies" runs an incremental upsert.
  *
- * No Notion edit → no Update button (by design). Change check is metadata-only;
- * the full ingest only runs when the user clicks Update.
+ * Google also needs a folder URL before any sync — Drive has no Notion-style
+ * "whatever was shared with the integration" boundary.
  */
 export function ConnectionCard({
   provider,
@@ -25,6 +32,7 @@ export function ConnectionCard({
   checkingChanges,
   onUpdate,
   onCheckAgain,
+  onConfigSaved,
 }: {
   provider: "notion" | "google" | "github";
   connection: ConnectionRecord | undefined;
@@ -33,10 +41,36 @@ export function ConnectionCard({
   checkingChanges?: boolean;
   onUpdate: (connectionId: string) => void;
   onCheckAgain?: () => void;
+  onConfigSaved?: (connection: ConnectionRecord) => void;
 }) {
-  const available = provider === "notion";
+  const available = provider === "notion" || provider === "google";
   const syncInProgress = lastJob != null && ACTIVE.has(lastJob.status);
   const needsUpdate = Boolean(changes?.has_changes);
+  const folderConfigured = Boolean(connection?.source_config?.folder_id);
+  const needsFolder = provider === "google" && connection && !folderConfigured;
+
+  const [folderUrl, setFolderUrl] = useState("");
+  const [savingConfig, setSavingConfig] = useState(false);
+  const [configError, setConfigError] = useState<string | null>(null);
+
+  async function handleSaveFolder(e: React.FormEvent) {
+    e.preventDefault();
+    if (!connection) return;
+    setSavingConfig(true);
+    setConfigError(null);
+    try {
+      const result = await api.setConnectionConfig(connection.id, folderUrl.trim());
+      setFolderUrl("");
+      onConfigSaved?.({
+        ...connection,
+        source_config: result.config,
+      });
+    } catch (err) {
+      setConfigError(err instanceof Error ? err.message : "Could not save folder.");
+    } finally {
+      setSavingConfig(false);
+    }
+  }
 
   return (
     <div className="card">
@@ -63,6 +97,40 @@ export function ConnectionCard({
         </p>
       )}
 
+      {connection && provider === "google" && folderConfigured && (
+        <p className="muted" style={{ marginTop: "0.4rem" }}>
+          Syncing folder:{" "}
+          <strong style={{ color: "inherit", fontWeight: 600 }}>
+            {connection.source_config?.folder_name || connection.source_config?.folder_id}
+          </strong>
+        </p>
+      )}
+
+      {needsFolder && (
+        <form onSubmit={handleSaveFolder} className="stack" style={{ marginTop: "0.9rem" }}>
+          <p className="muted" style={{ margin: 0 }}>
+            Paste a Drive folder URL (or folder id). Only Google Docs under that folder
+            will be ingested.
+          </p>
+          <div className="field">
+            <label htmlFor={`folder-${provider}`}>Folder URL</label>
+            <input
+              id={`folder-${provider}`}
+              className="input"
+              type="text"
+              required
+              placeholder="https://drive.google.com/drive/folders/…"
+              value={folderUrl}
+              onChange={(e) => setFolderUrl(e.target.value)}
+            />
+          </div>
+          {configError && <div className="banner banner-warn">{configError}</div>}
+          <button className="button" type="submit" disabled={savingConfig || !folderUrl.trim()}>
+            {savingConfig ? "Saving…" : "Save folder"}
+          </button>
+        </form>
+      )}
+
       {lastJob && (
         <p
           className="muted"
@@ -87,7 +155,7 @@ export function ConnectionCard({
         </p>
       )}
 
-      {connection && needsUpdate && !syncInProgress && (
+      {connection && !needsFolder && needsUpdate && !syncInProgress && (
         <div className="banner banner-wait" style={{ marginTop: "0.9rem" }}>
           <strong>We noticed changes in your policies</strong>
           <p className="muted" style={{ margin: "0.35rem 0 0" }}>
@@ -103,13 +171,13 @@ export function ConnectionCard({
         </div>
       )}
 
-      {connection && !needsUpdate && !syncInProgress && !checkingChanges && (
+      {connection && !needsFolder && !needsUpdate && !syncInProgress && !checkingChanges && (
         <p className="muted" style={{ marginTop: "0.75rem" }}>
           Policies look up to date
           {changes != null
             ? ` (${changes.unchanged_count} page${
                 changes.unchanged_count === 1 ? "" : "s"
-              } match Notion)`
+              } match ${SOURCE_NOUN[provider] || "source"})`
             : ""}
           . Re-sync can be done if any new changes were made to the policies.
         </p>
@@ -127,7 +195,7 @@ export function ConnectionCard({
             Connect {PROVIDER_LABELS[provider]}
           </a>
         )}
-        {connection && needsUpdate && (
+        {connection && !needsFolder && needsUpdate && (
           <button
             className="button"
             type="button"
@@ -137,7 +205,7 @@ export function ConnectionCard({
             {syncInProgress ? "Updating…" : "Update policies"}
           </button>
         )}
-        {connection && !syncInProgress && onCheckAgain && (
+        {connection && !needsFolder && !syncInProgress && onCheckAgain && (
           <button
             className="button-secondary"
             type="button"

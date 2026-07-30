@@ -68,11 +68,24 @@ export interface SyncChanges {
   has_changes: boolean;
 }
 
+export interface ConnectionSourceConfig {
+  folder_id?: string;
+  folder_name?: string;
+}
+
 export interface ConnectionRecord {
   id: string;
   provider: "notion" | "google" | "github";
   external_workspace_name: string | null;
   created_at: string;
+  /** Non-secret ingestion scope (e.g. Google Drive folder). */
+  source_config?: ConnectionSourceConfig | null;
+}
+
+export interface ConnectionConfigResponse {
+  connection_id: string;
+  provider: string;
+  config: ConnectionSourceConfig;
 }
 
 export interface JobRecord {
@@ -123,6 +136,13 @@ export const api = {
     ),
 
   listConnections: () => request<ConnectionRecord[]>("/admin/connections"),
+  getConnectionConfig: (connectionId: string) =>
+    request<ConnectionConfigResponse>(`/admin/connections/${connectionId}/config`),
+  setConnectionConfig: (connectionId: string, folderUrl: string) =>
+    request<ConnectionConfigResponse>(`/admin/connections/${connectionId}/config`, {
+      method: "PUT",
+      body: JSON.stringify({ folder_url: folderUrl }),
+    }),
   checkConnectionChanges: (connectionId: string) =>
     request<SyncChanges>(`/admin/connections/${connectionId}/changes`),
   triggerIngest: (connectionId: string) =>

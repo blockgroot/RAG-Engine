@@ -66,15 +66,21 @@ def detect_source_changes(
     adapter: SourceAdapter,
     org_id: str,
     *,
+    provider: str,
     store: VectorStore | None = None,
 ) -> ChangeReport:
     """Compare remote page metadata to stored rows — no content download.
 
     Cheap enough to call when an admin opens Sources: only ``list_documents``.
+
+    ``provider`` (e.g. ``"notion"``, ``"google"``) must be supplied by the
+    caller from the connection's known provider, never inferred — sync state
+    is partitioned per provider so a Google sync never diffs against Notion's
+    rows in the same org (see CLAUDE.md §4).
     """
     store = store or build_vector_store()
     refs = adapter.list_documents()
-    stored = {d.external_id: d for d in store.list_source_documents(org_id)}
+    stored = {d.external_id: d for d in store.list_source_documents(org_id, provider)}
 
     new_n = updated_n = unchanged_n = 0
     live_ids: set[str] = set()
@@ -133,6 +139,7 @@ def ingest_source(
     adapter: SourceAdapter,
     org_id: str,
     *,
+    provider: str,
     embedder: EmbeddingProvider | None = None,
     store: VectorStore | None = None,
     chunking: ChunkingSettings | None = None,
@@ -141,6 +148,11 @@ def ingest_source(
     incremental: bool = True,
 ) -> IngestResult:
     """Ingest documents from ``adapter`` into ``org_id``.
+
+    ``provider`` (e.g. ``"notion"``, ``"google"``) must be supplied by the
+    caller from the connection's known provider, never inferred — sync state
+    is partitioned per provider so a Google sync never diffs against Notion's
+    rows in the same org (see CLAUDE.md §4).
 
     With ``incremental=True`` (default): only new/changed pages are fetched and
     upserted; unchanged pages are skipped; pages gone from the source are
@@ -154,7 +166,7 @@ def ingest_source(
         llm = build_llm_provider()
 
     refs = adapter.list_documents()
-    stored = {d.external_id: d for d in store.list_source_documents(org_id)}
+    stored = {d.external_id: d for d in store.list_source_documents(org_id, provider)}
 
     if incremental:
         to_add, to_update, removed_ids, unchanged = _plan_refs(refs, stored)
@@ -165,7 +177,7 @@ def ingest_source(
         removed_ids = [eid for eid in stored if eid not in live_ids]
         unchanged = 0
 
-    removed_n = store.delete_source_documents(org_id, removed_ids) if removed_ids else 0
+    removed_n = store.delete_source_documents(org_id, provider, removed_ids) if removed_ids else 0
 
     chunks_total = 0
     skipped = 0
@@ -181,6 +193,7 @@ def ingest_source(
             # Remember empty/index pages so change-check does not re-flag them as new.
             store.acknowledge_source_document(
                 org_id,
+                provider=provider,
                 external_id=doc.external_id,
                 title=doc.title,
                 source_uri=doc.source_uri,
@@ -195,6 +208,7 @@ def ingest_source(
         embeddings = embedder.embed(chunks)
         document_id = store.upsert_source_document(
             org_id,
+            provider=provider,
             external_id=doc.external_id,
             title=doc.title,
             chunks=chunks,
