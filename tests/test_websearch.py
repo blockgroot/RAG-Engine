@@ -13,7 +13,13 @@ from __future__ import annotations
 
 import uuid
 
-from app.config.settings import RagSettings, RecoverySettings, WebSearchSettings
+from app.config.settings import (
+    QueryNormSettings,
+    RagSettings,
+    RecoverySettings,
+    ReuseSettings,
+    WebSearchSettings,
+)
 from app.core.exceptions import WebSearchError
 from app.ingestion import chunk_text, preprocess
 from app.llm.base import ChatResult, LLMProvider, ToolCall
@@ -212,3 +218,110 @@ def test_web_after_insufficient_evidence_when_gate_passed():
     assert result.answered
     assert WEB_ANSWER_LABEL in result.answer
     assert llm.tool_calls >= 1
+
+
+class _CaptureSearchLLM(LLMProvider):
+    """Always requests web_search; records the decision prompt + search query."""
+
+    def __init__(self) -> None:
+        self.decision_prompts: list[str] = []
+        self.search_queries: list[str] = []
+
+    def generate(self, prompt: str) -> str:
+        return "Cigna is a major US health insurer offering medical plans."
+
+    def generate_with_tools(self, messages, tools=None, tool_choice=None, timeout=None):
+        content = messages[0]["content"]
+        self.decision_prompts.append(content)
+        # Extract a search query that preserves the entity from the user question.
+        query = "Cigna health insurance coverage"
+        if "Niva" in content:
+            query = "Niva Bupa claim settlement ratio"
+        self.search_queries.append(query)
+        return ChatResult(
+            text=None,
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    name="web_search",
+                    arguments=f'{{"query": "{query}"}}',
+                )
+            ],
+            raw_message={"role": "assistant"},
+        )
+
+
+class _OkSearch(WebSearchProvider):
+    def search(self, query, max_results=5, timeout=8.0):
+        from app.websearch.base import SearchResult
+
+        return [
+            SearchResult(
+                title="About the insurer",
+                snippet="External coverage overview.",
+                url="https://example.com/insurer",
+            )
+        ]
+
+
+@requires_db
+def test_query_norm_preserves_entities_for_web_path(embedder, store, org_cleanup):
+    """Phase 17 must not corrupt Phase 5 named-entity web-search.
+
+    SymSpell runs on the retrieval key only; the web decision still sees the
+    original question. Both the normalized retrieval key AND the web decision
+    prompt must keep external entity tokens intact.
+    """
+    from app.rag.query_normalize import CorpusSpellNormalizer
+
+    org_id = _seed_leave_org(store, embedder, org_cleanup)
+    # Corpus contains "company" / "five"-like distractors via leave text only —
+    # add words that previously attracted distance-2 false fixes.
+    extra = chunk_text(
+        preprocess(
+            "# Misc\nCompany handbook. Five modules. Rated vendors. Main campus."
+        )
+    )
+    store.add_document(org_id, "Misc", extra, embedder.embed(extra))
+
+    texts = store.list_chunk_texts(org_id)
+    # Prove the default normalizer leaves entities intact (distance 1 + Cap skip).
+    norm = CorpusSpellNormalizer(
+        QueryNormSettings(enabled=True, max_edit_distance=1, min_word_length=4)
+    )
+    for q in (
+        "What does Cigna health insurance generally cover?",
+        "What is Niva Bupa's claim settlement ratio?",
+    ):
+        assert norm.normalize(q, org_id, texts) == q
+
+    llm = _CaptureSearchLLM()
+    pipe = RagPipeline(
+        llm=llm,
+        embedder=embedder,
+        store=store,
+        settings=RagSettings(
+            top_k=3, similarity_threshold=0.35, fallback_response=(
+                "I don't have information on that in the available policy documents."
+            )
+        ),
+        memory=None,
+        web_search=_OkSearch(),
+        web_search_settings=WebSearchSettings(
+            enabled=True, provider="duckduckgo", api_key=None, max_results=3, timeout=2.0
+        ),
+        reuse_settings=ReuseSettings(enabled=False),
+        recovery_settings=RecoverySettings(enabled=False),
+        query_norm_settings=QueryNormSettings(
+            enabled=True, max_edit_distance=1, min_word_length=4
+        ),
+    )
+
+    for q, entity in (
+        ("What does Cigna health insurance generally cover?", "Cigna"),
+        ("What is Niva Bupa's claim settlement ratio?", "Niva"),
+    ):
+        result = pipe.answer(q, org_id)
+        assert result.source == "web", (q, result.source, result.answer)
+        assert entity in llm.decision_prompts[-1]
+        assert entity in llm.search_queries[-1] or entity.lower() in llm.search_queries[-1].lower()

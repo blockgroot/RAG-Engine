@@ -39,6 +39,10 @@ best-effort. A per-conversation barrier runs before the next turn's rewrite so
 a turn that left the verbatim window is never invisible to both the summary and
 recent turns while a fold is still in flight.
 
+Phase 17 adds a **non-LLM** corpus-vocab SymSpell pass on the retrieval
+query (``query_normalize.py``) so first-time typo'd questions still rank
+the right chunk — without paying an LLM rewrite on every request.
+
 Bounded retrieval recovery addresses **Retrieval Discovery Gaps**: the first
 retrieve runs exactly as today; only when available evidence looks insufficient
 (gate miss, or generation finds the context insufficient) may one optional
@@ -60,6 +64,7 @@ import numpy as np
 
 from ..config.settings import (
     MemorySettings,
+    QueryNormSettings,
     RagSettings,
     RecoverySettings,
     ReuseSettings,
@@ -73,6 +78,7 @@ from ..vectorstore.base import RetrievedChunk, VectorStore
 from ..websearch.base import SearchResult, WebSearchProvider
 from .retrieval import HybridRetriever, RetrievalResult
 from .summary_fold import schedule_summary_fold, wait_for_conversation_fold
+from .query_normalize import CorpusSpellNormalizer
 from .prompts import (
     MODE_B_FORBIDDEN_PHRASES,
     WEB_SEARCH_TOOL,
@@ -224,6 +230,8 @@ class RagPipeline:
         retriever: "HybridRetriever | None" = None,
         reuse_settings: ReuseSettings | None = None,
         recovery_settings: RecoverySettings | None = None,
+        query_norm: CorpusSpellNormalizer | None = None,
+        query_norm_settings: QueryNormSettings | None = None,
     ) -> None:
         self._llm = llm
         self._embedder = embedder
@@ -238,6 +246,10 @@ class RagPipeline:
         self._reuse_settings = reuse_settings or ReuseSettings.from_env()
         # Bounded retrieval recovery (optional; at most one attempt per answer).
         self._recovery_settings = recovery_settings or RecoverySettings.from_env()
+        # Phase 17: cheap corpus-vocab spelling before embed/retrieve.
+        self._query_norm = query_norm or CorpusSpellNormalizer(
+            query_norm_settings or QueryNormSettings.from_env()
+        )
         # Phase 6: hybrid + reranking retriever. When None, fall back to plain
         # vector search (the Phase 3 behaviour), keeping this pipeline usable
         # without the retrieval upgrades.
@@ -338,15 +350,20 @@ class RagPipeline:
         """First retrieve as today; recover at most once if evidence is insufficient."""
         t0 = time.perf_counter()
 
-        query_vec = self._embedder.embed([question])[0]
+        # Phase 17: correct OOV query tokens toward this org's chunk vocabulary
+        # before embed/retrieve/keyword. Generation still uses ``question``
+        # (conversation-resolved intent); only the retrieval key is normalized.
+        retrieval_question = self._normalize_for_retrieval(question, org_id)
 
-        reused = self._try_reuse(question, org_id, query_vec, conversation_id)
+        query_vec = self._embedder.embed([retrieval_question])[0]
+
+        reused = self._try_reuse(retrieval_question, org_id, query_vec, conversation_id)
         if reused is not None:
             hits, top_score = reused.hits, reused.gate_score
             retrieval_reused = True
         else:
             retrieval_reused = False
-            hits, top_score = self._retrieve_once(org_id, question, query_vec)
+            hits, top_score = self._retrieve_once(org_id, retrieval_question, query_vec)
 
         top_score_before = top_score
         recovery_used = False
@@ -760,6 +777,18 @@ class RagPipeline:
     def _format_web_answer(answer: str, results: list[SearchResult]) -> str:
         sources = "\n".join(f"- {r.title} ({r.url})" for r in results if r.url)
         return f"{WEB_ANSWER_LABEL}\n\n{answer}\n\nSources:\n{sources}"
+
+    def _normalize_for_retrieval(self, question: str, org_id: str) -> str:
+        """Cheap corpus-vocab spelling fix for the retrieval key (Phase 17)."""
+        if not self._query_norm.enabled:
+            return question
+        try:
+            texts = self._store.list_chunk_texts(org_id)
+        except NotImplementedError:
+            return question
+        except Exception:  # noqa: BLE001
+            return question
+        return self._query_norm.normalize(question, org_id, texts)
 
     # -- Capability A: conversation memory helpers -------------------------
 

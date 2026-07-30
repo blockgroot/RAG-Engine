@@ -122,6 +122,15 @@ class PgVectorStore(VectorStore):
             for row in rows
         ]
 
+    def list_chunk_texts(self, org_id: str) -> list[str]:
+        """All chunk texts for ``org_id`` — corpus vocabulary for query spelling."""
+        with get_connection(self._settings) as conn:
+            rows = conn.execute(
+                "SELECT content FROM chunks WHERE org_id = %s::uuid",
+                (org_id,),
+            ).fetchall()
+        return [row[0] for row in rows if row[0]]
+
     def keyword_search(
         self,
         org_id: str,

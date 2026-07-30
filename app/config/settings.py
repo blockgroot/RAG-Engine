@@ -67,6 +67,12 @@ DEFAULT_RETRIEVAL_REUSE_THRESHOLD = 0.72
 DEFAULT_RECOVERY_ENABLED = True
 DEFAULT_RECOVERY_MAX_QUERIES = 2
 
+# Lightweight query spelling/normalization (Phase 17). Corpus-vocab
+# SymSpell — no LLM on the happy path. Kill-switch: QUERY_NORM_ENABLED=false.
+DEFAULT_QUERY_NORM_ENABLED = True
+DEFAULT_QUERY_NORM_MAX_EDIT_DISTANCE = 1
+DEFAULT_QUERY_NORM_MIN_WORD_LENGTH = 4
+
 # Web search tool (Phase 5). Keyless DuckDuckGo by default (no paid dependency);
 # set WEB_SEARCH_PROVIDER=tavily + WEB_SEARCH_API_KEY for production quality.
 DEFAULT_WEB_SEARCH_ENABLED = True
@@ -439,6 +445,37 @@ class RecoverySettings:
         return cls(
             enabled=_env_bool("RECOVERY_ENABLED", DEFAULT_RECOVERY_ENABLED),
             max_queries=int(os.getenv("RECOVERY_MAX_QUERIES") or DEFAULT_RECOVERY_MAX_QUERIES),
+        )
+
+
+@dataclass(frozen=True)
+class QueryNormSettings:
+    """Corpus-vocab spelling correction before retrieval (Phase 17).
+
+    First-time questions are otherwise embedded raw; only conversational
+    follow-ups get an LLM rewrite, and recovery spelling is reactive. This is
+    a cheap non-LLM first line — SymSpell against *this org's* chunk vocabulary
+    — so typos like "protien" map toward document terms without an LLM call on
+    every request. Default max edit distance is 1 (distance 2 falsely "fixed"
+    external entity names like Niva→five). See ``app/rag/query_normalize.py``.
+    """
+
+    enabled: bool = DEFAULT_QUERY_NORM_ENABLED
+    max_edit_distance: int = DEFAULT_QUERY_NORM_MAX_EDIT_DISTANCE
+    min_word_length: int = DEFAULT_QUERY_NORM_MIN_WORD_LENGTH
+
+    @classmethod
+    def from_env(cls) -> "QueryNormSettings":
+        return cls(
+            enabled=_env_bool("QUERY_NORM_ENABLED", DEFAULT_QUERY_NORM_ENABLED),
+            max_edit_distance=int(
+                os.getenv("QUERY_NORM_MAX_EDIT_DISTANCE")
+                or DEFAULT_QUERY_NORM_MAX_EDIT_DISTANCE
+            ),
+            min_word_length=int(
+                os.getenv("QUERY_NORM_MIN_WORD_LENGTH")
+                or DEFAULT_QUERY_NORM_MIN_WORD_LENGTH
+            ),
         )
 
 

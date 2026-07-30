@@ -96,6 +96,14 @@ class VectorStore(ABC):
         """Return the ``top_k`` most similar chunks *within ``org_id`` only*."""
         raise NotImplementedError
 
+    def list_chunk_texts(self, org_id: str) -> list[str]:
+        """Return raw chunk ``content`` strings for ``org_id`` (Phase 17 vocab).
+
+        Used to build a per-tenant SymSpell dictionary for query spelling
+        correction. Optional: default raises; ``PgVectorStore`` implements it.
+        """
+        raise NotImplementedError("this vector store does not support listing chunk texts")
+
     def keyword_search(
         self,
         org_id: str,
