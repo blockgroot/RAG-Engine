@@ -210,6 +210,26 @@ their policy documents; their employees ask questions and get answers grounded i
   a 15-run probe showed fencing alone still leaked ~60% on a strong SYSTEM
   payload; scrub zeroed *measured* leaks on that payload. Delimiting + scrub
   are partial mitigations.
+- **Corpus-vocab query spelling before retrieval (Phase 17, `app/rag/query_normalize.py`).**
+  First-time / standalone questions were embedded raw (only conversational
+  follow-ups get an LLM rewrite; recovery spelling is reactive). An always-on
+  LLM rewrite would add permanent latency/cost on every request — against the
+  same "cheapest mechanism that works" instinct as retrieval-reuse. Choice:
+  **SymSpell (`symspellpy`) against this org's chunk vocabulary**, plus a small
+  common-query-English seed so clean words like "many" are not mapped onto rare
+  corpus near-misses ("main"). Only the *retrieval key* is normalized;
+  generation / web-decision still use the conversation-resolved question (same
+  reason recovery preserves the original for generation). Defaults:
+  `QUERY_NORM_ENABLED=true`, **max edit distance 1** (distance 2 falsely fixed
+  external entities like Niva→five / Compare→company), min word length 4,
+  Capitalized OOV tokens left alone. `VectorStore.list_chunk_texts(org_id)`
+  feeds the dictionary. Kill-switch: `QUERY_NORM_ENABLED=false`. **Evidence
+  honesty:** ARCHITECTURE.md's ~#18–24 "protien suppliments" finding was on
+  live Notion Acme data; the measure harness uses golden+wellness (optionally
+  `--noisy` distractors) and does *not* replay that corpus — on crowded synthetic
+  pads the typo can stay rank #1 while cosine drops (~0.47→~0.74 after fix).
+  Spelling + score recovery are proven; the exact mid-pool rank flip is not
+  reproduced here.
 - **Retrieval is reused across turns when the previous chunks still cover the
   follow-up — a cheap, deterministic, NON-LLM check before retrieval (Phase 8,
   `RagPipeline._try_reuse`).** On a follow-up, after the query-rewrite, the
@@ -434,7 +454,9 @@ app/
                 #   Orchestrator like rag/ — composes existing interfaces; no base.py.
   vectorstore/  # base.py (VectorStore: query + keyword_search) + pgvector_store.py + factory.py
   rag/          # pipeline.py (RagPipeline/RagResult) + prompts.py + factory.py
-                #   + retrieval.py (P6: HybridRetriever — vector+keyword RRF + rerank).
+                #   + retrieval.py (P6: HybridRetriever — vector+keyword RRF + rerank)
+                #   + query_normalize.py (P17: corpus-vocab SymSpell before retrieve)
+                #   + summary_fold.py (P15: deferred running-summary fold).
                 #   Orchestrator, not a provider — composes the above; no base.py.
                 #   Phase 5: also does query-rewrite (memory) + web-search fallback.
                 #   Phase 8: incremental summary update + pre-retrieval reuse check.
@@ -601,6 +623,19 @@ tests/          # pytest; isolation (P2), grounding (P3), conversation+websearch
   do not expand them into a general content filter that eats legitimate policy
   prose. Web results get the same fence+scrub as policy chunks
   (`build_web_answer_prompt`).
+- **Query-norm must not corrupt Phase 5 web-search entities.** Corpus-vocab
+  SymSpell will invent near-misses for OOV tokens (observed: Niva→five,
+  Compare→company at edit distance 2). Keep default max edit distance at **1**,
+  skip Capitalized OOV tokens, and never feed the normalized string into the
+  web decision / tool query — those stay on the original question. Regression:
+  `test_query_norm_preserves_entities_for_web_path` +
+  `test_normalizer_preserves_external_entity_names`. Do not raise
+  `QUERY_NORM_MAX_EDIT_DISTANCE` to 2 without re-running those cases against a
+  vocab that contains "company"/"five"/"rated".
+- **Phase 17 measure harness ≠ ARCHITECTURE #18–24 corpus.**
+  `scripts/measure_query_normalization.py` seeds golden CORPUS + wellness
+  (+ optional `--noisy` pads). It proves spelling fires and can recover cosine;
+  it does not claim to have reproduced the live Notion mid-pool ranking.
 - **Retrieval-reuse threshold reasoning (Phase 8) — 0.72, and why cosine can't do
   better here.** Measured on BGE-M3 (query-vs-chunk cosine, same modality as the
   §-below gate bands): a legitimate *same-chunk* follow-up ("...and how many of
@@ -909,6 +944,14 @@ the project, closing the gap Phase 9 explicitly deferred.
   `test_untrusted_scrub.py`. 15-run probe: fencing alone ~40% sabbatical pass
   with leaks; +scrub → 0 measured leaks on that payload. Branch:
   `fix/prompt-injection-mitigation`.
+- Phase 17 — Corpus-vocab SymSpell query normalization before embed/retrieve
+  (`app/rag/query_normalize.py`, `QueryNormSettings`, `list_chunk_texts`).
+  Generation/web keep the unresolved question. Guards: English seed, inflection
+  skip, max edit distance 1, Capitalized OOV skip (protects Phase 5 entities).
+  Tests: `test_query_normalize.py` + web-path entity interaction; recovery typo
+  test disables query-norm so it stays isolated. Harness:
+  `scripts/measure_query_normalization.py` (honest about #18–24 corpus gap).
+  Branch: `fix/query-normalization`.
 - Phases 10-14 — The product layer Phase 9 explicitly deferred: real per-org OAuth,
   an admin panel, a durable ingestion queue, an HTTP API, streaming chat, and a
   frontend portal. See §2 for the full architectural reasoning; summary per phase:
@@ -1017,6 +1060,12 @@ walkthrough against a real internal-use Google client is still pending.
   wipe. First-time onboarding ingest uses the same path.
 - Ingestion adapters: layout-aware extraction from PDF/DOCX/HTML.
 - Packaging the self-hosted Docker image.
+- Still-open items from the hardening review (not in Phases 15–17): global
+  request deadline / cancellation, Postgres RLS as defense-in-depth beyond
+  application `org_id` filters, token-budget-aware context assembly, structured
+  (machine-readable) citation verification, and any model-routing / token-
+  accounting work. Token-budget + structured citations already listed under
+  RAG enhancements above.
 
 ---
 
