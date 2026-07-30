@@ -23,7 +23,7 @@ from app.config.settings import DatabaseSettings, LLMSettings, RecoverySettings 
 from app.db import apply_schema, close_pool, get_connection  # noqa: E402
 from app.embeddings import build_embedding_provider  # noqa: E402
 from app.memory import build_conversation_store  # noqa: E402
-from app.rag import build_rag_pipeline  # noqa: E402
+from app.rag import build_rag_pipeline, shutdown_summary_folds  # noqa: E402
 from app.rag.retrieval import HybridRetriever  # noqa: E402
 from app.reranker import build_reranker  # noqa: E402
 from app.vectorstore import build_vector_store  # noqa: E402
@@ -35,8 +35,9 @@ _RECOVERY_OFF = RecoverySettings(enabled=False)
 
 @pytest.fixture(scope="session", autouse=True)
 def _close_pool_at_session_end():
-    """Release the shared connection pool when the test session finishes."""
+    """Drain deferred summary folds, then release the shared connection pool."""
     yield
+    shutdown_summary_folds(wait=True, timeout=30.0)
     close_pool()
 
 

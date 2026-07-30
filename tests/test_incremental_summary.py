@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from app.config.settings import MemorySettings, RagSettings, RecoverySettings, ReuseSettings
 from app.rag.pipeline import RagPipeline
+from app.rag.summary_fold import wait_for_pending_summary_folds
 from .fakes import (
     InMemoryConversationStore,
     KeywordEmbedder,
@@ -57,6 +58,8 @@ def _drive(n_turns: int):
     cid = memory.create_conversation(ORG)
     for i in range(n_turns):
         pipe.answer(f"leave question number {i}?", ORG, conversation_id=cid)
+    # Phase 15: folds run in the background — drain before asserting.
+    wait_for_pending_summary_folds(timeout=5.0)
     return llm, memory, cid
 
 

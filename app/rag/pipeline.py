@@ -32,6 +32,13 @@ Phase 8 refines two earlier pieces, again without touching the gate/prompt:
   gate → generate path, so this only avoids redundant retrieval — it never
   weakens or bypasses the confidence gate.
 
+Phase 15 moves the summary fold **off the critical path**: ``answer()`` schedules
+``_update_running_summary`` on a background executor (see ``summary_fold.py``)
+and returns the already-decided ``RagResult`` without waiting. The fold remains
+best-effort. A per-conversation barrier runs before the next turn's rewrite so
+a turn that left the verbatim window is never invisible to both the summary and
+recent turns while a fold is still in flight.
+
 Bounded retrieval recovery addresses **Retrieval Discovery Gaps**: the first
 retrieve runs exactly as today; only when available evidence looks insufficient
 (gate miss, or generation finds the context insufficient) may one optional
@@ -65,6 +72,7 @@ from ..memory.base import ConversationContext, ConversationStore, RetrievedChunk
 from ..vectorstore.base import RetrievedChunk, VectorStore
 from ..websearch.base import SearchResult, WebSearchProvider
 from .retrieval import HybridRetriever, RetrievalResult
+from .summary_fold import schedule_summary_fold, wait_for_conversation_fold
 from .prompts import (
     MODE_B_FORBIDDEN_PHRASES,
     WEB_SEARCH_TOOL,
@@ -259,6 +267,9 @@ class RagPipeline:
         """
         resolved = question
         if conversation_id is not None and self._memory is not None:
+            # Phase 15: wait for any in-flight fold so rewrite sees a consistent
+            # window (turn that left verbatim is either still in turns, or in summary).
+            wait_for_conversation_fold(conversation_id)
             context = self._memory.get_context(
                 conversation_id, self._memory_settings.recent_turns
             )
@@ -274,7 +285,10 @@ class RagPipeline:
             # Remember this turn's policy chunks so the next turn can try to reuse
             # them (web/fallback answers have no reusable policy chunks -> cleared).
             self._remember_retrieval(conversation_id, org_id, result)
-            self._update_running_summary(conversation_id)
+            # Phase 15: pure bookkeeping — nothing in ``result`` depends on it.
+            # Schedule after the answer is known so the caller is not blocked.
+            cid = conversation_id
+            schedule_summary_fold(cid, lambda: self._update_running_summary(cid))
 
         return result
 
@@ -766,14 +780,15 @@ class RagPipeline:
 
     def _update_running_summary(self, conversation_id: str) -> None:
         """Incrementally fold the turn(s) that just left the verbatim window into
-        the running summary (Phase 8).
+        the running summary (Phase 8 / 15).
 
-        Called after *every* turn. Once the number of verbatim turns exceeds the
-        window, exactly one turn (the oldest) has fallen out; we merge just that
-        turn with the existing summary — so each update's input is the summary plus
-        a single turn, never the full history, and its cost stays ~constant no
-        matter how long the conversation gets. (If a previous update was skipped on
-        an LLM error, a small backlog is folded in on the next turn — still bounded,
+        Scheduled in the background after *every* turn (Phase 15) — ``answer()``
+        does not wait. Once the number of verbatim turns exceeds the window,
+        exactly one turn (the oldest) has fallen out; we merge just that turn with
+        the existing summary — so each update's input is the summary plus a single
+        turn, never the full history, and its cost stays ~constant no matter how
+        long the conversation gets. (If a previous update was skipped on an LLM
+        error, a small backlog is folded in on the next turn — still bounded,
         never the whole history.)
         """
         window = self._memory_settings.recent_turns
