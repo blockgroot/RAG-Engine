@@ -126,6 +126,7 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_users_org ON users (org_id);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS sessions_revoked_at TIMESTAMPTZ;
 
 -- Per-org, per-provider OAuth credentials (Phase 10) — replaces hand-set
 -- NOTION_TOKEN_<NAME> env vars with an admin-driven OAuth connect flow.
@@ -208,3 +209,11 @@ CREATE TABLE IF NOT EXISTS query_answer_cache (
     PRIMARY KEY (org_id, question_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_query_answer_cache_expires ON query_answer_cache (expires_at);
+
+-- Fixed-window HTTP rate counters (Phase 21).
+CREATE TABLE IF NOT EXISTS api_rate_counters (
+    scope_key      TEXT NOT NULL,
+    window_start   TIMESTAMPTZ NOT NULL,
+    request_count  INT NOT NULL DEFAULT 0,
+    PRIMARY KEY (scope_key, window_start)
+);

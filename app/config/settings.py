@@ -79,6 +79,15 @@ DEFAULT_BUDGET_MIN_STAGE_SECONDS = 3.0
 DEFAULT_QUERY_CACHE_ENABLED = True
 DEFAULT_QUERY_CACHE_TTL_SECONDS = 300
 
+# API rate limiting (Phase 21) — chat/query endpoint.
+DEFAULT_RATE_LIMIT_ENABLED = True
+DEFAULT_RATE_LIMIT_CHAT_REQUESTS = 30
+DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
+
+# Ingestion sanitization (Phase 21).
+DEFAULT_INGEST_MAX_DOCUMENT_CHARS = 2_000_000
+DEFAULT_INGEST_MAX_CONTROL_CHAR_RATIO = 0.05
+
 # Web search tool (Phase 5). Keyless DuckDuckGo by default (no paid dependency);
 # set WEB_SEARCH_PROVIDER=tavily + WEB_SEARCH_API_KEY for production quality.
 DEFAULT_WEB_SEARCH_ENABLED = True
@@ -475,6 +484,47 @@ class QueryCacheSettings:
         return cls(
             enabled=_env_bool("QUERY_CACHE_ENABLED", DEFAULT_QUERY_CACHE_ENABLED),
             ttl_seconds=int(os.getenv("QUERY_CACHE_TTL_SECONDS") or DEFAULT_QUERY_CACHE_TTL_SECONDS),
+        )
+
+
+@dataclass(frozen=True)
+class RateLimitSettings:
+    """Postgres-backed rate limits for HTTP endpoints (Phase 21)."""
+
+    enabled: bool = DEFAULT_RATE_LIMIT_ENABLED
+    chat_requests_per_window: int = DEFAULT_RATE_LIMIT_CHAT_REQUESTS
+    window_seconds: int = DEFAULT_RATE_LIMIT_WINDOW_SECONDS
+
+    @classmethod
+    def from_env(cls) -> "RateLimitSettings":
+        return cls(
+            enabled=_env_bool("RATE_LIMIT_ENABLED", DEFAULT_RATE_LIMIT_ENABLED),
+            chat_requests_per_window=int(
+                os.getenv("RATE_LIMIT_CHAT_REQUESTS") or DEFAULT_RATE_LIMIT_CHAT_REQUESTS
+            ),
+            window_seconds=int(
+                os.getenv("RATE_LIMIT_WINDOW_SECONDS") or DEFAULT_RATE_LIMIT_WINDOW_SECONDS
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class IngestSanitizeSettings:
+    """Ingestion-time document size and malformed-content guards (Phase 21)."""
+
+    max_document_chars: int = DEFAULT_INGEST_MAX_DOCUMENT_CHARS
+    max_control_char_ratio: float = DEFAULT_INGEST_MAX_CONTROL_CHAR_RATIO
+
+    @classmethod
+    def from_env(cls) -> "IngestSanitizeSettings":
+        return cls(
+            max_document_chars=int(
+                os.getenv("INGEST_MAX_DOCUMENT_CHARS") or DEFAULT_INGEST_MAX_DOCUMENT_CHARS
+            ),
+            max_control_char_ratio=float(
+                os.getenv("INGEST_MAX_CONTROL_CHAR_RATIO")
+                or DEFAULT_INGEST_MAX_CONTROL_CHAR_RATIO
+            ),
         )
 
 

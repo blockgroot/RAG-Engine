@@ -39,6 +39,7 @@ _CHUNK_DELAY_SECONDS = 0.02
 from ..agent.policy_agent import PolicyAgent
 from ..core.exceptions import LLMProviderError, ProviderError
 from ..db.connection import get_connection
+from ..security.rate_limit import check_rate_limit
 from .deps import SessionClaims, get_policy_agent, get_session
 
 router = APIRouter(prefix="/chat", tags=["chat"])
@@ -128,6 +129,8 @@ def chat_stream(
     session: SessionClaims = Depends(get_session),
     agent: PolicyAgent = Depends(get_policy_agent),
 ):
+    check_rate_limit(f"chat:{session.org_id}:{session.user_id}")
+
     question = (body.get("question") or "").strip()
     if not question:
         raise HTTPException(status_code=400, detail="A question is required")
