@@ -87,10 +87,11 @@ jobs:
         run: python scripts/init_db.py
 
       - name: No-LLM structural checks (always run)
-        # Well-formedness of the golden set + the deterministic no-real-LLM test.
+        # Well-formedness of the golden set + deterministic tiers that never call an LLM.
         run: |
           python -c "from evaluation.golden_set import GOLDEN_CASES; assert len(GOLDEN_CASES) >= 15"
-          pytest -q tests/test_websearch.py::test_web_search_failure_degrades_to_fixed_fallback
+          python -c "from evaluation.retrieval_eval import RETRIEVAL_EVAL_CASES; assert len(RETRIEVAL_EVAL_CASES) >= 5"
+          pytest -q tests/test_websearch.py::test_web_search_failure_degrades_to_fixed_fallback tests/test_retrieval_eval.py::test_retrieval_suite_passes_on_golden_corpus tests/test_retrieval_eval.py::test_retrieval_regression_detected_when_ranking_breaks
 
       - name: Golden-set path-firing + full suite (needs LLM secrets)
         if: env.LLM_MODEL != ''

@@ -65,6 +65,7 @@ from ..core.exceptions import LLMProviderError, WebSearchError
 from ..embeddings.base import EmbeddingProvider
 from ..llm.base import LLMProvider
 from ..llm.metering import AUX_LLM_STAGES, log_llm_call
+from .query_signals import log_query_signal
 from ..memory.base import ConversationContext, ConversationStore, RetrievedChunkRecord
 from ..vectorstore.base import RetrievedChunk, VectorStore
 from ..websearch.base import SearchResult, WebSearchProvider
@@ -308,10 +309,12 @@ class RagPipeline:
         if conversation_id is None:
             cached = self._query_cache.get(org_id, resolved)
             if cached is not None:
-                return replace(
+                out = replace(
                     cached,
                     resolved_question=resolved if resolved != question else None,
                 )
+                log_query_signal(out, org_id=org_id, conversation_id=conversation_id)
+                return out
 
         budget = RequestBudget.from_settings(self._budget_settings)
         result = self._run(
@@ -332,6 +335,7 @@ class RagPipeline:
             self._remember_retrieval(conversation_id, org_id, result)
             self._update_running_summary(conversation_id)
 
+        log_query_signal(result, org_id=org_id, conversation_id=conversation_id)
         return result
 
     def answer_stream(
