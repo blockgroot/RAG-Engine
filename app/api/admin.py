@@ -17,6 +17,7 @@ from ..auth import (
     invite_member,
     list_connections,
     list_members,
+    revoke_user_sessions,
     send_magic_link_email_safe,
     set_connection_config,
 )
@@ -93,6 +94,16 @@ def get_members(session: SessionClaims = Depends(require_admin)):
         {"id": u.id, "email": u.email, "role": u.role, "created_at": u.created_at.isoformat()}
         for u in list_members(session.org_id)
     ]
+
+
+@router.post("/members/{user_id}/revoke-sessions")
+def revoke_member_sessions(user_id: str, session: SessionClaims = Depends(require_admin)):
+    """Force-log-out a member (or admin) by invalidating all their sessions."""
+    try:
+        revoke_user_sessions(user_id, session.org_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "revoked", "user_id": user_id}
 
 
 @router.get("/connections")

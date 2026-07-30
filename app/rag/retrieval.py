@@ -4,9 +4,9 @@ Plain top-k vector search ranks each chunk independently and can leave a genuine
 relevant chunk just outside the cutoff. This retriever addresses that from two
 angles at query time:
 
-1. **Hybrid search** — run vector (semantic) *and* keyword (BM25-style) search,
+1. **Hybrid search** — run vector (semantic) *and* keyword (Okapi BM25) search,
    then fuse the two ranked lists with **Reciprocal Rank Fusion (RRF)**. RRF is
-   rank-based, so it needs no score normalization between cosine and ts_rank
+   rank-based, so it needs no score normalization between cosine and BM25
    (which live on totally different scales) — the settled default for hybrid RAG.
 2. **Cross-encoder reranking** — over-retrieve a wider ``candidate_pool`` then
    rerank it with a cross-encoder, selecting the final ``top_k``.
@@ -55,15 +55,50 @@ class HybridRetriever:
         self._rag_settings = rag_settings or RagSettings.from_env()
 
     def retrieve(
-        self, org_id: str, query_text: str, query_embedding: list[float]
+        self,
+        org_id: str,
+        query_text: str,
+        query_embedding: list[float],
+        *,
+        extra_queries: list[tuple[str, list[float]]] | None = None,
+        rerank_query: str | None = None,
     ) -> RetrievalResult:
+        """Retrieve for ``query_text``; optionally fuse extra (sub-)queries first."""
         top_k = self._rag_settings.top_k
         pool = self._settings.candidate_pool
+        rerank_q = rerank_query or query_text
 
-        # First-stage vector recall (wide).
+        query_pairs = [(query_text, query_embedding)]
+        if extra_queries:
+            query_pairs.extend(extra_queries)
+
+        ranked_lists: list[list[RetrievedChunk]] = []
+        for q_text, q_vec in query_pairs:
+            ranked_lists.append(self._first_stage(org_id, q_text, q_vec, pool))
+
+        if len(ranked_lists) == 1:
+            candidates = ranked_lists[0]
+        else:
+            candidates = self._rrf_fuse(ranked_lists, self._settings.rrf_k)
+
+        if not candidates:
+            return RetrievalResult(hits=[], gate_score=None)
+
+        gate_score = max((c.score for c in candidates), default=None)
+
+        pool_candidates = candidates[:pool]
+        if self._reranker is not None and self._settings.rerank_enabled:
+            final = self._reranker.rerank(rerank_q, pool_candidates, top_k)
+        else:
+            final = pool_candidates[:top_k]
+
+        return RetrievalResult(hits=final, gate_score=gate_score)
+
+    def _first_stage(
+        self, org_id: str, query_text: str, query_embedding: list[float], pool: int
+    ) -> list[RetrievedChunk]:
         vec_hits = self._store.query(org_id, query_embedding, top_k=pool)
 
-        # Hybrid: add keyword recall and fuse by rank.
         if self._settings.hybrid_enabled:
             try:
                 kw_hits = self._store.keyword_search(
@@ -71,24 +106,8 @@ class HybridRetriever:
                 )
             except NotImplementedError:
                 kw_hits = []
-            candidates = self._rrf_fuse([vec_hits, kw_hits], self._settings.rrf_k)
-        else:
-            candidates = list(vec_hits)
-
-        if not candidates:
-            return RetrievalResult(hits=[], gate_score=None)
-
-        # Gate signal = best cosine among candidates (== vector top-1). Unchanged
-        # from Phase 3, so the confidence gate downstream needs no recalibration.
-        gate_score = max((c.score for c in candidates), default=None)
-
-        pool_candidates = candidates[:pool]
-        if self._reranker is not None and self._settings.rerank_enabled:
-            final = self._reranker.rerank(query_text, pool_candidates, top_k)
-        else:
-            final = pool_candidates[:top_k]
-
-        return RetrievalResult(hits=final, gate_score=gate_score)
+            return self._rrf_fuse([vec_hits, kw_hits], self._settings.rrf_k)
+        return list(vec_hits)
 
     @staticmethod
     def _rrf_fuse(

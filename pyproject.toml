@@ -12,6 +12,7 @@ dependencies = [
     "pgvector>=0.3.0",
     "notion-client>=2.2.1",
     "ddgs>=6.0.0",
+    "rank-bm25>=0.2.2",
     "symspellpy>=6.7,<7",
 ]
 

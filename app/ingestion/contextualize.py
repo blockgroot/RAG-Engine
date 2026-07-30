@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from ..core.exceptions import LLMProviderError
 from ..llm.base import LLMProvider
+from ..llm.metering import log_llm_call
 from ..security.untrusted import scrub_untrusted_text
 
 # Cap how much of the document we send as context, to bound cost/latency on very
@@ -45,17 +46,30 @@ def _build_prompt(document_text: str, chunk: str) -> str:
     )
 
 
-def contextualize_chunk(llm: LLMProvider, document_text: str, chunk: str) -> str:
+def contextualize_chunk(
+    llm: LLMProvider,
+    document_text: str,
+    chunk: str,
+    *,
+    org_id: str | None = None,
+) -> str:
     """Prepend a short generated context to a single chunk (best-effort)."""
     try:
         context = llm.generate(_build_prompt(document_text, chunk)).strip()
+        log_llm_call("ingest-context", llm, org_id=org_id)
     except LLMProviderError:
         return chunk
     return f"{context}\n\n{chunk}" if context else chunk
 
 
 def contextualize_chunks(
-    llm: LLMProvider, document_text: str, chunks: list[str]
+    llm: LLMProvider,
+    document_text: str,
+    chunks: list[str],
+    *,
+    org_id: str | None = None,
 ) -> list[str]:
     """Contextualize every chunk of one document, in order."""
-    return [contextualize_chunk(llm, document_text, chunk) for chunk in chunks]
+    return [
+        contextualize_chunk(llm, document_text, chunk, org_id=org_id) for chunk in chunks
+    ]

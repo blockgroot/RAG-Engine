@@ -30,6 +30,7 @@ from .users import (
     create_admin,
     invite_member,
     list_members,
+    revoke_user_sessions,
 )
 from .magic_link import create_magic_link_token, consume_magic_link_token
 from .oauth_state import create_state, consume_state
@@ -58,6 +59,7 @@ __all__ = [
     "create_admin",
     "invite_member",
     "list_members",
+    "revoke_user_sessions",
     "create_magic_link_token",
     "consume_magic_link_token",
     "create_state",

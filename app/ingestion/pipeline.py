@@ -16,9 +16,10 @@ from ..config.settings import ChunkingSettings, ContextualSettings
 from ..embeddings import build_embedding_provider
 from ..embeddings.base import EmbeddingProvider
 from ..ingestion.chunking import chunk_text
+from ..ingestion.sanitize import sanitize_ingest_text
 from ..ingestion.contextualize import contextualize_chunks
 from ..ingestion.preprocessing import preprocess
-from ..llm import build_llm_provider
+from ..llm import build_aux_llm_provider, build_llm_provider
 from ..llm.base import LLMProvider
 from ..sources.base import SourceAdapter, SourceRef
 from ..vectorstore import build_vector_store
@@ -163,7 +164,7 @@ def ingest_source(
     store = store or build_vector_store()
     contextual = contextual or ContextualSettings.from_env()
     if contextual.enabled and llm is None:
-        llm = build_llm_provider()
+        llm = build_aux_llm_provider()
 
     refs = adapter.list_documents()
     stored = {d.external_id: d for d in store.list_source_documents(org_id, provider)}
@@ -187,7 +188,7 @@ def ingest_source(
 
     for ref, is_update in [(r, False) for r in to_add] + [(r, True) for r in to_update]:
         doc = adapter.fetch_document(ref.external_id)
-        clean = preprocess(doc.content)
+        clean = preprocess(sanitize_ingest_text(doc.content))
         chunks = chunk_text(clean, chunking)
         if not chunks:
             # Remember empty/index pages so change-check does not re-flag them as new.
@@ -203,7 +204,7 @@ def ingest_source(
             continue
 
         if contextual.enabled and llm is not None:
-            chunks = contextualize_chunks(llm, clean, chunks)
+            chunks = contextualize_chunks(llm, clean, chunks, org_id=org_id)
 
         embeddings = embedder.embed(chunks)
         document_id = store.upsert_source_document(

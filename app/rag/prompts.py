@@ -361,6 +361,26 @@ def build_recovery_queries_prompt(question: str, hit_snippets: list[str]) -> str
     )
 
 
+def build_decompose_prompt(question: str) -> str:
+    """Split a compound user question into standalone sub-questions (Phase 18).
+
+    Called only after ``looks_compound`` fires. Must not answer the question.
+    """
+    return (
+        "You analyze a user question for a company policy search system.\n\n"
+        "If the question contains ONE information need (even if it mentions "
+        "'and' joining related items, e.g. full-time and part-time leave), "
+        "output exactly one line:\n"
+        "SINGLE\n\n"
+        "If it contains TWO OR MORE distinct information needs that should be "
+        "searched separately, output one standalone sub-question per line "
+        "(each must be self-contained and end with '?'). Do not add commentary "
+        "or numbering.\n\n"
+        f"USER QUESTION:\n{question}\n\n"
+        "SUB-QUESTIONS:"
+    )
+
+
 # --- Phase 5: conversation memory ------------------------------------------
 
 def build_rewrite_prompt(question: str, summary: str | None, recent: list[tuple[str, str]]) -> str:

@@ -1,31 +1,23 @@
-"""Structure-aware text chunking with configurable size and overlap.
+"""Structure-aware text chunking with configurable size and overlap (token-based).
 
-Why these defaults (chunk_size=1000 chars, chunk_overlap=150 chars)
-------------------------------------------------------------------
-- **Retrieval precision.** ~1000 characters is roughly 200-250 tokens — small
-  enough that a chunk is about *one* idea, so a similarity hit is specific
-  (a leave-policy clause, not a whole handbook page). Chunks that are too large
-  dilute the embedding and drag in irrelevant text; too small and they lose the
-  context needed to answer.
-- **Well within the model limit.** BGE-M3 accepts up to 8192 tokens, so 1000
-  chars is comfortable and leaves headroom.
-- **Overlap of ~15%.** A sentence answering a question often sits right on a
-  chunk boundary. Repeating the last ~150 characters of the previous chunk at
-  the start of the next means a boundary-straddling fact still lands whole in at
-  least one chunk. 15% is the common rule-of-thumb sweet spot between recall and
-  storage/duplication cost.
+Why these defaults (chunk_size=256 tokens, chunk_overlap=40 tokens)
+-------------------------------------------------------------------
+- **Retrieval precision.** ~256 tokens is roughly one policy idea — small enough
+  that a similarity hit is specific, large enough to retain answering context.
+- **Aligned with BGE-M3.** Sizes are counted with the same tokenizer the embedding
+  model uses, so chunk density no longer drifts with character-heavy tables vs
+  sparse prose.
+- **Overlap of ~15%.** Boundary-straddling facts still land whole in at least one
+  chunk without excessive duplication.
 
-These are a deliberate *starting point*, tunable via CHUNK_SIZE / CHUNK_OVERLAP
-without code changes. They can be revisited once we can measure retrieval quality
-on real policy documents.
+Tunable via ``CHUNK_SIZE`` / ``CHUNK_OVERLAP`` (token counts).
 
 Strategy
 --------
-Split on natural boundaries first (paragraphs), keeping structural blocks such as
-Markdown tables and headings whole. Only blocks that are themselves larger than
-``chunk_size`` are hard-split (on sentence, then word boundaries). Blocks are
-then greedily packed into chunks up to ``chunk_size``, with a character overlap
-carried from the tail of the previous chunk.
+Split on natural boundaries first (paragraphs). Only blocks larger than
+``chunk_size`` tokens are hard-split (sentence, then word boundaries). Pieces
+are greedily packed up to ``chunk_size`` tokens, with token overlap from the
+tail of the previous chunk.
 """
 
 from __future__ import annotations
@@ -34,6 +26,7 @@ import re
 
 from ..config.settings import ChunkingSettings
 from ..core.exceptions import ConfigurationError
+from .chunk_tokens import count_tokens, truncate_to_tokens
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
@@ -53,22 +46,20 @@ def chunk_text(text: str, settings: ChunkingSettings | None = None) -> list[str]
     if not text:
         return []
 
-    # 1) Break into paragraph blocks; hard-split any block bigger than a chunk.
     pieces: list[str] = []
     for block in text.split("\n\n"):
         block = block.strip("\n")
         if not block.strip():
             continue
-        if len(block) <= size:
+        if count_tokens(block) <= size:
             pieces.append(block)
         else:
             pieces.extend(_hard_split(block, size))
 
-    # 2) Greedily pack pieces into chunks, carrying overlap between them.
     chunks: list[str] = []
     current = ""
     for piece in pieces:
-        if current and len(current) + 2 + len(piece) > size:
+        if current and count_tokens(current) + 2 + count_tokens(piece) > size:
             chunks.append(current)
             tail = _overlap_tail(current, overlap)
             current = f"{tail}\n\n{piece}" if tail else piece
@@ -86,15 +77,14 @@ def _hard_split(text: str, size: int) -> list[str]:
     out: list[str] = []
     current = ""
     for sentence in _SENTENCE_SPLIT.split(text):
-        if len(sentence) > size:
-            # Sentence itself too long — fall back to words.
+        if count_tokens(sentence) > size:
             for word in sentence.split(" "):
-                if current and len(current) + 1 + len(word) > size:
+                if current and count_tokens(current) + 1 + count_tokens(word) > size:
                     out.append(current)
                     current = word
                 else:
                     current = word if not current else f"{current} {word}"
-        elif current and len(current) + 1 + len(sentence) > size:
+        elif current and count_tokens(current) + 1 + count_tokens(sentence) > size:
             out.append(current)
             current = sentence
         else:
@@ -105,12 +95,13 @@ def _hard_split(text: str, size: int) -> list[str]:
     return out
 
 
-def _overlap_tail(text: str, overlap: int) -> str:
-    """Return the last ``overlap`` characters, snapped to a word boundary."""
-    if overlap <= 0 or len(text) <= overlap:
-        return text if overlap > 0 else ""
-    tail = text[-overlap:]
-    # Avoid starting the overlap mid-word.
+def _overlap_tail(text: str, overlap_tokens: int) -> str:
+    """Return the last ``overlap_tokens`` tokens, snapped to a word boundary."""
+    if overlap_tokens <= 0:
+        return ""
+    if count_tokens(text) <= overlap_tokens:
+        return text
+    tail = truncate_to_tokens(text, overlap_tokens)
     space = tail.find(" ")
     if space != -1:
         tail = tail[space + 1 :]

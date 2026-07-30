@@ -17,9 +17,9 @@ DEFAULT_EMBEDDING_BACKEND = "local"
 # declares vector(EMBEDDING_DIM); the two MUST stay in sync — see CLAUDE.md.
 DEFAULT_EMBEDDING_DIM = 1024
 
-# Chunking defaults (characters). Reasoning documented in app/ingestion/chunking.py.
-DEFAULT_CHUNK_SIZE = 1000
-DEFAULT_CHUNK_OVERLAP = 150
+# Chunking defaults (tokens, BGE-M3 tokenizer). See app/ingestion/chunking.py.
+DEFAULT_CHUNK_SIZE = 256
+DEFAULT_CHUNK_OVERLAP = 40
 
 DEFAULT_VECTOR_STORE_BACKEND = "pgvector"
 
@@ -66,6 +66,27 @@ DEFAULT_RETRIEVAL_REUSE_THRESHOLD = 0.72
 # today; at most one optional recovery when evidence looks insufficient.
 DEFAULT_RECOVERY_ENABLED = True
 DEFAULT_RECOVERY_MAX_QUERIES = 2
+
+# Compound-question decomposition (Phase 18). Heuristic gate first; LLM only when
+# the question likely bundles multiple distinct asks.
+DEFAULT_DECOMPOSE_ENABLED = True
+
+# Request-level time budget (Phase 19). Optional stages check remaining time before starting.
+DEFAULT_REQUEST_DEADLINE_SECONDS = 45.0
+DEFAULT_BUDGET_MIN_STAGE_SECONDS = 3.0
+
+# Query→answer cache for standalone questions (Phase 19).
+DEFAULT_QUERY_CACHE_ENABLED = True
+DEFAULT_QUERY_CACHE_TTL_SECONDS = 300
+
+# API rate limiting (Phase 21) — chat/query endpoint.
+DEFAULT_RATE_LIMIT_ENABLED = True
+DEFAULT_RATE_LIMIT_CHAT_REQUESTS = 30
+DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
+
+# Ingestion sanitization (Phase 21).
+DEFAULT_INGEST_MAX_DOCUMENT_CHARS = 2_000_000
+DEFAULT_INGEST_MAX_CONTROL_CHAR_RATIO = 0.05
 
 # Lightweight query spelling/normalization (Phase 17). Corpus-vocab
 # SymSpell — no LLM on the happy path. Kill-switch: QUERY_NORM_ENABLED=false.
@@ -114,11 +135,15 @@ class LLMSettings:
 
     - ``model``    provider/model string, e.g. ``openai/auto`` or
       ``anthropic/claude-sonnet-5`` (required)
+    - ``aux_model`` optional cheaper/faster model for rewrite, decompose,
+      recovery expansion, summarization, and ingest contextualization (Phase 19).
+      When unset, every stage uses ``model``.
     - ``api_key``  optional explicit key (else provider's standard env var)
     - ``base_url`` optional; for OpenAI-compatible / self-hosted endpoints
     """
 
     model: str | None
+    aux_model: str | None
     api_key: str | None
     base_url: str | None
     timeout: float = DEFAULT_TIMEOUT
@@ -127,6 +152,7 @@ class LLMSettings:
     def from_env(cls) -> "LLMSettings":
         return cls(
             model=os.getenv("LLM_MODEL"),
+            aux_model=os.getenv("LLM_AUX_MODEL") or None,
             api_key=os.getenv("LLM_API_KEY"),
             base_url=os.getenv("LLM_BASE_URL"),
             timeout=float(os.getenv("LLM_TIMEOUT") or DEFAULT_TIMEOUT),
@@ -190,7 +216,7 @@ class DatabaseSettings:
 
 @dataclass(frozen=True)
 class ChunkingSettings:
-    """Configuration for document chunking (sizes measured in characters)."""
+    """Configuration for document chunking (sizes measured in tokens)."""
 
     chunk_size: int = DEFAULT_CHUNK_SIZE
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
@@ -445,6 +471,99 @@ class RecoverySettings:
         return cls(
             enabled=_env_bool("RECOVERY_ENABLED", DEFAULT_RECOVERY_ENABLED),
             max_queries=int(os.getenv("RECOVERY_MAX_QUERIES") or DEFAULT_RECOVERY_MAX_QUERIES),
+        )
+
+
+@dataclass(frozen=True)
+class DecomposeSettings:
+    """Compound-question decomposition before retrieval (Phase 18).
+
+    When enabled, a deterministic heuristic detects likely multi-ask questions;
+    only then an LLM splits them into standalone sub-questions. Each sub-question
+    is retrieved separately; pools are merged and reranked before generation.
+    """
+
+    enabled: bool = DEFAULT_DECOMPOSE_ENABLED
+
+    @classmethod
+    def from_env(cls) -> "DecomposeSettings":
+        return cls(
+            enabled=_env_bool("DECOMPOSE_ENABLED", DEFAULT_DECOMPOSE_ENABLED),
+        )
+
+
+@dataclass(frozen=True)
+class RequestBudgetSettings:
+    """Global per-request deadline for ``RagPipeline.answer()`` (Phase 19)."""
+
+    deadline_seconds: float = DEFAULT_REQUEST_DEADLINE_SECONDS
+    min_stage_seconds: float = DEFAULT_BUDGET_MIN_STAGE_SECONDS
+
+    @classmethod
+    def from_env(cls) -> "RequestBudgetSettings":
+        return cls(
+            deadline_seconds=float(
+                os.getenv("REQUEST_DEADLINE_SECONDS") or DEFAULT_REQUEST_DEADLINE_SECONDS
+            ),
+            min_stage_seconds=float(
+                os.getenv("REQUEST_BUDGET_MIN_STAGE_SECONDS") or DEFAULT_BUDGET_MIN_STAGE_SECONDS
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class QueryCacheSettings:
+    """Postgres-backed cache for repeated standalone questions (Phase 19)."""
+
+    enabled: bool = DEFAULT_QUERY_CACHE_ENABLED
+    ttl_seconds: int = DEFAULT_QUERY_CACHE_TTL_SECONDS
+
+    @classmethod
+    def from_env(cls) -> "QueryCacheSettings":
+        return cls(
+            enabled=_env_bool("QUERY_CACHE_ENABLED", DEFAULT_QUERY_CACHE_ENABLED),
+            ttl_seconds=int(os.getenv("QUERY_CACHE_TTL_SECONDS") or DEFAULT_QUERY_CACHE_TTL_SECONDS),
+        )
+
+
+@dataclass(frozen=True)
+class RateLimitSettings:
+    """Postgres-backed rate limits for HTTP endpoints (Phase 21)."""
+
+    enabled: bool = DEFAULT_RATE_LIMIT_ENABLED
+    chat_requests_per_window: int = DEFAULT_RATE_LIMIT_CHAT_REQUESTS
+    window_seconds: int = DEFAULT_RATE_LIMIT_WINDOW_SECONDS
+
+    @classmethod
+    def from_env(cls) -> "RateLimitSettings":
+        return cls(
+            enabled=_env_bool("RATE_LIMIT_ENABLED", DEFAULT_RATE_LIMIT_ENABLED),
+            chat_requests_per_window=int(
+                os.getenv("RATE_LIMIT_CHAT_REQUESTS") or DEFAULT_RATE_LIMIT_CHAT_REQUESTS
+            ),
+            window_seconds=int(
+                os.getenv("RATE_LIMIT_WINDOW_SECONDS") or DEFAULT_RATE_LIMIT_WINDOW_SECONDS
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class IngestSanitizeSettings:
+    """Ingestion-time document size and malformed-content guards (Phase 21)."""
+
+    max_document_chars: int = DEFAULT_INGEST_MAX_DOCUMENT_CHARS
+    max_control_char_ratio: float = DEFAULT_INGEST_MAX_CONTROL_CHAR_RATIO
+
+    @classmethod
+    def from_env(cls) -> "IngestSanitizeSettings":
+        return cls(
+            max_document_chars=int(
+                os.getenv("INGEST_MAX_DOCUMENT_CHARS") or DEFAULT_INGEST_MAX_DOCUMENT_CHARS
+            ),
+            max_control_char_ratio=float(
+                os.getenv("INGEST_MAX_CONTROL_CHAR_RATIO")
+                or DEFAULT_INGEST_MAX_CONTROL_CHAR_RATIO
+            ),
         )
 
 

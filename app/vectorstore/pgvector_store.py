@@ -15,6 +15,7 @@ from ..db.connection import get_connection
 from datetime import datetime
 
 from .base import OrganizationRef, RetrievedChunk, StoredSourceDocument, VectorStore
+from .bm25_ranking import bm25_rank
 
 
 class PgVectorStore(VectorStore):
@@ -140,10 +141,9 @@ class PgVectorStore(VectorStore):
     ) -> list[RetrievedChunk]:
         """Full-text keyword search within ``org_id`` (Phase 6 hybrid retrieval).
 
-        Ordered by ``ts_rank`` (keyword relevance), but each row still carries its
-        cosine similarity vs ``query_embedding`` in ``score`` — so a keyword hit
-        flows through the same cosine-based confidence gate as a vector hit, and
-        RRF fusion can use the keyword *rank order* independently.
+        Phase 18: ranks matching chunks with in-process Okapi BM25 (see
+        ``bm25_ranking.py``) instead of Postgres ``ts_rank``. Each row still
+        carries cosine similarity vs ``query_embedding`` in ``score`` for the gate.
         """
         if not query_embedding:
             raise EmbeddingProviderError("query_embedding is empty")
@@ -155,29 +155,38 @@ class PgVectorStore(VectorStore):
             rows = conn.execute(
                 """
                 SELECT content,
-                       1 - (embedding <=> %s) AS score,
                        document_id::text,
                        chunk_index,
-                       org_id::text
+                       org_id::text,
+                       1 - (embedding <=> %s) AS score
                 FROM chunks
                 WHERE org_id = %s::uuid
                   AND content_tsv @@ websearch_to_tsquery('english', %s)
-                ORDER BY ts_rank(content_tsv, websearch_to_tsquery('english', %s)) DESC
-                LIMIT %s
                 """,
-                (vector, org_id, query_text, query_text, top_k),
+                (vector, org_id, query_text),
             ).fetchall()
 
-        return [
-            RetrievedChunk(
-                content=row[0],
-                score=float(row[1]),
-                document_id=row[2],
-                chunk_index=row[3],
-                org_id=row[4],
+        if not rows:
+            return []
+
+        contents = [r[0] for r in rows]
+        bm25_hits = bm25_rank(query_text, contents, top_k=min(top_k, len(contents)))
+        if not bm25_hits:
+            return []
+
+        out: list[RetrievedChunk] = []
+        for doc_idx, _bm25_score in bm25_hits:
+            row = rows[doc_idx]
+            out.append(
+                RetrievedChunk(
+                    content=row[0],
+                    score=float(row[4]),
+                    document_id=row[1],
+                    chunk_index=row[2],
+                    org_id=row[3],
+                )
             )
-            for row in rows
-        ]
+        return out
 
     def list_source_documents(self, org_id: str, provider: str) -> list[StoredSourceDocument]:
         with get_connection(self._settings) as conn:

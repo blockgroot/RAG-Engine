@@ -84,3 +84,19 @@ def list_members(org_id: str) -> list[User]:
             (org_id,),
         ).fetchall()
     return [_row_to_user(row) for row in rows]
+
+
+def revoke_user_sessions(user_id: str, org_id: str) -> None:
+    """Invalidate all outstanding sessions for ``user_id`` in ``org_id`` (Phase 21)."""
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            UPDATE users
+            SET sessions_revoked_at = now()
+            WHERE id = %s::uuid AND org_id = %s::uuid
+            RETURNING id
+            """,
+            (user_id, org_id),
+        ).fetchone()
+    if row is None:
+        raise ValueError("User not found in this organization")

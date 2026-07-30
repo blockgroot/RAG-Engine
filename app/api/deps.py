@@ -59,7 +59,7 @@ def get_session(request: Request) -> SessionClaims:
 
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT 1 FROM users u "
+            "SELECT u.sessions_revoked_at FROM users u "
             "JOIN organizations o ON o.id = u.org_id "
             "WHERE u.id = %s AND u.org_id = %s",
             (claims.user_id, claims.org_id),
@@ -69,6 +69,9 @@ def get_session(request: Request) -> SessionClaims:
             status_code=401,
             detail="Session is no longer valid — please sign in again",
         )
+    revoked_at = row[0]
+    if revoked_at is not None and claims.issued_at <= revoked_at:
+        raise HTTPException(status_code=401, detail="Session has been revoked")
     return claims
 
 

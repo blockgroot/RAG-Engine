@@ -787,11 +787,13 @@ Defined in `app/db/schema.sql`. Current tables:
 | `conversations` | (Phase 5) A conversation, scoped to one org. `id`, `org_id`, `summary` (running compression of pruned older turns), `created_at`. |
 | `conversation_turns` | (Phase 5) One question+answer within a conversation. `id`, `conversation_id`, `org_id`, `turn_index`, `question`, `answer`, `created_at`. Older turns are pruned once folded into the summary (Phase 8: incrementally, one at a time). |
 | `conversation_last_retrieval` | (Phase 8) The chunks retrieved on a conversation's most recent turn, for the pre-retrieval reuse check. One upserted row per conversation: `conversation_id` (PK), `org_id`, `chunks` (TEXT holding a JSON array of `{content, document_id, chunk_index, org_id}` — no embeddings), `updated_at`. |
-| `users` | (Phase 10) An application user. `id`, `email` (UNIQUE), `org_id` (nullable — but never issued a session while null), `role` (`admin`\|`member`), `created_at`. |
+| `users` | (Phase 10) An application user. `id`, `email` (UNIQUE), `org_id` (nullable — but never issued a session while null), `role` (`admin`\|`member`), `created_at`. Phase 21: `sessions_revoked_at` — sessions with JWT `iat` ≤ this timestamp are rejected. |
 | `oauth_connections` | (Phase 10) One org's OAuth credential for one provider. `id`, `org_id`, `provider`, `external_workspace_id`, `external_workspace_name`, `access_token_encrypted`, `refresh_token_encrypted`, `expires_at`, `connected_by_user_id`, `created_at`. `UNIQUE (org_id, provider)` — one row per org per provider, so a lookup can never be cross-tenant-ambiguous. Tokens are encrypted via `app/security/crypto.py`; this table never stores plaintext. Google Integration: optional **`source_config` JSONB** (e.g. `{folder_id, folder_name}`) — preserved on reconnect (upsert does not clobber it). |
 | `ingestion_jobs` | (Phase 10/12) A durable, pollable record of an admin-triggered fetch→chunk→embed→store run. `id`, `org_id`, `connection_id`, `status` (`queued`\|`running`\|`succeeded`\|`failed`), `doc_count`, `error`, `started_at`, `finished_at`, `created_at`. Consumed by a Postgres-backed worker (`SELECT ... FOR UPDATE SKIP LOCKED`), not an in-process background task. |
 | `magic_link_tokens` | (Phase 13) Single-use employee login tokens. `token_hash` (PK — only a SHA-256 hash is ever stored, never the token), `email`, `expires_at`, `consumed_at`, `created_at`. |
 | `oauth_states` | (Phase 13) Single-use, server-side OAuth `state` values for CSRF/replay protection on the admin connect flow. `state` (PK), `org_id`, `provider`, `expires_at`, `consumed_at`, `created_at`. |
+| `query_answer_cache` | (Phase 19) Short-TTL cache of standalone Q→A results keyed by `(org_id, normalized_question_hash)`. |
+| `api_rate_counters` | (Phase 21) Sliding-window request counters for Postgres-backed rate limiting (`scope` PK, `window_start`, `count`). |
 
 **`org_domains` (Phase 10) was dropped** in the domain-auto-join simplification
 (see §2) — `DROP TABLE IF EXISTS org_domains` in `schema.sql`. It held a
@@ -1007,6 +1009,37 @@ response but no account is ever created; a second org's admin never sees the
 first org's invited members). Full suite green (144 passing, 1 pre-existing
 unrelated `NOTION_TOKEN_SYVORA` environmental failure, 2 network deselected).
 
+**Hardening pass (Phases 18–22, external review follow-up).** Phase 20
+(structural citations + NLI) is **explicitly deferred** pending a separate
+cost/latency decision — not summarized as done below.
+
+- **Phase 18** — Token-based chunking (`CHUNK_SIZE`/`CHUNK_OVERLAP` in tokens via
+  BGE-M3 tokenizer in `app/ingestion/chunk_tokens.py`); real Okapi BM25 re-ranking
+  over FTS-filtered candidates (`app/vectorstore/bm25_ranking.py`, gate still uses
+  cosine top-1); compound-question decomposition (`app/rag/decompose.py`) with
+  per-sub-question retrieve + merge before rerank. Branches: `improve/chunking-bm25-decomposition`.
+- **Phase 19** — Request deadline (`app/rag/request_budget.py`); aux LLM for
+  rewrite/decompose/recovery/summary/ingest-context (`LLM_AUX_MODEL`); structured
+  token logging (`rag.llm_usage`); Postgres `query_answer_cache` for standalone
+  questions (`app/rag/query_cache.py`, `RagResult.cache_hit`). Branches:
+  `improve/latency-cost-controls`.
+- **Phase 21** — Postgres-backed chat rate limits (`app/security/rate_limit.py`,
+  `api_rate_counters`); session revocation via `users.sessions_revoked_at` +
+  JWT `iat` check in `get_session` + `POST /admin/members/{id}/revoke-sessions`;
+  ingestion sanitization (`app/ingestion/sanitize.py`, size + control-char ratio).
+  Branch: `improve/security-hardening`.
+- **Phase 22** — Fast retrieval-only eval (`evaluation/retrieval_eval.py`, rank of
+  correct chunk, no LLM; wired into CI no-LLM tier); production query signals
+  (`rag.query_signals` JSON: `top_score`, `response_mode`, `answered`, `source`,
+  `retrieval_reused`, `cache_hit`, etc. from `RagPipeline.answer`). Branch:
+  `improve/eval-split-production-signals`.
+
+**Backlog (deliberately unscheduled this round — do not drop silently):**
+- HNSW index build/query parameter tuning (`m`, `ef_construction`, `ef_search`) —
+  matters at corpus scale not yet reached.
+- LLM provider-level prompt caching for the large fixed grounded-prompt prefix —
+  lower priority next to query-result cache (Phase 19).
+
 **Google Drive/Docs integration (on `feature/google-integration`).** Second
 external source alongside Notion — Phases 1–7 of `GOOGLE_INTEGRATION_PLAN.md`:
 provider-partitioned sync, live token refresh, `GoogleOAuthProvider`,
@@ -1037,15 +1070,16 @@ walkthrough against a real internal-use Google client is still pending.
 - Email delivery is `console` (prints the link) by default; a real deployment needs
   `EMAIL_SENDER=smtp` configured, or a transactional-email provider swapped in
   behind `app/auth/email.py`.
-- Validate the Phase 8 reuse threshold (0.72) against logged production similarities
-  + a reuse hit/miss audit before treating it as final — same discipline as the 0.35
-  gate. A richer signal than a single query-vs-chunk cosine (e.g. also comparing the
-  rewritten question to the previous question) is the natural next experiment if reuse
-  needs to fire more often without losing correctness.
+- Validate the Phase 8 reuse threshold (0.72) and the 0.35 gate using **production
+  `rag.query_signals` logs** (Phase 22) plus a reuse hit/miss audit — no longer
+  only hand-measured examples. A richer reuse signal (e.g. comparing the rewritten
+  question to the previous question) remains a future experiment.
 - Act on the Part 3 gate findings — a *decision*, not a default: the evidence says
   keep `0.35` and the two-layer design as-is (`evaluation/reports/GATE_FINDINGS.md`).
   Any future recalibration must be driven by an *expanded* golden set + production
-  `top_score` logging, never the current ~17-case sample. Awaiting explicit sign-off.
+  signal logs, never the current ~17-case sample. Awaiting explicit sign-off.
+- **Phase 20 (deferred):** structural `{claim, chunk_id}` citations + cheap NLI
+  per claim — revisit after weighing latency/cost using Phase 19 token logs.
 - RAG enhancements: token-budget-aware context assembly and structured
   (machine-readable) citations. Current pipeline returns `sources` for
   traceability and asks the model to cite `[n]` inline, but does not yet parse
