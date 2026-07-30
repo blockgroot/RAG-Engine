@@ -15,6 +15,7 @@ argument (build it from config).
 from __future__ import annotations
 
 from ..config.settings import (
+    DecomposeSettings,
     MemorySettings,
     RagSettings,
     RecoverySettings,
@@ -95,4 +96,5 @@ def build_rag_pipeline(
         retriever=retriever,
         reuse_settings=ReuseSettings.from_env(),
         recovery_settings=recovery_settings or RecoverySettings.from_env(),
+        decompose_settings=DecomposeSettings.from_env(),
     )

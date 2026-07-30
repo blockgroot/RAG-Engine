@@ -17,9 +17,9 @@ DEFAULT_EMBEDDING_BACKEND = "local"
 # declares vector(EMBEDDING_DIM); the two MUST stay in sync — see CLAUDE.md.
 DEFAULT_EMBEDDING_DIM = 1024
 
-# Chunking defaults (characters). Reasoning documented in app/ingestion/chunking.py.
-DEFAULT_CHUNK_SIZE = 1000
-DEFAULT_CHUNK_OVERLAP = 150
+# Chunking defaults (tokens, BGE-M3 tokenizer). See app/ingestion/chunking.py.
+DEFAULT_CHUNK_SIZE = 256
+DEFAULT_CHUNK_OVERLAP = 40
 
 DEFAULT_VECTOR_STORE_BACKEND = "pgvector"
 
@@ -66,6 +66,10 @@ DEFAULT_RETRIEVAL_REUSE_THRESHOLD = 0.72
 # today; at most one optional recovery when evidence looks insufficient.
 DEFAULT_RECOVERY_ENABLED = True
 DEFAULT_RECOVERY_MAX_QUERIES = 2
+
+# Compound-question decomposition (Phase 18). Heuristic gate first; LLM only when
+# the question likely bundles multiple distinct asks.
+DEFAULT_DECOMPOSE_ENABLED = True
 
 # Web search tool (Phase 5). Keyless DuckDuckGo by default (no paid dependency);
 # set WEB_SEARCH_PROVIDER=tavily + WEB_SEARCH_API_KEY for production quality.
@@ -184,7 +188,7 @@ class DatabaseSettings:
 
 @dataclass(frozen=True)
 class ChunkingSettings:
-    """Configuration for document chunking (sizes measured in characters)."""
+    """Configuration for document chunking (sizes measured in tokens)."""
 
     chunk_size: int = DEFAULT_CHUNK_SIZE
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
@@ -406,6 +410,24 @@ class RecoverySettings:
         return cls(
             enabled=_env_bool("RECOVERY_ENABLED", DEFAULT_RECOVERY_ENABLED),
             max_queries=int(os.getenv("RECOVERY_MAX_QUERIES") or DEFAULT_RECOVERY_MAX_QUERIES),
+        )
+
+
+@dataclass(frozen=True)
+class DecomposeSettings:
+    """Compound-question decomposition before retrieval (Phase 18).
+
+    When enabled, a deterministic heuristic detects likely multi-ask questions;
+    only then an LLM splits them into standalone sub-questions. Each sub-question
+    is retrieved separately; pools are merged and reranked before generation.
+    """
+
+    enabled: bool = DEFAULT_DECOMPOSE_ENABLED
+
+    @classmethod
+    def from_env(cls) -> "DecomposeSettings":
+        return cls(
+            enabled=_env_bool("DECOMPOSE_ENABLED", DEFAULT_DECOMPOSE_ENABLED),
         )
 
 

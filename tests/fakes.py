@@ -84,6 +84,7 @@ class RecordingLLM(LLMProvider):
         summary: str = "Running summary of earlier turns.",
         rewrite: str | None = None,
         recovery_queries: list[str] | None = None,
+        decompose_subquestions: list[str] | None = None,
         raise_on_recovery: bool = False,
     ) -> None:
         self.prompts: list[str] = []
@@ -93,8 +94,10 @@ class RecordingLLM(LLMProvider):
         self._summary = summary
         self._rewrite = rewrite
         self._recovery_queries = recovery_queries
+        self._decompose_subquestions = decompose_subquestions
         self._raise_on_recovery = raise_on_recovery
         self.recovery_calls = 0
+        self.decompose_calls = 0
         self.grounded_calls = 0
 
     def generate(self, prompt: str) -> str:
@@ -110,6 +113,11 @@ class RecordingLLM(LLMProvider):
             if self._recovery_queries is None:
                 return ""
             return "\n".join(self._recovery_queries)
+        if "SUB-QUESTIONS:" in prompt:
+            self.decompose_calls += 1
+            if self._decompose_subquestions is None:
+                return "SINGLE"
+            return "\n".join(self._decompose_subquestions)
         self.grounded_calls += 1
         if self._answers is not None:
             if self._answer_idx < len(self._answers):

@@ -52,6 +52,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from ..config.settings import (
+    DecomposeSettings,
     MemorySettings,
     RagSettings,
     RecoverySettings,
@@ -65,9 +66,11 @@ from ..memory.base import ConversationContext, ConversationStore, RetrievedChunk
 from ..vectorstore.base import RetrievedChunk, VectorStore
 from ..websearch.base import SearchResult, WebSearchProvider
 from .retrieval import HybridRetriever, RetrievalResult
+from .decompose import looks_compound, parse_sub_questions
 from .prompts import (
     MODE_B_FORBIDDEN_PHRASES,
     WEB_SEARCH_TOOL,
+    build_decompose_prompt,
     build_grounded_prompt,
     build_recovery_queries_prompt,
     build_rewrite_prompt,
@@ -164,6 +167,8 @@ class RagResult:
       forbidden meta-language and the pipeline retried the generation once with a
       corrective reminder (see ``RagPipeline._generate``). A diagnostic; never
       loops more than once.
+    - ``question_decomposed`` / ``sub_questions`` — Phase 18 compound-question
+      split before retrieval (diagnostics).
     """
 
     answer: str
@@ -183,6 +188,8 @@ class RagResult:
     latency_ms: float | None = None
     response_mode: str | None = None
     tone_retry_used: bool = False
+    question_decomposed: bool = False
+    sub_questions: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -216,6 +223,7 @@ class RagPipeline:
         retriever: "HybridRetriever | None" = None,
         reuse_settings: ReuseSettings | None = None,
         recovery_settings: RecoverySettings | None = None,
+        decompose_settings: DecomposeSettings | None = None,
     ) -> None:
         self._llm = llm
         self._embedder = embedder
@@ -230,6 +238,7 @@ class RagPipeline:
         self._reuse_settings = reuse_settings or ReuseSettings.from_env()
         # Bounded retrieval recovery (optional; at most one attempt per answer).
         self._recovery_settings = recovery_settings or RecoverySettings.from_env()
+        self._decompose_settings = decompose_settings or DecomposeSettings.from_env()
         # Phase 6: hybrid + reranking retriever. When None, fall back to plain
         # vector search (the Phase 3 behaviour), keeping this pipeline usable
         # without the retrieval upgrades.
@@ -326,13 +335,19 @@ class RagPipeline:
 
         query_vec = self._embedder.embed([question])[0]
 
+        sub_questions: list[str] = [question]
+        question_decomposed = False
+
         reused = self._try_reuse(question, org_id, query_vec, conversation_id)
         if reused is not None:
             hits, top_score = reused.hits, reused.gate_score
             retrieval_reused = True
         else:
             retrieval_reused = False
-            hits, top_score = self._retrieve_once(org_id, question, query_vec)
+            sub_questions, question_decomposed = self._maybe_decompose(question)
+            hits, top_score = self._retrieve_for_subquestions(
+                org_id, question, sub_questions
+            )
 
         top_score_before = top_score
         recovery_used = False
@@ -356,6 +371,8 @@ class RagPipeline:
                 top_score_after=after if recovery_used else top_score_before,
                 final_answer_source=result.source,
                 latency_ms=round((time.perf_counter() - t0) * 1000.0, 1),
+                question_decomposed=question_decomposed,
+                sub_questions=list(sub_questions) if question_decomposed else [],
             )
 
         # Gate miss → optional recovery before web/fallback.
@@ -438,6 +455,52 @@ class RagPipeline:
             retrieval = self._retriever.retrieve(org_id, query_text, query_vec)
             return retrieval.hits, retrieval.gate_score
         hits = self._store.query(org_id, query_vec, top_k=self._settings.top_k)
+        top_score = hits[0].score if hits else None
+        return hits, top_score
+
+    def _maybe_decompose(self, question: str) -> tuple[list[str], bool]:
+        if not self._decompose_settings.enabled or not looks_compound(question):
+            return [question], False
+        try:
+            raw = self._llm.generate(build_decompose_prompt(question)).strip()
+            subs = parse_sub_questions(raw, original=question)
+        except Exception:
+            return [question], False
+        if len(subs) <= 1:
+            return [question], False
+        return subs, True
+
+    def _retrieve_for_subquestions(
+        self, org_id: str, original_question: str, sub_questions: list[str]
+    ) -> tuple[list[RetrievedChunk], float | None]:
+        if len(sub_questions) == 1:
+            vec = self._embedder.embed([sub_questions[0]])[0]
+            return self._retrieve_once(org_id, sub_questions[0], vec)
+
+        vectors = self._embedder.embed(sub_questions)
+        primary_text, primary_vec = sub_questions[0], vectors[0]
+        extra = list(zip(sub_questions[1:], vectors[1:]))
+
+        if self._retriever is not None:
+            retrieval = self._retriever.retrieve(
+                org_id,
+                primary_text,
+                primary_vec,
+                extra_queries=[(t, v) for t, v in extra],
+                rerank_query=original_question,
+            )
+            return retrieval.hits, retrieval.gate_score
+
+        merged: dict[tuple[str, int], RetrievedChunk] = {}
+        for q_text, q_vec in zip(sub_questions, vectors):
+            for hit in self._store.query(org_id, q_vec, top_k=self._settings.top_k):
+                key = (hit.document_id, hit.chunk_index)
+                prev = merged.get(key)
+                if prev is None or hit.score > prev.score:
+                    merged[key] = hit
+        hits = sorted(merged.values(), key=lambda h: h.score, reverse=True)[
+            : self._settings.top_k
+        ]
         top_score = hits[0].score if hits else None
         return hits, top_score
 
