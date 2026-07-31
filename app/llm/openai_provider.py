@@ -54,12 +54,15 @@ class OpenAICompatProvider(LLMProvider):
         # base_url=None makes the client use OpenAI's default endpoint.
         self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, *, max_tokens: int | None = None) -> str:
+        kwargs: dict = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if max_tokens is not None and max_tokens > 0:
+            kwargs["max_tokens"] = max_tokens
         try:
-            response = self._client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-            )
+            response = self._client.chat.completions.create(**kwargs)
         except APITimeoutError as exc:
             raise LLMProviderError(
                 f"LLM request timed out after {self.timeout}s", cause=exc

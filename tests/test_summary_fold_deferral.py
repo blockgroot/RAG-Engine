@@ -39,7 +39,7 @@ class _SlowSummaryLLM(RecordingLLM):
         self.summary_started = 0
         self.summary_finished = 0
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, *, max_tokens: int | None = None) -> str:
         if "UPDATED SUMMARY:" in prompt:
             self.summary_started += 1
             time.sleep(self.sleep_s)

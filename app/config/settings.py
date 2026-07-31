@@ -27,6 +27,12 @@ DEFAULT_VECTOR_STORE_BACKEND = "pgvector"
 # similarity threshold value and the two-layer grounding design.
 DEFAULT_RAG_TOP_K = 5
 DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.35
+# Cap chars of retrieved context fed into the grounded prompt (latency).
+DEFAULT_RAG_MAX_CONTEXT_CHARS = 6000
+# Cap completion length for answer generation (latency on slow free endpoints).
+DEFAULT_RAG_MAX_ANSWER_TOKENS = 700
+# How long a follow-up may wait for the previous turn's summary fold.
+DEFAULT_MEMORY_FOLD_WAIT_SECONDS = 2.0
 DEFAULT_RAG_FALLBACK_RESPONSE = (
     "I don't have information on that in the available policy documents."
 )
@@ -51,7 +57,7 @@ DEFAULT_MEMORY_RECENT_TURNS = 3
 DEFAULT_CONTEXTUAL_ENABLED = True          # prepend LLM context to each chunk at ingest
 DEFAULT_RETRIEVAL_HYBRID_ENABLED = True    # fuse vector + keyword (BM25-style) search
 DEFAULT_RETRIEVAL_RERANK_ENABLED = True    # cross-encoder rerank of the candidate pool
-DEFAULT_RETRIEVAL_CANDIDATE_POOL = 30      # how many candidates to fetch/rerank before top_k
+DEFAULT_RETRIEVAL_CANDIDATE_POOL = 16      # how many candidates to fetch/rerank before top_k
 DEFAULT_RETRIEVAL_RRF_K = 60               # Reciprocal Rank Fusion constant (standard default)
 DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
 
@@ -257,20 +263,38 @@ class RagSettings:
       in three places that MUST agree: the confidence gate, the LLM's refusal
       instruction, and the pipeline's refusal detection — so it lives here as one
       source of truth rather than being duplicated.
+    - ``max_context_chars``  total characters of retrieved chunk text placed in
+      the grounded prompt (most-relevant first; later chunks truncated/dropped).
+      Keeps prompt tokens bounded so slow endpoints stay usable.
+    - ``max_answer_tokens``  completion cap for generate / tone-retry calls
+      (``None`` / 0 = provider default). Shorter caps finish faster on free LLMs.
     """
 
     top_k: int = DEFAULT_RAG_TOP_K
     similarity_threshold: float = DEFAULT_RAG_SIMILARITY_THRESHOLD
     fallback_response: str = DEFAULT_RAG_FALLBACK_RESPONSE
+    max_context_chars: int = DEFAULT_RAG_MAX_CONTEXT_CHARS
+    max_answer_tokens: int | None = DEFAULT_RAG_MAX_ANSWER_TOKENS
 
     @classmethod
     def from_env(cls) -> "RagSettings":
+        raw_answer_tokens = os.getenv("RAG_MAX_ANSWER_TOKENS")
+        if raw_answer_tokens is None:
+            max_answer_tokens: int | None = DEFAULT_RAG_MAX_ANSWER_TOKENS
+        elif raw_answer_tokens.strip() in ("", "0"):
+            max_answer_tokens = None
+        else:
+            max_answer_tokens = int(raw_answer_tokens)
         return cls(
             top_k=int(os.getenv("RAG_TOP_K") or DEFAULT_RAG_TOP_K),
             similarity_threshold=float(
                 os.getenv("RAG_SIMILARITY_THRESHOLD") or DEFAULT_RAG_SIMILARITY_THRESHOLD
             ),
             fallback_response=os.getenv("RAG_FALLBACK_RESPONSE") or DEFAULT_RAG_FALLBACK_RESPONSE,
+            max_context_chars=int(
+                os.getenv("RAG_MAX_CONTEXT_CHARS") or DEFAULT_RAG_MAX_CONTEXT_CHARS
+            ),
+            max_answer_tokens=max_answer_tokens,
         )
 
 
@@ -395,11 +419,15 @@ class MemorySettings:
     """
 
     recent_turns: int = DEFAULT_MEMORY_RECENT_TURNS
+    fold_wait_seconds: float = DEFAULT_MEMORY_FOLD_WAIT_SECONDS
 
     @classmethod
     def from_env(cls) -> "MemorySettings":
         return cls(
             recent_turns=int(os.getenv("MEMORY_RECENT_TURNS") or DEFAULT_MEMORY_RECENT_TURNS),
+            fold_wait_seconds=float(
+                os.getenv("MEMORY_FOLD_WAIT_SECONDS") or DEFAULT_MEMORY_FOLD_WAIT_SECONDS
+            ),
         )
 
 

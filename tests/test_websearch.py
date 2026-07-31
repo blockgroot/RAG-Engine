@@ -82,7 +82,7 @@ class _AlwaysSearchLLM(LLMProvider):
     """Fake LLM that always asks to call web_search (so we can test the failure
     path deterministically), and returns fixed text for plain generate()."""
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, *, max_tokens: int | None = None) -> str:
         return "unused in this path"
 
     def generate_with_tools(self, messages, tools=None, tool_choice=None, timeout=None):
@@ -133,7 +133,7 @@ class _RefuseThenWebLLM(LLMProvider):
         self.generate_calls = 0
         self.tool_calls = 0
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, *, max_tokens: int | None = None) -> str:
         self.generate_calls += 1
         # Recovery expander or web answer composition.
         if "RETRIEVAL EXPRESSIONS:" in prompt:
@@ -227,7 +227,7 @@ class _CaptureSearchLLM(LLMProvider):
         self.decision_prompts: list[str] = []
         self.search_queries: list[str] = []
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, *, max_tokens: int | None = None) -> str:
         return "Cigna is a major US health insurer offering medical plans."
 
     def generate_with_tools(self, messages, tools=None, tool_choice=None, timeout=None):

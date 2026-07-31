@@ -82,6 +82,7 @@ from ..memory.base import ConversationContext, ConversationStore, RetrievedChunk
 from ..vectorstore.base import RetrievedChunk, VectorStore
 from ..websearch.base import SearchResult, WebSearchProvider
 from .retrieval import HybridRetriever, RetrievalResult
+from .context_assemble import assemble_context_texts
 from .decompose import looks_compound, parse_sub_questions
 from .query_cache import QueryAnswerCache
 from .request_budget import RequestBudget
@@ -288,9 +289,10 @@ class RagPipeline:
         *,
         org_id: str | None = None,
         conversation_id: str | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         provider = self._provider_for_stage(stage)
-        text = provider.generate(prompt)
+        text = provider.generate(prompt, max_tokens=max_tokens)
         log_llm_call(stage, provider, org_id=org_id, conversation_id=conversation_id)
         return text
 
@@ -318,9 +320,14 @@ class RagPipeline:
         """
         resolved = question
         if conversation_id is not None and self._memory is not None:
-            # Phase 15: wait for any in-flight fold so rewrite sees a consistent
-            # window (turn that left verbatim is either still in turns, or in summary).
-            wait_for_conversation_fold(conversation_id)
+            # Phase 15: wait briefly for any in-flight fold so rewrite sees a
+            # consistent window. Bounded — a stuck fold must not delay the turn
+            # for the full FreeLLMAPI timeout (was unbounded and caused multi-minute
+            # follow-up latency).
+            wait_for_conversation_fold(
+                conversation_id,
+                timeout=self._memory_settings.fold_wait_seconds,
+            )
             context = self._memory.get_context(
                 conversation_id, self._memory_settings.recent_turns
             )
@@ -670,16 +677,22 @@ class RagPipeline:
         conversation_id: str | None = None,
         budget: RequestBudget | None = None,
     ) -> RagResult:
+        contexts = assemble_context_texts(
+            [h.content for h in hits],
+            self._settings.max_context_chars,
+        )
         prompt = build_grounded_prompt(
             question=question,
-            contexts=[h.content for h in hits],
+            contexts=contexts,
             fallback_response=self._settings.fallback_response,
         )
+        answer_cap = self._settings.max_answer_tokens
         raw = self._generate_text(
             "generate",
             prompt,
             org_id=org_id,
             conversation_id=conversation_id,
+            max_tokens=answer_cap,
         ).strip()
         mode, text = _parse_tagged_mode(raw)
 
@@ -696,6 +709,7 @@ class RagPipeline:
                 prompt + _tone_retry_addendum(mode),
                 org_id=org_id,
                 conversation_id=conversation_id,
+                max_tokens=answer_cap,
             ).strip()
             tone_retry_used = True
             retry_mode, retry_text = _parse_tagged_mode(retry_raw)

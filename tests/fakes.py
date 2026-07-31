@@ -106,7 +106,7 @@ class RecordingLLM(LLMProvider):
         self.last_usage = TokenUsage(input_tokens=10, output_tokens=5)
         self.grounded_calls = 0
 
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, *, max_tokens: int | None = None) -> str:
         self.prompts.append(prompt)
         if "STANDALONE QUESTION:" in prompt:
             return self._rewrite or "How many paid annual leave days do we get?"
