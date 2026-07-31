@@ -5,10 +5,10 @@ import { AppShell } from "@/components/AppShell";
 import { ConnectionCard } from "@/components/ConnectionCard";
 import { useMe } from "@/lib/useMe";
 import { api, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
+import { ACTIVE_JOB_STATUSES, useJobPolling } from "@/lib/jobPoll";
 
 const PROVIDERS: ("notion" | "google" | "github")[] = ["notion", "google", "github"];
-const ACTIVE_STATUSES = new Set(["queued", "running"]);
-const POLL_MS = 2500;
+const ACTIVE_STATUSES = ACTIVE_JOB_STATUSES;
 
 function latestJobByConnection(jobs: JobRecord[]): Record<string, JobRecord> {
   const latest: Record<string, JobRecord> = {};
@@ -40,6 +40,7 @@ export default function ConnectionsPage() {
   const [error, setError] = useState<string | null>(null);
   /** Bumped when an update starts so job polling resumes (it stops when idle). */
   const [pollToken, setPollToken] = useState(0);
+  const [watchedJobId, setWatchedJobId] = useState<string | null>(null);
   const prevStatuses = useRef<Record<string, string>>({});
   const loaded = useRef(false);
   const bannerRef = useRef<HTMLDivElement | null>(null);
@@ -75,7 +76,13 @@ export default function ConnectionsPage() {
       setConnections(list);
       refreshChanges(list);
     });
-    api.listJobs().then(setJobs);
+    api.listJobs().then((list) => {
+      setJobs(list);
+      const active = list.filter((j) => ACTIVE_STATUSES.has(j.status));
+      if (active.length === 1) setWatchedJobId(active[0].id);
+      else if (active.length > 1) setWatchedJobId(null);
+      if (active.length > 0) setPollToken((n) => n + 1);
+    });
   }, [me, refreshChanges]);
 
   // Re-check when the tab is focused again (e.g. after editing Notion in another tab).
@@ -88,27 +95,25 @@ export default function ConnectionsPage() {
     return () => window.removeEventListener("focus", onFocus);
   }, [me, refreshChanges]);
 
-  // Poll while a job is active. pollToken restarts the loop after "Update policies".
-  useEffect(() => {
-    if (!me) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-
-    async function tick() {
-      const list = await api.listJobs().catch(() => null);
-      if (cancelled || !list) return;
-      setJobs(list);
-      if (list.some((j) => ACTIVE_STATUSES.has(j.status))) {
-        timer = setTimeout(tick, POLL_MS);
-      }
-    }
-
-    tick();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [me?.user_id, pollToken]);
+  const hasActiveJob = jobs.some((j) => ACTIVE_STATUSES.has(j.status));
+  useJobPolling({
+    enabled: Boolean(me) && (watchedJobId != null || hasActiveJob),
+    jobId: watchedJobId,
+    pollToken,
+    onJobs: (fetched) => {
+      setJobs((prev) => {
+        if (!watchedJobId) return fetched;
+        const byId = new Map(prev.map((j) => [j.id, j]));
+        for (const j of fetched) byId.set(j.id, j);
+        return Array.from(byId.values()).sort((a, b) =>
+          b.created_at.localeCompare(a.created_at)
+        );
+      });
+      const stillActive = fetched.some((j) => ACTIVE_STATUSES.has(j.status));
+      if (!stillActive) setWatchedJobId(null);
+      return stillActive;
+    },
+  });
 
   useEffect(() => {
     const latest = latestJobByConnection(jobs);
@@ -138,13 +143,17 @@ export default function ConnectionsPage() {
     setError(null);
     setMessage("Updating changed policies… Keep this page open — we’ll confirm when it’s done.");
     try {
-      await api.triggerIngest(connectionId);
-      const list = await api.listJobs();
-      setJobs(list);
+      const { job_id } = await api.triggerIngest(connectionId);
+      setWatchedJobId(job_id);
+      const job = await api.getJob(job_id).catch(() => null);
+      if (job) {
+        setJobs((prev) => [job, ...prev.filter((j) => j.id !== job.id)]);
+      }
       setPollToken((n) => n + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start the update.");
       setMessage(null);
+      setWatchedJobId(null);
     }
   }
 

@@ -6,9 +6,9 @@ import { AppShell } from "@/components/AppShell";
 import { useMe } from "@/lib/useMe";
 import { api, ConnectionRecord, JobRecord, MemberRecord, Me } from "@/lib/api";
 import { isSetupComplete } from "@/lib/routing";
+import { ACTIVE_JOB_STATUSES, useJobPolling } from "@/lib/jobPoll";
 
-const ACTIVE = new Set(["queued", "running"]);
-const POLL_MS = 2500;
+const ACTIVE = ACTIVE_JOB_STATUSES;
 
 const PROVIDER_LABELS: Record<string, string> = {
   notion: "Notion",
@@ -48,6 +48,7 @@ function OnboardingInner() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [pollToken, setPollToken] = useState(0);
+  const [watchedJobId, setWatchedJobId] = useState<string | null>(null);
   const [localMe, setLocalMe] = useState<Me | null>(null);
   const [folderUrl, setFolderUrl] = useState("");
   const [savingFolder, setSavingFolder] = useState(false);
@@ -122,7 +123,14 @@ function OnboardingInner() {
     bootstrapped.current = true;
     api.listConnections().then(setConnections).catch(() => undefined);
     api.listMembers().then(setMembers).catch(() => undefined);
-    api.listJobs().then(setJobs).catch(() => undefined);
+    api.listJobs().then((list) => {
+      setJobs(list);
+      const active = list.find((j) => ACTIVE.has(j.status));
+      if (active) {
+        setWatchedJobId(active.id);
+        setPollToken((n) => n + 1);
+      }
+    }).catch(() => undefined);
   }, [me]);
 
   const applyMeSnapshot = useCallback((fresh: Me) => {
@@ -153,51 +161,34 @@ function OnboardingInner() {
     [refresh]
   );
 
-  // Poll until a full sync has succeeded (ready_to_ask). Never unlock mid-ingest.
-  useEffect(() => {
-    if (!me || me.role !== "admin") return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
+  // Poll only while a job is active (or we just kicked one off) — not forever until ready.
+  const pollEnabled =
+    Boolean(me && me.role === "admin") &&
+    (watchedJobId != null || Boolean(activeJob) || busy);
 
-    async function tick() {
-      try {
-        const list = await api.listJobs();
-        if (cancelled) return;
-        setJobs(list);
-
-        const fresh = await api.me().catch(() => null);
-        if (cancelled) return;
-        if (fresh) {
-          applyMeSnapshot(fresh);
-          if (fresh.ready_to_ask) {
-            const succeeded = list.find((j) => j.status === "succeeded");
-            announceReady(succeeded?.doc_count ?? fresh.latest_doc_count);
-          }
-        }
-
-        if (!cancelled && !fresh?.ready_to_ask) {
-          timer = setTimeout(tick, POLL_MS);
-        }
-      } catch {
-        if (!cancelled) {
-          timer = setTimeout(tick, POLL_MS * 2);
-        }
-      }
-    }
-
-    tick();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [me?.user_id, pollToken]);
+  useJobPolling({
+    enabled: pollEnabled,
+    jobId: watchedJobId,
+    pollToken,
+    onJobs: (fetched) => {
+      setJobs((prev) => {
+        if (!watchedJobId) return fetched;
+        const byId = new Map(prev.map((j) => [j.id, j]));
+        for (const j of fetched) byId.set(j.id, j);
+        return Array.from(byId.values()).sort((a, b) =>
+          b.created_at.localeCompare(a.created_at)
+        );
+      });
+      return fetched.some((j) => ACTIVE.has(j.status));
+    },
+  });
 
   useEffect(() => {
     if (!displayJob) return;
     const prev = prevJobStatus.current;
     const curr = displayJob.status;
     if (prev && ACTIVE.has(prev) && curr === "succeeded") {
+      setWatchedJobId(null);
       api.me().then((fresh) => {
         applyMeSnapshot(fresh);
         if (fresh.ready_to_ask) {
@@ -205,6 +196,7 @@ function OnboardingInner() {
         }
       }).catch(() => undefined);
     } else if (prev && ACTIVE.has(prev) && curr === "failed") {
+      setWatchedJobId(null);
       setError(displayJob.error || "Sync failed. Please try again.");
       setMessage(null);
     }
@@ -237,15 +229,19 @@ function OnboardingInner() {
     setBusy(true);
     setError(null);
     announcedSuccess.current = false;
-    setPollToken((n) => n + 1);
     setMessage(null);
     try {
-      await api.triggerIngest(primary.id);
-      const list = await api.listJobs();
-      setJobs(list);
+      const { job_id } = await api.triggerIngest(primary.id);
+      setWatchedJobId(job_id);
+      const job = await api.getJob(job_id).catch(() => null);
+      if (job) {
+        setJobs((prev) => [job, ...prev.filter((j) => j.id !== job.id)]);
+      }
+      setPollToken((n) => n + 1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not start sync.");
       setMessage(null);
+      setWatchedJobId(null);
     } finally {
       setBusy(false);
     }

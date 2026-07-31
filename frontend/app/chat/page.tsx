@@ -6,8 +6,7 @@ import { ChatMessageView, Message } from "@/components/ChatMessage";
 import { useMe } from "@/lib/useMe";
 import { streamChat } from "@/lib/sse";
 import { api } from "@/lib/api";
-
-const SYNC_POLL_MS = 4000;
+import { JOB_POLL_MS } from "@/lib/jobPoll";
 
 const SUGGESTED_QUESTIONS = [
   "How many days of paid leave do I get?",
@@ -32,21 +31,44 @@ export default function ChatPage() {
     setReadyToAsk(me.ready_to_ask);
   }, [me]);
 
+  // Light /me poll only while waiting for first sync — pause when tab is hidden.
   useEffect(() => {
     if (readyToAsk !== false) return;
     let cancelled = false;
-    const interval = setInterval(async () => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    async function tick() {
+      if (cancelled) return;
+      if (typeof document !== "undefined" && document.hidden) {
+        timer = setTimeout(tick, JOB_POLL_MS);
+        return;
+      }
       const fresh = await api.me().catch(() => null);
-      if (cancelled || !fresh) return;
+      if (cancelled || !fresh) {
+        timer = setTimeout(tick, JOB_POLL_MS * 2);
+        return;
+      }
       if (fresh.ready_to_ask) {
         setReadyToAsk(true);
         setJustSynced(true);
         refresh();
+        return;
       }
-    }, SYNC_POLL_MS);
+      timer = setTimeout(tick, JOB_POLL_MS);
+    }
+
+    function onVisibility() {
+      if (cancelled || document.hidden) return;
+      if (timer) clearTimeout(timer);
+      void tick();
+    }
+
+    void tick();
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       cancelled = true;
-      clearInterval(interval);
+      if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [readyToAsk, refresh]);
 
