@@ -279,3 +279,155 @@ def test_oauth_callback_rejects_unknown_state(client, monkeypatch):
 
     response = client.get("/auth/notion/callback?code=abc&state=not-a-real-state")
     assert response.status_code == 400
+
+
+# --- Workspace-within-a-Workspace: workspace-scoped connect flow (Task 7) ---
+
+
+@requires_db
+def test_workspace_authorize_requires_owner_role(client, store, org_cleanup, monkeypatch):
+    from app.auth import create_session_token
+    from app.workspaces import create_workspace, invite_member
+
+    monkeypatch.setenv("NOTION_CLIENT_ID", "client-123")
+    monkeypatch.setenv("NOTION_CLIENT_SECRET", "secret-456")
+    monkeypatch.setenv("NOTION_REDIRECT_URI", "https://portal.example.com/auth/notion/callback")
+
+    org_id = store.create_organization("Workspace OAuth Org")
+    org_cleanup.append(org_id)
+    owner = create_admin(f"owner-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    from app.auth.users import invite_member as invite_org_member
+
+    colleague = invite_org_member(f"colleague-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    workspace_id = create_workspace(org_id, "Meeting Notes", owner.id)
+    invite_member(workspace_id, org_id, owner.id, colleague.email)
+
+    from app.auth.users import get_user
+
+    member_session = create_session_token(get_user(colleague.id))
+    response = client.get(
+        f"/auth/notion/authorize?workspace_id={workspace_id}",
+        cookies={"session": member_session},
+        follow_redirects=False,
+    )
+    assert response.status_code == 403
+
+
+@requires_db
+def test_workspace_authorize_rejects_non_member(client, store, org_cleanup, monkeypatch):
+    from app.auth import create_session_token
+    from app.workspaces import create_workspace
+
+    monkeypatch.setenv("NOTION_CLIENT_ID", "client-123")
+    monkeypatch.setenv("NOTION_CLIENT_SECRET", "secret-456")
+    monkeypatch.setenv("NOTION_REDIRECT_URI", "https://portal.example.com/auth/notion/callback")
+
+    org_id = store.create_organization("Workspace OAuth Non-Member Org")
+    org_cleanup.append(org_id)
+    owner = create_admin(f"owner-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    stranger = create_admin(f"stranger-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    workspace_id = create_workspace(org_id, "Meeting Notes", owner.id)
+
+    session_token = create_session_token(stranger)
+    response = client.get(
+        f"/auth/notion/authorize?workspace_id={workspace_id}",
+        cookies={"session": session_token},
+        follow_redirects=False,
+    )
+    assert response.status_code == 403
+
+
+@requires_db
+def test_workspace_owner_authorize_redirects_to_provider(
+    client, store, org_cleanup, monkeypatch
+):
+    from app.auth import create_session_token
+    from app.workspaces import create_workspace
+
+    monkeypatch.setenv("NOTION_CLIENT_ID", "client-123")
+    monkeypatch.setenv("NOTION_CLIENT_SECRET", "secret-456")
+    monkeypatch.setenv("NOTION_REDIRECT_URI", "https://portal.example.com/auth/notion/callback")
+
+    org_id = store.create_organization("Workspace OAuth Owner Org")
+    org_cleanup.append(org_id)
+    owner = create_admin(f"owner-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    workspace_id = create_workspace(org_id, "Meeting Notes", owner.id)
+
+    session_token = create_session_token(owner)
+    response = client.get(
+        f"/auth/notion/authorize?workspace_id={workspace_id}",
+        cookies={"session": session_token},
+        follow_redirects=False,
+    )
+    assert response.status_code in (302, 307)
+    assert response.headers["location"].startswith("https://api.notion.com/v1/oauth/authorize")
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT workspace_id::text FROM oauth_states WHERE org_id = %s ORDER BY created_at DESC LIMIT 1",
+            (org_id,),
+        ).fetchone()
+    assert row[0] == workspace_id
+
+
+@requires_db
+def test_workspace_oauth_callback_saves_connection_scoped_to_workspace(
+    client, store, org_cleanup, monkeypatch
+):
+    """Full authorize -> callback roundtrip for a workspace connect flow."""
+    from app.auth import create_session_token
+    from app.auth.oauth_state import create_state
+    from app.workspaces import create_workspace
+
+    monkeypatch.setenv("NOTION_CLIENT_ID", "client-123")
+    monkeypatch.setenv("NOTION_CLIENT_SECRET", "secret-456")
+    monkeypatch.setenv("NOTION_REDIRECT_URI", "https://portal.example.com/auth/notion/callback")
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("AUTH_ENCRYPTION_KEYS", Fernet.generate_key().decode())
+
+    org_id = store.create_organization("Workspace OAuth Callback Org")
+    org_cleanup.append(org_id)
+    owner = create_admin(f"owner-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    workspace_id = create_workspace(org_id, "Meeting Notes", owner.id)
+
+    # Simulate the callback by mocking the token exchange (no real Notion call).
+    from app.auth.notion_oauth import NotionOAuthProvider
+    from app.auth.base import OAuthTokens
+
+    def _fake_exchange(self, code):
+        return OAuthTokens(
+            access_token="ntn_workspace_secret",
+            refresh_token=None,
+            expires_at=None,
+            external_workspace_id="ws-workspace-connect",
+            external_workspace_name="Employee's Notion",
+        )
+
+    monkeypatch.setattr(NotionOAuthProvider, "exchange_code", _fake_exchange)
+
+    state = create_state(org_id, "notion", workspace_id=workspace_id)
+    response = client.get(
+        f"/auth/notion/callback?code=abc&state={state}", follow_redirects=False
+    )
+    assert response.status_code in (302, 307)
+    assert f"/workspaces/{workspace_id}" in response.headers["location"]
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT workspace_id::text, external_workspace_id FROM oauth_connections "
+            "WHERE org_id = %s AND provider = 'notion' AND workspace_id = %s",
+            (org_id, workspace_id),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == workspace_id
+    assert row[1] == "ws-workspace-connect"
+
+    # The org-wide (workspace_id IS NULL) slot must be untouched by this connect.
+    with get_connection() as conn:
+        org_wide = conn.execute(
+            "SELECT 1 FROM oauth_connections "
+            "WHERE org_id = %s AND provider = 'notion' AND workspace_id IS NULL",
+            (org_id,),
+        ).fetchone()
+    assert org_wide is None

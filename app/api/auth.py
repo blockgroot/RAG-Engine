@@ -39,6 +39,7 @@ from ..auth import (
 from ..config.settings import ApiSettings, AuthSettings, EmailSettings
 from ..core.exceptions import AuthError, ConfigurationError, OAuthError
 from ..vectorstore.base import VectorStore
+from ..workspaces import assert_member
 from .deps import SESSION_COOKIE_NAME, get_session, get_vector_store
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -165,15 +166,36 @@ def verify_magic_link(token: str, settings: ApiSettings = Depends(ApiSettings.fr
 
 
 @router.get("/{provider}/authorize")
-def authorize(provider: str, session=Depends(get_session)):
-    if session.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin role required")
+def authorize(provider: str, workspace_id: str | None = None, session=Depends(get_session)):
+    """Start a connect flow.
+
+    Without ``workspace_id``: the existing org-wide admin connect flow —
+    admin role required, unchanged. With ``workspace_id`` (Workspace-within-
+    a-Workspace): an employee connecting their OWN personal source into a
+    sub-workspace they belong to. Restricted to the workspace's ``owner``
+    (its creator) — see CLAUDE.md's Workspace-within-a-Workspace plan §Task 12
+    decision 3 — so an ordinary member can't silently repoint the workspace's
+    data source.
+    """
+    if workspace_id is None:
+        if session.role != "admin":
+            raise HTTPException(status_code=403, detail="Admin role required")
+    else:
+        try:
+            role = assert_member(workspace_id, session.org_id, session.user_id)
+        except AuthError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        if role != "owner":
+            raise HTTPException(
+                status_code=403, detail="Only the workspace owner can connect a source"
+            )
+
     try:
         oauth_provider = build_oauth_provider(provider)
     except ConfigurationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    state = create_state(session.org_id, provider)
+    state = create_state(session.org_id, provider, workspace_id=workspace_id)
     return RedirectResponse(url=oauth_provider.authorize_url(state))
 
 
@@ -185,15 +207,18 @@ def callback(
     settings: ApiSettings = Depends(ApiSettings.from_env),
 ):
     try:
-        org_id = consume_state(state, provider=provider)
+        org_id, workspace_id = consume_state(state, provider=provider)
         oauth_provider = build_oauth_provider(provider)
         tokens = oauth_provider.exchange_code(code)
-        save_connection(org_id, provider, tokens)
+        save_connection(org_id, provider, tokens, workspace_id=workspace_id)
     except (OAuthError, ConfigurationError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # Resume admin onboarding at the ingest step after OAuth returns.
+    # Resume admin onboarding at the ingest step after OAuth returns. A
+    # workspace connect resumes in the workspace's own UI instead.
     base = (settings.frontend_url or "").rstrip("/")
-    return RedirectResponse(
-        url=f"{base}/onboarding?connected={provider}" if base else f"/onboarding?connected={provider}"
-    )
+    if workspace_id is not None:
+        target = f"/workspaces/{workspace_id}?connected={provider}"
+    else:
+        target = f"/onboarding?connected={provider}"
+    return RedirectResponse(url=f"{base}{target}" if base else target)

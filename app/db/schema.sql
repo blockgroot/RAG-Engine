@@ -242,9 +242,15 @@ ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS external_workspace_name T
 -- app/auth/credentials.py::save_connection).
 ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
 ALTER TABLE oauth_connections DROP CONSTRAINT IF EXISTS oauth_connections_org_id_provider_key;
+-- DROP + recreate (not just IF NOT EXISTS) because an earlier iteration of
+-- this schema briefly created a COALESCE-expression index under this same
+-- name before landing on the partial-index form below; IF NOT EXISTS alone
+-- would silently keep that stale definition on any DB that already applied
+-- the earlier version, causing ON CONFLICT to fail to match this index.
+DROP INDEX IF EXISTS idx_oauth_connections_org_provider_workspace;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_connections_org_provider_orgwide
     ON oauth_connections (org_id, provider) WHERE workspace_id IS NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_connections_org_provider_workspace
+CREATE UNIQUE INDEX idx_oauth_connections_org_provider_workspace
     ON oauth_connections (org_id, provider, workspace_id) WHERE workspace_id IS NOT NULL;
 
 -- Provider-specific ingestion scope config (Google Integration Phase 4). Unlike

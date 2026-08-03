@@ -53,25 +53,40 @@ def save_connection(
     tokens: OAuthTokens,
     *,
     connected_by_user_id: str | None = None,
+    workspace_id: str | None = None,
 ) -> str:
-    """Encrypt and upsert an org's OAuth connection for ``provider``.
+    """Encrypt and upsert a connection for ``provider``.
 
-    One row per ``(org_id, provider)`` — a second connect for the same
-    provider replaces the first (e.g. reconnecting after revoking access).
+    One row per ``(org_id, provider)`` when ``workspace_id`` is ``None``
+    (today's org-wide admin connection, unchanged) — a second connect for the
+    same provider replaces the first (e.g. reconnecting after revoking
+    access). One row per ``(org_id, provider, workspace_id)`` when
+    ``workspace_id`` is set (Workspace-within-a-Workspace): an employee's
+    personal connection for their sub-workspace, kept fully separate from the
+    org-wide connection and from any other workspace's connection for the
+    same provider (see the two partial unique indexes in schema.sql). Which
+    ``ON CONFLICT`` target applies depends on whether ``workspace_id`` is
+    ``None`` — Postgres requires the inference clause's predicate to match
+    the partial index's predicate exactly, so this can't be one static query.
     """
     access_encrypted = encrypt(tokens.access_token)
     refresh_encrypted = encrypt(tokens.refresh_token) if tokens.refresh_token else None
+    conflict_clause = (
+        "ON CONFLICT (org_id, provider) WHERE workspace_id IS NULL DO UPDATE SET"
+        if workspace_id is None
+        else "ON CONFLICT (org_id, provider, workspace_id) WHERE workspace_id IS NOT NULL DO UPDATE SET"
+    )
 
     with get_connection() as conn:
         row = conn.execute(
-            """
+            f"""
             INSERT INTO oauth_connections (
                 org_id, provider, external_workspace_id, external_workspace_name,
                 access_token_encrypted, refresh_token_encrypted, expires_at,
-                connected_by_user_id
+                connected_by_user_id, workspace_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (org_id, provider) WHERE workspace_id IS NULL DO UPDATE SET
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            {conflict_clause}
                 external_workspace_id   = EXCLUDED.external_workspace_id,
                 external_workspace_name = EXCLUDED.external_workspace_name,
                 access_token_encrypted  = EXCLUDED.access_token_encrypted,
@@ -89,23 +104,28 @@ def save_connection(
                 refresh_encrypted,
                 tokens.expires_at,
                 connected_by_user_id,
+                workspace_id,
             ),
         ).fetchone()
     return str(row[0])
 
 
-def get_connection_token(org_id: str, provider: str) -> str:
-    """Return the decrypted access token for this org's ``provider`` connection.
+def get_connection_token(
+    org_id: str, provider: str, workspace_id: str | None = None
+) -> str:
+    """Return the decrypted access token for this ``provider`` connection.
 
     Always scoped by BOTH ``org_id`` and ``provider`` — never provider alone —
-    so this can never return another org's token. Raises ``ConfigurationError``
-    if no connection exists (the admin hasn't connected this provider yet).
+    so this can never return another org's token. ``workspace_id`` (default
+    ``None``) additionally scopes to the org-wide connection vs. a specific
+    sub-workspace's personal connection. Raises ``ConfigurationError`` if no
+    connection exists (the admin/employee hasn't connected this provider yet).
     """
     with get_connection() as conn:
         row = conn.execute(
             "SELECT access_token_encrypted FROM oauth_connections "
-            "WHERE org_id = %s AND provider = %s",
-            (org_id, provider),
+            "WHERE org_id = %s AND provider = %s AND workspace_id IS NOT DISTINCT FROM %s",
+            (org_id, provider, workspace_id),
         ).fetchone()
     if not row:
         raise ConfigurationError(
@@ -114,7 +134,9 @@ def get_connection_token(org_id: str, provider: str) -> str:
     return decrypt(row[0])
 
 
-def get_live_connection_token(org_id: str, provider: str) -> str:
+def get_live_connection_token(
+    org_id: str, provider: str, workspace_id: str | None = None
+) -> str:
     """Return a valid (refreshed if necessary) access token for this connection.
 
     Provider-agnostic (CLAUDE.md D10): Notion's tokens never expire, Google's
@@ -148,8 +170,9 @@ def get_live_connection_token(org_id: str, provider: str) -> str:
     with get_connection() as conn:
         row = conn.execute(
             "SELECT access_token_encrypted, refresh_token_encrypted, expires_at "
-            "FROM oauth_connections WHERE org_id = %s AND provider = %s",
-            (org_id, provider),
+            "FROM oauth_connections "
+            "WHERE org_id = %s AND provider = %s AND workspace_id IS NOT DISTINCT FROM %s",
+            (org_id, provider, workspace_id),
         ).fetchone()
     if not row:
         raise ConfigurationError(
@@ -201,28 +224,37 @@ def get_live_connection_token(org_id: str, provider: str) -> str:
         conn.execute(
             "UPDATE oauth_connections SET "
             "access_token_encrypted = %s, refresh_token_encrypted = %s, expires_at = %s "
-            "WHERE org_id = %s AND provider = %s",
+            "WHERE org_id = %s AND provider = %s AND workspace_id IS NOT DISTINCT FROM %s",
             (
                 new_access_encrypted,
                 new_refresh_encrypted,
                 new_tokens.expires_at,
                 org_id,
                 provider,
+                workspace_id,
             ),
         )
 
     return new_tokens.access_token
 
 
-def list_connections(org_id: str) -> list[OAuthConnectionInfo]:
-    """List this org's connections (metadata only — never the decrypted token)."""
+def list_connections(
+    org_id: str, workspace_id: str | None = None
+) -> list[OAuthConnectionInfo]:
+    """List connections (metadata only — never the decrypted token).
+
+    ``workspace_id`` (default ``None``) lists the org-wide connections;
+    passing a workspace's id lists only that sub-workspace's personal
+    connections instead.
+    """
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT id::text, provider, external_workspace_id, "
             "external_workspace_name, created_at, source_config "
             "FROM oauth_connections "
-            "WHERE org_id = %s ORDER BY created_at DESC",
-            (org_id,),
+            "WHERE org_id = %s AND workspace_id IS NOT DISTINCT FROM %s "
+            "ORDER BY created_at DESC",
+            (org_id, workspace_id),
         ).fetchall()
     return [
         OAuthConnectionInfo(
@@ -237,7 +269,9 @@ def list_connections(org_id: str) -> list[OAuthConnectionInfo]:
     ]
 
 
-def set_connection_config(org_id: str, provider: str, config: dict) -> None:
+def set_connection_config(
+    org_id: str, provider: str, config: dict, workspace_id: str | None = None
+) -> None:
     """Store this org's provider-specific ingestion scope config.
 
     Generic on purpose (Google Integration Phase 4): Notion never needs this
@@ -255,8 +289,9 @@ def set_connection_config(org_id: str, provider: str, config: dict) -> None:
     with get_connection() as conn:
         row = conn.execute(
             "UPDATE oauth_connections SET source_config = %s "
-            "WHERE org_id = %s AND provider = %s RETURNING id",
-            (Json(config), org_id, provider),
+            "WHERE org_id = %s AND provider = %s AND workspace_id IS NOT DISTINCT FROM %s "
+            "RETURNING id",
+            (Json(config), org_id, provider, workspace_id),
         ).fetchone()
     if not row:
         raise ConfigurationError(
@@ -264,8 +299,10 @@ def set_connection_config(org_id: str, provider: str, config: dict) -> None:
         )
 
 
-def get_connection_config(org_id: str, provider: str) -> dict | None:
-    """Return this org's stored provider-specific scope config, or ``None``.
+def get_connection_config(
+    org_id: str, provider: str, workspace_id: str | None = None
+) -> dict | None:
+    """Return the stored provider-specific scope config, or ``None``.
 
     ``None`` covers both "never connected" and "connected but never
     configured" — callers that need to distinguish those cases should check
@@ -274,8 +311,9 @@ def get_connection_config(org_id: str, provider: str) -> dict | None:
     """
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT source_config FROM oauth_connections WHERE org_id = %s AND provider = %s",
-            (org_id, provider),
+            "SELECT source_config FROM oauth_connections "
+            "WHERE org_id = %s AND provider = %s AND workspace_id IS NOT DISTINCT FROM %s",
+            (org_id, provider, workspace_id),
         ).fetchone()
     if not row:
         return None

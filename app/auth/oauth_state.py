@@ -20,32 +20,41 @@ _STATE_TTL_MINUTES = 10
 _STATE_BYTES = 32
 
 
-def create_state(org_id: str, provider: str) -> str:
+def create_state(org_id: str, provider: str, workspace_id: str | None = None) -> str:
+    """Create a state value for a connect flow.
+
+    ``workspace_id`` (Workspace-within-a-Workspace): ``None`` (default) is
+    today's org-wide admin connect flow, unchanged. Non-``None`` records
+    which sub-workspace this personal connection is for, so the callback
+    knows to save it scoped to that workspace instead of the org.
+    """
     state = secrets.token_urlsafe(_STATE_BYTES)
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=_STATE_TTL_MINUTES)
     with get_connection() as conn:
         conn.execute(
-            "INSERT INTO oauth_states (state, org_id, provider, expires_at) "
-            "VALUES (%s, %s, %s, %s)",
-            (state, org_id, provider, expires_at),
+            "INSERT INTO oauth_states (state, org_id, provider, expires_at, workspace_id) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (state, org_id, provider, expires_at, workspace_id),
         )
     return state
 
 
-def consume_state(state: str, *, provider: str) -> str:
-    """Validate + consume a state value, scoped to ``provider``. Returns org_id.
+def consume_state(state: str, *, provider: str) -> tuple[str, str | None]:
+    """Validate + consume a state value, scoped to ``provider``.
 
-    Raises ``OAuthError`` if the state is unknown, expired, already used, or
-    was issued for a different provider (defends against a state value
-    generated for one connect flow being replayed against another).
+    Returns ``(org_id, workspace_id)`` — ``workspace_id`` is ``None`` for the
+    org-wide connect flow. Raises ``OAuthError`` if the state is unknown,
+    expired, already used, or was issued for a different provider (defends
+    against a state value generated for one connect flow being replayed
+    against another).
     """
     with get_connection() as conn:
         row = conn.execute(
             "UPDATE oauth_states SET consumed_at = now() "
             "WHERE state = %s AND provider = %s AND consumed_at IS NULL AND expires_at > now() "
-            "RETURNING org_id::text",
+            "RETURNING org_id::text, workspace_id::text",
             (state, provider),
         ).fetchone()
     if not row:
         raise OAuthError("Invalid, expired, or already-used OAuth state")
-    return row[0]
+    return row[0], row[1]
