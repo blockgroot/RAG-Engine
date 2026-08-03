@@ -79,3 +79,31 @@ def require_admin(session: SessionClaims = Depends(get_session)) -> SessionClaim
     if session.role != "admin":
         raise HTTPException(status_code=403, detail="Admin role required")
     return session
+
+
+def get_workspace_role(
+    workspace_id: str,
+    session: SessionClaims = Depends(get_session),
+) -> str:
+    """Resolve + validate workspace membership; return the caller's role.
+
+    Mirrors ``require_admin``'s shape but for the workspace boundary
+    (Workspace-within-a-Workspace) — the ONE place a ``workspace_id`` from a
+    URL path is checked against the session's ``org_id`` + ``user_id`` before
+    any router uses it. ``assert_member`` also checks the workspace's own
+    ``org_id`` against the caller's, so a stale/forged ``workspace_id`` from a
+    different org fails closed here rather than resolving to real data.
+    """
+    from ..core.exceptions import AuthError
+    from ..workspaces import assert_member
+
+    try:
+        return assert_member(workspace_id, session.org_id, session.user_id)
+    except AuthError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def require_workspace_owner(role: str = Depends(get_workspace_role)) -> str:
+    if role != "owner":
+        raise HTTPException(status_code=403, detail="Workspace owner role required")
+    return role
