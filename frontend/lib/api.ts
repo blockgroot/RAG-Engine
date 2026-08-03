@@ -88,6 +88,12 @@ export interface ConnectionConfigResponse {
   config: ConnectionSourceConfig;
 }
 
+/** One Drive folder the connected account can see (folder-picker dropdown). */
+export interface DriveFolder {
+  id: string;
+  name: string;
+}
+
 export interface JobRecord {
   id: string;
   connection_id: string;
@@ -152,6 +158,10 @@ export const api = {
   listConnections: () => request<ConnectionRecord[]>("/admin/connections"),
   getConnectionConfig: (connectionId: string) =>
     request<ConnectionConfigResponse>(`/admin/connections/${connectionId}/config`),
+  searchConnectionDriveFolders: (connectionId: string, q: string) =>
+    request<{ folders: DriveFolder[] }>(
+      `/admin/connections/${connectionId}/drive-folders?q=${encodeURIComponent(q)}`
+    ),
   setConnectionConfig: (connectionId: string, folderUrl: string) =>
     request<ConnectionConfigResponse>(`/admin/connections/${connectionId}/config`, {
       method: "PUT",
@@ -190,6 +200,10 @@ export const api = {
     }),
   listWorkspaceConnections: (workspaceId: string) =>
     request<ConnectionRecord[]>(`/workspaces/${workspaceId}/connections`),
+  searchWorkspaceConnectionDriveFolders: (workspaceId: string, connectionId: string, q: string) =>
+    request<{ folders: DriveFolder[] }>(
+      `/workspaces/${workspaceId}/connections/${connectionId}/drive-folders?q=${encodeURIComponent(q)}`
+    ),
   setWorkspaceConnectionConfig: (workspaceId: string, connectionId: string, folderUrl: string) =>
     request<ConnectionConfigResponse>(
       `/workspaces/${workspaceId}/connections/${connectionId}/config`,

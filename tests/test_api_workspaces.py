@@ -14,7 +14,7 @@ import uuid
 import pytest
 from fastapi.testclient import TestClient
 
-from app.auth import create_admin, create_session_token
+from app.auth import OAuthTokens, create_admin, create_session_token, save_connection
 from app.auth.users import invite_member as invite_org_member
 
 from .conftest import requires_db
@@ -22,7 +22,10 @@ from .conftest import requires_db
 
 @pytest.fixture(autouse=True)
 def _auth_env(monkeypatch):
+    from cryptography.fernet import Fernet
+
     monkeypatch.setenv("AUTH_JWT_SECRET", "test-jwt-secret-do-not-use-in-prod")
+    monkeypatch.setenv("AUTH_ENCRYPTION_KEYS", Fernet.generate_key().decode())
     monkeypatch.setenv("EMAIL_SENDER", "console")
     monkeypatch.setenv("FRONTEND_URL", "https://portal.example.com")
     monkeypatch.setenv("API_CORS_ORIGINS", "https://portal.example.com")
@@ -166,3 +169,90 @@ def test_workspaces_route_requires_a_session(client, owner_org):
 
     response = client.get(f"/workspaces/{workspace_id}/members")
     assert response.status_code == 401
+
+
+# -- Drive folder-picker dropdown (search-as-you-type over an existing connection) --
+
+
+def _save_workspace_google(org_id: str, workspace_id: str) -> str:
+    return save_connection(
+        org_id,
+        "google",
+        OAuthTokens(
+            access_token="goog_access",
+            refresh_token="goog_refresh",
+            expires_at=None,
+            external_workspace_id="drive-user@example.com",
+            external_workspace_name="drive-user@example.com",
+        ),
+        workspace_id=workspace_id,
+    )
+
+
+@requires_db
+def test_search_workspace_drive_folders_returns_matches(client, owner_org, monkeypatch):
+    org_id, owner, cookies = owner_org
+    create_resp = client.post("/workspaces", json={"name": "Meeting Notes"}, cookies=cookies)
+    workspace_id = create_resp.json()["id"]
+    connection_id = _save_workspace_google(org_id, workspace_id)
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"files": [{"id": "folder-1", "name": "Q3 Meeting Notes"}]}
+
+    monkeypatch.setattr(
+        "app.sources.google_drive_utils.httpx.get", lambda *a, **k: FakeResponse()
+    )
+
+    response = client.get(
+        f"/workspaces/{workspace_id}/connections/{connection_id}/drive-folders",
+        params={"q": "Q3"},
+        cookies=cookies,
+    )
+    assert response.status_code == 200
+    assert response.json()["folders"] == [{"id": "folder-1", "name": "Q3 Meeting Notes"}]
+
+
+@requires_db
+def test_search_workspace_drive_folders_requires_owner_role(client, store, org_cleanup):
+    org_id = store.create_organization(f"Workspace Drive Search Role Org {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+    owner = create_admin(f"owner-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    owner_cookies = {"session": create_session_token(owner)}
+    colleague = invite_org_member(f"colleague-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    colleague_cookies = {"session": create_session_token(colleague)}
+
+    create_resp = client.post("/workspaces", json={"name": "Meeting Notes"}, cookies=owner_cookies)
+    workspace_id = create_resp.json()["id"]
+    client.post(
+        f"/workspaces/{workspace_id}/members",
+        json={"email": colleague.email},
+        cookies=owner_cookies,
+    )
+    connection_id = _save_workspace_google(org_id, workspace_id)
+
+    response = client.get(
+        f"/workspaces/{workspace_id}/connections/{connection_id}/drive-folders",
+        cookies=colleague_cookies,
+    )
+    assert response.status_code == 403
+
+
+@requires_db
+def test_search_workspace_drive_folders_wrong_workspace_returns_404(client, owner_org):
+    org_id, owner, cookies = owner_org
+    workspace_a = client.post(
+        "/workspaces", json={"name": "Workspace A"}, cookies=cookies
+    ).json()["id"]
+    workspace_b = client.post(
+        "/workspaces", json={"name": "Workspace B"}, cookies=cookies
+    ).json()["id"]
+    connection_id = _save_workspace_google(org_id, workspace_a)
+
+    response = client.get(
+        f"/workspaces/{workspace_b}/connections/{connection_id}/drive-folders",
+        cookies=cookies,
+    )
+    assert response.status_code == 404

@@ -135,3 +135,61 @@ def validate_drive_folder(token: str, folder_id: str, *, timeout: float = 15.0) 
         "folder_id": data.get("id") or folder_id,
         "folder_name": data.get("name") or folder_id,
     }
+
+
+def _escape_drive_query_value(value: str) -> str:
+    """Escape a value embedded in a Drive API ``q`` string literal."""
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def search_drive_folders(
+    token: str, query: str = "", *, page_size: int = 20, timeout: float = 15.0
+) -> list[dict]:
+    """List Drive folders the connected account can see, optionally name-filtered.
+
+    Powers a folder-picker dropdown (search-as-you-type) so connecting a
+    folder no longer requires the admin/workspace-owner to copy-paste its URL
+    out of Drive — they just pick from folders Drive already says they can
+    see, with the id resolved server-side. Uses the same live OAuth token as
+    ``validate_drive_folder``.
+
+    Returns:
+        ``[{"id": ..., "name": ...}, ...]``, most-recently-modified first.
+        Empty list for no matches — never raises for "nothing found".
+
+    Raises:
+        SourceError: unexpected Drive/HTTP failure (network, non-2xx).
+    """
+    q_parts = [f"mimeType='{_FOLDER_MIME}'", "trashed=false"]
+    clean_query = (query or "").strip()
+    if clean_query:
+        q_parts.append(f"name contains '{_escape_drive_query_value(clean_query)}'")
+
+    try:
+        response = httpx.get(
+            _DRIVE_FILES_URL,
+            headers={"Authorization": f"Bearer {token}"},
+            params={
+                "q": " and ".join(q_parts),
+                "fields": "files(id,name)",
+                "orderBy": "modifiedTime desc",
+                "pageSize": str(page_size),
+                "supportsAllDrives": "true",
+                "includeItemsFromAllDrives": "true",
+            },
+            timeout=timeout,
+        )
+    except httpx.HTTPError as exc:
+        raise SourceError(f"Google Drive files.list failed: {exc}", cause=exc) from exc
+
+    if response.status_code >= 400:
+        raise SourceError(
+            f"Google Drive files.list returned HTTP {response.status_code}: {response.text}"
+        )
+
+    data = response.json()
+    return [
+        {"id": f["id"], "name": f.get("name") or f["id"]}
+        for f in data.get("files", [])
+        if f.get("id")
+    ]

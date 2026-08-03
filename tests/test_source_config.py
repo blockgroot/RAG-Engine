@@ -10,8 +10,8 @@ import pytest
 
 from app.auth import get_connection_config, save_connection, set_connection_config
 from app.auth.base import OAuthTokens
-from app.core.exceptions import ConfigurationError
-from app.sources.google_drive_utils import extract_drive_folder_id
+from app.core.exceptions import ConfigurationError, SourceError
+from app.sources.google_drive_utils import extract_drive_folder_id, search_drive_folders
 
 from .conftest import requires_db
 
@@ -108,3 +108,84 @@ def test_extract_drive_folder_id_rejects_unrelated_google_doc_link():
         extract_drive_folder_id(
             "https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUvWxYz/edit"
         )
+
+
+# -- search_drive_folders (folder-picker dropdown, no DB) -----------------------
+
+
+class _FakeResponse:
+    def __init__(self, payload, status_code=200, text=""):
+        self._payload = payload
+        self.status_code = status_code
+        self.text = text
+
+    def json(self):
+        return self._payload
+
+
+def test_search_drive_folders_returns_id_and_name(monkeypatch):
+    def fake_get(url, *, headers=None, params=None, timeout=None):
+        return _FakeResponse({"files": [{"id": "f1", "name": "HR Policies"}]})
+
+    monkeypatch.setattr("app.sources.google_drive_utils.httpx.get", fake_get)
+
+    folders = search_drive_folders("tok", "HR")
+    assert folders == [{"id": "f1", "name": "HR Policies"}]
+
+
+def test_search_drive_folders_query_filters_by_folder_mime_and_name(monkeypatch):
+    captured = {}
+
+    def fake_get(url, *, headers=None, params=None, timeout=None):
+        captured["q"] = params["q"]
+        return _FakeResponse({"files": []})
+
+    monkeypatch.setattr("app.sources.google_drive_utils.httpx.get", fake_get)
+
+    search_drive_folders("tok", "Q3 Notes")
+    assert "mimeType='application/vnd.google-apps.folder'" in captured["q"]
+    assert "trashed=false" in captured["q"]
+    assert "name contains 'Q3 Notes'" in captured["q"]
+
+
+def test_search_drive_folders_empty_query_omits_name_filter(monkeypatch):
+    captured = {}
+
+    def fake_get(url, *, headers=None, params=None, timeout=None):
+        captured["q"] = params["q"]
+        return _FakeResponse({"files": []})
+
+    monkeypatch.setattr("app.sources.google_drive_utils.httpx.get", fake_get)
+
+    search_drive_folders("tok", "")
+    assert "name contains" not in captured["q"]
+
+
+def test_search_drive_folders_escapes_single_quotes_in_query(monkeypatch):
+    captured = {}
+
+    def fake_get(url, *, headers=None, params=None, timeout=None):
+        captured["q"] = params["q"]
+        return _FakeResponse({"files": []})
+
+    monkeypatch.setattr("app.sources.google_drive_utils.httpx.get", fake_get)
+
+    search_drive_folders("tok", "Bob's Notes")
+    assert "name contains 'Bob\\'s Notes'" in captured["q"]
+
+
+def test_search_drive_folders_no_matches_returns_empty_list(monkeypatch):
+    monkeypatch.setattr(
+        "app.sources.google_drive_utils.httpx.get",
+        lambda *a, **k: _FakeResponse({"files": []}),
+    )
+    assert search_drive_folders("tok", "nonexistent") == []
+
+
+def test_search_drive_folders_raises_source_error_on_http_failure(monkeypatch):
+    monkeypatch.setattr(
+        "app.sources.google_drive_utils.httpx.get",
+        lambda *a, **k: _FakeResponse(None, status_code=500, text="boom"),
+    )
+    with pytest.raises(SourceError):
+        search_drive_folders("tok", "HR")

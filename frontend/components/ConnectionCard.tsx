@@ -1,6 +1,8 @@
-import { useState } from "react";
-import { api, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { api, ConnectionRecord, DriveFolder, JobRecord, SyncChanges } from "@/lib/api";
 import { JobStatusBadge } from "./JobStatusBadge";
+
+const FOLDER_SEARCH_DEBOUNCE_MS = 300;
 
 const PROVIDER_LABELS: Record<string, string> = {
   notion: "Notion",
@@ -58,16 +60,53 @@ export function ConnectionCard({
   const [savingConfig, setSavingConfig] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
 
-  async function handleSaveFolder(e: React.FormEvent) {
-    e.preventDefault();
-    if (!connection) return;
+  // Drive folder-picker dropdown: search-as-you-type against folders the
+  // connected account can see, so connecting a folder no longer requires
+  // copy-pasting its URL out of Drive (a plain URL/id paste still works as a
+  // fallback via "Save folder" below).
+  const [folderResults, setFolderResults] = useState<DriveFolder[]>([]);
+  const [searchingFolders, setSearchingFolders] = useState(false);
+  const [folderSearchError, setFolderSearchError] = useState<string | null>(null);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+
+  useEffect(() => {
+    if (!needsFolder || !dropdownOpen || !connection) return;
+    let cancelled = false;
+    setSearchingFolders(true);
+    const timer = setTimeout(async () => {
+      try {
+        const { folders } = workspaceId
+          ? await api.searchWorkspaceConnectionDriveFolders(workspaceId, connection.id, folderUrl.trim())
+          : await api.searchConnectionDriveFolders(connection.id, folderUrl.trim());
+        if (cancelled) return;
+        setFolderResults(folders);
+        setFolderSearchError(null);
+      } catch (err) {
+        if (cancelled) return;
+        setFolderResults([]);
+        setFolderSearchError(err instanceof Error ? err.message : "Could not search Drive folders.");
+      } finally {
+        if (!cancelled) setSearchingFolders(false);
+      }
+    }, FOLDER_SEARCH_DEBOUNCE_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [folderUrl, dropdownOpen, needsFolder, connection?.id, workspaceId]);
+
+  async function saveFolder(value: string) {
+    if (!connection || !value) return;
     setSavingConfig(true);
     setConfigError(null);
     try {
       const result = workspaceId
-        ? await api.setWorkspaceConnectionConfig(workspaceId, connection.id, folderUrl.trim())
-        : await api.setConnectionConfig(connection.id, folderUrl.trim());
+        ? await api.setWorkspaceConnectionConfig(workspaceId, connection.id, value)
+        : await api.setConnectionConfig(connection.id, value);
       setFolderUrl("");
+      setFolderResults([]);
+      setDropdownOpen(false);
       onConfigSaved?.({
         ...connection,
         source_config: result.config,
@@ -77,6 +116,15 @@ export function ConnectionCard({
     } finally {
       setSavingConfig(false);
     }
+  }
+
+  function handleSaveFolder(e: React.FormEvent) {
+    e.preventDefault();
+    saveFolder(folderUrl.trim());
+  }
+
+  function handleSelectFolder(folder: DriveFolder) {
+    saveFolder(folder.id);
   }
 
   return (
@@ -116,20 +164,50 @@ export function ConnectionCard({
       {needsFolder && (
         <form onSubmit={handleSaveFolder} className="stack" style={{ marginTop: "0.9rem" }}>
           <p className="muted" style={{ margin: 0 }}>
-            Paste a Drive folder URL (or folder id). Only Google Docs under that folder
-            will be ingested.
+            Search for a folder from this Google account, or paste a Drive folder URL
+            directly. Only Google Docs under that folder will be ingested.
           </p>
-          <div className="field">
-            <label htmlFor={`folder-${provider}`}>Folder URL</label>
+          <div className="field" style={{ position: "relative" }}>
+            <label htmlFor={`folder-${provider}`}>Folder</label>
             <input
               id={`folder-${provider}`}
               className="input"
               type="text"
               required
-              placeholder="https://drive.google.com/drive/folders/…"
+              autoComplete="off"
+              placeholder="Search your Drive folders, or paste a folder URL…"
               value={folderUrl}
               onChange={(e) => setFolderUrl(e.target.value)}
+              onFocus={() => setDropdownOpen(true)}
+              onBlur={() => setTimeout(() => setDropdownOpen(false), 150)}
             />
+            {dropdownOpen && (searchingFolders || folderResults.length > 0 || folderSearchError) && (
+              <div className="folder-dropdown" role="listbox">
+                {searchingFolders && <div className="folder-dropdown-status">Searching…</div>}
+                {!searchingFolders && folderSearchError && (
+                  <div className="folder-dropdown-status">{folderSearchError}</div>
+                )}
+                {!searchingFolders && !folderSearchError && folderResults.length === 0 && (
+                  <div className="folder-dropdown-status">
+                    No matching folders — you can still paste a folder URL and save.
+                  </div>
+                )}
+                {!searchingFolders &&
+                  folderResults.map((folder) => (
+                    <button
+                      key={folder.id}
+                      type="button"
+                      className="folder-dropdown-item"
+                      // Keep the input focused so onBlur doesn't close the
+                      // dropdown before this click registers.
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => handleSelectFolder(folder)}
+                    >
+                      {folder.name}
+                    </button>
+                  ))}
+              </div>
+            )}
           </div>
           {configError && <div className="banner banner-warn">{configError}</div>}
           <button className="button" type="submit" disabled={savingConfig || !folderUrl.trim()}>

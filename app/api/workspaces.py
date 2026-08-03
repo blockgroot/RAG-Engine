@@ -26,7 +26,12 @@ from ..auth import (
 from ..core.exceptions import ConfigurationError, NotFoundError, SourceError
 from ..ingestion import detect_source_changes
 from ..jobs import enqueue, get_job, has_active_job, list_jobs
-from ..sources import build_source_adapter, extract_drive_folder_id, validate_drive_folder
+from ..sources import (
+    build_source_adapter,
+    extract_drive_folder_id,
+    search_drive_folders,
+    validate_drive_folder,
+)
 from ..workspaces import create_workspace, invite_member, list_my_workspaces, list_workspace_members
 from .deps import SessionClaims, get_session, get_workspace_role, require_workspace_owner
 
@@ -93,6 +98,36 @@ def get_connections(workspace_id: str, session: SessionClaims = Depends(get_sess
         }
         for c in list_connections(session.org_id, workspace_id=workspace_id)
     ]
+
+
+@router.get("/{workspace_id}/connections/{connection_id}/drive-folders")
+def search_connection_drive_folders(
+    workspace_id: str,
+    connection_id: str,
+    q: str = "",
+    session: SessionClaims = Depends(get_session),
+    _role: str = Depends(require_workspace_owner),
+):
+    """List Drive folders this connection's account can see (folder-picker dropdown).
+
+    Same shape as the admin ``GET /admin/connections/{id}/drive-folders``
+    route, resolved against this workspace's own connection.
+    """
+    conn = _owned_workspace_connection(session.org_id, workspace_id, connection_id)
+    if conn.provider != "google":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Folder search is only supported for Google Drive "
+                f"(this connection is {conn.provider!r})."
+            ),
+        )
+    try:
+        token = get_live_connection_token(session.org_id, conn.provider, workspace_id=workspace_id)
+        folders = search_drive_folders(token, q)
+    except SourceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"folders": folders}
 
 
 @router.put("/{workspace_id}/connections/{connection_id}/config")
