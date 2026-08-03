@@ -9,7 +9,7 @@ import { streamChat } from "@/lib/sse";
 import { api } from "@/lib/api";
 import { JOB_POLL_MS } from "@/lib/jobPoll";
 
-const SUGGESTED_QUESTIONS = [
+const POLICY_SUGGESTED_QUESTIONS = [
   "How many days of paid leave do I get?",
   "What's the remote work policy?",
   "How do I claim a medical reimbursement?",
@@ -212,16 +212,19 @@ function ChatPageInner() {
           <div className="chat-empty">
             <h1>Ask a question</h1>
             <p className="muted">
-              Ask anything about your company&rsquo;s policies — leave, benefits, remote work, and
-              more.
+              {workspaceId
+                ? "Ask anything about the content connected to this workspace."
+                : "Ask anything about your company’s policies — leave, benefits, remote work, and more."}
             </p>
-            <div className="suggested-chips">
-              {SUGGESTED_QUESTIONS.map((q) => (
-                <button key={q} type="button" className="suggested-chip" onClick={() => ask(q)}>
-                  {q}
-                </button>
-              ))}
-            </div>
+            {!workspaceId && (
+              <div className="suggested-chips">
+                {POLICY_SUGGESTED_QUESTIONS.map((q) => (
+                  <button key={q} type="button" className="suggested-chip" onClick={() => ask(q)}>
+                    {q}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         ) : (
           <div className="chat-log" ref={logRef}>
@@ -233,7 +236,9 @@ function ChatPageInner() {
         <form onSubmit={handleSubmit} className="chat-composer">
           <input
             className="chat-composer-input"
-            placeholder="Ask about leave, benefits, remote work…"
+            placeholder={
+              workspaceId ? "Ask a question about this workspace…" : "Ask about leave, benefits, remote work…"
+            }
             value={input}
             onChange={(e) => setInput(e.target.value)}
             disabled={busy}
