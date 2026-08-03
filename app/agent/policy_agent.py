@@ -41,15 +41,28 @@ class PolicyAgent(Agent):
         return self._pipeline
 
     def answer(
-        self, question: str, org_id: str, *, conversation_id: str | None = None
+        self,
+        question: str,
+        org_id: str,
+        *,
+        conversation_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> AgentResponse:
         result = self._pipeline.answer(
-            question, org_id=org_id, conversation_id=conversation_id
+            question,
+            org_id=org_id,
+            conversation_id=conversation_id,
+            workspace_id=workspace_id,
         )
         return self._to_response(result)
 
     def answer_stream(
-        self, question: str, org_id: str, *, conversation_id: str | None = None
+        self,
+        question: str,
+        org_id: str,
+        *,
+        conversation_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> tuple[Iterator[str], AgentResponse]:
         """Like ``answer``, but the text arrives as a chunk iterator.
 
@@ -61,7 +74,7 @@ class PolicyAgent(Agent):
         LLM tokens through the gate/recovery/tone-retry logic.
         """
         chunks, result = self._pipeline.answer_stream(
-            question, org_id, conversation_id=conversation_id
+            question, org_id, conversation_id=conversation_id, workspace_id=workspace_id
         )
         return chunks, self._to_response(result)
 

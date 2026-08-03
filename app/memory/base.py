@@ -62,8 +62,15 @@ class ConversationStore(ABC):
     """Abstract, org-scoped store for conversation history."""
 
     @abstractmethod
-    def create_conversation(self, org_id: str) -> str:
-        """Create a conversation for a tenant and return its ``conversation_id``."""
+    def create_conversation(self, org_id: str, workspace_id: str | None = None) -> str:
+        """Create a conversation for a tenant and return its ``conversation_id``.
+
+        ``workspace_id`` (Workspace-within-a-Workspace): ``None`` (default)
+        creates an org-wide conversation, unchanged from every prior caller.
+        A non-``None`` value stamps which sub-workspace this conversation
+        belongs to, so the API layer can later verify a client-supplied
+        ``conversation_id`` actually belongs to the caller's workspace.
+        """
         raise NotImplementedError
 
     @abstractmethod

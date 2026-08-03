@@ -99,7 +99,19 @@ class Agent(ABC):
 
     @abstractmethod
     def answer(
-        self, question: str, org_id: str, *, conversation_id: str | None = None
+        self,
+        question: str,
+        org_id: str,
+        *,
+        conversation_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> AgentResponse:
-        """Answer ``question`` for ``org_id`` (optionally within a conversation)."""
+        """Answer ``question`` for ``org_id`` (optionally within a conversation).
+
+        ``workspace_id`` (Workspace-within-a-Workspace): ``None`` (default)
+        answers from the org-wide space; a non-``None`` value scopes the
+        answer to that sub-workspace only. Optional — an agent that has no
+        notion of sub-workspaces may ignore it, but must never widen scope
+        when it IS given (never fall back to org-wide on a workspace miss).
+        """
         raise NotImplementedError
