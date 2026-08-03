@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { ChatMessageView, Message } from "@/components/ChatMessage";
 import { useMe } from "@/lib/useMe";
@@ -16,7 +17,29 @@ const SUGGESTED_QUESTIONS = [
 ];
 
 export default function ChatPage() {
-  const { me, loading, refresh } = useMe();
+  return (
+    <Suspense
+      fallback={
+        <main className="page">
+          <p className="muted">Loading…</p>
+        </main>
+      }
+    >
+      <ChatPageInner />
+    </Suspense>
+  );
+}
+
+function ChatPageInner() {
+  // Workspace-within-a-Workspace: ?workspace=<id> scopes the whole page to a
+  // sub-workspace instead of the org-wide space -- same component, same
+  // /chat/stream call, just an extra id threaded through (per the plan:
+  // "the SAME chat component as the main org chat, parameterized by
+  // workspace_id", not a forked second chat UI).
+  const searchParams = useSearchParams();
+  const workspaceId = searchParams.get("workspace");
+
+  const { me, loading, refresh } = useMe({ enforceSetupFlow: !workspaceId });
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -28,12 +51,15 @@ export default function ChatPage() {
 
   useEffect(() => {
     if (!me) return;
-    setReadyToAsk(me.ready_to_ask);
-  }, [me]);
+    // A sub-workspace's own readiness is independent of the org-wide sync
+    // gate -- an employee's personal workspace can be asked in immediately
+    // once its own source is connected, regardless of the org's setup state.
+    setReadyToAsk(workspaceId ? true : me.ready_to_ask);
+  }, [me, workspaceId]);
 
   // Light /me poll only while waiting for first sync — pause when tab is hidden.
   useEffect(() => {
-    if (readyToAsk !== false) return;
+    if (workspaceId || readyToAsk !== false) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -75,7 +101,7 @@ export default function ChatPage() {
   async function ensureConversation() {
     if (conversationId.current) return conversationId.current;
     try {
-      const { conversation_id } = await api.createConversation();
+      const { conversation_id } = await api.createConversation(workspaceId);
       conversationId.current = conversation_id;
     } catch {
       // Memory may be disabled server-side; each question just goes standalone.
@@ -93,33 +119,38 @@ export default function ChatPage() {
 
     const convId = await ensureConversation();
 
-    await streamChat(question, convId, {
-      onToken: (chunk) => {
-        setMessages((prev) => {
-          const next = [...prev];
-          const last = next[next.length - 1];
-          next[next.length - 1] = { ...last, text: last.text + chunk };
-          return next;
-        });
+    await streamChat(
+      question,
+      convId,
+      {
+        onToken: (chunk) => {
+          setMessages((prev) => {
+            const next = [...prev];
+            const last = next[next.length - 1];
+            next[next.length - 1] = { ...last, text: last.text + chunk };
+            return next;
+          });
+        },
+        onDone: (payload) => {
+          setMessages((prev) => {
+            const next = [...prev];
+            const last = next[next.length - 1];
+            next[next.length - 1] = { ...last, streaming: false, done: payload };
+            return next;
+          });
+          setBusy(false);
+        },
+        onError: (message) => {
+          setMessages((prev) => {
+            const next = [...prev];
+            next[next.length - 1] = { role: "assistant", text: `Error: ${message}` };
+            return next;
+          });
+          setBusy(false);
+        },
       },
-      onDone: (payload) => {
-        setMessages((prev) => {
-          const next = [...prev];
-          const last = next[next.length - 1];
-          next[next.length - 1] = { ...last, streaming: false, done: payload };
-          return next;
-        });
-        setBusy(false);
-      },
-      onError: (message) => {
-        setMessages((prev) => {
-          const next = [...prev];
-          next[next.length - 1] = { role: "assistant", text: `Error: ${message}` };
-          return next;
-        });
-        setBusy(false);
-      },
-    });
+      workspaceId
+    );
 
     requestAnimationFrame(() => {
       logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });

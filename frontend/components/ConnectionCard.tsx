@@ -33,6 +33,7 @@ export function ConnectionCard({
   onUpdate,
   onCheckAgain,
   onConfigSaved,
+  workspaceId,
 }: {
   provider: "notion" | "google" | "github";
   connection: ConnectionRecord | undefined;
@@ -42,6 +43,10 @@ export function ConnectionCard({
   onUpdate: (connectionId: string) => void;
   onCheckAgain?: () => void;
   onConfigSaved?: (connection: ConnectionRecord) => void;
+  /** When set, this card manages a personal sub-workspace connection instead
+   * of the org-wide one (Workspace-within-a-Workspace) -- connect/config
+   * calls are routed to the workspace-scoped endpoints. */
+  workspaceId?: string;
 }) {
   const available = provider === "notion" || provider === "google";
   const syncInProgress = lastJob != null && ACTIVE.has(lastJob.status);
@@ -59,7 +64,9 @@ export function ConnectionCard({
     setSavingConfig(true);
     setConfigError(null);
     try {
-      const result = await api.setConnectionConfig(connection.id, folderUrl.trim());
+      const result = workspaceId
+        ? await api.setWorkspaceConnectionConfig(workspaceId, connection.id, folderUrl.trim())
+        : await api.setConnectionConfig(connection.id, folderUrl.trim());
       setFolderUrl("");
       onConfigSaved?.({
         ...connection,
@@ -191,7 +198,10 @@ export function ConnectionCard({
 
       <div style={{ marginTop: "1rem", display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
         {available && !connection && (
-          <a className="button" href={api.connectUrl(provider)}>
+          <a
+            className="button"
+            href={workspaceId ? api.connectWorkspaceUrl(workspaceId, provider) : api.connectUrl(provider)}
+          >
             Connect {PROVIDER_LABELS[provider]}
           </a>
         )}

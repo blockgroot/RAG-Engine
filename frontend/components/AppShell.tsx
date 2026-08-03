@@ -36,6 +36,9 @@ export function AppShell({
                   Ask
                 </Link>
               )}
+              <Link href="/workspaces" data-active={pathname.startsWith("/workspaces")}>
+                My Workspaces
+              </Link>
               {showAdmin && (
                 <>
                   <Link

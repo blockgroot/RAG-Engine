@@ -108,6 +108,20 @@ export interface MagicLinkResponse {
   dev_link: string | null;
 }
 
+/** A sub-workspace ("workspace within a workspace") the caller is a member of. */
+export interface WorkspaceRecord {
+  id: string;
+  name: string;
+  role: "owner" | "member";
+  created_by: string | null;
+}
+
+export interface WorkspaceMemberRecord {
+  email: string;
+  role: "owner" | "member";
+  joined_at: string;
+}
+
 export const api = {
   signup: (email: string, companyName: string) =>
     request<MagicLinkResponse>("/auth/signup", {
@@ -153,8 +167,45 @@ export const api = {
   listJobs: () => request<JobRecord[]>("/admin/jobs"),
   getJob: (jobId: string) => request<JobRecord>(`/admin/jobs/${jobId}`),
 
-  createConversation: () =>
-    request<{ conversation_id: string }>("/chat/conversations", { method: "POST" }),
+  createConversation: (workspaceId?: string | null) =>
+    request<{ conversation_id: string }>("/chat/conversations", {
+      method: "POST",
+      body: JSON.stringify(workspaceId ? { workspace_id: workspaceId } : {}),
+    }),
+
+  // --- Workspace-within-a-Workspace ---
+
+  listWorkspaces: () => request<WorkspaceRecord[]>("/workspaces"),
+  createWorkspace: (name: string) =>
+    request<WorkspaceRecord>("/workspaces", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+  listWorkspaceMembers: (workspaceId: string) =>
+    request<WorkspaceMemberRecord[]>(`/workspaces/${workspaceId}/members`),
+  inviteWorkspaceMember: (workspaceId: string, email: string) =>
+    request<{ status: string; email: string }>(`/workspaces/${workspaceId}/members`, {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+  listWorkspaceConnections: (workspaceId: string) =>
+    request<ConnectionRecord[]>(`/workspaces/${workspaceId}/connections`),
+  setWorkspaceConnectionConfig: (workspaceId: string, connectionId: string, folderUrl: string) =>
+    request<ConnectionConfigResponse>(
+      `/workspaces/${workspaceId}/connections/${connectionId}/config`,
+      { method: "PUT", body: JSON.stringify({ folder_url: folderUrl }) }
+    ),
+  checkWorkspaceConnectionChanges: (workspaceId: string, connectionId: string) =>
+    request<SyncChanges>(`/workspaces/${workspaceId}/connections/${connectionId}/changes`),
+  triggerWorkspaceIngest: (workspaceId: string, connectionId: string) =>
+    request<{ job_id: string; status: string }>(
+      `/workspaces/${workspaceId}/connections/${connectionId}/ingest`,
+      { method: "POST" }
+    ),
+  listWorkspaceJobs: (workspaceId: string) =>
+    request<JobRecord[]>(`/workspaces/${workspaceId}/jobs`),
+  connectWorkspaceUrl: (workspaceId: string, provider: string) =>
+    `${API_BASE_URL}/auth/${provider}/authorize?workspace_id=${workspaceId}`,
 };
 
 export { API_BASE_URL };

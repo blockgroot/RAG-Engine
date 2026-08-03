@@ -6,6 +6,7 @@ import { Me } from "@/lib/api";
 
 const LINKS = [
   { href: "/chat", label: "Ask" },
+  { href: "/workspaces", label: "My Workspaces" },
   { href: "/admin/connections", label: "Connections", adminOnly: true },
   { href: "/admin/members", label: "Members", adminOnly: true },
 ];
