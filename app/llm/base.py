@@ -44,11 +44,12 @@ class LLMProvider(ABC):
     """Abstract chat/completion provider."""
 
     @abstractmethod
-    def generate(self, prompt: str) -> str:
+    def generate(self, prompt: str, *, max_tokens: int | None = None) -> str:
         """Send a single prompt and return the model's text reply.
 
-        Implementations must raise ``core.exceptions.LLMProviderError`` on
-        failure.
+        ``max_tokens``, when set, caps the completion length (latency knob for
+        slow endpoints). Implementations must raise
+        ``core.exceptions.LLMProviderError`` on failure.
         """
         raise NotImplementedError
 
