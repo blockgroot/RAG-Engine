@@ -27,10 +27,16 @@ def run_once() -> queue.IngestionJob | None:
 
     try:
         provider = queue.get_connection_provider(job.connection_id, job.org_id)
-        token = get_live_connection_token(job.org_id, provider)
-        config = get_connection_config(job.org_id, provider)
+        token = get_live_connection_token(job.org_id, provider, workspace_id=job.workspace_id)
+        config = get_connection_config(job.org_id, provider, workspace_id=job.workspace_id)
         adapter = build_source_adapter(provider, token=token, config=config)
-        result = ingest_source(adapter, job.org_id, provider=provider, incremental=True)
+        result = ingest_source(
+            adapter,
+            job.org_id,
+            provider=provider,
+            incremental=True,
+            workspace_id=job.workspace_id,
+        )
         # doc_count = pages written this run (added + updated), not remote total.
         queue.mark_succeeded(job.id, result.documents_ingested)
     except Exception as exc:  # noqa: BLE001 - a job failure must never crash the worker

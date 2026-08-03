@@ -39,6 +39,7 @@ class IngestionJob:
     started_at: datetime | None
     finished_at: datetime | None
     created_at: datetime
+    workspace_id: str | None = None
 
 
 def _row_to_job(row) -> IngestionJob:
@@ -52,12 +53,13 @@ def _row_to_job(row) -> IngestionJob:
         started_at=row[6],
         finished_at=row[7],
         created_at=row[8],
+        workspace_id=row[9],
     )
 
 
 _SELECT_COLUMNS = (
     "id::text, org_id::text, connection_id::text, status, doc_count, error, "
-    "started_at, finished_at, created_at"
+    "started_at, finished_at, created_at, workspace_id::text"
 )
 
 
@@ -74,13 +76,18 @@ def has_active_job(org_id: str, connection_id: str) -> bool:
     return row is not None
 
 
-def enqueue(org_id: str, connection_id: str) -> str:
-    """Enqueue an ingestion job for this org's connection. Returns the job id."""
+def enqueue(org_id: str, connection_id: str, workspace_id: str | None = None) -> str:
+    """Enqueue an ingestion job for this connection. Returns the job id.
+
+    ``workspace_id`` (Workspace-within-a-Workspace): ``None`` (default) is
+    today's org-wide admin-triggered job, unchanged. Non-``None`` records
+    which sub-workspace this job's fetched content should be stored under.
+    """
     with get_connection() as conn:
         row = conn.execute(
-            "INSERT INTO ingestion_jobs (org_id, connection_id, status) "
-            "VALUES (%s, %s, 'queued') RETURNING id::text",
-            (org_id, connection_id),
+            "INSERT INTO ingestion_jobs (org_id, connection_id, status, workspace_id) "
+            "VALUES (%s, %s, 'queued', %s) RETURNING id::text",
+            (org_id, connection_id, workspace_id),
         ).fetchone()
     return row[0]
 
@@ -160,12 +167,13 @@ def get_job(org_id: str, job_id: str) -> IngestionJob | None:
     return _row_to_job(row) if row else None
 
 
-def list_jobs(org_id: str) -> list[IngestionJob]:
+def list_jobs(org_id: str, workspace_id: str | None = None) -> list[IngestionJob]:
     with get_connection() as conn:
         rows = conn.execute(
             f"SELECT {_SELECT_COLUMNS} FROM ingestion_jobs "
-            "WHERE org_id = %s ORDER BY created_at DESC",
-            (org_id,),
+            "WHERE org_id = %s AND workspace_id IS NOT DISTINCT FROM %s "
+            "ORDER BY created_at DESC",
+            (org_id, workspace_id),
         ).fetchall()
     return [_row_to_job(row) for row in rows]
 

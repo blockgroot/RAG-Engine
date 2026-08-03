@@ -199,8 +199,6 @@ CREATE INDEX IF NOT EXISTS idx_conversations_workspace ON conversations (workspa
 
 ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
 
-ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
-
 -- Per-org, per-provider OAuth credentials (Phase 10) — replaces hand-set
 -- NOTION_TOKEN_<NAME> env vars with an admin-driven OAuth connect flow.
 -- Tokens are encrypted at rest (see app/security/crypto.py); this table never
@@ -280,6 +278,12 @@ CREATE TABLE IF NOT EXISTS ingestion_jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_org ON ingestion_jobs (org_id);
 CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_status ON ingestion_jobs (status);
+
+-- Workspace-within-a-Workspace: which sub-workspace (if any) this job's
+-- fetched content should be stored under (NULL = today's org-wide admin
+-- job, unchanged). Must come AFTER this CREATE TABLE — on a fresh database
+-- this ALTER would otherwise fail since the table wouldn't exist yet.
+ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
 
 -- Single-use magic-link login tokens (Phase 13). Only a HASH of the token is
 -- stored (never the token itself), so a DB read can't be used to log in as
