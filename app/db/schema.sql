@@ -144,14 +144,26 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS sessions_revoked_at TIMESTAMPTZ;
 -- this new boundary rather than a second, parallel mechanism. `created_by`
 -- is the employee who created it (always an org member, enforced at the
 -- API layer, never a cross-org id).
+-- created_by/invited_by below use ON DELETE SET NULL (not the default NO
+-- ACTION) so that deleting an org cascades cleanly: organizations -> users
+-- and organizations -> workspaces both cascade from the SAME org_id delete,
+-- with no guaranteed ordering between them, so a plain NO ACTION reference
+-- from workspace rows back to users can transiently violate the FK mid-
+-- cascade. SET NULL sidesteps the ordering dependency entirely; the
+-- workspace/membership row itself is still removed via its own org_id/
+-- workspace_id cascade regardless.
 CREATE TABLE IF NOT EXISTS workspaces (
     id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id     UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
     name       TEXT NOT NULL,
-    created_by UUID NOT NULL REFERENCES users (id),
+    created_by UUID REFERENCES users (id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_workspaces_org ON workspaces (org_id);
+ALTER TABLE workspaces ALTER COLUMN created_by DROP NOT NULL;
+ALTER TABLE workspaces DROP CONSTRAINT IF EXISTS workspaces_created_by_fkey;
+ALTER TABLE workspaces ADD CONSTRAINT workspaces_created_by_fkey
+    FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE SET NULL;
 
 -- Membership in a sub-workspace. A member must already belong to the same
 -- org as the workspace (enforced in app/workspaces/, not by a DB constraint
@@ -163,11 +175,14 @@ CREATE TABLE IF NOT EXISTS workspace_members (
     workspace_id UUID NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
     user_id      UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
     role         TEXT NOT NULL DEFAULT 'member',
-    invited_by   UUID REFERENCES users (id),
+    invited_by   UUID REFERENCES users (id) ON DELETE SET NULL,
     joined_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (workspace_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS idx_workspace_members_user ON workspace_members (user_id);
+ALTER TABLE workspace_members DROP CONSTRAINT IF EXISTS workspace_members_invited_by_fkey;
+ALTER TABLE workspace_members ADD CONSTRAINT workspace_members_invited_by_fkey
+    FOREIGN KEY (invited_by) REFERENCES users (id) ON DELETE SET NULL;
 
 -- Workspace-within-a-Workspace: NULL = org-wide (unchanged default; every
 -- existing row and every existing query path is unaffected), non-NULL =

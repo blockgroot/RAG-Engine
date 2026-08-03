@@ -1,0 +1,113 @@
+"""Sub-workspace CRUD + membership (Workspace-within-a-Workspace).
+
+A sub-workspace always belongs to exactly one org (``org_id``); membership is
+this module's OWN boundary — separate from, and stricter than, org
+membership (every workspace member must already be a ``users`` row in the
+same org, but not every org member is in every workspace). Never trust a
+caller-supplied ``workspace_id`` without calling ``assert_member`` first —
+this mirrors how ``app/api/deps.py`` is the only place ``org_id`` enters a
+request; this module is the only place a ``workspace_id`` is validated
+against a user.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from ..core.exceptions import AuthError, NotFoundError
+from ..db.connection import get_connection
+
+
+@dataclass(frozen=True)
+class WorkspaceInfo:
+    id: str
+    org_id: str
+    name: str
+    created_by: str | None
+    role: str | None = None  # populated when listing "my workspaces"
+
+
+def create_workspace(org_id: str, name: str, created_by_user_id: str) -> str:
+    """Create a sub-workspace and add its creator as ``owner``."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "INSERT INTO workspaces (org_id, name, created_by) VALUES (%s, %s, %s) "
+            "RETURNING id::text",
+            (org_id, name, created_by_user_id),
+        ).fetchone()
+        workspace_id = row[0]
+        conn.execute(
+            "INSERT INTO workspace_members (workspace_id, user_id, role, invited_by) "
+            "VALUES (%s, %s, 'owner', %s)",
+            (workspace_id, created_by_user_id, created_by_user_id),
+        )
+    return workspace_id
+
+
+def invite_member(workspace_id: str, org_id: str, inviter_user_id: str, invitee_email: str) -> None:
+    """Add an existing org user (by email) to the workspace.
+
+    Requires the invitee to already be a ``users`` row with this SAME
+    ``org_id`` — this is what stops a sub-workspace from becoming a
+    side-channel around the org's Notion-enforced tenant boundary. Raises
+    ``NotFoundError`` if the email isn't a member of this org (never
+    auto-creates a user here — that stays magic-link/admin-invite's job, see
+    ``app/auth/users.py``).
+    """
+    with get_connection() as conn:
+        user_row = conn.execute(
+            "SELECT id::text FROM users WHERE email = %s AND org_id = %s",
+            (invitee_email.lower(), org_id),
+        ).fetchone()
+        if not user_row:
+            raise NotFoundError(f"{invitee_email!r} is not a member of this organization")
+        conn.execute(
+            "INSERT INTO workspace_members (workspace_id, user_id, role, invited_by) "
+            "VALUES (%s, %s, 'member', %s) ON CONFLICT (workspace_id, user_id) DO NOTHING",
+            (workspace_id, user_row[0], inviter_user_id),
+        )
+
+
+def assert_member(workspace_id: str, org_id: str, user_id: str) -> str:
+    """Return the caller's role in this workspace, or raise ``AuthError``.
+
+    ALWAYS checks ``org_id`` too (not just ``workspace_id`` + ``user_id``) —
+    the workspace's own ``org_id`` must match the caller's session ``org_id``,
+    so a stale/forged ``workspace_id`` from a different org fails closed
+    instead of ever resolving. Call this before any read/write scoped to a
+    workspace.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT wm.role FROM workspace_members wm "
+            "JOIN workspaces w ON w.id = wm.workspace_id "
+            "WHERE wm.workspace_id = %s AND wm.user_id = %s AND w.org_id = %s",
+            (workspace_id, user_id, org_id),
+        ).fetchone()
+    if not row:
+        raise AuthError("Not a member of this workspace")
+    return row[0]
+
+
+def list_my_workspaces(org_id: str, user_id: str) -> list[WorkspaceInfo]:
+    """Workspaces ``user_id`` is a member of, scoped to ``org_id``."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT w.id::text, w.org_id::text, w.name, w.created_by::text, wm.role "
+            "FROM workspaces w JOIN workspace_members wm ON wm.workspace_id = w.id "
+            "WHERE w.org_id = %s AND wm.user_id = %s ORDER BY w.created_at DESC",
+            (org_id, user_id),
+        ).fetchall()
+    return [
+        WorkspaceInfo(id=r[0], org_id=r[1], name=r[2], created_by=r[3], role=r[4]) for r in rows
+    ]
+
+
+def list_workspace_members(workspace_id: str) -> list[dict]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT u.email, wm.role, wm.joined_at FROM workspace_members wm "
+            "JOIN users u ON u.id = wm.user_id WHERE wm.workspace_id = %s ORDER BY wm.joined_at",
+            (workspace_id,),
+        ).fetchall()
+    return [{"email": r[0], "role": r[1], "joined_at": r[2]} for r in rows]

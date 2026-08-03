@@ -59,3 +59,8 @@ class OAuthReauthRequiredError(OAuthError):
 
 class AuthError(ProviderError):
     """Raised when session/magic-link authentication fails or is invalid."""
+
+
+class NotFoundError(ProviderError):
+    """Raised when a referenced resource (by id/email/etc.) does not exist
+    in the scope the caller is allowed to see."""
