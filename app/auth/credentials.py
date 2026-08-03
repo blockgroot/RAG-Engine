@@ -71,7 +71,7 @@ def save_connection(
                 connected_by_user_id
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (org_id, provider) DO UPDATE SET
+            ON CONFLICT (org_id, provider) WHERE workspace_id IS NULL DO UPDATE SET
                 external_workspace_id   = EXCLUDED.external_workspace_id,
                 external_workspace_name = EXCLUDED.external_workspace_name,
                 access_token_encrypted  = EXCLUDED.access_token_encrypted,

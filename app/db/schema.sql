@@ -138,6 +138,54 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_org ON users (org_id);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS sessions_revoked_at TIMESTAMPTZ;
 
+-- Employee-created sub-workspaces (Workspace-within-a-Workspace). A
+-- sub-workspace nests INSIDE its parent org — every row it owns still
+-- carries org_id, so the org_id isolation proof stays a strict subset of
+-- this new boundary rather than a second, parallel mechanism. `created_by`
+-- is the employee who created it (always an org member, enforced at the
+-- API layer, never a cross-org id).
+CREATE TABLE IF NOT EXISTS workspaces (
+    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id     UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    name       TEXT NOT NULL,
+    created_by UUID NOT NULL REFERENCES users (id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_workspaces_org ON workspaces (org_id);
+
+-- Membership in a sub-workspace. A member must already belong to the same
+-- org as the workspace (enforced in app/workspaces/, not by a DB constraint
+-- alone, since that requires a cross-table check) — a sub-workspace can
+-- never admit someone from a different tenant. `role` mirrors org roles
+-- (owner = created it / can invite+connect sources, member = can only ask
+-- questions).
+CREATE TABLE IF NOT EXISTS workspace_members (
+    workspace_id UUID NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+    user_id      UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    role         TEXT NOT NULL DEFAULT 'member',
+    invited_by   UUID REFERENCES users (id),
+    joined_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (workspace_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_members_user ON workspace_members (user_id);
+
+-- Workspace-within-a-Workspace: NULL = org-wide (unchanged default; every
+-- existing row and every existing query path is unaffected), non-NULL =
+-- scoped to that sub-workspace. Never query workspace_id alone — always
+-- paired with org_id (see app/rag/scope.py).
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS idx_documents_workspace ON documents (workspace_id);
+
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS idx_chunks_workspace ON chunks (workspace_id);
+
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS idx_conversations_workspace ON conversations (workspace_id);
+
+ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
+
+ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
+
 -- Per-org, per-provider OAuth credentials (Phase 10) — replaces hand-set
 -- NOTION_TOKEN_<NAME> env vars with an admin-driven OAuth connect flow.
 -- Tokens are encrypted at rest (see app/security/crypto.py); this table never
@@ -160,6 +208,29 @@ CREATE TABLE IF NOT EXISTS oauth_connections (
 );
 CREATE INDEX IF NOT EXISTS idx_oauth_connections_org ON oauth_connections (org_id);
 ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS external_workspace_name TEXT;
+
+-- Workspace-within-a-Workspace: a personal connection (e.g. an employee's
+-- own Notion "Meeting Notes" page) is scoped to their sub-workspace, not the
+-- org. workspace_id NULL = today's org-wide admin connection (behavior
+-- unchanged). The uniqueness must include workspace_id or a second member's
+-- personal connection for the same provider would collide with (and via the
+-- existing ON CONFLICT upsert, silently overwrite) an unrelated workspace's
+-- connection or the org-wide one.
+--
+-- Two PARTIAL unique indexes, not one UNIQUE(org_id, provider, workspace_id):
+-- Postgres treats NULL as distinct-from-NULL in a plain multi-column UNIQUE,
+-- which would let unlimited org-wide (workspace_id IS NULL) rows through —
+-- exactly the ambiguity this table exists to prevent. Splitting by
+-- "IS NULL" / "IS NOT NULL" keeps "at most one org-wide row per provider"
+-- exactly as before, while giving each real workspace_id its own row. Also
+-- lets ON CONFLICT target the right index by matching its WHERE clause (see
+-- app/auth/credentials.py::save_connection).
+ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
+ALTER TABLE oauth_connections DROP CONSTRAINT IF EXISTS oauth_connections_org_id_provider_key;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_connections_org_provider_orgwide
+    ON oauth_connections (org_id, provider) WHERE workspace_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_oauth_connections_org_provider_workspace
+    ON oauth_connections (org_id, provider, workspace_id) WHERE workspace_id IS NOT NULL;
 
 -- Provider-specific ingestion scope config (Google Integration Phase 4). Unlike
 -- Notion (which always ingests every page shared with the integration token),
@@ -217,6 +288,12 @@ CREATE TABLE IF NOT EXISTS oauth_states (
     consumed_at TIMESTAMPTZ,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Workspace-within-a-Workspace: when a "Connect" flow is for a personal
+-- sub-workspace source rather than the org-wide one, the state row records
+-- which workspace so the callback knows to save the resulting connection
+-- scoped to it (NULL = today's org-wide connect flow, unchanged).
+ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
 
 -- Short-TTL cache for repeated standalone policy questions (Phase 19).
 CREATE TABLE IF NOT EXISTS query_answer_cache (
