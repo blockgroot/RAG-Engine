@@ -37,19 +37,30 @@ from fastapi.responses import StreamingResponse
 _CHUNK_DELAY_SECONDS = 0.02
 
 from ..agent.policy_agent import PolicyAgent
-from ..core.exceptions import LLMProviderError, ProviderError
+from ..core.exceptions import AuthError, LLMProviderError, ProviderError
 from ..db.connection import get_connection
 from ..security.rate_limit import check_rate_limit
+from ..workspaces import assert_member
 from .deps import SessionClaims, get_policy_agent, get_session
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
-def _conversation_belongs_to_org(conversation_id: str, org_id: str) -> bool:
+def _conversation_belongs_to_scope(
+    conversation_id: str, org_id: str, workspace_id: str | None
+) -> bool:
+    """A client-supplied conversation_id must match BOTH org_id and workspace_id.
+
+    Workspace-within-a-Workspace: without this, a workspace conversation_id
+    could be replayed against the org-wide chat (or a sibling workspace's
+    chat) for the same org_id. ``IS NOT DISTINCT FROM`` so workspace_id=None
+    correctly matches an org-wide conversation's NULL column.
+    """
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT 1 FROM conversations WHERE id = %s AND org_id = %s",
-            (conversation_id, org_id),
+            "SELECT 1 FROM conversations WHERE id = %s AND org_id = %s "
+            "AND workspace_id IS NOT DISTINCT FROM %s",
+            (conversation_id, org_id, workspace_id),
         ).fetchone()
     return row is not None
 
@@ -72,12 +83,23 @@ def _user_facing_llm_error(exc: BaseException) -> str:
 
 @router.post("/conversations")
 def create_conversation(
+    body: dict | None = None,
     session: SessionClaims = Depends(get_session),
     agent: PolicyAgent = Depends(get_policy_agent),
 ):
     if agent.pipeline.memory is None:
         raise HTTPException(status_code=503, detail="Conversation memory is not enabled")
-    conversation_id = agent.pipeline.memory.create_conversation(session.org_id)
+
+    workspace_id = (body or {}).get("workspace_id")
+    if workspace_id is not None:
+        try:
+            assert_member(workspace_id, session.org_id, session.user_id)
+        except AuthError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    conversation_id = agent.pipeline.memory.create_conversation(
+        session.org_id, workspace_id=workspace_id
+    )
     return {"conversation_id": conversation_id}
 
 
@@ -91,11 +113,15 @@ def _sse_event(event: str, data: dict | str) -> str:
 
 
 def _stream_answer(
-    agent: PolicyAgent, question: str, org_id: str, conversation_id: str | None
+    agent: PolicyAgent,
+    question: str,
+    org_id: str,
+    conversation_id: str | None,
+    workspace_id: str | None = None,
 ) -> Iterator[str]:
     try:
         chunks, result = agent.answer_stream(
-            question, org_id, conversation_id=conversation_id
+            question, org_id, conversation_id=conversation_id, workspace_id=workspace_id
         )
     except LLMProviderError as exc:
         yield _sse_event("error", {"message": _user_facing_llm_error(exc)})
@@ -135,13 +161,20 @@ def chat_stream(
     if not question:
         raise HTTPException(status_code=400, detail="A question is required")
 
+    workspace_id = body.get("workspace_id")
+    if workspace_id is not None:
+        try:
+            assert_member(workspace_id, session.org_id, session.user_id)
+        except AuthError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
     conversation_id = body.get("conversation_id")
-    if conversation_id is not None and not _conversation_belongs_to_org(
-        conversation_id, session.org_id
+    if conversation_id is not None and not _conversation_belongs_to_scope(
+        conversation_id, session.org_id, workspace_id
     ):
         raise HTTPException(status_code=404, detail="No such conversation for this organization")
 
     return StreamingResponse(
-        _stream_answer(agent, question, session.org_id, conversation_id),
+        _stream_answer(agent, question, session.org_id, conversation_id, workspace_id=workspace_id),
         media_type="text/event-stream",
     )
