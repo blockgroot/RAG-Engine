@@ -438,6 +438,57 @@ their policy documents; their employees ask questions and get answers grounded i
   deliberate given this is a low-risk internal tool with an already-hardened cookie
   (httpOnly+Secure+SameSite=Lax) and no refresh-token flow; revisit with a proper
   refresh mechanism if the risk profile changes.
+- **Workspace-within-a-Workspace: a `workspace_id` isolation axis nests INSIDE
+  `org_id`, everywhere `org_id` already scopes a row — it never replaces it.**
+  An employee can create a personal sub-workspace inside their own org, invite
+  a few org colleagues into it, connect their own Notion/Drive source (e.g.
+  meeting notes), and have questions asked *in that workspace* answered ONLY
+  from its own content. Every table that already carried `org_id` for tenant
+  scoping (`documents`, `chunks`, `conversations`, `conversation_turns`,
+  `oauth_connections`, `ingestion_jobs`, `oauth_states`) got one new nullable
+  `workspace_id` column: `NULL` = today's org-wide row, completely unchanged
+  behavior; non-`NULL` = scoped to that sub-workspace. Every read/write pairs
+  `workspace_id` with `org_id` — **never `workspace_id` alone** — matching the
+  same "ambiguity must be structurally impossible" discipline `oauth_connections`
+  already used for `(org_id, provider)`. A workspace query sees ONLY its own
+  workspace's rows, never also the org-wide ones (`WHERE org_id = :org AND
+  workspace_id = :workspace`, no `OR workspace_id IS NULL`) — deliberate: a
+  meeting-notes workspace silently blending in HR policy chunks would make
+  workspace membership meaningless as an access boundary. `app/workspaces/`
+  is a new, separate boundary from the org: an invited workspace member must
+  already be a `users` row in the SAME `org_id` (enforced by
+  `invite_member`/`assert_member`) — a sub-workspace can never admit someone
+  from a different tenant; the org boundary (Notion-integration-enforced, per
+  the bullet below) stays the outermost wall, the workspace is an inner,
+  app-enforced one. The gate/strict-prompt/reranker/memory pipeline
+  (`RagPipeline`, `PolicyAgent`) is reused byte-for-byte — `answer()` /
+  `answer_stream()` just gained an optional `workspace_id` threaded to every
+  retrieval call site (`_retrieve_once`, `_retrieve_for_subquestions`,
+  `_recover_once`, `HybridRetriever.retrieve`, `VectorStore.query`/
+  `keyword_search`), the query-answer cache key, and `ConversationStore.
+  create_conversation` — never a second gate/prompt implementation.
+  `oauth_connections` uniqueness is `(org_id, provider)` for the org-wide
+  connection and `(org_id, provider, workspace_id)` for a personal one, via
+  TWO PARTIAL unique indexes (`WHERE workspace_id IS NULL` /
+  `WHERE workspace_id IS NOT NULL`) rather than one plain
+  `UNIQUE(org_id, provider, workspace_id)` — Postgres treats `NULL` as
+  distinct-from-`NULL` in a multi-column `UNIQUE`, which would let unlimited
+  org-wide rows through. `save_connection` picks the matching `ON CONFLICT`
+  target by whether `workspace_id` is `None`, since Postgres requires the
+  inference clause's predicate to match the target partial index's predicate
+  exactly. Only a workspace's `owner` (its creator) may invite members or
+  connect/reconnect its source (`GET /auth/{provider}/authorize?workspace_id=`,
+  `POST /workspaces/{id}/members`) — an ordinary member can only ask
+  questions, so they can't silently repoint the workspace's data source.
+  **Gotcha hit while building this:** an early schema edit added
+  `workspace_id` to `ingestion_jobs` via `ALTER TABLE` placed BEFORE that
+  table's own `CREATE TABLE` in `schema.sql` — invisible on an already-
+  migrated dev DB, but broke `apply_schema` from scratch on a fresh CI
+  database (`relation "ingestion_jobs" does not exist`). Every `ALTER TABLE
+  ... ADD COLUMN` for a new cross-table column MUST come after that table's
+  `CREATE TABLE`, and should be verified by applying `schema.sql` against a
+  genuinely fresh throwaway database, not just re-applying to an already-
+  migrated one (idempotency alone doesn't catch ordering bugs).
 
 ## 3. Folder / file structure convention
 
@@ -489,11 +540,22 @@ app/
                 #   (enqueue/claim_next/reap_stuck/get_job, SELECT ... FOR UPDATE
                 #   SKIP LOCKED) + worker.py (runs the unchanged ingest_source()).
                 #   No base.py — one queue implementation, no second backend.
+  workspaces/   # Workspace-within-a-Workspace: sub-workspace CRUD + membership.
+                #   store.py (create_workspace/invite_member/assert_member/
+                #   list_my_workspaces/list_workspace_members). No base.py — one
+                #   storage backend, like app/jobs/. assert_member is the ONE
+                #   place a workspace_id is validated against a user's org_id
+                #   before any downstream code trusts it (mirrors deps.get_session
+                #   for org_id).
   api/          # P13: the HTTP layer (FastAPI). main.py (app + CORS) + deps.py
                 #   (get_session/require_admin — the ONLY place org_id enters a
-                #   request) + auth.py (magic-link + OAuth connect routes) +
+                #   request; get_workspace_role/require_workspace_owner — the
+                #   same for workspace_id) + auth.py (magic-link + OAuth connect
+                #   routes, workspace-scoped connect via ?workspace_id=) +
                 #   admin.py (members/connections/jobs, all org-scoped from the
-                #   session) + chat.py (SSE streaming) + orgs.py (/me).
+                #   session) + chat.py (SSE streaming, optional workspace_id) +
+                #   workspaces.py (create/invite/connections/jobs for a
+                #   sub-workspace) + orgs.py (/me).
 evaluation/     # P7 golden-set eval (peer to scripts/tests). golden_set.py (cases +
                 #   corpus mirroring real Notion data), harness.py (seed + run + path
                 #   verdict), ragas_scoring.py (optional [eval] dep), report.py,
@@ -507,14 +569,21 @@ scripts/        # entrypoints: verify_providers.py, init_db.py, demo_rag.py, ing
 frontend/       # P14: Next.js 15 App Router portal, separate app calling app/api/
                 #   over HTTP with credentials: "include" (session cookie only,
                 #   never JS-accessible storage). (auth)/login + (auth)/verify
-                #   (magic-link), chat/ (streaming SSE + citations), admin/
-                #   members|connections|jobs. No Tailwind/UI-kit — plain CSS vars.
-tests/          # pytest; isolation (P2), grounding (P3), conversation+websearch (P5),
-                #   retrieval (P6), golden-set path-firing (P7, test_golden_set.py),
-                #   security/auth/jobs/streaming/api_* (P10-13, test_security.py,
-                #   test_auth.py, test_identity.py, test_jobs.py,
-                #   test_streaming.py, test_api_auth.py, test_api_admin.py,
-                #   test_api_chat.py)
+                #   (magic-link), chat/ (streaming SSE + citations, accepts
+                #   ?workspace=<id> — same component parameterized, not a
+                #   forked chat UI), admin/members|connections|jobs, workspaces/
+                #   + workspaces/[id] (Workspace-within-a-Workspace: create,
+                #   invite, connect a personal source, workspace-scoped chat
+                #   link). No Tailwind/UI-kit — plain CSS vars.
+tests/          # pytest; isolation (P2, extended with workspace-vs-org-wide and
+                #   workspace-vs-sibling-workspace leak proofs), grounding (P3),
+                #   conversation+websearch (P5), retrieval (P6), golden-set
+                #   path-firing (P7, test_golden_set.py), security/auth/jobs/
+                #   streaming/api_* (P10-13, test_security.py, test_auth.py,
+                #   test_identity.py, test_jobs.py, test_streaming.py,
+                #   test_api_auth.py, test_api_admin.py, test_api_chat.py),
+                #   test_workspaces.py + test_workspace_rag.py + test_api_workspaces.py
+                #   (Workspace-within-a-Workspace: membership, RAG scoping, API).
 .github/workflows/eval.yml  # P7 CI: fast path-firing tier every push + nightly RAGAS tier
 ```
 
@@ -792,8 +861,10 @@ Defined in `app/db/schema.sql`. Current tables:
 | `ingestion_jobs` | (Phase 10/12) A durable, pollable record of an admin-triggered fetch→chunk→embed→store run. `id`, `org_id`, `connection_id`, `status` (`queued`\|`running`\|`succeeded`\|`failed`), `doc_count`, `error`, `started_at`, `finished_at`, `created_at`. Consumed by a Postgres-backed worker (`SELECT ... FOR UPDATE SKIP LOCKED`), not an in-process background task. |
 | `magic_link_tokens` | (Phase 13) Single-use employee login tokens. `token_hash` (PK — only a SHA-256 hash is ever stored, never the token), `email`, `expires_at`, `consumed_at`, `created_at`. |
 | `oauth_states` | (Phase 13) Single-use, server-side OAuth `state` values for CSRF/replay protection on the admin connect flow. `state` (PK), `org_id`, `provider`, `expires_at`, `consumed_at`, `created_at`. |
-| `query_answer_cache` | (Phase 19) Short-TTL cache of standalone Q→A results keyed by `(org_id, normalized_question_hash)`. |
+| `query_answer_cache` | (Phase 19) Short-TTL cache of standalone Q→A results keyed by `(org_id, normalized_question_hash)`. Workspace-within-a-Workspace: the hash input folds in `workspace_id` (no new column) so an org-wide and a workspace's cache entry for the same question text never collide. |
 | `api_rate_counters` | (Phase 21) Sliding-window request counters for Postgres-backed rate limiting (`scope` PK, `window_start`, `count`). |
+| `workspaces` | (Workspace-within-a-Workspace) An employee-created sub-workspace nested inside one org. `id`, `org_id`, `name`, `created_by` (nullable, `ON DELETE SET NULL`), `created_at`. |
+| `workspace_members` | (Workspace-within-a-Workspace) Membership in a sub-workspace — a SEPARATE, stricter boundary than org membership (every member must already be a `users` row in the same org, enforced in `app/workspaces/`, not by a DB constraint alone). `workspace_id`, `user_id`, `role` (`owner`\|`member`), `invited_by` (nullable, `ON DELETE SET NULL`), `joined_at`. PK `(workspace_id, user_id)`. |
 
 **`org_domains` (Phase 10) was dropped** in the domain-auto-join simplification
 (see §2) — `DROP TABLE IF EXISTS org_domains` in `schema.sql`. It held a
@@ -805,15 +876,24 @@ revived.
 Deletes cascade: removing an org removes its documents, chunks, users,
 oauth_connections, and ingestion_jobs (and its conversations + turns +
 last-retrieval row); removing a conversation removes its turns and its
-last-retrieval row. Indexes: `org_id` on every org-scoped table (tenant filter) +
-an HNSW cosine index on `chunks.embedding` (ranking speed).
+last-retrieval row; removing a workspace removes its members, and (via
+`ON DELETE CASCADE` on the new `workspace_id` columns) its scoped documents,
+chunks, conversations, oauth_connections, and ingestion_jobs. Indexes: `org_id`
+on every org-scoped table (tenant filter) + an HNSW cosine index on
+`chunks.embedding` (ranking speed) + `workspace_id` indexes on every table that
+carries it.
 
 **Phase 7 added no tables** — the PolicyAgent and golden-set eval are pure
 application/tooling layers over the existing schema. **Phase 8 added one table**
 (`conversation_last_retrieval`) for the retrieval-reuse check and removed the
 `MEMORY_SUMMARIZE_AFTER` setting (summarization is now incremental). **Phases
 10-13 added the six tables above** — the first `users`/`auth`/OAuth tables in
-the project, closing the gap Phase 9 explicitly deferred.
+the project, closing the gap Phase 9 explicitly deferred. **Workspace-within-
+a-Workspace added two tables** (`workspaces`, `workspace_members`) and a
+nullable `workspace_id` column on every table that already carried `org_id`
+for content/credential/job scoping (`documents`, `chunks`, `conversations`,
+`conversation_turns`, `oauth_connections`, `ingestion_jobs`, `oauth_states`) —
+see §2 for the full reasoning.
 
 ## 6. Current state: built vs. pending
 
@@ -1033,6 +1113,59 @@ cost/latency decision — not summarized as done below.
   (`rag.query_signals` JSON: `top_score`, `response_mode`, `answered`, `source`,
   `retrieval_reused`, `cache_hit`, etc. from `RagPipeline.answer`). Branch:
   `improve/eval-split-production-signals`.
+
+**Workspace-within-a-Workspace** (branch `feature/workspace-within-workspace-clean`,
+plan: `docs/plans/2026-08-03-workspace-within-workspace.md`). An authenticated
+employee can create a personal sub-workspace inside their org, invite a few org
+colleagues, connect their own Notion/Drive source, and have questions asked *in
+that workspace* answered only from its own content — never blended with the
+org-wide policies, never crossing into a sibling workspace. Built as one new
+nullable `workspace_id` axis nested inside `org_id`, threaded through the
+existing pipeline rather than a second, parallel system (full reasoning in §2).
+Layers, each additive and gated behind `workspace_id` defaulting to `None`
+(zero behavior change for every existing org-wide call site):
+- **Schema**: `workspaces` + `workspace_members` tables; `workspace_id` on
+  `documents`/`chunks`/`conversations`/`conversation_turns`/`oauth_connections`/
+  `ingestion_jobs`/`oauth_states`; `oauth_connections` uniqueness re-keyed to
+  two partial indexes (org-wide vs. per-workspace).
+- **`app/workspaces/`** — CRUD + membership, its own boundary stricter than org
+  membership (`assert_member` checks `workspace_id` + `org_id` + `user_id`
+  together).
+- **`VectorStore`** (`query`/`keyword_search`/`list_source_documents`/
+  `upsert_source_document`/`acknowledge_source_document`/`delete_source_documents`)
+  — optional `workspace_id`, scoped via `IS NOT DISTINCT FROM` so `None` still
+  matches org-wide `NULL` rows exactly as before.
+- **`RagPipeline`/`HybridRetriever`/`PolicyAgent`** — optional `workspace_id`
+  threaded to every retrieval call site + the query-answer cache key; the
+  gate/strict-prompt/reranker/memory logic is completely unchanged.
+- **OAuth connect flow** (`app/auth/oauth_state.py`, `credentials.py`,
+  `app/api/auth.py`) — `?workspace_id=` on `authorize`, restricted to the
+  workspace's `owner`; `oauth_states`/`oauth_connections` carry it through to
+  the callback.
+- **Ingestion** (`app/ingestion/pipeline.py`, `app/jobs/`) — sync state
+  (new/updated/removed) is now diffed independently per workspace, mirroring
+  exactly how it's already partitioned per provider.
+- **HTTP API** — `app/api/workspaces.py` (create/invite/connections/ingest/
+  jobs, gated by `deps.get_workspace_role`/`require_workspace_owner`);
+  `/chat/stream` + `/chat/conversations` accept an optional `workspace_id`,
+  and a client-supplied `conversation_id` is now checked against BOTH
+  `org_id` and `workspace_id` before use.
+- **Frontend** — `frontend/app/workspaces/` (list/create) +
+  `workspaces/[id]/` (members, invite, connect, jobs); `/chat` accepts
+  `?workspace=<id>` (same component, not a forked chat UI).
+
+Verified: new isolation/RAG/API test files (`test_workspaces.py`,
+`test_workspace_rag.py`, `test_api_workspaces.py`) plus extensions to
+`test_isolation.py`/`test_auth.py`/`test_jobs.py`/`test_incremental_sync.py`/
+`test_api_auth.py`/`test_api_chat.py`; full suite green each iteration
+(only the pre-existing `NOTION_TOKEN_SYVORA` env-pollution failure and
+known free-LLM-endpoint flakiness observed, both documented above, not
+regressions); CI (`golden-set-eval`) green; a live end-to-end smoke test
+against a running API (signup → magic-link login → create workspace → list
+→ members → workspace-scoped conversation) all returned correct responses;
+`npm run build` + `tsc --noEmit` clean for the frontend. Caught and fixed a
+schema-ordering bug during this work (see §2/§4) that only reproduced on a
+genuinely fresh database, not an already-migrated one.
 
 **Backlog (deliberately unscheduled this round — do not drop silently):**
 - HNSW index build/query parameter tuning (`m`, `ef_construction`, `ef_search`) —
