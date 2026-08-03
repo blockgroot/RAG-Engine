@@ -1,11 +1,15 @@
 const LABELS: Record<string, string> = {
   policy: "Company policy",
+  workspace: "Workspace content",
   web: "Web search",
   none: "No answer found",
 };
 
 const COLORS: Record<string, string> = {
   policy: "var(--provenance-policy)",
+  // Falls back to the policy color until a dedicated design pass picks a
+  // distinct one — placeholder wiring, not the intended final look.
+  workspace: "var(--provenance-workspace, var(--provenance-policy))",
   web: "var(--provenance-web)",
   none: "var(--provenance-none)",
 };

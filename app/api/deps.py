@@ -13,8 +13,9 @@ from functools import lru_cache
 
 from fastapi import Depends, HTTPException, Request
 
-from ..agent import build_policy_agent
+from ..agent import build_policy_agent, build_workspace_agent
 from ..agent.policy_agent import PolicyAgent
+from ..agent.workspace_agent import WorkspaceAgent
 from ..auth.session import SessionClaims, decode_session_token
 from ..core.exceptions import AuthError
 from ..db.connection import get_connection
@@ -34,6 +35,18 @@ def get_policy_agent() -> PolicyAgent:
     builds it once per session rather than once per turn.
     """
     return build_policy_agent()
+
+
+@lru_cache(maxsize=1)
+def get_workspace_agent() -> WorkspaceAgent:
+    """Process-wide singleton ``WorkspaceAgent`` (Workspace-within-a-Workspace).
+
+    A second, independent pipeline from ``get_policy_agent`` (own prompt
+    framing + fallback string, web-search off) — see
+    ``app/agent/workspace_agent.py``. Still built once per process like the
+    policy agent, for the same reason (embedding/reranker model load cost).
+    """
+    return build_workspace_agent()
 
 
 @lru_cache(maxsize=1)

@@ -12,6 +12,7 @@ from __future__ import annotations
 import uuid
 
 from app.agent.policy_agent import PolicyAgent
+from app.agent.workspace_agent import WorkspaceAgent
 from app.ingestion import chunk_text, preprocess
 from app.auth.users import create_admin
 from app.workspaces import create_workspace
@@ -125,4 +126,28 @@ def test_policy_agent_passes_workspace_id_through(rag, store, embedder, org_clea
     )
 
     assert response.grounded, f"expected a grounded answer, got fallback: {response.answer!r}"
+    assert "October" in response.answer, response.answer
+
+
+@requires_db
+@requires_llm
+def test_workspace_agent_answers_a_workspace_scoped_question_with_workspace_source(
+    rag_workspace, store, embedder, org_cleanup
+):
+    """WorkspaceAgent (separate pipeline/prompt profile) answers a workspace
+    question and labels it ``source="workspace"`` -- the split's whole point."""
+    suffix = uuid.uuid4().hex[:8]
+    org_id = store.create_organization(f"Workspace-Agent-Split-Org-{suffix}")
+    org_cleanup.append(org_id)
+    owner = create_admin(f"owner-{suffix}@example.com", org_id)
+    workspace_id = create_workspace(org_id, "Meeting Notes", owner.id)
+    _ingest_workspace(store, embedder, org_id, workspace_id, "Q3 Notes", MEETING_NOTES)
+
+    agent = WorkspaceAgent(rag_workspace)
+    response = agent.answer(
+        "What was decided about the Q3 launch date?", org_id, workspace_id=workspace_id
+    )
+
+    assert response.grounded, f"expected a grounded answer, got fallback: {response.answer!r}"
+    assert response.source == "workspace"
     assert "October" in response.answer, response.answer

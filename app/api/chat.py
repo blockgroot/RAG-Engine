@@ -1,7 +1,7 @@
 """Chat router: streaming (SSE) question answering (Phase 13d).
 
 The gate/recovery/grounding decision always completes BEFORE any token is
-sent — ``PolicyAgent.answer_stream`` (see app/agent/policy_agent.py) runs the
+sent — ``answer_stream`` (see app/agent/rag_pipeline_agent.py) runs the
 full, unchanged answer path first and only then hands back an iterator over
 the already-decided answer text. This endpoint's job is purely transport: turn
 that iterator into Server-Sent Events and attach the terminal metadata
@@ -15,6 +15,14 @@ Exposed over HTTP to arbitrary clients, an org could otherwise probe another
 org's conversation by guessing/reusing its id. So this router is the one place
 that must verify a supplied ``conversation_id`` actually belongs to the
 caller's ``org_id`` before ever handing it to the agent.
+
+Agent routing (Workspace Agent split): a request with no ``workspace_id``
+goes to ``PolicyAgent`` exactly as before; a request WITH one is answered by
+``WorkspaceAgent`` instead — a separate pipeline tuned for a sub-workspace's
+own generic connected content rather than company policy (see
+app/agent/workspace_agent.py). ``_select_agent`` is the one place that
+decision is made, so both agents are chosen from the same spot every route
+uses.
 """
 
 from __future__ import annotations
@@ -37,13 +45,24 @@ from fastapi.responses import StreamingResponse
 _CHUNK_DELAY_SECONDS = 0.02
 
 from ..agent.policy_agent import PolicyAgent
+from ..agent.rag_pipeline_agent import RagPipelineAgent
+from ..agent.workspace_agent import WorkspaceAgent
 from ..core.exceptions import AuthError, LLMProviderError, ProviderError
 from ..db.connection import get_connection
 from ..security.rate_limit import check_rate_limit
 from ..workspaces import assert_member
-from .deps import SessionClaims, get_policy_agent, get_session
+from .deps import SessionClaims, get_policy_agent, get_session, get_workspace_agent
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+
+def _select_agent(
+    workspace_id: str | None,
+    policy_agent: PolicyAgent,
+    workspace_agent: WorkspaceAgent,
+) -> RagPipelineAgent:
+    """One place that decides which agent answers a request (see module docstring)."""
+    return workspace_agent if workspace_id is not None else policy_agent
 
 
 def _conversation_belongs_to_scope(
@@ -85,17 +104,19 @@ def _user_facing_llm_error(exc: BaseException) -> str:
 def create_conversation(
     body: dict | None = None,
     session: SessionClaims = Depends(get_session),
-    agent: PolicyAgent = Depends(get_policy_agent),
+    policy_agent: PolicyAgent = Depends(get_policy_agent),
+    workspace_agent: WorkspaceAgent = Depends(get_workspace_agent),
 ):
-    if agent.pipeline.memory is None:
-        raise HTTPException(status_code=503, detail="Conversation memory is not enabled")
-
     workspace_id = (body or {}).get("workspace_id")
     if workspace_id is not None:
         try:
             assert_member(workspace_id, session.org_id, session.user_id)
         except AuthError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    agent = _select_agent(workspace_id, policy_agent, workspace_agent)
+    if agent.pipeline.memory is None:
+        raise HTTPException(status_code=503, detail="Conversation memory is not enabled")
 
     conversation_id = agent.pipeline.memory.create_conversation(
         session.org_id, workspace_id=workspace_id
@@ -113,7 +134,7 @@ def _sse_event(event: str, data: dict | str) -> str:
 
 
 def _stream_answer(
-    agent: PolicyAgent,
+    agent: RagPipelineAgent,
     question: str,
     org_id: str,
     conversation_id: str | None,
@@ -153,7 +174,8 @@ def _stream_answer(
 def chat_stream(
     body: dict,
     session: SessionClaims = Depends(get_session),
-    agent: PolicyAgent = Depends(get_policy_agent),
+    policy_agent: PolicyAgent = Depends(get_policy_agent),
+    workspace_agent: WorkspaceAgent = Depends(get_workspace_agent),
 ):
     check_rate_limit(f"chat:{session.org_id}:{session.user_id}")
 
@@ -174,6 +196,7 @@ def chat_stream(
     ):
         raise HTTPException(status_code=404, detail="No such conversation for this organization")
 
+    agent = _select_agent(workspace_id, policy_agent, workspace_agent)
     return StreamingResponse(
         _stream_answer(agent, question, session.org_id, conversation_id, workspace_id=workspace_id),
         media_type="text/event-stream",

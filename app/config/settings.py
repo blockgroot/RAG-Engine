@@ -36,6 +36,12 @@ DEFAULT_MEMORY_FOLD_WAIT_SECONDS = 2.0
 DEFAULT_RAG_FALLBACK_RESPONSE = (
     "I don't have information on that in the available policy documents."
 )
+# WorkspaceAgent's own fallback copy (Workspace-within-a-Workspace agent split)
+# — a separate RagPipeline instance from the policy one, so it gets its own
+# fixed fallback string rather than reusing the policy-flavored one above.
+DEFAULT_WORKSPACE_FALLBACK_RESPONSE = (
+    "I don't have anything about that in this workspace's connected content."
+)
 
 # Connection-pool sizing for the Postgres backing store.
 DEFAULT_DB_POOL_MIN_SIZE = 1
@@ -295,6 +301,35 @@ class RagSettings:
                 os.getenv("RAG_MAX_CONTEXT_CHARS") or DEFAULT_RAG_MAX_CONTEXT_CHARS
             ),
             max_answer_tokens=max_answer_tokens,
+        )
+
+
+@dataclass(frozen=True)
+class WorkspaceAgentSettings:
+    """Configuration specific to ``WorkspaceAgent`` (Workspace-within-a-Workspace).
+
+    ``WorkspaceAgent`` reuses the same ``RagPipeline`` machinery as
+    ``PolicyAgent`` (gate, retrieval, tone-compliance) via a separate pipeline
+    instance with a different ``PromptProfile`` (see ``app/rag/prompts.py``)
+    — everything else (``top_k``, ``similarity_threshold``, etc.) comes from
+    the same ``RagSettings.from_env()`` shared with the policy pipeline. Only
+    the fixed fallback string is distinct, since it must be exact-string-matched
+    consistently within ONE pipeline (gate/prompt/refusal-detection), and this
+    is a second, independent pipeline instance.
+
+    - ``fallback_response``  the single, fixed "I don't know" string for a
+      workspace-scoped question. Same three-consumer-agreement discipline as
+      ``RagSettings.fallback_response``, just a separate string for a separate
+      pipeline.
+    """
+
+    fallback_response: str = DEFAULT_WORKSPACE_FALLBACK_RESPONSE
+
+    @classmethod
+    def from_env(cls) -> "WorkspaceAgentSettings":
+        return cls(
+            fallback_response=os.getenv("WORKSPACE_FALLBACK_RESPONSE")
+            or DEFAULT_WORKSPACE_FALLBACK_RESPONSE,
         )
 
 

@@ -17,14 +17,17 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.agent.policy_agent import PolicyAgent
+from app.agent.workspace_agent import WorkspaceAgent
 from app.config.settings import RagSettings, RecoverySettings, ReuseSettings
 from app.memory import build_conversation_store
 from app.rag.pipeline import RagPipeline
+from app.rag.prompts import WORKSPACE_PROMPT_PROFILE
 
 from .conftest import requires_db
 from .fakes import KeywordEmbedder, RecordingLLM, TopicAwareVectorStore
 
 FALLBACK = "I don't have information on that in the available policy documents."
+WORKSPACE_FALLBACK = "I don't have anything about that in this workspace's connected content."
 
 
 @pytest.fixture(autouse=True)
@@ -51,9 +54,34 @@ def _fake_agent(org_id: str, *, memory=None) -> PolicyAgent:
     return PolicyAgent(pipeline)
 
 
+def _fake_workspace_agent(org_id: str, *, memory=None) -> WorkspaceAgent:
+    """Mirrors ``_fake_agent`` but with the workspace prompt profile + fallback,
+    and store content that answers a workspace-flavored question — so a test
+    can tell (via ``source``/answer text) which agent actually ran."""
+    llm = RecordingLLM(answer="The launch was delayed to October 15th.")
+    store = TopicAwareVectorStore(
+        org_id, [("doc-1", "The Q3 launch was delayed to October 15th.")]
+    )
+    pipeline = RagPipeline(
+        llm=llm,
+        embedder=KeywordEmbedder(),
+        store=store,
+        settings=RagSettings(
+            top_k=3, similarity_threshold=0.35, fallback_response=WORKSPACE_FALLBACK
+        ),
+        memory=memory,
+        web_search=None,
+        retriever=None,
+        reuse_settings=ReuseSettings(enabled=False),
+        recovery_settings=RecoverySettings(enabled=False),
+        prompt_profile=WORKSPACE_PROMPT_PROFILE,
+    )
+    return WorkspaceAgent(pipeline)
+
+
 @pytest.fixture
 def client_and_session(store, org_cleanup):
-    from app.api.deps import get_policy_agent
+    from app.api.deps import get_policy_agent, get_workspace_agent
     from app.api.main import create_app
     from app.auth import create_admin, create_session_token
 
@@ -65,6 +93,12 @@ def client_and_session(store, org_cleanup):
     app = create_app()
     memory = build_conversation_store()
     app.dependency_overrides[get_policy_agent] = lambda: _fake_agent(org_id, memory=memory)
+    # Every chat route now also depends on get_workspace_agent (Workspace Agent
+    # split routing) even for org-wide requests -- override it too so no test
+    # accidentally builds the real, heavy singleton (embedding/reranker models).
+    app.dependency_overrides[get_workspace_agent] = lambda: _fake_workspace_agent(
+        org_id, memory=memory
+    )
 
     client = TestClient(app)
     return client, {"session": token}, org_id, memory
@@ -310,3 +344,46 @@ def test_workspace_conversation_id_rejected_without_matching_workspace_id(
         cookies=owner_cookies,
     )
     assert matching_response.status_code == 200
+
+
+# --- Workspace Agent split: routing picks WorkspaceAgent, not PolicyAgent ---
+
+
+@requires_db
+def test_org_wide_chat_uses_policy_agent(client_and_session):
+    """No workspace_id -> PolicyAgent (unchanged) answers, source == 'policy'."""
+    client, cookies, org_id, _memory = client_and_session
+    response = client.post(
+        "/chat/stream",
+        json={"question": "How many annual leave days do I get?"},
+        cookies=cookies,
+    )
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    done = json.loads([e for e in events if e[0] == "done"][0][1])
+    assert done["source"] == "policy"
+    assert done["answer"] == "You get 25 days of annual leave. [1]"
+
+
+@requires_db
+def test_workspace_chat_uses_workspace_agent(client_and_session, store, org_cleanup):
+    """A workspace_id request is answered by WorkspaceAgent, source == 'workspace'."""
+    from app.auth import create_session_token
+    from app.auth.users import create_admin
+    from app.workspaces import create_workspace
+
+    client, _cookies, org_id, _memory = client_and_session
+    owner = create_admin(f"owner-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    workspace_id = create_workspace(org_id, "Meeting Notes", owner.id)
+    owner_cookies = {"session": create_session_token(owner)}
+
+    response = client.post(
+        "/chat/stream",
+        json={"question": "What was decided about the launch?", "workspace_id": workspace_id},
+        cookies=owner_cookies,
+    )
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    done = json.loads([e for e in events if e[0] == "done"][0][1])
+    assert done["source"] == "workspace"
+    assert "October 15th" in done["answer"]

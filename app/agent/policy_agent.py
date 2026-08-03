@@ -3,106 +3,21 @@
 Phase 7 extracts the retrieve → gate → generate → memory → web-search-fallback
 behavior that previously lived scattered across the CLI scripts into one place.
 The logic is **not rewritten** — it still lives, exactly as before, in
-``RagPipeline`` (Phases 3–6). ``PolicyAgent`` is a thin adapter that:
+``RagPipeline`` (Phases 3–6). ``PolicyAgent`` is a thin adapter (see
+``RagPipelineAgent`` for the shared ``RagResult`` -> ``AgentResponse`` mapping
+also used by ``WorkspaceAgent``) that composes an already-built ``RagPipeline``
+built with the default (company-policy) ``PromptProfile`` — so the one place
+callers (scripts, the eval harness, the HTTP layer) reach for policy answers is
+this class, while the gate, prompt, and every test outcome stay byte-for-byte
+unchanged, because the pipeline underneath is untouched.
 
-- composes an already-built ``RagPipeline`` (injected, like every other
-  orchestrator here), and
-- maps its ``RagResult`` onto the generic ``AgentResponse`` / ``Citation`` shape,
-
-so the one place callers (scripts, the eval harness, a future HTTP layer) reach for
-policy answers is this class — while the gate, prompt, and every test outcome stay
-byte-for-byte unchanged, because the pipeline underneath is untouched.
+Prefer building via ``factory.build_policy_agent``.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-
-from ..rag import RagPipeline
-from ..rag.pipeline import RagResult
-from ..vectorstore.base import RetrievedChunk
-from .base import Agent, AgentResponse, Citation
+from .rag_pipeline_agent import RagPipelineAgent
 
 
-class PolicyAgent(Agent):
-    """Answers policy questions for a tenant by delegating to a ``RagPipeline``.
-
-    Prefer building via ``factory.build_policy_agent``. The pipeline is injected so
-    this stays a pure adapter (and reuses the session-scoped provider fixtures in
-    tests). Behavior is 100% the pipeline's — this class only reshapes the result.
-    """
-
-    def __init__(self, pipeline: RagPipeline) -> None:
-        self._pipeline = pipeline
-
-    @property
-    def pipeline(self) -> RagPipeline:
-        """The underlying RAG pipeline (exposed for diagnostics/settings access)."""
-        return self._pipeline
-
-    def answer(
-        self,
-        question: str,
-        org_id: str,
-        *,
-        conversation_id: str | None = None,
-        workspace_id: str | None = None,
-    ) -> AgentResponse:
-        result = self._pipeline.answer(
-            question,
-            org_id=org_id,
-            conversation_id=conversation_id,
-            workspace_id=workspace_id,
-        )
-        return self._to_response(result)
-
-    def answer_stream(
-        self,
-        question: str,
-        org_id: str,
-        *,
-        conversation_id: str | None = None,
-        workspace_id: str | None = None,
-    ) -> tuple[Iterator[str], AgentResponse]:
-        """Like ``answer``, but the text arrives as a chunk iterator.
-
-        Not part of the abstract ``Agent`` contract — it's a PolicyAgent-specific
-        convenience for callers that want progressive display (the CLI,
-        ``app/api/chat.py``'s streaming chat endpoint), not a capability every
-        future agent must implement. See ``RagPipeline.answer_stream`` for why
-        this chunks an already-fully-decided answer rather than streaming raw
-        LLM tokens through the gate/recovery/tone-retry logic.
-        """
-        chunks, result = self._pipeline.answer_stream(
-            question, org_id, conversation_id=conversation_id, workspace_id=workspace_id
-        )
-        return chunks, self._to_response(result)
-
-    @staticmethod
-    def _to_response(result: RagResult) -> AgentResponse:
-        return AgentResponse(
-            answer=result.answer,
-            grounded=result.answered,
-            source=result.source,
-            citations=[PolicyAgent._to_citation(c) for c in result.sources],
-            resolved_question=result.resolved_question,
-            top_score=result.top_score,
-            retrieval_reused=result.retrieval_reused,
-            recovery_used=result.recovery_used,
-            recovery_reason=result.recovery_reason,
-            recovery_queries=list(result.recovery_queries),
-            retrieval_improved=result.retrieval_improved,
-            top_score_before=result.top_score_before,
-            top_score_after=result.top_score_after,
-            latency_ms=result.latency_ms,
-            response_mode=result.response_mode,
-            tone_retry_used=result.tone_retry_used,
-        )
-
-    @staticmethod
-    def _to_citation(chunk: RetrievedChunk) -> Citation:
-        return Citation(
-            content=chunk.content,
-            reference=f"{chunk.document_id}#{chunk.chunk_index}",
-            score=chunk.score,
-        )
+class PolicyAgent(RagPipelineAgent):
+    """Answers policy questions for a tenant by delegating to a ``RagPipeline``."""

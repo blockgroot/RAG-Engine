@@ -90,7 +90,9 @@ from .summary_fold import schedule_summary_fold, wait_for_conversation_fold
 from .query_normalize import CorpusSpellNormalizer
 from .prompts import (
     MODE_B_FORBIDDEN_PHRASES,
+    POLICY_PROMPT_PROFILE,
     WEB_SEARCH_TOOL,
+    PromptProfile,
     build_decompose_prompt,
     build_grounded_prompt,
     build_recovery_queries_prompt,
@@ -252,6 +254,7 @@ class RagPipeline:
         query_cache: QueryAnswerCache | None = None,
         query_norm: CorpusSpellNormalizer | None = None,
         query_norm_settings: QueryNormSettings | None = None,
+        prompt_profile: PromptProfile | None = None,
     ) -> None:
         self._llm = llm
         self._llm_aux = llm_aux or llm
@@ -278,6 +281,10 @@ class RagPipeline:
         # vector search (the Phase 3 behaviour), keeping this pipeline usable
         # without the retrieval upgrades.
         self._retriever = retriever
+        # Domain framing for the grounded prompt (Workspace Agent split) — see
+        # prompts.PromptProfile. Defaults to the original company-policy
+        # wording, so every existing caller is byte-for-byte unchanged.
+        self._prompt_profile = prompt_profile or POLICY_PROMPT_PROFILE
 
     def _provider_for_stage(self, stage: str) -> LLMProvider:
         return self._llm_aux if stage in AUX_LLM_STAGES else self._llm
@@ -722,6 +729,7 @@ class RagPipeline:
             question=question,
             contexts=contexts,
             fallback_response=self._settings.fallback_response,
+            profile=self._prompt_profile,
         )
         answer_cap = self._settings.max_answer_tokens
         raw = self._generate_text(
@@ -757,7 +765,7 @@ class RagPipeline:
         return RagResult(
             answer=answer,
             answered=answered,
-            source="policy" if answered else "none",
+            source=self._prompt_profile.source_label if answered else "none",
             sources=hits,
             top_score=top_score,
             retrieval_reused=retrieval_reused,

@@ -19,12 +19,17 @@ Phase 3–6 RAG pipeline.
 
 from .base import Agent, AgentResponse, Citation
 from .policy_agent import PolicyAgent
-from .factory import build_policy_agent
+from .rag_pipeline_agent import RagPipelineAgent
+from .workspace_agent import WorkspaceAgent
+from .factory import build_policy_agent, build_workspace_agent
 
 __all__ = [
     "Agent",
     "AgentResponse",
     "Citation",
     "PolicyAgent",
+    "RagPipelineAgent",
+    "WorkspaceAgent",
     "build_policy_agent",
+    "build_workspace_agent",
 ]

@@ -37,6 +37,7 @@ from ..vectorstore.base import VectorStore
 from ..websearch import build_web_search_provider
 from ..websearch.base import WebSearchProvider
 from .pipeline import RagPipeline
+from .prompts import PromptProfile
 from .query_normalize import CorpusSpellNormalizer
 from .retrieval import HybridRetriever
 
@@ -54,6 +55,7 @@ def build_rag_pipeline(
     retriever: HybridRetriever | None = _UNSET,  # type: ignore[assignment]
     recovery_settings: RecoverySettings | None = None,
     query_norm_settings: QueryNormSettings | None = None,
+    prompt_profile: PromptProfile | None = None,
 ) -> RagPipeline:
     """Build the RAG pipeline, defaulting each dependency from configuration."""
     web_settings = WebSearchSettings.from_env()
@@ -105,4 +107,5 @@ def build_rag_pipeline(
         recovery_settings=recovery_settings or RecoverySettings.from_env(),
         decompose_settings=DecomposeSettings.from_env(),
         query_norm_settings=query_norm_settings or QueryNormSettings.from_env(),
+        prompt_profile=prompt_profile,
     )
