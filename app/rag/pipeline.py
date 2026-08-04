@@ -90,7 +90,9 @@ from .summary_fold import schedule_summary_fold, wait_for_conversation_fold
 from .query_normalize import CorpusSpellNormalizer
 from .prompts import (
     MODE_B_FORBIDDEN_PHRASES,
+    POLICY_PROMPT_PROFILE,
     WEB_SEARCH_TOOL,
+    PromptProfile,
     build_decompose_prompt,
     build_grounded_prompt,
     build_recovery_queries_prompt,
@@ -252,6 +254,7 @@ class RagPipeline:
         query_cache: QueryAnswerCache | None = None,
         query_norm: CorpusSpellNormalizer | None = None,
         query_norm_settings: QueryNormSettings | None = None,
+        prompt_profile: PromptProfile | None = None,
     ) -> None:
         self._llm = llm
         self._llm_aux = llm_aux or llm
@@ -278,6 +281,10 @@ class RagPipeline:
         # vector search (the Phase 3 behaviour), keeping this pipeline usable
         # without the retrieval upgrades.
         self._retriever = retriever
+        # Domain framing for the grounded prompt (Workspace Agent split) — see
+        # prompts.PromptProfile. Defaults to the original company-policy
+        # wording, so every existing caller is byte-for-byte unchanged.
+        self._prompt_profile = prompt_profile or POLICY_PROMPT_PROFILE
 
     def _provider_for_stage(self, stage: str) -> LLMProvider:
         return self._llm_aux if stage in AUX_LLM_STAGES else self._llm
@@ -310,9 +317,22 @@ class RagPipeline:
     # -- public API --------------------------------------------------------
 
     def answer(
-        self, question: str, org_id: str, *, conversation_id: str | None = None
+        self,
+        question: str,
+        org_id: str,
+        *,
+        conversation_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> RagResult:
         """Answer ``question`` using only ``org_id``'s chunks (with optional memory).
+
+        ``workspace_id`` (Workspace-within-a-Workspace): ``None`` (default)
+        answers from the org-wide space, identical to every prior caller.
+        Non-``None`` scopes retrieval to that sub-workspace ONLY — never also
+        the org-wide space — while the gate, strict prompt, and every other
+        grounding guarantee below are completely unchanged; only which rows
+        retrieval is allowed to see changes. Always paired with ``org_id``,
+        never resolved from ``workspace_id`` alone.
 
         Retrieval is delegated to the vector store, which enforces the
         ``WHERE org_id`` tenant filter — this pipeline never sees another tenant's
@@ -337,7 +357,7 @@ class RagPipeline:
                 )
 
         if conversation_id is None:
-            cached = self._query_cache.get(org_id, resolved)
+            cached = self._query_cache.get(org_id, resolved, workspace_id=workspace_id)
             if cached is not None:
                 out = replace(
                     cached,
@@ -352,10 +372,11 @@ class RagPipeline:
             org_id,
             conversation_id=conversation_id,
             budget=budget,
+            workspace_id=workspace_id,
         )
 
         if conversation_id is None and not result.cache_hit:
-            self._query_cache.put(org_id, resolved, result)
+            self._query_cache.put(org_id, resolved, result, workspace_id=workspace_id)
 
         if conversation_id is not None and self._memory is not None:
             result = replace(result, resolved_question=resolved)
@@ -378,6 +399,7 @@ class RagPipeline:
         *,
         conversation_id: str | None = None,
         chunk_chars: int = 40,
+        workspace_id: str | None = None,
     ) -> tuple[Iterator[str], RagResult]:
         """Answer, then hand back the text as a chunk iterator instead of one string.
 
@@ -400,7 +422,9 @@ class RagPipeline:
         an SSE endpoint) this still avoids showing the whole answer in one go;
         it just never displays a token that could later be discarded.
         """
-        result = self.answer(question, org_id, conversation_id=conversation_id)
+        result = self.answer(
+            question, org_id, conversation_id=conversation_id, workspace_id=workspace_id
+        )
 
         def _chunks() -> Iterator[str]:
             text = result.answer
@@ -418,6 +442,7 @@ class RagPipeline:
         *,
         conversation_id: str | None = None,
         budget: RequestBudget | None = None,
+        workspace_id: str | None = None,
     ) -> RagResult:
         """First retrieve as today; recover at most once if evidence is insufficient."""
         t0 = time.perf_counter()
@@ -450,7 +475,7 @@ class RagPipeline:
             else:
                 sub_questions = [retrieval_question]
             hits, top_score = self._retrieve_for_subquestions(
-                org_id, question, sub_questions
+                org_id, question, sub_questions, workspace_id=workspace_id
             )
 
         top_score_before = top_score
@@ -490,6 +515,7 @@ class RagPipeline:
                     reason=RECOVERY_REASON_GATE_MISS,
                     budget=budget,
                     conversation_id=conversation_id,
+                    workspace_id=workspace_id,
                 )
                 recovery_used = True
                 recovery_reason = RECOVERY_REASON_GATE_MISS
@@ -531,6 +557,7 @@ class RagPipeline:
                     reason=RECOVERY_REASON_INSUFFICIENT_EVIDENCE,
                     budget=budget,
                     conversation_id=conversation_id,
+                    workspace_id=workspace_id,
                 )
             recovery_used = True
             recovery_reason = RECOVERY_REASON_INSUFFICIENT_EVIDENCE
@@ -597,12 +624,21 @@ class RagPipeline:
         )
 
     def _retrieve_once(
-        self, org_id: str, query_text: str, query_vec: list[float]
+        self,
+        org_id: str,
+        query_text: str,
+        query_vec: list[float],
+        *,
+        workspace_id: str | None = None,
     ) -> tuple[list[RetrievedChunk], float | None]:
         if self._retriever is not None:
-            retrieval = self._retriever.retrieve(org_id, query_text, query_vec)
+            retrieval = self._retriever.retrieve(
+                org_id, query_text, query_vec, workspace_id=workspace_id
+            )
             return retrieval.hits, retrieval.gate_score
-        hits = self._store.query(org_id, query_vec, top_k=self._settings.top_k)
+        hits = self._store.query(
+            org_id, query_vec, top_k=self._settings.top_k, workspace_id=workspace_id
+        )
         top_score = hits[0].score if hits else None
         return hits, top_score
 
@@ -633,11 +669,16 @@ class RagPipeline:
         return subs, True
 
     def _retrieve_for_subquestions(
-        self, org_id: str, original_question: str, sub_questions: list[str]
+        self,
+        org_id: str,
+        original_question: str,
+        sub_questions: list[str],
+        *,
+        workspace_id: str | None = None,
     ) -> tuple[list[RetrievedChunk], float | None]:
         if len(sub_questions) == 1:
             vec = self._embedder.embed([sub_questions[0]])[0]
-            return self._retrieve_once(org_id, sub_questions[0], vec)
+            return self._retrieve_once(org_id, sub_questions[0], vec, workspace_id=workspace_id)
 
         vectors = self._embedder.embed(sub_questions)
         primary_text, primary_vec = sub_questions[0], vectors[0]
@@ -650,12 +691,15 @@ class RagPipeline:
                 primary_vec,
                 extra_queries=[(t, v) for t, v in extra],
                 rerank_query=original_question,
+                workspace_id=workspace_id,
             )
             return retrieval.hits, retrieval.gate_score
 
         merged: dict[tuple[str, int], RetrievedChunk] = {}
         for q_text, q_vec in zip(sub_questions, vectors):
-            for hit in self._store.query(org_id, q_vec, top_k=self._settings.top_k):
+            for hit in self._store.query(
+                org_id, q_vec, top_k=self._settings.top_k, workspace_id=workspace_id
+            ):
                 key = (hit.document_id, hit.chunk_index)
                 prev = merged.get(key)
                 if prev is None or hit.score > prev.score:
@@ -685,6 +729,7 @@ class RagPipeline:
             question=question,
             contexts=contexts,
             fallback_response=self._settings.fallback_response,
+            profile=self._prompt_profile,
         )
         answer_cap = self._settings.max_answer_tokens
         raw = self._generate_text(
@@ -720,7 +765,7 @@ class RagPipeline:
         return RagResult(
             answer=answer,
             answered=answered,
-            source="policy" if answered else "none",
+            source=self._prompt_profile.source_label if answered else "none",
             sources=hits,
             top_score=top_score,
             retrieval_reused=retrieval_reused,
@@ -737,6 +782,7 @@ class RagPipeline:
         reason: str,
         budget: RequestBudget,
         conversation_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> _RecoveryAttempt:
         """One bounded recovery: expand retrieval expressions → re-retrieve → fuse.
 
@@ -769,7 +815,7 @@ class RagPipeline:
 
         for q_text, q_vec in zip(queries, vectors):
             try:
-                hits, _ = self._retrieve_once(org_id, q_text, q_vec)
+                hits, _ = self._retrieve_once(org_id, q_text, q_vec, workspace_id=workspace_id)
             except Exception:
                 continue
             if hits:

@@ -294,6 +294,74 @@ def test_put_google_config_parses_url_and_validates_folder(client, admin_org, mo
 
 
 @requires_db
+def test_search_drive_folders_returns_matches_and_filters_by_name(client, admin_org, monkeypatch):
+    org_id, cookies = admin_org
+    connection_id = _save_google(org_id)
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "files": [
+                    {"id": "folder-1", "name": "HR Policies"},
+                    {"id": "folder-2", "name": "HR Archive"},
+                ]
+            }
+
+    captured: dict = {}
+
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        captured["params"] = params
+        return FakeResponse()
+
+    monkeypatch.setattr("app.sources.google_drive_utils.httpx.get", fake_get)
+
+    response = client.get(
+        f"/admin/connections/{connection_id}/drive-folders",
+        params={"q": "HR"},
+        cookies=cookies,
+    )
+    assert response.status_code == 200
+    assert response.json()["folders"] == [
+        {"id": "folder-1", "name": "HR Policies"},
+        {"id": "folder-2", "name": "HR Archive"},
+    ]
+    assert "name contains 'HR'" in captured["params"]["q"]
+    assert "mimeType=" in captured["params"]["q"]
+
+
+@requires_db
+def test_search_drive_folders_rejects_notion_connection(client, admin_org):
+    org_id, cookies = admin_org
+    connection_id = save_connection(
+        org_id,
+        "notion",
+        OAuthTokens(
+            access_token="ntn_search",
+            refresh_token=None,
+            expires_at=None,
+            external_workspace_id="ws-search",
+        ),
+    )
+    response = client.get(f"/admin/connections/{connection_id}/drive-folders", cookies=cookies)
+    assert response.status_code == 400
+
+
+@requires_db
+def test_search_drive_folders_cross_org_returns_404(client, admin_org, store, org_cleanup):
+    _, cookies = admin_org
+    other_org = store.create_organization(f"Admin API Drive Search Other {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(other_org)
+    other_connection_id = _save_google(other_org)
+
+    response = client.get(
+        f"/admin/connections/{other_connection_id}/drive-folders", cookies=cookies
+    )
+    assert response.status_code == 404
+
+
+@requires_db
 def test_put_google_config_rejects_non_folder_mime(client, admin_org, monkeypatch):
     org_id, cookies = admin_org
     connection_id = _save_google(org_id)

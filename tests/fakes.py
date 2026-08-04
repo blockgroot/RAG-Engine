@@ -151,7 +151,7 @@ class InMemoryConversationStore(ConversationStore):
         self._last: dict[str, list[RetrievedChunkRecord]] = {}
         self._seq = 0
 
-    def create_conversation(self, org_id: str) -> str:
+    def create_conversation(self, org_id: str, workspace_id: str | None = None) -> str:
         self._seq += 1
         cid = f"conv-{self._seq}"
         self._summaries[cid] = None
@@ -212,7 +212,11 @@ class RecordingVectorStore(VectorStore):
         return "doc-fresh"
 
     def query(
-        self, org_id: str, query_embedding: list[float], top_k: int = 5
+        self,
+        org_id: str,
+        query_embedding: list[float],
+        top_k: int = 5,
+        workspace_id: str | None = None,
     ) -> list[RetrievedChunk]:
         self.query_calls += 1
         return [
@@ -261,7 +265,11 @@ class TopicAwareVectorStore(VectorStore):
         return "doc-1"
 
     def query(
-        self, org_id: str, query_embedding: list[float], top_k: int = 5
+        self,
+        org_id: str,
+        query_embedding: list[float],
+        top_k: int = 5,
+        workspace_id: str | None = None,
     ) -> list[RetrievedChunk]:
         self.query_calls += 1
         self.query_texts_via_embedding.append(list(query_embedding))

@@ -88,6 +88,12 @@ export interface ConnectionConfigResponse {
   config: ConnectionSourceConfig;
 }
 
+/** One Drive folder the connected account can see (folder-picker dropdown). */
+export interface DriveFolder {
+  id: string;
+  name: string;
+}
+
 export interface JobRecord {
   id: string;
   connection_id: string;
@@ -106,6 +112,30 @@ export interface MagicLinkResponse {
   // instead of "go check the server terminal". Always null once SMTP is
   // configured for a real deployment.
   dev_link: string | null;
+}
+
+/** A sub-workspace ("workspace within a workspace") the caller is a member of. */
+export interface WorkspaceRecord {
+  id: string;
+  name: string;
+  role: "owner" | "member";
+  created_by: string | null;
+}
+
+/** Workspace detail + the same readiness shape as ``Me`` / ``GET /me``. */
+export interface WorkspaceDetail extends WorkspaceRecord {
+  has_connection: boolean;
+  has_documents: boolean;
+  sync_in_progress: boolean;
+  latest_job_status: string | null;
+  latest_doc_count: number | null;
+  ready_to_ask: boolean;
+}
+
+export interface WorkspaceMemberRecord {
+  email: string;
+  role: "owner" | "member";
+  joined_at: string;
 }
 
 export const api = {
@@ -138,6 +168,10 @@ export const api = {
   listConnections: () => request<ConnectionRecord[]>("/admin/connections"),
   getConnectionConfig: (connectionId: string) =>
     request<ConnectionConfigResponse>(`/admin/connections/${connectionId}/config`),
+  searchConnectionDriveFolders: (connectionId: string, q: string) =>
+    request<{ folders: DriveFolder[] }>(
+      `/admin/connections/${connectionId}/drive-folders?q=${encodeURIComponent(q)}`
+    ),
   setConnectionConfig: (connectionId: string, folderUrl: string) =>
     request<ConnectionConfigResponse>(`/admin/connections/${connectionId}/config`, {
       method: "PUT",
@@ -153,8 +187,53 @@ export const api = {
   listJobs: () => request<JobRecord[]>("/admin/jobs"),
   getJob: (jobId: string) => request<JobRecord>(`/admin/jobs/${jobId}`),
 
-  createConversation: () =>
-    request<{ conversation_id: string }>("/chat/conversations", { method: "POST" }),
+  createConversation: (workspaceId?: string | null) =>
+    request<{ conversation_id: string }>("/chat/conversations", {
+      method: "POST",
+      body: JSON.stringify(workspaceId ? { workspace_id: workspaceId } : {}),
+    }),
+
+  // --- Workspace-within-a-Workspace ---
+
+  listWorkspaces: () => request<WorkspaceRecord[]>("/workspaces"),
+  getWorkspace: (workspaceId: string) =>
+    request<WorkspaceDetail>(`/workspaces/${workspaceId}`),
+  createWorkspace: (name: string) =>
+    request<WorkspaceRecord>("/workspaces", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+  listWorkspaceMembers: (workspaceId: string) =>
+    request<WorkspaceMemberRecord[]>(`/workspaces/${workspaceId}/members`),
+  inviteWorkspaceMember: (workspaceId: string, email: string) =>
+    request<{ status: string; email: string }>(`/workspaces/${workspaceId}/members`, {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+  listWorkspaceConnections: (workspaceId: string) =>
+    request<ConnectionRecord[]>(`/workspaces/${workspaceId}/connections`),
+  searchWorkspaceConnectionDriveFolders: (workspaceId: string, connectionId: string, q: string) =>
+    request<{ folders: DriveFolder[] }>(
+      `/workspaces/${workspaceId}/connections/${connectionId}/drive-folders?q=${encodeURIComponent(q)}`
+    ),
+  setWorkspaceConnectionConfig: (workspaceId: string, connectionId: string, folderUrl: string) =>
+    request<ConnectionConfigResponse>(
+      `/workspaces/${workspaceId}/connections/${connectionId}/config`,
+      { method: "PUT", body: JSON.stringify({ folder_url: folderUrl }) }
+    ),
+  checkWorkspaceConnectionChanges: (workspaceId: string, connectionId: string) =>
+    request<SyncChanges>(`/workspaces/${workspaceId}/connections/${connectionId}/changes`),
+  triggerWorkspaceIngest: (workspaceId: string, connectionId: string) =>
+    request<{ job_id: string; status: string }>(
+      `/workspaces/${workspaceId}/connections/${connectionId}/ingest`,
+      { method: "POST" }
+    ),
+  listWorkspaceJobs: (workspaceId: string) =>
+    request<JobRecord[]>(`/workspaces/${workspaceId}/jobs`),
+  getWorkspaceJob: (workspaceId: string, jobId: string) =>
+    request<JobRecord>(`/workspaces/${workspaceId}/jobs/${jobId}`),
+  connectWorkspaceUrl: (workspaceId: string, provider: string) =>
+    `${API_BASE_URL}/auth/${provider}/authorize?workspace_id=${workspaceId}`,
 };
 
 export { API_BASE_URL };

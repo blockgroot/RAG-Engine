@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { ChatMessageView, Message } from "@/components/ChatMessage";
 import { useMe } from "@/lib/useMe";
@@ -8,7 +9,7 @@ import { streamChat } from "@/lib/sse";
 import { api } from "@/lib/api";
 import { JOB_POLL_MS } from "@/lib/jobPoll";
 
-const SUGGESTED_QUESTIONS = [
+const POLICY_SUGGESTED_QUESTIONS = [
   "How many days of paid leave do I get?",
   "What's the remote work policy?",
   "How do I claim a medical reimbursement?",
@@ -16,7 +17,29 @@ const SUGGESTED_QUESTIONS = [
 ];
 
 export default function ChatPage() {
-  const { me, loading, refresh } = useMe();
+  return (
+    <Suspense
+      fallback={
+        <main className="page">
+          <p className="muted">Loading…</p>
+        </main>
+      }
+    >
+      <ChatPageInner />
+    </Suspense>
+  );
+}
+
+function ChatPageInner() {
+  // Workspace-within-a-Workspace: ?workspace=<id> scopes the whole page to a
+  // sub-workspace instead of the org-wide space -- same component, same
+  // /chat/stream call, just an extra id threaded through (per the plan:
+  // "the SAME chat component as the main org chat, parameterized by
+  // workspace_id", not a forked second chat UI).
+  const searchParams = useSearchParams();
+  const workspaceId = searchParams.get("workspace");
+
+  const { me, loading, refresh } = useMe({ enforceSetupFlow: !workspaceId });
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -24,14 +47,35 @@ export default function ChatPage() {
   const logRef = useRef<HTMLDivElement>(null);
 
   const [readyToAsk, setReadyToAsk] = useState<boolean | null>(null);
+  const [workspaceSyncing, setWorkspaceSyncing] = useState(false);
   const [justSynced, setJustSynced] = useState(false);
 
   useEffect(() => {
     if (!me) return;
-    setReadyToAsk(me.ready_to_ask);
-  }, [me]);
+    // Org Ask uses /me.ready_to_ask. Workspace Ask uses GET /workspaces/{id}
+    // — same gate shape, scoped to that workspace's own sync (independent of
+    // org-wide readiness).
+    if (!workspaceId) {
+      setReadyToAsk(me.ready_to_ask);
+      return;
+    }
+    let cancelled = false;
+    api
+      .getWorkspace(workspaceId)
+      .then((ws) => {
+        if (cancelled) return;
+        setWorkspaceSyncing(ws.sync_in_progress);
+        setReadyToAsk(ws.ready_to_ask);
+      })
+      .catch(() => {
+        if (!cancelled) setReadyToAsk(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [me, workspaceId]);
 
-  // Light /me poll only while waiting for first sync — pause when tab is hidden.
+  // Poll readiness only while waiting for first sync — pause when tab is hidden.
   useEffect(() => {
     if (readyToAsk !== false) return;
     let cancelled = false;
@@ -43,16 +87,30 @@ export default function ChatPage() {
         timer = setTimeout(tick, JOB_POLL_MS);
         return;
       }
-      const fresh = await api.me().catch(() => null);
-      if (cancelled || !fresh) {
-        timer = setTimeout(tick, JOB_POLL_MS * 2);
-        return;
-      }
-      if (fresh.ready_to_ask) {
-        setReadyToAsk(true);
-        setJustSynced(true);
-        refresh();
-        return;
+      if (workspaceId) {
+        const fresh = await api.getWorkspace(workspaceId).catch(() => null);
+        if (cancelled || !fresh) {
+          timer = setTimeout(tick, JOB_POLL_MS * 2);
+          return;
+        }
+        setWorkspaceSyncing(fresh.sync_in_progress);
+        if (fresh.ready_to_ask) {
+          setReadyToAsk(true);
+          setJustSynced(true);
+          return;
+        }
+      } else {
+        const fresh = await api.me().catch(() => null);
+        if (cancelled || !fresh) {
+          timer = setTimeout(tick, JOB_POLL_MS * 2);
+          return;
+        }
+        if (fresh.ready_to_ask) {
+          setReadyToAsk(true);
+          setJustSynced(true);
+          refresh();
+          return;
+        }
       }
       timer = setTimeout(tick, JOB_POLL_MS);
     }
@@ -70,12 +128,12 @@ export default function ChatPage() {
       if (timer) clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [readyToAsk, refresh]);
+  }, [readyToAsk, refresh, workspaceId]);
 
   async function ensureConversation() {
     if (conversationId.current) return conversationId.current;
     try {
-      const { conversation_id } = await api.createConversation();
+      const { conversation_id } = await api.createConversation(workspaceId);
       conversationId.current = conversation_id;
     } catch {
       // Memory may be disabled server-side; each question just goes standalone.
@@ -93,33 +151,38 @@ export default function ChatPage() {
 
     const convId = await ensureConversation();
 
-    await streamChat(question, convId, {
-      onToken: (chunk) => {
-        setMessages((prev) => {
-          const next = [...prev];
-          const last = next[next.length - 1];
-          next[next.length - 1] = { ...last, text: last.text + chunk };
-          return next;
-        });
+    await streamChat(
+      question,
+      convId,
+      {
+        onToken: (chunk) => {
+          setMessages((prev) => {
+            const next = [...prev];
+            const last = next[next.length - 1];
+            next[next.length - 1] = { ...last, text: last.text + chunk };
+            return next;
+          });
+        },
+        onDone: (payload) => {
+          setMessages((prev) => {
+            const next = [...prev];
+            const last = next[next.length - 1];
+            next[next.length - 1] = { ...last, streaming: false, done: payload };
+            return next;
+          });
+          setBusy(false);
+        },
+        onError: (message) => {
+          setMessages((prev) => {
+            const next = [...prev];
+            next[next.length - 1] = { role: "assistant", text: `Error: ${message}` };
+            return next;
+          });
+          setBusy(false);
+        },
       },
-      onDone: (payload) => {
-        setMessages((prev) => {
-          const next = [...prev];
-          const last = next[next.length - 1];
-          next[next.length - 1] = { ...last, streaming: false, done: payload };
-          return next;
-        });
-        setBusy(false);
-      },
-      onError: (message) => {
-        setMessages((prev) => {
-          const next = [...prev];
-          next[next.length - 1] = { role: "assistant", text: `Error: ${message}` };
-          return next;
-        });
-        setBusy(false);
-      },
-    });
+      workspaceId
+    );
 
     requestAnimationFrame(() => {
       logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
@@ -140,28 +203,37 @@ export default function ChatPage() {
   }
 
   if (readyToAsk === false) {
+    const syncing = workspaceId ? workspaceSyncing : me.sync_in_progress;
     return (
       <AppShell me={me} variant="app">
         <main className="page">
           <div className="card stack waiting-card">
             <p className="eyebrow">Not ready yet</p>
-            <h1>Your organization is still setting up</h1>
-            {me.role === "admin" ? (
+            <h1>
+              {workspaceId
+                ? "This space isn’t ready yet"
+                : "Your company isn’t ready yet"}
+            </h1>
+            {workspaceId ? (
               <p className="muted">
-                Finish connecting a policy source and syncing in setup. You&rsquo;ll be redirected
-                automatically when documents are ready.
+                The owner still needs to connect documents and finish the first refresh. This page
+                updates on its own.
+              </p>
+            ) : me.role === "admin" ? (
+              <p className="muted">
+                Finish connecting your policies in setup. We’ll bring you here automatically when
+                they’re ready.
               </p>
             ) : (
               <p className="muted">
-                An admin needs to connect your company&rsquo;s policy documents before you can ask
-                questions. This page updates automatically — no refresh needed.
+                An admin still needs to connect your company policies. This page updates on its own.
               </p>
             )}
             <div className="pulse-dot" aria-hidden />
             <p className="muted" style={{ fontSize: "0.85rem" }}>
-              {me.sync_in_progress
-                ? "Sync in progress — Ask unlocks when every policy page is ingested…"
-                : "Waiting for a completed policy sync…"}
+              {syncing
+                ? "Refreshing documents — Ask unlocks when they’re ready…"
+                : "Waiting for the first refresh to finish…"}
             </p>
           </div>
         </main>
@@ -174,23 +246,28 @@ export default function ChatPage() {
       <div className="chat-page">
         {justSynced && (
           <div className="banner banner-ok" style={{ margin: "0 0 1rem" }}>
-            Sync complete — all policies are ready. You can ask questions now.
+            {workspaceId
+              ? "You’re all set — this space is ready for questions."
+              : "You’re all set — company policies are ready for questions."}
           </div>
         )}
         {messages.length === 0 ? (
           <div className="chat-empty">
             <h1>Ask a question</h1>
             <p className="muted">
-              Ask anything about your company&rsquo;s policies — leave, benefits, remote work, and
-              more.
+              {workspaceId
+                ? "Ask about the notes and docs connected to this space."
+                : "Ask about leave, benefits, remote work, and more — answers come from your company policies."}
             </p>
-            <div className="suggested-chips">
-              {SUGGESTED_QUESTIONS.map((q) => (
-                <button key={q} type="button" className="suggested-chip" onClick={() => ask(q)}>
-                  {q}
-                </button>
-              ))}
-            </div>
+            {!workspaceId && (
+              <div className="suggested-chips">
+                {POLICY_SUGGESTED_QUESTIONS.map((q) => (
+                  <button key={q} type="button" className="suggested-chip" onClick={() => ask(q)}>
+                    {q}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         ) : (
           <div className="chat-log" ref={logRef}>
@@ -202,7 +279,9 @@ export default function ChatPage() {
         <form onSubmit={handleSubmit} className="chat-composer">
           <input
             className="chat-composer-input"
-            placeholder="Ask about leave, benefits, remote work…"
+            placeholder={
+              workspaceId ? "Ask something about this space…" : "Ask about leave, benefits, remote work…"
+            }
             value={input}
             onChange={(e) => setInput(e.target.value)}
             disabled={busy}

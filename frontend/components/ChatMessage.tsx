@@ -26,7 +26,7 @@ export function ChatMessageView({ message }: { message: Message }) {
             <span />
             <span />
           </span>
-          <span className="chat-thinking-label">Looking through your policies…</span>
+          <span className="chat-thinking-label">Looking through your documents…</span>
         </div>
       ) : (
         <>

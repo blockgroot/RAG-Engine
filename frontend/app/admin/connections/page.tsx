@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { PageHeader } from "@/components/PageHeader";
 import { ConnectionCard } from "@/components/ConnectionCard";
 import { useMe } from "@/lib/useMe";
 import { api, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
@@ -23,11 +24,9 @@ function latestJobByConnection(jobs: JobRecord[]): Record<string, JobRecord> {
 
 function updateCompleteMessage(docCount: number | null | undefined): string {
   if (docCount != null && docCount > 0) {
-    return `Sync complete — ${docCount} policy page${
-      docCount === 1 ? "" : "s"
-    } updated. Ask can use the new policies now.`;
+    return `Updated · ${docCount} page${docCount === 1 ? "" : "s"}`;
   }
-  return "Sync complete — your policies already matched the source. Nothing needed rewriting.";
+  return "Already up to date";
 }
 
 export default function ConnectionsPage() {
@@ -141,7 +140,7 @@ export default function ConnectionsPage() {
     const latest = latestJobByConnection(jobs)[connectionId];
     if (latest && ACTIVE_STATUSES.has(latest.status)) return;
     setError(null);
-    setMessage("Updating changed policies… Keep this page open — we’ll confirm when it’s done.");
+    setMessage("Updating…");
     try {
       const { job_id } = await api.triggerIngest(connectionId);
       setWatchedJobId(job_id);
@@ -170,31 +169,21 @@ export default function ConnectionsPage() {
   return (
     <AppShell me={me} variant="admin">
       <main className="page-wide stack">
-        <div>
-          <p className="eyebrow">Admin</p>
-          <h1>Data sources</h1>
-          <p className="muted">
-            Connect Notion or Google Drive. We only fetch page timestamps until
-            something actually changed — then you can update just those pages.
-          </p>
-        </div>
+        <PageHeader
+          eyebrow="Company"
+          title="Company policies"
+          description="Connect Notion or Drive, then keep them in sync."
+        />
         {message && (
           <div
             ref={bannerRef}
             className={
-              message.startsWith("Sync complete") ? "banner banner-ok" : "banner banner-wait"
+              message.startsWith("Updating") ? "banner banner-wait" : "banner banner-ok"
             }
             role="status"
             aria-live="polite"
           >
-            {message.startsWith("Sync complete") ? (
-              <>
-                <strong>Update finished</strong>
-                <p style={{ margin: "0.35rem 0 0" }}>{message}</p>
-              </>
-            ) : (
-              message
-            )}
+            {message}
           </div>
         )}
         {error && <div className="banner banner-warn">{error}</div>}

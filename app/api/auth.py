@@ -1,11 +1,17 @@
-"""Auth router: self-serve signup, admin-invited member login, admin OAuth
-"Connect" flow (Phase 13, simplified — domain auto-join removed).
+"""Auth router: whitelist-gated signup, admin-invited member login, admin
+OAuth "Connect" flow (Phase 13, simplified — domain auto-join removed).
 
 Three entry points, all converging on the same passwordless magic-link
 session issuance — there is exactly one way to log in, admin or employee:
-1. Signup (``/auth/signup``) — a brand-new company's first user. Creates the
-   org, makes this user its admin, and emails them a magic link. No password
-   to set, no separate "admin login" flow.
+1. Signup (``/auth/signup``) — creates a brand-new org and makes this user
+   its admin, but ONLY for an email on the DB-backed
+   ``owner_email_whitelist`` table (``app/auth/owner_whitelist.py``, managed
+   via ``scripts/manage_owner_whitelist.py``); anyone else gets a 403. This
+   is deliberately narrow: it gates the moment a new org is born, nothing
+   else. Everyone who isn't pre-approved to create an org instead joins an
+   EXISTING one via an admin invite (``/admin/members``) — see that router.
+   A whitelisted signup emails the new admin a magic link. No password to
+   set, no separate "admin login" flow.
 2. Magic link (``/auth/magic-link`` + ``/auth/magic-link/verify``) — the
    normal way back in for anyone who ALREADY has an account (an admin, or a
    member an admin invited via ``/admin/members``). An email with no existing
@@ -33,12 +39,14 @@ from ..auth import (
     create_session_token,
     create_state,
     get_user_by_email,
+    is_whitelisted,
     save_connection,
     send_magic_link_email_safe,
 )
 from ..config.settings import ApiSettings, AuthSettings, EmailSettings
 from ..core.exceptions import AuthError, ConfigurationError, OAuthError
 from ..vectorstore.base import VectorStore
+from ..workspaces import assert_member
 from .deps import SESSION_COOKIE_NAME, get_session, get_vector_store
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -65,9 +73,10 @@ def signup(
 ):
     """Create a brand-new org + its first admin user, then email a login link.
 
-    Self-serve: no manual org-creation step on our side. An email that's
-    already a user anywhere is rejected rather than silently creating a
-    second, disconnected account for it.
+    Gated: only an email on the DB-backed ``owner_email_whitelist`` table
+    may create a new org this way — everyone else gets a 403. An email
+    that's already a user anywhere is rejected rather than silently creating
+    a second, disconnected account for it.
     """
     email = (body.get("email") or "").strip().lower()
     company_name = (body.get("company_name") or "").strip()
@@ -75,6 +84,10 @@ def signup(
         raise HTTPException(status_code=400, detail="A valid email is required")
     if not company_name:
         raise HTTPException(status_code=400, detail="A company name is required")
+    if not is_whitelisted(email):
+        raise HTTPException(
+            status_code=403, detail="This email is not authorized to create an organization"
+        )
     if get_user_by_email(email) is not None:
         raise HTTPException(status_code=400, detail="An account already exists for this email")
 
@@ -165,15 +178,36 @@ def verify_magic_link(token: str, settings: ApiSettings = Depends(ApiSettings.fr
 
 
 @router.get("/{provider}/authorize")
-def authorize(provider: str, session=Depends(get_session)):
-    if session.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin role required")
+def authorize(provider: str, workspace_id: str | None = None, session=Depends(get_session)):
+    """Start a connect flow.
+
+    Without ``workspace_id``: the existing org-wide admin connect flow —
+    admin role required, unchanged. With ``workspace_id`` (Workspace-within-
+    a-Workspace): an employee connecting their OWN personal source into a
+    sub-workspace they belong to. Restricted to the workspace's ``owner``
+    (its creator) — see CLAUDE.md's Workspace-within-a-Workspace plan §Task 12
+    decision 3 — so an ordinary member can't silently repoint the workspace's
+    data source.
+    """
+    if workspace_id is None:
+        if session.role != "admin":
+            raise HTTPException(status_code=403, detail="Admin role required")
+    else:
+        try:
+            role = assert_member(workspace_id, session.org_id, session.user_id)
+        except AuthError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        if role != "owner":
+            raise HTTPException(
+                status_code=403, detail="Only the workspace owner can connect a source"
+            )
+
     try:
         oauth_provider = build_oauth_provider(provider)
     except ConfigurationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    state = create_state(session.org_id, provider)
+    state = create_state(session.org_id, provider, workspace_id=workspace_id)
     return RedirectResponse(url=oauth_provider.authorize_url(state))
 
 
@@ -185,15 +219,18 @@ def callback(
     settings: ApiSettings = Depends(ApiSettings.from_env),
 ):
     try:
-        org_id = consume_state(state, provider=provider)
+        org_id, workspace_id = consume_state(state, provider=provider)
         oauth_provider = build_oauth_provider(provider)
         tokens = oauth_provider.exchange_code(code)
-        save_connection(org_id, provider, tokens)
+        save_connection(org_id, provider, tokens, workspace_id=workspace_id)
     except (OAuthError, ConfigurationError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # Resume admin onboarding at the ingest step after OAuth returns.
+    # Resume admin onboarding at the ingest step after OAuth returns. A
+    # workspace connect resumes in the workspace's own UI instead.
     base = (settings.frontend_url or "").rstrip("/")
-    return RedirectResponse(
-        url=f"{base}/onboarding?connected={provider}" if base else f"/onboarding?connected={provider}"
-    )
+    if workspace_id is not None:
+        target = f"/workspaces/{workspace_id}?connected={provider}"
+    else:
+        target = f"/onboarding?connected={provider}"
+    return RedirectResponse(url=f"{base}{target}" if base else target)

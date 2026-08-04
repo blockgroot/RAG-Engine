@@ -1,27 +1,22 @@
 import type { Metadata } from "next";
-import { Fraunces, Source_Sans_3 } from "next/font/google";
+import { Outfit } from "next/font/google";
 import "./globals.css";
 
-const display = Fraunces({
+const outfit = Outfit({
   subsets: ["latin"],
-  variable: "--font-display",
-});
-
-const body = Source_Sans_3({
-  subsets: ["latin"],
-  variable: "--font-body",
+  variable: "--font-outfit",
   weight: ["400", "500", "600", "700"],
 });
 
 export const metadata: Metadata = {
-  title: "Policy Portal",
-  description: "Ask questions grounded in your company's policy documents.",
+  title: "Folio",
+  description: "Ask questions grounded in your own documents.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" data-theme="light">
-      <body className={`${display.variable} ${body.variable}`}>{children}</body>
+    <html lang="en" data-theme="light" className={outfit.variable}>
+      <body className={outfit.className}>{children}</body>
     </html>
   );
 }

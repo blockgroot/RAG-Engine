@@ -20,11 +20,12 @@ class PgConversationStore(ConversationStore):
     def __init__(self, settings: DatabaseSettings | None = None) -> None:
         self._settings = settings or DatabaseSettings.from_env()
 
-    def create_conversation(self, org_id: str) -> str:
+    def create_conversation(self, org_id: str, workspace_id: str | None = None) -> str:
         with get_connection(self._settings) as conn:
             row = conn.execute(
-                "INSERT INTO conversations (org_id) VALUES (%s::uuid) RETURNING id",
-                (org_id,),
+                "INSERT INTO conversations (org_id, workspace_id) VALUES (%s::uuid, %s::uuid) "
+                "RETURNING id",
+                (org_id, workspace_id),
             ).fetchone()
         return str(row[0])
 

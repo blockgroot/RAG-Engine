@@ -204,7 +204,7 @@ def test_worker_run_once_marks_job_succeeded(_connected_org, monkeypatch):
     class FakeIngestResult:
         documents_ingested = 3
 
-    monkeypatch.setattr(worker, "get_live_connection_token", lambda org, provider: "ntn_fake")
+    monkeypatch.setattr(worker, "get_live_connection_token", lambda org, provider, **kw: "ntn_fake")
     monkeypatch.setattr(
         worker, "build_source_adapter", lambda provider, token=None, config=None, **kw: object()
     )
@@ -229,7 +229,7 @@ def test_worker_run_once_marks_job_failed_on_ingestion_error(_connected_org, mon
     def _boom(*args, **kwargs):
         raise RuntimeError("ingestion exploded")
 
-    monkeypatch.setattr(worker, "get_live_connection_token", lambda org, provider: "ntn_fake")
+    monkeypatch.setattr(worker, "get_live_connection_token", lambda org, provider, **kw: "ntn_fake")
     monkeypatch.setattr(
         worker, "build_source_adapter", lambda provider, token=None, config=None, **kw: object()
     )
@@ -276,7 +276,7 @@ def test_worker_google_job_passes_folder_config(store, org_cleanup, monkeypatch)
     class FakeIngestResult:
         documents_ingested = 2
 
-    monkeypatch.setattr(worker, "get_live_connection_token", lambda org, provider: "goog_live")
+    monkeypatch.setattr(worker, "get_live_connection_token", lambda org, provider, **kw: "goog_live")
     monkeypatch.setattr(worker, "build_source_adapter", fake_build)
     monkeypatch.setattr(
         worker, "ingest_source", lambda adapter, org, provider, **kw: FakeIngestResult()
@@ -302,3 +302,122 @@ def test_worker_run_once_returns_none_when_queue_empty(monkeypatch):
         pass  # drain anything left running->already claimed doesn't apply; queued only
 
     assert worker.run_once() is None
+
+
+# --- Workspace-within-a-Workspace: workspace-scoped ingestion jobs (Task 8) ---
+
+
+@requires_db
+def test_enqueue_stamps_workspace_id_on_job(store, org_cleanup):
+    from app.auth.users import create_admin
+    from app.workspaces import create_workspace
+
+    org_id = store.create_organization("Jobs Workspace Org")
+    org_cleanup.append(org_id)
+    owner = create_admin("owner-jobs@example.com", org_id)
+    workspace_id = create_workspace(org_id, "Meeting Notes", owner.id)
+    connection_id = save_connection(
+        org_id,
+        "notion",
+        OAuthTokens(
+            access_token="ntn_workspace_fake",
+            refresh_token=None,
+            expires_at=None,
+            external_workspace_id="ws-jobs-workspace-test",
+        ),
+        workspace_id=workspace_id,
+    )
+
+    job_id = queue.enqueue(org_id, connection_id, workspace_id=workspace_id)
+
+    job = queue.get_job(org_id, job_id)
+    assert job.workspace_id == workspace_id
+
+
+@requires_db
+def test_list_jobs_scoped_to_workspace(store, org_cleanup):
+    from app.auth.users import create_admin
+    from app.workspaces import create_workspace
+
+    org_id = store.create_organization("Jobs Workspace List Org")
+    org_cleanup.append(org_id)
+    owner = create_admin("owner-jobs-list@example.com", org_id)
+    workspace_id = create_workspace(org_id, "Meeting Notes", owner.id)
+
+    org_wide_connection = save_connection(
+        org_id,
+        "notion",
+        OAuthTokens(
+            access_token="ntn_orgwide",
+            refresh_token=None,
+            expires_at=None,
+            external_workspace_id="ws-orgwide",
+        ),
+    )
+    workspace_connection = save_connection(
+        org_id,
+        "notion",
+        OAuthTokens(
+            access_token="ntn_workspace",
+            refresh_token=None,
+            expires_at=None,
+            external_workspace_id="ws-personal",
+        ),
+        workspace_id=workspace_id,
+    )
+    org_wide_job = queue.enqueue(org_id, org_wide_connection)
+    workspace_job = queue.enqueue(org_id, workspace_connection, workspace_id=workspace_id)
+
+    org_wide_jobs = queue.list_jobs(org_id)
+    workspace_jobs = queue.list_jobs(org_id, workspace_id=workspace_id)
+
+    assert {j.id for j in org_wide_jobs} == {org_wide_job}
+    assert {j.id for j in workspace_jobs} == {workspace_job}
+
+
+@requires_db
+def test_worker_run_once_scopes_ingestion_to_job_workspace(store, org_cleanup, monkeypatch):
+    from app.auth.users import create_admin
+    from app.jobs import worker
+    from app.workspaces import create_workspace
+
+    org_id = store.create_organization("Jobs Worker Workspace Org")
+    org_cleanup.append(org_id)
+    owner = create_admin("owner-worker@example.com", org_id)
+    workspace_id = create_workspace(org_id, "Meeting Notes", owner.id)
+    connection_id = save_connection(
+        org_id,
+        "notion",
+        OAuthTokens(
+            access_token="ntn_worker_fake",
+            refresh_token=None,
+            expires_at=None,
+            external_workspace_id="ws-worker-test",
+        ),
+        workspace_id=workspace_id,
+    )
+    job_id = queue.enqueue(org_id, connection_id, workspace_id=workspace_id)
+
+    captured: dict = {}
+
+    class FakeIngestResult:
+        documents_ingested = 1
+
+    monkeypatch.setattr(
+        worker, "get_live_connection_token", lambda org, provider, **kw: "ntn_worker_fake"
+    )
+    monkeypatch.setattr(
+        worker, "build_source_adapter", lambda provider, token=None, config=None, **kw: object()
+    )
+
+    def _fake_ingest_source(adapter, org, provider, **kw):
+        captured["workspace_id"] = kw.get("workspace_id")
+        return FakeIngestResult()
+
+    monkeypatch.setattr(worker, "ingest_source", _fake_ingest_source)
+
+    result = worker.run_once()
+    assert result is not None
+    assert result.id == job_id
+    assert result.status == "succeeded"
+    assert captured["workspace_id"] == workspace_id

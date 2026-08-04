@@ -24,7 +24,8 @@ export interface ChatStreamHandlers {
 export async function streamChat(
   question: string,
   conversationId: string | null,
-  handlers: ChatStreamHandlers
+  handlers: ChatStreamHandlers,
+  workspaceId?: string | null
 ): Promise<void> {
   let response: Response;
   try {
@@ -32,7 +33,11 @@ export async function streamChat(
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, conversation_id: conversationId }),
+      body: JSON.stringify({
+        question,
+        conversation_id: conversationId,
+        ...(workspaceId ? { workspace_id: workspaceId } : {}),
+      }),
     });
   } catch {
     handlers.onError("Could not reach the server.");

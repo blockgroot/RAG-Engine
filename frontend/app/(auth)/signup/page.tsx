@@ -33,11 +33,11 @@ export default function SignupPage() {
         <div className="brand-lockup">
           <span className="brand-mark" aria-hidden />
           <span className="brand" style={{ fontSize: "1.2rem" }}>
-            Policy Portal
+            Folio
           </span>
         </div>
         <p className="eyebrow">Get started</p>
-        <h1>Create your organization</h1>
+        <h1>Set up your company</h1>
         <p className="muted">
           You&rsquo;ll be the admin. Next: connect Notion, sync policies, invite your team.
         </p>

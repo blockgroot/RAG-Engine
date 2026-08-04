@@ -32,12 +32,12 @@ export default function LoginPage() {
         <div className="brand-lockup">
           <span className="brand-mark" aria-hidden />
           <span className="brand" style={{ fontSize: "1.2rem" }}>
-            Policy Portal
+            Folio
           </span>
         </div>
         <p className="eyebrow">Welcome back</p>
         <h1>Sign in</h1>
-        <p className="muted">Use your work email — we&rsquo;ll send a one-time link. No password.</p>
+        <p className="muted">Enter your work email and we&rsquo;ll send a one-time sign-in link. No password needed.</p>
 
         {submitted ? (
           <div className="card stack">

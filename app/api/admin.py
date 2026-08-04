@@ -28,6 +28,7 @@ from ..jobs import enqueue, get_job, has_active_job, list_jobs
 from ..sources import (
     build_source_adapter,
     extract_drive_folder_id,
+    search_drive_folders,
     validate_drive_folder,
 )
 from .deps import SessionClaims, require_admin
@@ -128,6 +129,35 @@ def get_connection_config_route(
     conn = _owned_connection(session.org_id, connection_id)
     config = get_connection_config(session.org_id, conn.provider)
     return {"connection_id": connection_id, "provider": conn.provider, "config": config or {}}
+
+
+@router.get("/connections/{connection_id}/drive-folders")
+def search_connection_drive_folders(
+    connection_id: str,
+    q: str = "",
+    session: SessionClaims = Depends(require_admin),
+):
+    """List Drive folders this connection's account can see (folder-picker dropdown).
+
+    Powers a search-as-you-type folder picker in the Sources UI so connecting
+    a folder no longer requires copy-pasting its URL — see
+    ``google_drive_utils.search_drive_folders``.
+    """
+    conn = _owned_connection(session.org_id, connection_id)
+    if conn.provider != "google":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Folder search is only supported for Google Drive "
+                f"(this connection is {conn.provider!r})."
+            ),
+        )
+    try:
+        token = get_live_connection_token(session.org_id, conn.provider)
+        folders = search_drive_folders(token, q)
+    except SourceError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"folders": folders}
 
 
 @router.put("/connections/{connection_id}/config")

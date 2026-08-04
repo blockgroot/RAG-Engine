@@ -8,8 +8,10 @@ belongs to) and returns a structured ``AgentResponse``.
 The interface is deliberately **small and generic** — it says nothing about Notion,
 policies, retrieval, gates, or web search. A future GitHub agent (not built in this
 phase) will implement the *same* contract, so nothing source-specific may leak into
-it. The one concrete implementation today is ``PolicyAgent`` (see
-``policy_agent.py``), which composes the existing Phase 3–6 RAG pipeline.
+it. Two implementations exist today, both thin adapters over ``RagPipeline`` via
+the shared ``RagPipelineAgent`` base (see ``rag_pipeline_agent.py``):
+``PolicyAgent`` (company policy, ``policy_agent.py``) and ``WorkspaceAgent`` (a
+sub-workspace's own connected content, ``workspace_agent.py``).
 
 This mirrors the ``rag/`` package's stance: an agent is an *orchestrator*, but
 unlike the RAG pipeline there genuinely is a second backend coming (GitHub), so —
@@ -50,8 +52,10 @@ class AgentResponse:
       know" fallback when nothing could be grounded).
     - ``grounded``   ``True`` when a real answer was produced (from source docs OR
       web search); ``False`` for the fallback. Callers branch on this bool.
-    - ``source``     provenance of the answer: ``"policy"`` (internal docs),
-      ``"web"`` (web-search fallback), or ``"none"`` (fixed fallback / refusal).
+    - ``source``     provenance of the answer: ``"policy"`` (internal policy
+      docs, ``PolicyAgent``), ``"workspace"`` (a sub-workspace's own connected
+      content, ``WorkspaceAgent``), ``"web"`` (web-search fallback), or
+      ``"none"`` (fixed fallback / refusal).
     - ``citations``  the evidence the answer was grounded on (empty for web answers
       and refusals).
     - ``resolved_question``  the standalone question actually used after any
@@ -99,7 +103,19 @@ class Agent(ABC):
 
     @abstractmethod
     def answer(
-        self, question: str, org_id: str, *, conversation_id: str | None = None
+        self,
+        question: str,
+        org_id: str,
+        *,
+        conversation_id: str | None = None,
+        workspace_id: str | None = None,
     ) -> AgentResponse:
-        """Answer ``question`` for ``org_id`` (optionally within a conversation)."""
+        """Answer ``question`` for ``org_id`` (optionally within a conversation).
+
+        ``workspace_id`` (Workspace-within-a-Workspace): ``None`` (default)
+        answers from the org-wide space; a non-``None`` value scopes the
+        answer to that sub-workspace only. Optional — an agent that has no
+        notion of sub-workspaces may ignore it, but must never widen scope
+        when it IS given (never fall back to org-wide on a workspace miss).
+        """
         raise NotImplementedError

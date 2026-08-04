@@ -424,8 +424,9 @@ their policy documents; their employees ask questions and get answers grounded i
   kind. `request_magic_link` now only ever sends a link to an email that
   *already has an account* (created at signup, or via an admin invite) —
   there is no path left that creates a first account from an unrecognized
-  email. The signup flow (a brand-new org's first admin) is untouched. **To
-  revive self-serve domain auto-join later** (e.g. once onboarding many
+  email. The signup flow (a brand-new org's first admin) was untouched by
+  this change — it was later gated behind a whitelist, see the next bullet.
+  **To revive self-serve domain auto-join later** (e.g. once onboarding many
   companies without manual admin invites is an actual need): restore the
   `org_domains` table and `app/auth/domains.py` from git history (the commit
   that removed them), and re-wire `resolve_org_for_email` back into
@@ -433,11 +434,95 @@ their policy documents; their employees ask questions and get answers grounded i
   exclusive — an admin invite and a domain claim could both resolve an org for
   an email). Don't rebuild it from scratch; the DNS-verification design was
   already reasoned through once.
+- **Self-serve org creation is gated behind an email whitelist — signup is
+  closed by default, not open-to-anyone.** `POST /auth/signup` used to let
+  literally anyone name a company and become its admin with zero
+  verification — a real gap for a multi-tenant platform where "this org's
+  admin" is a trust boundary. `signup()` (`app/api/auth.py`) now checks the
+  submitted email via `is_whitelisted()` and returns 403 for anything not
+  listed. This is a narrow gate: it only decides who may bring a brand-new
+  org into existence. It does NOT touch — and does not need to touch —
+  either of the two mechanisms that already handle everything downstream of
+  that: an existing admin inviting new employees (`POST /admin/members`,
+  admin-only) and any org member creating their own sub-workspace
+  (`POST /workspaces`, gated only by `get_session`, not `require_admin` —
+  see the Workspace-within-a-Workspace entry below).
+  **The whitelist itself is DB-backed (`owner_email_whitelist` table,
+  `app/auth/owner_whitelist.py`), not an env var — this supersedes the
+  original `OWNER_EMAIL_WHITELIST` env-var design.** The env var was the
+  right MVP call when the list was expected to be short and change rarely,
+  but that assumption broke down: every new approved owner meant editing
+  `.env` and redeploying, with no audit trail of who was added or when. A
+  DB table needs no redeploy (an addition takes effect on the very next
+  signup attempt) and is consistent with how every other piece of identity
+  in this app is stored. Managed exclusively via
+  `scripts/manage_owner_whitelist.py list/add/remove` — deliberately still
+  **no HTTP/session surface**, the one part of the original reasoning that
+  didn't change: granting "can create a new org" is a platform-operator
+  action, not something that belongs behind a web login, and a CLI against
+  the live DB is the cheapest mechanism that actually fits that need. **This
+  supersedes an earlier, even more elaborate design** (a full pending-request
+  approval queue reviewed via a CLI script, with a later increment adding
+  one-click email approve/reject links) that was prototyped and then
+  abandoned mid-build in favor of the whitelist gate — that work never
+  merged; if a review-queue workflow is wanted again later, it was reasoned
+  through in detail and shouldn't be redesigned from scratch.
 - **Session TTL defaults to 30 days, not a typical short web session** (`AUTH_SESSION_TTL_MINUTES`,
   `app/auth/session.py` + the `max_age` on the session cookie in `app/api/auth.py`) —
   deliberate given this is a low-risk internal tool with an already-hardened cookie
   (httpOnly+Secure+SameSite=Lax) and no refresh-token flow; revisit with a proper
   refresh mechanism if the risk profile changes.
+- **Workspace-within-a-Workspace: a `workspace_id` isolation axis nests INSIDE
+  `org_id`, everywhere `org_id` already scopes a row — it never replaces it.**
+  An employee can create a personal sub-workspace inside their own org, invite
+  a few org colleagues into it, connect their own Notion/Drive source (e.g.
+  meeting notes), and have questions asked *in that workspace* answered ONLY
+  from its own content. Every table that already carried `org_id` for tenant
+  scoping (`documents`, `chunks`, `conversations`, `conversation_turns`,
+  `oauth_connections`, `ingestion_jobs`, `oauth_states`) got one new nullable
+  `workspace_id` column: `NULL` = today's org-wide row, completely unchanged
+  behavior; non-`NULL` = scoped to that sub-workspace. Every read/write pairs
+  `workspace_id` with `org_id` — **never `workspace_id` alone** — matching the
+  same "ambiguity must be structurally impossible" discipline `oauth_connections`
+  already used for `(org_id, provider)`. A workspace query sees ONLY its own
+  workspace's rows, never also the org-wide ones (`WHERE org_id = :org AND
+  workspace_id = :workspace`, no `OR workspace_id IS NULL`) — deliberate: a
+  meeting-notes workspace silently blending in HR policy chunks would make
+  workspace membership meaningless as an access boundary. `app/workspaces/`
+  is a new, separate boundary from the org: an invited workspace member must
+  already be a `users` row in the SAME `org_id` (enforced by
+  `invite_member`/`assert_member`) — a sub-workspace can never admit someone
+  from a different tenant; the org boundary (Notion-integration-enforced, per
+  the bullet below) stays the outermost wall, the workspace is an inner,
+  app-enforced one. The gate/strict-prompt/reranker/memory pipeline
+  (`RagPipeline`, `PolicyAgent`) is reused byte-for-byte — `answer()` /
+  `answer_stream()` just gained an optional `workspace_id` threaded to every
+  retrieval call site (`_retrieve_once`, `_retrieve_for_subquestions`,
+  `_recover_once`, `HybridRetriever.retrieve`, `VectorStore.query`/
+  `keyword_search`), the query-answer cache key, and `ConversationStore.
+  create_conversation` — never a second gate/prompt implementation.
+  `oauth_connections` uniqueness is `(org_id, provider)` for the org-wide
+  connection and `(org_id, provider, workspace_id)` for a personal one, via
+  TWO PARTIAL unique indexes (`WHERE workspace_id IS NULL` /
+  `WHERE workspace_id IS NOT NULL`) rather than one plain
+  `UNIQUE(org_id, provider, workspace_id)` — Postgres treats `NULL` as
+  distinct-from-`NULL` in a multi-column `UNIQUE`, which would let unlimited
+  org-wide rows through. `save_connection` picks the matching `ON CONFLICT`
+  target by whether `workspace_id` is `None`, since Postgres requires the
+  inference clause's predicate to match the target partial index's predicate
+  exactly. Only a workspace's `owner` (its creator) may invite members or
+  connect/reconnect its source (`GET /auth/{provider}/authorize?workspace_id=`,
+  `POST /workspaces/{id}/members`) — an ordinary member can only ask
+  questions, so they can't silently repoint the workspace's data source.
+  **Gotcha hit while building this:** an early schema edit added
+  `workspace_id` to `ingestion_jobs` via `ALTER TABLE` placed BEFORE that
+  table's own `CREATE TABLE` in `schema.sql` — invisible on an already-
+  migrated dev DB, but broke `apply_schema` from scratch on a fresh CI
+  database (`relation "ingestion_jobs" does not exist`). Every `ALTER TABLE
+  ... ADD COLUMN` for a new cross-table column MUST come after that table's
+  `CREATE TABLE`, and should be verified by applying `schema.sql` against a
+  genuinely fresh throwaway database, not just re-applying to an already-
+  migrated one (idempotency alone doesn't catch ordering bugs).
 
 ## 3. Folder / file structure convention
 
@@ -489,11 +574,22 @@ app/
                 #   (enqueue/claim_next/reap_stuck/get_job, SELECT ... FOR UPDATE
                 #   SKIP LOCKED) + worker.py (runs the unchanged ingest_source()).
                 #   No base.py — one queue implementation, no second backend.
+  workspaces/   # Workspace-within-a-Workspace: sub-workspace CRUD + membership.
+                #   store.py (create_workspace/invite_member/assert_member/
+                #   list_my_workspaces/list_workspace_members). No base.py — one
+                #   storage backend, like app/jobs/. assert_member is the ONE
+                #   place a workspace_id is validated against a user's org_id
+                #   before any downstream code trusts it (mirrors deps.get_session
+                #   for org_id).
   api/          # P13: the HTTP layer (FastAPI). main.py (app + CORS) + deps.py
                 #   (get_session/require_admin — the ONLY place org_id enters a
-                #   request) + auth.py (magic-link + OAuth connect routes) +
+                #   request; get_workspace_role/require_workspace_owner — the
+                #   same for workspace_id) + auth.py (magic-link + OAuth connect
+                #   routes, workspace-scoped connect via ?workspace_id=) +
                 #   admin.py (members/connections/jobs, all org-scoped from the
-                #   session) + chat.py (SSE streaming) + orgs.py (/me).
+                #   session) + chat.py (SSE streaming, optional workspace_id) +
+                #   workspaces.py (create/invite/connections/jobs for a
+                #   sub-workspace) + orgs.py (/me).
 evaluation/     # P7 golden-set eval (peer to scripts/tests). golden_set.py (cases +
                 #   corpus mirroring real Notion data), harness.py (seed + run + path
                 #   verdict), ragas_scoring.py (optional [eval] dep), report.py,
@@ -507,14 +603,21 @@ scripts/        # entrypoints: verify_providers.py, init_db.py, demo_rag.py, ing
 frontend/       # P14: Next.js 15 App Router portal, separate app calling app/api/
                 #   over HTTP with credentials: "include" (session cookie only,
                 #   never JS-accessible storage). (auth)/login + (auth)/verify
-                #   (magic-link), chat/ (streaming SSE + citations), admin/
-                #   members|connections|jobs. No Tailwind/UI-kit — plain CSS vars.
-tests/          # pytest; isolation (P2), grounding (P3), conversation+websearch (P5),
-                #   retrieval (P6), golden-set path-firing (P7, test_golden_set.py),
-                #   security/auth/jobs/streaming/api_* (P10-13, test_security.py,
-                #   test_auth.py, test_identity.py, test_jobs.py,
-                #   test_streaming.py, test_api_auth.py, test_api_admin.py,
-                #   test_api_chat.py)
+                #   (magic-link), chat/ (streaming SSE + citations, accepts
+                #   ?workspace=<id> — same component parameterized, not a
+                #   forked chat UI), admin/members|connections|jobs, workspaces/
+                #   + workspaces/[id] (Workspace-within-a-Workspace: create,
+                #   invite, connect a personal source, workspace-scoped chat
+                #   link). No Tailwind/UI-kit — plain CSS vars.
+tests/          # pytest; isolation (P2, extended with workspace-vs-org-wide and
+                #   workspace-vs-sibling-workspace leak proofs), grounding (P3),
+                #   conversation+websearch (P5), retrieval (P6), golden-set
+                #   path-firing (P7, test_golden_set.py), security/auth/jobs/
+                #   streaming/api_* (P10-13, test_security.py, test_auth.py,
+                #   test_identity.py, test_jobs.py, test_streaming.py,
+                #   test_api_auth.py, test_api_admin.py, test_api_chat.py),
+                #   test_workspaces.py + test_workspace_rag.py + test_api_workspaces.py
+                #   (Workspace-within-a-Workspace: membership, RAG scoping, API).
 .github/workflows/eval.yml  # P7 CI: fast path-firing tier every push + nightly RAGAS tier
 ```
 
@@ -792,8 +895,11 @@ Defined in `app/db/schema.sql`. Current tables:
 | `ingestion_jobs` | (Phase 10/12) A durable, pollable record of an admin-triggered fetch→chunk→embed→store run. `id`, `org_id`, `connection_id`, `status` (`queued`\|`running`\|`succeeded`\|`failed`), `doc_count`, `error`, `started_at`, `finished_at`, `created_at`. Consumed by a Postgres-backed worker (`SELECT ... FOR UPDATE SKIP LOCKED`), not an in-process background task. |
 | `magic_link_tokens` | (Phase 13) Single-use employee login tokens. `token_hash` (PK — only a SHA-256 hash is ever stored, never the token), `email`, `expires_at`, `consumed_at`, `created_at`. |
 | `oauth_states` | (Phase 13) Single-use, server-side OAuth `state` values for CSRF/replay protection on the admin connect flow. `state` (PK), `org_id`, `provider`, `expires_at`, `consumed_at`, `created_at`. |
-| `query_answer_cache` | (Phase 19) Short-TTL cache of standalone Q→A results keyed by `(org_id, normalized_question_hash)`. |
+| `query_answer_cache` | (Phase 19) Short-TTL cache of standalone Q→A results keyed by `(org_id, normalized_question_hash)`. Workspace-within-a-Workspace: the hash input folds in `workspace_id` (no new column) so an org-wide and a workspace's cache entry for the same question text never collide. |
 | `api_rate_counters` | (Phase 21) Sliding-window request counters for Postgres-backed rate limiting (`scope` PK, `window_start`, `count`). |
+| `workspaces` | (Workspace-within-a-Workspace) An employee-created sub-workspace nested inside one org. `id`, `org_id`, `name`, `created_by` (nullable, `ON DELETE SET NULL`), `created_at`. |
+| `workspace_members` | (Workspace-within-a-Workspace) Membership in a sub-workspace — a SEPARATE, stricter boundary than org membership (every member must already be a `users` row in the same org, enforced in `app/workspaces/`, not by a DB constraint alone). `workspace_id`, `user_id`, `role` (`owner`\|`member`), `invited_by` (nullable, `ON DELETE SET NULL`), `joined_at`. PK `(workspace_id, user_id)`. |
+| `owner_email_whitelist` | (§2) The only emails allowed to self-serve `POST /auth/signup` (create a brand-new org). `email` (PK, lowercased), `created_at`. Managed exclusively via `scripts/manage_owner_whitelist.py` — no HTTP/session surface. Replaces the original `OWNER_EMAIL_WHITELIST` env var so an addition takes effect immediately with no redeploy. |
 
 **`org_domains` (Phase 10) was dropped** in the domain-auto-join simplification
 (see §2) — `DROP TABLE IF EXISTS org_domains` in `schema.sql`. It held a
@@ -805,15 +911,24 @@ revived.
 Deletes cascade: removing an org removes its documents, chunks, users,
 oauth_connections, and ingestion_jobs (and its conversations + turns +
 last-retrieval row); removing a conversation removes its turns and its
-last-retrieval row. Indexes: `org_id` on every org-scoped table (tenant filter) +
-an HNSW cosine index on `chunks.embedding` (ranking speed).
+last-retrieval row; removing a workspace removes its members, and (via
+`ON DELETE CASCADE` on the new `workspace_id` columns) its scoped documents,
+chunks, conversations, oauth_connections, and ingestion_jobs. Indexes: `org_id`
+on every org-scoped table (tenant filter) + an HNSW cosine index on
+`chunks.embedding` (ranking speed) + `workspace_id` indexes on every table that
+carries it.
 
 **Phase 7 added no tables** — the PolicyAgent and golden-set eval are pure
 application/tooling layers over the existing schema. **Phase 8 added one table**
 (`conversation_last_retrieval`) for the retrieval-reuse check and removed the
 `MEMORY_SUMMARIZE_AFTER` setting (summarization is now incremental). **Phases
 10-13 added the six tables above** — the first `users`/`auth`/OAuth tables in
-the project, closing the gap Phase 9 explicitly deferred.
+the project, closing the gap Phase 9 explicitly deferred. **Workspace-within-
+a-Workspace added two tables** (`workspaces`, `workspace_members`) and a
+nullable `workspace_id` column on every table that already carried `org_id`
+for content/credential/job scoping (`documents`, `chunks`, `conversations`,
+`conversation_turns`, `oauth_connections`, `ingestion_jobs`, `oauth_states`) —
+see §2 for the full reasoning.
 
 ## 6. Current state: built vs. pending
 
@@ -1009,6 +1124,43 @@ response but no account is ever created; a second org's admin never sees the
 first org's invited members). Full suite green (144 passing, 1 pre-existing
 unrelated `NOTION_TOKEN_SYVORA` environmental failure, 2 network deselected).
 
+**Owner-email whitelist (branch `feature/owner-email-whitelist`) — self-serve
+org creation gated by a pre-approved email list.** See §2 for the full
+reasoning. Changes: `AuthSettings.owner_email_whitelist`
+(env `OWNER_EMAIL_WHITELIST`, comma-separated, empty by default) in
+`app/config/settings.py`; `signup()` (`app/api/auth.py`) checks the
+submitted email against it and returns 403 for anything not listed, before
+the existing duplicate-account check. No schema change, no new tables, no
+new endpoints — the existing immediate org+admin-creation code path is
+unchanged for a whitelisted email, only reachability changed. Tests: added
+`test_signup_rejects_non_whitelisted_email` (403, no account/org created)
+to `tests/test_api_auth.py`; existing signup tests updated to whitelist
+their own generated test email via `monkeypatch.setenv` before signing up.
+Deliberately does not touch `POST /admin/members` (existing-org invites) or
+`POST /workspaces` (any org member can already create a sub-workspace) —
+both already did what was asked of them before this change.
+
+**Owner-email whitelist moved from env var to DB (same branch,
+`feature/workspace-within-workspace-clean`) — the env-var version above was
+superseded within the same day.** Editing `.env` and redeploying for every
+newly-approved owner didn't scale. See §2 for the full reasoning. Changes:
+new `owner_email_whitelist` table (`email` PK, `created_at`); new
+`app/auth/owner_whitelist.py` (`is_whitelisted`/`add_owner_email`/
+`remove_owner_email`/`list_owner_emails`, both add/remove idempotent); the
+`signup()` check swapped from `AuthSettings.owner_email_whitelist` to
+`is_whitelisted(email)`; `AuthSettings.owner_email_whitelist` and the
+`OWNER_EMAIL_WHITELIST` env var removed entirely (no dual env+DB check, no
+migration needed since nothing was configured yet); new
+`scripts/manage_owner_whitelist.py list/add/remove`, manually smoke-tested
+against the local dev DB (add → whitelisted signup succeeds, remove →
+re-signup 403s again). Tests: new `tests/test_owner_whitelist.py` (7 cases:
+add/remove round-trip, idempotent add/remove, case-insensitive matching,
+list reflects state) plus a shared `whitelist_cleanup` fixture added to
+`tests/conftest.py` (mirrors `org_cleanup`); existing signup tests in
+`test_api_auth.py` switched from `monkeypatch.setenv(...)` to
+`add_owner_email(...)`. Still deliberately **no HTTP/session surface** —
+that part of the original design didn't change, only where the list lives.
+
 **Hardening pass (Phases 18–22, external review follow-up).** Phase 20
 (structural citations + NLI) is **explicitly deferred** pending a separate
 cost/latency decision — not summarized as done below.
@@ -1033,6 +1185,59 @@ cost/latency decision — not summarized as done below.
   (`rag.query_signals` JSON: `top_score`, `response_mode`, `answered`, `source`,
   `retrieval_reused`, `cache_hit`, etc. from `RagPipeline.answer`). Branch:
   `improve/eval-split-production-signals`.
+
+**Workspace-within-a-Workspace** (branch `feature/workspace-within-workspace-clean`,
+plan: `docs/plans/2026-08-03-workspace-within-workspace.md`). An authenticated
+employee can create a personal sub-workspace inside their org, invite a few org
+colleagues, connect their own Notion/Drive source, and have questions asked *in
+that workspace* answered only from its own content — never blended with the
+org-wide policies, never crossing into a sibling workspace. Built as one new
+nullable `workspace_id` axis nested inside `org_id`, threaded through the
+existing pipeline rather than a second, parallel system (full reasoning in §2).
+Layers, each additive and gated behind `workspace_id` defaulting to `None`
+(zero behavior change for every existing org-wide call site):
+- **Schema**: `workspaces` + `workspace_members` tables; `workspace_id` on
+  `documents`/`chunks`/`conversations`/`conversation_turns`/`oauth_connections`/
+  `ingestion_jobs`/`oauth_states`; `oauth_connections` uniqueness re-keyed to
+  two partial indexes (org-wide vs. per-workspace).
+- **`app/workspaces/`** — CRUD + membership, its own boundary stricter than org
+  membership (`assert_member` checks `workspace_id` + `org_id` + `user_id`
+  together).
+- **`VectorStore`** (`query`/`keyword_search`/`list_source_documents`/
+  `upsert_source_document`/`acknowledge_source_document`/`delete_source_documents`)
+  — optional `workspace_id`, scoped via `IS NOT DISTINCT FROM` so `None` still
+  matches org-wide `NULL` rows exactly as before.
+- **`RagPipeline`/`HybridRetriever`/`PolicyAgent`** — optional `workspace_id`
+  threaded to every retrieval call site + the query-answer cache key; the
+  gate/strict-prompt/reranker/memory logic is completely unchanged.
+- **OAuth connect flow** (`app/auth/oauth_state.py`, `credentials.py`,
+  `app/api/auth.py`) — `?workspace_id=` on `authorize`, restricted to the
+  workspace's `owner`; `oauth_states`/`oauth_connections` carry it through to
+  the callback.
+- **Ingestion** (`app/ingestion/pipeline.py`, `app/jobs/`) — sync state
+  (new/updated/removed) is now diffed independently per workspace, mirroring
+  exactly how it's already partitioned per provider.
+- **HTTP API** — `app/api/workspaces.py` (create/invite/connections/ingest/
+  jobs, gated by `deps.get_workspace_role`/`require_workspace_owner`);
+  `/chat/stream` + `/chat/conversations` accept an optional `workspace_id`,
+  and a client-supplied `conversation_id` is now checked against BOTH
+  `org_id` and `workspace_id` before use.
+- **Frontend** — `frontend/app/workspaces/` (list/create) +
+  `workspaces/[id]/` (members, invite, connect, jobs); `/chat` accepts
+  `?workspace=<id>` (same component, not a forked chat UI).
+
+Verified: new isolation/RAG/API test files (`test_workspaces.py`,
+`test_workspace_rag.py`, `test_api_workspaces.py`) plus extensions to
+`test_isolation.py`/`test_auth.py`/`test_jobs.py`/`test_incremental_sync.py`/
+`test_api_auth.py`/`test_api_chat.py`; full suite green each iteration
+(only the pre-existing `NOTION_TOKEN_SYVORA` env-pollution failure and
+known free-LLM-endpoint flakiness observed, both documented above, not
+regressions); CI (`golden-set-eval`) green; a live end-to-end smoke test
+against a running API (signup → magic-link login → create workspace → list
+→ members → workspace-scoped conversation) all returned correct responses;
+`npm run build` + `tsc --noEmit` clean for the frontend. Caught and fixed a
+schema-ordering bug during this work (see §2/§4) that only reproduced on a
+genuinely fresh database, not an already-migrated one.
 
 **Backlog (deliberately unscheduled this round — do not drop silently):**
 - HNSW index build/query parameter tuning (`m`, `ef_construction`, `ef_search`) —

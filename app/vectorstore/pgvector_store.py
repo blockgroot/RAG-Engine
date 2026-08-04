@@ -52,6 +52,7 @@ class PgVectorStore(VectorStore):
         chunks: list[str],
         embeddings: list[list[float]],
         source_uri: str | None = None,
+        workspace_id: str | None = None,
     ) -> str:
         if len(chunks) != len(embeddings):
             raise ProviderError(
@@ -64,22 +65,29 @@ class PgVectorStore(VectorStore):
         with get_connection(self._settings) as conn:
             doc_row = conn.execute(
                 """
-                INSERT INTO documents (org_id, title, source_uri)
-                VALUES (%s::uuid, %s, %s)
+                INSERT INTO documents (org_id, title, source_uri, workspace_id)
+                VALUES (%s::uuid, %s, %s, %s::uuid)
                 RETURNING id
                 """,
-                (org_id, title, source_uri),
+                (org_id, title, source_uri, workspace_id),
             ).fetchone()
             document_id = doc_row[0]
 
             rows = [
-                (org_id, document_id, index, content, np.asarray(embedding, dtype=np.float32))
+                (
+                    org_id,
+                    document_id,
+                    index,
+                    content,
+                    np.asarray(embedding, dtype=np.float32),
+                    workspace_id,
+                )
                 for index, (content, embedding) in enumerate(zip(chunks, embeddings))
             ]
             conn.cursor().executemany(
                 """
-                INSERT INTO chunks (org_id, document_id, chunk_index, content, embedding)
-                VALUES (%s::uuid, %s, %s, %s, %s)
+                INSERT INTO chunks (org_id, document_id, chunk_index, content, embedding, workspace_id)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s::uuid)
                 """,
                 rows,
             )
@@ -91,6 +99,7 @@ class PgVectorStore(VectorStore):
         org_id: str,
         query_embedding: list[float],
         top_k: int = 5,
+        workspace_id: str | None = None,
     ) -> list[RetrievedChunk]:
         if not query_embedding:
             raise EmbeddingProviderError("query_embedding is empty")
@@ -106,10 +115,11 @@ class PgVectorStore(VectorStore):
                        org_id::text
                 FROM chunks
                 WHERE org_id = %s::uuid
+                  AND workspace_id IS NOT DISTINCT FROM %s::uuid
                 ORDER BY embedding <=> %s
                 LIMIT %s
                 """,
-                (vector, org_id, vector, top_k),
+                (vector, org_id, workspace_id, vector, top_k),
             ).fetchall()
 
         return [
@@ -138,6 +148,7 @@ class PgVectorStore(VectorStore):
         query_text: str,
         query_embedding: list[float],
         top_k: int = 30,
+        workspace_id: str | None = None,
     ) -> list[RetrievedChunk]:
         """Full-text keyword search within ``org_id`` (Phase 6 hybrid retrieval).
 
@@ -161,9 +172,10 @@ class PgVectorStore(VectorStore):
                        1 - (embedding <=> %s) AS score
                 FROM chunks
                 WHERE org_id = %s::uuid
+                  AND workspace_id IS NOT DISTINCT FROM %s::uuid
                   AND content_tsv @@ websearch_to_tsquery('english', %s)
                 """,
-                (vector, org_id, query_text),
+                (vector, org_id, workspace_id, query_text),
             ).fetchall()
 
         if not rows:
@@ -188,7 +200,9 @@ class PgVectorStore(VectorStore):
             )
         return out
 
-    def list_source_documents(self, org_id: str, provider: str) -> list[StoredSourceDocument]:
+    def list_source_documents(
+        self, org_id: str, provider: str, workspace_id: str | None = None
+    ) -> list[StoredSourceDocument]:
         with get_connection(self._settings) as conn:
             rows = conn.execute(
                 """
@@ -197,9 +211,10 @@ class PgVectorStore(VectorStore):
                 FROM documents
                 WHERE org_id = %s::uuid
                   AND source_provider = %s
+                  AND workspace_id IS NOT DISTINCT FROM %s::uuid
                   AND source_external_id IS NOT NULL
                 """,
-                (org_id, provider),
+                (org_id, provider, workspace_id),
             ).fetchall()
         return [
             StoredSourceDocument(
@@ -224,6 +239,7 @@ class PgVectorStore(VectorStore):
         embeddings: list[list[float]],
         source_uri: str | None = None,
         last_modified: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> str:
         if len(chunks) != len(embeddings):
             raise ProviderError(
@@ -237,19 +253,22 @@ class PgVectorStore(VectorStore):
 
         with get_connection(self._settings) as conn:
             # Drop prior copy of this page + legacy URI duplicates (no external id),
-            # scoped to this provider so another provider's rows are never touched.
+            # scoped to this provider AND workspace so another provider's rows, or
+            # another workspace's/the org-wide connection's rows for the same
+            # provider, are never touched.
             if source_uri:
                 conn.execute(
                     """
                     DELETE FROM documents
                     WHERE org_id = %s::uuid
                       AND source_provider = %s
+                      AND workspace_id IS NOT DISTINCT FROM %s::uuid
                       AND (
                         source_external_id = %s
                         OR (source_uri = %s AND source_external_id IS NULL)
                       )
                     """,
-                    (org_id, provider, external_id, source_uri),
+                    (org_id, provider, workspace_id, external_id, source_uri),
                 )
             else:
                 conn.execute(
@@ -257,32 +276,40 @@ class PgVectorStore(VectorStore):
                     DELETE FROM documents
                     WHERE org_id = %s::uuid
                       AND source_provider = %s
+                      AND workspace_id IS NOT DISTINCT FROM %s::uuid
                       AND source_external_id = %s
                     """,
-                    (org_id, provider, external_id),
+                    (org_id, provider, workspace_id, external_id),
                 )
 
             doc_row = conn.execute(
                 """
                 INSERT INTO documents (
                     org_id, title, source_uri, source_provider, source_external_id,
-                    source_last_modified
+                    source_last_modified, workspace_id
                 )
-                VALUES (%s::uuid, %s, %s, %s, %s, %s)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid)
                 RETURNING id
                 """,
-                (org_id, title, source_uri, provider, external_id, last_modified),
+                (org_id, title, source_uri, provider, external_id, last_modified, workspace_id),
             ).fetchone()
             document_id = doc_row[0]
 
             rows = [
-                (org_id, document_id, index, content, np.asarray(embedding, dtype=np.float32))
+                (
+                    org_id,
+                    document_id,
+                    index,
+                    content,
+                    np.asarray(embedding, dtype=np.float32),
+                    workspace_id,
+                )
                 for index, (content, embedding) in enumerate(zip(chunks, embeddings))
             ]
             conn.cursor().executemany(
                 """
-                INSERT INTO chunks (org_id, document_id, chunk_index, content, embedding)
-                VALUES (%s::uuid, %s, %s, %s, %s)
+                INSERT INTO chunks (org_id, document_id, chunk_index, content, embedding, workspace_id)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s::uuid)
                 """,
                 rows,
             )
@@ -298,6 +325,7 @@ class PgVectorStore(VectorStore):
         title: str,
         source_uri: str | None = None,
         last_modified: datetime | None = None,
+        workspace_id: str | None = None,
     ) -> str:
         """Upsert metadata-only row so empty pages are not forever "new"."""
         if not external_id:
@@ -309,12 +337,13 @@ class PgVectorStore(VectorStore):
                     DELETE FROM documents
                     WHERE org_id = %s::uuid
                       AND source_provider = %s
+                      AND workspace_id IS NOT DISTINCT FROM %s::uuid
                       AND (
                         source_external_id = %s
                         OR (source_uri = %s AND source_external_id IS NULL)
                       )
                     """,
-                    (org_id, provider, external_id, source_uri),
+                    (org_id, provider, workspace_id, external_id, source_uri),
                 )
             else:
                 conn.execute(
@@ -322,24 +351,31 @@ class PgVectorStore(VectorStore):
                     DELETE FROM documents
                     WHERE org_id = %s::uuid
                       AND source_provider = %s
+                      AND workspace_id IS NOT DISTINCT FROM %s::uuid
                       AND source_external_id = %s
                     """,
-                    (org_id, provider, external_id),
+                    (org_id, provider, workspace_id, external_id),
                 )
             row = conn.execute(
                 """
                 INSERT INTO documents (
                     org_id, title, source_uri, source_provider, source_external_id,
-                    source_last_modified
+                    source_last_modified, workspace_id
                 )
-                VALUES (%s::uuid, %s, %s, %s, %s, %s)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid)
                 RETURNING id
                 """,
-                (org_id, title, source_uri, provider, external_id, last_modified),
+                (org_id, title, source_uri, provider, external_id, last_modified, workspace_id),
             ).fetchone()
         return str(row[0])
 
-    def delete_source_documents(self, org_id: str, provider: str, external_ids: list[str]) -> int:
+    def delete_source_documents(
+        self,
+        org_id: str,
+        provider: str,
+        external_ids: list[str],
+        workspace_id: str | None = None,
+    ) -> int:
         if not external_ids:
             return 0
         with get_connection(self._settings) as conn:
@@ -348,10 +384,11 @@ class PgVectorStore(VectorStore):
                 DELETE FROM documents
                 WHERE org_id = %s::uuid
                   AND source_provider = %s
+                  AND workspace_id IS NOT DISTINCT FROM %s::uuid
                   AND source_external_id = ANY(%s)
                 RETURNING id
                 """,
-                (org_id, provider, list(external_ids)),
+                (org_id, provider, workspace_id, list(external_ids)),
             ).fetchall()
         return len(rows)
 

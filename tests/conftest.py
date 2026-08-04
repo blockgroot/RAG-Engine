@@ -24,6 +24,7 @@ from app.db import apply_schema, close_pool, get_connection  # noqa: E402
 from app.embeddings import build_embedding_provider  # noqa: E402
 from app.memory import build_conversation_store  # noqa: E402
 from app.rag import build_rag_pipeline, shutdown_summary_folds  # noqa: E402
+from app.rag.prompts import WORKSPACE_PROMPT_PROFILE  # noqa: E402
 from app.rag.retrieval import HybridRetriever  # noqa: E402
 from app.reranker import build_reranker  # noqa: E402
 from app.vectorstore import build_vector_store  # noqa: E402
@@ -103,6 +104,22 @@ def rag(embedder, store, retriever):
 
 
 @pytest.fixture(scope="session")
+def rag_workspace(embedder, store, retriever):
+    """Same shape as ``rag``, but built with ``WORKSPACE_PROMPT_PROFILE`` — for
+    ``WorkspaceAgent`` tests that need the real embedding/LLM/retrieval stack
+    (memory + web search OFF, same as ``rag``)."""
+    return build_rag_pipeline(
+        embedder=embedder,
+        store=store,
+        memory=None,
+        web_search=None,
+        retriever=retriever,
+        recovery_settings=_RECOVERY_OFF,
+        prompt_profile=WORKSPACE_PROMPT_PROFILE,
+    )
+
+
+@pytest.fixture(scope="session")
 def memory():
     """Conversation store (Postgres-backed)."""
     return build_conversation_store()
@@ -143,5 +160,18 @@ def org_cleanup():
         with get_connection() as conn:
             conn.execute(
                 "DELETE FROM organizations WHERE id = ANY(%s::uuid[])",
+                (created,),
+            )
+
+
+@pytest.fixture
+def whitelist_cleanup():
+    """Track emails added to owner_email_whitelist during a test and remove them after."""
+    created: list[str] = []
+    yield created
+    if created:
+        with get_connection() as conn:
+            conn.execute(
+                "DELETE FROM owner_email_whitelist WHERE email = ANY(%s::text[])",
                 (created,),
             )

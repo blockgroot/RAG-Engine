@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { AppShell } from "@/components/AppShell";
+import { PageHeader } from "@/components/PageHeader";
 import { useMe } from "@/lib/useMe";
 import { api, MemberRecord } from "@/lib/api";
 
@@ -50,31 +51,34 @@ export default function MembersPage() {
   return (
     <AppShell me={me} variant="admin">
       <main className="page-wide stack">
-        <div>
-          <p className="eyebrow">Admin</p>
-          <h1>Team members</h1>
-          <p className="muted">
-            Invite teammates by email. They get Ask access for your organization.
-          </p>
-        </div>
+        <PageHeader
+          eyebrow="Company"
+          title="People"
+          description="Invite people with their work email."
+        />
 
-        <form onSubmit={handleInvite} className="card stack" style={{ maxWidth: "480px" }}>
-          <div className="field">
-            <label htmlFor="email">Work email</label>
-            <input
-              id="email"
-              className="input"
-              type="email"
-              placeholder="teammate@company.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-            />
+        <section className="panel">
+          <div className="panel-head">
+            <h2>Invite</h2>
           </div>
-          <button className="button" type="submit">
-            Send invite
-          </button>
-        </form>
+          <form onSubmit={handleInvite} className="stack" style={{ maxWidth: "480px" }}>
+            <div className="field">
+              <label htmlFor="email">Work email</label>
+              <input
+                id="email"
+                className="input"
+                type="email"
+                placeholder="teammate@company.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+            </div>
+            <button className="button" type="submit" style={{ width: "fit-content" }}>
+              Send invite
+            </button>
+          </form>
+        </section>
 
         {error && <div className="banner banner-warn">{error}</div>}
         {message && <div className="banner banner-ok">{message}</div>}

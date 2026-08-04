@@ -78,11 +78,17 @@ class VectorStore(ABC):
         chunks: list[str],
         embeddings: list[list[float]],
         source_uri: str | None = None,
+        workspace_id: str | None = None,
     ) -> str:
         """Store a document and its chunk embeddings; return the ``document_id``.
 
         ``chunks`` and ``embeddings`` must be the same length and aligned by
         index. All rows are written under ``org_id``.
+
+        ``workspace_id`` (Workspace-within-a-Workspace): ``None`` (default)
+        stores an org-wide row, identical to every existing call site.
+        Non-``None`` scopes the row to that sub-workspace — it is written
+        alongside ``org_id``, never instead of it.
         """
         raise NotImplementedError
 
@@ -92,8 +98,19 @@ class VectorStore(ABC):
         org_id: str,
         query_embedding: list[float],
         top_k: int = 5,
+        workspace_id: str | None = None,
     ) -> list[RetrievedChunk]:
-        """Return the ``top_k`` most similar chunks *within ``org_id`` only*."""
+        """Return the ``top_k`` most similar chunks *within ``org_id`` only*.
+
+        ``workspace_id`` (Workspace-within-a-Workspace): ``None`` (default)
+        queries only org-wide chunks (rows with ``workspace_id IS NULL``) —
+        every existing call site is unaffected. A non-``None`` value queries
+        only that sub-workspace's chunks and NEVER also the org-wide ones —
+        a sub-workspace's answers must never silently blend in the parent
+        org's policy content (see CLAUDE.md's Workspace-within-a-Workspace
+        plan §0.3 for the reasoning). Always paired with ``org_id`` — never
+        resolved from ``workspace_id`` alone.
+        """
         raise NotImplementedError
 
     def list_chunk_texts(self, org_id: str) -> list[str]:
@@ -110,6 +127,7 @@ class VectorStore(ABC):
         query_text: str,
         query_embedding: list[float],
         top_k: int = 30,
+        workspace_id: str | None = None,
     ) -> list[RetrievedChunk]:
         """Full-text (BM25-style) search within ``org_id``, ordered by keyword
         relevance (Phase 6 hybrid retrieval).
@@ -121,7 +139,9 @@ class VectorStore(ABC):
         """
         raise NotImplementedError("this vector store does not support keyword search")
 
-    def list_source_documents(self, org_id: str, provider: str) -> list["StoredSourceDocument"]:
+    def list_source_documents(
+        self, org_id: str, provider: str, workspace_id: str | None = None
+    ) -> list["StoredSourceDocument"]:
         """Return ingested source-page metadata for incremental sync.
 
         Scoped to ``provider`` (e.g. ``"notion"``, ``"google"``) as well as
@@ -142,6 +162,7 @@ class VectorStore(ABC):
         embeddings: list[list[float]],
         source_uri: str | None = None,
         last_modified: "datetime | None" = None,
+        workspace_id: str | None = None,
     ) -> str:
         """Replace any prior copy of this source page, then store the new chunks.
 
@@ -161,6 +182,7 @@ class VectorStore(ABC):
         title: str,
         source_uri: str | None = None,
         last_modified: "datetime | None" = None,
+        workspace_id: str | None = None,
     ) -> str:
         """Record a source page with no chunks (empty / index-only after fetch).
 
@@ -171,9 +193,18 @@ class VectorStore(ABC):
             "this vector store does not support source document acknowledge"
         )
 
-    def delete_source_documents(self, org_id: str, provider: str, external_ids: list[str]) -> int:
+    def delete_source_documents(
+        self,
+        org_id: str,
+        provider: str,
+        external_ids: list[str],
+        workspace_id: str | None = None,
+    ) -> int:
         """Delete ingested pages by source external id, scoped to ``provider``.
 
-        Returns rows removed.
+        Returns rows removed. ``workspace_id`` scoping matters here too: a
+        workspace's personal Notion connection and the org's admin Notion
+        connection can both be ``provider="notion"``, so ``provider`` alone
+        cannot disambiguate their documents — ``workspace_id`` closes that gap.
         """
         raise NotImplementedError("this vector store does not support source document delete")

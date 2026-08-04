@@ -50,7 +50,7 @@ def test_detect_source_changes_metadata_only():
             raise AssertionError("detect must not fetch per-page")
 
     class FakeStore:
-        def list_source_documents(self, org_id: str, provider: str):
+        def list_source_documents(self, org_id: str, provider: str, workspace_id: str | None = None):
             assert provider == "notion"
             return [
                 StoredSourceDocument("1", "notion", "x", "X", None, _dt("2026-01-01T00:00:00")),
@@ -98,7 +98,7 @@ def test_detect_source_changes_partitions_by_provider():
                 "google": [],
             }
 
-        def list_source_documents(self, org_id: str, provider: str):
+        def list_source_documents(self, org_id: str, provider: str, workspace_id: str | None = None):
             return self._rows.get(provider, [])
 
     report = detect_source_changes(FakeAdapter(), "org", provider="google", store=FakeStore())
@@ -224,3 +224,71 @@ def test_google_sync_never_deletes_notion_documents(store, embedder, org_cleanup
 
     google_docs_after = store.list_source_documents(org_id, "google")
     assert google_docs_after == []
+
+
+@requires_db
+def test_workspace_scoped_sync_never_touches_org_wide_documents(store, embedder, org_cleanup):
+    """Workspace-within-a-Workspace: sync state is partitioned by workspace_id
+    the same way it's already partitioned by provider (see the test above).
+
+    Ingest an org-wide Notion doc and a workspace-scoped Notion doc for the
+    SAME provider in the same org, then re-sync the workspace with an empty
+    remote listing. It must remove only the workspace's own doc, never the
+    org-wide one -- mirroring the exact regression this file already proves
+    for providers.
+    """
+    from app.auth.users import create_admin
+    from app.workspaces import create_workspace
+
+    org_id = store.create_organization(f"Workspace Sync Isolation Org {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+    owner = create_admin(f"owner-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    workspace_id = create_workspace(org_id, "Meeting Notes", owner.id)
+
+    org_wide_id = f"orgwide-{uuid.uuid4().hex[:8]}"
+    workspace_page_id = f"workspace-{uuid.uuid4().hex[:8]}"
+
+    org_wide_adapter = _FakeAdapter(org_wide_id, "Org Policy Doc", "Employees get 20 days of PTO.")
+    workspace_adapter = _FakeAdapter(
+        workspace_page_id, "Meeting Notes Doc", "Q3 launch moved to October."
+    )
+
+    ingest_source(
+        org_wide_adapter,
+        org_id,
+        provider="notion",
+        embedder=embedder,
+        store=store,
+        contextual=SimpleNamespace(enabled=False),
+    )
+    ingest_source(
+        workspace_adapter,
+        org_id,
+        provider="notion",
+        embedder=embedder,
+        store=store,
+        contextual=SimpleNamespace(enabled=False),
+        workspace_id=workspace_id,
+    )
+
+    org_wide_before = store.list_source_documents(org_id, "notion")
+    assert {d.external_id for d in org_wide_before} == {org_wide_id}
+    workspace_before = store.list_source_documents(org_id, "notion", workspace_id=workspace_id)
+    assert {d.external_id for d in workspace_before} == {workspace_page_id}
+
+    # Re-sync the WORKSPACE with nothing remote -- must remove only its own doc.
+    result = ingest_source(
+        _EmptyAdapter(),
+        org_id,
+        provider="notion",
+        embedder=embedder,
+        store=store,
+        contextual=SimpleNamespace(enabled=False),
+        workspace_id=workspace_id,
+    )
+    assert result.documents_removed == 1
+
+    org_wide_after = store.list_source_documents(org_id, "notion")
+    assert {d.external_id for d in org_wide_after} == {org_wide_id}
+    workspace_after = store.list_source_documents(org_id, "notion", workspace_id=workspace_id)
+    assert workspace_after == []

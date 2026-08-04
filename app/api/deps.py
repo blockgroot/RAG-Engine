@@ -13,8 +13,9 @@ from functools import lru_cache
 
 from fastapi import Depends, HTTPException, Request
 
-from ..agent import build_policy_agent
+from ..agent import build_policy_agent, build_workspace_agent
 from ..agent.policy_agent import PolicyAgent
+from ..agent.workspace_agent import WorkspaceAgent
 from ..auth.session import SessionClaims, decode_session_token
 from ..core.exceptions import AuthError
 from ..db.connection import get_connection
@@ -34,6 +35,18 @@ def get_policy_agent() -> PolicyAgent:
     builds it once per session rather than once per turn.
     """
     return build_policy_agent()
+
+
+@lru_cache(maxsize=1)
+def get_workspace_agent() -> WorkspaceAgent:
+    """Process-wide singleton ``WorkspaceAgent`` (Workspace-within-a-Workspace).
+
+    A second, independent pipeline from ``get_policy_agent`` (own prompt
+    framing + fallback string, web-search off) — see
+    ``app/agent/workspace_agent.py``. Still built once per process like the
+    policy agent, for the same reason (embedding/reranker model load cost).
+    """
+    return build_workspace_agent()
 
 
 @lru_cache(maxsize=1)
@@ -79,3 +92,31 @@ def require_admin(session: SessionClaims = Depends(get_session)) -> SessionClaim
     if session.role != "admin":
         raise HTTPException(status_code=403, detail="Admin role required")
     return session
+
+
+def get_workspace_role(
+    workspace_id: str,
+    session: SessionClaims = Depends(get_session),
+) -> str:
+    """Resolve + validate workspace membership; return the caller's role.
+
+    Mirrors ``require_admin``'s shape but for the workspace boundary
+    (Workspace-within-a-Workspace) — the ONE place a ``workspace_id`` from a
+    URL path is checked against the session's ``org_id`` + ``user_id`` before
+    any router uses it. ``assert_member`` also checks the workspace's own
+    ``org_id`` against the caller's, so a stale/forged ``workspace_id`` from a
+    different org fails closed here rather than resolving to real data.
+    """
+    from ..core.exceptions import AuthError
+    from ..workspaces import assert_member
+
+    try:
+        return assert_member(workspace_id, session.org_id, session.user_id)
+    except AuthError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def require_workspace_owner(role: str = Depends(get_workspace_role)) -> str:
+    if role != "owner":
+        raise HTTPException(status_code=403, detail="Workspace owner role required")
+    return role

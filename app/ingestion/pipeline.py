@@ -69,6 +69,7 @@ def detect_source_changes(
     *,
     provider: str,
     store: VectorStore | None = None,
+    workspace_id: str | None = None,
 ) -> ChangeReport:
     """Compare remote page metadata to stored rows — no content download.
 
@@ -77,11 +78,16 @@ def detect_source_changes(
     ``provider`` (e.g. ``"notion"``, ``"google"``) must be supplied by the
     caller from the connection's known provider, never inferred — sync state
     is partitioned per provider so a Google sync never diffs against Notion's
-    rows in the same org (see CLAUDE.md §4).
+    rows in the same org (see CLAUDE.md §4). ``workspace_id`` (Workspace-
+    within-a-Workspace): ``None`` (default) diffs the org-wide documents,
+    unchanged; a sub-workspace's documents are diffed independently.
     """
     store = store or build_vector_store()
     refs = adapter.list_documents()
-    stored = {d.external_id: d for d in store.list_source_documents(org_id, provider)}
+    stored = {
+        d.external_id: d
+        for d in store.list_source_documents(org_id, provider, workspace_id=workspace_id)
+    }
 
     new_n = updated_n = unchanged_n = 0
     live_ids: set[str] = set()
@@ -147,13 +153,20 @@ def ingest_source(
     llm: LLMProvider | None = None,
     contextual: ContextualSettings | None = None,
     incremental: bool = True,
+    workspace_id: str | None = None,
 ) -> IngestResult:
     """Ingest documents from ``adapter`` into ``org_id``.
 
     ``provider`` (e.g. ``"notion"``, ``"google"``) must be supplied by the
     caller from the connection's known provider, never inferred — sync state
     is partitioned per provider so a Google sync never diffs against Notion's
-    rows in the same org (see CLAUDE.md §4).
+    rows in the same org (see CLAUDE.md §4). ``workspace_id`` (Workspace-
+    within-a-Workspace): ``None`` (default) ingests into the org-wide space,
+    unchanged from every prior caller; a non-``None`` value scopes the
+    fetched documents+chunks to that sub-workspace only, and sync state
+    (new/updated/removed) is diffed independently per workspace — mirroring
+    exactly how ``provider`` already partitions sync state so Google and
+    Notion never diff against each other's rows.
 
     With ``incremental=True`` (default): only new/changed pages are fetched and
     upserted; unchanged pages are skipped; pages gone from the source are
@@ -167,7 +180,10 @@ def ingest_source(
         llm = build_aux_llm_provider()
 
     refs = adapter.list_documents()
-    stored = {d.external_id: d for d in store.list_source_documents(org_id, provider)}
+    stored = {
+        d.external_id: d
+        for d in store.list_source_documents(org_id, provider, workspace_id=workspace_id)
+    }
 
     if incremental:
         to_add, to_update, removed_ids, unchanged = _plan_refs(refs, stored)
@@ -178,7 +194,11 @@ def ingest_source(
         removed_ids = [eid for eid in stored if eid not in live_ids]
         unchanged = 0
 
-    removed_n = store.delete_source_documents(org_id, provider, removed_ids) if removed_ids else 0
+    removed_n = (
+        store.delete_source_documents(org_id, provider, removed_ids, workspace_id=workspace_id)
+        if removed_ids
+        else 0
+    )
 
     chunks_total = 0
     skipped = 0
@@ -199,6 +219,7 @@ def ingest_source(
                 title=doc.title,
                 source_uri=doc.source_uri,
                 last_modified=doc.last_modified or ref.last_modified,
+                workspace_id=workspace_id,
             )
             skipped += 1
             continue
@@ -216,6 +237,7 @@ def ingest_source(
             embeddings=embeddings,
             source_uri=doc.source_uri,
             last_modified=doc.last_modified or ref.last_modified,
+            workspace_id=workspace_id,
         )
         doc_ids.append(document_id)
         chunks_total += len(chunks)

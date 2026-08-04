@@ -31,9 +31,9 @@ function pickDisplayJob(
 
 function syncCompleteMessage(docCount: number | null | undefined): string {
   if (docCount != null) {
-    return `Sync complete — ${docCount} policy document${docCount === 1 ? "" : "s"} ready. You can ask questions now.`;
+    return `You’re ready — ${docCount} policy document${docCount === 1 ? "" : "s"} loaded. Start asking anytime.`;
   }
-  return "Sync complete — your policies are ready. You can ask questions now.";
+  return "You’re ready — your policies are loaded. Start asking anytime.";
 }
 
 function OnboardingInner() {
@@ -292,9 +292,9 @@ function OnboardingInner() {
           <p className="eyebrow">
             Welcome{effectiveMe.org_name ? ` to ${effectiveMe.org_name}` : ""}
           </p>
-          <h1>Set up your policy portal</h1>
+          <h1>Welcome — let’s get you set up</h1>
           <p className="muted">
-            Connect Notion or Google Drive, sync your policies, then invite your team.
+            Connect where your policies live, bring them in, then invite your team.
           </p>
         </div>
 
@@ -303,9 +303,9 @@ function OnboardingInner() {
 
         {step === 1 && (
           <section className="card stack">
-            <h2>1. Connect a policy source</h2>
+            <h2>1. Connect your policies</h2>
             <p className="muted">
-              Connect the workspace or Drive folder that holds your company policies.
+              Choose Notion or Google Drive — whichever already holds your company policies.
             </p>
             <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
               <a className="button" href={api.connectUrl("notion")}>
@@ -320,14 +320,14 @@ function OnboardingInner() {
 
         {step === 2 && (
           <section className="card stack">
-            <h2>2. Sync policies</h2>
+            <h2>2. Bring your policies in</h2>
             <p className="muted">
               {primary?.external_workspace_name
                 ? `Connected to “${primary.external_workspace_name}” (${providerLabel}). `
                 : `${providerLabel} is connected. `}
               {needsFolder
-                ? "Choose a Drive folder before syncing."
-                : "Sync all shared policy pages, then wait here until it finishes."}
+                ? "Choose a Drive folder before continuing."
+                : "Bring in the shared policy pages, then wait here until it finishes."}
             </p>
 
             {needsFolder && (
@@ -359,9 +359,9 @@ function OnboardingInner() {
                 <div className="sync-wait-row">
                   <span className="sync-spinner" aria-hidden />
                   <div>
-                    <strong>Syncing your policies…</strong>
+                    <strong>Bringing your policies in…</strong>
                     <p className="muted" style={{ margin: "0.35rem 0 0" }}>
-                      This can take a few minutes. Keep this page open until sync completes.
+                      This can take a few minutes. Keep this page open until it finishes.
                     </p>
                   </div>
                 </div>
@@ -384,8 +384,8 @@ function OnboardingInner() {
                   : displayJob?.status === "failed"
                     ? "Try again"
                     : displayJob
-                      ? "Sync again"
-                      : "Start sync"}
+                      ? "Try again"
+                      : "Bring them in"}
               </button>
             )}
           </section>
@@ -394,11 +394,11 @@ function OnboardingInner() {
         {step === 3 && (
           <section className="card stack">
             <div className="banner banner-ok">
-              <strong>Sync complete</strong>
+              <strong>You’re ready</strong>
               <p style={{ margin: "0.4rem 0 0" }}>
                 {docCount != null
-                  ? `${docCount} policy document${docCount === 1 ? "" : "s"} ready. You can ask questions now.`
-                  : "Your policies are ready. You can ask questions now."}
+                  ? `${docCount} policy document${docCount === 1 ? "" : "s"} loaded. Start asking anytime.`
+                  : "Your policies are loaded. Start asking anytime."}
               </p>
             </div>
 
@@ -408,12 +408,12 @@ function OnboardingInner() {
               onClick={() => router.push("/chat")}
               disabled={!isSetupComplete(effectiveMe)}
             >
-              Go to Ask →
+              Start asking →
             </button>
 
             <div className="invite-section">
-              <h2>Invite your team</h2>
-              <p className="muted">Optional — send a sign-in link by email.</p>
+              <h2>Invite your teammates</h2>
+              <p className="muted">Optional — we’ll email them a sign-in link.</p>
               <form onSubmit={handleInvite} className="invite-form">
                 <div className="field">
                   <label htmlFor="invite">Work email</label>

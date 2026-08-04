@@ -62,8 +62,16 @@ class HybridRetriever:
         *,
         extra_queries: list[tuple[str, list[float]]] | None = None,
         rerank_query: str | None = None,
+        workspace_id: str | None = None,
     ) -> RetrievalResult:
-        """Retrieve for ``query_text``; optionally fuse extra (sub-)queries first."""
+        """Retrieve for ``query_text``; optionally fuse extra (sub-)queries first.
+
+        ``workspace_id`` (Workspace-within-a-Workspace): ``None`` (default)
+        retrieves only org-wide chunks, unchanged from every prior call site.
+        Non-``None`` retrieves only that sub-workspace's chunks — passed
+        straight through to the store, never widened to also include the
+        org-wide space (see CLAUDE.md's Workspace-within-a-Workspace plan).
+        """
         top_k = self._rag_settings.top_k
         pool = self._settings.candidate_pool
         rerank_q = rerank_query or query_text
@@ -74,7 +82,9 @@ class HybridRetriever:
 
         ranked_lists: list[list[RetrievedChunk]] = []
         for q_text, q_vec in query_pairs:
-            ranked_lists.append(self._first_stage(org_id, q_text, q_vec, pool))
+            ranked_lists.append(
+                self._first_stage(org_id, q_text, q_vec, pool, workspace_id=workspace_id)
+            )
 
         if len(ranked_lists) == 1:
             candidates = ranked_lists[0]
@@ -95,14 +105,22 @@ class HybridRetriever:
         return RetrievalResult(hits=final, gate_score=gate_score)
 
     def _first_stage(
-        self, org_id: str, query_text: str, query_embedding: list[float], pool: int
+        self,
+        org_id: str,
+        query_text: str,
+        query_embedding: list[float],
+        pool: int,
+        *,
+        workspace_id: str | None = None,
     ) -> list[RetrievedChunk]:
-        vec_hits = self._store.query(org_id, query_embedding, top_k=pool)
+        vec_hits = self._store.query(
+            org_id, query_embedding, top_k=pool, workspace_id=workspace_id
+        )
 
         if self._settings.hybrid_enabled:
             try:
                 kw_hits = self._store.keyword_search(
-                    org_id, query_text, query_embedding, top_k=pool
+                    org_id, query_text, query_embedding, top_k=pool, workspace_id=workspace_id
                 )
             except NotImplementedError:
                 kw_hits = []
