@@ -9,8 +9,8 @@ const outfit = Outfit({
 });
 
 export const metadata: Metadata = {
-  title: "Policy Portal",
-  description: "Get clear answers from your company’s own policy documents.",
+  title: "Folio",
+  description: "Ask questions grounded in your own documents.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

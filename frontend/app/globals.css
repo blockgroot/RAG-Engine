@@ -494,7 +494,7 @@ form.card:hover { transform: none; }
   pointer-events: none;
 }
 .auth-stage::after {
-  content: "Answers grounded in your own documents";
+  content: "Ask across your docs — policies, notes, and more";
   position: absolute;
   left: 2.5rem;
   bottom: 2.5rem;

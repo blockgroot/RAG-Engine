@@ -28,8 +28,8 @@ export function AppShell({
         <Link href={homeHref} className="brand">
           <span className="brand-mark" aria-hidden />
           <span className="brand-text">
-            <span className="brand-name">Policy Portal</span>
-            <span className="brand-tag">Policy Q&A</span>
+            <span className="brand-name">Folio</span>
+            <span className="brand-tag">Ask your documents</span>
           </span>
         </Link>
 
