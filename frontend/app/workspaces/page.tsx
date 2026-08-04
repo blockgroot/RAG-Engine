@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
+import { PageHeader } from "@/components/PageHeader";
 import { useMe } from "@/lib/useMe";
 import { api, WorkspaceRecord } from "@/lib/api";
 
@@ -36,7 +37,7 @@ export default function WorkspacesPage() {
       ]);
       setName("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not create the workspace.");
+      setError(err instanceof Error ? err.message : "Couldn’t create that space. Try again.");
     } finally {
       setCreating(false);
     }
@@ -53,59 +54,58 @@ export default function WorkspacesPage() {
   return (
     <AppShell me={me} variant="app">
       <main className="page-wide stack">
-        <div>
-          <p className="eyebrow">Workspace within a workspace</p>
-          <h1>My Workspaces</h1>
-          <p className="muted">
-            Create a personal space for a specific topic — like meeting notes — invite a
-            few colleagues, and connect a Notion page or Drive folder just for them.
-            Questions asked in a workspace are answered only from that workspace&rsquo;s own
-            content, never the rest of your organization&rsquo;s policies.
-          </p>
-        </div>
+        <PageHeader
+          eyebrow="Spaces"
+          title="Your team spaces"
+          description="Private rooms for project notes — separate from company policies."
+        />
 
-        <form onSubmit={handleCreate} className="card stack" style={{ maxWidth: 480 }}>
-          <div className="field">
-            <label htmlFor="workspace-name">New workspace name</label>
-            <input
-              id="workspace-name"
-              className="input"
-              type="text"
-              placeholder="e.g. Q3 Planning Meeting Notes"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              disabled={creating}
-            />
+        <section className="panel">
+          <div className="panel-head">
+            <h2>New space</h2>
           </div>
-          {error && <div className="banner banner-warn">{error}</div>}
-          <button className="button" type="submit" disabled={creating || !name.trim()}>
-            {creating ? "Creating…" : "Create workspace"}
-          </button>
-        </form>
+          <form onSubmit={handleCreate} className="stack" style={{ maxWidth: 480 }}>
+            <div className="field">
+              <label htmlFor="workspace-name">Name</label>
+              <input
+                id="workspace-name"
+                className="input"
+                type="text"
+                placeholder="e.g. Q3 planning notes"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                disabled={creating}
+              />
+            </div>
+            {error && <div className="banner banner-warn">{error}</div>}
+            <button className="button" type="submit" disabled={creating || !name.trim()} style={{ width: "fit-content" }}>
+              {creating ? "Creating…" : "Create space"}
+            </button>
+          </form>
+        </section>
 
-        <div className="stack">
+        <section className="stack">
+          <div className="panel-head" style={{ marginBottom: 0 }}>
+            <h2>Your spaces</h2>
+          </div>
           {loadingList ? (
-            <p className="muted">Loading your workspaces…</p>
+            <p className="muted">Loading your spaces…</p>
           ) : workspaces.length === 0 ? (
-            <p className="muted">You&rsquo;re not in any workspaces yet — create one above.</p>
+            <p className="muted">No spaces yet — create one above to get started.</p>
           ) : (
-            workspaces.map((w) => (
-              <Link key={w.id} href={`/workspaces/${w.id}`} className="card" style={{ display: "block" }}>
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    gap: "1rem",
-                  }}
-                >
-                  <h3 style={{ fontSize: "1.05rem" }}>{w.name}</h3>
-                  <span className="badge">{w.role === "owner" ? "Owner" : "Member"}</span>
-                </div>
-              </Link>
-            ))
+            <div className="tile-grid">
+              {workspaces.map((w) => (
+                <Link key={w.id} href={`/workspaces/${w.id}`} className="workspace-tile">
+                  <div className="workspace-tile-top">
+                    <h3>{w.name}</h3>
+                    <span className="badge">{w.role === "owner" ? "Owner" : "Member"}</span>
+                  </div>
+                  <span className="workspace-tile-cta">Open →</span>
+                </Link>
+              ))}
+            </div>
           )}
-        </div>
+        </section>
       </main>
     </AppShell>
   );

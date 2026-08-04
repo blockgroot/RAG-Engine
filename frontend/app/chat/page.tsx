@@ -211,34 +211,29 @@ function ChatPageInner() {
             <p className="eyebrow">Not ready yet</p>
             <h1>
               {workspaceId
-                ? "This workspace is still setting up"
-                : "Your organization is still setting up"}
+                ? "This space isn’t ready yet"
+                : "Your company isn’t ready yet"}
             </h1>
             {workspaceId ? (
               <p className="muted">
-                The workspace owner needs to connect a source and finish syncing before you can ask
-                questions here. This page updates automatically — no refresh needed.
+                The owner still needs to connect documents and finish the first refresh. This page
+                updates on its own.
               </p>
             ) : me.role === "admin" ? (
               <p className="muted">
-                Finish connecting a policy source and syncing in setup. You&rsquo;ll be redirected
-                automatically when documents are ready.
+                Finish connecting your policies in setup. We’ll bring you here automatically when
+                they’re ready.
               </p>
             ) : (
               <p className="muted">
-                An admin needs to connect your company&rsquo;s policy documents before you can ask
-                questions. This page updates automatically — no refresh needed.
+                An admin still needs to connect your company policies. This page updates on its own.
               </p>
             )}
             <div className="pulse-dot" aria-hidden />
             <p className="muted" style={{ fontSize: "0.85rem" }}>
               {syncing
-                ? workspaceId
-                  ? "Sync in progress — Ask unlocks when this workspace's content is ingested…"
-                  : "Sync in progress — Ask unlocks when every policy page is ingested…"
-                : workspaceId
-                  ? "Waiting for a completed workspace sync…"
-                  : "Waiting for a completed policy sync…"}
+                ? "Refreshing documents — Ask unlocks when they’re ready…"
+                : "Waiting for the first refresh to finish…"}
             </p>
           </div>
         </main>
@@ -252,8 +247,8 @@ function ChatPageInner() {
         {justSynced && (
           <div className="banner banner-ok" style={{ margin: "0 0 1rem" }}>
             {workspaceId
-              ? "Sync complete — this workspace is ready. You can ask questions now."
-              : "Sync complete — all policies are ready. You can ask questions now."}
+              ? "You’re all set — this space is ready for questions."
+              : "You’re all set — company policies are ready for questions."}
           </div>
         )}
         {messages.length === 0 ? (
@@ -261,8 +256,8 @@ function ChatPageInner() {
             <h1>Ask a question</h1>
             <p className="muted">
               {workspaceId
-                ? "Ask anything about the content connected to this workspace."
-                : "Ask anything about your company’s policies — leave, benefits, remote work, and more."}
+                ? "Ask about the notes and docs connected to this space."
+                : "Ask about leave, benefits, remote work, and more — answers come from your company policies."}
             </p>
             {!workspaceId && (
               <div className="suggested-chips">
@@ -285,7 +280,7 @@ function ChatPageInner() {
           <input
             className="chat-composer-input"
             placeholder={
-              workspaceId ? "Ask a question about this workspace…" : "Ask about leave, benefits, remote work…"
+              workspaceId ? "Ask something about this space…" : "Ask about leave, benefits, remote work…"
             }
             value={input}
             onChange={(e) => setInput(e.target.value)}

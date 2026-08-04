@@ -37,7 +37,7 @@ export default function SignupPage() {
           </span>
         </div>
         <p className="eyebrow">Get started</p>
-        <h1>Create your organization</h1>
+        <h1>Set up your company</h1>
         <p className="muted">
           You&rsquo;ll be the admin. Next: connect Notion, sync policies, invite your team.
         </p>

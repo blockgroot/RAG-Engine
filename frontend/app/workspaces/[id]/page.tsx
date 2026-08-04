@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
+import { PageHeader } from "@/components/PageHeader";
 import { ConnectionCard } from "@/components/ConnectionCard";
 import { useMe } from "@/lib/useMe";
 import {
@@ -30,11 +31,9 @@ function latestJobByConnection(jobs: JobRecord[]): Record<string, JobRecord> {
 
 function updateCompleteMessage(docCount: number | null | undefined): string {
   if (docCount != null && docCount > 0) {
-    return `Sync complete — ${docCount} page${
-      docCount === 1 ? "" : "s"
-    } updated. Ask can use this workspace's content now.`;
+    return `Updated · ${docCount} page${docCount === 1 ? "" : "s"}`;
   }
-  return "Sync complete — this workspace already matched the source. Nothing needed rewriting.";
+  return "Already up to date";
 }
 
 export default function WorkspaceDetailPage() {
@@ -172,7 +171,7 @@ export default function WorkspaceDetailPage() {
             bannerRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
           });
         } else if (curr === "failed") {
-          setError(job.error || "Update failed. Please try again.");
+          setError(job.error || "Update didn’t finish. Please try again.");
           setMessage(null);
         }
       }
@@ -204,7 +203,7 @@ export default function WorkspaceDetailPage() {
     const latest = latestJobByConnection(jobs)[connectionId];
     if (latest && ACTIVE_STATUSES.has(latest.status)) return;
     setError(null);
-    setMessage("Updating changed content… Keep this page open — we'll confirm when it's done.");
+    setMessage("Updating…");
     try {
       const { job_id } = await api.triggerWorkspaceIngest(workspaceId, connectionId);
       setWatchedJobId(job_id);
@@ -252,67 +251,62 @@ export default function WorkspaceDetailPage() {
   return (
     <AppShell me={me} variant="app">
       <main className="page-wide stack">
-        <div>
-          <p className="eyebrow">Workspace</p>
-          <h1>{workspace?.name || "…"}</h1>
-          <p className="muted">
-            Ask questions here and they&rsquo;re answered only from this workspace&rsquo;s own
-            content — never the rest of your organization&rsquo;s policies.
-          </p>
-        </div>
+        <PageHeader
+          eyebrow="Space"
+          title={workspace?.name || "…"}
+          description="Answers come only from this space’s docs."
+          actions={
+            readyToAsk ? (
+              <Link href={`/chat?workspace=${workspaceId}`} className="button">
+                Ask →
+              </Link>
+            ) : undefined
+          }
+        />
 
         {message && (
           <div
             ref={bannerRef}
             className={
-              message.startsWith("Sync complete") ? "banner banner-ok" : "banner banner-wait"
+              message.startsWith("Updating") ? "banner banner-wait" : "banner banner-ok"
             }
             role="status"
             aria-live="polite"
           >
-            {message.startsWith("Sync complete") ? (
-              <>
-                <strong>Update finished</strong>
-                <p style={{ margin: "0.35rem 0 0" }}>{message}</p>
-              </>
-            ) : (
-              message
-            )}
+            {message}
           </div>
         )}
         {error && <div className="banner banner-warn">{error}</div>}
 
-        {readyToAsk ? (
-          <Link href={`/chat?workspace=${workspaceId}`} className="button" style={{ width: "fit-content" }}>
-            Ask in this workspace →
-          </Link>
-        ) : (
+        {!readyToAsk && (
           <div className="banner banner-wait" role="status">
-            <strong>Ask unlocks after the first sync</strong>
+            <strong>Not ready to ask yet</strong>
             <p className="muted" style={{ margin: "0.35rem 0 0" }}>
               {workspace?.sync_in_progress
-                ? "Sync in progress — this page updates automatically when content is ready."
+                ? "Still importing documents…"
                 : isOwner
-                  ? "Connect a source below and run Update policies once. Then you can ask questions here."
-                  : "Waiting for the workspace owner to connect a source and finish syncing."}
+                  ? "Connect a source below, then update once."
+                  : "Waiting on the owner to connect documents."}
             </p>
           </div>
         )}
 
-        <div className="card stack">
-          <h3 style={{ fontSize: "1.05rem" }}>Members</h3>
-          <div className="stack" style={{ gap: "0.4rem" }}>
+        <section className="panel stack">
+          <div className="panel-head">
+            <h2>People in this space</h2>
+          </div>
+          <div className="stack" style={{ gap: "0.45rem" }}>
             {members.map((m) => (
-              <div key={m.email} style={{ display: "flex", justifyContent: "space-between" }}>
+              <div key={m.email} style={{ display: "flex", justifyContent: "space-between", gap: "1rem" }}>
                 <span>{m.email}</span>
                 <span className="badge">{m.role === "owner" ? "Owner" : "Member"}</span>
               </div>
             ))}
           </div>
           {isOwner && (
-            <form onSubmit={handleInvite} className="stack" style={{ marginTop: "0.5rem" }}>
+            <form onSubmit={handleInvite} className="stack" style={{ marginTop: "0.35rem" }}>
               <div className="field">
-                <label htmlFor="invite-email">Invite a colleague (must already be in your org)</label>
+                <label htmlFor="invite-email">Invite by email</label>
                 <input
                   id="invite-email"
                   className="input"
@@ -331,19 +325,22 @@ export default function WorkspaceDetailPage() {
                 disabled={inviting || !inviteEmail.trim()}
                 style={{ width: "fit-content" }}
               >
-                {inviting ? "Inviting…" : "Invite"}
+                {inviting ? "Sending…" : "Send invite"}
               </button>
             </form>
           )}
-        </div>
+        </section>
 
         {isOwner ? (
-          <div className="stack">
-            <h3 style={{ fontSize: "1.05rem" }}>Connect this workspace&rsquo;s source</h3>
-            <p className="muted" style={{ marginTop: "-0.5rem" }}>
-              Connect your own Notion page or Drive folder (e.g. meeting notes) — only you,
-              as the workspace owner, can connect or change this.
-            </p>
+          <section className="stack">
+            <div className="panel-head" style={{ marginBottom: 0 }}>
+              <div>
+                <h2>Documents for this space</h2>
+                <p className="muted" style={{ marginTop: "0.35rem" }}>
+                  Where this space gets its answers.
+                </p>
+              </div>
+            </div>
             {PROVIDERS.map((provider) => {
               const connection = connections.find((c) => c.provider === provider);
               return (
@@ -365,9 +362,9 @@ export default function WorkspaceDetailPage() {
                 />
               );
             })}
-          </div>
+          </section>
         ) : (
-          <p className="muted">Only the workspace owner can connect or change its source.</p>
+          <p className="muted">Only the owner can connect or change documents for this space.</p>
         )}
       </main>
     </AppShell>

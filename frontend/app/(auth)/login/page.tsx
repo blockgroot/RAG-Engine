@@ -37,7 +37,7 @@ export default function LoginPage() {
         </div>
         <p className="eyebrow">Welcome back</p>
         <h1>Sign in</h1>
-        <p className="muted">Use your work email — we&rsquo;ll send a one-time link. No password.</p>
+        <p className="muted">Enter your work email and we&rsquo;ll send a one-time sign-in link. No password needed.</p>
 
         {submitted ? (
           <div className="card stack">

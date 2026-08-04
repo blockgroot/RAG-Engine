@@ -18,6 +18,29 @@ const SOURCE_NOUN: Record<string, string> = {
 
 const ACTIVE = new Set(["queued", "running"]);
 
+function friendlyWhen(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const now = new Date();
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  if (sameDay) return `today at ${time}`;
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  const wasYesterday =
+    d.getFullYear() === yesterday.getFullYear() &&
+    d.getMonth() === yesterday.getMonth() &&
+    d.getDate() === yesterday.getDate();
+  if (wasYesterday) return `yesterday at ${time}`;
+  const date = d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return `${date} at ${time}`;
+}
+
+
 /**
  * Provider card: connected sources no longer show a blunt "Sync now" that
  * re-dumps everything. Instead we surface a change notice when remote pages
@@ -139,33 +162,25 @@ export function ConnectionCard({
       >
         <h3 style={{ fontSize: "1.05rem" }}>{PROVIDER_LABELS[provider]}</h3>
         {connection ? (
-          <span className="badge badge-verified">Connected</span>
+          <span className="badge badge-verified">Linked</span>
         ) : (
-          <span className="badge">{available ? "Not connected" : "Coming soon"}</span>
+          <span className="badge">{available ? "Not linked yet" : "Coming soon"}</span>
         )}
       </div>
 
       {connection && (
-        <p className="muted" style={{ marginTop: "0.4rem" }}>
-          {connection.external_workspace_name || "Connected workspace"} · since{" "}
-          {new Date(connection.created_at).toLocaleDateString()}
-        </p>
-      )}
-
-      {connection && provider === "google" && folderConfigured && (
-        <p className="muted" style={{ marginTop: "0.4rem" }}>
-          Syncing folder:{" "}
-          <strong style={{ color: "inherit", fontWeight: 600 }}>
-            {connection.source_config?.folder_name || connection.source_config?.folder_id}
-          </strong>
+        <p className="muted" style={{ marginTop: "0.35rem" }}>
+          {connection.external_workspace_name || "Connected"}
+          {provider === "google" && folderConfigured
+            ? ` · ${connection.source_config?.folder_name || "Drive folder"}`
+            : ""}
         </p>
       )}
 
       {needsFolder && (
         <form onSubmit={handleSaveFolder} className="stack" style={{ marginTop: "0.9rem" }}>
           <p className="muted" style={{ margin: 0 }}>
-            Search for a folder from this Google account, or paste a Drive folder URL
-            directly. Only Google Docs under that folder will be ingested.
+            Choose a Drive folder to use.
           </p>
           <div className="field" style={{ position: "relative" }}>
             <label htmlFor={`folder-${provider}`}>Folder</label>
@@ -175,7 +190,7 @@ export function ConnectionCard({
               type="text"
               required
               autoComplete="off"
-              placeholder="Search your Drive folders, or paste a folder URL…"
+              placeholder="Search folders or paste a link…"
               value={folderUrl}
               onChange={(e) => setFolderUrl(e.target.value)}
               onFocus={() => setDropdownOpen(true)}
@@ -189,7 +204,7 @@ export function ConnectionCard({
                 )}
                 {!searchingFolders && !folderSearchError && folderResults.length === 0 && (
                   <div className="folder-dropdown-status">
-                    No matching folders — you can still paste a folder URL and save.
+                    No matches — paste a folder link instead.
                   </div>
                 )}
                 {!searchingFolders &&
@@ -219,58 +234,41 @@ export function ConnectionCard({
       {lastJob && (
         <p
           className="muted"
-          style={{ marginTop: "0.4rem", display: "flex", alignItems: "center", gap: "0.5rem" }}
+          style={{ marginTop: "0.55rem", display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
         >
           <JobStatusBadge status={lastJob.status} />
           {ACTIVE.has(lastJob.status)
-            ? "Updating changed policies…"
+            ? "Updating…"
             : lastJob.status === "succeeded"
-              ? `Last sync completed ${
-                  lastJob.finished_at
-                    ? new Date(lastJob.finished_at).toLocaleString()
-                    : new Date(lastJob.created_at).toLocaleString()
-                }${
-                  lastJob.doc_count != null && lastJob.doc_count > 0
-                    ? ` · ${lastJob.doc_count} page${lastJob.doc_count === 1 ? "" : "s"} refreshed`
-                    : " · already up to date"
-                }`
+              ? (() => {
+                  const when = friendlyWhen(lastJob.finished_at || lastJob.created_at);
+                  const count = lastJob.doc_count;
+                  if (count != null && count > 0) {
+                    return `${when} · ${count} page${count === 1 ? "" : "s"}`;
+                  }
+                  return when;
+                })()
               : lastJob.status === "failed"
-                ? lastJob.error || "Update failed"
+                ? "Update failed — try again"
                 : null}
         </p>
       )}
 
       {connection && !needsFolder && needsUpdate && !syncInProgress && (
-        <div className="banner banner-wait" style={{ marginTop: "0.9rem" }}>
-          <strong>We noticed changes in your policies</strong>
-          <p className="muted" style={{ margin: "0.35rem 0 0" }}>
-            {[
-              changes!.new_count > 0 ? `${changes!.new_count} new` : null,
-              changes!.updated_count > 0 ? `${changes!.updated_count} updated` : null,
-              changes!.removed_count > 0 ? `${changes!.removed_count} removed` : null,
-            ]
-              .filter(Boolean)
-              .join(" · ")}
-            . Only those pages will be refreshed — nothing is duplicated.
-          </p>
-        </div>
-      )}
-
-      {connection && !needsFolder && !needsUpdate && !syncInProgress && !checkingChanges && (
-        <p className="muted" style={{ marginTop: "0.75rem" }}>
-          Policies look up to date
-          {changes != null
-            ? ` (${changes.unchanged_count} page${
-                changes.unchanged_count === 1 ? "" : "s"
-              } match ${SOURCE_NOUN[provider] || "source"})`
-            : ""}
-          . Re-sync can be done if any new changes were made to the policies.
+        <p className="muted" style={{ marginTop: "0.65rem" }}>
+          {[
+            changes!.new_count > 0 ? `${changes!.new_count} new` : null,
+            changes!.updated_count > 0 ? `${changes!.updated_count} edited` : null,
+            changes!.removed_count > 0 ? `${changes!.removed_count} removed` : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
         </p>
       )}
 
       {connection && checkingChanges && (
-        <p className="muted" style={{ marginTop: "0.75rem" }}>
-          Checking for policy updates…
+        <p className="muted" style={{ marginTop: "0.65rem" }}>
+          Checking…
         </p>
       )}
 
@@ -290,7 +288,7 @@ export function ConnectionCard({
             onClick={() => onUpdate(connection.id)}
             disabled={syncInProgress}
           >
-            {syncInProgress ? "Updating…" : "Update policies"}
+            {syncInProgress ? "Updating…" : "Update"}
           </button>
         )}
         {connection && !needsFolder && !syncInProgress && onCheckAgain && (
@@ -300,7 +298,7 @@ export function ConnectionCard({
             onClick={onCheckAgain}
             disabled={checkingChanges}
           >
-            {checkingChanges ? "Checking…" : "Check for updates"}
+            {checkingChanges ? "Checking…" : "Check"}
           </button>
         )}
       </div>
