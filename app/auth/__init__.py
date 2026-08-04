@@ -33,6 +33,14 @@ from .users import (
     revoke_user_sessions,
 )
 from .magic_link import create_magic_link_token, consume_magic_link_token
+from .signup_requests import (
+    SignupRequest,
+    create_signup_request,
+    get_pending_request_for_email,
+    list_signup_requests,
+    approve_signup_request,
+    reject_signup_request,
+)
 from .oauth_state import create_state, consume_state
 from .session import SessionClaims, create_session_token, decode_session_token
 from .email import send_magic_link_email, send_magic_link_email_safe
@@ -62,6 +70,12 @@ __all__ = [
     "revoke_user_sessions",
     "create_magic_link_token",
     "consume_magic_link_token",
+    "SignupRequest",
+    "create_signup_request",
+    "get_pending_request_for_email",
+    "list_signup_requests",
+    "approve_signup_request",
+    "reject_signup_request",
     "create_state",
     "consume_state",
     "SessionClaims",
