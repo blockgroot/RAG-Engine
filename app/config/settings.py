@@ -765,29 +765,25 @@ class AuthSettings:
       low-risk internal tool with an already-hardened cookie
       (httpOnly+Secure+SameSite=Lax) and no refresh-token mechanism.
     - ``magic_link_ttl_minutes``  how long a login link stays valid/single-use.
-    - ``owner_email_whitelist``  the only emails allowed to self-serve
-      ``/auth/signup`` (create a brand-new org + become its admin). An empty
-      list means signup is closed entirely — there is no "open to anyone"
-      fallback. Everyone else joins an EXISTING org via an admin invite
-      (``/admin/members``) instead; this whitelist only gates the moment a
-      new org is born, not who can join one.
+
+    The owner-email whitelist that gates ``/auth/signup`` (who may create a
+    brand-new org) is NOT here — it's DB-backed (``owner_email_whitelist``
+    table, ``app/auth/owner_whitelist.py``), not an env var, so granting a
+    new owner takes effect immediately with no redeploy. Manage it via
+    ``scripts/manage_owner_whitelist.py``.
     """
 
     encryption_keys: list[str] = field(default_factory=list)
     jwt_secret: str | None = None
     session_ttl_minutes: int = DEFAULT_SESSION_TTL_MINUTES
     magic_link_ttl_minutes: int = DEFAULT_MAGIC_LINK_TTL_MINUTES
-    owner_email_whitelist: list[str] = field(default_factory=list)
 
     @classmethod
     def from_env(cls) -> "AuthSettings":
         raw_keys = os.getenv("AUTH_ENCRYPTION_KEYS") or ""
         keys = [key.strip() for key in raw_keys.split(",") if key.strip()]
-        raw_whitelist = os.getenv("OWNER_EMAIL_WHITELIST") or ""
-        whitelist = [e.strip().lower() for e in raw_whitelist.split(",") if e.strip()]
         return cls(
             encryption_keys=keys,
-            owner_email_whitelist=whitelist,
             jwt_secret=os.getenv("AUTH_JWT_SECRET"),
             session_ttl_minutes=int(
                 os.getenv("AUTH_SESSION_TTL_MINUTES") or DEFAULT_SESSION_TTL_MINUTES
