@@ -424,8 +424,9 @@ their policy documents; their employees ask questions and get answers grounded i
   kind. `request_magic_link` now only ever sends a link to an email that
   *already has an account* (created at signup, or via an admin invite) —
   there is no path left that creates a first account from an unrecognized
-  email. The signup flow (a brand-new org's first admin) is untouched. **To
-  revive self-serve domain auto-join later** (e.g. once onboarding many
+  email. The signup flow (a brand-new org's first admin) was untouched by
+  this change — it was later gated behind a whitelist, see the next bullet.
+  **To revive self-serve domain auto-join later** (e.g. once onboarding many
   companies without manual admin invites is an actual need): restore the
   `org_domains` table and `app/auth/domains.py` from git history (the commit
   that removed them), and re-wire `resolve_org_for_email` back into
@@ -433,6 +434,32 @@ their policy documents; their employees ask questions and get answers grounded i
   exclusive — an admin invite and a domain claim could both resolve an org for
   an email). Don't rebuild it from scratch; the DNS-verification design was
   already reasoned through once.
+- **Self-serve org creation is gated behind an email whitelist — signup is
+  closed by default, not open-to-anyone.** `POST /auth/signup` used to let
+  literally anyone name a company and become its admin with zero
+  verification — a real gap for a multi-tenant platform where "this org's
+  admin" is a trust boundary. `signup()` (`app/api/auth.py`) now checks the
+  submitted email against `AuthSettings.owner_email_whitelist` (env
+  `OWNER_EMAIL_WHITELIST`, comma-separated, **empty by default** — with
+  nothing configured, signup is fully closed, not "open") and returns 403
+  for anything not listed. This is a narrow gate: it only decides who may
+  bring a brand-new org into existence. It does NOT touch — and does not
+  need to touch — either of the two mechanisms that already handle
+  everything downstream of that: an existing admin inviting new employees
+  (`POST /admin/members`, admin-only) and any org member creating their own
+  sub-workspace (`POST /workspaces`, gated only by `get_session`, not
+  `require_admin` — see the Workspace-within-a-Workspace entry below). A
+  simple env-var whitelist was chosen over a DB table specifically because
+  the list is short and changes rarely (new companies partnering with this
+  platform), matching the same "cheapest mechanism that actually fits the
+  need" instinct used elsewhere (e.g. `NOTION_TOKEN_<NAME>` discovery) rather
+  than building a management UI/CLI for a handful of rows. **This
+  supersedes an earlier, more elaborate design** (a full pending-request
+  approval queue reviewed via a CLI script, with a later increment adding
+  one-click email approve/reject links) that was prototyped and then
+  abandoned mid-build in favor of this much smaller whitelist gate — that
+  work never merged; if a review-queue workflow is wanted again later, it
+  was reasoned through in detail and shouldn't be redesigned from scratch.
 - **Session TTL defaults to 30 days, not a typical short web session** (`AUTH_SESSION_TTL_MINUTES`,
   `app/auth/session.py` + the `max_age` on the session cookie in `app/api/auth.py`) —
   deliberate given this is a low-risk internal tool with an already-hardened cookie
@@ -1088,6 +1115,22 @@ admin's org as `role=member`; an uninvited email gets the same generic
 response but no account is ever created; a second org's admin never sees the
 first org's invited members). Full suite green (144 passing, 1 pre-existing
 unrelated `NOTION_TOKEN_SYVORA` environmental failure, 2 network deselected).
+
+**Owner-email whitelist (branch `feature/owner-email-whitelist`) — self-serve
+org creation gated by a pre-approved email list.** See §2 for the full
+reasoning. Changes: `AuthSettings.owner_email_whitelist`
+(env `OWNER_EMAIL_WHITELIST`, comma-separated, empty by default) in
+`app/config/settings.py`; `signup()` (`app/api/auth.py`) checks the
+submitted email against it and returns 403 for anything not listed, before
+the existing duplicate-account check. No schema change, no new tables, no
+new endpoints — the existing immediate org+admin-creation code path is
+unchanged for a whitelisted email, only reachability changed. Tests: added
+`test_signup_rejects_non_whitelisted_email` (403, no account/org created)
+to `tests/test_api_auth.py`; existing signup tests updated to whitelist
+their own generated test email via `monkeypatch.setenv` before signing up.
+Deliberately does not touch `POST /admin/members` (existing-org invites) or
+`POST /workspaces` (any org member can already create a sub-workspace) —
+both already did what was asked of them before this change.
 
 **Hardening pass (Phases 18–22, external review follow-up).** Phase 20
 (structural citations + NLI) is **explicitly deferred** pending a separate
