@@ -33,6 +33,12 @@ from .users import (
     revoke_user_sessions,
 )
 from .magic_link import create_magic_link_token, consume_magic_link_token
+from .owner_whitelist import (
+    is_whitelisted,
+    add_owner_email,
+    remove_owner_email,
+    list_owner_emails,
+)
 from .oauth_state import create_state, consume_state
 from .session import SessionClaims, create_session_token, decode_session_token
 from .email import send_magic_link_email, send_magic_link_email_safe
@@ -62,6 +68,10 @@ __all__ = [
     "revoke_user_sessions",
     "create_magic_link_token",
     "consume_magic_link_token",
+    "is_whitelisted",
+    "add_owner_email",
+    "remove_owner_email",
+    "list_owner_emails",
     "create_state",
     "consume_state",
     "SessionClaims",
