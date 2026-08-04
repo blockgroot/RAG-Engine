@@ -32,7 +32,7 @@ export default function LoginPage() {
         <div className="brand-lockup">
           <span className="brand-mark" aria-hidden />
           <span className="brand" style={{ fontSize: "1.2rem" }}>
-            Folio
+            Sourcebase
           </span>
         </div>
         <p className="eyebrow">Welcome back</p>

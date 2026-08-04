@@ -9,8 +9,8 @@ const outfit = Outfit({
 });
 
 export const metadata: Metadata = {
-  title: "Folio",
-  description: "Ask questions grounded in your own documents.",
+  title: "Sourcebase",
+  description: "Ask questions grounded in your own sources — policies, notes, and more.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

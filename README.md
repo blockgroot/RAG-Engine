@@ -1,6 +1,9 @@
-# RAG Engine
+# Sourcebase
 
-A multi-tenant RAG policy Q&A platform, built in small, reviewable phases.
+A multi-tenant RAG platform for team knowledge Q&A — connect your sources
+(Notion, Google Drive, GitHub, and more), and ask questions grounded in your
+own team's content. Started as a company-policy Q&A tool; the RAG engine
+underneath is source-agnostic, built in small, reviewable phases.
 
 > **Phases built so far:** (1) LLM & embedding provider abstraction,
 > (2) database schema + chunking + vector store layer with proven tenant

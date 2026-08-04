@@ -8,9 +8,15 @@
 
 ## 1. What this system is (and why it's built this way)
 
-A **multi-tenant RAG platform for company policy Q&A**. Companies (tenants) upload
-their policy documents; their employees ask questions and get answers grounded in
-*their own* company's policies.
+**Sourcebase** — a **multi-tenant RAG platform for team knowledge Q&A**.
+Companies (tenants) connect their sources (Notion, Google Drive, and more —
+GitHub is a planned future source), their employees ask questions and get
+answers grounded in *their own* company's content. Started as a
+company-policy Q&A tool specifically; the retrieval/grounding engine
+underneath (`app/rag/`) is source-agnostic and always has been — "policy" in
+some of the naming/examples below (`RagResult`, golden-set cases, etc.) is a
+holdover from that original scope, not a hard constraint on what content can
+be ingested.
 
 - **Why RAG, not fine-tuning.** Policies are *facts that change* (leave rules,
   reimbursement limits, etc.). Fine-tuning bakes facts into model weights and goes
