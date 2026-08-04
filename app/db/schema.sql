@@ -140,11 +140,13 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS sessions_revoked_at TIMESTAMPTZ;
 
 -- Self-serve org creation request queue: a brand-new company's first user no
 -- longer creates an org+admin synchronously at /auth/signup — they land here
--- as `pending` until the platform owner approves via
--- scripts/review_signup_requests.py (deliberately NOT a new HTTP/session
--- surface — see CLAUDE.md §2/§4). This is a plain CREATE TABLE (no ALTER on
--- an existing table), so it carries none of the ALTER-ordering hazard
--- documented near `ingestion_jobs`/`workspace_id` below.
+-- as `pending` until the platform owner approves, either via
+-- scripts/review_signup_requests.py or the one-click email links below (see
+-- CLAUDE.md §2/§4). No session/login/cookie surface either way — the email
+-- links carry a single-use possession token, same trust model as
+-- magic_link_tokens, not a second auth system. This is a plain CREATE TABLE
+-- (no ALTER on an existing table), so it carries none of the ALTER-ordering
+-- hazard documented near `ingestion_jobs`/`workspace_id` below.
 CREATE TABLE IF NOT EXISTS org_signup_requests (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email         TEXT NOT NULL,
@@ -156,6 +158,19 @@ CREATE TABLE IF NOT EXISTS org_signup_requests (
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_org_signup_requests_status ON org_signup_requests (status);
+
+-- One-click email approve/reject: two single-use possession tokens
+-- generated together at request-creation time (only their SHA-256 hashes
+-- are ever stored, like magic_link_tokens). No separate "consumed" flag is
+-- needed — approve_signup_request/reject_signup_request already guard
+-- atomically on status='pending', so the request's own status transition
+-- IS the one-time-use gate; a token stays hash-verifiable after use, but
+-- re-attempting the action is a no-op, not a double-action. This ALTER is
+-- safe immediately after this table's own CREATE TABLE above (no ordering
+-- hazard — see the gotcha in §4 about which schema changes DO have one).
+ALTER TABLE org_signup_requests ADD COLUMN IF NOT EXISTS approve_token_hash TEXT;
+ALTER TABLE org_signup_requests ADD COLUMN IF NOT EXISTS reject_token_hash TEXT;
+ALTER TABLE org_signup_requests ADD COLUMN IF NOT EXISTS action_expires_at TIMESTAMPTZ;
 
 -- One PENDING request per email at a time (partial unique index, same
 -- pattern as idx_oauth_connections_org_provider_orgwide below): a second
