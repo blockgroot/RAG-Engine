@@ -49,9 +49,12 @@ def _invited_member(store, org_cleanup):
 
 
 @requires_db
-def test_signup_creates_org_and_admin_and_sends_link(client, org_cleanup, monkeypatch):
+def test_signup_creates_org_and_admin_and_sends_link(client, org_cleanup, whitelist_cleanup):
+    from app.auth import add_owner_email
+
     email = f"founder-{uuid.uuid4().hex[:8]}@newco.example.com"
-    monkeypatch.setenv("OWNER_EMAIL_WHITELIST", email)
+    whitelist_cleanup.append(email)
+    add_owner_email(email)
     response = client.post(
         "/auth/signup", json={"email": email, "company_name": f"NewCo {uuid.uuid4().hex[:8]}"}
     )
@@ -77,8 +80,8 @@ def test_signup_creates_org_and_admin_and_sends_link(client, org_cleanup, monkey
 
 
 @requires_db
-def test_signup_rejects_non_whitelisted_email(client, monkeypatch):
-    # OWNER_EMAIL_WHITELIST left unset by _auth_env — signup is closed by default.
+def test_signup_rejects_non_whitelisted_email(client):
+    # Never added to owner_email_whitelist — signup is closed by default.
     email = f"uninvited-{uuid.uuid4().hex[:8]}@newco.example.com"
     response = client.post(
         "/auth/signup", json={"email": email, "company_name": "Uninvited Co"}
@@ -91,9 +94,12 @@ def test_signup_rejects_non_whitelisted_email(client, monkeypatch):
 
 
 @requires_db
-def test_signup_rejects_duplicate_email(client, org_cleanup, monkeypatch):
+def test_signup_rejects_duplicate_email(client, org_cleanup, whitelist_cleanup):
+    from app.auth import add_owner_email
+
     email = f"dup-{uuid.uuid4().hex[:8]}@newco.example.com"
-    monkeypatch.setenv("OWNER_EMAIL_WHITELIST", email)
+    whitelist_cleanup.append(email)
+    add_owner_email(email)
     first = client.post("/auth/signup", json={"email": email, "company_name": "First Co"})
     assert first.status_code == 200
     from app.auth.users import get_user_by_email

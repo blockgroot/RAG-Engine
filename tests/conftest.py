@@ -162,3 +162,16 @@ def org_cleanup():
                 "DELETE FROM organizations WHERE id = ANY(%s::uuid[])",
                 (created,),
             )
+
+
+@pytest.fixture
+def whitelist_cleanup():
+    """Track emails added to owner_email_whitelist during a test and remove them after."""
+    created: list[str] = []
+    yield created
+    if created:
+        with get_connection() as conn:
+            conn.execute(
+                "DELETE FROM owner_email_whitelist WHERE email = ANY(%s::text[])",
+                (created,),
+            )

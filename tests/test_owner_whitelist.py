@@ -7,22 +7,8 @@ import uuid
 import pytest
 
 from app.auth import add_owner_email, is_whitelisted, list_owner_emails, remove_owner_email
-from app.db.connection import get_connection
 
 from .conftest import requires_db
-
-
-@pytest.fixture
-def whitelist_cleanup():
-    """Track emails added during a test and remove them afterwards."""
-    created: list[str] = []
-    yield created
-    if created:
-        with get_connection() as conn:
-            conn.execute(
-                "DELETE FROM owner_email_whitelist WHERE email = ANY(%s::text[])",
-                (created,),
-            )
 
 
 def _new_email(prefix: str) -> str:

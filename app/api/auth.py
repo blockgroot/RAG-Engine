@@ -4,10 +4,11 @@ OAuth "Connect" flow (Phase 13, simplified — domain auto-join removed).
 Three entry points, all converging on the same passwordless magic-link
 session issuance — there is exactly one way to log in, admin or employee:
 1. Signup (``/auth/signup``) — creates a brand-new org and makes this user
-   its admin, but ONLY for an email on ``AuthSettings.owner_email_whitelist``
-   (env ``OWNER_EMAIL_WHITELIST``); anyone else gets a 403. This is
-   deliberately narrow: it gates the moment a new org is born, nothing else.
-   Everyone who isn't pre-approved to create an org instead joins an
+   its admin, but ONLY for an email on the DB-backed
+   ``owner_email_whitelist`` table (``app/auth/owner_whitelist.py``, managed
+   via ``scripts/manage_owner_whitelist.py``); anyone else gets a 403. This
+   is deliberately narrow: it gates the moment a new org is born, nothing
+   else. Everyone who isn't pre-approved to create an org instead joins an
    EXISTING one via an admin invite (``/admin/members``) — see that router.
    A whitelisted signup emails the new admin a magic link. No password to
    set, no separate "admin login" flow.
@@ -38,6 +39,7 @@ from ..auth import (
     create_session_token,
     create_state,
     get_user_by_email,
+    is_whitelisted,
     save_connection,
     send_magic_link_email_safe,
 )
@@ -67,15 +69,14 @@ def signup(
     body: dict,
     background_tasks: BackgroundTasks,
     settings: ApiSettings = Depends(ApiSettings.from_env),
-    auth_settings: AuthSettings = Depends(AuthSettings.from_env),
     store: VectorStore = Depends(get_vector_store),
 ):
     """Create a brand-new org + its first admin user, then email a login link.
 
-    Gated: only an email on ``AuthSettings.owner_email_whitelist`` may create
-    a new org this way — everyone else gets a 403. An email that's already a
-    user anywhere is rejected rather than silently creating a second,
-    disconnected account for it.
+    Gated: only an email on the DB-backed ``owner_email_whitelist`` table
+    may create a new org this way — everyone else gets a 403. An email
+    that's already a user anywhere is rejected rather than silently creating
+    a second, disconnected account for it.
     """
     email = (body.get("email") or "").strip().lower()
     company_name = (body.get("company_name") or "").strip()
@@ -83,7 +84,7 @@ def signup(
         raise HTTPException(status_code=400, detail="A valid email is required")
     if not company_name:
         raise HTTPException(status_code=400, detail="A company name is required")
-    if email not in auth_settings.owner_email_whitelist:
+    if not is_whitelisted(email):
         raise HTTPException(
             status_code=403, detail="This email is not authorized to create an organization"
         )
