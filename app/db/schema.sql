@@ -138,6 +138,32 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_org ON users (org_id);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS sessions_revoked_at TIMESTAMPTZ;
 
+-- Self-serve org creation request queue: a brand-new company's first user no
+-- longer creates an org+admin synchronously at /auth/signup — they land here
+-- as `pending` until the platform owner approves via
+-- scripts/review_signup_requests.py (deliberately NOT a new HTTP/session
+-- surface — see CLAUDE.md §2/§4). This is a plain CREATE TABLE (no ALTER on
+-- an existing table), so it carries none of the ALTER-ordering hazard
+-- documented near `ingestion_jobs`/`workspace_id` below.
+CREATE TABLE IF NOT EXISTS org_signup_requests (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email         TEXT NOT NULL,
+    company_name  TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'pending', -- pending | approved | rejected
+    reject_reason TEXT,
+    org_id        UUID REFERENCES organizations (id) ON DELETE SET NULL,
+    reviewed_at   TIMESTAMPTZ,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_org_signup_requests_status ON org_signup_requests (status);
+
+-- One PENDING request per email at a time (partial unique index, same
+-- pattern as idx_oauth_connections_org_provider_orgwide below): a second
+-- signup attempt while one is already pending conflicts; re-submitting after
+-- a rejection is allowed since a rejected row no longer matches this index.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_org_signup_requests_email_pending
+    ON org_signup_requests (email) WHERE status = 'pending';
+
 -- Employee-created sub-workspaces (Workspace-within-a-Workspace). A
 -- sub-workspace nests INSIDE its parent org — every row it owns still
 -- carries org_id, so the org_id isolation proof stays a strict subset of
