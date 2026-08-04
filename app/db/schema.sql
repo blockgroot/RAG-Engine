@@ -138,6 +138,18 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_org ON users (org_id);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS sessions_revoked_at TIMESTAMPTZ;
 
+-- Owner-email whitelist: the only emails allowed to self-serve
+-- POST /auth/signup (create a brand-new org + become its admin). Moved out
+-- of an env var (OWNER_EMAIL_WHITELIST) because editing .env + redeploying
+-- for every new approved owner doesn't scale — see CLAUDE.md §2/§4.
+-- Managed exclusively via scripts/manage_owner_whitelist.py — no HTTP/
+-- session surface, matching this app's existing platform-operator-action
+-- pattern.
+CREATE TABLE IF NOT EXISTS owner_email_whitelist (
+    email      TEXT PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Employee-created sub-workspaces (Workspace-within-a-Workspace). A
 -- sub-workspace nests INSIDE its parent org — every row it owns still
 -- carries org_id, so the org_id isolation proof stays a strict subset of
