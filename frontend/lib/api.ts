@@ -114,6 +114,12 @@ export interface MagicLinkResponse {
   dev_link: string | null;
 }
 
+export interface SignupResponse {
+  // No dev_link: nothing is generated to sign in with yet — signup only
+  // queues a pending org_signup_requests row for platform-owner review.
+  message: string;
+}
+
 /** A sub-workspace ("workspace within a workspace") the caller is a member of. */
 export interface WorkspaceRecord {
   id: string;
@@ -130,7 +136,7 @@ export interface WorkspaceMemberRecord {
 
 export const api = {
   signup: (email: string, companyName: string) =>
-    request<MagicLinkResponse>("/auth/signup", {
+    request<SignupResponse>("/auth/signup", {
       method: "POST",
       body: JSON.stringify({ email, company_name: companyName }),
     }),

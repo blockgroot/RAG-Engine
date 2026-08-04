@@ -8,7 +8,6 @@ export default function SignupPage() {
   const [email, setEmail] = useState("");
   const [companyName, setCompanyName] = useState("");
   const [submitted, setSubmitted] = useState(false);
-  const [devLink, setDevLink] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -17,8 +16,7 @@ export default function SignupPage() {
     setError(null);
     setLoading(true);
     try {
-      const { dev_link } = await api.signup(email, companyName);
-      setDevLink(dev_link);
+      await api.signup(email, companyName);
       setSubmitted(true);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong.");
@@ -37,19 +35,18 @@ export default function SignupPage() {
           </span>
         </div>
         <p className="eyebrow">Get started</p>
-        <h1>Create your organization</h1>
+        <h1>Request your organization</h1>
         <p className="muted">
-          You&rsquo;ll be the admin. Next: connect Notion, sync policies, invite your team.
+          Requests are reviewed before an organization is created. Once approved,
+          you&rsquo;ll be the admin — next: connect Notion, sync policies, invite your team.
         </p>
 
         {submitted ? (
           <div className="card stack">
-            <p>Check your inbox for a sign-in link to finish setting up {companyName}.</p>
-            {devLink && (
-              <p className="muted">
-                Dev mode: <a href={devLink}>Continue to sign in</a>
-              </p>
-            )}
+            <p>
+              Thanks! Your request to create {companyName} has been received. We&rsquo;ll
+              email you once it&rsquo;s approved.
+            </p>
           </div>
         ) : (
           <form className="card stack" onSubmit={handleSubmit}>
@@ -82,7 +79,7 @@ export default function SignupPage() {
               </p>
             )}
             <button className="button" type="submit" disabled={loading}>
-              {loading ? "Creating…" : "Create organization"}
+              {loading ? "Submitting…" : "Request access"}
             </button>
           </form>
         )}
