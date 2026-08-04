@@ -41,9 +41,9 @@ UPDATE documents SET source_provider = 'notion'
     WHERE source_provider IS NULL AND source_external_id IS NOT NULL;
 
 DROP INDEX IF EXISTS idx_documents_org_external;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_org_provider_external
-    ON documents (org_id, source_provider, source_external_id)
-    WHERE source_external_id IS NOT NULL;
+-- Superseded below (once workspace_id exists on documents) by two partial
+-- unique indexes — see the Workspace-within-a-Workspace block further down.
+DROP INDEX IF EXISTS idx_documents_org_provider_external;
 
 
 -- Chunks of a document + their embedding vector. Org-scoped (denormalized org_id
@@ -190,6 +190,22 @@ ALTER TABLE workspace_members ADD CONSTRAINT workspace_members_invited_by_fkey
 -- paired with org_id (see app/rag/scope.py).
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS idx_documents_workspace ON documents (workspace_id);
+
+-- Provider-partitioned sync uniqueness (org_id, source_provider,
+-- source_external_id) must ALSO be scoped by workspace_id, or the same
+-- external file synced into a personal workspace collides with the org-wide
+-- copy's row on INSERT. Same reasoning as oauth_connections above: Postgres
+-- treats NULL as distinct-from-NULL in a plain multi-column UNIQUE, so a
+-- naive UNIQUE(org_id, source_provider, source_external_id, workspace_id)
+-- would let unlimited "duplicate" org-wide (workspace_id IS NULL) rows
+-- through. Two partial unique indexes instead: one for the org-wide
+-- connection, one for a specific workspace's connection.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_org_provider_external_orgwide
+    ON documents (org_id, source_provider, source_external_id)
+    WHERE workspace_id IS NULL AND source_external_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_org_provider_external_workspace
+    ON documents (org_id, source_provider, source_external_id, workspace_id)
+    WHERE workspace_id IS NOT NULL AND source_external_id IS NOT NULL;
 
 ALTER TABLE chunks ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS idx_chunks_workspace ON chunks (workspace_id);
