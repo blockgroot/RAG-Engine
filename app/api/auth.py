@@ -1,18 +1,22 @@
-"""Auth router: self-serve signup, admin-invited member login, admin OAuth
-"Connect" flow (Phase 13, simplified — domain auto-join removed).
+"""Auth router: signup-approval queue, admin-invited member login, admin
+OAuth "Connect" flow (Phase 13, simplified — domain auto-join removed;
+self-serve org creation later gated behind manual approval).
 
 Three entry points, all converging on the same passwordless magic-link
 session issuance — there is exactly one way to log in, admin or employee:
-1. Signup (``/auth/signup``) — a brand-new company's first user. Creates the
-   org, makes this user its admin, and emails them a magic link. No password
-   to set, no separate "admin login" flow.
+1. Signup (``/auth/signup``) — a brand-new company's first user. Does NOT
+   create an org or account synchronously: it queues a pending
+   ``org_signup_requests`` row for the platform owner to review via
+   ``scripts/review_signup_requests.py``. Only once approved does the org +
+   admin user get created and a magic-link sign-in email go out.
 2. Magic link (``/auth/magic-link`` + ``/auth/magic-link/verify``) — the
-   normal way back in for anyone who ALREADY has an account (an admin, or a
-   member an admin invited via ``/admin/members``). An email with no existing
-   account has no path to a first login here — only an admin invite (or
-   signup, for a brand-new org) creates one. There is deliberately no
-   response-content difference between "no account" and "email sent" so this
-   endpoint can't be used to enumerate registered accounts.
+   normal way back in for anyone who ALREADY has an account (an admin whose
+   signup request was approved, or a member an admin invited via
+   ``/admin/members``). An email with no existing account has no path to a
+   first login here — only an admin invite or an approved signup request
+   creates one. There is deliberately no response-content difference between
+   "no account" and "email sent" so this endpoint can't be used to enumerate
+   registered accounts.
 3. OAuth connect (``/auth/{provider}/authorize`` + ``/auth/{provider}/callback``)
    — admin-only, requires an existing session, used to link an org's Notion
    (etc.) workspace. Fully separate from magic-link auth; it never issues a
@@ -28,19 +32,19 @@ from ..auth import (
     build_oauth_provider,
     consume_magic_link_token,
     consume_state,
-    create_admin,
     create_magic_link_token,
     create_session_token,
     create_state,
+    create_signup_request,
+    get_pending_request_for_email,
     get_user_by_email,
     save_connection,
     send_magic_link_email_safe,
 )
 from ..config.settings import ApiSettings, AuthSettings, EmailSettings
 from ..core.exceptions import AuthError, ConfigurationError, OAuthError
-from ..vectorstore.base import VectorStore
 from ..workspaces import assert_member
-from .deps import SESSION_COOKIE_NAME, get_session, get_vector_store
+from .deps import SESSION_COOKIE_NAME, get_session
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -58,17 +62,15 @@ def _dev_link(link: str) -> str | None:
 
 
 @router.post("/signup")
-def signup(
-    body: dict,
-    background_tasks: BackgroundTasks,
-    settings: ApiSettings = Depends(ApiSettings.from_env),
-    store: VectorStore = Depends(get_vector_store),
-):
-    """Create a brand-new org + its first admin user, then email a login link.
+def signup(body: dict):
+    """Queue a request to create a brand-new org — does NOT create it.
 
-    Self-serve: no manual org-creation step on our side. An email that's
-    already a user anywhere is rejected rather than silently creating a
-    second, disconnected account for it.
+    No org or account is created here. The request lands in
+    ``org_signup_requests`` as ``pending`` until the platform owner reviews
+    it via ``scripts/review_signup_requests.py``; only on approval does the
+    org + its admin user get created and a sign-in link get emailed. An
+    email that's already a user anywhere, or already has a pending request,
+    is rejected.
     """
     email = (body.get("email") or "").strip().lower()
     company_name = (body.get("company_name") or "").strip()
@@ -78,17 +80,22 @@ def signup(
         raise HTTPException(status_code=400, detail="A company name is required")
     if get_user_by_email(email) is not None:
         raise HTTPException(status_code=400, detail="An account already exists for this email")
+    if get_pending_request_for_email(email) is not None:
+        raise HTTPException(
+            status_code=400, detail="A request for this email is already pending review"
+        )
 
-    org_id = store.create_organization(company_name)
-    create_admin(email, org_id)
+    try:
+        create_signup_request(email, company_name)
+    except AuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    token = create_magic_link_token(email)
-    base = (settings.frontend_url or "").rstrip("/")
-    link = f"{base}/verify?token={token}"
-    # Gmail SMTP is multi-second; don't block the signup response on it.
-    background_tasks.add_task(send_magic_link_email_safe, email, link)
-
-    return {"message": "Check your email for a sign-in link.", "dev_link": _dev_link(link)}
+    return {
+        "message": (
+            "Thanks — your request to create an organization has been received "
+            "and is pending review."
+        )
+    }
 
 
 @router.post("/magic-link")

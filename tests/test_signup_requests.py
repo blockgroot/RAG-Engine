@@ -14,22 +14,8 @@ from app.auth import (
     reject_signup_request,
 )
 from app.core.exceptions import AuthError, NotFoundError
-from app.db.connection import get_connection
 
 from .conftest import requires_db
-
-
-@pytest.fixture
-def signup_email_cleanup():
-    """Track emails used in a test and delete their signup-request rows after."""
-    created: list[str] = []
-    yield created
-    if created:
-        with get_connection() as conn:
-            conn.execute(
-                "DELETE FROM org_signup_requests WHERE email = ANY(%s::text[])",
-                (created,),
-            )
 
 
 def _new_email(prefix: str) -> str:
