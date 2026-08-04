@@ -32,8 +32,10 @@ from ..sources import (
     search_drive_folders,
     validate_drive_folder,
 )
+from ..db.connection import get_connection
 from ..workspaces import create_workspace, invite_member, list_my_workspaces, list_workspace_members
 from .deps import SessionClaims, get_session, get_workspace_role, require_workspace_owner
+from .setup_status import content_setup_status
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
@@ -53,6 +55,35 @@ def list_mine(session: SessionClaims = Depends(get_session)):
         {"id": w.id, "name": w.name, "role": w.role, "created_by": w.created_by}
         for w in list_my_workspaces(session.org_id, session.user_id)
     ]
+
+
+@router.get("/{workspace_id}")
+def get_workspace(
+    workspace_id: str,
+    session: SessionClaims = Depends(get_session),
+    role: str = Depends(get_workspace_role),
+):
+    """Workspace identity + the same ready_to_ask gate shape as ``GET /me``.
+
+    Scoped only to this workspace's connections/docs/jobs — never org-wide
+    rows — so Ask unlocks after *this* workspace's sync succeeds.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT name, created_by::text FROM workspaces "
+            "WHERE id = %s AND org_id = %s",
+            (workspace_id, session.org_id),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    status = content_setup_status(session.org_id, workspace_id=workspace_id)
+    return {
+        "id": workspace_id,
+        "name": row[0],
+        "role": role,
+        "created_by": row[1],
+        **status,
+    }
 
 
 @router.get("/{workspace_id}/members")

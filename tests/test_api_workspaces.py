@@ -15,6 +15,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.auth import OAuthTokens, create_admin, create_session_token, save_connection
+from app.db.connection import get_connection
+from app.jobs import enqueue, mark_succeeded
 from app.auth.users import invite_member as invite_org_member
 
 from .conftest import requires_db
@@ -256,3 +258,87 @@ def test_search_workspace_drive_folders_wrong_workspace_returns_404(client, owne
         cookies=cookies,
     )
     assert response.status_code == 404
+
+
+# -- ready_to_ask gate (mirrors GET /me, scoped to the workspace) --
+
+
+def _insert_workspace_document(org_id: str, workspace_id: str, title: str = "Notes") -> None:
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO documents (org_id, title, workspace_id, source_provider, source_external_id) "
+            "VALUES (%s, %s, %s, 'notion', %s)",
+            (org_id, title, workspace_id, f"ext-{title}"),
+        )
+
+
+@requires_db
+def test_workspace_detail_ready_to_ask_false_until_succeeded_sync(client, owner_org):
+    org_id, owner, cookies = owner_org
+    workspace_id = client.post(
+        "/workspaces", json={"name": "Meeting Notes"}, cookies=cookies
+    ).json()["id"]
+
+    detail = client.get(f"/workspaces/{workspace_id}", cookies=cookies)
+    assert detail.status_code == 200
+    body = detail.json()
+    assert body["ready_to_ask"] is False
+    assert body["has_connection"] is False
+    assert body["sync_in_progress"] is False
+
+    connection_id = save_connection(
+        org_id,
+        "notion",
+        OAuthTokens(
+            access_token="ntn_ws",
+            refresh_token=None,
+            expires_at=None,
+            external_workspace_id="ws-ready",
+        ),
+        workspace_id=workspace_id,
+    )
+    job_id = enqueue(org_id, connection_id, workspace_id=workspace_id)
+    mid = client.get(f"/workspaces/{workspace_id}", cookies=cookies).json()
+    assert mid["has_connection"] is True
+    assert mid["sync_in_progress"] is True
+    assert mid["ready_to_ask"] is False
+
+    mark_succeeded(job_id, doc_count=1)
+    _insert_workspace_document(org_id, workspace_id)
+    ready = client.get(f"/workspaces/{workspace_id}", cookies=cookies).json()
+    assert ready["ready_to_ask"] is True
+    assert ready["has_documents"] is True
+    assert ready["sync_in_progress"] is False
+    assert ready["latest_job_status"] == "succeeded"
+
+
+@requires_db
+def test_org_me_ready_to_ask_ignores_workspace_only_sync(client, owner_org):
+    """A workspace sync must not unlock (or block) org-wide Ask."""
+    org_id, owner, cookies = owner_org
+    workspace_id = client.post(
+        "/workspaces", json={"name": "Personal Notes"}, cookies=cookies
+    ).json()["id"]
+    connection_id = save_connection(
+        org_id,
+        "notion",
+        OAuthTokens(
+            access_token="ntn_ws_only",
+            refresh_token=None,
+            expires_at=None,
+            external_workspace_id="ws-only",
+        ),
+        workspace_id=workspace_id,
+    )
+    job_id = enqueue(org_id, connection_id, workspace_id=workspace_id)
+    mark_succeeded(job_id, doc_count=2)
+    _insert_workspace_document(org_id, workspace_id, title="Workspace Doc")
+
+    me = client.get("/me", cookies=cookies).json()
+    assert me["ready_to_ask"] is False
+    assert me["has_connection"] is False
+    assert me["has_documents"] is False
+    assert me["sync_in_progress"] is False
+
+    ws = client.get(f"/workspaces/{workspace_id}", cookies=cookies).json()
+    assert ws["ready_to_ask"] is True

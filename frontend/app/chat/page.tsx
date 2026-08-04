@@ -47,19 +47,37 @@ function ChatPageInner() {
   const logRef = useRef<HTMLDivElement>(null);
 
   const [readyToAsk, setReadyToAsk] = useState<boolean | null>(null);
+  const [workspaceSyncing, setWorkspaceSyncing] = useState(false);
   const [justSynced, setJustSynced] = useState(false);
 
   useEffect(() => {
     if (!me) return;
-    // A sub-workspace's own readiness is independent of the org-wide sync
-    // gate -- an employee's personal workspace can be asked in immediately
-    // once its own source is connected, regardless of the org's setup state.
-    setReadyToAsk(workspaceId ? true : me.ready_to_ask);
+    // Org Ask uses /me.ready_to_ask. Workspace Ask uses GET /workspaces/{id}
+    // — same gate shape, scoped to that workspace's own sync (independent of
+    // org-wide readiness).
+    if (!workspaceId) {
+      setReadyToAsk(me.ready_to_ask);
+      return;
+    }
+    let cancelled = false;
+    api
+      .getWorkspace(workspaceId)
+      .then((ws) => {
+        if (cancelled) return;
+        setWorkspaceSyncing(ws.sync_in_progress);
+        setReadyToAsk(ws.ready_to_ask);
+      })
+      .catch(() => {
+        if (!cancelled) setReadyToAsk(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [me, workspaceId]);
 
-  // Light /me poll only while waiting for first sync — pause when tab is hidden.
+  // Poll readiness only while waiting for first sync — pause when tab is hidden.
   useEffect(() => {
-    if (workspaceId || readyToAsk !== false) return;
+    if (readyToAsk !== false) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -69,16 +87,30 @@ function ChatPageInner() {
         timer = setTimeout(tick, JOB_POLL_MS);
         return;
       }
-      const fresh = await api.me().catch(() => null);
-      if (cancelled || !fresh) {
-        timer = setTimeout(tick, JOB_POLL_MS * 2);
-        return;
-      }
-      if (fresh.ready_to_ask) {
-        setReadyToAsk(true);
-        setJustSynced(true);
-        refresh();
-        return;
+      if (workspaceId) {
+        const fresh = await api.getWorkspace(workspaceId).catch(() => null);
+        if (cancelled || !fresh) {
+          timer = setTimeout(tick, JOB_POLL_MS * 2);
+          return;
+        }
+        setWorkspaceSyncing(fresh.sync_in_progress);
+        if (fresh.ready_to_ask) {
+          setReadyToAsk(true);
+          setJustSynced(true);
+          return;
+        }
+      } else {
+        const fresh = await api.me().catch(() => null);
+        if (cancelled || !fresh) {
+          timer = setTimeout(tick, JOB_POLL_MS * 2);
+          return;
+        }
+        if (fresh.ready_to_ask) {
+          setReadyToAsk(true);
+          setJustSynced(true);
+          refresh();
+          return;
+        }
       }
       timer = setTimeout(tick, JOB_POLL_MS);
     }
@@ -96,7 +128,7 @@ function ChatPageInner() {
       if (timer) clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [readyToAsk, refresh]);
+  }, [readyToAsk, refresh, workspaceId]);
 
   async function ensureConversation() {
     if (conversationId.current) return conversationId.current;
@@ -171,13 +203,23 @@ function ChatPageInner() {
   }
 
   if (readyToAsk === false) {
+    const syncing = workspaceId ? workspaceSyncing : me.sync_in_progress;
     return (
       <AppShell me={me} variant="app">
         <main className="page">
           <div className="card stack waiting-card">
             <p className="eyebrow">Not ready yet</p>
-            <h1>Your organization is still setting up</h1>
-            {me.role === "admin" ? (
+            <h1>
+              {workspaceId
+                ? "This workspace is still setting up"
+                : "Your organization is still setting up"}
+            </h1>
+            {workspaceId ? (
+              <p className="muted">
+                The workspace owner needs to connect a source and finish syncing before you can ask
+                questions here. This page updates automatically — no refresh needed.
+              </p>
+            ) : me.role === "admin" ? (
               <p className="muted">
                 Finish connecting a policy source and syncing in setup. You&rsquo;ll be redirected
                 automatically when documents are ready.
@@ -190,9 +232,13 @@ function ChatPageInner() {
             )}
             <div className="pulse-dot" aria-hidden />
             <p className="muted" style={{ fontSize: "0.85rem" }}>
-              {me.sync_in_progress
-                ? "Sync in progress — Ask unlocks when every policy page is ingested…"
-                : "Waiting for a completed policy sync…"}
+              {syncing
+                ? workspaceId
+                  ? "Sync in progress — Ask unlocks when this workspace's content is ingested…"
+                  : "Sync in progress — Ask unlocks when every policy page is ingested…"
+                : workspaceId
+                  ? "Waiting for a completed workspace sync…"
+                  : "Waiting for a completed policy sync…"}
             </p>
           </div>
         </main>
@@ -205,7 +251,9 @@ function ChatPageInner() {
       <div className="chat-page">
         {justSynced && (
           <div className="banner banner-ok" style={{ margin: "0 0 1rem" }}>
-            Sync complete — all policies are ready. You can ask questions now.
+            {workspaceId
+              ? "Sync complete — this workspace is ready. You can ask questions now."
+              : "Sync complete — all policies are ready. You can ask questions now."}
           </div>
         )}
         {messages.length === 0 ? (

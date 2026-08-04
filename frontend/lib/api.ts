@@ -122,6 +122,16 @@ export interface WorkspaceRecord {
   created_by: string | null;
 }
 
+/** Workspace detail + the same readiness shape as ``Me`` / ``GET /me``. */
+export interface WorkspaceDetail extends WorkspaceRecord {
+  has_connection: boolean;
+  has_documents: boolean;
+  sync_in_progress: boolean;
+  latest_job_status: string | null;
+  latest_doc_count: number | null;
+  ready_to_ask: boolean;
+}
+
 export interface WorkspaceMemberRecord {
   email: string;
   role: "owner" | "member";
@@ -186,6 +196,8 @@ export const api = {
   // --- Workspace-within-a-Workspace ---
 
   listWorkspaces: () => request<WorkspaceRecord[]>("/workspaces"),
+  getWorkspace: (workspaceId: string) =>
+    request<WorkspaceDetail>(`/workspaces/${workspaceId}`),
   createWorkspace: (name: string) =>
     request<WorkspaceRecord>("/workspaces", {
       method: "POST",
@@ -218,6 +230,8 @@ export const api = {
     ),
   listWorkspaceJobs: (workspaceId: string) =>
     request<JobRecord[]>(`/workspaces/${workspaceId}/jobs`),
+  getWorkspaceJob: (workspaceId: string, jobId: string) =>
+    request<JobRecord>(`/workspaces/${workspaceId}/jobs/${jobId}`),
   connectWorkspaceUrl: (workspaceId: string, provider: string) =>
     `${API_BASE_URL}/auth/${provider}/authorize?workspace_id=${workspaceId}`,
 };

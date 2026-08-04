@@ -15,26 +15,38 @@ export function isActiveJob(job: JobRecord): boolean {
 /**
  * Poll ingestion job status until ``shouldContinue`` returns false.
  *
- * - Prefers ``GET /admin/jobs/{id}`` when ``jobId`` is set (one cheap request).
- * - Falls back to ``GET /admin/jobs`` when discovering / watching multiple jobs.
- * - Does **not** call ``/me`` — callers refresh session once on terminal status.
+ * - Prefers a single-job GET when ``jobId`` is set (one cheap request).
+ * - Falls back to the jobs list when discovering / watching multiple jobs.
+ * - With ``workspaceId``, uses workspace-scoped job endpoints; otherwise admin.
+ * - Does **not** call readiness endpoints — callers refresh those on terminal status.
  * - Skips network work while the document tab is hidden; resumes on focus.
  */
 export function useJobPolling(options: {
   enabled: boolean;
   /** Prefer this job id; omit/null to list all jobs each tick. */
   jobId?: string | null;
+  /** When set, poll ``/workspaces/{id}/jobs…`` instead of ``/admin/jobs…``. */
+  workspaceId?: string | null;
   /** Bump to restart the loop (e.g. after triggering ingest). */
   pollToken?: number;
   intervalMs?: number;
   /** Return true to keep polling. */
   onJobs: (jobs: JobRecord[]) => boolean;
 }): void {
-  const { enabled, jobId, pollToken = 0, intervalMs = JOB_POLL_MS, onJobs } = options;
+  const {
+    enabled,
+    jobId,
+    workspaceId = null,
+    pollToken = 0,
+    intervalMs = JOB_POLL_MS,
+    onJobs,
+  } = options;
   const onJobsRef = useRef(onJobs);
   onJobsRef.current = onJobs;
   const jobIdRef = useRef(jobId);
   jobIdRef.current = jobId;
+  const workspaceIdRef = useRef(workspaceId);
+  workspaceIdRef.current = workspaceId;
 
   useEffect(() => {
     if (!enabled) return;
@@ -51,11 +63,16 @@ export function useJobPolling(options: {
 
     async function fetchJobs(): Promise<JobRecord[] | null> {
       const id = jobIdRef.current;
+      const ws = workspaceIdRef.current;
       if (id) {
-        const job = await api.getJob(id).catch(() => null);
+        const job = ws
+          ? await api.getWorkspaceJob(ws, id).catch(() => null)
+          : await api.getJob(id).catch(() => null);
         return job ? [job] : null;
       }
-      return api.listJobs().catch(() => null);
+      return ws
+        ? api.listWorkspaceJobs(ws).catch(() => null)
+        : api.listJobs().catch(() => null);
     }
 
     async function tick() {
@@ -92,5 +109,5 @@ export function useJobPolling(options: {
       if (timer) clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [enabled, pollToken, intervalMs, jobId]);
+  }, [enabled, pollToken, intervalMs, jobId, workspaceId]);
 }
