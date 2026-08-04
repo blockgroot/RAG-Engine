@@ -453,9 +453,13 @@ their policy documents; their employees ask questions and get answers grounded i
   `action_expires_at`, same trust model as `magic_link_tokens`); if
   `EmailSettings.owner_notification_email` is set, `signup()` emails that
   address a notification (`send_signup_request_notification_email`) with
-  both links — **this is the only place a pending request is surfaced
-  anywhere; leaving the env var unset means requests are invisible short of
-  querying the table directly.** A partial unique index
+  both links rendered as real teal/terracotta HTML buttons (inline-styled,
+  `multipart/alternative` next to a plain-text fallback — mail clients strip
+  `<style>` blocks and gradients, so every rule that matters is inline and a
+  solid `background-color` sits behind the gradient) — **this is the only
+  place a pending request is surfaced anywhere; leaving the env var unset
+  means requests are invisible short of querying the table directly.** A
+  partial unique index
   (`idx_org_signup_requests_email_pending`, same pattern as
   `idx_oauth_connections_org_provider_orgwide`) blocks a second signup while
   one is already pending, but re-submitting after a rejection is allowed (a
@@ -469,7 +473,21 @@ their policy documents; their employees ask questions and get answers grounded i
   (no separate `consumed` flag needed — the status transition itself is the
   one-time-use gate). This guards against a mail scanner or client
   prefetching a bare GET link and silently approving/rejecting before a
-  human ever sees it. Approving reuses the exact same
+  human ever sees it. This is also why the email buttons only ever link to
+  the confirmation page, never call the API directly on click, even though
+  that would be a literal one-click experience — a link-scanning security
+  product (Outlook Safe Links, Microsoft Defender, some Workspace/Gmail
+  scans) auto-visits every link in a mail before a human opens it, so a
+  bare GET-mutates link would let one of those scans silently approve/reject
+  on the owner's behalf. The confirmation page itself (`_confirm_page`/
+  `_result_page`/`_PAGE_STYLE` in `app/api/auth.py`) and the notification
+  email (`send_signup_request_notification_email`) both match the app's own
+  "Harbor Desk" look (`frontend/app/globals.css`: brand mark, teal
+  `--accent`/`--accent-strong`, `.card`/`.button`/`.banner` treatment) rather
+  than being unstyled — a trimmed, self-contained copy of the relevant
+  tokens/classes, since this page is served by FastAPI and can't import the
+  Next.js stylesheet or its self-hosted Outfit font; it falls back to the
+  same system font stack globals.css itself falls back to. Approving reuses the exact same
   `store.create_organization` + `create_admin` calls signup used to make
   directly, then emails the requester a magic-link sign-in via
   `send_signup_approved_email`; rejecting records an optional reason and
