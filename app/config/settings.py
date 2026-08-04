@@ -772,8 +772,9 @@ class AuthSettings:
 
     Self-serve org creation (``/auth/signup``) is gated by human review, not a
     pre-approved list — see the signup-approval queue
-    (``app/auth/signup_requests.py``, ``scripts/review_signup_requests.py``).
-    This superseded an earlier DB-backed ``owner_email_whitelist`` design.
+    (``app/auth/signup_requests.py``, reviewed via the one-click email links
+    in ``app/api/auth.py``). This superseded an earlier DB-backed
+    ``owner_email_whitelist`` design.
     """
 
     encryption_keys: list[str] = field(default_factory=list)
@@ -838,9 +839,10 @@ class EmailSettings:
       and self-hosted-without-SMTP path) or ``"smtp"``.
     - ``smtp_*``  only read/required when ``sender == "smtp"``.
     - ``owner_notification_email``  where the "new org-signup request" email
-      (with one-click approve/reject links) is sent. If unset, no
-      notification is sent — the platform owner falls back to
-      ``scripts/review_signup_requests.py list`` to discover pending requests.
+      (with one-click approve/reject links) is sent. This is the ONLY review
+      surface for the signup-approval queue — there is no admin UI or CLI, so
+      leaving this unset means pending requests are only visible via a direct
+      query against ``org_signup_requests``.
     """
 
     sender: str = DEFAULT_EMAIL_SENDER

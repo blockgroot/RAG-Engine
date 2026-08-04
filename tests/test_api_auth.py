@@ -84,16 +84,16 @@ def test_signup_rejects_duplicate_pending_request(client, signup_email_cleanup):
 
 @requires_db
 def test_signup_allowed_again_after_rejection(client, signup_email_cleanup):
+    from app.auth import consume_reject_token, create_signup_request
+
     email = f"reapply-{uuid.uuid4().hex[:8]}@newco.example.com"
     signup_email_cleanup.append(email)
 
-    first = client.post("/auth/signup", json={"email": email, "company_name": "First Co"})
-    assert first.status_code == 200
-
-    from app.auth import get_pending_request_for_email, reject_signup_request
-
-    request = get_pending_request_for_email(email)
-    reject_signup_request(request.id, reason="not a fit")
+    # Create directly (rather than via POST /auth/signup) so the test has the
+    # reject_token — the HTTP response deliberately never returns it, only
+    # the owner-notification email does.
+    request = create_signup_request(email, "First Co")
+    consume_reject_token(request.reject_token, reason="not a fit")
 
     second = client.post("/auth/signup", json={"email": email, "company_name": "Second Co"})
     assert second.status_code == 200

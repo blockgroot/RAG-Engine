@@ -8,10 +8,9 @@ session issuance — there is exactly one way to log in, admin or employee:
    create an org or account synchronously: it queues a pending
    ``org_signup_requests`` row and emails the platform owner
    (``EmailSettings.owner_notification_email``) a notification with
-   one-click approve/reject confirmation links, plus
-   ``scripts/review_signup_requests.py`` as a CLI alternative. Only once
-   approved does the org + admin user get created and a magic-link sign-in
-   email go out to the requester.
+   one-click approve/reject confirmation links — the ONLY review surface,
+   deliberately no CLI/admin UI. Only once approved does the org + admin
+   user get created and a magic-link sign-in email go out to the requester.
 2. Magic link (``/auth/magic-link`` + ``/auth/magic-link/verify``) — the
    normal way back in for anyone who ALREADY has an account (an admin whose
    signup request was approved, or a member an admin invited via
@@ -95,10 +94,9 @@ def signup(body: dict, background_tasks: BackgroundTasks, http_request: Request)
 
     No org or account is created here. The request lands in
     ``org_signup_requests`` as ``pending`` until the platform owner reviews
-    it (one-click email links, or ``scripts/review_signup_requests.py``);
-    only on approval does the org + its admin user get created and a
-    sign-in link get emailed. An email that's already a user anywhere, or
-    already has a pending request, is rejected.
+    it via the one-click email links; only on approval does the org + its
+    admin user get created and a sign-in link get emailed. An email that's
+    already a user anywhere, or already has a pending request, is rejected.
     """
     email = (body.get("email") or "").strip().lower()
     company_name = (body.get("company_name") or "").strip()

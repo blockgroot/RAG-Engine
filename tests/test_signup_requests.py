@@ -1,4 +1,4 @@
-"""org_signup_requests queue: create/get/list/approve/reject (no HTTP)."""
+"""org_signup_requests queue: create/get + one-click approve/reject tokens (no HTTP)."""
 
 from __future__ import annotations
 
@@ -7,13 +7,14 @@ import uuid
 import pytest
 
 from app.auth import (
-    approve_signup_request,
+    consume_approve_token,
+    consume_reject_token,
     create_signup_request,
     get_pending_request_for_email,
-    list_signup_requests,
-    reject_signup_request,
+    get_request_by_approve_token,
+    get_request_by_reject_token,
 )
-from app.core.exceptions import AuthError, NotFoundError
+from app.core.exceptions import AuthError
 
 from .conftest import requires_db
 
@@ -31,6 +32,8 @@ def test_create_then_get_pending_round_trip(signup_email_cleanup):
     assert created.status == "pending"
     assert created.company_name == "Acme Co"
     assert created.org_id is None
+    assert created.approve_token
+    assert created.reject_token
 
     fetched = get_pending_request_for_email(email)
     assert fetched is not None
@@ -53,7 +56,7 @@ def test_reject_then_reapply_succeeds(signup_email_cleanup):
     signup_email_cleanup.append(email)
 
     first = create_signup_request(email, "First Co")
-    reject_signup_request(first.id, reason="not a fit")
+    consume_reject_token(first.reject_token, reason="not a fit")
 
     # Re-submitting after rejection must succeed (only PENDING collides).
     second = create_signup_request(email, "Second Co")
@@ -62,12 +65,27 @@ def test_reject_then_reapply_succeeds(signup_email_cleanup):
 
 
 @requires_db
-def test_approve_creates_org_and_admin(store, org_cleanup, signup_email_cleanup):
+def test_get_request_by_approve_token_round_trip(signup_email_cleanup):
+    email = _new_email("lookup")
+    signup_email_cleanup.append(email)
+
+    request = create_signup_request(email, "Lookup Co")
+    fetched = get_request_by_approve_token(request.approve_token)
+    assert fetched is not None
+    assert fetched.id == request.id
+
+    rejected_lookup = get_request_by_reject_token(request.reject_token)
+    assert rejected_lookup is not None
+    assert rejected_lookup.id == request.id
+
+
+@requires_db
+def test_approve_token_creates_org_and_admin(store, org_cleanup, signup_email_cleanup):
     email = _new_email("approve")
     signup_email_cleanup.append(email)
 
     request = create_signup_request(email, "Approved Co")
-    approved, org_id = approve_signup_request(request.id, store=store)
+    approved, org_id = consume_approve_token(request.approve_token, store=store)
     org_cleanup.append(org_id)
 
     assert approved.status == "approved"
@@ -82,60 +100,57 @@ def test_approve_creates_org_and_admin(store, org_cleanup, signup_email_cleanup)
 
 
 @requires_db
-def test_approve_twice_raises_not_found(store, org_cleanup, signup_email_cleanup):
+def test_approve_token_twice_raises_auth_error(store, org_cleanup, signup_email_cleanup):
     email = _new_email("approve-twice")
     signup_email_cleanup.append(email)
 
     request = create_signup_request(email, "Approve Twice Co")
-    _, org_id = approve_signup_request(request.id, store=store)
+    _, org_id = consume_approve_token(request.approve_token, store=store)
     org_cleanup.append(org_id)
 
-    with pytest.raises(NotFoundError):
-        approve_signup_request(request.id, store=store)
+    with pytest.raises(AuthError):
+        consume_approve_token(request.approve_token, store=store)
 
 
 @requires_db
-def test_reject_records_reason(signup_email_cleanup):
+def test_reject_token_records_reason(signup_email_cleanup):
     email = _new_email("reject")
     signup_email_cleanup.append(email)
 
     request = create_signup_request(email, "Rejected Co")
-    rejected = reject_signup_request(request.id, reason="duplicate of an existing tenant")
+    rejected = consume_reject_token(
+        request.reject_token, reason="duplicate of an existing tenant"
+    )
 
     assert rejected.status == "rejected"
     assert rejected.reject_reason == "duplicate of an existing tenant"
 
 
 @requires_db
-def test_reject_twice_raises_not_found(signup_email_cleanup):
+def test_reject_token_twice_raises_auth_error(signup_email_cleanup):
     email = _new_email("reject-twice")
     signup_email_cleanup.append(email)
 
     request = create_signup_request(email, "Reject Twice Co")
-    reject_signup_request(request.id)
+    consume_reject_token(request.reject_token)
 
-    with pytest.raises(NotFoundError):
-        reject_signup_request(request.id)
-
-
-@requires_db
-def test_approve_unknown_id_raises_not_found(store):
-    with pytest.raises(NotFoundError):
-        approve_signup_request(str(uuid.uuid4()), store=store)
+    with pytest.raises(AuthError):
+        consume_reject_token(request.reject_token)
 
 
 @requires_db
-def test_list_signup_requests_pending_vs_all(signup_email_cleanup):
-    email = _new_email("list")
+def test_approve_unknown_token_raises_auth_error(store):
+    with pytest.raises(AuthError):
+        consume_approve_token("not-a-real-token", store=store)
+
+
+@requires_db
+def test_approving_with_reject_token_fails(store, signup_email_cleanup):
+    """The two tokens are not interchangeable — the reject token must never
+    approve a request, even though both point at the same row."""
+    email = _new_email("cross-token")
     signup_email_cleanup.append(email)
 
-    request = create_signup_request(email, "List Co")
-    reject_signup_request(request.id, reason="test")
-
-    pending = list_signup_requests(status="pending")
-    assert request.id not in {r.id for r in pending}
-
-    everything = list_signup_requests(status=None)
-    assert request.id in {r.id for r in everything}
-    matched = next(r for r in everything if r.id == request.id)
-    assert matched.status == "rejected"
+    request = create_signup_request(email, "Cross Token Co")
+    with pytest.raises(AuthError):
+        consume_approve_token(request.reject_token, store=store)

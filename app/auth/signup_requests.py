@@ -2,12 +2,14 @@
 
 Replaces immediate self-serve org+admin creation at ``/auth/signup``: a
 brand-new company's first user lands here as ``pending`` instead of getting
-an org synchronously. The platform owner reviews and approves/rejects either
-via ``scripts/review_signup_requests.py`` (by id) or the one-click links in
-the owner-notification email (``consume_approve_token``/
-``consume_reject_token``, by possession token) — deliberately not a new
-authenticated HTTP/session surface, just a bearer-token action link like
-``magic_link.py`` (see CLAUDE.md §2/§4). Only DB reads/writes live here;
+an org synchronously. The platform owner reviews and approves/rejects via
+the one-click links in the owner-notification email
+(``consume_approve_token``/``consume_reject_token``, by possession token) —
+deliberately not a new authenticated HTTP/session surface, just a
+bearer-token action link like ``magic_link.py`` (see CLAUDE.md §2/§4).
+There is intentionally no id-based approve/reject path or CLI here — the
+email flow is the only reviewer-facing surface, kept to exactly one to avoid
+two parallel ways of doing the same thing. Only DB reads/writes live here;
 composing the approval/rejection/notification emails is the caller's job
 (mirrors ``users.py``'s separation of concerns).
 """
@@ -21,7 +23,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from ..config.settings import AuthSettings
-from ..core.exceptions import AuthError, NotFoundError
+from ..core.exceptions import AuthError
 from ..db.connection import DatabaseError, get_connection
 from .users import create_admin
 
@@ -118,88 +120,6 @@ def get_pending_request_for_email(email: str) -> SignupRequest | None:
     return _row_to_request(row) if row else None
 
 
-def list_signup_requests(status: str | None = "pending") -> list[SignupRequest]:
-    """List signup requests. ``status=None`` lists every request, any status."""
-    with get_connection() as conn:
-        if status is None:
-            rows = conn.execute(
-                f"SELECT {_SELECT_COLUMNS} FROM org_signup_requests ORDER BY created_at"
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                f"SELECT {_SELECT_COLUMNS} FROM org_signup_requests "
-                f"WHERE status = %s ORDER BY created_at",
-                (status,),
-            ).fetchall()
-    return [_row_to_request(row) for row in rows]
-
-
-def _approve_by_clause(where_clause: str, param, *, store) -> tuple[SignupRequest, str]:
-    """Shared approve logic: mark approved, create org + admin, keyed by
-    whatever ``where_clause``/``param`` uniquely identifies one pending row
-    (an id, or a hashed possession token — see ``approve_signup_request`` /
-    ``consume_approve_token``). ``store`` is passed straight through to
-    ``create_organization`` — never a module-level global, so concurrent
-    approvals (by id and by token) can't race on each other's store.
-
-    Raises ``NotFoundError`` if no pending row matches.
-    """
-    with get_connection() as conn:
-        row = conn.execute(
-            f"UPDATE org_signup_requests SET status = 'approved', reviewed_at = now() "
-            f"WHERE {where_clause} AND status = 'pending' "
-            f"RETURNING id::text, email, company_name",
-            param,
-        ).fetchone()
-    if row is None:
-        raise NotFoundError("No pending request found for that reference.")
-    request_id, email, company_name = row
-
-    org_id = store.create_organization(company_name)
-    create_admin(email, org_id)
-
-    with get_connection() as conn:
-        updated = conn.execute(
-            f"UPDATE org_signup_requests SET org_id = %s::uuid WHERE id = %s::uuid "
-            f"RETURNING {_SELECT_COLUMNS}",
-            (org_id, request_id),
-        ).fetchone()
-    return _row_to_request(updated), org_id
-
-
-def approve_signup_request(request_id: str, *, store) -> tuple[SignupRequest, str]:
-    """Approve a pending request by id: create its org + admin user.
-
-    ``store`` is a ``VectorStore`` (e.g. ``PgvectorStore``) used only for
-    ``create_organization`` — kept as a parameter rather than constructed
-    here so this module stays free of a hard dependency on one concrete
-    store implementation, matching the rest of the app's factory-injection
-    convention. Used by ``scripts/review_signup_requests.py``.
-
-    Raises ``NotFoundError`` if no pending request matches ``request_id``
-    (unknown id, or already approved/rejected).
-    """
-    return _approve_by_clause("id = %s::uuid", (request_id,), store=store)
-
-
-def reject_signup_request(request_id: str, reason: str | None = None) -> SignupRequest:
-    """Reject a pending request by id, optionally recording ``reason``.
-
-    Raises ``NotFoundError`` if no pending request matches ``request_id``.
-    """
-    with get_connection() as conn:
-        row = conn.execute(
-            f"UPDATE org_signup_requests "
-            f"SET status = 'rejected', reject_reason = %s, reviewed_at = now() "
-            f"WHERE id = %s::uuid AND status = 'pending' "
-            f"RETURNING {_SELECT_COLUMNS}",
-            (reason, request_id),
-        ).fetchone()
-    if row is None:
-        raise NotFoundError("No pending request with that id.")
-    return _row_to_request(row)
-
-
 def get_request_by_approve_token(token: str) -> SignupRequest | None:
     """Read-only lookup for the GET confirmation page — never mutates state.
     Returns ``None`` if the token is unknown, expired, or the request is no
@@ -225,24 +145,39 @@ def get_request_by_reject_token(token: str) -> SignupRequest | None:
 
 
 def consume_approve_token(token: str, *, store) -> tuple[SignupRequest, str]:
-    """Approve a pending request via its one-click email possession token.
+    """Approve a pending request via its one-click email possession token:
+    atomically mark it approved, then create its org + admin user.
 
-    Same guarantees as ``approve_signup_request`` (atomic pending-only
-    transition, org+admin creation) but keyed by a hashed, expiring token
-    instead of an id — used by the ``/auth/signup-requests/approve`` route
-    reached from the owner-notification email. Raises ``AuthError`` if the
-    token is unknown, expired, or the request is no longer pending (already
+    ``store`` is a ``VectorStore`` (e.g. ``PgvectorStore``) used only for
+    ``create_organization`` — kept as a parameter rather than constructed
+    here so this module stays free of a hard dependency on one concrete
+    store implementation, matching the rest of the app's factory-injection
+    convention. Used by the ``/auth/signup-requests/approve`` route reached
+    from the owner-notification email. Raises ``AuthError`` if the token is
+    unknown, expired, or the request is no longer pending (already
     approved/rejected, or a stale duplicate email link).
     """
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT id::text FROM org_signup_requests "
-            "WHERE approve_token_hash = %s AND status = 'pending' AND action_expires_at > now()",
+            "UPDATE org_signup_requests SET status = 'approved', reviewed_at = now() "
+            "WHERE approve_token_hash = %s AND status = 'pending' AND action_expires_at > now() "
+            "RETURNING id::text, email, company_name",
             (_hash(token),),
         ).fetchone()
     if row is None:
         raise AuthError("This approval link is invalid, expired, or already used.")
-    return _approve_by_clause("id = %s::uuid", (row[0],), store=store)
+    request_id, email, company_name = row
+
+    org_id = store.create_organization(company_name)
+    create_admin(email, org_id)
+
+    with get_connection() as conn:
+        updated = conn.execute(
+            f"UPDATE org_signup_requests SET org_id = %s::uuid WHERE id = %s::uuid "
+            f"RETURNING {_SELECT_COLUMNS}",
+            (org_id, request_id),
+        ).fetchone()
+    return _row_to_request(updated), org_id
 
 
 def consume_reject_token(token: str, reason: str | None = None) -> SignupRequest:

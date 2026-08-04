@@ -150,13 +150,13 @@ DROP TABLE IF EXISTS owner_email_whitelist;
 
 -- Self-serve org creation request queue: a brand-new company's first user no
 -- longer creates an org+admin synchronously at /auth/signup — they land here
--- as `pending` until the platform owner approves, either via
--- scripts/review_signup_requests.py or the one-click email links below (see
--- CLAUDE.md §2/§4). No session/login/cookie surface either way — the email
--- links carry a single-use possession token, same trust model as
--- magic_link_tokens, not a second auth system. This is a plain CREATE TABLE
--- (no ALTER on an existing table), so it carries none of the ALTER-ordering
--- hazard documented near `ingestion_jobs`/`workspace_id` below.
+-- as `pending` until the platform owner approves via the one-click email
+-- links below (see CLAUDE.md §2/§4) — the ONLY review surface, no CLI or
+-- admin UI. No session/login/cookie surface — the email links carry a
+-- single-use possession token, same trust model as magic_link_tokens, not a
+-- second auth system. This is a plain CREATE TABLE (no ALTER on an existing
+-- table), so it carries none of the ALTER-ordering hazard documented near
+-- `ingestion_jobs`/`workspace_id` below.
 CREATE TABLE IF NOT EXISTS org_signup_requests (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email         TEXT NOT NULL,

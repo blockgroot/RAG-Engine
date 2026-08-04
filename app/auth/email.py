@@ -9,11 +9,8 @@ CLAUDE.md §1.
 
 SMTP sends are intentionally simple: connect → STARTTLS → login → send. That
 round-trip to a remote host (e.g. Gmail) routinely takes several seconds, so
-callers should schedule these via FastAPI ``BackgroundTasks`` rather than
-blocking the HTTP response on it — ``scripts/review_signup_requests.py`` is a
-synchronous CLI instead, so it calls the non-``_safe`` variants directly and
-lets a delivery failure print as a CLI error without rolling back the
-already-committed approve/reject decision.
+callers schedule these via FastAPI ``BackgroundTasks`` rather than blocking
+the HTTP response on it.
 """
 
 from __future__ import annotations
@@ -88,9 +85,9 @@ def send_magic_link_email_safe(to: str, link: str) -> None:
 def send_signup_approved_email(
     to: str, link: str, *, settings: EmailSettings | None = None
 ) -> None:
-    """Sent by scripts/review_signup_requests.py when a request is approved —
-    the org+admin already exist by the time this is called; this link is the
-    requester's first sign-in."""
+    """Sent after a signup request is approved (via its one-click email
+    link) — the org+admin already exist by the time this is called; this
+    link is the requester's first sign-in."""
     body = (
         "Good news — your organization has been approved and is ready.\n\n"
         f"Click to sign in (expires shortly, single use):\n\n{link}\n"
@@ -108,7 +105,7 @@ def send_signup_approved_email_safe(to: str, link: str) -> None:
 def send_signup_rejected_email(
     to: str, reason: str | None = None, *, settings: EmailSettings | None = None
 ) -> None:
-    """Sent by scripts/review_signup_requests.py when a request is rejected."""
+    """Sent after a signup request is rejected (via its one-click email link)."""
     body = "We're not able to approve your request to create an organization at this time.\n"
     if reason:
         body += f"\nReason: {reason}\n"

@@ -436,60 +436,62 @@ their policy documents; their employees ask questions and get answers grounded i
   rebuild it from scratch; the DNS-verification design was already
   reasoned through once.
 - **Self-serve org creation is gated behind a human-reviewed approval
-  queue — signup no longer creates an org or admin synchronously, and no
-  longer relies on a pre-approved whitelist.** Until now, `POST /auth/signup`
+  queue, reviewed EXCLUSIVELY via one-click email links — no CLI, no admin
+  UI, no id-based approve/reject path at all.** Until now, `POST /auth/signup`
   immediately called `store.create_organization(...)` + `create_admin(...)`:
   anyone could show up, name any company name, and become that org's admin
   with zero verification — a real gap for a multi-tenant platform where
   "this org's admin" is a trust boundary. `signup()` (`app/api/auth.py`) now
   only inserts a `pending` row into a new `org_signup_requests` table
   (`app/auth/signup_requests.py`: `create_signup_request`/
-  `get_pending_request_for_email`/`list_signup_requests`/
-  `approve_signup_request`/`reject_signup_request`/`consume_approve_token`/
-  `consume_reject_token`) — no org, no user, no magic-link email, since
-  there's no account yet to sign into. Approving reuses the exact same
+  `get_pending_request_for_email`/`consume_approve_token`/
+  `consume_reject_token`/`get_request_by_approve_token`/
+  `get_request_by_reject_token`) — no org, no user, no magic-link email,
+  since there's no account yet to sign into. `create_signup_request` also
+  mints an `approve_token`/`reject_token` pair (only their SHA-256 hashes are
+  stored, on `org_signup_requests.approve_token_hash`/`reject_token_hash`/
+  `action_expires_at`, same trust model as `magic_link_tokens`); if
+  `EmailSettings.owner_notification_email` is set, `signup()` emails that
+  address a notification (`send_signup_request_notification_email`) with
+  both links — **this is the only place a pending request is surfaced
+  anywhere; leaving the env var unset means requests are invisible short of
+  querying the table directly.** A partial unique index
+  (`idx_org_signup_requests_email_pending`, same pattern as
+  `idx_oauth_connections_org_provider_orgwide`) blocks a second signup while
+  one is already pending, but re-submitting after a rejection is allowed (a
+  rejected row no longer matches the partial index).
+  **The links are GET-a-confirmation-page, POST-to-act, not GET-mutates**
+  (`GET/POST /auth/signup-requests/approve` + `.../reject` in
+  `app/api/auth.py`) — a GET alone only renders a page showing the
+  requester's email/company and a button; only that button's POST back to
+  the same URL calls `consume_approve_token`/`consume_reject_token`, which
+  atomically flip `pending`→`approved`/`rejected` keyed by the hashed token
+  (no separate `consumed` flag needed — the status transition itself is the
+  one-time-use gate). This guards against a mail scanner or client
+  prefetching a bare GET link and silently approving/rejecting before a
+  human ever sees it. Approving reuses the exact same
   `store.create_organization` + `create_admin` calls signup used to make
   directly, then emails the requester a magic-link sign-in via
   `send_signup_approved_email`; rejecting records an optional reason and
   emails `send_signup_rejected_email` (from here on the *existing*
   invited-member/magic-link login path is used unchanged — this only gates
-  how the *first* admin account for a *new* org comes into being). A partial
-  unique index (`idx_org_signup_requests_email_pending`, same pattern as
-  `idx_oauth_connections_org_provider_orgwide`) blocks a second signup while
-  one is already pending, but re-submitting after a rejection is allowed (a
-  rejected row no longer matches the partial index).
-  **Two review paths, same underlying transition.** (1)
-  `scripts/review_signup_requests.py list/approve/reject` — a CLI against
-  the live DB, no HTTP/session surface, for anyone comfortable running a
-  script. (2) **One-click email links** — `create_signup_request` also mints
-  an `approve_token`/`reject_token` pair (only their SHA-256 hashes are
-  stored, on `org_signup_requests.approve_token_hash`/`reject_token_hash`/
-  `action_expires_at`, same trust model as `magic_link_tokens`); if
-  `EmailSettings.owner_notification_email` is set, `signup()` emails that
-  address a notification (`send_signup_request_notification_email`) with
-  both links. **The links are GET-a-confirmation-page, POST-to-act, not
-  GET-mutates** (`GET/POST /auth/signup-requests/approve` +
-  `.../reject` in `app/api/auth.py`) — a GET alone only renders a page
-  showing the requester's email/company and a button; only that button's
-  POST back to the same URL calls `consume_approve_token`/
-  `consume_reject_token`. This was a deliberate correction from the token
-  columns' original design note ("no separate consumed flag needed, the
-  status transition is the one-time-use gate") — that's still true for
-  *replay*, but it doesn't protect against a mail scanner or client
-  prefetching a bare GET link and silently approving/rejecting before a
-  human ever sees it. Both paths are otherwise equivalent: same atomic
-  `WHERE status = 'pending'` guard, same org+admin creation, same emails.
-  **This supersedes the DB-backed `owner_email_whitelist` design** (dropped
-  via `DROP TABLE IF EXISTS owner_email_whitelist` in `schema.sql`,
-  `app/auth/owner_whitelist.py` + `scripts/manage_owner_whitelist.py`
-  deleted): a whitelist requires knowing every future owner's email in
-  advance and pre-populating it out-of-band, which stopped scaling once
-  approvals became frequent enough to be a routine, unpredictable event
-  rather than a rare provisioning step — the approval queue instead lets
-  *anyone* ask, and gates on a reviewer's decision made against the actual
-  request (email + company name) rather than a static list. Revive the
-  whitelist from git history if a pre-approved-list gate is ever wanted
-  again (e.g. alongside the queue, as a fast-path auto-approve).
+  how the *first* admin account for a *new* org comes into being).
+  **This supersedes two earlier, more elaborate designs, both intentionally
+  dropped rather than kept as parallel options:** (1) the DB-backed
+  `owner_email_whitelist` gate (`DROP TABLE IF EXISTS owner_email_whitelist`
+  in `schema.sql`, `app/auth/owner_whitelist.py` +
+  `scripts/manage_owner_whitelist.py` deleted) — a static list requires
+  knowing every future owner's email in advance and pre-populating it
+  out-of-band, which stopped scaling once approvals became a routine,
+  unpredictable event rather than a rare provisioning step. (2) an id-based
+  CLI review path (`scripts/review_signup_requests.py list/approve/reject`,
+  plus `approve_signup_request`/`reject_signup_request`/
+  `list_signup_requests` by id) that briefly coexisted with the email links
+  as a fallback — removed on request to keep exactly one reviewer-facing
+  surface instead of two ways to do the same thing; a CLI/id-based path adds
+  real value only once there are multiple reviewers or a need to review
+  without an inbox, neither true yet. Revive either from git history if that
+  changes.
 - **Session TTL defaults to 30 days, not a typical short web session** (`AUTH_SESSION_TTL_MINUTES`,
   `app/auth/session.py` + the `max_age` on the session cookie in `app/api/auth.py`) —
   deliberate given this is a low-risk internal tool with an already-hardened cookie
@@ -935,7 +937,7 @@ Defined in `app/db/schema.sql`. Current tables:
 | `api_rate_counters` | (Phase 21) Sliding-window request counters for Postgres-backed rate limiting (`scope` PK, `window_start`, `count`). |
 | `workspaces` | (Workspace-within-a-Workspace) An employee-created sub-workspace nested inside one org. `id`, `org_id`, `name`, `created_by` (nullable, `ON DELETE SET NULL`), `created_at`. |
 | `workspace_members` | (Workspace-within-a-Workspace) Membership in a sub-workspace — a SEPARATE, stricter boundary than org membership (every member must already be a `users` row in the same org, enforced in `app/workspaces/`, not by a DB constraint alone). `workspace_id`, `user_id`, `role` (`owner`\|`member`), `invited_by` (nullable, `ON DELETE SET NULL`), `joined_at`. PK `(workspace_id, user_id)`. |
-| `org_signup_requests` | (Signup-approval queue, §2/§4) A pending/approved/rejected request to create a new org, replacing both the old immediate self-serve org+admin creation and the later `owner_email_whitelist` gate. `id`, `email`, `company_name`, `status` (`pending`\|`approved`\|`rejected`), `reject_reason`, `org_id` (nullable, `ON DELETE SET NULL` — populated only on approval, an audit trail of which org a request became), `reviewed_at`, `created_at`, plus `approve_token_hash`/`reject_token_hash`/`action_expires_at` (one-click email links — only hashes stored, same trust model as `magic_link_tokens`). Partial unique index `idx_org_signup_requests_email_pending ON (email) WHERE status='pending'` — one pending request per email; re-submitting after a rejection is allowed. Reviewed via `scripts/review_signup_requests.py` (no HTTP surface) or the one-click GET-confirm/POST-act links in `app/api/auth.py` (also no authenticated session — bearer possession tokens). |
+| `org_signup_requests` | (Signup-approval queue, §2/§4) A pending/approved/rejected request to create a new org, replacing both the old immediate self-serve org+admin creation and the later `owner_email_whitelist` gate. `id`, `email`, `company_name`, `status` (`pending`\|`approved`\|`rejected`), `reject_reason`, `org_id` (nullable, `ON DELETE SET NULL` — populated only on approval, an audit trail of which org a request became), `reviewed_at`, `created_at`, plus `approve_token_hash`/`reject_token_hash`/`action_expires_at` (one-click email links — only hashes stored, same trust model as `magic_link_tokens`). Partial unique index `idx_org_signup_requests_email_pending ON (email) WHERE status='pending'` — one pending request per email; re-submitting after a rejection is allowed. Reviewed EXCLUSIVELY via the one-click GET-confirm/POST-act links in `app/api/auth.py` (no authenticated session — bearer possession tokens); there is no CLI or id-based review path. |
 
 **`org_domains` (Phase 10) was dropped** in the domain-auto-join simplification
 (see §2) — `DROP TABLE IF EXISTS org_domains` in `schema.sql`. It held a
@@ -1190,8 +1192,8 @@ knowing every future owner's email in advance, while a review queue lets
 the request itself (email + company name). Changes: new
 `org_signup_requests` table + `app/auth/signup_requests.py`
 (`create_signup_request`/`get_pending_request_for_email`/
-`list_signup_requests`/`approve_signup_request`/`reject_signup_request`/
-`consume_approve_token`/`consume_reject_token`/`get_request_by_approve_token`/
+`approve_signup_request`/`reject_signup_request`/`consume_approve_token`/
+`consume_reject_token`/`get_request_by_approve_token`/
 `get_request_by_reject_token`); `POST /auth/signup` (`app/api/auth.py`) now
 only queues a pending request instead of calling
 `store.create_organization`/`create_admin` directly, and no longer returns
@@ -1200,30 +1202,52 @@ only queues a pending request instead of calling
 Three email templates (`send_signup_approved_email`/`send_signup_rejected_email`/
 `send_signup_request_notification_email` + `_safe` wrappers) in
 `app/auth/email.py`, sharing the existing `_dispatch()` console/smtp helper.
-**Two equivalent review paths:** (1) `scripts/review_signup_requests.py
-list/approve/reject` — a CLI against the live DB, no HTTP/session surface;
-(2) **one-click email links** — `create_signup_request` mints an
-`approve_token`/`reject_token` pair (hash-only storage, `action_expires_at`,
-`AuthSettings.signup_action_ttl_hours`, default 72h); if
-`EmailSettings.owner_notification_email` is set, `signup()` emails that
-address the two links via a background task. The links are deliberately
-**GET-a-confirmation-page, POST-to-act** (`GET/POST /auth/signup-requests/approve`
-+ `.../reject`, `app/api/auth.py`) rather than GET-mutates: a GET renders a
-small HTML page showing the requester's email/company with a button; only
-that button's POST calls `consume_approve_token`/`consume_reject_token`. This
-guards against a mail client or security scanner prefetching the emailed URL
-and silently approving/rejecting a request before a human sees it — the
-original token-column design note ("status transition is the one-time-use
-gate") is still true against *replay*, but doesn't cover prefetch-triggered
-first use. Frontend `signup/page.tsx` copy updated for "pending review".
-Tests: `tests/test_signup_requests.py` covers the module directly
-(create/get, duplicate-pending rejected, approve creates org+admin, reject
-records a reason, double-approve/double-reject raise `NotFoundError`,
-re-request after rejection succeeds, `list_signup_requests` pending-vs-all);
-`test_api_auth.py` replaced the old immediate-admin/whitelist tests with
-pending-request + duplicate-pending + re-request-after-rejection assertions.
-Existing invited-member and magic-link login paths are completely
-unchanged.
+At merge time this shipped with **two review paths** — an id-based CLI
+(`scripts/review_signup_requests.py list/approve/reject`) alongside the
+one-click email links — but the CLI path was removed the same day (see the
+next bullet); read on for the flow as it actually ships. The links are
+deliberately **GET-a-confirmation-page, POST-to-act**
+(`GET/POST /auth/signup-requests/approve` + `.../reject`, `app/api/auth.py`)
+rather than GET-mutates: a GET renders a small HTML page showing the
+requester's email/company with a button; only that button's POST calls
+`consume_approve_token`/`consume_reject_token`. This guards against a mail
+client or security scanner prefetching the emailed URL and silently
+approving/rejecting a request before a human sees it — the original
+token-column design note ("status transition is the one-time-use gate") is
+still true against *replay*, but doesn't cover prefetch-triggered first use.
+Frontend `signup/page.tsx` copy updated for "pending review". Existing
+invited-member and magic-link login paths are completely unchanged.
+
+**CLI review path removed the same day (still on `feature/signup-approval-queue-v2`)
+— email links are now the ONLY way to review a signup request.** The merge
+above kept `scripts/review_signup_requests.py` as a fallback in case email
+wasn't configured, plus the id-based `approve_signup_request`/
+`reject_signup_request`/`list_signup_requests` functions it called. Explicit
+ask: no CLI, no admin UI, nothing beyond "click approve/reject in the email"
+— a second reviewer-facing surface was unwanted complexity for a
+single-operator deployment where email is already required to run the flow
+at all (the requester's own approval email depends on it). Removed:
+`scripts/review_signup_requests.py`; `approve_signup_request`/
+`reject_signup_request`/`list_signup_requests` from
+`app/auth/signup_requests.py` (their logic is now inlined directly into
+`consume_approve_token`, the only remaining approve path, as a single atomic
+`UPDATE ... WHERE approve_token_hash = %s AND status = 'pending' AND
+action_expires_at > now()` — no separate SELECT-then-UPDATE). `EmailSettings.
+owner_notification_email`'s docstring and the `org_signup_requests` §5 entry
+now say plainly: leaving it unset means pending requests are invisible short
+of querying the table directly — that is accepted, not a gap to fill with a
+fallback CLI. Tests: `tests/test_signup_requests.py` rewritten around
+`consume_approve_token`/`consume_reject_token`/`get_request_by_approve_token`/
+`get_request_by_reject_token` (create/get, duplicate-pending rejected,
+approve creates org+admin, double-approve raises `AuthError`, reject records
+a reason, double-reject raises `AuthError`, unknown token raises `AuthError`,
+and a reject-token can never approve); `test_api_auth.py`'s
+re-request-after-rejection case now creates the request directly (via
+`create_signup_request`) to obtain the reject token, since the HTTP signup
+response never exposes it — only the notification email does. If a CLI or
+multi-reviewer path is wanted again later (e.g. once there's more than one
+platform owner, or a need to review without an inbox), it was reasoned
+through twice already; restore from git history rather than redesigning.
 
 **Hardening pass (Phases 18–22, external review follow-up).** Phase 20
 (structural citations + NLI) is **explicitly deferred** pending a separate
