@@ -1,53 +1,72 @@
-"""Auth router: whitelist-gated signup, admin-invited member login, admin
-OAuth "Connect" flow (Phase 13, simplified — domain auto-join removed).
+"""Auth router: signup-approval queue, admin-invited member login, admin
+OAuth "Connect" flow (Phase 13, simplified — domain auto-join removed;
+self-serve org creation gated behind manual approval, not a whitelist).
 
 Three entry points, all converging on the same passwordless magic-link
 session issuance — there is exactly one way to log in, admin or employee:
-1. Signup (``/auth/signup``) — creates a brand-new org and makes this user
-   its admin, but ONLY for an email on the DB-backed
-   ``owner_email_whitelist`` table (``app/auth/owner_whitelist.py``, managed
-   via ``scripts/manage_owner_whitelist.py``); anyone else gets a 403. This
-   is deliberately narrow: it gates the moment a new org is born, nothing
-   else. Everyone who isn't pre-approved to create an org instead joins an
-   EXISTING one via an admin invite (``/admin/members``) — see that router.
-   A whitelisted signup emails the new admin a magic link. No password to
-   set, no separate "admin login" flow.
+1. Signup (``/auth/signup``) — a brand-new company's first user. Does NOT
+   create an org or account synchronously: it queues a pending
+   ``org_signup_requests`` row and emails the platform owner
+   (``EmailSettings.owner_notification_email``) a notification with
+   one-click approve/reject confirmation links, plus
+   ``scripts/review_signup_requests.py`` as a CLI alternative. Only once
+   approved does the org + admin user get created and a magic-link sign-in
+   email go out to the requester.
 2. Magic link (``/auth/magic-link`` + ``/auth/magic-link/verify``) — the
-   normal way back in for anyone who ALREADY has an account (an admin, or a
-   member an admin invited via ``/admin/members``). An email with no existing
-   account has no path to a first login here — only an admin invite (or
-   signup, for a brand-new org) creates one. There is deliberately no
-   response-content difference between "no account" and "email sent" so this
-   endpoint can't be used to enumerate registered accounts.
+   normal way back in for anyone who ALREADY has an account (an admin whose
+   signup request was approved, or a member an admin invited via
+   ``/admin/members``). An email with no existing account has no path to a
+   first login here — only an admin invite or an approved signup request
+   creates one. There is deliberately no response-content difference between
+   "no account" and "email sent" so this endpoint can't be used to enumerate
+   registered accounts.
 3. OAuth connect (``/auth/{provider}/authorize`` + ``/auth/{provider}/callback``)
    — admin-only, requires an existing session, used to link an org's Notion
    (etc.) workspace. Fully separate from magic-link auth; it never issues a
    session itself, only an ``oauth_connections`` row.
+
+The signup-approval one-click links (``/auth/signup-requests/approve`` and
+``/auth/signup-requests/reject``) are deliberately GET-a-confirmation-page,
+POST-to-act: a GET alone never mutates state, so a mail client or security
+scanner prefetching the link in the notification email can't silently
+approve/reject a request. Only clicking the button on the confirmation page
+(a same-URL POST) does. Like magic-link tokens, these are bearer possession
+tokens (single-use, expiring, hash-stored) — not a new authenticated
+HTTP/session surface.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
-from fastapi.responses import RedirectResponse
+import html
+
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from ..auth import (
     build_oauth_provider,
+    consume_approve_token,
     consume_magic_link_token,
+    consume_reject_token,
     consume_state,
-    create_admin,
     create_magic_link_token,
     create_session_token,
     create_state,
+    create_signup_request,
+    get_pending_request_for_email,
+    get_request_by_approve_token,
+    get_request_by_reject_token,
     get_user_by_email,
-    is_whitelisted,
     save_connection,
     send_magic_link_email_safe,
+    send_signup_approved_email_safe,
+    send_signup_rejected_email_safe,
+    send_signup_request_notification_email_safe,
 )
 from ..config.settings import ApiSettings, AuthSettings, EmailSettings
 from ..core.exceptions import AuthError, ConfigurationError, OAuthError
-from ..vectorstore.base import VectorStore
+from ..vectorstore import build_vector_store
 from ..workspaces import assert_member
-from .deps import SESSION_COOKIE_NAME, get_session, get_vector_store
+from .deps import SESSION_COOKIE_NAME, get_session
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -64,19 +83,22 @@ def _dev_link(link: str) -> str | None:
     return link if EmailSettings.from_env().sender == "console" else None
 
 
-@router.post("/signup")
-def signup(
-    body: dict,
-    background_tasks: BackgroundTasks,
-    settings: ApiSettings = Depends(ApiSettings.from_env),
-    store: VectorStore = Depends(get_vector_store),
-):
-    """Create a brand-new org + its first admin user, then email a login link.
+def _build_magic_link(email: str) -> str:
+    token = create_magic_link_token(email)
+    base = (ApiSettings.from_env().frontend_url or "").rstrip("/")
+    return f"{base}/verify?token={token}"
 
-    Gated: only an email on the DB-backed ``owner_email_whitelist`` table
-    may create a new org this way — everyone else gets a 403. An email
-    that's already a user anywhere is rejected rather than silently creating
-    a second, disconnected account for it.
+
+@router.post("/signup")
+def signup(body: dict, background_tasks: BackgroundTasks, http_request: Request):
+    """Queue a request to create a brand-new org — does NOT create it.
+
+    No org or account is created here. The request lands in
+    ``org_signup_requests`` as ``pending`` until the platform owner reviews
+    it (one-click email links, or ``scripts/review_signup_requests.py``);
+    only on approval does the org + its admin user get created and a
+    sign-in link get emailed. An email that's already a user anywhere, or
+    already has a pending request, is rejected.
     """
     email = (body.get("email") or "").strip().lower()
     company_name = (body.get("company_name") or "").strip()
@@ -84,23 +106,38 @@ def signup(
         raise HTTPException(status_code=400, detail="A valid email is required")
     if not company_name:
         raise HTTPException(status_code=400, detail="A company name is required")
-    if not is_whitelisted(email):
-        raise HTTPException(
-            status_code=403, detail="This email is not authorized to create an organization"
-        )
     if get_user_by_email(email) is not None:
         raise HTTPException(status_code=400, detail="An account already exists for this email")
+    if get_pending_request_for_email(email) is not None:
+        raise HTTPException(
+            status_code=400, detail="A request for this email is already pending review"
+        )
 
-    org_id = store.create_organization(company_name)
-    create_admin(email, org_id)
+    try:
+        request = create_signup_request(email, company_name)
+    except AuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    token = create_magic_link_token(email)
-    base = (settings.frontend_url or "").rstrip("/")
-    link = f"{base}/verify?token={token}"
-    # Gmail SMTP is multi-second; don't block the signup response on it.
-    background_tasks.add_task(send_magic_link_email_safe, email, link)
+    owner_email = EmailSettings.from_env().owner_notification_email
+    if owner_email:
+        base = str(http_request.base_url).rstrip("/")
+        approve_link = f"{base}/auth/signup-requests/approve?token={request.approve_token}"
+        reject_link = f"{base}/auth/signup-requests/reject?token={request.reject_token}"
+        background_tasks.add_task(
+            send_signup_request_notification_email_safe,
+            owner_email,
+            email,
+            company_name,
+            approve_link,
+            reject_link,
+        )
 
-    return {"message": "Check your email for a sign-in link.", "dev_link": _dev_link(link)}
+    return {
+        "message": (
+            "Thanks — your request to create an organization has been received "
+            "and is pending review."
+        )
+    }
 
 
 @router.post("/magic-link")
@@ -234,3 +271,85 @@ def callback(
     else:
         target = f"/onboarding?connected={provider}"
     return RedirectResponse(url=f"{base}{target}" if base else target)
+
+
+def _confirm_page(action: str, email: str, company_name: str, token: str) -> str:
+    """Tiny, dependency-free confirmation page. GET renders this and does
+    NOT mutate anything (see module docstring for why); only the button's
+    POST back to the same URL does."""
+    verb = "Approve" if action == "approve" else "Reject"
+    extra_field = (
+        '<input name="reason" placeholder="Optional reason (shown to the requester)" '
+        'style="width:100%;padding:.5em;margin-top:.5em">'
+        if action == "reject"
+        else ""
+    )
+    return f"""
+<!doctype html>
+<html><head><meta charset="utf-8"><title>{verb} organization request</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:32em;margin:3em auto;padding:0 1em">
+  <h2>{verb} organization request?</h2>
+  <p><strong>Email:</strong> {html.escape(email)}<br>
+     <strong>Company:</strong> {html.escape(company_name)}</p>
+  <form method="post">
+    <input type="hidden" name="token" value="{html.escape(token)}">
+    {extra_field}
+    <button type="submit" style="padding:.6em 1.2em;margin-top:1em">{verb}</button>
+  </form>
+</body></html>
+""".strip()
+
+
+def _result_page(message: str) -> str:
+    return f"""
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Signup request</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:32em;margin:3em auto;padding:0 1em">
+  <p>{html.escape(message)}</p>
+</body></html>
+""".strip()
+
+
+@router.get("/signup-requests/approve", response_class=HTMLResponse)
+def confirm_approve_signup_request(token: str):
+    """GET only renders a confirmation page — never approves. See module
+    docstring: this is what stops an email scanner prefetching the link
+    from silently creating an org."""
+    request = get_request_by_approve_token(token)
+    if request is None:
+        return HTMLResponse(_result_page("This link is invalid, expired, or already used."))
+    return HTMLResponse(_confirm_page("approve", request.email, request.company_name, token))
+
+
+@router.post("/signup-requests/approve", response_class=HTMLResponse)
+def do_approve_signup_request(token: str = Form(...)):
+    store = build_vector_store()
+    try:
+        request, org_id = consume_approve_token(token, store=store)
+    except AuthError as exc:
+        return HTMLResponse(_result_page(str(exc)))
+
+    link = _build_magic_link(request.email)
+    send_signup_approved_email_safe(request.email, link)
+    return HTMLResponse(
+        _result_page(f"Approved. {request.company_name} ({request.email}) can now sign in.")
+    )
+
+
+@router.get("/signup-requests/reject", response_class=HTMLResponse)
+def confirm_reject_signup_request(token: str):
+    request = get_request_by_reject_token(token)
+    if request is None:
+        return HTMLResponse(_result_page("This link is invalid, expired, or already used."))
+    return HTMLResponse(_confirm_page("reject", request.email, request.company_name, token))
+
+
+@router.post("/signup-requests/reject", response_class=HTMLResponse)
+def do_reject_signup_request(token: str = Form(...), reason: str = Form("")):
+    try:
+        request = consume_reject_token(token, reason=reason or None)
+    except AuthError as exc:
+        return HTMLResponse(_result_page(str(exc)))
+
+    send_signup_rejected_email_safe(request.email, reason or None)
+    return HTMLResponse(_result_page(f"Rejected the request from {request.email}."))

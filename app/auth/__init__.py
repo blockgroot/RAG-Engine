@@ -33,15 +33,30 @@ from .users import (
     revoke_user_sessions,
 )
 from .magic_link import create_magic_link_token, consume_magic_link_token
-from .owner_whitelist import (
-    is_whitelisted,
-    add_owner_email,
-    remove_owner_email,
-    list_owner_emails,
+from .signup_requests import (
+    SignupRequest,
+    create_signup_request,
+    get_pending_request_for_email,
+    list_signup_requests,
+    approve_signup_request,
+    reject_signup_request,
+    consume_approve_token,
+    consume_reject_token,
+    get_request_by_approve_token,
+    get_request_by_reject_token,
 )
 from .oauth_state import create_state, consume_state
 from .session import SessionClaims, create_session_token, decode_session_token
-from .email import send_magic_link_email, send_magic_link_email_safe
+from .email import (
+    send_magic_link_email,
+    send_magic_link_email_safe,
+    send_signup_approved_email,
+    send_signup_approved_email_safe,
+    send_signup_rejected_email,
+    send_signup_rejected_email_safe,
+    send_signup_request_notification_email,
+    send_signup_request_notification_email_safe,
+)
 
 __all__ = [
     "OAuthProvider",
@@ -68,10 +83,16 @@ __all__ = [
     "revoke_user_sessions",
     "create_magic_link_token",
     "consume_magic_link_token",
-    "is_whitelisted",
-    "add_owner_email",
-    "remove_owner_email",
-    "list_owner_emails",
+    "SignupRequest",
+    "create_signup_request",
+    "get_pending_request_for_email",
+    "list_signup_requests",
+    "approve_signup_request",
+    "reject_signup_request",
+    "consume_approve_token",
+    "consume_reject_token",
+    "get_request_by_approve_token",
+    "get_request_by_reject_token",
     "create_state",
     "consume_state",
     "SessionClaims",
@@ -79,4 +100,10 @@ __all__ = [
     "decode_session_token",
     "send_magic_link_email",
     "send_magic_link_email_safe",
+    "send_signup_approved_email",
+    "send_signup_approved_email_safe",
+    "send_signup_rejected_email",
+    "send_signup_rejected_email_safe",
+    "send_signup_request_notification_email",
+    "send_signup_request_notification_email_safe",
 ]

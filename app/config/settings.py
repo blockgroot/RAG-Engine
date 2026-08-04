@@ -124,6 +124,7 @@ DEFAULT_WEB_SEARCH_TIMEOUT = 8.0
 # users).
 DEFAULT_SESSION_TTL_MINUTES = 60 * 24 * 30  # 30 days
 DEFAULT_MAGIC_LINK_TTL_MINUTES = 10
+DEFAULT_SIGNUP_ACTION_TTL_HOURS = 72  # 3 days
 
 # HTTP API (Phase 10+).
 DEFAULT_API_HOST = "0.0.0.0"
@@ -765,18 +766,21 @@ class AuthSettings:
       low-risk internal tool with an already-hardened cookie
       (httpOnly+Secure+SameSite=Lax) and no refresh-token mechanism.
     - ``magic_link_ttl_minutes``  how long a login link stays valid/single-use.
+    - ``signup_action_ttl_hours``  how long the one-click approve/reject links
+      emailed to the platform owner on a new ``/auth/signup`` request stay
+      valid/single-use (``org_signup_requests.action_expires_at``).
 
-    The owner-email whitelist that gates ``/auth/signup`` (who may create a
-    brand-new org) is NOT here — it's DB-backed (``owner_email_whitelist``
-    table, ``app/auth/owner_whitelist.py``), not an env var, so granting a
-    new owner takes effect immediately with no redeploy. Manage it via
-    ``scripts/manage_owner_whitelist.py``.
+    Self-serve org creation (``/auth/signup``) is gated by human review, not a
+    pre-approved list — see the signup-approval queue
+    (``app/auth/signup_requests.py``, ``scripts/review_signup_requests.py``).
+    This superseded an earlier DB-backed ``owner_email_whitelist`` design.
     """
 
     encryption_keys: list[str] = field(default_factory=list)
     jwt_secret: str | None = None
     session_ttl_minutes: int = DEFAULT_SESSION_TTL_MINUTES
     magic_link_ttl_minutes: int = DEFAULT_MAGIC_LINK_TTL_MINUTES
+    signup_action_ttl_hours: int = DEFAULT_SIGNUP_ACTION_TTL_HOURS
 
     @classmethod
     def from_env(cls) -> "AuthSettings":
@@ -790,6 +794,9 @@ class AuthSettings:
             ),
             magic_link_ttl_minutes=int(
                 os.getenv("AUTH_MAGIC_LINK_TTL_MINUTES") or DEFAULT_MAGIC_LINK_TTL_MINUTES
+            ),
+            signup_action_ttl_hours=int(
+                os.getenv("AUTH_SIGNUP_ACTION_TTL_HOURS") or DEFAULT_SIGNUP_ACTION_TTL_HOURS
             ),
         )
 
@@ -830,6 +837,10 @@ class EmailSettings:
     - ``sender``  ``"console"`` (default; prints the link, no dependency — dev
       and self-hosted-without-SMTP path) or ``"smtp"``.
     - ``smtp_*``  only read/required when ``sender == "smtp"``.
+    - ``owner_notification_email``  where the "new org-signup request" email
+      (with one-click approve/reject links) is sent. If unset, no
+      notification is sent — the platform owner falls back to
+      ``scripts/review_signup_requests.py list`` to discover pending requests.
     """
 
     sender: str = DEFAULT_EMAIL_SENDER
@@ -838,6 +849,7 @@ class EmailSettings:
     smtp_username: str | None = None
     smtp_password: str | None = None
     smtp_from: str | None = None
+    owner_notification_email: str | None = None
 
     @classmethod
     def from_env(cls) -> "EmailSettings":
@@ -849,4 +861,5 @@ class EmailSettings:
             smtp_username=os.getenv("EMAIL_SMTP_USERNAME"),
             smtp_password=os.getenv("EMAIL_SMTP_PASSWORD"),
             smtp_from=os.getenv("EMAIL_SMTP_FROM"),
+            owner_notification_email=os.getenv("OWNER_NOTIFICATION_EMAIL"),
         )

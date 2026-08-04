@@ -49,65 +49,54 @@ def _invited_member(store, org_cleanup):
 
 
 @requires_db
-def test_signup_creates_org_and_admin_and_sends_link(client, org_cleanup, whitelist_cleanup):
-    from app.auth import add_owner_email
-
+def test_signup_creates_pending_request_not_org_or_admin(client, signup_email_cleanup):
     email = f"founder-{uuid.uuid4().hex[:8]}@newco.example.com"
-    whitelist_cleanup.append(email)
-    add_owner_email(email)
+    signup_email_cleanup.append(email)
+
     response = client.post(
         "/auth/signup", json={"email": email, "company_name": f"NewCo {uuid.uuid4().hex[:8]}"}
     )
     assert response.status_code == 200
+    body = response.json()
+    assert "pending" in body["message"].lower()
+    assert "dev_link" not in body
 
+    from app.auth import get_pending_request_for_email
     from app.auth.users import get_user_by_email
 
-    user = get_user_by_email(email)
-    assert user is not None
-    org_cleanup.append(user.org_id)
-    assert user.role == "admin"
-
-    from app.auth import create_magic_link_token
-
-    token = create_magic_link_token(email)
-    verify_response = client.get(
-        f"/auth/magic-link/verify?token={token}", follow_redirects=False
-    )
-    assert verify_response.status_code in (302, 307)
-    session_token = verify_response.cookies.get("session")
-    me_response = client.get("/me", cookies={"session": session_token})
-    assert me_response.json()["role"] == "admin"
+    assert get_user_by_email(email) is None  # no account/org created yet
+    request = get_pending_request_for_email(email)
+    assert request is not None
+    assert request.status == "pending"
 
 
 @requires_db
-def test_signup_rejects_non_whitelisted_email(client):
-    # Never added to owner_email_whitelist — signup is closed by default.
-    email = f"uninvited-{uuid.uuid4().hex[:8]}@newco.example.com"
-    response = client.post(
-        "/auth/signup", json={"email": email, "company_name": "Uninvited Co"}
-    )
-    assert response.status_code == 403
-
-    from app.auth.users import get_user_by_email
-
-    assert get_user_by_email(email) is None  # no org/account created
-
-
-@requires_db
-def test_signup_rejects_duplicate_email(client, org_cleanup, whitelist_cleanup):
-    from app.auth import add_owner_email
-
+def test_signup_rejects_duplicate_pending_request(client, signup_email_cleanup):
     email = f"dup-{uuid.uuid4().hex[:8]}@newco.example.com"
-    whitelist_cleanup.append(email)
-    add_owner_email(email)
+    signup_email_cleanup.append(email)
+
     first = client.post("/auth/signup", json={"email": email, "company_name": "First Co"})
     assert first.status_code == 200
-    from app.auth.users import get_user_by_email
-
-    org_cleanup.append(get_user_by_email(email).org_id)
 
     second = client.post("/auth/signup", json={"email": email, "company_name": "Second Co"})
     assert second.status_code == 400
+
+
+@requires_db
+def test_signup_allowed_again_after_rejection(client, signup_email_cleanup):
+    email = f"reapply-{uuid.uuid4().hex[:8]}@newco.example.com"
+    signup_email_cleanup.append(email)
+
+    first = client.post("/auth/signup", json={"email": email, "company_name": "First Co"})
+    assert first.status_code == 200
+
+    from app.auth import get_pending_request_for_email, reject_signup_request
+
+    request = get_pending_request_for_email(email)
+    reject_signup_request(request.id, reason="not a fit")
+
+    second = client.post("/auth/signup", json={"email": email, "company_name": "Second Co"})
+    assert second.status_code == 200
 
 
 @requires_db
