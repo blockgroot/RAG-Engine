@@ -1,4 +1,4 @@
-"""Outbound email for magic links (Phase 13).
+"""Outbound email for magic links and the signup-approval queue (Phase 13).
 
 Minimal pluggable sender — not a full provider/factory package since there is
 only one real capability (send a message) and one production backend (SMTP);
@@ -9,8 +9,11 @@ CLAUDE.md §1.
 
 SMTP sends are intentionally simple: connect → STARTTLS → login → send. That
 round-trip to a remote host (e.g. Gmail) routinely takes several seconds, so
-callers should schedule ``send_magic_link_email`` via FastAPI
-``BackgroundTasks`` rather than blocking the HTTP response on it.
+callers should schedule these via FastAPI ``BackgroundTasks`` rather than
+blocking the HTTP response on it — ``scripts/review_signup_requests.py`` is a
+synchronous CLI instead, so it calls the non-``_safe`` variants directly and
+lets a delivery failure print as a CLI error without rolling back the
+already-committed approve/reject decision.
 """
 
 from __future__ import annotations
@@ -29,10 +32,10 @@ logger = logging.getLogger(__name__)
 _SMTP_TIMEOUT_SECONDS = 20
 
 
-def send_magic_link_email(to: str, link: str, *, settings: EmailSettings | None = None) -> None:
+def _dispatch(to: str, subject: str, body: str, settings: EmailSettings | None) -> None:
+    """Shared console/smtp send, factored out so each template function stays
+    a one-liner (subject + body) instead of re-implementing dispatch."""
     settings = settings or EmailSettings.from_env()
-    subject = "Your sign-in link"
-    body = f"Click to sign in (expires shortly, single use):\n\n{link}\n"
 
     if settings.sender == "console":
         print(f"\n[email:console] To: {to}\nSubject: {subject}\n{body}")
@@ -61,14 +64,17 @@ def send_magic_link_email(to: str, link: str, *, settings: EmailSettings | None 
                     smtp.login(settings.smtp_username, settings.smtp_password)
                 smtp.send_message(message)
         except (smtplib.SMTPException, OSError, TimeoutError) as exc:
-            raise ProviderError(
-                f"Failed to send magic-link email via SMTP: {exc}", cause=exc
-            ) from exc
+            raise ProviderError(f"Failed to send email via SMTP: {exc}", cause=exc) from exc
         return
 
     raise ConfigurationError(
         f"Unknown EMAIL_SENDER: {settings.sender!r} (expected 'console' or 'smtp')"
     )
+
+
+def send_magic_link_email(to: str, link: str, *, settings: EmailSettings | None = None) -> None:
+    body = f"Click to sign in (expires shortly, single use):\n\n{link}\n"
+    _dispatch(to, "Your sign-in link", body, settings)
 
 
 def send_magic_link_email_safe(to: str, link: str) -> None:
@@ -77,3 +83,40 @@ def send_magic_link_email_safe(to: str, link: str) -> None:
         send_magic_link_email(to, link)
     except (ConfigurationError, ProviderError) as exc:
         logger.warning("Magic-link email to %s failed: %s", to, exc)
+
+
+def send_signup_approved_email(
+    to: str, link: str, *, settings: EmailSettings | None = None
+) -> None:
+    """Sent by scripts/review_signup_requests.py when a request is approved —
+    the org+admin already exist by the time this is called; this link is the
+    requester's first sign-in."""
+    body = (
+        "Good news — your organization has been approved and is ready.\n\n"
+        f"Click to sign in (expires shortly, single use):\n\n{link}\n"
+    )
+    _dispatch(to, "Your organization is ready", body, settings)
+
+
+def send_signup_approved_email_safe(to: str, link: str) -> None:
+    try:
+        send_signup_approved_email(to, link)
+    except (ConfigurationError, ProviderError) as exc:
+        logger.warning("Signup-approved email to %s failed: %s", to, exc)
+
+
+def send_signup_rejected_email(
+    to: str, reason: str | None = None, *, settings: EmailSettings | None = None
+) -> None:
+    """Sent by scripts/review_signup_requests.py when a request is rejected."""
+    body = "We're not able to approve your request to create an organization at this time.\n"
+    if reason:
+        body += f"\nReason: {reason}\n"
+    _dispatch(to, "About your organization request", body, settings)
+
+
+def send_signup_rejected_email_safe(to: str, reason: str | None = None) -> None:
+    try:
+        send_signup_rejected_email(to, reason)
+    except (ConfigurationError, ProviderError) as exc:
+        logger.warning("Signup-rejected email to %s failed: %s", to, exc)

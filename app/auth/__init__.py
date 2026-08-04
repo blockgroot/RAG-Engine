@@ -43,7 +43,14 @@ from .signup_requests import (
 )
 from .oauth_state import create_state, consume_state
 from .session import SessionClaims, create_session_token, decode_session_token
-from .email import send_magic_link_email, send_magic_link_email_safe
+from .email import (
+    send_magic_link_email,
+    send_magic_link_email_safe,
+    send_signup_approved_email,
+    send_signup_approved_email_safe,
+    send_signup_rejected_email,
+    send_signup_rejected_email_safe,
+)
 
 __all__ = [
     "OAuthProvider",
@@ -83,4 +90,8 @@ __all__ = [
     "decode_session_token",
     "send_magic_link_email",
     "send_magic_link_email_safe",
+    "send_signup_approved_email",
+    "send_signup_approved_email_safe",
+    "send_signup_rejected_email",
+    "send_signup_rejected_email_safe",
 ]
