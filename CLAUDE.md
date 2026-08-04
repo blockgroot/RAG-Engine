@@ -439,27 +439,34 @@ their policy documents; their employees ask questions and get answers grounded i
   literally anyone name a company and become its admin with zero
   verification — a real gap for a multi-tenant platform where "this org's
   admin" is a trust boundary. `signup()` (`app/api/auth.py`) now checks the
-  submitted email against `AuthSettings.owner_email_whitelist` (env
-  `OWNER_EMAIL_WHITELIST`, comma-separated, **empty by default** — with
-  nothing configured, signup is fully closed, not "open") and returns 403
-  for anything not listed. This is a narrow gate: it only decides who may
-  bring a brand-new org into existence. It does NOT touch — and does not
-  need to touch — either of the two mechanisms that already handle
-  everything downstream of that: an existing admin inviting new employees
-  (`POST /admin/members`, admin-only) and any org member creating their own
-  sub-workspace (`POST /workspaces`, gated only by `get_session`, not
-  `require_admin` — see the Workspace-within-a-Workspace entry below). A
-  simple env-var whitelist was chosen over a DB table specifically because
-  the list is short and changes rarely (new companies partnering with this
-  platform), matching the same "cheapest mechanism that actually fits the
-  need" instinct used elsewhere (e.g. `NOTION_TOKEN_<NAME>` discovery) rather
-  than building a management UI/CLI for a handful of rows. **This
-  supersedes an earlier, more elaborate design** (a full pending-request
+  submitted email via `is_whitelisted()` and returns 403 for anything not
+  listed. This is a narrow gate: it only decides who may bring a brand-new
+  org into existence. It does NOT touch — and does not need to touch —
+  either of the two mechanisms that already handle everything downstream of
+  that: an existing admin inviting new employees (`POST /admin/members`,
+  admin-only) and any org member creating their own sub-workspace
+  (`POST /workspaces`, gated only by `get_session`, not `require_admin` —
+  see the Workspace-within-a-Workspace entry below).
+  **The whitelist itself is DB-backed (`owner_email_whitelist` table,
+  `app/auth/owner_whitelist.py`), not an env var — this supersedes the
+  original `OWNER_EMAIL_WHITELIST` env-var design.** The env var was the
+  right MVP call when the list was expected to be short and change rarely,
+  but that assumption broke down: every new approved owner meant editing
+  `.env` and redeploying, with no audit trail of who was added or when. A
+  DB table needs no redeploy (an addition takes effect on the very next
+  signup attempt) and is consistent with how every other piece of identity
+  in this app is stored. Managed exclusively via
+  `scripts/manage_owner_whitelist.py list/add/remove` — deliberately still
+  **no HTTP/session surface**, the one part of the original reasoning that
+  didn't change: granting "can create a new org" is a platform-operator
+  action, not something that belongs behind a web login, and a CLI against
+  the live DB is the cheapest mechanism that actually fits that need. **This
+  supersedes an earlier, even more elaborate design** (a full pending-request
   approval queue reviewed via a CLI script, with a later increment adding
   one-click email approve/reject links) that was prototyped and then
-  abandoned mid-build in favor of this much smaller whitelist gate — that
-  work never merged; if a review-queue workflow is wanted again later, it
-  was reasoned through in detail and shouldn't be redesigned from scratch.
+  abandoned mid-build in favor of the whitelist gate — that work never
+  merged; if a review-queue workflow is wanted again later, it was reasoned
+  through in detail and shouldn't be redesigned from scratch.
 - **Session TTL defaults to 30 days, not a typical short web session** (`AUTH_SESSION_TTL_MINUTES`,
   `app/auth/session.py` + the `max_age` on the session cookie in `app/api/auth.py`) —
   deliberate given this is a low-risk internal tool with an already-hardened cookie
@@ -892,6 +899,7 @@ Defined in `app/db/schema.sql`. Current tables:
 | `api_rate_counters` | (Phase 21) Sliding-window request counters for Postgres-backed rate limiting (`scope` PK, `window_start`, `count`). |
 | `workspaces` | (Workspace-within-a-Workspace) An employee-created sub-workspace nested inside one org. `id`, `org_id`, `name`, `created_by` (nullable, `ON DELETE SET NULL`), `created_at`. |
 | `workspace_members` | (Workspace-within-a-Workspace) Membership in a sub-workspace — a SEPARATE, stricter boundary than org membership (every member must already be a `users` row in the same org, enforced in `app/workspaces/`, not by a DB constraint alone). `workspace_id`, `user_id`, `role` (`owner`\|`member`), `invited_by` (nullable, `ON DELETE SET NULL`), `joined_at`. PK `(workspace_id, user_id)`. |
+| `owner_email_whitelist` | (§2) The only emails allowed to self-serve `POST /auth/signup` (create a brand-new org). `email` (PK, lowercased), `created_at`. Managed exclusively via `scripts/manage_owner_whitelist.py` — no HTTP/session surface. Replaces the original `OWNER_EMAIL_WHITELIST` env var so an addition takes effect immediately with no redeploy. |
 
 **`org_domains` (Phase 10) was dropped** in the domain-auto-join simplification
 (see §2) — `DROP TABLE IF EXISTS org_domains` in `schema.sql`. It held a
@@ -1131,6 +1139,27 @@ their own generated test email via `monkeypatch.setenv` before signing up.
 Deliberately does not touch `POST /admin/members` (existing-org invites) or
 `POST /workspaces` (any org member can already create a sub-workspace) —
 both already did what was asked of them before this change.
+
+**Owner-email whitelist moved from env var to DB (same branch,
+`feature/workspace-within-workspace-clean`) — the env-var version above was
+superseded within the same day.** Editing `.env` and redeploying for every
+newly-approved owner didn't scale. See §2 for the full reasoning. Changes:
+new `owner_email_whitelist` table (`email` PK, `created_at`); new
+`app/auth/owner_whitelist.py` (`is_whitelisted`/`add_owner_email`/
+`remove_owner_email`/`list_owner_emails`, both add/remove idempotent); the
+`signup()` check swapped from `AuthSettings.owner_email_whitelist` to
+`is_whitelisted(email)`; `AuthSettings.owner_email_whitelist` and the
+`OWNER_EMAIL_WHITELIST` env var removed entirely (no dual env+DB check, no
+migration needed since nothing was configured yet); new
+`scripts/manage_owner_whitelist.py list/add/remove`, manually smoke-tested
+against the local dev DB (add → whitelisted signup succeeds, remove →
+re-signup 403s again). Tests: new `tests/test_owner_whitelist.py` (7 cases:
+add/remove round-trip, idempotent add/remove, case-insensitive matching,
+list reflects state) plus a shared `whitelist_cleanup` fixture added to
+`tests/conftest.py` (mirrors `org_cleanup`); existing signup tests in
+`test_api_auth.py` switched from `monkeypatch.setenv(...)` to
+`add_owner_email(...)`. Still deliberately **no HTTP/session surface** —
+that part of the original design didn't change, only where the list lives.
 
 **Hardening pass (Phases 18–22, external review follow-up).** Phase 20
 (structural citations + NLI) is **explicitly deferred** pending a separate
