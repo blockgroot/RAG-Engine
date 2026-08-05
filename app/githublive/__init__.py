@@ -23,6 +23,15 @@ from .repos import (
     scope_from_config,
     scope_to_config,
 )
+from .base import (
+    CommitDetail,
+    CommitFile,
+    CommitSummary,
+    GitHubReader,
+    RepoReadme,
+)
+from .factory import build_github_reader
+from .rest import RestGitHubReader
 from .scope import load_scope, refresh_installation_scope
 
 __all__ = [
@@ -36,4 +45,11 @@ __all__ = [
     "scope_to_config",
     "load_scope",
     "refresh_installation_scope",
+    "GitHubReader",
+    "RepoReadme",
+    "CommitDetail",
+    "CommitFile",
+    "CommitSummary",
+    "RestGitHubReader",
+    "build_github_reader",
 ]

@@ -482,6 +482,43 @@ class GitHubSettings:
 
 
 @dataclass(frozen=True)
+class GitHubLiveSettings:
+    """Bounds on live GitHub reads (GitHub Integration Plan Phase 5).
+
+    Every value here exists to stop an unbounded payload reaching a prompt. That
+    is not a tidiness concern: GitHub documents that a commit diff can span 300
+    files per page up to 3 000 total and that "larger diffs may time out", and a
+    README can be arbitrarily long. Feeding either in whole would blow the
+    context window and, worse, could silently drop the part of the evidence the
+    answer depended on. Truncation here is always *marked* so the model can see
+    the evidence is partial (risk T6).
+
+    Unlike the RAG path there is no cache behind these calls, so timeouts are the
+    only thing standing between a slow GitHub and a slow answer (risk T8).
+    """
+
+    enabled: bool = True
+    timeout: float = 10.0
+    readme_max_bytes: int = 40_000
+    patch_max_bytes: int = 4_000
+    max_files_per_commit: int = 25
+    max_commits: int = 20
+    max_attempts: int = 3
+
+    @classmethod
+    def from_env(cls) -> "GitHubLiveSettings":
+        return cls(
+            enabled=os.getenv("GITHUB_LIVE_ENABLED", "true").lower() != "false",
+            timeout=float(os.getenv("GITHUB_LIVE_TIMEOUT", "10.0")),
+            readme_max_bytes=int(os.getenv("GITHUB_README_MAX_BYTES", "40000")),
+            patch_max_bytes=int(os.getenv("GITHUB_PATCH_MAX_BYTES", "4000")),
+            max_files_per_commit=int(os.getenv("GITHUB_MAX_FILES_PER_COMMIT", "25")),
+            max_commits=int(os.getenv("GITHUB_MAX_COMMITS", "20")),
+            max_attempts=int(os.getenv("GITHUB_LIVE_MAX_ATTEMPTS", "3")),
+        )
+
+
+@dataclass(frozen=True)
 class MemorySettings:
     """Conversation-memory sizing (Phase 5, revised Phase 8).
 
