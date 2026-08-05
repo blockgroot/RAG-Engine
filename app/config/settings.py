@@ -444,6 +444,44 @@ class GoogleSettings:
 
 
 @dataclass(frozen=True)
+class GitHubSettings:
+    """Configuration for the GitHub App "Connect" flow (GitHub Integration D1).
+
+    Like ``GoogleSettings`` there is deliberately **no** static-token path: a
+    GitHub App installed on the customer's GitHub organization is the only
+    supported credential, because repo access is then granted (and enforced) by
+    GitHub's own install screen rather than by a field in our database — the
+    same externally-enforced tenant boundary that made per-org Notion secrets
+    the right call (CLAUDE.md §2).
+
+    ``private_key`` is new secret material: an RS256 PEM used *only* to sign
+    the short-lived App JWT that mints installation tokens
+    (``app/auth/github_app.py``). It is never logged and never leaves the
+    process. ``app_slug`` is the App's URL slug, needed to build the install
+    URL — GitHub's install page lives at ``/apps/<slug>/installations/new``,
+    not at an OAuth authorize endpoint.
+    """
+
+    app_slug: str | None = None
+    client_id: str | None = None
+    client_secret: str | None = None
+    private_key: str | None = None
+
+    @classmethod
+    def from_env(cls) -> "GitHubSettings":
+        raw_key = os.getenv("GITHUB_APP_PRIVATE_KEY")
+        return cls(
+            app_slug=os.getenv("GITHUB_APP_SLUG"),
+            client_id=os.getenv("GITHUB_CLIENT_ID"),
+            client_secret=os.getenv("GITHUB_CLIENT_SECRET"),
+            # Accept a ``\n``-escaped single-line value so a multi-line PEM
+            # survives .env files and secret managers that only hold flat
+            # strings. A real multi-line value passes through untouched.
+            private_key=raw_key.replace("\\n", "\n") if raw_key else None,
+        )
+
+
+@dataclass(frozen=True)
 class MemorySettings:
     """Conversation-memory sizing (Phase 5, revised Phase 8).
 
