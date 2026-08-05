@@ -64,7 +64,8 @@ from ..auth import (
     send_signup_request_notification_email_safe,
 )
 from ..config.settings import ApiSettings, AuthSettings, EmailSettings
-from ..core.exceptions import AuthError, ConfigurationError, OAuthError
+from ..core.exceptions import AuthError, ConfigurationError, OAuthError, SourceError
+from ..githublive import refresh_installation_scope
 from ..vectorstore import build_vector_store
 from ..workspaces import assert_member
 from .deps import SESSION_COOKIE_NAME, get_session
@@ -290,6 +291,16 @@ def callback(
                 },
                 workspace_id=workspace_id,
             )
+            # Then record what the admin ACTUALLY authorized on GitHub's install
+            # screen ("All repositories" vs a chosen subset) — decision D5b.
+            # Best-effort: a failure here leaves a connected row whose scope is
+            # empty, which fails *closed* (resolve_repo refuses everything) and
+            # is fixable by refreshing scope, so it must not abort a connect that
+            # otherwise succeeded.
+            try:
+                refresh_installation_scope(org_id, workspace_id)
+            except (OAuthError, ConfigurationError, SourceError):
+                pass
         else:
             tokens = oauth_provider.exchange_code(code)
             save_connection(org_id, provider, tokens, workspace_id=workspace_id)
