@@ -165,13 +165,17 @@ def org_cleanup():
 
 
 @pytest.fixture
-def whitelist_cleanup():
-    """Track emails added to owner_email_whitelist during a test and remove them after."""
+def signup_email_cleanup():
+    """Track emails used in a signup-request test and delete their rows after.
+
+    org_signup_requests.org_id is ON DELETE SET NULL (not CASCADE), so an
+    org_cleanup teardown alone would leave the request row behind.
+    """
     created: list[str] = []
     yield created
     if created:
         with get_connection() as conn:
             conn.execute(
-                "DELETE FROM owner_email_whitelist WHERE email = ANY(%s::text[])",
+                "DELETE FROM org_signup_requests WHERE email = ANY(%s::text[])",
                 (created,),
             )

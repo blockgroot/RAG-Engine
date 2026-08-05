@@ -138,17 +138,56 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_org ON users (org_id);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS sessions_revoked_at TIMESTAMPTZ;
 
--- Owner-email whitelist: the only emails allowed to self-serve
--- POST /auth/signup (create a brand-new org + become its admin). Moved out
--- of an env var (OWNER_EMAIL_WHITELIST) because editing .env + redeploying
--- for every new approved owner doesn't scale — see CLAUDE.md §2/§4.
--- Managed exclusively via scripts/manage_owner_whitelist.py — no HTTP/
--- session surface, matching this app's existing platform-operator-action
--- pattern.
-CREATE TABLE IF NOT EXISTS owner_email_whitelist (
-    email      TEXT PRIMARY KEY,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+-- `owner_email_whitelist` (pre-approved-list gate on POST /auth/signup) was
+-- REPLACED by the signup-approval queue below — see CLAUDE.md §2/§4. A
+-- static whitelist still required editing it out-of-band before every new
+-- owner could sign up; the approval queue lets ANY email request an org and
+-- gates creation on a human decision instead, so there's no list to
+-- pre-populate. Dropped rather than left unused. Revive by restoring this
+-- table + app/auth/owner_whitelist.py from git history if a pre-approved-list
+-- gate is ever wanted again instead of (or alongside) review-based approval.
+DROP TABLE IF EXISTS owner_email_whitelist;
+
+-- Self-serve org creation request queue: a brand-new company's first user no
+-- longer creates an org+admin synchronously at /auth/signup — they land here
+-- as `pending` until the platform owner approves via the one-click email
+-- links below (see CLAUDE.md §2/§4) — the ONLY review surface, no CLI or
+-- admin UI. No session/login/cookie surface — the email links carry a
+-- single-use possession token, same trust model as magic_link_tokens, not a
+-- second auth system. This is a plain CREATE TABLE (no ALTER on an existing
+-- table), so it carries none of the ALTER-ordering hazard documented near
+-- `ingestion_jobs`/`workspace_id` below.
+CREATE TABLE IF NOT EXISTS org_signup_requests (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email         TEXT NOT NULL,
+    company_name  TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'pending', -- pending | approved | rejected
+    reject_reason TEXT,
+    org_id        UUID REFERENCES organizations (id) ON DELETE SET NULL,
+    reviewed_at   TIMESTAMPTZ,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE INDEX IF NOT EXISTS idx_org_signup_requests_status ON org_signup_requests (status);
+
+-- One-click email approve/reject: two single-use possession tokens
+-- generated together at request-creation time (only their SHA-256 hashes
+-- are ever stored, like magic_link_tokens). No separate "consumed" flag is
+-- needed — approve_signup_request/reject_signup_request already guard
+-- atomically on status='pending', so the request's own status transition
+-- IS the one-time-use gate; a token stays hash-verifiable after use, but
+-- re-attempting the action is a no-op, not a double-action. This ALTER is
+-- safe immediately after this table's own CREATE TABLE above (no ordering
+-- hazard — see the gotcha in §4 about which schema changes DO have one).
+ALTER TABLE org_signup_requests ADD COLUMN IF NOT EXISTS approve_token_hash TEXT;
+ALTER TABLE org_signup_requests ADD COLUMN IF NOT EXISTS reject_token_hash TEXT;
+ALTER TABLE org_signup_requests ADD COLUMN IF NOT EXISTS action_expires_at TIMESTAMPTZ;
+
+-- One PENDING request per email at a time (partial unique index, same
+-- pattern as idx_oauth_connections_org_provider_orgwide below): a second
+-- signup attempt while one is already pending conflicts; re-submitting after
+-- a rejection is allowed since a rejected row no longer matches this index.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_org_signup_requests_email_pending
+    ON org_signup_requests (email) WHERE status = 'pending';
 
 -- Employee-created sub-workspaces (Workspace-within-a-Workspace). A
 -- sub-workspace nests INSIDE its parent org — every row it owns still

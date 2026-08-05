@@ -49,65 +49,192 @@ def _invited_member(store, org_cleanup):
 
 
 @requires_db
-def test_signup_creates_org_and_admin_and_sends_link(client, org_cleanup, whitelist_cleanup):
-    from app.auth import add_owner_email
-
+def test_signup_creates_pending_request_not_org_or_admin(client, signup_email_cleanup):
     email = f"founder-{uuid.uuid4().hex[:8]}@newco.example.com"
-    whitelist_cleanup.append(email)
-    add_owner_email(email)
+    signup_email_cleanup.append(email)
+
     response = client.post(
         "/auth/signup", json={"email": email, "company_name": f"NewCo {uuid.uuid4().hex[:8]}"}
     )
     assert response.status_code == 200
+    body = response.json()
+    assert "pending" in body["message"].lower()
+    assert "dev_link" not in body
+
+    from app.auth import get_pending_request_for_email
+    from app.auth.users import get_user_by_email
+
+    assert get_user_by_email(email) is None  # no account/org created yet
+    request = get_pending_request_for_email(email)
+    assert request is not None
+    assert request.status == "pending"
+
+
+@requires_db
+def test_signup_rejects_duplicate_pending_request(client, signup_email_cleanup):
+    email = f"dup-{uuid.uuid4().hex[:8]}@newco.example.com"
+    signup_email_cleanup.append(email)
+
+    first = client.post("/auth/signup", json={"email": email, "company_name": "First Co"})
+    assert first.status_code == 200
+
+    second = client.post("/auth/signup", json={"email": email, "company_name": "Second Co"})
+    assert second.status_code == 400
+
+
+@requires_db
+def test_signup_allowed_again_after_rejection(client, signup_email_cleanup):
+    from app.auth import consume_reject_token, create_signup_request
+
+    email = f"reapply-{uuid.uuid4().hex[:8]}@newco.example.com"
+    signup_email_cleanup.append(email)
+
+    # Create directly (rather than via POST /auth/signup) so the test has the
+    # reject_token — the HTTP response deliberately never returns it, only
+    # the owner-notification email does.
+    request = create_signup_request(email, "First Co")
+    consume_reject_token(request.reject_token, reason="not a fit")
+
+    second = client.post("/auth/signup", json={"email": email, "company_name": "Second Co"})
+    assert second.status_code == 200
+
+
+@requires_db
+def test_signup_notifies_owner_with_one_click_links(client, monkeypatch, signup_email_cleanup):
+    monkeypatch.setenv("OWNER_NOTIFICATION_EMAIL", "owner@example.com")
+    captured = {}
+
+    def _fake_notify(to, email, company_name, approve_link, reject_link):
+        captured["to"] = to
+        captured["email"] = email
+        captured["approve_link"] = approve_link
+        captured["reject_link"] = reject_link
+
+    monkeypatch.setattr("app.api.auth.send_signup_request_notification_email_safe", _fake_notify)
+
+    email = f"notify-{uuid.uuid4().hex[:8]}@newco.example.com"
+    signup_email_cleanup.append(email)
+    response = client.post("/auth/signup", json={"email": email, "company_name": "Notify Co"})
+    assert response.status_code == 200
+
+    assert captured["to"] == "owner@example.com"
+    assert captured["email"] == email
+    assert "/auth/signup-requests/approve?token=" in captured["approve_link"]
+    assert "/auth/signup-requests/reject?token=" in captured["reject_link"]
+
+
+@requires_db
+def test_signup_does_not_notify_when_owner_email_unset(client, monkeypatch, signup_email_cleanup):
+    monkeypatch.delenv("OWNER_NOTIFICATION_EMAIL", raising=False)
+    called = []
+    monkeypatch.setattr(
+        "app.api.auth.send_signup_request_notification_email_safe",
+        lambda *a, **k: called.append(True),
+    )
+
+    email = f"nonotify-{uuid.uuid4().hex[:8]}@newco.example.com"
+    signup_email_cleanup.append(email)
+    response = client.post("/auth/signup", json={"email": email, "company_name": "No Notify Co"})
+    assert response.status_code == 200
+    assert not called
+
+
+@requires_db
+def test_approve_confirm_page_renders_without_mutating(client, signup_email_cleanup):
+    from app.auth import create_signup_request, get_pending_request_for_email
+
+    email = f"confirm-approve-{uuid.uuid4().hex[:8]}@newco.example.com"
+    signup_email_cleanup.append(email)
+    request = create_signup_request(email, "Confirm Approve Co")
+
+    response = client.get(
+        "/auth/signup-requests/approve", params={"token": request.approve_token}
+    )
+    assert response.status_code == 200
+    assert "Confirm Approve Co" in response.text
+    assert "<form" in response.text
+
+    # GET must not have mutated anything.
+    still_pending = get_pending_request_for_email(email)
+    assert still_pending is not None
+    assert still_pending.status == "pending"
+    from app.auth.users import get_user_by_email
+
+    assert get_user_by_email(email) is None
+
+
+@requires_db
+def test_approve_post_creates_org_and_admin(client, org_cleanup, signup_email_cleanup):
+    from app.auth import create_signup_request
+
+    email = f"do-approve-{uuid.uuid4().hex[:8]}@newco.example.com"
+    signup_email_cleanup.append(email)
+    request = create_signup_request(email, "Do Approve Co")
+
+    response = client.post(
+        "/auth/signup-requests/approve", data={"token": request.approve_token}
+    )
+    assert response.status_code == 200
+    assert "Approved" in response.text
 
     from app.auth.users import get_user_by_email
 
     user = get_user_by_email(email)
     assert user is not None
-    org_cleanup.append(user.org_id)
     assert user.role == "admin"
-
-    from app.auth import create_magic_link_token
-
-    token = create_magic_link_token(email)
-    verify_response = client.get(
-        f"/auth/magic-link/verify?token={token}", follow_redirects=False
-    )
-    assert verify_response.status_code in (302, 307)
-    session_token = verify_response.cookies.get("session")
-    me_response = client.get("/me", cookies={"session": session_token})
-    assert me_response.json()["role"] == "admin"
+    org_cleanup.append(user.org_id)
 
 
 @requires_db
-def test_signup_rejects_non_whitelisted_email(client):
-    # Never added to owner_email_whitelist — signup is closed by default.
-    email = f"uninvited-{uuid.uuid4().hex[:8]}@newco.example.com"
-    response = client.post(
-        "/auth/signup", json={"email": email, "company_name": "Uninvited Co"}
-    )
-    assert response.status_code == 403
-
+def test_approve_post_twice_second_time_fails(client, org_cleanup, signup_email_cleanup):
+    from app.auth import create_signup_request
     from app.auth.users import get_user_by_email
 
-    assert get_user_by_email(email) is None  # no org/account created
+    email = f"double-approve-{uuid.uuid4().hex[:8]}@newco.example.com"
+    signup_email_cleanup.append(email)
+    request = create_signup_request(email, "Double Approve Co")
 
-
-@requires_db
-def test_signup_rejects_duplicate_email(client, org_cleanup, whitelist_cleanup):
-    from app.auth import add_owner_email
-
-    email = f"dup-{uuid.uuid4().hex[:8]}@newco.example.com"
-    whitelist_cleanup.append(email)
-    add_owner_email(email)
-    first = client.post("/auth/signup", json={"email": email, "company_name": "First Co"})
-    assert first.status_code == 200
-    from app.auth.users import get_user_by_email
-
+    first = client.post("/auth/signup-requests/approve", data={"token": request.approve_token})
+    assert "Approved" in first.text
     org_cleanup.append(get_user_by_email(email).org_id)
 
-    second = client.post("/auth/signup", json={"email": email, "company_name": "Second Co"})
-    assert second.status_code == 400
+    second = client.post("/auth/signup-requests/approve", data={"token": request.approve_token})
+    assert second.status_code == 200
+    assert "invalid, expired, or already used" in second.text
+
+
+@requires_db
+def test_reject_confirm_and_post_records_reason(client, signup_email_cleanup):
+    from app.auth import create_signup_request, get_pending_request_for_email
+
+    email = f"do-reject-{uuid.uuid4().hex[:8]}@newco.example.com"
+    signup_email_cleanup.append(email)
+    request = create_signup_request(email, "Do Reject Co")
+
+    confirm = client.get(
+        "/auth/signup-requests/reject", params={"token": request.reject_token}
+    )
+    assert confirm.status_code == 200
+    assert "Do Reject Co" in confirm.text
+
+    response = client.post(
+        "/auth/signup-requests/reject",
+        data={"token": request.reject_token, "reason": "not a fit"},
+    )
+    assert response.status_code == 200
+    assert "Rejected" in response.text
+
+    # Confirmed rejected in the DB, not left pending.
+    assert get_pending_request_for_email(email) is None
+
+
+@requires_db
+def test_approve_confirm_with_invalid_token_returns_error_page(client):
+    response = client.get(
+        "/auth/signup-requests/approve", params={"token": "not-a-real-token"}
+    )
+    assert response.status_code == 200
+    assert "invalid, expired, or already used" in response.text
 
 
 @requires_db

@@ -425,48 +425,91 @@ their policy documents; their employees ask questions and get answers grounded i
   *already has an account* (created at signup, or via an admin invite) —
   there is no path left that creates a first account from an unrecognized
   email. The signup flow (a brand-new org's first admin) was untouched by
-  this change — it was later gated behind a whitelist, see the next bullet.
-  **To revive self-serve domain auto-join later** (e.g. once onboarding many
-  companies without manual admin invites is an actual need): restore the
-  `org_domains` table and `app/auth/domains.py` from git history (the commit
-  that removed them), and re-wire `resolve_org_for_email` back into
-  `request_magic_link` alongside the invite path (the two aren't mutually
-  exclusive — an admin invite and a domain claim could both resolve an org for
-  an email). Don't rebuild it from scratch; the DNS-verification design was
-  already reasoned through once.
-- **Self-serve org creation is gated behind an email whitelist — signup is
-  closed by default, not open-to-anyone.** `POST /auth/signup` used to let
-  literally anyone name a company and become its admin with zero
-  verification — a real gap for a multi-tenant platform where "this org's
-  admin" is a trust boundary. `signup()` (`app/api/auth.py`) now checks the
-  submitted email via `is_whitelisted()` and returns 403 for anything not
-  listed. This is a narrow gate: it only decides who may bring a brand-new
-  org into existence. It does NOT touch — and does not need to touch —
-  either of the two mechanisms that already handle everything downstream of
-  that: an existing admin inviting new employees (`POST /admin/members`,
-  admin-only) and any org member creating their own sub-workspace
-  (`POST /workspaces`, gated only by `get_session`, not `require_admin` —
-  see the Workspace-within-a-Workspace entry below).
-  **The whitelist itself is DB-backed (`owner_email_whitelist` table,
-  `app/auth/owner_whitelist.py`), not an env var — this supersedes the
-  original `OWNER_EMAIL_WHITELIST` env-var design.** The env var was the
-  right MVP call when the list was expected to be short and change rarely,
-  but that assumption broke down: every new approved owner meant editing
-  `.env` and redeploying, with no audit trail of who was added or when. A
-  DB table needs no redeploy (an addition takes effect on the very next
-  signup attempt) and is consistent with how every other piece of identity
-  in this app is stored. Managed exclusively via
-  `scripts/manage_owner_whitelist.py list/add/remove` — deliberately still
-  **no HTTP/session surface**, the one part of the original reasoning that
-  didn't change: granting "can create a new org" is a platform-operator
-  action, not something that belongs behind a web login, and a CLI against
-  the live DB is the cheapest mechanism that actually fits that need. **This
-  supersedes an earlier, even more elaborate design** (a full pending-request
-  approval queue reviewed via a CLI script, with a later increment adding
-  one-click email approve/reject links) that was prototyped and then
-  abandoned mid-build in favor of the whitelist gate — that work never
-  merged; if a review-queue workflow is wanted again later, it was reasoned
-  through in detail and shouldn't be redesigned from scratch.
+  this change — it was later gated behind manual approval, see the
+  signup-approval-queue entry below. **To revive self-serve domain
+  auto-join later** (e.g. once onboarding many companies without manual
+  admin invites is an actual need): restore the `org_domains` table and
+  `app/auth/domains.py` from git history (the commit that removed them),
+  and re-wire `resolve_org_for_email` back into `request_magic_link`
+  alongside the invite path (the two aren't mutually exclusive — an admin
+  invite and a domain claim could both resolve an org for an email). Don't
+  rebuild it from scratch; the DNS-verification design was already
+  reasoned through once.
+- **Self-serve org creation is gated behind a human-reviewed approval
+  queue, reviewed EXCLUSIVELY via one-click email links — no CLI, no admin
+  UI, no id-based approve/reject path at all.** Until now, `POST /auth/signup`
+  immediately called `store.create_organization(...)` + `create_admin(...)`:
+  anyone could show up, name any company name, and become that org's admin
+  with zero verification — a real gap for a multi-tenant platform where
+  "this org's admin" is a trust boundary. `signup()` (`app/api/auth.py`) now
+  only inserts a `pending` row into a new `org_signup_requests` table
+  (`app/auth/signup_requests.py`: `create_signup_request`/
+  `get_pending_request_for_email`/`consume_approve_token`/
+  `consume_reject_token`/`get_request_by_approve_token`/
+  `get_request_by_reject_token`) — no org, no user, no magic-link email,
+  since there's no account yet to sign into. `create_signup_request` also
+  mints an `approve_token`/`reject_token` pair (only their SHA-256 hashes are
+  stored, on `org_signup_requests.approve_token_hash`/`reject_token_hash`/
+  `action_expires_at`, same trust model as `magic_link_tokens`); if
+  `EmailSettings.owner_notification_email` is set, `signup()` emails that
+  address a notification (`send_signup_request_notification_email`) with
+  both links rendered as real teal/terracotta HTML buttons (inline-styled,
+  `multipart/alternative` next to a plain-text fallback — mail clients strip
+  `<style>` blocks and gradients, so every rule that matters is inline and a
+  solid `background-color` sits behind the gradient) — **this is the only
+  place a pending request is surfaced anywhere; leaving the env var unset
+  means requests are invisible short of querying the table directly.** A
+  partial unique index
+  (`idx_org_signup_requests_email_pending`, same pattern as
+  `idx_oauth_connections_org_provider_orgwide`) blocks a second signup while
+  one is already pending, but re-submitting after a rejection is allowed (a
+  rejected row no longer matches the partial index).
+  **The links are GET-a-confirmation-page, POST-to-act, not GET-mutates**
+  (`GET/POST /auth/signup-requests/approve` + `.../reject` in
+  `app/api/auth.py`) — a GET alone only renders a page showing the
+  requester's email/company and a button; only that button's POST back to
+  the same URL calls `consume_approve_token`/`consume_reject_token`, which
+  atomically flip `pending`→`approved`/`rejected` keyed by the hashed token
+  (no separate `consumed` flag needed — the status transition itself is the
+  one-time-use gate). This guards against a mail scanner or client
+  prefetching a bare GET link and silently approving/rejecting before a
+  human ever sees it. This is also why the email buttons only ever link to
+  the confirmation page, never call the API directly on click, even though
+  that would be a literal one-click experience — a link-scanning security
+  product (Outlook Safe Links, Microsoft Defender, some Workspace/Gmail
+  scans) auto-visits every link in a mail before a human opens it, so a
+  bare GET-mutates link would let one of those scans silently approve/reject
+  on the owner's behalf. The confirmation page itself (`_confirm_page`/
+  `_result_page`/`_PAGE_STYLE` in `app/api/auth.py`) and the notification
+  email (`send_signup_request_notification_email`) both match the app's own
+  "Harbor Desk" look (`frontend/app/globals.css`: brand mark, teal
+  `--accent`/`--accent-strong`, `.card`/`.button`/`.banner` treatment) rather
+  than being unstyled — a trimmed, self-contained copy of the relevant
+  tokens/classes, since this page is served by FastAPI and can't import the
+  Next.js stylesheet or its self-hosted Outfit font; it falls back to the
+  same system font stack globals.css itself falls back to. Approving reuses the exact same
+  `store.create_organization` + `create_admin` calls signup used to make
+  directly, then emails the requester a magic-link sign-in via
+  `send_signup_approved_email`; rejecting records an optional reason and
+  emails `send_signup_rejected_email` (from here on the *existing*
+  invited-member/magic-link login path is used unchanged — this only gates
+  how the *first* admin account for a *new* org comes into being).
+  **This supersedes two earlier, more elaborate designs, both intentionally
+  dropped rather than kept as parallel options:** (1) the DB-backed
+  `owner_email_whitelist` gate (`DROP TABLE IF EXISTS owner_email_whitelist`
+  in `schema.sql`, `app/auth/owner_whitelist.py` +
+  `scripts/manage_owner_whitelist.py` deleted) — a static list requires
+  knowing every future owner's email in advance and pre-populating it
+  out-of-band, which stopped scaling once approvals became a routine,
+  unpredictable event rather than a rare provisioning step. (2) an id-based
+  CLI review path (`scripts/review_signup_requests.py list/approve/reject`,
+  plus `approve_signup_request`/`reject_signup_request`/
+  `list_signup_requests` by id) that briefly coexisted with the email links
+  as a fallback — removed on request to keep exactly one reviewer-facing
+  surface instead of two ways to do the same thing; a CLI/id-based path adds
+  real value only once there are multiple reviewers or a need to review
+  without an inbox, neither true yet. Revive either from git history if that
+  changes.
 - **Session TTL defaults to 30 days, not a typical short web session** (`AUTH_SESSION_TTL_MINUTES`,
   `app/auth/session.py` + the `max_age` on the session cookie in `app/api/auth.py`) —
   deliberate given this is a low-risk internal tool with an already-hardened cookie
@@ -635,6 +678,19 @@ tests/          # pytest; isolation (P2, extended with workspace-vs-org-wide and
 
 ## 4. Known gotchas & past decisions worth remembering
 
+- **Not every schema.sql addition has the ALTER-ordering hazard.**
+  `org_signup_requests` (signup-approval queue, §2/§5) is a plain
+  `CREATE TABLE IF NOT EXISTS` with no `ALTER TABLE ... ADD COLUMN` on an
+  existing table, so it carries none of the "must come after the table's own
+  CREATE TABLE" hazard documented below for `ingestion_jobs`/`workspace_id`.
+  Worth saying explicitly since a reader who's just seen that gotcha might
+  assume every new table/column addition needs the same care — only `ALTER
+  TABLE` on a table defined elsewhere in the file does.
+  `idx_org_signup_requests_email_pending` also reuses the partial-unique-index
+  pattern from `oauth_connections` (`idx_oauth_connections_org_provider_orgwide`)
+  — a plain multi-column `UNIQUE` can't express "one row per email while
+  `status='pending'`" because dropping the `WHERE` clause would also block
+  re-submitting after a rejection.
 - **We moved off paid embedding APIs.** DeepInfra (hosted BGE-M3) started
   returning `402 needs positive balance`. That triggered the switch to local
   sentence-transformers. Don't reintroduce a paid embedding dependency as the
@@ -899,7 +955,7 @@ Defined in `app/db/schema.sql`. Current tables:
 | `api_rate_counters` | (Phase 21) Sliding-window request counters for Postgres-backed rate limiting (`scope` PK, `window_start`, `count`). |
 | `workspaces` | (Workspace-within-a-Workspace) An employee-created sub-workspace nested inside one org. `id`, `org_id`, `name`, `created_by` (nullable, `ON DELETE SET NULL`), `created_at`. |
 | `workspace_members` | (Workspace-within-a-Workspace) Membership in a sub-workspace — a SEPARATE, stricter boundary than org membership (every member must already be a `users` row in the same org, enforced in `app/workspaces/`, not by a DB constraint alone). `workspace_id`, `user_id`, `role` (`owner`\|`member`), `invited_by` (nullable, `ON DELETE SET NULL`), `joined_at`. PK `(workspace_id, user_id)`. |
-| `owner_email_whitelist` | (§2) The only emails allowed to self-serve `POST /auth/signup` (create a brand-new org). `email` (PK, lowercased), `created_at`. Managed exclusively via `scripts/manage_owner_whitelist.py` — no HTTP/session surface. Replaces the original `OWNER_EMAIL_WHITELIST` env var so an addition takes effect immediately with no redeploy. |
+| `org_signup_requests` | (Signup-approval queue, §2/§4) A pending/approved/rejected request to create a new org, replacing both the old immediate self-serve org+admin creation and the later `owner_email_whitelist` gate. `id`, `email`, `company_name`, `status` (`pending`\|`approved`\|`rejected`), `reject_reason`, `org_id` (nullable, `ON DELETE SET NULL` — populated only on approval, an audit trail of which org a request became), `reviewed_at`, `created_at`, plus `approve_token_hash`/`reject_token_hash`/`action_expires_at` (one-click email links — only hashes stored, same trust model as `magic_link_tokens`). Partial unique index `idx_org_signup_requests_email_pending ON (email) WHERE status='pending'` — one pending request per email; re-submitting after a rejection is allowed. Reviewed EXCLUSIVELY via the one-click GET-confirm/POST-act links in `app/api/auth.py` (no authenticated session — bearer possession tokens); there is no CLI or id-based review path. |
 
 **`org_domains` (Phase 10) was dropped** in the domain-auto-join simplification
 (see §2) — `DROP TABLE IF EXISTS org_domains` in `schema.sql`. It held a
@@ -916,7 +972,12 @@ last-retrieval row; removing a workspace removes its members, and (via
 chunks, conversations, oauth_connections, and ingestion_jobs. Indexes: `org_id`
 on every org-scoped table (tenant filter) + an HNSW cosine index on
 `chunks.embedding` (ranking speed) + `workspace_id` indexes on every table that
-carries it.
+carries it. **Exception:** `org_signup_requests.org_id` is `ON DELETE SET
+NULL`, not `CASCADE` — deleting an org nulls out `org_id` on its (approved)
+request row rather than deleting it, so the request stays as an audit trail;
+test cleanup that deletes an org must separately delete any
+`org_signup_requests` rows it created (see `signup_email_cleanup` in
+`tests/conftest.py`).
 
 **Phase 7 added no tables** — the PolicyAgent and golden-set eval are pure
 application/tooling layers over the existing schema. **Phase 8 added one table**
@@ -928,7 +989,8 @@ a-Workspace added two tables** (`workspaces`, `workspace_members`) and a
 nullable `workspace_id` column on every table that already carried `org_id`
 for content/credential/job scoping (`documents`, `chunks`, `conversations`,
 `conversation_turns`, `oauth_connections`, `ingestion_jobs`, `oauth_states`) —
-see §2 for the full reasoning.
+see §2 for the full reasoning. **The signup-approval-queue change added one
+table** (`org_signup_requests`) and no new columns on any existing table.
 
 ## 6. Current state: built vs. pending
 
@@ -1124,42 +1186,86 @@ response but no account is ever created; a second org's admin never sees the
 first org's invited members). Full suite green (144 passing, 1 pre-existing
 unrelated `NOTION_TOKEN_SYVORA` environmental failure, 2 network deselected).
 
-**Owner-email whitelist (branch `feature/owner-email-whitelist`) — self-serve
-org creation gated by a pre-approved email list.** See §2 for the full
-reasoning. Changes: `AuthSettings.owner_email_whitelist`
-(env `OWNER_EMAIL_WHITELIST`, comma-separated, empty by default) in
-`app/config/settings.py`; `signup()` (`app/api/auth.py`) checks the
-submitted email against it and returns 403 for anything not listed, before
-the existing duplicate-account check. No schema change, no new tables, no
-new endpoints — the existing immediate org+admin-creation code path is
-unchanged for a whitelisted email, only reachability changed. Tests: added
-`test_signup_rejects_non_whitelisted_email` (403, no account/org created)
-to `tests/test_api_auth.py`; existing signup tests updated to whitelist
-their own generated test email via `monkeypatch.setenv` before signing up.
-Deliberately does not touch `POST /admin/members` (existing-org invites) or
-`POST /workspaces` (any org member can already create a sub-workspace) —
-both already did what was asked of them before this change.
+**Owner-email whitelist (branch `feature/owner-email-whitelist`, then moved
+to DB on `feature/workspace-within-workspace-clean`) — self-serve org
+creation gated by a pre-approved email list. Superseded, see below.** First
+cut: `AuthSettings.owner_email_whitelist` (env `OWNER_EMAIL_WHITELIST`), a
+403 in `signup()` for any unlisted email. Moved to DB the same day
+(`owner_email_whitelist` table + `app/auth/owner_whitelist.py`
+`is_whitelisted`/`add_owner_email`/`remove_owner_email`/`list_owner_emails`,
+managed via `scripts/manage_owner_whitelist.py`) because editing `.env` and
+redeploying per new owner didn't scale. Both variants left the existing
+immediate `store.create_organization`/`create_admin` call in `signup()`
+untouched — they only gated *reachability*, not what happened once past the
+gate.
 
-**Owner-email whitelist moved from env var to DB (same branch,
-`feature/workspace-within-workspace-clean`) — the env-var version above was
-superseded within the same day.** Editing `.env` and redeploying for every
-newly-approved owner didn't scale. See §2 for the full reasoning. Changes:
-new `owner_email_whitelist` table (`email` PK, `created_at`); new
-`app/auth/owner_whitelist.py` (`is_whitelisted`/`add_owner_email`/
-`remove_owner_email`/`list_owner_emails`, both add/remove idempotent); the
-`signup()` check swapped from `AuthSettings.owner_email_whitelist` to
-`is_whitelisted(email)`; `AuthSettings.owner_email_whitelist` and the
-`OWNER_EMAIL_WHITELIST` env var removed entirely (no dual env+DB check, no
-migration needed since nothing was configured yet); new
-`scripts/manage_owner_whitelist.py list/add/remove`, manually smoke-tested
-against the local dev DB (add → whitelisted signup succeeds, remove →
-re-signup 403s again). Tests: new `tests/test_owner_whitelist.py` (7 cases:
-add/remove round-trip, idempotent add/remove, case-insensitive matching,
-list reflects state) plus a shared `whitelist_cleanup` fixture added to
-`tests/conftest.py` (mirrors `org_cleanup`); existing signup tests in
-`test_api_auth.py` switched from `monkeypatch.setenv(...)` to
-`add_owner_email(...)`. Still deliberately **no HTTP/session surface** —
-that part of the original design didn't change, only where the list lives.
+**Signup-approval queue (branch `feature/signup-approval-queue`, merged into
+main via `feature/signup-approval-queue-v2`) — replaces the whitelist
+entirely; self-serve org+admin creation is now gated by human review of the
+actual request, not a pre-approved list.** See §2/§4/§5 for the full
+reasoning and schema. The whitelist approach was reconsidered once approvals
+became routine rather than a rare provisioning step: a static list requires
+knowing every future owner's email in advance, while a review queue lets
+*anyone* submit a request and gates on a reviewer's decision made against
+the request itself (email + company name). Changes: new
+`org_signup_requests` table + `app/auth/signup_requests.py`
+(`create_signup_request`/`get_pending_request_for_email`/
+`approve_signup_request`/`reject_signup_request`/`consume_approve_token`/
+`consume_reject_token`/`get_request_by_approve_token`/
+`get_request_by_reject_token`); `POST /auth/signup` (`app/api/auth.py`) now
+only queues a pending request instead of calling
+`store.create_organization`/`create_admin` directly, and no longer returns
+`dev_link`; `owner_email_whitelist` table dropped, `app/auth/owner_whitelist.py`
++ `scripts/manage_owner_whitelist.py` + their tests deleted.
+Three email templates (`send_signup_approved_email`/`send_signup_rejected_email`/
+`send_signup_request_notification_email` + `_safe` wrappers) in
+`app/auth/email.py`, sharing the existing `_dispatch()` console/smtp helper.
+At merge time this shipped with **two review paths** — an id-based CLI
+(`scripts/review_signup_requests.py list/approve/reject`) alongside the
+one-click email links — but the CLI path was removed the same day (see the
+next bullet); read on for the flow as it actually ships. The links are
+deliberately **GET-a-confirmation-page, POST-to-act**
+(`GET/POST /auth/signup-requests/approve` + `.../reject`, `app/api/auth.py`)
+rather than GET-mutates: a GET renders a small HTML page showing the
+requester's email/company with a button; only that button's POST calls
+`consume_approve_token`/`consume_reject_token`. This guards against a mail
+client or security scanner prefetching the emailed URL and silently
+approving/rejecting a request before a human sees it — the original
+token-column design note ("status transition is the one-time-use gate") is
+still true against *replay*, but doesn't cover prefetch-triggered first use.
+Frontend `signup/page.tsx` copy updated for "pending review". Existing
+invited-member and magic-link login paths are completely unchanged.
+
+**CLI review path removed the same day (still on `feature/signup-approval-queue-v2`)
+— email links are now the ONLY way to review a signup request.** The merge
+above kept `scripts/review_signup_requests.py` as a fallback in case email
+wasn't configured, plus the id-based `approve_signup_request`/
+`reject_signup_request`/`list_signup_requests` functions it called. Explicit
+ask: no CLI, no admin UI, nothing beyond "click approve/reject in the email"
+— a second reviewer-facing surface was unwanted complexity for a
+single-operator deployment where email is already required to run the flow
+at all (the requester's own approval email depends on it). Removed:
+`scripts/review_signup_requests.py`; `approve_signup_request`/
+`reject_signup_request`/`list_signup_requests` from
+`app/auth/signup_requests.py` (their logic is now inlined directly into
+`consume_approve_token`, the only remaining approve path, as a single atomic
+`UPDATE ... WHERE approve_token_hash = %s AND status = 'pending' AND
+action_expires_at > now()` — no separate SELECT-then-UPDATE). `EmailSettings.
+owner_notification_email`'s docstring and the `org_signup_requests` §5 entry
+now say plainly: leaving it unset means pending requests are invisible short
+of querying the table directly — that is accepted, not a gap to fill with a
+fallback CLI. Tests: `tests/test_signup_requests.py` rewritten around
+`consume_approve_token`/`consume_reject_token`/`get_request_by_approve_token`/
+`get_request_by_reject_token` (create/get, duplicate-pending rejected,
+approve creates org+admin, double-approve raises `AuthError`, reject records
+a reason, double-reject raises `AuthError`, unknown token raises `AuthError`,
+and a reject-token can never approve); `test_api_auth.py`'s
+re-request-after-rejection case now creates the request directly (via
+`create_signup_request`) to obtain the reject token, since the HTTP signup
+response never exposes it — only the notification email does. If a CLI or
+multi-reviewer path is wanted again later (e.g. once there's more than one
+platform owner, or a need to review without an inbox), it was reasoned
+through twice already; restore from git history rather than redesigning.
 
 **Hardening pass (Phases 18–22, external review follow-up).** Phase 20
 (structural citations + NLI) is **explicitly deferred** pending a separate
