@@ -8,13 +8,25 @@ commit-level questions by fetching live from the GitHub API — behind a new
 `GitHubAgent` that implements the *existing* `Agent` contract.
 
 **Architecture:** A GitHub App installed on the customer's GitHub org (GitHub
-itself enforces which repos are visible). Prose files (`README`, `docs/**`) are
-ingested through the **unchanged** `ingest_source()` → chunk → embed → store
-path as ordinary `org_id`-scoped rows with `source_provider = 'github'`. Code and
-commit history are **never embedded**; they are fetched at question time through
-a bounded tool-call, reusing the exact shape of the Phase 5 web-search fallback.
-The confidence gate, strict grounded prompt, reranker, and tenant isolation are
-byte-for-byte unchanged.
+itself enforces which repos are visible). **Nothing is embedded.** Every answer
+comes from a live, bounded GitHub API tool-call — `get_readme`, `get_commit`,
+`list_commits`, `list_repos` — decided by the LLM via real function-calling, in
+the same shape as the Phase 5 web-search fallback. The existing RAG corpus,
+confidence gate, grounded prompt, reranker, and tenant isolation are completely
+untouched: GitHub adds no documents, no chunks, and no rows to the vector store.
+
+---
+
+## Revision log
+
+**2026-08-05, revision 1 (after design review) — the ingestion half is cut.**
+The original plan indexed `README` + `docs/**` into the chunk/embed/store path
+(old decisions D5/D8/D9 and old Phases 4–5). That is **reversed**: v1 embeds
+nothing at all. Reasoning in the revised D5 below. Net effect: two whole phases
+(adapter + sync wiring) are deleted rather than deferred, and `GitHubAgent`
+becomes a genuine tool-calling agent rather than a `RagPipelineAgent` subclass.
+Phases 1–3 were already committed and are unaffected — they are the credential
+layer, which both designs need identically.
 
 **Tech Stack:** Python 3.12, FastAPI, Postgres + pgvector, `httpx`, `pyjwt` +
 `cryptography` (both **already** dependencies — zero new Python deps), Next.js 15
@@ -26,17 +38,21 @@ frontend.
 
 ## 1. Understanding summary
 
-- **What.** GitHub as the third external source after Notion and Google Drive.
-  An org admin clicks "Connect GitHub", installs our GitHub App on their GitHub
-  organization, and gains repo Q&A: *"what does this service do"* (answered from
-  indexed docs) and *"what happened in commit abc123"* (answered from a live API
-  fetch).
-- **Why two paths.** Prose docs are small, stable, and semantically searchable —
-  they index well. Code and git history are large, volatile, and unbounded;
-  embedding them would cost enormously, go stale immediately, and require
-  AST-aware chunking we do not have. Fetching them live is cheaper *and* always
-  current. This is the same reasoning CLAUDE.md §1 uses for RAG-over-fine-tuning,
-  applied one level down.
+- **What.** GitHub as a third connectable source after Notion and Google Drive,
+  but a structurally different one: an org admin clicks "Connect GitHub",
+  installs our GitHub App on their GitHub organization, and gains repo Q&A —
+  *"what does this service do"* and *"what happened in commit abc123"* — both
+  answered by **live API calls**, not retrieval.
+- **Why nothing is embedded.** Code plainly can't be: it isn't prose, it doesn't
+  chunk or embed meaningfully, and doing it properly is a separate large feature
+  (AST-aware chunking, code-specific embedding models). But the README doesn't
+  need embedding *either* — and that's the sharper point. A README is small,
+  changes rarely, and is trivially cheap to fetch fresh, so indexing it buys
+  nothing while costing a whole ingestion/sync lifecycle **and** introducing a
+  staleness window that live fetching cannot have (a policy doc can drift
+  between edit and re-ingest; a live-fetched README has nothing to keep in
+  sync). Once commits are already tool-calls, making the README a tool-call too
+  is the consistent design rather than a second mechanism.
 - **Who for.** Existing tenants' engineering users, via the existing chat UI.
 - **New component.** `GitHubAgent` — the second real backend that
   `app/agent/base.py` was explicitly reserved for ("there genuinely is a second
@@ -45,11 +61,22 @@ frontend.
   path inherits it from `WHERE org_id = ...`. The live path is new risk: the
   `repo` argument is **LLM-filled**, so it must be validated against the
   installation's own repo list before any HTTP call. See §5 T1.
-- **Non-goals (v1), each deliberate.** Workspace-scoped GitHub connections
-  (deferred by explicit request — the `workspace_id` column already exists, so
-  passing `None` now costs nothing later); embedding source code; AST/symbol
-  chunking; issues; PRs; code search; GitHub Enterprise Server; write access;
-  GitHub-based login/SSO.
+- **Non-goals (v1), each deliberate.** **Any embedding/ingestion of GitHub
+  content** (revision 1); **workspace-scoped GitHub connections** — GitHub
+  connects at the org level exactly like Notion and Drive, and any org member
+  may ask about any authorized repo, because nothing else in this system has a
+  scoping layer between org and individual member and inventing repo-level ACLs
+  here would be a genuinely new access-control dimension built speculatively;
+  AST/symbol chunking; issues; PRs; code search; GitHub Enterprise Server; write
+  access; GitHub-based login/SSO.
+- **Known functional limit of the no-embedding choice.** Without an index there
+  is no semantic search *across* repos, so a vague question ("which service
+  handles payments?") can't be resolved by similarity. Mitigation that makes
+  this a non-issue in practice: `list_repos` returns each repo's **name,
+  description, and topics** — GitHub already maintains those — which is enough
+  signal for the model to pick the right repo before calling `get_readme`. A
+  real fuzzy-semantic need (e.g. "find the commit that fixed the login bug") is
+  the trigger to revisit indexing, not something to pre-build.
 
 ## 2. Decisions (with alternatives and why)
 
@@ -59,11 +86,12 @@ frontend.
 | D2 | Store the **user access token** in `access_token_encrypted`; mint **installation tokens on demand** | Store installation tokens and refresh them | `access_token_encrypted` is `NOT NULL`, and the user token is what proves *who* connected. Installation tokens last 1 h and can be minted any time from the private key + `installation_id`, so storing them buys nothing. Minting slots into the existing provider-agnostic `get_live_connection_token` seam (Google's D10) — every caller benefits with no call-site change. |
 | D3 | `installation_id` lives in **`source_config`** JSONB | New column; reuse `external_workspace_id` | `set_connection_config`'s own docstring already anticipates this: *"a future GitHub/Slack adapter will need its own shape (a repo name, a channel list)"*. `external_workspace_id` holds the GitHub org login (human-readable in the admin UI), same as Google stores an email there. |
 | D4 | **Verify `installation_id` server-side** via the user token, never trust the redirect | Trust the `installation_id` query param | GitHub's docs are explicit: *"bad actors can hit this URL with a spoofed `installation_id`"*, and recommend generating a user access token and checking the installation is associated with that user. Trusting it would let an attacker bind **someone else's** GitHub org to their tenant — a cross-tenant data-exfiltration hole. Implemented via `GET /user/installations`. |
-| D5 | Index **prose files only**: `README*` + `docs/**` (`.md`/`.mdx`/`.rst`/`.txt`), with per-repo file and per-file size caps | Index all files; index nothing | Answers "what does this repo do" — the actual ask — while keeping the corpus bounded across an org with hundreds of repos. Mirrors Google's "native Docs only" (D5) and Notion's page filtering. |
+| D5 | ~~Index prose files~~ → **REVERSED (revision 1): embed nothing. `get_readme` is a live tool-call like every other GitHub read.** | Index `README` + `docs/**`; index all files | The README needs no index: it's small, rarely changes, and fetching it fresh costs one API call while an index costs an adapter, a sync lifecycle, provider-partitioned diffing, *and* a staleness window that live fetch cannot have. Since commits were already going to be tool-calls, indexing the README would mean two mechanisms answering the same agent's questions. YAGNI on the ingestion half: build it only when a real fuzzy-semantic-search need appears. Consequence accepted and documented in §1. |
+| D5b | Record the admin's **actual authorized repo scope** (`repository_selection` = `all` \| `selected`, plus the repo list) in `source_config` | Assume all org repos are in scope | "Connect GitHub" does **not** grant everything — the admin picks "All repositories" or a specific subset on GitHub's install screen. Storing what they actually chose mirrors how Drive stores the picked `folder_id`, keeps our view honest, and lets `list_repos` be answered without assuming. GitHub remains the enforcer either way; this is bookkeeping so the UI and prompts don't overstate scope. |
 | D6 | Commits/code fetched **live** via a bounded tool-call | Embed commit messages; embed diffs; a multi-step agent loop | Commit history is unbounded and append-only: embedding it grows forever and is stale the moment it lands. The Phase 5 web-search fallback already proves the pattern here — real function-calling, **one** bounded call, distinct provenance label, graceful degradation to the fixed fallback. |
 | D7 | JWT signing via **`pyjwt` + `cryptography`** | `PyGithub`; `githubkit`; shelling out | Both libraries are **already** in `requirements.txt` (`session.py` signs session JWTs with `pyjwt`; `security/crypto.py` uses `cryptography`), and RS256 needs exactly those two. **Zero new dependencies** — same reasoning as D9 in the Google plan and notion-client-over-llama-index in §2. |
-| D8 | `GitHubAgent` **subclasses `RagPipelineAgent`** | A from-scratch `Agent`; add GitHub tools to `PolicyAgent` | `WorkspaceAgent` already proves the pattern: a distinct agent is just a different pipeline (prompt profile + fallback copy). Writing a fresh agent would duplicate the gate/prompt/memory logic that CLAUDE.md insists lives in exactly one place. Adding tools to `PolicyAgent` would put repo tools in every policy prompt. |
-| D9 | Provider-partitioned sync is **already done** — reuse it | Add a partition mechanism | `documents.source_provider` + `(org_id, source_provider, source_external_id)` landed with Google. GitHub inherits coexistence for free; the regression tests in `tests/test_incremental_sync.py` already cover the shape. |
+| D8 | ~~`GitHubAgent` subclasses `RagPipelineAgent`~~ → **REVISED (revision 1): `GitHubAgent` implements `Agent` directly, as a tool-calling agent** | Subclass `RagPipelineAgent`; add GitHub tools to `PolicyAgent` | Once nothing is embedded (D5), there is no retrieval, so there is no `RagPipeline` to adapt — `PolicyAgent`/`WorkspaceAgent`'s "thin adapter over a pipeline" shape simply doesn't apply. This is the first agent that isn't a RAG agent, which is exactly what `app/agent/base.py` claimed the abstraction was for ("says nothing about retrieval, gates, or web search"). Adding tools to `PolicyAgent` would put repo tools into every policy prompt. |
+| D9 | GitHub writes **no rows** to `documents`/`chunks` | Reuse provider-partitioned sync | Follows from D5: with nothing ingested, `source_provider = 'github'` is never written, so the Google-era sync partitioning is simply unused here rather than extended. Nothing in the existing isolation or incremental-sync behaviour changes. |
 
 ## 3. Open decision needing your sign-off (blocks Phase 6)
 
@@ -133,8 +161,9 @@ cross-tenant hole described in D4.
 | T1 | **LLM-filled `repo` argument** could name a repo outside the installation (or another tenant's repo) | Every live call resolves `repo` against the cached `GET /installation/repositories` list for *this* connection and raises before any HTTP call on a miss. This is the live path's equivalent of `WHERE org_id = ...` and must be tested explicitly. |
 | T2 | **READMEs and commit messages are attacker-writable.** Any repo contributor can commit prompt-injection text — a materially wider authorship surface than curated HR policy docs | Both paths go through the Phase 16 defences: fence with `<<<UNTRUSTED_DOCUMENT_CONTENT>>>` and scrub via `app/security/untrusted.py`. Add golden injection cases mirroring `injection-sabbatical`. CLAUDE.md is honest that this is partial mitigation, not a solution. |
 | T3 | `state` round-tripping through the *install* URL (vs the plain authorize URL) is **not confirmed by GitHub's docs** — the setup-URL page documents `installation_id` but not `state` | Verified during Phase 2 against a real App before building on it. Fallback if `state` does not survive: register the App's **Setup URL** as a dedicated `/auth/github/setup` route and resolve the org from the authenticated session instead of state. Flagged the same way the Google plan flagged R2 rather than assuming. |
-| T4 | Ingest volume: an org with 500 repos × many docs could be a very large first sync | Per-repo file cap and per-file byte cap (D5), enforced in the adapter. The durable Phase 12 job queue already means a long sync doesn't block the API. |
-| T5 | Rate limits: 5 000 req/hr per installation (scaling to 12 500; 15 000 on Enterprise Cloud) | Ingest is metadata-first via one recursive tree call per repo rather than per-file listing; live lookups are one call per question. Retry with backoff on 429/5xx, honouring `Retry-After`. |
+| T4 | ~~Ingest volume~~ — **eliminated by revision 1.** Nothing is ingested, so there is no first-sync cost, no job-queue load, and no corpus growth from GitHub at all | n/a — this risk was a consequence of the indexing design that was cut |
+| T5 | Rate limits: 5 000 req/hr per installation (scaling to 12 500; 15 000 on Enterprise Cloud) | Now comfortably sufficient: the steady state is 1–2 calls **per question** rather than a bulk sync. The repo list is read from stored `source_config`, not re-fetched per question. Retry with backoff on 429/5xx, honouring `Retry-After`. |
+| T8 | **Latency is now on the critical path.** With no index, every answer waits on a live GitHub call plus a second LLM round-trip to compose from the tool result | Bounded per-call timeouts and one single-step tool round (never a loop), inside the Phase 19 request deadline. Accepted trade for always-current answers and zero staleness — but unlike the RAG path there is no cache to fall back on, so a slow GitHub means a slow answer. |
 | T6 | A commit diff can be enormous (300 files per page, up to 3 000; "larger diffs may time out") | Never request full diffs for context. Fetch the commit summary + changed-file list, and truncate patches to a configured byte budget before they reach the prompt. |
 | T7 | Private key (PEM) is **new secret material** the current secrets story doesn't cover | Read only via `GitHubSettings.from_env()` (`GITHUB_APP_PRIVATE_KEY`, supporting a `\n`-escaped single-line value); never logged. Added to the deployment-secrets list in CLAUDE.md §6 alongside `AUTH_JWT_SECRET` / `AUTH_ENCRYPTION_KEYS`. |
 
@@ -453,172 +482,185 @@ cache it in-process keyed by `(org_id, workspace_id, installation_id)` until
 
 ---
 
-## Phase 4 — `GitHubAdapter`: index prose docs → P1, P3
+## Phase 4 — Record the admin's actual authorized repo scope → P2, P3
 
-*The largest phase. Answers your question 4: this is exactly what gets embedded.*
+*Implements D5b. Small, and it makes every later phase honest about scope.*
 
 **Files:**
-- Create: `app/sources/github.py`
-- Modify: `app/sources/factory.py`, `app/sources/__init__.py`
-- Create: `tests/test_github_source.py`
+- Modify: `app/auth/credentials.py` (a `get_installation_scope` helper)
+- Create: `app/githublive/repos.py` (fetch + normalize the installation's repo list)
+- Modify: `app/api/auth.py` (persist scope on connect)
+- Test: `tests/test_github_repo_scope.py`
 
-**What is embedded, precisely:**
+`GET /installation/repositories` (installation token, paginated) returns
+`total_count`, `repository_selection` (`all` | `selected`), and the repos. Persist
+into `source_config` alongside `installation_id`:
 
-| Included | Excluded |
-|---|---|
-| `README*` at repo root | every source-code file |
-| `docs/**` with `.md`, `.mdx`, `.rst`, `.txt` | commits, diffs, branches, tags |
-| `CONTRIBUTING.md`, `ARCHITECTURE.md` at root | issues, PRs, wikis, releases |
-| — | binaries, images, lockfiles |
-| — | archived + disabled repos, empty repos |
+```json
+{
+  "installation_id": "4242",
+  "account_login": "acme-inc",
+  "repository_selection": "selected",
+  "repos": [
+    {"full_name": "acme-inc/payments-svc", "description": "Billing + invoicing", "topics": ["go"]},
+    {"full_name": "acme-inc/handbook", "description": "Engineering handbook", "topics": []}
+  ]
+}
+```
 
-**Interface mapping:**
+`description` and `topics` are stored deliberately: they are the signal that lets
+the model resolve a vague question to a repo with **no embeddings** (see §1's
+known-limit note). This is the no-index answer to repo resolution.
 
-- `list_documents()` — `GET /installation/repositories` (paginated) for the repo
-  list, then per repo **one** `GET /repos/{owner}/{repo}/git/trees/{default_branch}?recursive=1`
-  to enumerate paths in a single call (T5), filtered by the table above. Honour
-  the `truncated` flag by logging rather than silently under-ingesting (the same
-  discipline as Drive's `incompleteSearch`). Cap files per repo.
-- `external_id` = `f"{owner}/{repo}:{path}"` — stable, human-readable, and
-  unique within `(org_id, 'github')`.
-- `title` = `f"{repo} — {path}"` so the **repo name is in the chunk text**. This
-  is what makes repo resolution work (your chosen approach) — retrieval surfaces
-  the right repo, and the live tool's `repo` argument is filled from it.
-- `fetch_document()` — `GET /repos/{owner}/{repo}/contents/{path}` with
-  `Accept: application/vnd.github.raw+json`. Skip anything over the per-file cap
-  (well under GitHub's 1 MB full-support threshold).
-- `get_last_modified()` — `GET /repos/{owner}/{repo}/commits?path=<path>&per_page=1`,
-  the commit date of the last change to that file. This is what makes incremental
-  sync work: an edited doc gets a newer date and is re-ingested; untouched docs
-  are acknowledged, not re-embedded.
-- Retry/backoff helper on 429/5xx honouring `Retry-After`; wrap every failure as
-  `SourceError(..., cause=exc)`; 404 → treat as inaccessible/removed (as Drive does).
+**Tests:**
+1. `repository_selection: "all"` is recorded as `all`.
+2. `repository_selection: "selected"` records exactly the returned repos — never
+   an assumption that everything is in scope.
+3. Pagination is followed (repo list spans two pages).
+4. `description`/`topics` survive into the stored config.
+5. A repo list is re-fetched (not stale) when scope is refreshed after a
+   reconnect that changed the selection.
 
-**Tests (offline, monkeypatching the adapter module's `httpx`):**
-1. Repo listing paginates.
-2. Tree walk picks up `README.md` and `docs/a/b.md`, and **excludes** `src/main.py`.
-3. Archived repo skipped.
-4. `title` contains the repo name.
-5. Raw content fetch returns a `SourceDocument`.
-6. Oversize file skipped, not fatal.
-7. 429 then success (retry works).
-8. 404 mid-walk skips that repo and continues.
-9. `truncated: true` is logged, not swallowed.
-10. Full `ingest_source` round trip with `provider="github"`, plus **a Notion doc
-    in the same org surviving a GitHub sync** (extend `tests/test_incremental_sync.py`).
-
-**Commit:** `feat(github): GitHubAdapter indexing README and docs prose`
+**Commit:** `feat(github): record the installation's authorized repo scope`
 
 ---
 
-## Phase 5 — Wire connect + sync end to end → P2, P3, P4
+## Phase 5 — `app/githublive/`: the live read layer → P3, P4
 
-Mostly configuration; the generic layers already handle a third provider.
+*This is the whole data path now. No adapter, no ingestion, no vector store.*
 
 **Files:**
-- Modify: `app/sources/factory.py` (`elif source_type == "github"`)
-- Modify: `app/api/admin.py` — the Drive-only guards on
-  `/connections/{id}/config` and `/drive-folders` must return a clean 400 for
-  GitHub, not 500; GitHub needs no folder config at all (its scope came from
-  the install screen)
-- Modify: `frontend/components/ConnectionCard.tsx` — add `github` to `available`
-  (the labels already exist); GitHub shows **no** folder-config UI
-- Test: extend `tests/test_api_admin.py`
+- Create: `app/githublive/base.py` (`GitHubReader` ABC + result dataclasses)
+- Create: `app/githublive/rest.py` (`RestGitHubReader`, plain `httpx`)
+- Create: `app/githublive/factory.py` (`build_github_reader`)
+- Create: `app/githublive/__init__.py`
+- Modify: `app/config/settings.py` (`GitHubLiveSettings`)
+- Test: `tests/test_github_live.py`
 
-**Manual verification gate — do not skip.** Connect a real GitHub org, run one
-ingest through the worker, and confirm in `psql` that chunks exist with
-`source_provider = 'github'` and the correct `org_id`. Then ask, through the
-existing chat, *"what does <repo> do?"* — this must already answer from the
-indexed README **before** any agent work starts. If it doesn't, the problem is
-here, not in Phase 6.
+Interface + factory, per CLAUDE.md §3 conventions (this is a real capability with
+a plausible second backend — a GraphQL reader — so it earns a `base.py`):
 
-**Commit:** `feat(github): wire GitHub connect and ingestion end to end`
+| Operation | Endpoint | Returns |
+|---|---|---|
+| `list_repos()` | from stored `source_config` (Phase 4), no call | name, description, topics |
+| `get_readme(repo)` | `GET /repos/{repo}/readme`, `Accept: application/vnd.github.raw` | raw Markdown, truncated to a byte budget |
+| `get_commit(repo, sha)` | `GET /repos/{repo}/commits/{sha}` | message, author, date, changed files, patches truncated to a byte budget |
+| `list_commits(repo, path?, since?, limit)` | `GET /repos/{repo}/commits` | recent commit summaries |
+
+**Non-negotiables (each gets a test):**
+
+1. **T1 — `repo` is untrusted input.** It arrives LLM-filled. Every operation
+   resolves it against this connection's own stored repo list and raises
+   `SourceError` **before any HTTP call** on a miss. For `repository_selection:
+   "all"`, validate the owner matches `account_login` so a fully-qualified
+   foreign repo (`other-org/secrets`) is still refused. This is the live path's
+   equivalent of `WHERE org_id = ...`; it is the single most important test here.
+2. **T6 — never send an unbounded payload.** README and every patch are
+   truncated to a configured byte budget with an explicit `[truncated]` marker so
+   the model knows the evidence is partial. Never request a full diff.
+3. **T5 — retry/backoff** on 429/5xx honouring `Retry-After`; bounded attempts.
+4. 404 → a clear "not found or not accessible" `SourceError` (GitHub returns 404
+   for both, exactly like Drive).
+5. Every failure wrapped as `SourceError(..., cause=exc)`.
+
+**Tests:** repo allowlist rejects a foreign repo pre-network (T1, both
+`all` and `selected` modes); README fetched and truncated; commit summary +
+files parsed; oversize patch truncated with marker; 429 retried then succeeds;
+404 → `SourceError`; `list_commits` honours `path`/`limit`.
+
+**Commit:** `feat(github): bounded live GitHub read layer with repo allowlist`
 
 ---
 
-## Phase 6 — `GitHubAgent` + orchestrator routing → P5, **and O1 signed off**
+## Phase 6 — `GitHubAgent` → P5, **and O1 signed off**
+
+*The first non-RAG agent. `Agent`'s abstraction finally earns its keep.*
 
 **Files:**
 - Create: `app/agent/github_agent.py`
 - Modify: `app/agent/factory.py` (`build_github_agent`), `app/agent/__init__.py`
-- Modify: `app/rag/prompts.py` (`GITHUB_PROMPT_PROFILE`)
-- Modify: `app/config/settings.py` (`GitHubAgentSettings` — its own fallback copy)
-- Modify: `app/api/deps.py` (`get_github_agent`), `app/api/chat.py` (`_select_agent`)
-- Modify: `app/agent/base.py` — document `source="github"` in the `AgentResponse` docstring
-- Create: `tests/test_github_agent.py`
+- Modify: `app/rag/prompts.py` (tool definitions + the GitHub answer prompt)
+- Modify: `app/config/settings.py` (`GitHubAgentSettings`: fallback copy, budgets)
+- Modify: `app/agent/base.py` (document `source="github"`)
+- Test: `tests/test_github_agent.py`
 
-`GitHubAgent` subclasses `RagPipelineAgent` exactly as `WorkspaceAgent` does —
-a different prompt persona and fallback string, web search off. **No answering
-logic** (CLAUDE.md: "`PolicyAgent` must not add behavior — it's an adapter").
+`GitHubAgent.answer(question, org_id, conversation_id=None, workspace_id=None)`:
 
-`_select_agent` gains its third branch per O1. Keep it the single place the
-decision is made — that property is called out in `chat.py`'s own docstring.
+1. Load this org's GitHub connection scope (Phase 4). No connection → the fixed
+   fallback, no LLM call.
+2. One `generate_with_tools` call offering `get_readme` / `get_commit` /
+   `list_commits`, with the repo list (name + description + topics) in the
+   prompt so the model can resolve which repo without retrieval.
+3. If it calls a tool: execute **one** bounded round (repo validated per T1),
+   feed results back, compose the final answer. No multi-step agent loop —
+   matching the Phase 5 web-search single-step decision.
+4. If it calls nothing, or the call fails/times out: return the fixed fallback.
+   **Never** answer a GitHub question from model world-knowledge.
+5. **T2 — tool output is untrusted.** READMEs and commit messages are writable by
+   any repo contributor, a far wider authorship surface than curated policy docs.
+   Fence with `<<<UNTRUSTED_DOCUMENT_CONTENT>>>` and scrub via
+   `app/security/untrusted.py`, exactly as retrieved chunks are.
+6. Map to `AgentResponse` with `source="github"`, `grounded` true only when a
+   tool actually supplied the evidence, and `citations` pointing at the GitHub
+   URLs used.
 
-**Tests:** routing picks GitHubAgent for the GitHub selector and PolicyAgent by
-default; a GitHub question with no matching chunks returns the fallback with
-`grounded=False`; `source == "github"`; existing policy/workspace routing tests
-still pass unchanged.
+**Grounding note.** The confidence gate does not apply here — there is no
+similarity score to gate on. The equivalent guarantee is structural: an answer
+is only produced from tool output, and no tool output means the fallback. That
+substitution must be stated in the code, not left implicit.
 
-**Commit:** `feat(github): GitHubAgent behind the existing Agent contract`
+`_select_agent` in `app/api/chat.py` gains its third branch per O1. It stays the
+one place that decision is made.
+
+**Tests:** no connection → fallback, zero LLM calls; a SHA question triggers
+`get_commit` and the answer contains the message; a "what does X do" question
+triggers `get_readme`; foreign repo refused (T1); injection text in a commit
+message is scrubbed (T2); tool failure → fallback; model calls no tool →
+fallback; `source == "github"`; existing policy/workspace routing unchanged.
+
+**Commit:** `feat(github): GitHubAgent answering from live tool calls only`
 
 ---
 
-## Phase 7 — Live commit lookup → P6
-
-*Answers your question 5: yes, there is a live API, and this is how it's wired.*
+## Phase 7 — API + frontend wiring → P6
 
 **Files:**
-- Create: `app/githublive/base.py`, `rest.py`, `factory.py`
-- Modify: `app/rag/prompts.py` (tool description + answer prompt)
-- Modify: `app/rag/pipeline.py` (offer the tool where `web_search` is offered today)
-- Modify: `app/config/settings.py` (`GitHubLiveSettings`: enabled, timeout, patch byte budget)
-- Create: `tests/test_github_live.py`
+- Modify: `app/api/deps.py` (`get_github_agent`), `app/api/chat.py`
+- Modify: `app/api/admin.py` — GitHub needs **no** folder/scope config endpoint
+  (its scope came from the install screen); the Drive-only guards must return a
+  clean 400 for GitHub rather than 500
+- Modify: `frontend/components/ConnectionCard.tsx` — add `github` to `available`
+  (labels already exist); show the authorized repo scope ("all repositories" or
+  the list) instead of a folder picker
+- Modify: `frontend/app/chat/` — the source selector from O1
+- Test: extend `tests/test_api_admin.py`, `tests/test_api_chat.py`
 
-**The two operations (v1):**
+**Manual verification gate.** Connect a real GitHub org, then through the real
+UI: ask "what does `<repo>` do?" (expect a README-grounded answer) and "what
+happened in commit `<sha>`?" (expect a commit-grounded answer). Confirm in the
+DB that **no** `documents`/`chunks` rows were created for GitHub — that is the
+observable proof D5 was implemented as designed.
 
-| Tool op | Endpoint | Returned to the model |
-|---|---|---|
-| `get_commit(repo, sha)` | `GET /repos/{owner}/{repo}/commits/{sha}` | message, author, date, changed-file list with add/del counts, patches truncated to the byte budget (T6) |
-| `list_commits(repo, path?, since?)` | `GET /repos/{owner}/{repo}/commits` | recent commit summaries (sha, message first line, author, date) |
-
-**Non-negotiables in this phase:**
-
-1. **T1 — validate `repo` against the installation's repo list before any HTTP
-   call.** The model filled that string; it is untrusted input. Test that a
-   foreign repo raises and never reaches the network.
-2. **T2 — commit messages and patches are untrusted.** Fence and scrub them
-   exactly as retrieved chunks are, via `app/security/untrusted.py`.
-3. **T6 — never send a full diff.** Truncate to the configured budget with an
-   explicit "[truncated]" marker so the model knows the evidence is partial.
-4. **Degrade like web search.** Any failure/timeout → the fixed fallback, never
-   a crash and never an ungrounded guess.
-5. **One call per question.** No multi-step agent loop, matching the Phase 5
-   single-step decision.
-
-**Tests:** SHA question triggers `get_commit` and the answer contains the commit
-message; foreign repo → raises pre-network (T1); injection text in a commit
-message is scrubbed (T2); oversize patch truncated (T6); API failure → fallback;
-a docs question does **not** trigger a live call.
-
-**Commit:** `feat(github): bounded live commit lookup via tool-calling`
+**Commit:** `feat(github): expose GitHubAgent through the API and portal`
 
 ---
 
 ## Phase 8 — Evaluation + documentation
 
-- Add golden cases to `evaluation/golden_set.py`: two answerable-from-README,
-  one live-commit, one fallback, one **injection** case mirroring
-  `injection-sabbatical` (T2).
-- Extend `tests/test_isolation.py`: org A must never retrieve org B's GitHub
-  chunks, and the live path must refuse a repo outside its own installation.
-- Update `CLAUDE.md` §2 (reasoning), §3 (`app/githublive/`, `app/sources/github.py`,
-  `app/agent/github_agent.py`), §4 (gotchas: spoofable `installation_id`; the
-  `Accept: application/json` token-exchange trap; the 300/3000-file diff limits),
-  §5 (no new tables — `source_config` carries `installation_id`), §6 (built vs
-  pending, and the PEM secret).
-- **Live walkthrough:** connect → install → sync → ask "what does this repo do"
-  → ask "what happened in commit `<sha>`" → edit a README → change-check →
-  re-sync. Record results honestly, including anything that only half-works.
+- Golden cases in `evaluation/golden_set.py`: one README-answerable, one
+  live-commit, one fallback (no connection), one **injection** case mirroring
+  `injection-sabbatical` (T2). GitHub cases are **advisory** in CI like the web
+  cases — they need live GitHub credentials CI won't have.
+- `tests/test_isolation.py`: org A's GitHub connection must never be reachable
+  from org B, and the live path must refuse a repo outside its own installation.
+- Update `CLAUDE.md`: §2 (reasoning, incl. why GitHub embeds nothing and why
+  that differs from Notion/Drive), §3 (`app/githublive/`, `app/auth/github_app.py`,
+  `app/auth/github_oauth.py`, `app/agent/github_agent.py`), §4 (gotchas:
+  spoofable `installation_id`; the `Accept: application/json` token-exchange
+  trap; 300/3000-file diff limits; `repository_selection` is the admin's choice,
+  not an assumption), §5 (**no new tables** — `source_config` carries everything),
+  §6 (built vs pending, and the PEM secret).
+- **Live walkthrough**, recorded honestly including anything that half-works.
 
 **Commit:** `docs: record GitHub integration decisions and findings`
 
@@ -626,11 +668,19 @@ a docs question does **not** trigger a live call.
 
 ## What deliberately does NOT change
 
-The gate (`RAG_SIMILARITY_THRESHOLD` 0.35), the strict grounded prompt and its
-three response modes, hybrid search + RRF + reranking, conversation memory and
-the incremental summary fold, retrieval reuse, query normalization, and
-`org_id` isolation. GitHub chunks are ordinary org-scoped rows; the live lookup
-is one more tool in the slot web search already occupies. **No new tables.**
+After revision 1 the answer is "even more than before": the entire RAG path is
+untouched, because GitHub never enters it. The gate
+(`RAG_SIMILARITY_THRESHOLD` 0.35), the strict grounded prompt and its three
+response modes, hybrid search + RRF + reranking, contextual retrieval,
+conversation memory and the incremental summary fold, retrieval reuse, query
+normalization, and `org_id` isolation all keep working exactly as today on
+Notion/Drive content.
+
+GitHub adds: **no new tables, no `documents` rows, no `chunks` rows, no
+embeddings, and no ingestion jobs.** It stores exactly one thing — an
+`oauth_connections` row plus its `source_config` — and reads everything else
+live. `PolicyAgent` and `WorkspaceAgent` are not modified at all; the only
+shared code that changes is `_select_agent` gaining a third branch.
 
 ## Sources
 
