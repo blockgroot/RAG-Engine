@@ -10,8 +10,12 @@ const plusJakarta = Plus_Jakarta_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "Folio",
+  title: {
+    default: "Folio",
+    template: "%s · Folio",
+  },
   description: "Ask questions grounded in your own documents.",
+  applicationName: "Folio",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

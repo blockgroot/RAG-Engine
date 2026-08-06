@@ -1664,6 +1664,23 @@ table .role-chip.role-admin,
 .chat-citation-about .chat-citation-body {
   font-style: italic;
 }
+.chat-citation-document {
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--provenance-policy) 10%, var(--surface)) 0%,
+      var(--surface) 58%
+    );
+  border-color: color-mix(in srgb, var(--provenance-policy) 28%, var(--border));
+  border-left: 3px solid color-mix(in srgb, var(--provenance-policy) 75%, #067647);
+  box-shadow: 0 10px 22px -18px rgba(6, 118, 71, 0.45);
+}
+.chat-citation-document .chat-citation-kind {
+  color: var(--provenance-policy);
+}
+.chat-citation-document .chat-citation-body {
+  font-style: normal;
+}
 
 .page-wide .page-header,
 .page .page-header {
@@ -2008,6 +2025,22 @@ table .role-chip.role-admin,
 .as-float-2 { animation: float-card 6.8s ease-in-out 0.3s infinite; }
 .as-float-3 { animation: float-card 7.2s ease-in-out 0.15s infinite; }
 .as-core { animation: core-pulse 4.5s ease-in-out infinite; transform-origin: 210px 160px; }
+.auth-scene--signup .as-core-signup {
+  animation: float-card 6.4s ease-in-out 0.2s infinite;
+  transform-origin: 280px 144px;
+}
+.auth-scene--login .as-pill { animation: float-card 7s ease-in-out 0.4s infinite; }
+.auth-scene--signup .as-pill { animation: float-card 6.2s ease-in-out 0.55s infinite; }
+.auth-scene--signup .auth-scene-title {
+  background: linear-gradient(135deg, #0f172a 10%, #0d5c56 55%, #b45309 115%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.auth-scene--signup .auth-scene-bullet {
+  background: linear-gradient(145deg, #f59e0b, #0f766e);
+}
+
 .as-arc { animation: dash-flow 4.5s linear infinite; }
 .as-arc-delay { animation-delay: 1.1s; }
 
@@ -2033,7 +2066,7 @@ table .role-chip.role-admin,
   .auth-scene-art { margin-inline: auto; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .as-blob-a, .as-blob-b, .as-float-1, .as-float-2, .as-float-3, .as-core, .as-arc {
+  .as-blob-a, .as-blob-b, .as-float-1, .as-float-2, .as-float-3, .as-core, .as-core-signup, .as-pill, .as-arc {
     animation: none !important;
   }
 }

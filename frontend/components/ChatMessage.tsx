@@ -10,20 +10,22 @@ export interface Message {
   done?: ChatDonePayload;
 }
 
-type CitationKind = "about" | "readme" | "commit" | "generic";
+type CitationKind = "about" | "readme" | "commit" | "document" | "generic";
 
 interface ParsedCitation {
   kind: CitationKind;
-  repo?: string;
   label: string;
   detail?: string;
 }
 
-/** Turn raw refs like ``owner/repo#about`` into readable source-card labels. */
+const UUID_REF =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:#\d+)?$/i;
+
+/** Turn raw refs into readable source-card labels (never shouty UUID dumps). */
 function parseCitationRef(ref: string | undefined, index: number): ParsedCitation {
   const raw = (ref || "").trim();
   if (!raw) {
-    return { kind: "generic", label: `Source ${index + 1}` };
+    return { kind: "generic", label: "Source", detail: `Excerpt ${index + 1}` };
   }
 
   const aboutOrReadme = raw.match(/^([^/#\s]+\/[^/#\s]+)#(about|readme)$/i);
@@ -32,7 +34,6 @@ function parseCitationRef(ref: string | undefined, index: number): ParsedCitatio
     const kind = aboutOrReadme[2].toLowerCase() as "about" | "readme";
     return {
       kind,
-      repo,
       label: kind === "about" ? "Repository about" : "README",
       detail: repo,
     };
@@ -42,21 +43,39 @@ function parseCitationRef(ref: string | undefined, index: number): ParsedCitatio
   if (commitAt) {
     return {
       kind: "commit",
-      repo: commitAt[1],
       label: "Commit",
       detail: `${commitAt[1]} · ${commitAt[2].slice(0, 7)}`,
     };
   }
 
-  // Commit citations sometimes use ``repo#sha`` — keep a readable fallback.
-  const hashParts = raw.match(/^([^/#\s]+\/[^/#\s]+)#([0-9a-f]{7,40})$/i);
-  if (hashParts) {
+  const commitHash = raw.match(/^([^/#\s]+\/[^/#\s]+)#([0-9a-f]{7,40})$/i);
+  if (commitHash) {
     return {
       kind: "commit",
-      repo: hashParts[1],
       label: "Commit",
-      detail: `${hashParts[1]} · ${hashParts[2].slice(0, 7)}`,
+      detail: `${commitHash[1]} · ${commitHash[2].slice(0, 7)}`,
     };
+  }
+
+  // Policy / workspace: "Leave Policy · excerpt 2"
+  const titled = raw.match(/^(.*?)\s·\sexcerpt\s+(\d+)$/i);
+  if (titled) {
+    return {
+      kind: "document",
+      label: `Excerpt ${titled[2]}`,
+      detail: titled[1].trim(),
+    };
+  }
+
+  if (/^Document excerpt\s+\d+$/i.test(raw)) {
+    return { kind: "document", label: "Document", detail: raw };
+  }
+
+  // Legacy UUID#n refs — never show the raw id.
+  if (UUID_REF.test(raw)) {
+    const part = raw.includes("#") ? raw.split("#").pop() : null;
+    const n = part && /^\d+$/.test(part) ? String(Number(part) + 1) : String(index + 1);
+    return { kind: "document", label: "Document", detail: `Excerpt ${n}` };
   }
 
   return { kind: "generic", label: "Source", detail: raw };
@@ -74,12 +93,18 @@ function CitationCard({
   const parsed = parseCitationRef(reference, index);
   const isGithub =
     parsed.kind === "about" || parsed.kind === "readme" || parsed.kind === "commit";
+  const isDocument = parsed.kind === "document";
 
   return (
     <div
-      className={`chat-citation${isGithub ? " chat-citation-github" : ""}${
-        parsed.kind === "about" ? " chat-citation-about" : ""
-      }`}
+      className={[
+        "chat-citation",
+        isGithub ? "chat-citation-github" : "",
+        parsed.kind === "about" ? "chat-citation-about" : "",
+        isDocument ? "chat-citation-document" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
     >
       <div className="chat-citation-head">
         {isGithub && <ProviderMark provider="github" size={18} />}

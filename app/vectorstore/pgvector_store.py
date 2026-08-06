@@ -108,15 +108,17 @@ class PgVectorStore(VectorStore):
         with get_connection(self._settings) as conn:
             rows = conn.execute(
                 """
-                SELECT content,
-                       1 - (embedding <=> %s) AS score,
-                       document_id::text,
-                       chunk_index,
-                       org_id::text
-                FROM chunks
-                WHERE org_id = %s::uuid
-                  AND workspace_id IS NOT DISTINCT FROM %s::uuid
-                ORDER BY embedding <=> %s
+                SELECT c.content,
+                       1 - (c.embedding <=> %s) AS score,
+                       c.document_id::text,
+                       c.chunk_index,
+                       c.org_id::text,
+                       d.title
+                FROM chunks c
+                LEFT JOIN documents d ON d.id = c.document_id
+                WHERE c.org_id = %s::uuid
+                  AND c.workspace_id IS NOT DISTINCT FROM %s::uuid
+                ORDER BY c.embedding <=> %s
                 LIMIT %s
                 """,
                 (vector, org_id, workspace_id, vector, top_k),
@@ -129,6 +131,7 @@ class PgVectorStore(VectorStore):
                 document_id=row[2],
                 chunk_index=row[3],
                 org_id=row[4],
+                document_title=(str(row[5]).strip() if row[5] else None),
             )
             for row in rows
         ]
@@ -165,15 +168,17 @@ class PgVectorStore(VectorStore):
         with get_connection(self._settings) as conn:
             rows = conn.execute(
                 """
-                SELECT content,
-                       document_id::text,
-                       chunk_index,
-                       org_id::text,
-                       1 - (embedding <=> %s) AS score
-                FROM chunks
-                WHERE org_id = %s::uuid
-                  AND workspace_id IS NOT DISTINCT FROM %s::uuid
-                  AND content_tsv @@ websearch_to_tsquery('english', %s)
+                SELECT c.content,
+                       c.document_id::text,
+                       c.chunk_index,
+                       c.org_id::text,
+                       1 - (c.embedding <=> %s) AS score,
+                       d.title
+                FROM chunks c
+                LEFT JOIN documents d ON d.id = c.document_id
+                WHERE c.org_id = %s::uuid
+                  AND c.workspace_id IS NOT DISTINCT FROM %s::uuid
+                  AND c.content_tsv @@ websearch_to_tsquery('english', %s)
                 """,
                 (vector, org_id, workspace_id, query_text),
             ).fetchall()
@@ -196,6 +201,7 @@ class PgVectorStore(VectorStore):
                     document_id=row[1],
                     chunk_index=row[2],
                     org_id=row[3],
+                    document_title=(str(row[5]).strip() if row[5] else None),
                 )
             )
         return out
