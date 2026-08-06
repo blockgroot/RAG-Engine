@@ -10,24 +10,6 @@ import { streamChat } from "@/lib/sse";
 import { api } from "@/lib/api";
 import { JOB_POLL_MS } from "@/lib/jobPoll";
 
-const POLICY_SUGGESTED_QUESTIONS = [
-  "How many days of paid leave do I get?",
-  "What's the remote work policy?",
-  "How do I claim a medical reimbursement?",
-  "What are the maternity/paternity leave rules?",
-];
-
-// The GitHub agent answers from live API reads, so its examples are shaped
-// around what a single bounded read can actually ground: one repo, or one
-// commit. Deliberately no cross-repo question ("which service does X?") --
-// nothing is embedded, so there is no semantic search across repositories.
-const CODE_SUGGESTED_QUESTIONS = [
-  "What does the RAG repository do?",
-  "What does Fact-Verification-Engine do?",
-  "What changed recently in persistent-memory-assistant?",
-  "How do I run the RAG project locally?",
-];
-
 function ChipIcon({ kind }: { kind: "policy" | "code" }) {
   if (kind === "code") {
     return (
@@ -78,6 +60,9 @@ function ChatPageInner() {
   const [readyToAsk, setReadyToAsk] = useState<boolean | null>(null);
   const [workspaceSyncing, setWorkspaceSyncing] = useState(false);
   const [justSynced, setJustSynced] = useState(false);
+  const [suggestedQuestions, setSuggestedQuestions] = useState<string[]>([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+
 
   // Which agent answers. The tab only appears when GitHub is actually
   // connected -- offering "Code" with nothing behind it would just produce
@@ -96,6 +81,29 @@ function ChatPageInner() {
   useEffect(() => {
     if (showAgentTabs && !policiesReady) setAgentTab("github");
   }, [showAgentTabs, policiesReady]);
+
+  // Starter chips from connected sources (document titles / GitHub repos).
+  useEffect(() => {
+    if (!me) return;
+    let cancelled = false;
+    const agent = askingCode ? "github" : "policy";
+    setSuggestionsLoading(true);
+    api
+      .chatSuggestions(agent, workspaceId)
+      .then((res) => {
+        if (!cancelled) setSuggestedQuestions(res.questions || []);
+      })
+      .catch(() => {
+        if (!cancelled) setSuggestedQuestions([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSuggestionsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [me, askingCode, workspaceId]);
+
 
   useEffect(() => {
     if (!me) return;
@@ -369,23 +377,23 @@ function ChatPageInner() {
                 <h1>{emptyTitle}</h1>
                 <p className="muted">{emptyCopy}</p>
               </div>
-              {!workspaceId && (
+              {suggestionsLoading ? (
+                <p className="muted suggested-loading">Loading suggestions…</p>
+              ) : suggestedQuestions.length > 0 ? (
                 <div className="suggested-chips suggested-chips-bento">
-                  {(askingCode ? CODE_SUGGESTED_QUESTIONS : POLICY_SUGGESTED_QUESTIONS).map(
-                    (q) => (
-                      <button
-                        key={q}
-                        type="button"
-                        className="suggested-chip suggested-chip-card"
-                        onClick={() => ask(q)}
-                      >
-                        <ChipIcon kind={askingCode ? "code" : "policy"} />
-                        <span>{q}</span>
-                      </button>
-                    )
-                  )}
+                  {suggestedQuestions.map((q) => (
+                    <button
+                      key={q}
+                      type="button"
+                      className="suggested-chip suggested-chip-card"
+                      onClick={() => ask(q)}
+                    >
+                      <ChipIcon kind={askingCode ? "code" : "policy"} />
+                      <span>{q}</span>
+                    </button>
+                  ))}
                 </div>
-              )}
+              ) : null}
             </div>
           ) : (
             <div className="chat-log" ref={logRef} aria-live="polite">

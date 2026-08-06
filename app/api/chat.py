@@ -75,9 +75,12 @@ from .deps import (
     get_workspace_agent,
 )
 
+from .suggestions import build_github_suggestions, build_policy_suggestions
+
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 AGENT_GITHUB = "github"
+AGENT_POLICY = "policy"
 
 
 def _select_agent(
@@ -134,6 +137,76 @@ def _user_facing_llm_error(exc: BaseException) -> str:
     if "timeout" in text:
         return "The AI service timed out. Please try again."
     return "The AI service is unavailable right now. Please try again shortly."
+
+
+@router.get("/suggestions")
+def list_suggestions(
+    agent: str = AGENT_POLICY,
+    workspace_id: str | None = None,
+    session: SessionClaims = Depends(get_session),
+):
+    """Starter questions derived from *this tenant's* connected sources.
+
+    Never hardcoded product copy: Policies chips come from ingested document
+    titles; Code chips come from the GitHub installation's stored repo list.
+    Exposed to every signed-in member (not admin-only) so the Ask empty state
+    works for ordinary employees — only names/titles needed for chips, not
+    OAuth secrets.
+    """
+    if workspace_id is not None:
+        try:
+            assert_member(workspace_id, session.org_id, session.user_id)
+        except AuthError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    requested = (agent or AGENT_POLICY).strip().lower()
+    if requested == AGENT_GITHUB:
+        # GitHub is org-level only — workspace Ask has no Code tab.
+        if workspace_id is not None:
+            return {"agent": AGENT_GITHUB, "questions": []}
+        questions = build_github_suggestions(_github_repos_for_org(session.org_id))
+        return {"agent": AGENT_GITHUB, "questions": questions}
+
+    titles = _document_titles_for_scope(session.org_id, workspace_id)
+    return {
+        "agent": AGENT_POLICY,
+        "questions": build_policy_suggestions(titles),
+    }
+
+
+def _github_repos_for_org(org_id: str) -> list[dict]:
+    """Repo list from the org-wide GitHub connection's ``source_config``."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT source_config FROM oauth_connections "
+            "WHERE org_id = %s AND provider = 'github' AND workspace_id IS NULL",
+            (org_id,),
+        ).fetchone()
+    if not row or row[0] is None:
+        return []
+    config = row[0]
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(config, dict):
+        return []
+    repos = config.get("repos") or []
+    return [r for r in repos if isinstance(r, dict)]
+
+
+def _document_titles_for_scope(org_id: str, workspace_id: str | None) -> list[str]:
+    """Ingested document titles for this org (or one workspace), newest first."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT title FROM documents "
+            "WHERE org_id = %s AND workspace_id IS NOT DISTINCT FROM %s "
+            "ORDER BY created_at DESC NULLS LAST "
+            "LIMIT 12",
+            (org_id, workspace_id),
+        ).fetchall()
+    return [str(r[0]) for r in rows if r and r[0]]
 
 
 @router.post("/conversations")

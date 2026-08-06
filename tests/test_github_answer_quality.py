@@ -317,3 +317,40 @@ def test_mode_tag_never_leaks_into_the_user_visible_answer():
 
     assert "MODE" not in response.answer
     assert response.answer == "Clean answer."
+
+def test_about_only_mode_a_fetches_commits_for_richer_answer():
+    """README 404 + Mode A from catalog description still recovers commits.
+
+    Thin `#about` evidence alone produces short paraphrases; one commit round
+    gives the model something concrete to expand into a fuller overview.
+    """
+    from app.core.exceptions import SourceError
+
+    llm = _ScriptedLLM(
+        _readme_call(),
+        [
+            "MODE: A\n\nIt is a long-term memory layer.",
+            "MODE: A\n\n"
+            "persistent-memory-assistant is a long-term memory layer for LLM "
+            "assistants. Recent work added a vector store for conversation "
+            "memory and retrieval APIs — so beyond the GitHub description, "
+            "the commit history shows active memory/retrieval work.",
+        ],
+    )
+
+    class _NoReadme(_FakeReader):
+        def get_readme(self, repo):
+            self.calls.append("get_readme")
+            raise SourceError("README not found")
+
+    reader = _NoReadme(commits=_commits())
+    agent = _agent(llm, reader)
+    response = agent.answer("What does persistent-memory-assistant do?", "org-1")
+
+    assert reader.calls == ["get_readme", "list_commits"]
+    assert len(llm.answer_prompts) == 2
+    assert "Add vector store for conversation memory" in llm.answer_prompts[1]
+    assert response.grounded is True
+    assert response.recovery_used is True
+    assert "vector store" in response.answer.lower()
+

@@ -247,6 +247,15 @@ export const api = {
       body: JSON.stringify(workspaceId ? { workspace_id: workspaceId } : {}),
     }),
 
+  /** Starter chips from connected sources (docs / GitHub repos) — not hardcoded. */
+  chatSuggestions: (agent: "policy" | "github", workspaceId?: string | null) => {
+    const params = new URLSearchParams({ agent });
+    if (workspaceId) params.set("workspace_id", workspaceId);
+    return request<{ agent: string; questions: string[] }>(
+      `/chat/suggestions?${params.toString()}`
+    );
+  },
+
   // --- Workspace-within-a-Workspace ---
 
   listWorkspaces: () => request<WorkspaceRecord[]>("/workspaces"),

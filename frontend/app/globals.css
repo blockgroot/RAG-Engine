@@ -1589,32 +1589,80 @@ table .role-chip.role-admin,
   padding-top: 0.85rem;
   border-top: 1px solid var(--border);
   display: grid;
-  gap: 0.55rem;
+  gap: 0.65rem;
 }
 .chat-citation {
   display: grid;
-  gap: 0.2rem;
-  padding: 0.7rem 0.85rem;
-  border-radius: 12px;
+  gap: 0.45rem;
+  padding: 0.75rem 0.9rem;
+  border-radius: 14px;
   background: var(--surface-muted);
   border: 1px solid var(--border);
   animation: rise-in 0.35s var(--ease) both;
 }
+.chat-citation-github {
+  background:
+    linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--provenance-github) 8%, var(--surface)) 0%,
+      var(--surface) 55%
+    );
+  border-color: color-mix(in srgb, var(--provenance-github) 22%, var(--border));
+  box-shadow: 0 10px 22px -18px rgba(52, 64, 84, 0.55);
+}
+.chat-citation-about {
+  border-left: 3px solid color-mix(in srgb, var(--provenance-github) 70%, #667085);
+}
+.chat-citation-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+}
+.chat-citation-github .provider-mark {
+  color: var(--provenance-github);
+  flex: none;
+  margin-top: 0.1rem;
+}
+.chat-citation-meta {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+}
+.chat-citation-kind {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+.chat-citation-title {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: 0;
+  text-transform: none;
+  word-break: break-word;
+}
 .chat-citation-ref {
   font-size: 0.72rem;
   font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  text-transform: none;
   color: var(--accent-strong);
 }
 .chat-citation-body {
+  margin: 0;
   font-size: 0.86rem;
   color: var(--ink-muted);
-  line-height: 1.45;
+  line-height: 1.5;
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+.chat-citation-about .chat-citation-body {
+  font-style: italic;
 }
 
 .page-wide .page-header,

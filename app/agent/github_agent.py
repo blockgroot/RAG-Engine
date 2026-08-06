@@ -59,6 +59,13 @@ ReaderBuilder = Callable[..., GitHubReader]
 _MODE_TAG_RE = re.compile(r"^\s*MODE:\s*([ABC])\s*\n+(.*)", re.IGNORECASE | re.DOTALL)
 
 
+def _citations_are_about_only(citations: list[Citation]) -> bool:
+    """True when every citation is catalog metadata (``repo#about``), no README/commits."""
+    if not citations:
+        return False
+    return all((c.reference or "").lower().endswith("#about") for c in citations)
+
+
 def _split_mode_tag(raw: str) -> tuple[str | None, str]:
     """Split a declared mode off the front of a generation, if present.
 
@@ -135,7 +142,16 @@ class GitHubAgent(Agent):
         # establishes…" copy instead of C, which used to skip recovery. For
         # get_readme questions, try one supplementary commit fetch on B or C;
         # if that fails, keep a Mode B answer (never invent), or fall back on C.
-        if mode in ("B", "C") and self._settings.evidence_recovery_enabled:
+        #
+        # Also recover on Mode A when the *only* grounding is catalog `#about`
+        # metadata (README 404). A one-line GitHub description is true but thin;
+        # recent commit subjects usually let us write a fuller, still-grounded
+        # overview without inventing purpose.
+        thin_about_only = mode == "A" and _citations_are_about_only(citations)
+        if (
+            self._settings.evidence_recovery_enabled
+            and (mode in ("B", "C") or thin_about_only)
+        ):
             recovered = self._recover(
                 question, reader, decision, evidence_block, citations
             )
@@ -385,18 +401,26 @@ class GitHubAgent(Agent):
             return None
 
         lines = [
-            f"Repository metadata for {matched.full_name}",
-            "(no README is available on this repository — using the description "
-            "recorded for this GitHub installation)",
+            f"Repository about for {matched.full_name}",
+            "(no README is available — this is the description/topics recorded "
+            "for this GitHub installation, not a project README)",
+            "",
+            f"Name: {matched.full_name}",
         ]
         if description:
             lines.append(f"Description: {description}")
         if topics:
-            lines.append("Topics: " + ", ".join(topics))
+            lines.append("Topics / tech tags: " + ", ".join(topics))
+        lines.append(
+            "Guidance for the answer: expand these fields into a clear overview "
+            "of what the repository is for. Do not invent features beyond the "
+            "description and topics."
+        )
         block = "\n".join(lines)
+        about_body = description or ("Topics: " + ", ".join(topics))
         return block, [
             Citation(
-                content=(description or ", ".join(topics))[:500],
+                content=about_body[:500],
                 reference=f"{matched.full_name}#about",
             )
         ]
