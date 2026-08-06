@@ -43,6 +43,16 @@ DEFAULT_WORKSPACE_FALLBACK_RESPONSE = (
     "I don't have anything about that in this workspace's connected content."
 )
 
+# The GitHub agent's refusal. Distinct copy because the *reason* differs: there
+# is no retrieval here, so a refusal means "no tool could supply evidence for
+# this", not "nothing matched in the corpus" — and the actionable next step for
+# the user is different too (name a repo, or check it's in the installation).
+DEFAULT_GITHUB_FALLBACK_RESPONSE = (
+    "I couldn't find that in the connected GitHub repositories. Try naming the "
+    "repository, or check that it's included in this organization's GitHub "
+    "installation."
+)
+
 # Connection-pool sizing for the Postgres backing store.
 DEFAULT_DB_POOL_MIN_SIZE = 1
 DEFAULT_DB_POOL_MAX_SIZE = 10
@@ -478,6 +488,27 @@ class GitHubSettings:
             # survives .env files and secret managers that only hold flat
             # strings. A real multi-line value passes through untouched.
             private_key=raw_key.replace("\\n", "\n") if raw_key else None,
+        )
+
+
+@dataclass(frozen=True)
+class GitHubAgentSettings:
+    """Configuration specific to ``GitHubAgent``.
+
+    Only the fallback string, mirroring ``WorkspaceAgentSettings`` — but for a
+    different reason. There, the string must stay consistent across one
+    pipeline's gate/prompt/refusal-detection. Here there is no pipeline at all:
+    the agent returns this string whenever no tool could supply evidence, so it
+    has exactly one consumer and simply needs to be configurable.
+    """
+
+    fallback_response: str = DEFAULT_GITHUB_FALLBACK_RESPONSE
+
+    @classmethod
+    def from_env(cls) -> "GitHubAgentSettings":
+        return cls(
+            fallback_response=os.getenv("GITHUB_FALLBACK_RESPONSE")
+            or DEFAULT_GITHUB_FALLBACK_RESPONSE,
         )
 
 

@@ -13,7 +13,8 @@ from functools import lru_cache
 
 from fastapi import Depends, HTTPException, Request
 
-from ..agent import build_policy_agent, build_workspace_agent
+from ..agent import build_github_agent, build_policy_agent, build_workspace_agent
+from ..agent.github_agent import GitHubAgent
 from ..agent.policy_agent import PolicyAgent
 from ..agent.workspace_agent import WorkspaceAgent
 from ..auth.session import SessionClaims, decode_session_token
@@ -47,6 +48,20 @@ def get_workspace_agent() -> WorkspaceAgent:
     policy agent, for the same reason (embedding/reranker model load cost).
     """
     return build_workspace_agent()
+
+
+@lru_cache(maxsize=1)
+def get_github_agent() -> GitHubAgent:
+    """Process-wide singleton ``GitHubAgent``.
+
+    Cheap to build compared to the other two — no embedding model and no
+    reranker, because this agent has no retrieval at all. Cached anyway for
+    consistency, and safe to cache because it holds **no** tenant state: the
+    GitHub reader (and therefore the installation token and authorized repo
+    scope) is constructed per request from the caller's ``org_id``. See
+    ``app/agent/github_agent.py`` on why ``reader_builder`` is a builder.
+    """
+    return build_github_agent()
 
 
 @lru_cache(maxsize=1)

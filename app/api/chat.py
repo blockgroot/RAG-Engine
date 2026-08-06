@@ -16,13 +16,28 @@ org's conversation by guessing/reusing its id. So this router is the one place
 that must verify a supplied ``conversation_id`` actually belongs to the
 caller's ``org_id`` before ever handing it to the agent.
 
-Agent routing (Workspace Agent split): a request with no ``workspace_id``
-goes to ``PolicyAgent`` exactly as before; a request WITH one is answered by
-``WorkspaceAgent`` instead — a separate pipeline tuned for a sub-workspace's
-own generic connected content rather than company policy (see
-app/agent/workspace_agent.py). ``_select_agent`` is the one place that
-decision is made, so both agents are chosen from the same spot every route
-uses.
+Agent routing: ``_select_agent`` is the one place the decision is made, and it
+is entirely deterministic — no LLM ever classifies a question to pick an agent,
+because a non-deterministic step in front of the tenant-scoped path is exactly
+what the confidence gate's design philosophy avoids.
+
+- ``workspace_id`` set          -> ``WorkspaceAgent`` (a sub-workspace's own
+  connected content, its own pipeline — see app/agent/workspace_agent.py)
+- ``agent == "github"``         -> ``GitHubAgent`` (live GitHub API reads, no
+  retrieval at all — see app/agent/github_agent.py)
+- otherwise                     -> ``PolicyAgent``, exactly as before
+
+The explicit ``agent`` field exists because GitHub connects at the **org** level,
+so an org commonly has Notion/Drive policies *and* GitHub connected at once. At
+org scope "route by connected source" cannot disambiguate, so the client names
+the target (rendered as a "Policies | Code" tab). Naming it also keeps the user
+informed about which corpus answered, rather than guessing on their behalf.
+
+**v1 limitation, deliberate:** ``GitHubAgent`` has no conversation memory, so a
+GitHub question is always standalone — follow-ups like "and the commit before
+that?" are not resolved against history. ``/chat/conversations`` therefore
+rejects ``agent="github"`` rather than handing back a conversation id that would
+silently do nothing.
 """
 
 from __future__ import annotations
@@ -44,6 +59,7 @@ from fastapi.responses import StreamingResponse
 # tests and the CLI.
 _CHUNK_DELAY_SECONDS = 0.02
 
+from ..agent.github_agent import GitHubAgent
 from ..agent.policy_agent import PolicyAgent
 from ..agent.rag_pipeline_agent import RagPipelineAgent
 from ..agent.workspace_agent import WorkspaceAgent
@@ -51,18 +67,38 @@ from ..core.exceptions import AuthError, LLMProviderError, ProviderError
 from ..db.connection import get_connection
 from ..security.rate_limit import check_rate_limit
 from ..workspaces import assert_member
-from .deps import SessionClaims, get_policy_agent, get_session, get_workspace_agent
+from .deps import (
+    SessionClaims,
+    get_github_agent,
+    get_policy_agent,
+    get_session,
+    get_workspace_agent,
+)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+AGENT_GITHUB = "github"
 
 
 def _select_agent(
     workspace_id: str | None,
     policy_agent: PolicyAgent,
     workspace_agent: WorkspaceAgent,
-) -> RagPipelineAgent:
-    """One place that decides which agent answers a request (see module docstring)."""
-    return workspace_agent if workspace_id is not None else policy_agent
+    github_agent: GitHubAgent | None = None,
+    requested_agent: str | None = None,
+) -> RagPipelineAgent | GitHubAgent:
+    """One place that decides which agent answers a request (see module docstring).
+
+    Deterministic by construction. ``workspace_id`` wins over ``requested_agent``
+    because a sub-workspace is a narrower data boundary than a source choice: a
+    workspace member asking inside their workspace must never be silently served
+    org-wide GitHub content instead.
+    """
+    if workspace_id is not None:
+        return workspace_agent
+    if requested_agent == AGENT_GITHUB and github_agent is not None:
+        return github_agent
+    return policy_agent
 
 
 def _conversation_belongs_to_scope(
@@ -114,6 +150,15 @@ def create_conversation(
         except AuthError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
 
+    # GitHubAgent has no conversation memory (see module docstring), so handing
+    # back a conversation id for it would imply follow-up context that doesn't
+    # exist. Refuse plainly instead of failing quietly later.
+    if (body or {}).get("agent") == AGENT_GITHUB and workspace_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="GitHub questions are answered standalone and do not use conversations.",
+        )
+
     agent = _select_agent(workspace_id, policy_agent, workspace_agent)
     if agent.pipeline.memory is None:
         raise HTTPException(status_code=503, detail="Conversation memory is not enabled")
@@ -134,7 +179,7 @@ def _sse_event(event: str, data: dict | str) -> str:
 
 
 def _stream_answer(
-    agent: RagPipelineAgent,
+    agent: RagPipelineAgent | GitHubAgent,
     question: str,
     org_id: str,
     conversation_id: str | None,
@@ -176,6 +221,7 @@ def chat_stream(
     session: SessionClaims = Depends(get_session),
     policy_agent: PolicyAgent = Depends(get_policy_agent),
     workspace_agent: WorkspaceAgent = Depends(get_workspace_agent),
+    github_agent: GitHubAgent = Depends(get_github_agent),
 ):
     check_rate_limit(f"chat:{session.org_id}:{session.user_id}")
 
@@ -183,6 +229,7 @@ def chat_stream(
     if not question:
         raise HTTPException(status_code=400, detail="A question is required")
 
+    requested_agent = body.get("agent")
     workspace_id = body.get("workspace_id")
     if workspace_id is not None:
         try:
@@ -196,7 +243,9 @@ def chat_stream(
     ):
         raise HTTPException(status_code=404, detail="No such conversation for this organization")
 
-    agent = _select_agent(workspace_id, policy_agent, workspace_agent)
+    agent = _select_agent(
+        workspace_id, policy_agent, workspace_agent, github_agent, requested_agent
+    )
     return StreamingResponse(
         _stream_answer(agent, question, session.org_id, conversation_id, workspace_id=workspace_id),
         media_type="text/event-stream",

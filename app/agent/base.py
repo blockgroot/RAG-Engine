@@ -54,8 +54,9 @@ class AgentResponse:
       web search); ``False`` for the fallback. Callers branch on this bool.
     - ``source``     provenance of the answer: ``"policy"`` (internal policy
       docs, ``PolicyAgent``), ``"workspace"`` (a sub-workspace's own connected
-      content, ``WorkspaceAgent``), ``"web"`` (web-search fallback), or
-      ``"none"`` (fixed fallback / refusal).
+      content, ``WorkspaceAgent``), ``"github"`` (a live GitHub API read,
+      ``GitHubAgent`` — never a stored/embedded copy), ``"web"`` (web-search
+      fallback), or ``"none"`` (fixed fallback / refusal).
     - ``citations``  the evidence the answer was grounded on (empty for web answers
       and refusals).
     - ``resolved_question``  the standalone question actually used after any

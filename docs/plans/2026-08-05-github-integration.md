@@ -93,25 +93,35 @@ frontend.
 | D8 | ~~`GitHubAgent` subclasses `RagPipelineAgent`~~ → **REVISED (revision 1): `GitHubAgent` implements `Agent` directly, as a tool-calling agent** | Subclass `RagPipelineAgent`; add GitHub tools to `PolicyAgent` | Once nothing is embedded (D5), there is no retrieval, so there is no `RagPipeline` to adapt — `PolicyAgent`/`WorkspaceAgent`'s "thin adapter over a pipeline" shape simply doesn't apply. This is the first agent that isn't a RAG agent, which is exactly what `app/agent/base.py` claimed the abstraction was for ("says nothing about retrieval, gates, or web search"). Adding tools to `PolicyAgent` would put repo tools into every policy prompt. |
 | D9 | GitHub writes **no rows** to `documents`/`chunks` | Reuse provider-partitioned sync | Follows from D5: with nothing ingested, `source_provider = 'github'` is never written, so the Google-era sync partitioning is simply unused here rather than extended. Nothing in the existing isolation or incremental-sync behaviour changes. |
 
-## 3. Open decision needing your sign-off (blocks Phase 6)
+## 3. O1 — orchestrator routing (**DECIDED**, implemented in Phase 6)
 
-**O1 — how does an org-level chat request reach `GitHubAgent`?**
+**How does an org-level chat request reach `GitHubAgent`?**
 
-You chose *"deterministic, by connected source"*, and that is right for a
-workspace (a workspace has exactly one connected source). But **v1 is org-level
-only**, and an org will commonly have *both* Notion policies **and** GitHub
-connected. At org scope, "by connected source" does not disambiguate — so
-`_select_agent` needs one more input.
+The original answer, *"deterministic, by connected source"*, is right for a
+workspace (which has exactly one connected source) but cannot disambiguate at
+**org** scope, where Notion policies and GitHub are commonly both connected.
 
-Recommendation: **an explicit source selector on the chat request**
-(`{"agent": "policy" | "github"}`, default `"policy"`), surfaced as a small tab
-in the chat header. It stays fully deterministic, needs no LLM classify call, is
-one new field, and is honest to the user about which corpus answered. The
-alternative (an aux-LLM intent classifier) adds a non-deterministic step in front
-of the tenant-scoped path and latency to every request — exactly what the
+**Decided: an explicit source selector on the chat request** —
+`{"agent": "policy" | "github"}`, default `"policy"`, surfaced as a "Policies |
+Code" tab in the chat header. Fully deterministic, no LLM classify call, no added
+latency, and it tells the user which corpus answered instead of guessing for
+them. Rejected alternative: an aux-LLM intent classifier, which would put a
+non-deterministic step in front of the tenant-scoped path — precisely what the
 confidence gate's design philosophy avoids.
 
-Phases 1–5 do **not** depend on O1 and can be built while it's open.
+Two implementation notes worth carrying forward:
+
+- **`workspace_id` outranks the requested agent.** A sub-workspace is a narrower
+  data boundary than a source choice, so a workspace member asking inside their
+  workspace is never served org-wide GitHub content instead. An unrecognized
+  `agent` value falls through to `PolicyAgent`, never to GitHub.
+- **`GitHubAgent` has no conversation memory in v1.** GitHub questions are
+  answered standalone, so follow-ups ("and the commit before that?") are not
+  resolved against history. `POST /chat/conversations` therefore **rejects**
+  `agent="github"` with a 400 rather than returning a conversation id that would
+  silently do nothing. Adding memory later means giving the agent a
+  `ConversationStore` and a rewrite step — the same mechanism the RAG path
+  already uses, not a new one.
 
 ## 4. The connect flow, end to end (answers your question 3)
 
