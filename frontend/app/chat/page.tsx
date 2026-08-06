@@ -66,12 +66,19 @@ function ChatPageInner() {
 
   // Which agent answers. The tab only appears when GitHub is actually
   // connected -- offering "Code" with nothing behind it would just produce
-  // fallbacks. Read from /me (not /admin/connections) so ordinary members see
-  // it too; they can ask repo questions, they just can't manage the connection.
-  // A workspace never shows it: a sub-workspace answers from its own connected
-  // content only, and GitHub is org-level (see the plan's non-goals).
+  // fallbacks.
+  //
+  // Two independent signals, deliberately not merged: org-wide chat reads
+  // /me.github_connected (available to every member, unlike admin-only
+  // /admin/connections), while a workspace reads that WORKSPACE's own
+  // github_connected from GET /workspaces/{id}. An org-wide connection must not
+  // light up a workspace's Code tab -- the workspace answers only from its own
+  // installation, so offering the tab would promise code it cannot read.
   const [agentTab, setAgentTab] = useState<AgentTab>("policy");
-  const showAgentTabs = !workspaceId && Boolean(me?.github_connected);
+  const [workspaceGithub, setWorkspaceGithub] = useState(false);
+  const showAgentTabs = workspaceId
+    ? workspaceGithub
+    : Boolean(me?.github_connected);
   // Policies need a successful ingest before they can answer; GitHub does not,
   // because it is read live. So an org with only GitHub connected must not be
   // held behind the policy readiness gate.
@@ -121,6 +128,7 @@ function ChatPageInner() {
         if (cancelled) return;
         setWorkspaceSyncing(ws.sync_in_progress);
         setReadyToAsk(ws.ready_to_ask);
+        setWorkspaceGithub(Boolean(ws.github_connected));
       })
       .catch(() => {
         if (!cancelled) setReadyToAsk(false);
@@ -302,20 +310,25 @@ function ChatPageInner() {
     );
   }
 
-  const emptyTitle = workspaceId
-    ? "Ask this space"
-    : askingCode
-      ? "Ask your code"
+  // Code copy takes precedence over the workspace copy: a workspace can now have
+  // its own GitHub connection, so "this space" wording would misdescribe what is
+  // actually being asked.
+  const emptyTitle = askingCode
+    ? workspaceId
+      ? "Ask this space’s code"
+      : "Ask your code"
+    : workspaceId
+      ? "Ask this space"
       : "Ask your company";
-  const emptyCopy = workspaceId
-    ? "Answers come only from the notes and docs connected to this space."
-    : askingCode
-      ? "Repository and commit answers are read live from GitHub — always current, never stale."
+  const emptyCopy = askingCode
+    ? "Repository and commit answers are read live from GitHub — always current, never stale."
+    : workspaceId
+      ? "Answers come only from the notes and docs connected to this space."
       : "Leave, benefits, remote work, and more — grounded in your connected policies.";
-  const composerPlaceholder = workspaceId
-    ? "Ask something about this space…"
-    : askingCode
-      ? "Ask about a repository or a commit…"
+  const composerPlaceholder = askingCode
+    ? "Ask about a repository or a commit…"
+    : workspaceId
+      ? "Ask something about this space…"
       : "Ask about leave, benefits, remote work…";
 
   return (

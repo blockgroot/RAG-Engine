@@ -24,6 +24,7 @@ from ..auth import (
     set_connection_config,
 )
 from ..core.exceptions import ConfigurationError, NotFoundError, SourceError
+from ..githublive import refresh_installation_scope
 from ..ingestion import detect_source_changes
 from ..jobs import enqueue, get_job, has_active_job, list_jobs
 from ..sources import (
@@ -82,8 +83,42 @@ def get_workspace(
         "name": row[0],
         "role": role,
         "created_by": row[1],
+        # Whether THIS workspace has its own GitHub connection, so the workspace
+        # chat can offer a Code tab. Scoped to the workspace on purpose: an
+        # org-wide GitHub connection must NOT light this up, or a member would be
+        # offered a Code tab that then answers from a scope they aren't in.
+        "github_connected": _workspace_github_connected(session.org_id, workspace_id),
         **status,
     }
+
+
+def _workspace_github_connected(org_id: str, workspace_id: str) -> bool:
+    """True only when this workspace has its OWN github connection row."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM oauth_connections "
+            "WHERE org_id = %s AND provider = 'github' AND workspace_id = %s",
+            (org_id, workspace_id),
+        ).fetchone()
+    return row is not None
+
+
+def _reject_if_github(provider: str, what: str) -> None:
+    """GitHub has no ingestion — refuse sync-shaped operations on a workspace too.
+
+    Same reasoning as the admin router's guard: without this, ``/ingest`` would
+    enqueue a job the worker cannot run and the owner would watch it fail later
+    with an obscure "Unknown source type".
+    """
+    if provider == "github":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{what} does not apply to GitHub. Repositories are read live when "
+                "a question is asked, so there is nothing to sync or configure "
+                "here — the repositories in scope are chosen on GitHub."
+            ),
+        )
 
 
 @router.get("/{workspace_id}/members")
@@ -201,6 +236,53 @@ def put_connection_config(
     return {"connection_id": connection_id, "provider": conn.provider, "config": config}
 
 
+@router.post("/{workspace_id}/connections/{connection_id}/refresh-scope")
+def refresh_workspace_connection_scope(
+    workspace_id: str,
+    connection_id: str,
+    session: SessionClaims = Depends(get_session),
+    _role: str = Depends(require_workspace_owner),
+):
+    """Re-read which repositories this WORKSPACE's installation may see.
+
+    Owner-only, like every other operation that changes what a workspace can
+    read — an ordinary member can ask questions but must not be able to widen the
+    workspace's data scope. Otherwise identical to the admin route: the repo list
+    is stored rather than re-fetched per question, so it needs an explicit refresh
+    when the owner edits the installation on GitHub.
+    """
+    conn = _owned_workspace_connection(session.org_id, workspace_id, connection_id)
+    if conn.provider != "github":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Repository scope refresh only applies to GitHub "
+                f"(this connection is {conn.provider!r})."
+            ),
+        )
+
+    try:
+        scope = refresh_installation_scope(session.org_id, workspace_id)
+    except (ConfigurationError, SourceError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "connection_id": connection_id,
+        "provider": "github",
+        "account_login": scope.account_login,
+        "repository_selection": scope.repository_selection,
+        "repo_count": len(scope.repos),
+        "repos": [
+            {
+                "full_name": repo.full_name,
+                "description": repo.description,
+                "topics": list(repo.topics),
+            }
+            for repo in scope.repos
+        ],
+    }
+
+
 @router.get("/{workspace_id}/connections/{connection_id}/changes")
 def connection_changes(
     workspace_id: str,
@@ -209,6 +291,7 @@ def connection_changes(
     _role: str = Depends(get_workspace_role),
 ):
     conn = _owned_workspace_connection(session.org_id, workspace_id, connection_id)
+    _reject_if_github(conn.provider, "Change checking")
     try:
         token = get_live_connection_token(session.org_id, conn.provider, workspace_id=workspace_id)
         config = get_connection_config(session.org_id, conn.provider, workspace_id=workspace_id)
@@ -237,7 +320,8 @@ def trigger_ingest(
     session: SessionClaims = Depends(get_session),
     _role: str = Depends(require_workspace_owner),
 ):
-    _owned_workspace_connection(session.org_id, workspace_id, connection_id)
+    conn = _owned_workspace_connection(session.org_id, workspace_id, connection_id)
+    _reject_if_github(conn.provider, "Syncing")
     if has_active_job(session.org_id, connection_id):
         raise HTTPException(
             status_code=409, detail="A sync is already in progress for this connection"

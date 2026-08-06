@@ -231,19 +231,18 @@ def authorize(provider: str, workspace_id: str | None = None, session=Depends(ge
         if session.role != "admin":
             raise HTTPException(status_code=403, detail="Admin role required")
     else:
-        # GitHub connects at the ORG level only. Allowing a workspace-scoped
-        # GitHub connection would introduce repo-level access control inside an
-        # org — an access-control dimension this system does not have anywhere
-        # else, and an explicit non-goal of the GitHub plan. Enforced here, not
-        # only in the UI, so a hand-crafted URL can't create one either.
-        if provider == "github":
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "GitHub connects at the organization level and cannot be "
-                    "connected to an individual workspace."
-                ),
-            )
+        # GitHub was org-level-only when first built (a per-workspace repo subset
+        # introduces repo-level access control inside an org, which nothing else
+        # here has). That restriction was lifted on request: a workspace owner may
+        # connect their own installation, which makes workspace membership a real
+        # access boundary over code as well as documents.
+        #
+        # What keeps that safe is NOT a check here but the scoping downstream:
+        # every GitHub read resolves its token and repo allowlist from
+        # ``(org_id, workspace_id)`` together, so a workspace with no GitHub
+        # connection raises rather than falling back to the org-wide one. See
+        # tests/test_github_workspace_scope.py — that no-fallback property is the
+        # whole reason this is safe, so do not "helpfully" add a fallback.
         try:
             role = assert_member(workspace_id, session.org_id, session.user_id)
         except AuthError as exc:

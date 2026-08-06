@@ -466,24 +466,46 @@ their policy documents; their employees ask questions and get answers grounded i
   the installation), it can go stale, which is why
   `POST /admin/connections/{id}/refresh-scope` exists — the GitHub analogue of
   Drive's "check for changes", for *scope* rather than content.
-- **GitHub connects at the ORG level only — workspace-scoped GitHub is an
-  explicit non-goal.** Nothing else in this system has a scoping layer between
-  org and individual member, so a per-workspace repo subset would introduce
-  repo-level ACLs inside an org: a genuinely new access-control dimension, built
-  speculatively. Enforced **server-side** in `/auth/{provider}/authorize` (a
-  hand-crafted `?workspace_id=` URL is refused with 400), not merely hidden in
-  the UI. Same deferral reasoning as domain auto-join below.
-- **Agent routing stays deterministic — no LLM picks the agent.** GitHub is
-  org-level, so an org commonly has Notion/Drive policies *and* GitHub connected
-  at once, and "route by connected source" cannot disambiguate at org scope. So
+- **GitHub is connectable per WORKSPACE as well as per org — this REVERSES the
+  original org-level-only non-goal.** The first design refused a workspace-scoped
+  GitHub connection (server-side, with a 400 on a hand-crafted `?workspace_id=`
+  URL) on the grounds that a per-workspace repo subset introduces repo-level
+  ACLs inside an org — a new access-control dimension built speculatively. That
+  was overturned on request. The consequence is real and worth stating plainly:
+  **workspace membership is now an access boundary over code, not just over
+  documents.** A workspace owner connects their own installation, and its repos
+  are readable by that workspace's members.
+  **The one property that makes this safe** is not a check in the router but the
+  scoping underneath: `load_scope`, `get_live_connection_token`,
+  `refresh_installation_scope`, and the suggestions query all pair
+  `workspace_id` with `org_id` (`IS NOT DISTINCT FROM`, or `= %s` where a
+  workspace is required), so a workspace with **no** GitHub connection raises
+  `ConfigurationError` → fixed fallback, and **never** reads the org-wide
+  installation. A silent fallback would mean inviting a colleague into a
+  meeting-notes workspace quietly handed them the whole company's code. Proven by
+  `tests/test_github_workspace_scope.py::test_a_workspace_without_github_never_falls_back_to_the_org_connection`
+  — do not "helpfully" add a fallback there. Connecting stays **owner-only**
+  (`require_workspace_owner`), which matters more for code than it did for docs:
+  a member who could connect GitHub could widen what the whole workspace reads.
+  `GET /workspaces/{id}` reports a workspace-scoped `github_connected` (an
+  org-wide connection must not light up a workspace's Code tab), and
+  `POST /workspaces/{id}/connections/{cid}/refresh-scope` is the workspace
+  analogue of the admin route.
+- **Agent routing stays deterministic — no LLM picks the agent.** A single scope
+  can have documents *and* GitHub connected at once (true org-wide, and now true
+  per workspace), so "route by connected source" cannot disambiguate. So
   `POST /chat/stream` takes an explicit `{"agent": "policy"|"github"}` (a
   "Policies | Code" tab in the chat header). `_select_agent` remains the one
-  place the decision is made; `workspace_id` outranks the requested agent (a
-  sub-workspace is a narrower boundary than a source choice), and an
-  unrecognized value falls through to `PolicyAgent`, never to GitHub. An
-  aux-LLM intent classifier was rejected: it would put a non-deterministic step
-  in front of the tenant-scoped path, which is exactly what the confidence
-  gate's design philosophy avoids.
+  place the decision is made, and an unrecognized value falls through to
+  `PolicyAgent`, never to GitHub. An aux-LLM intent classifier was rejected: it
+  would put a non-deterministic step in front of the tenant-scoped path, which is
+  exactly what the confidence gate's design philosophy avoids.
+  **Ordering inverted when workspace-scoped GitHub landed:** `agent="github"` now
+  outranks `workspace_id`, where previously `workspace_id` won. The old ordering
+  existed so a workspace question could never be served *org-wide* code; that is
+  now handled properly by the agent receiving the `workspace_id` and building a
+  workspace-scoped reader (see the bullet above). If that scoping is ever
+  weakened, restore the old ordering.
 - **Domain-based auto-join was removed in favor of direct admin-invited
   members — deferred, not wrong.** Phase 13 originally gated employee login on
   a per-org `org_domains` claim (an admin typed a domain, toggled

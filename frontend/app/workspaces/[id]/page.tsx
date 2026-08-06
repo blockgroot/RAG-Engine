@@ -17,12 +17,13 @@ import {
 } from "@/lib/api";
 import { ACTIVE_JOB_STATUSES, useJobPolling } from "@/lib/jobPoll";
 
-// GitHub is deliberately absent: it connects at the ORG level only. A personal
-// sub-workspace answers from its own connected documents, and repo-level access
-// control inside an org is an access-control dimension this system doesn't have
-// (see the GitHub plan's non-goals). The API refuses a workspace-scoped GitHub
-// connect too -- this just keeps the UI from offering it.
-const PROVIDERS: ("notion" | "google")[] = ["notion", "google"];
+// GitHub is now offered per workspace (it used to be org-level only). A
+// workspace owner connects their own installation, so the workspace's Code
+// answers come from that installation alone -- never the org-wide one, and a
+// workspace with no GitHub connection gets the fallback rather than the org's
+// repos. That no-fallback scoping is what makes this safe; see
+// tests/test_github_workspace_scope.py.
+const PROVIDERS: ("notion" | "google" | "github")[] = ["notion", "google", "github"];
 const ACTIVE_STATUSES = ACTIVE_JOB_STATUSES;
 
 function latestJobByConnection(jobs: JobRecord[]): Record<string, JobRecord> {
@@ -86,6 +87,9 @@ export default function WorkspaceDetailPage() {
       const next: Record<string, SyncChanges> = {};
       await Promise.all(
         list.map(async (c) => {
+          // GitHub is read live and never ingested, so there is no "changed since
+          // last sync" to compute -- and the API refuses this call for it.
+          if (c.provider === "github") return;
           if (c.provider === "google" && !c.source_config?.folder_id) return;
           try {
             next[c.id] = await api.checkWorkspaceConnectionChanges(workspaceId, c.id);

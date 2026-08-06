@@ -379,15 +379,26 @@ def test_routing_defaults_to_the_policy_agent():
     assert _select_agent(None, policy, workspace, github, "nonsense") is policy
 
 
-def test_workspace_scope_wins_over_a_requested_github_agent():
-    """A narrower data boundary must never be widened by a source choice."""
+def test_a_requested_github_agent_now_wins_over_workspace_scope():
+    """INVERTED when workspace-scoped GitHub connections landed.
+
+    This used to assert the opposite ("a narrower data boundary must never be
+    widened by a source choice"), which was right while GitHub was org-level only:
+    routing a workspace question to GitHub would have served org-wide code inside
+    a workspace. Now a workspace has its own installation, and the ``workspace_id``
+    is threaded into the agent, so Code-in-a-workspace reads only that
+    workspace's repos. Kept as an inverted assertion rather than deleted so the
+    reversal stays visible.
+
+    A workspace question with no explicit agent still goes to WorkspaceAgent.
+    """
     from app.api.chat import _select_agent
 
     policy, workspace, github = _Sentinel("p"), _Sentinel("w"), _Sentinel("g")
 
-    chosen = _select_agent("ws-1", policy, workspace, github, "github")
-
-    assert chosen is workspace
+    assert _select_agent("ws-1", policy, workspace, github, "github") is github
+    assert _select_agent("ws-1", policy, workspace, github, None) is workspace
+    assert _select_agent("ws-1", policy, workspace, github, "policy") is workspace
 
 
 def test_routing_falls_back_to_policy_when_no_github_agent_is_available():

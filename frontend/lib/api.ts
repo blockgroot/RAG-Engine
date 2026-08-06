@@ -172,6 +172,13 @@ export interface WorkspaceDetail extends WorkspaceRecord {
   latest_job_status: string | null;
   latest_doc_count: number | null;
   ready_to_ask: boolean;
+  /**
+   * True when THIS workspace has its own GitHub connection. Scoped to the
+   * workspace on purpose: an org-wide GitHub connection must not light up a
+   * workspace's Code tab, or a member would be offered code they aren't scoped
+   * to read.
+   */
+  github_connected: boolean;
 }
 
 export interface WorkspaceMemberRecord {
@@ -283,6 +290,12 @@ export const api = {
     request<ConnectionConfigResponse>(
       `/workspaces/${workspaceId}/connections/${connectionId}/config`,
       { method: "PUT", body: JSON.stringify({ folder_url: folderUrl }) }
+    ),
+  /** Workspace equivalent of refreshConnectionScope (owner-only server-side). */
+  refreshWorkspaceConnectionScope: (workspaceId: string, connectionId: string) =>
+    request<GitHubScopeResponse>(
+      `/workspaces/${workspaceId}/connections/${connectionId}/refresh-scope`,
+      { method: "POST" }
     ),
   checkWorkspaceConnectionChanges: (workspaceId: string, connectionId: string) =>
     request<SyncChanges>(`/workspaces/${workspaceId}/connections/${connectionId}/changes`),
