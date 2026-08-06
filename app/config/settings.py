@@ -503,12 +503,25 @@ class GitHubAgentSettings:
     """
 
     fallback_response: str = DEFAULT_GITHUB_FALLBACK_RESPONSE
+    # When the first answer declares its evidence insufficient (MODE: C), fetch
+    # complementary evidence ONCE and regenerate. Bounded exactly like
+    # RECOVERY_ENABLED on the RAG side: at most one extra round, never a loop
+    # chasing better evidence. Added after a live question hit a repo whose
+    # README was an unmodified project template -- recent commit subjects
+    # described the project fine, but nothing went looking for them.
+    evidence_recovery_enabled: bool = True
+    recovery_commit_count: int = 10
 
     @classmethod
     def from_env(cls) -> "GitHubAgentSettings":
         return cls(
             fallback_response=os.getenv("GITHUB_FALLBACK_RESPONSE")
             or DEFAULT_GITHUB_FALLBACK_RESPONSE,
+            evidence_recovery_enabled=os.getenv(
+                "GITHUB_EVIDENCE_RECOVERY_ENABLED", "true"
+            ).lower()
+            != "false",
+            recovery_commit_count=int(os.getenv("GITHUB_RECOVERY_COMMIT_COUNT", "10")),
         )
 
 

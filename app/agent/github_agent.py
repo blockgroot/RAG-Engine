@@ -36,8 +36,10 @@ retrieved chunks (Phase 16) before it reaches a prompt.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Iterator
 
+from ..config.settings import GitHubAgentSettings
 from ..core.exceptions import ConfigurationError, LLMProviderError, ProviderError, SourceError
 from ..githublive.base import CommitDetail, CommitSummary, GitHubReader, RepoReadme
 from ..llm.base import LLMProvider
@@ -51,6 +53,23 @@ from .base import Agent, AgentResponse, Citation
 
 ReaderBuilder = Callable[..., GitHubReader]
 
+# Parses the "MODE: A|B|C\n\n<answer>" tag ``build_github_answer_prompt`` asks
+# for. Deliberately the same shape as ``RagPipeline``'s ``_MODE_TAG_RE`` rather
+# than a second convention.
+_MODE_TAG_RE = re.compile(r"^\s*MODE:\s*([ABC])\s*\n+(.*)", re.IGNORECASE | re.DOTALL)
+
+
+def _split_mode_tag(raw: str) -> tuple[str | None, str]:
+    """Split a declared mode off the front of a generation, if present.
+
+    An untagged answer returns ``(None, raw)`` and is treated as sufficient — see
+    ``GitHubAgent._compose`` for why failing open is the right direction here.
+    """
+    match = _MODE_TAG_RE.match(raw or "")
+    if not match:
+        return None, (raw or "").strip()
+    return match.group(1).upper(), match.group(2).strip()
+
 
 class GitHubAgent(Agent):
     """Answers questions about an org's authorized GitHub repositories."""
@@ -60,6 +79,7 @@ class GitHubAgent(Agent):
         llm: LLMProvider,
         reader_builder: ReaderBuilder,
         fallback_response: str,
+        settings: GitHubAgentSettings | None = None,
     ) -> None:
         """Build the agent.
 
@@ -73,6 +93,7 @@ class GitHubAgent(Agent):
         self._llm = llm
         self._build_reader = reader_builder
         self._fallback = fallback_response
+        self._settings = settings or GitHubAgentSettings.from_env()
 
     def answer(
         self,
@@ -98,19 +119,30 @@ class GitHubAgent(Agent):
         if decision is None:
             return self._fallback_response()
 
-        evidence = self._run_tool(reader, decision)
+        evidence = self._run_tool(reader, decision, known_repos=repos)
         if evidence is None:
             return self._fallback_response()
 
         evidence_block, citations = evidence
-        try:
-            answer = self._llm.generate(
-                build_github_answer_prompt(question, evidence_block)
-            ).strip()
-        except LLMProviderError:
-            return self._fallback_response()
 
-        if not answer:
+        composed = self._compose(question, evidence_block)
+        if composed is None:
+            return self._fallback_response()
+        mode, answer = composed
+
+        # Mode C = nothing relevant. Mode B = partial but useful — yet for a
+        # stock-template README the model often picks B with stiff "evidence
+        # establishes…" copy instead of C, which used to skip recovery. For
+        # get_readme questions, try one supplementary commit fetch on B or C;
+        # if that fails, keep a Mode B answer (never invent), or fall back on C.
+        if mode in ("B", "C") and self._settings.evidence_recovery_enabled:
+            recovered = self._recover(
+                question, reader, decision, evidence_block, citations
+            )
+            if recovered is not None:
+                return recovered
+
+        if mode == "C":
             return self._fallback_response()
 
         return AgentResponse(
@@ -118,6 +150,86 @@ class GitHubAgent(Agent):
             grounded=True,
             source="github",
             citations=citations,
+            response_mode=mode,
+        )
+
+    def _compose(self, question: str, evidence_block: str) -> tuple[str | None, str] | None:
+        """One generation over the evidence. ``None`` on failure/empty."""
+        try:
+            raw = self._llm.generate(
+                build_github_answer_prompt(question, evidence_block)
+            )
+        except LLMProviderError:
+            return None
+        mode, answer = _split_mode_tag(raw)
+        if not answer:
+            return None
+        return mode, answer
+
+    def _recover(
+        self,
+        question: str,
+        reader: GitHubReader,
+        decision: tuple[str, dict],
+        evidence_block: str,
+        citations: list[Citation],
+    ) -> AgentResponse | None:
+        """ONE supplementary evidence round after a thin Mode B/C answer.
+
+        The motivating case, seen live: a "what does this repo do" question fetched
+        a README that turned out to be an unmodified project template. The model
+        often labels that Mode B (partial) rather than Mode C, so recovery must
+        run for both. Recent commit *subjects* describe such a project well.
+
+        Bounded exactly like ``RECOVERY_ENABLED`` on the RAG side: at most one
+        extra round, and if it yields no genuinely new evidence we do **not** burn
+        a second generation re-reading the same text. Returns ``None`` when
+        recovery couldn't help, leaving the caller to fall back.
+        """
+        name, arguments = decision
+        repo = arguments.get("repo")
+        if not isinstance(repo, str) or not repo:
+            return None
+        # Only the repo-overview path benefits: a commit lookup that found nothing
+        # relevant isn't improved by listing more commits.
+        if name != "get_readme":
+            return None
+
+        try:
+            commits = reader.list_commits(
+                repo, limit=self._settings.recovery_commit_count
+            )
+        except (SourceError, ProviderError, ValueError, TypeError):
+            return None
+        if not commits:
+            return None
+
+        supplement = self._format_commits(commits)
+        if supplement is None:
+            return None
+        commit_block, commit_citations = supplement
+
+        combined = (
+            f"{evidence_block}\n\n"
+            "--- additional evidence: recent commit history ---\n"
+            f"{commit_block}"
+        )
+        composed = self._compose(question, combined)
+        if composed is None:
+            return None
+        mode, answer = composed
+        if mode == "C":
+            # Honest second look, still nothing. Don't dress it up.
+            return None
+
+        return AgentResponse(
+            answer=answer,
+            grounded=True,
+            source="github",
+            citations=list(citations) + list(commit_citations),
+            response_mode=mode,
+            recovery_used=True,
+            recovery_reason="insufficient_evidence",
         )
 
     def answer_stream(
@@ -187,15 +299,23 @@ class GitHubAgent(Agent):
         return call.name, arguments
 
     def _run_tool(
-        self, reader: GitHubReader, decision: tuple[str, dict]
+        self,
+        reader: GitHubReader,
+        decision: tuple[str, dict],
+        *,
+        known_repos: list | None = None,
     ) -> tuple[str, list[Citation]] | None:
         """Execute exactly one read. Any failure returns ``None`` (-> fallback).
 
         ``SourceError`` covers both a genuine GitHub failure and a **refused
-        repo** (``resolve_repo`` raises it). Both are handled identically and
-        deliberately: the user gets the fixed fallback rather than a message
-        confirming whether some repository exists, which would otherwise make
-        this a probe for private repo names.
+        repo** (``resolve_repo`` raises it). Refused repos still degrade to the
+        fixed fallback so we never confirm whether a private name exists.
+
+        One deliberate exception: ``get_readme`` often 404s when a repo simply
+        has no README (common on personal/learning repos). If that repo is in
+        the installation's own catalog and carries a description/topics, those
+        are enough to ground a short "what is this repo" answer — they were
+        stored for exactly that purpose when nothing is embedded.
         """
         name, arguments = decision
         repo = arguments.get("repo")
@@ -204,7 +324,9 @@ class GitHubAgent(Agent):
 
         try:
             if name == "get_readme":
-                return self._format_readme(reader.get_readme(repo))
+                return self._format_readme(
+                    reader.get_readme(repo), known_repos=known_repos or []
+                )
             if name == "get_commit":
                 sha = arguments.get("sha")
                 if not isinstance(sha, str) or not sha:
@@ -221,6 +343,10 @@ class GitHubAgent(Agent):
                     )
                 )
         except (SourceError, ProviderError, ValueError, TypeError):
+            if name == "get_readme":
+                meta = self._format_repo_metadata(repo, known_repos or [])
+                if meta is not None:
+                    return meta
             return None
 
         # An unrecognized tool name (a hallucinated function) is not an error to
@@ -228,14 +354,75 @@ class GitHubAgent(Agent):
         return None
 
     @staticmethod
-    def _format_readme(readme: RepoReadme) -> tuple[str, list[Citation]]:
+    def _format_repo_metadata(
+        repo: str, known_repos: list
+    ) -> tuple[str, list[Citation]] | None:
+        """Ground a README miss on the installation catalog, if the repo is listed.
+
+        Matching is against the catalog only — never against GitHub world
+        knowledge — so a coaxed foreign name that isn't in ``known_repos`` still
+        yields ``None`` and the fixed fallback.
+        """
+        candidate = (repo or "").strip().lower()
+        if not candidate:
+            return None
+
+        matched = None
+        for item in known_repos:
+            full = (getattr(item, "full_name", "") or "").lower()
+            if not full:
+                continue
+            bare = full.rsplit("/", 1)[-1]
+            if candidate in {full, bare}:
+                matched = item
+                break
+        if matched is None:
+            return None
+
+        description = (getattr(matched, "description", None) or "").strip()
+        topics = tuple(getattr(matched, "topics", ()) or ())
+        if not description and not topics:
+            return None
+
+        lines = [
+            f"Repository metadata for {matched.full_name}",
+            "(no README is available on this repository — using the description "
+            "recorded for this GitHub installation)",
+        ]
+        if description:
+            lines.append(f"Description: {description}")
+        if topics:
+            lines.append("Topics: " + ", ".join(topics))
+        block = "\n".join(lines)
+        return block, [
+            Citation(
+                content=(description or ", ".join(topics))[:500],
+                reference=f"{matched.full_name}#about",
+            )
+        ]
+
+    @classmethod
+    def _format_readme(
+        cls, readme: RepoReadme, *, known_repos: list | None = None
+    ) -> tuple[str, list[Citation]]:
+        """README plus installation catalog description/topics when available.
+
+        A stock template README alone is often useless for "what does this do?",
+        while the org's stored description usually is not — include both.
+        """
         header = f"README of {readme.repo}"
         if readme.truncated:
             header += " (truncated — only the beginning is shown)"
-        block = f"{header}:\n\n{readme.content}"
-        return block, [
+        parts = [f"{header}:\n\n{readme.content}"]
+        citations = [
             Citation(content=readme.content[:500], reference=f"{readme.repo}#readme")
         ]
+        meta = cls._format_repo_metadata(readme.repo, known_repos or [])
+        if meta is not None:
+            meta_block, meta_citations = meta
+            parts.insert(0, meta_block)
+            citations = list(meta_citations) + citations
+        return "\n\n".join(parts), citations
 
     @staticmethod
     def _format_commit(commit: CommitDetail) -> tuple[str, list[Citation]]:

@@ -826,15 +826,15 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
   letter-spacing: 0.05em;
   padding: 0.3rem 0.6rem;
   border-radius: var(--radius-sm);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: var(--ink-on-dark-muted);
-  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  color: var(--ink-muted);
+  background: var(--surface);
   width: fit-content;
 }
 .role-chip.role-admin {
-  color: #b7f0e8;
-  border-color: rgba(43, 191, 180, 0.35);
-  background: rgba(43, 191, 180, 0.12);
+  color: var(--accent-strong);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: var(--accent-soft);
 }
 
 /* Light surfaces also use role chips (tables) */
@@ -1162,6 +1162,11 @@ table .role-chip.role-admin,
   background: white;
   border: 1px solid var(--border);
   color: var(--ink-muted);
+}
+.rail-user .role-chip.role-admin {
+  color: var(--accent-strong);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: var(--accent-soft);
 }
 
 .app-main {

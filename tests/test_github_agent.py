@@ -157,13 +157,28 @@ def test_model_calling_no_tool_returns_fallback_not_world_knowledge():
 
 
 def test_tool_failure_degrades_to_fallback():
-    llm = _FakeLLM(tool_calls=[_tool_call("get_readme", repo="payments-svc")])
+    # A commit-tool failure has no catalog fallback, so grounding must refuse.
+    llm = _FakeLLM(tool_calls=[_tool_call("get_commit", repo="payments-svc", sha="abc1234")])
     agent = _agent(llm, _FakeReader(error=SourceError("GitHub exploded")))
 
-    response = agent.answer("what does payments-svc do?", "org-1")
+    response = agent.answer("what happened in commit abc1234?", "org-1")
 
     assert response.grounded is False
     assert response.answer == FALLBACK
+
+
+def test_missing_readme_falls_back_to_repo_description():
+    """Repos with no README still answer from the installation catalog description."""
+    llm = _FakeLLM(tool_calls=[_tool_call("get_readme", repo="payments-svc")])
+    agent = _agent(llm, _FakeReader(error=SourceError("README not found")))
+
+    response = agent.answer("what does payments-svc do?", "org-1")
+
+    assert response.grounded is True
+    assert response.source == "github"
+    assert response.answer == "Composed answer."
+    assert any("Billing and invoicing" in prompt for prompt in llm.answer_prompts)
+    assert response.citations and response.citations[0].reference.endswith("#about")
 
 
 def test_llm_failure_degrades_to_fallback():
