@@ -9,7 +9,7 @@ import { API_BASE_URL } from "./api";
 export interface ChatDonePayload {
   answer: string;
   grounded: boolean;
-  source: "policy" | "web" | "none";
+  source: "policy" | "workspace" | "web" | "github" | "none";
   citations: { content: string; reference: string; score: number | null }[];
   resolved_question: string | null;
   latency_ms: number | null;

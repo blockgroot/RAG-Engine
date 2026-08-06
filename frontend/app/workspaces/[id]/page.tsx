@@ -241,7 +241,7 @@ export default function WorkspaceDetailPage() {
           <p className="muted">
             This workspace doesn&rsquo;t exist, or you&rsquo;re not a member of it.
           </p>
-          <Link href="/workspaces" className="button-secondary" style={{ width: "fit-content" }}>
+          <Link href="/workspaces" className="button button-secondary" style={{ width: "fit-content" }}>
             Back to My Workspaces
           </Link>
         </main>
@@ -325,7 +325,7 @@ export default function WorkspaceDetailPage() {
               {inviteError && <div className="banner banner-warn">{inviteError}</div>}
               {inviteMessage && <div className="banner banner-ok">{inviteMessage}</div>}
               <button
-                className="button-secondary"
+                className="button button-secondary"
                 type="submit"
                 disabled={inviting || !inviteEmail.trim()}
                 style={{ width: "fit-content" }}

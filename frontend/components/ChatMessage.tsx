@@ -15,6 +15,7 @@ export function ChatMessageView({ message }: { message: Message }) {
   }
 
   const thinking = Boolean(message.streaming && !message.text.trim());
+  const citations = message.done?.citations?.filter((c) => c.content?.trim()) ?? [];
 
   return (
     <div className="chat-bubble chat-bubble-assistant" data-thinking={thinking || undefined}>
@@ -26,12 +27,22 @@ export function ChatMessageView({ message }: { message: Message }) {
             <span />
             <span />
           </span>
-          <span className="chat-thinking-label">Looking through your documents…</span>
+          <span className="chat-thinking-label">Finding a grounded answer…</span>
         </div>
       ) : (
         <>
           <AnswerText text={message.text} />
           {message.streaming && <span className="chat-stream-caret" aria-hidden />}
+          {!message.streaming && citations.length > 0 && (
+            <div className="chat-citations" aria-label="Sources">
+              {citations.slice(0, 4).map((c, i) => (
+                <div className="chat-citation" key={`${c.reference}-${i}`}>
+                  <span className="chat-citation-ref">{c.reference || `Source ${i + 1}`}</span>
+                  <span className="chat-citation-body">{c.content}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </>
       )}
     </div>

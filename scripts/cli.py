@@ -50,6 +50,7 @@ _EXIT_WORDS = {"/exit", "/quit", "/q", "exit", "quit"}
 _SOURCE_STYLE = {
     "policy": ("grounded in policy documents", "green"),
     "web": ("from a web search", "cyan"),
+    "github": ("from connected GitHub repositories", "blue"),
     "none": ("no grounded answer — internal fallback", "yellow"),
 }
 

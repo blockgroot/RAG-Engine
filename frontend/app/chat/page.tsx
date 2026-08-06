@@ -278,6 +278,22 @@ function ChatPageInner() {
     );
   }
 
+  const emptyTitle = workspaceId
+    ? "Ask this space"
+    : askingCode
+      ? "Ask your code"
+      : "Ask your company";
+  const emptyCopy = workspaceId
+    ? "Answers come only from the notes and docs connected to this space."
+    : askingCode
+      ? "Repository and commit answers are read live from GitHub — always current, never stale."
+      : "Leave, benefits, remote work, and more — grounded in your connected policies.";
+  const composerPlaceholder = workspaceId
+    ? "Ask something about this space…"
+    : askingCode
+      ? "Ask about a repository or a commit…"
+      : "Ask about leave, benefits, remote work…";
+
   return (
     <AppShell me={me} variant="app">
       <div className="chat-page">
@@ -288,70 +304,85 @@ function ChatPageInner() {
               : "You’re all set — company policies are ready for questions."}
           </div>
         )}
-        {showAgentTabs && (
-          <div className="agent-tabs" role="tablist" aria-label="What to ask about">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={!askingCode}
-              className={`agent-tab${!askingCode ? " is-active" : ""}`}
-              onClick={() => setAgentTab("policy")}
-              disabled={busy || !policiesReady}
-              title={
-                policiesReady ? undefined : "Company policies are still being prepared."
-              }
-            >
-              Policies
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={askingCode}
-              className={`agent-tab${askingCode ? " is-active" : ""}`}
-              onClick={() => setAgentTab("github")}
-              disabled={busy}
-            >
-              Code
-            </button>
+
+        <div className="chat-topbar">
+          <div className="chat-topbar-copy">
+            <p className="chat-kicker">{workspaceId ? "Space" : "Workspace"}</p>
+            <h1>{askingCode ? "Code" : workspaceId ? "Space Ask" : "Ask"}</h1>
           </div>
-        )}
-        {messages.length === 0 ? (
-          <div className="chat-empty">
-            <h1>Ask a question</h1>
-            <p className="muted">
-              {workspaceId
-                ? "Ask about the notes and docs connected to this space."
-                : askingCode
-                  ? "Ask about a repository or a specific commit — answers are read live from GitHub, so they’re always current."
-                  : "Ask about leave, benefits, remote work, and more — answers come from your company policies."}
-            </p>
-            {!workspaceId && (
-              <div className="suggested-chips">
-                {(askingCode ? CODE_SUGGESTED_QUESTIONS : POLICY_SUGGESTED_QUESTIONS).map((q) => (
-                  <button key={q} type="button" className="suggested-chip" onClick={() => ask(q)}>
-                    {q}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="chat-log" ref={logRef}>
-            {messages.map((m, i) => (
-              <ChatMessageView key={i} message={m} />
-            ))}
-          </div>
-        )}
-        <form onSubmit={handleSubmit} className="chat-composer">
+          {showAgentTabs && (
+            <div className="agent-tabs" role="tablist" aria-label="What to ask about">
+              <button
+                type="button"
+                role="tab"
+                id="tab-policies"
+                aria-controls="ask-panel"
+                aria-selected={!askingCode}
+                className={`agent-tab${!askingCode ? " is-active" : ""}`}
+                onClick={() => setAgentTab("policy")}
+                disabled={busy || !policiesReady}
+                title={
+                  policiesReady ? undefined : "Company policies are still being prepared."
+                }
+              >
+                Policies
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="tab-code"
+                aria-controls="ask-panel"
+                aria-selected={askingCode}
+                className={`agent-tab${askingCode ? " is-active" : ""}`}
+                onClick={() => setAgentTab("github")}
+                disabled={busy}
+              >
+                Code
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div id="ask-panel" role="tabpanel" aria-label="Ask answers">
+          {messages.length === 0 ? (
+            <div className="chat-empty">
+              <div className="chat-hero-orb" aria-hidden />
+              <h1>{emptyTitle}</h1>
+              <p className="muted">{emptyCopy}</p>
+              {!workspaceId && (
+                <div className="suggested-chips">
+                  {(askingCode ? CODE_SUGGESTED_QUESTIONS : POLICY_SUGGESTED_QUESTIONS).map(
+                    (q) => (
+                      <button
+                        key={q}
+                        type="button"
+                        className="suggested-chip"
+                        onClick={() => ask(q)}
+                      >
+                        {q}
+                      </button>
+                    )
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="chat-log" ref={logRef} aria-live="polite">
+              {messages.map((m, i) => (
+                <ChatMessageView key={i} message={m} />
+              ))}
+            </div>
+          )}
+        </div>
+
+        <form onSubmit={handleSubmit} className="chat-composer" aria-label="Ask a question">
+          <label className="sr-only" htmlFor="ask-input">
+            Your question
+          </label>
           <input
+            id="ask-input"
             className="chat-composer-input"
-            placeholder={
-              workspaceId
-                ? "Ask something about this space…"
-                : askingCode
-                  ? "Ask about a repository or a commit…"
-                  : "Ask about leave, benefits, remote work…"
-            }
+            placeholder={composerPlaceholder}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             disabled={busy}
@@ -361,7 +392,7 @@ function ChatPageInner() {
             className="chat-composer-send"
             type="submit"
             disabled={busy || !input.trim()}
-            aria-label="Send"
+            aria-label="Send question"
           >
             {busy ? "…" : "↑"}
           </button>

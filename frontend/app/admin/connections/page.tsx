@@ -174,8 +174,8 @@ export default function ConnectionsPage() {
       <main className="page-wide stack">
         <PageHeader
           eyebrow="Company"
-          title="Company policies"
-          description="Connect Notion or Drive, then keep them in sync."
+          title="Sources"
+          description="Connect Notion, Google Drive, and GitHub — policies sync; code is answered live."
         />
         {message && (
           <div
