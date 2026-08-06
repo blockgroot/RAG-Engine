@@ -396,3 +396,72 @@ def test_workspace_github_answer_is_scoped_to_that_workspace():
     assert seen == {"org_id": "org-1", "workspace_id": "ws-9"}
     assert response.source == "github"
     assert response.grounded is True
+
+
+# -- org-level AND workspace-level GitHub, side by side --------------------
+
+
+@requires_db
+def test_org_wide_and_workspace_github_coexist_like_notion_and_drive(
+    client, store, org_cleanup
+):
+    """Both scopes connected at once, each answering from its own installation.
+
+    This is the shape Notion and Drive already have (an org-wide connection plus
+    independent per-workspace ones), and the two partial unique indexes on
+    ``oauth_connections`` are what allow both rows to exist:
+    ``(org_id, provider) WHERE workspace_id IS NULL`` for the org-wide row and
+    ``(org_id, provider, workspace_id) WHERE workspace_id IS NOT NULL`` for each
+    workspace's. Verified here across the whole API surface rather than assumed,
+    because a single mis-scoped query would silently blend the two.
+    """
+    org_id = store.create_organization(f"GH Coexist {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+    admin = create_admin(f"admin-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    workspace_id = create_workspace(org_id, "Side Project", admin.id)
+    cookies = {"session": create_session_token(admin)}
+
+    org_connection = _connect_github(org_id, "acme-inc", ["acme-inc/payroll"])
+    ws_connection = _connect_github(
+        org_id, "sana", ["sana/notes"], workspace_id=workspace_id
+    )
+
+    # 1. Both scopes report a GitHub connection, independently.
+    assert client.get("/me", cookies=cookies).json()["github_connected"] is True
+    assert (
+        client.get(f"/workspaces/{workspace_id}", cookies=cookies).json()[
+            "github_connected"
+        ]
+        is True
+    )
+
+    # 2. Each connection listing shows only its own scope's row.
+    admin_providers = client.get("/admin/connections", cookies=cookies).json()
+    admin_ids = {c["id"] for c in admin_providers}
+    ws_ids = {
+        c["id"]
+        for c in client.get(
+            f"/workspaces/{workspace_id}/connections", cookies=cookies
+        ).json()
+    }
+    assert org_connection in admin_ids and ws_connection not in admin_ids
+    assert ws_connection in ws_ids and org_connection not in ws_ids
+
+    # 3. Code suggestions are scoped: neither advertises the other's repos.
+    org_chips = " ".join(
+        client.get("/chat/suggestions?agent=github", cookies=cookies).json()["questions"]
+    )
+    ws_chips = " ".join(
+        client.get(
+            f"/chat/suggestions?agent=github&workspace_id={workspace_id}",
+            cookies=cookies,
+        ).json()["questions"]
+    )
+    assert "payroll" in org_chips and "notes" not in org_chips
+    assert "notes" in ws_chips and "payroll" not in ws_chips
+
+    # 4. And the underlying read scopes stay separate.
+    assert {r.full_name for r in load_scope(org_id).repos} == {"acme-inc/payroll"}
+    assert {r.full_name for r in load_scope(org_id, workspace_id).repos} == {
+        "sana/notes"
+    }
