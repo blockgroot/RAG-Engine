@@ -25,7 +25,17 @@ export async function streamChat(
   question: string,
   conversationId: string | null,
   handlers: ChatStreamHandlers,
-  workspaceId?: string | null
+  workspaceId?: string | null,
+  /**
+   * Which agent answers. Omitted (or "policy") uses the indexed policy corpus;
+   * "github" routes to the GitHub agent, which answers from live GitHub API
+   * reads instead of retrieval. The client names this explicitly because
+   * GitHub connects at the org level, so an org commonly has policies AND
+   * GitHub connected at once and "route by connected source" cannot
+   * disambiguate. The server decides deterministically from this value -- no
+   * LLM classifies the question.
+   */
+  agent?: "policy" | "github"
 ): Promise<void> {
   let response: Response;
   try {
@@ -37,6 +47,7 @@ export async function streamChat(
         question,
         conversation_id: conversationId,
         ...(workspaceId ? { workspace_id: workspaceId } : {}),
+        ...(agent && agent !== "policy" ? { agent } : {}),
       }),
     });
   } catch {

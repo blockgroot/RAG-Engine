@@ -51,6 +51,9 @@ export default function ConnectionsPage() {
     const next: Record<string, SyncChanges> = {};
     await Promise.all(
       list.map(async (c) => {
+        // GitHub has no ingestion at all -- nothing is stored, so there is no
+        // "changed since last sync" to compute and the API refuses this call.
+        if (c.provider === "github") return;
         // Google needs a folder before change-check works.
         if (c.provider === "google" && !c.source_config?.folder_id) return;
         try {

@@ -231,6 +231,19 @@ def authorize(provider: str, workspace_id: str | None = None, session=Depends(ge
         if session.role != "admin":
             raise HTTPException(status_code=403, detail="Admin role required")
     else:
+        # GitHub connects at the ORG level only. Allowing a workspace-scoped
+        # GitHub connection would introduce repo-level access control inside an
+        # org — an access-control dimension this system does not have anywhere
+        # else, and an explicit non-goal of the GitHub plan. Enforced here, not
+        # only in the UI, so a hand-crafted URL can't create one either.
+        if provider == "github":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "GitHub connects at the organization level and cannot be "
+                    "connected to an individual workspace."
+                ),
+            )
         try:
             role = assert_member(workspace_id, session.org_id, session.user_id)
         except AuthError as exc:

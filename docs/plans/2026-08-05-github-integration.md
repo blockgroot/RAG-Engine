@@ -632,18 +632,44 @@ fallback; `source == "github"`; existing policy/workspace routing unchanged.
 
 ---
 
-## Phase 7 — API + frontend wiring → P6
+## Phase 7 — API + frontend wiring → P6  *(implemented)*
 
 **Files:**
-- Modify: `app/api/deps.py` (`get_github_agent`), `app/api/chat.py`
-- Modify: `app/api/admin.py` — GitHub needs **no** folder/scope config endpoint
-  (its scope came from the install screen); the Drive-only guards must return a
-  clean 400 for GitHub rather than 500
-- Modify: `frontend/components/ConnectionCard.tsx` — add `github` to `available`
-  (labels already exist); show the authorized repo scope ("all repositories" or
-  the list) instead of a folder picker
-- Modify: `frontend/app/chat/` — the source selector from O1
-- Test: extend `tests/test_api_admin.py`, `tests/test_api_chat.py`
+- `app/api/admin.py` — `_reject_if_github` guards the sync-shaped routes;
+  new `POST /connections/{id}/refresh-scope`
+- `app/api/orgs.py` — `/me` reports `github_connected`
+- `app/api/auth.py` — refuses a **workspace-scoped** GitHub connect
+- `frontend/components/ConnectionCard.tsx`, `frontend/app/chat/page.tsx`,
+  `frontend/lib/{api,sse}.ts`, `frontend/app/globals.css`,
+  `frontend/app/admin/connections/page.tsx`, `frontend/app/workspaces/[id]/page.tsx`
+- `tests/test_api_github_admin.py` (10 cases)
+
+**Four things this phase had to get right, each found while building it:**
+
+1. **`/ingest` must refuse GitHub.** Without a guard it would enqueue a job the
+   worker cannot run, and the admin would watch it fail minutes later with an
+   obscure "Unknown source type". A 400 up front states the truth: nothing to
+   sync, because nothing is stored. Same for `/changes`.
+2. **The Code tab can't be gated on `ready_to_ask`.** That flag means "a policy
+   ingest has succeeded" — but GitHub needs no ingest, so an org with *only*
+   GitHub connected would have been stuck forever behind the "not ready yet"
+   screen. The gate now only blocks when there is genuinely nothing to ask.
+3. **`github_connected` belongs on `/me`, not `/admin/connections`.** The latter
+   is admin-only, so reading it there would have hidden the Code tab from every
+   ordinary member — who can ask repo questions, they just can't manage the
+   connection. Only a boolean is exposed; repo names stay behind `require_admin`.
+4. **A workspace-scoped GitHub connect is refused server-side**, not merely
+   hidden in the UI. Removing `github` from the workspace page's provider list
+   isn't enough — a hand-crafted `?workspace_id=` URL would otherwise create
+   exactly the repo-level-ACL-inside-an-org this plan lists as a non-goal.
+
+**Scope staleness, and why `refresh-scope` exists.** The authorized repo list is
+stored at connect time rather than re-fetched per question (it changes only when
+an admin edits the installation, so re-listing every time would spend rate limit
+and latency re-learning something static). The cost is that a repo added on
+GitHub afterwards is invisible until someone refreshes — so the Sources card gets
+a "Refresh repositories" button. It is the GitHub analogue of Drive's "check for
+changes", for *scope* rather than content.
 
 **Manual verification gate.** Connect a real GitHub org, then through the real
 UI: ask "what does `<repo>` do?" (expect a README-grounded answer) and "what

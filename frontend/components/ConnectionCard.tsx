@@ -73,11 +73,43 @@ export function ConnectionCard({
    * calls are routed to the workspace-scoped endpoints. */
   workspaceId?: string;
 }) {
-  const available = provider === "notion" || provider === "google";
-  const syncInProgress = lastJob != null && ACTIVE.has(lastJob.status);
-  const needsUpdate = Boolean(changes?.has_changes);
+  const available = provider === "notion" || provider === "google" || provider === "github";
+  // GitHub is a "live" source: nothing is ever fetched, chunked, embedded, or
+  // stored, so this card must hide every ingestion-shaped control (sync status,
+  // change counts, Update/Check). Showing them would promise a sync that does
+  // not exist -- and the API refuses those calls for GitHub anyway.
+  const isLive = provider === "github";
+  const syncInProgress = !isLive && lastJob != null && ACTIVE.has(lastJob.status);
+  const needsUpdate = !isLive && Boolean(changes?.has_changes);
   const folderConfigured = Boolean(connection?.source_config?.folder_id);
   const needsFolder = provider === "google" && connection && !folderConfigured;
+
+  // What the admin actually authorized on GitHub's install screen.
+  const repoSelection = connection?.source_config?.repository_selection;
+  const repos = connection?.source_config?.repos ?? [];
+  const [refreshingScope, setRefreshingScope] = useState(false);
+  const [scopeError, setScopeError] = useState<string | null>(null);
+
+  async function refreshScope() {
+    if (!connection) return;
+    setRefreshingScope(true);
+    setScopeError(null);
+    try {
+      const scope = await api.refreshConnectionScope(connection.id);
+      onConfigSaved?.({
+        ...connection,
+        source_config: {
+          ...connection.source_config,
+          repository_selection: scope.repository_selection,
+          repos: scope.repos,
+        },
+      });
+    } catch (err) {
+      setScopeError(err instanceof Error ? err.message : "Could not refresh repositories.");
+    } finally {
+      setRefreshingScope(false);
+    }
+  }
 
   const [folderUrl, setFolderUrl] = useState("");
   const [savingConfig, setSavingConfig] = useState(false);
@@ -177,6 +209,33 @@ export function ConnectionCard({
         </p>
       )}
 
+      {isLive && connection && (
+        <div className="stack" style={{ marginTop: "0.9rem", gap: "0.55rem" }}>
+          <p className="muted" style={{ margin: 0 }}>
+            {repoSelection === "all"
+              ? "All repositories in this organization are available."
+              : repos.length > 0
+                ? `${repos.length} repositor${repos.length === 1 ? "y" : "ies"} available.`
+                : "No repositories are available yet — refresh, or add them to the installation on GitHub."}
+          </p>
+          {repoSelection !== "all" && repos.length > 0 && (
+            <p className="muted" style={{ margin: 0, fontSize: "0.85rem" }}>
+              {repos
+                .slice(0, 5)
+                .map((r) => r.full_name)
+                .join(", ")}
+              {repos.length > 5 ? ` +${repos.length - 5} more` : ""}
+            </p>
+          )}
+          <p className="muted" style={{ margin: 0, fontSize: "0.85rem" }}>
+            Answers are read live from GitHub when a question is asked, so
+            nothing is stored or needs syncing. Which repositories are included
+            is chosen on GitHub.
+          </p>
+          {scopeError && <div className="banner banner-warn">{scopeError}</div>}
+        </div>
+      )}
+
       {needsFolder && (
         <form onSubmit={handleSaveFolder} className="stack" style={{ marginTop: "0.9rem" }}>
           <p className="muted" style={{ margin: 0 }}>
@@ -231,7 +290,7 @@ export function ConnectionCard({
         </form>
       )}
 
-      {lastJob && (
+      {lastJob && !isLive && (
         <p
           className="muted"
           style={{ marginTop: "0.55rem", display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
@@ -266,7 +325,7 @@ export function ConnectionCard({
         </p>
       )}
 
-      {connection && checkingChanges && (
+      {connection && checkingChanges && !isLive && (
         <p className="muted" style={{ marginTop: "0.65rem" }}>
           Checking…
         </p>
@@ -281,7 +340,18 @@ export function ConnectionCard({
             Connect {PROVIDER_LABELS[provider]}
           </a>
         )}
-        {connection && !needsFolder && needsUpdate && (
+        {connection && isLive && !workspaceId && (
+          <button
+            className="button-secondary"
+            type="button"
+            onClick={refreshScope}
+            disabled={refreshingScope}
+            title="Re-read which repositories this installation can see"
+          >
+            {refreshingScope ? "Refreshing…" : "Refresh repositories"}
+          </button>
+        )}
+        {connection && !isLive && !needsFolder && needsUpdate && (
           <button
             className="button"
             type="button"
@@ -291,7 +361,7 @@ export function ConnectionCard({
             {syncInProgress ? "Updating…" : "Update"}
           </button>
         )}
-        {connection && !needsFolder && !syncInProgress && onCheckAgain && (
+        {connection && !isLive && !needsFolder && !syncInProgress && onCheckAgain && (
           <button
             className="button-secondary"
             type="button"

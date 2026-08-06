@@ -16,6 +16,19 @@ const POLICY_SUGGESTED_QUESTIONS = [
   "What are the maternity/paternity leave rules?",
 ];
 
+// The GitHub agent answers from live API reads, so its examples are shaped
+// around what a single bounded read can actually ground: one repo, or one
+// commit. Deliberately no cross-repo question ("which service does X?") --
+// nothing is embedded, so there is no semantic search across repositories.
+const CODE_SUGGESTED_QUESTIONS = [
+  "What does the payments service do?",
+  "What happened in commit abc1234?",
+  "What changed recently in the API repo?",
+  "How do I run this project locally?",
+];
+
+type AgentTab = "policy" | "github";
+
 export default function ChatPage() {
   return (
     <Suspense
@@ -49,6 +62,24 @@ function ChatPageInner() {
   const [readyToAsk, setReadyToAsk] = useState<boolean | null>(null);
   const [workspaceSyncing, setWorkspaceSyncing] = useState(false);
   const [justSynced, setJustSynced] = useState(false);
+
+  // Which agent answers. The tab only appears when GitHub is actually
+  // connected -- offering "Code" with nothing behind it would just produce
+  // fallbacks. Read from /me (not /admin/connections) so ordinary members see
+  // it too; they can ask repo questions, they just can't manage the connection.
+  // A workspace never shows it: a sub-workspace answers from its own connected
+  // content only, and GitHub is org-level (see the plan's non-goals).
+  const [agentTab, setAgentTab] = useState<AgentTab>("policy");
+  const showAgentTabs = !workspaceId && Boolean(me?.github_connected);
+  // Policies need a successful ingest before they can answer; GitHub does not,
+  // because it is read live. So an org with only GitHub connected must not be
+  // held behind the policy readiness gate.
+  const policiesReady = readyToAsk !== false;
+  const askingCode = showAgentTabs && (agentTab === "github" || !policiesReady);
+
+  useEffect(() => {
+    if (showAgentTabs && !policiesReady) setAgentTab("github");
+  }, [showAgentTabs, policiesReady]);
 
   useEffect(() => {
     if (!me) return;
@@ -149,7 +180,10 @@ function ChatPageInner() {
     setMessages((prev) => [...prev, { role: "user", text: question }]);
     setMessages((prev) => [...prev, { role: "assistant", text: "", streaming: true }]);
 
-    const convId = await ensureConversation();
+    // GitHub answers are standalone: the agent has no conversation memory, and
+    // POST /chat/conversations rejects agent="github" rather than handing back
+    // an id that would silently do nothing. So skip the conversation entirely.
+    const convId = askingCode ? null : await ensureConversation();
 
     await streamChat(
       question,
@@ -181,7 +215,8 @@ function ChatPageInner() {
           setBusy(false);
         },
       },
-      workspaceId
+      workspaceId,
+      askingCode ? "github" : "policy"
     );
 
     requestAnimationFrame(() => {
@@ -202,7 +237,9 @@ function ChatPageInner() {
     );
   }
 
-  if (readyToAsk === false) {
+  // GitHub answers need no ingest, so only block when there is genuinely
+  // nothing this user could ask about yet.
+  if (readyToAsk === false && !showAgentTabs) {
     const syncing = workspaceId ? workspaceSyncing : me.sync_in_progress;
     return (
       <AppShell me={me} variant="app">
@@ -251,17 +288,46 @@ function ChatPageInner() {
               : "You’re all set — company policies are ready for questions."}
           </div>
         )}
+        {showAgentTabs && (
+          <div className="agent-tabs" role="tablist" aria-label="What to ask about">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={!askingCode}
+              className={`agent-tab${!askingCode ? " is-active" : ""}`}
+              onClick={() => setAgentTab("policy")}
+              disabled={busy || !policiesReady}
+              title={
+                policiesReady ? undefined : "Company policies are still being prepared."
+              }
+            >
+              Policies
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={askingCode}
+              className={`agent-tab${askingCode ? " is-active" : ""}`}
+              onClick={() => setAgentTab("github")}
+              disabled={busy}
+            >
+              Code
+            </button>
+          </div>
+        )}
         {messages.length === 0 ? (
           <div className="chat-empty">
             <h1>Ask a question</h1>
             <p className="muted">
               {workspaceId
                 ? "Ask about the notes and docs connected to this space."
-                : "Ask about leave, benefits, remote work, and more — answers come from your company policies."}
+                : askingCode
+                  ? "Ask about a repository or a specific commit — answers are read live from GitHub, so they’re always current."
+                  : "Ask about leave, benefits, remote work, and more — answers come from your company policies."}
             </p>
             {!workspaceId && (
               <div className="suggested-chips">
-                {POLICY_SUGGESTED_QUESTIONS.map((q) => (
+                {(askingCode ? CODE_SUGGESTED_QUESTIONS : POLICY_SUGGESTED_QUESTIONS).map((q) => (
                   <button key={q} type="button" className="suggested-chip" onClick={() => ask(q)}>
                     {q}
                   </button>
@@ -280,7 +346,11 @@ function ChatPageInner() {
           <input
             className="chat-composer-input"
             placeholder={
-              workspaceId ? "Ask something about this space…" : "Ask about leave, benefits, remote work…"
+              workspaceId
+                ? "Ask something about this space…"
+                : askingCode
+                  ? "Ask about a repository or a commit…"
+                  : "Ask about leave, benefits, remote work…"
             }
             value={input}
             onChange={(e) => setInput(e.target.value)}

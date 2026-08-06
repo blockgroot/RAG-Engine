@@ -17,7 +17,12 @@ import {
 } from "@/lib/api";
 import { ACTIVE_JOB_STATUSES, useJobPolling } from "@/lib/jobPoll";
 
-const PROVIDERS: ("notion" | "google" | "github")[] = ["notion", "google", "github"];
+// GitHub is deliberately absent: it connects at the ORG level only. A personal
+// sub-workspace answers from its own connected documents, and repo-level access
+// control inside an org is an access-control dimension this system doesn't have
+// (see the GitHub plan's non-goals). The API refuses a workspace-scoped GitHub
+// connect too -- this just keeps the UI from offering it.
+const PROVIDERS: ("notion" | "google")[] = ["notion", "google"];
 const ACTIVE_STATUSES = ACTIVE_JOB_STATUSES;
 
 function latestJobByConnection(jobs: JobRecord[]): Record<string, JobRecord> {

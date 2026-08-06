@@ -653,6 +653,48 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
   transform: translateY(-2px);
   box-shadow: var(--shadow-lift);
 }
+/* Chat source selector ("Policies | Code"). Shown only when GitHub is
+   connected -- it names which corpus answers rather than guessing, since an org
+   commonly has both policies and GitHub connected at once. */
+.agent-tabs {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  margin-bottom: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  flex: none;
+}
+.agent-tab {
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--ink-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 0.4rem 1rem;
+  cursor: pointer;
+  transition: background 0.2s var(--ease), color 0.2s var(--ease),
+    border-color 0.2s var(--ease);
+}
+.agent-tab:hover:not(:disabled):not(.is-active) {
+  color: var(--ink);
+}
+.agent-tab.is-active {
+  color: var(--accent-strong);
+  background: var(--surface-elevated);
+  border-color: var(--border);
+  box-shadow: var(--shadow-soft);
+}
+.agent-tab:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .chat-composer {
   display: flex;
   align-items: center;
