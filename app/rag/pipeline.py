@@ -960,6 +960,7 @@ class RagPipeline:
                 document_id=prev[i].document_id,
                 chunk_index=prev[i].chunk_index,
                 org_id=prev[i].org_id,
+                document_title=getattr(prev[i], "document_title", None),
             )
             for i in order
         ][: self._settings.top_k]
@@ -976,6 +977,7 @@ class RagPipeline:
                 document_id=c.document_id,
                 chunk_index=c.chunk_index,
                 org_id=c.org_id,
+                document_title=c.document_title,
             )
             for c in result.sources
         ]

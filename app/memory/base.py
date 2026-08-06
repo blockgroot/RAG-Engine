@@ -56,6 +56,7 @@ class RetrievedChunkRecord:
     document_id: str
     chunk_index: int
     org_id: str
+    document_title: str | None = None
 
 
 class ConversationStore(ABC):

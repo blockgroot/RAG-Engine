@@ -34,8 +34,8 @@ class Citation:
 
     - ``content``    the source text the answer drew on.
     - ``reference``  a stable, human-meaningful locator for the source. For the
-      policy agent this is ``"<document_id>#<chunk_index>"``; other agents may use
-      a URL or path.
+      policy/workspace agent this is ``"<document title> · excerpt N"``; other
+      agents may use a repo path (e.g. ``owner/repo#readme``).
     - ``score``      retrieval similarity in ``[0, 1]`` when available.
     """
 

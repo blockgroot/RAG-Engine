@@ -79,8 +79,10 @@ def build_github_agent(
 
         reader_builder = build_github_reader
 
+    resolved = settings or GitHubAgentSettings.from_env()
     return GitHubAgent(
         llm=llm or build_llm_provider(),
         reader_builder=reader_builder,
-        fallback_response=(settings or GitHubAgentSettings.from_env()).fallback_response,
+        fallback_response=resolved.fallback_response,
+        settings=resolved,
     )

@@ -134,6 +134,7 @@ class PgConversationStore(ConversationStore):
                     "document_id": c.document_id,
                     "chunk_index": c.chunk_index,
                     "org_id": c.org_id,
+                    "document_title": c.document_title,
                 }
                 for c in chunks
             ]
@@ -167,6 +168,7 @@ class PgConversationStore(ConversationStore):
                 document_id=item["document_id"],
                 chunk_index=item["chunk_index"],
                 org_id=item["org_id"],
+                document_title=item.get("document_title"),
             )
             for item in items
         ]
