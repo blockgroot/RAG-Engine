@@ -407,6 +407,83 @@ their policy documents; their employees ask questions and get answers grounded i
   `httpx` (no `google-api-python-client`). Deployment model: **internal-use
   OAuth client** (exempt from Google verification / 7-day refresh expiry).
   Gate/prompt/retrieval unchanged — Google chunks are ordinary org-scoped rows.
+- **GitHub is a source that embeds NOTHING — the first one (`app/githublive/`,
+  `app/agent/github_agent.py`). Plan: `docs/plans/2026-08-05-github-integration.md`.**
+  Notion and Drive are *ingested*: fetch → chunk → embed → store, then answered
+  by retrieval. GitHub is answered by **live, bounded API tool-calls** at
+  question time, and writes **no `documents` rows, no `chunks`, no embeddings,
+  and no ingestion jobs**. Code obviously can't be embedded (it isn't prose;
+  doing it properly needs AST-aware chunking + code embedding models, a separate
+  large feature). But the sharper point, and the one that changed this design
+  mid-build: **the README doesn't need embedding either.** It's small, changes
+  rarely, and fetching it live costs one API call — while indexing it would cost
+  an adapter, a sync lifecycle, provider-partitioned diffing, *and* a staleness
+  window that live fetching cannot have (a policy doc can drift between edit and
+  re-ingest; a live-fetched README has nothing to keep in sync). Since commit
+  questions were already going to be tool-calls, indexing the README would have
+  meant two mechanisms serving one agent. An earlier revision of the plan *did*
+  index `README` + `docs/**`; that was reversed and two whole phases were
+  deleted rather than deferred. **Known cost, accepted:** no semantic search
+  *across* repos, so a vague "which service handles payments?" isn't resolvable
+  by similarity. Mitigation that makes it a non-issue in practice: the stored
+  scope keeps each repo's **name, description, and topics**, which is enough
+  signal for the model to pick a repo before calling a tool — they do the job
+  retrieval would otherwise do, at zero storage cost. Revisit indexing only when
+  a genuine fuzzy-semantic need appears ("find the commit that fixed the login
+  bug"), not preemptively.
+- **`GitHubAgent` is the first non-RAG agent, and it's why `app/agent/base.py`
+  has a `base.py` at all.** Phase 7 predicted "a future GitHub agent will
+  implement the *same* contract"; it does — but *not* by extending
+  `RagPipelineAgent` like `PolicyAgent`/`WorkspaceAgent`. With nothing embedded
+  there is no `RagPipeline` to adapt, so the "thin adapter over a pipeline" shape
+  doesn't apply. **How grounding is guaranteed without a confidence gate:** there
+  is no similarity score to threshold, so the guarantee is *structural* instead —
+  an answer is only ever composed from tool output, and no tool call, unparseable
+  arguments, a refused repo, a GitHub failure, or an LLM failure all return the
+  fixed fallback. The model is never asked to answer from its own knowledge,
+  because a plausible invention about a customer's codebase is worse than "I
+  don't know" (the user cannot tell them apart). One tool round, never a loop —
+  same reasoning as the Phase 5 web-search fallback.
+- **The live path's `WHERE org_id` equivalent is `resolve_repo`
+  (`app/githublive/repos.py`).** Every read takes a `repo` argument the **LLM
+  filled in**, making it untrusted input exactly as a client-supplied `org_id`
+  would be. `resolve_repo` normalizes and authorizes it against the connection's
+  own stored scope *before any authenticated request is issued*, and raises
+  rather than returning a value a caller could forget to check. Under
+  `repository_selection = "selected"` only listed repos resolve; under `"all"`
+  any repo of the connected account resolves (including ones created after
+  connect — the point of choosing "all") but the **owner is still checked**, so
+  `other-org/secrets` is refused either way. Malformed input is rejected, not
+  normalized — an early `.strip("/")` silently rewrote `/handbook` into a valid
+  name. Proven by `tests/test_github_isolation.py`.
+- **Repo scope is what the admin ACTUALLY authorized, never an assumption.**
+  "Connect GitHub" does not grant every repo: the admin picks "All repositories"
+  or a subset on **GitHub's own install screen**, and `GET /installation/repositories`
+  reports which. That choice is stored in `oauth_connections.source_config`
+  (`installation_id`, `account_login`, `repository_selection`, `repos`) —
+  mirroring how a Drive connection stores its picked folder id. Because it's
+  stored rather than re-fetched per question (it only changes when an admin edits
+  the installation), it can go stale, which is why
+  `POST /admin/connections/{id}/refresh-scope` exists — the GitHub analogue of
+  Drive's "check for changes", for *scope* rather than content.
+- **GitHub connects at the ORG level only — workspace-scoped GitHub is an
+  explicit non-goal.** Nothing else in this system has a scoping layer between
+  org and individual member, so a per-workspace repo subset would introduce
+  repo-level ACLs inside an org: a genuinely new access-control dimension, built
+  speculatively. Enforced **server-side** in `/auth/{provider}/authorize` (a
+  hand-crafted `?workspace_id=` URL is refused with 400), not merely hidden in
+  the UI. Same deferral reasoning as domain auto-join below.
+- **Agent routing stays deterministic — no LLM picks the agent.** GitHub is
+  org-level, so an org commonly has Notion/Drive policies *and* GitHub connected
+  at once, and "route by connected source" cannot disambiguate at org scope. So
+  `POST /chat/stream` takes an explicit `{"agent": "policy"|"github"}` (a
+  "Policies | Code" tab in the chat header). `_select_agent` remains the one
+  place the decision is made; `workspace_id` outranks the requested agent (a
+  sub-workspace is a narrower boundary than a source choice), and an
+  unrecognized value falls through to `PolicyAgent`, never to GitHub. An
+  aux-LLM intent classifier was rejected: it would put a non-deterministic step
+  in front of the tenant-scoped path, which is exactly what the confidence
+  gate's design philosophy avoids.
 - **Domain-based auto-join was removed in favor of direct admin-invited
   members — deferred, not wrong.** Phase 13 originally gated employee login on
   a per-org `org_domains` claim (an admin typed a domain, toggled
@@ -600,16 +677,31 @@ app/
                 #   (last turn's chunks, for the retrieval-reuse check).
   websearch/    # base.py (WebSearchProvider) + duckduckgo.py + factory.py. The
                 #   web-search tool used as the external-entity fallback.
+  githublive/   # GitHub's ENTIRE data path — no adapter, no ingestion, no vectors.
+                #   base.py (GitHubReader) + rest.py + factory.py + repos.py (scope +
+                #   resolve_repo, the ALLOWLIST for LLM-supplied repo names) +
+                #   scope.py (the DB-facing half). NOT under sources/: a SourceAdapter
+                #   exists to feed the ingestion pipeline, and nothing here is ever
+                #   ingested.
   agent/        # base.py (Agent + AgentResponse + Citation) + policy_agent.py +
+                #   workspace_agent.py + rag_pipeline_agent.py + github_agent.py +
                 #   factory.py. P7: the formal PolicyAgent (thin adapter over the RAG
-                #   pipeline). HAS a base.py — a GitHub agent will implement it later.
-                #   P13: policy_agent.py also has answer_stream() (chunks the
-                #   already-decided answer; not on the abstract Agent base).
+                #   pipeline). HAS a base.py — and GitHub finally cashed that in.
+                #   THREE implementations now, and they do NOT share a shape:
+                #   PolicyAgent/WorkspaceAgent are thin adapters over a RagPipeline
+                #   (via RagPipelineAgent); GitHubAgent implements Agent DIRECTLY
+                #   because it has no retrieval to adapt — it answers purely from
+                #   live tool calls. P13: answer_stream() (chunks the already-decided
+                #   answer; not on the abstract Agent base) — GitHubAgent has one too,
+                #   so app/api/chat.py treats every agent identically at transport.
   security/     # P10: crypto.py (encrypt/decrypt via MultiFernet) for OAuth tokens
                 #   at rest. A tiny utility module, not an interface+factory package
                 #   (only one real capability, no second backend to abstract over).
-  auth/         # P10-13 + Google: identity + OAuth "Connect X" + sessions. base.py
-                #   (OAuthProvider) + notion_oauth.py + google_oauth.py + factory.py
+  auth/         # P10-13 + Google + GitHub: identity + OAuth "Connect X" + sessions.
+                #   base.py (OAuthProvider) + notion_oauth.py + google_oauth.py +
+                #   github_oauth.py (GitHubAppProvider — install flow, verified
+                #   installation id) + github_app.py (RS256 App JWT + installation
+                #   token minting; no interface/factory, it's two primitives) + factory.py
                 #   + credentials.py (oauth_connections + live token refresh +
                 #   source_config) + users.py + magic_link.py + oauth_state.py +
                 #   session.py + email.py. domains.py was REMOVED — see §2.
@@ -748,6 +840,59 @@ tests/          # pytest; isolation (P2, extended with workspace-vs-org-wide and
   verification and the testing-mode 7-day refresh expiry); testing-mode clients
   will silently break weekly when refresh tokens die (`invalid_grant` →
   `OAuthReauthRequiredError`, actionable "reconnect" — never retry-loop).
+- **The `installation_id` GitHub hands back on the connect redirect can be
+  SPOOFED — verify it.** GitHub's docs say so outright ("bad actors can hit this
+  URL with a spoofed `installation_id`") and recommend confirming it with a user
+  access token. Trusting it would let an attacker bind a *victim's* GitHub
+  organization to their own tenant and read its repos through us — a cross-tenant
+  exfiltration hole, not a cosmetic bug. `GitHubAppProvider._verify_installation`
+  checks it against `GET /user/installations` and takes the persisted identity
+  from **that verified response**, never from the query parameter. Regression:
+  `test_exchange_rejects_installation_id_not_owned_by_the_user`. Never "simplify"
+  this away.
+- **GitHub's token exchange needs `Accept: application/json`.** Without it the
+  endpoint returns a **form-encoded** body and `response.json()` blows up — a
+  classic first-integration trap, and the reason `github_oauth.py` sets it
+  explicitly.
+- **GitHub's install URL is `/apps/<slug>/installations/new`, not an OAuth
+  authorize endpoint.** Installing is what grants repository access; a plain
+  `/login/oauth/authorize` would authorize a *user* without installing anything,
+  leaving a token that cannot read the org's repos.
+- **`state` surviving the install redirect is NOT confirmed by GitHub's docs**
+  (they document `installation_id` on the setup redirect, not `state`). The
+  implementation assumes it does. **Verify against a real App before trusting
+  it**; documented fallback if it doesn't hold: register the App's Setup URL as a
+  dedicated route and resolve the org from the authenticated session instead.
+  Tracked as risk T3 in the plan.
+- **A GitHub commit diff is not safe to inline.** GitHub paginates at 300 files
+  per page (max 3 000) and warns that "larger diffs may time out". Never request
+  a full diff: `app/githublive/rest.py` caps files per commit and truncates each
+  patch to a byte budget, and **marks** the truncation — the marker matters more
+  than the cut, because silently-shortened evidence lets the model answer
+  confidently from half of it.
+- **GitHub 404s resources a token merely cannot see** — same ambiguity as Drive.
+  Reported as "not found, or not accessible", never as "deleted", and never
+  retried (retrying a permanent answer just burns request budget). 429/5xx *are*
+  retried with backoff honouring `Retry-After`.
+- **GitHub installation tokens are minted, not stored.** The token on the
+  `oauth_connections` row is the *user* token (proof of who connected); repo
+  reads use a 1-hour installation token minted on demand from the App private key
+  inside `get_live_connection_token`. Cached in-process, keyed by
+  `(org_id, workspace_id, installation_id)` so a cache hit can never hand one
+  tenant another's token. The stored user token is **never** returned as a
+  fallback — a connection with no recorded `installation_id` raises an actionable
+  "reconnect GitHub" instead.
+- **GitHub has no ingestion, so sync-shaped admin routes must refuse it.**
+  `/admin/connections/{id}/ingest` and `/changes` return 400 for a GitHub
+  connection. Without that guard `/ingest` would enqueue a job the worker cannot
+  run, and the admin would watch it fail minutes later with an obscure "Unknown
+  source type". Likewise the chat UI's Code tab must **not** be gated on
+  `ready_to_ask` (that means "a policy ingest succeeded"), or an org with only
+  GitHub connected would be stuck forever behind "not ready yet".
+- **`github_connected` is reported on `/me`, not read from `/admin/connections`.**
+  The latter is admin-only, so reading it there hides the Code tab from every
+  ordinary member — who can ask repo questions, they just can't manage the
+  connection. Only a boolean is exposed; repo names stay behind `require_admin`.
 - **Google has no env-var token path** — only `oauth_connections` +
   `get_live_connection_token`. A Drive connection also requires
   `source_config.folder_id` before sync/changes (admin pastes a folder URL).
@@ -978,6 +1123,18 @@ request row rather than deleting it, so the request stays as an audit trail;
 test cleanup that deletes an org must separately delete any
 `org_signup_requests` rows it created (see `signup_email_cleanup` in
 `tests/conftest.py`).
+
+**The GitHub integration added NO tables and NO columns.** It stores exactly one
+thing — an ordinary `oauth_connections` row (`provider = 'github'`) whose
+existing `source_config` JSONB carries `installation_id`, `account_login`,
+`repository_selection` (`all` | `selected`), and the authorized `repos` list
+(each with `description`/`topics`, which is what lets the model pick a repo with
+no embeddings). Everything else is read live. In particular there are **no
+`documents` or `chunks` rows for GitHub**, so `documents.source_provider` is
+never written as `'github'` and the Google-era provider-partitioned sync is
+simply unused here rather than extended. That absence is the observable proof the
+"embed nothing" decision was implemented as designed — check it after a live
+walkthrough.
 
 **Phase 7 added no tables** — the PolicyAgent and golden-set eval are pure
 application/tooling layers over the existing schema. **Phase 8 added one table**
@@ -1360,6 +1517,51 @@ BFS), factory/worker/changes wiring, and frontend (Sources + onboarding treat
 Google as a first-class connect). Gate/prompt/retrieval untouched. Live OAuth
 walkthrough against a real internal-use Google client is still pending.
 
+**GitHub integration (branch `feature/github-integration`, plan
+`docs/plans/2026-08-05-github-integration.md`).** A third connectable source, but
+structurally unlike the first two: **nothing is embedded** — every answer is a
+live, bounded GitHub API tool-call. See §2 for the full reasoning (including why
+an earlier revision that indexed `README` + `docs/**` was reversed and two phases
+deleted), §4 for the gotchas, §5 for why it adds no tables. Phases:
+- **P1** `GitHubSettings` + RS256 App JWT + installation-token minting
+  (`app/auth/github_app.py`). Zero new dependencies — `pyjwt` and `cryptography`
+  were already present, which is exactly what RS256 needs.
+- **P2** `GitHubAppProvider` (`app/auth/github_oauth.py`): install-URL authorize,
+  form-encoded exchange with `Accept: application/json`, and the
+  **spoofed-`installation_id` defence** (§4).
+- **P3** `get_live_connection_token` mints/caches installation tokens per
+  `(org_id, workspace_id, installation_id)`.
+- **P4** authorized repo scope recorded from `GET /installation/repositories`
+  (`app/githublive/repos.py` + `scope.py`), plus `resolve_repo` — the allowlist.
+- **P5** the live read layer (`base.py`/`rest.py`/`factory.py`):
+  `list_repos`/`get_readme`/`get_commit`/`list_commits`, bounded + truncation-marked.
+- **P6** `GitHubAgent` (implements `Agent` directly, not `RagPipelineAgent`) +
+  deterministic `_select_agent` routing on an explicit `agent` field.
+- **P7** admin guards (no ingest/changes/folder-config for GitHub) +
+  `POST /admin/connections/{id}/refresh-scope`; `/me.github_connected`;
+  server-side refusal of a workspace-scoped GitHub connect; frontend
+  "Policies | Code" chat tab and a Sources card showing authorized repo scope
+  with every sync control hidden.
+- **P8** isolation proofs (`tests/test_github_isolation.py`), GitHub prompt
+  fence/scrub structure tests, and real-LLM behaviour tests
+  (`tests/test_github_agent_behavior.py`, `network`-marked: real model, **faked**
+  GitHub, so no GitHub credentials needed).
+
+**Deliberately NOT added to the golden set.** `evaluation/` seeds a corpus and
+scores retrieval-shaped things (contexts, `top_score`, RAGAS context
+precision/recall). GitHub has none of those, so GitHub cases would either need
+live credentials CI lacks or fill the report with empty retrieval columns.
+The behaviour that genuinely needs a real model (does it pick the right tool?
+does it decline when handed no evidence?) lives in
+`tests/test_github_agent_behavior.py` instead.
+
+**Still pending for GitHub:** the live walkthrough against a real GitHub App
+(`GITHUB_APP_SLUG` / `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` /
+`GITHUB_APP_PRIVATE_KEY` — the PEM is **new secret material** the current secrets
+story doesn't cover). That walkthrough is also what settles risk **T3** (§4): the
+`state` round-trip through the install redirect is unverified. Everything above
+was proven offline with faked HTTP.
+
 **Pending (not started)**
 - **Live end-to-end verification of Phases 10-14** against a real sandbox Notion
   OAuth app (create one, set `NOTION_CLIENT_ID`/`SECRET`/`REDIRECT_URI`) and a
@@ -1375,9 +1577,15 @@ walkthrough against a real internal-use Google client is still pending.
   unchanged), the Phase 10-14 Notion OAuth self-serve flow, or Google Drive
   OAuth + folder config in the portal. Neither live Google nor production
   company data has been run end-to-end in this environment yet.
-- Production secrets management: `AUTH_JWT_SECRET` and `AUTH_ENCRYPTION_KEYS` must
-  be generated and provisioned per environment (e.g. a secrets manager) before any
-  real deployment — this work defines the config surface, not the provisioning.
+- Production secrets management: `AUTH_JWT_SECRET`, `AUTH_ENCRYPTION_KEYS`, and
+  (once GitHub is deployed) the GitHub App's RS256 private key
+  `GITHUB_APP_PRIVATE_KEY` must be generated and provisioned per environment
+  (e.g. a secrets manager) before any real deployment — this work defines the
+  config surface, not the provisioning. The PEM is a *new class* of secret here:
+  unlike the others it is an asymmetric signing key that mints repo-read
+  credentials on demand, so leaking it is equivalent to leaking every connected
+  org's repository access. `GitHubSettings.from_env` accepts a `\n`-escaped
+  single-line value so it survives secret stores that can't hold newlines.
 - Email delivery is `console` (prints the link) by default; a real deployment needs
   `EMAIL_SENDER=smtp` configured, or a transactional-email provider swapped in
   behind `app/auth/email.py`.

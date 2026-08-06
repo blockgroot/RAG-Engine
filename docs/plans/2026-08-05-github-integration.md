@@ -681,14 +681,37 @@ observable proof D5 was implemented as designed.
 
 ---
 
-## Phase 8 — Evaluation + documentation
+## Phase 8 — Evaluation + documentation  *(implemented)*
 
-- Golden cases in `evaluation/golden_set.py`: one README-answerable, one
-  live-commit, one fallback (no connection), one **injection** case mirroring
-  `injection-sabbatical` (T2). GitHub cases are **advisory** in CI like the web
-  cases — they need live GitHub credentials CI won't have.
-- `tests/test_isolation.py`: org A's GitHub connection must never be reachable
-  from org B, and the live path must refuse a repo outside its own installation.
+**Deviation from this plan, made deliberately: GitHub cases were NOT added to
+the golden set.** `evaluation/` seeds a corpus and scores retrieval-shaped
+things — contexts, `top_score`, RAGAS context-precision/recall. GitHub has none
+of those: nothing is embedded, so there is no context to score and no gate to
+observe. Adding GitHub cases there would mean either (a) requiring live GitHub
+credentials CI does not have, or (b) filling the report with empty retrieval
+columns. `run_case` does take a generic `Agent`, so it *could* be forced — the
+objection is that the harness's output would be meaningless for this agent, not
+that it's impossible.
+
+What replaced it, keeping the signal the plan actually wanted:
+
+- **`tests/test_github_agent_behavior.py`** (`network`-marked) — a **real LLM**
+  with a **faked GitHub reader**, so no GitHub credentials are needed. This is
+  the part `tests/test_github_agent.py` cannot cover: those tests script the
+  model's tool calls, proving *plumbing* deterministically; only a real model can
+  show it picks the right tool and genuinely declines when handed no evidence.
+  Four cases: README question → `get_readme`; SHA question → `get_commit`; a
+  question about `kubernetes/kubernetes` (not in the installation, and a repo the
+  model knows well from pretraining — the hardest case for world-knowledge leak)
+  → fallback; injected instructions in a commit message → not obeyed.
+- **`tests/test_github_isolation.py`** — cross-tenant proofs for a path with no
+  chunks to scope: per-connection stored scope, `resolve_repo` refusing another
+  tenant's repo by name, `"all"` still refusing a foreign owner, a workspace
+  connection not satisfying an org-wide lookup, and "not connected" raising
+  rather than silently reading as an empty allowlist.
+- **`tests/test_prompt_injection_structure.py`** — three GitHub cases: the answer
+  prompt fences + scrubs repository text, forbids supplementing from world
+  knowledge, and the decision prompt never invites an unsourced answer.
 - Update `CLAUDE.md`: §2 (reasoning, incl. why GitHub embeds nothing and why
   that differs from Notion/Drive), §3 (`app/githublive/`, `app/auth/github_app.py`,
   `app/auth/github_oauth.py`, `app/agent/github_agent.py`), §4 (gotchas:
