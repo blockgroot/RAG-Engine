@@ -93,6 +93,10 @@ export function AppShell({
       </a>
 
       <aside className="app-rail" aria-label="Primary">
+        <div className="rail-atmosphere" aria-hidden>
+          <span className="rail-glow rail-glow-a" />
+          <span className="rail-glow rail-glow-b" />
+        </div>
         <Link href={homeHref} className="brand">
           <span className="brand-mark" aria-hidden />
           <span className="brand-text">
@@ -118,7 +122,7 @@ export function AppShell({
                 </span>
                 <span className="rail-link-copy">
                   <span className="rail-link-title">Ask</span>
-                  <span className="rail-link-hint">Policies &amp; code</span>
+                  <span className="rail-link-hint">Ask anything</span>
                 </span>
               </Link>
             )}
@@ -133,7 +137,7 @@ export function AppShell({
               </span>
               <span className="rail-link-copy">
                 <span className="rail-link-title">Spaces</span>
-                <span className="rail-link-hint">Team workspaces</span>
+                <span className="rail-link-hint">Private rooms</span>
               </span>
             </Link>
 
@@ -155,7 +159,7 @@ export function AppShell({
                   </span>
                   <span className="rail-link-copy">
                     <span className="rail-link-title">Sources</span>
-                    <span className="rail-link-hint">Notion, Drive, GitHub</span>
+                    <span className="rail-link-hint">Connect apps</span>
                   </span>
                 </Link>
                 <Link
@@ -169,7 +173,7 @@ export function AppShell({
                   </span>
                   <span className="rail-link-copy">
                     <span className="rail-link-title">People</span>
-                    <span className="rail-link-hint">Invite teammates</span>
+                    <span className="rail-link-hint">Grow the team</span>
                   </span>
                 </Link>
               </>

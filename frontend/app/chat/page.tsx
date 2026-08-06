@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
+import { AskHeroArt } from "@/components/AskHeroArt";
 import { ChatMessageView, Message } from "@/components/ChatMessage";
 import { useMe } from "@/lib/useMe";
 import { streamChat } from "@/lib/sse";
@@ -21,11 +22,26 @@ const POLICY_SUGGESTED_QUESTIONS = [
 // commit. Deliberately no cross-repo question ("which service does X?") --
 // nothing is embedded, so there is no semantic search across repositories.
 const CODE_SUGGESTED_QUESTIONS = [
-  "What does the payments service do?",
-  "What happened in commit abc1234?",
-  "What changed recently in the API repo?",
-  "How do I run this project locally?",
+  "What does the RAG repository do?",
+  "What does Fact-Verification-Engine do?",
+  "What changed recently in persistent-memory-assistant?",
+  "How do I run the RAG project locally?",
 ];
+
+function ChipIcon({ kind }: { kind: "policy" | "code" }) {
+  if (kind === "code") {
+    return (
+      <svg className="suggested-chip-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+        <path d="M8 8 4 12l4 4M16 8l4 4-4 4M14 6l-4 12" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  return (
+    <svg className="suggested-chip-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path d="M7 4h10a2 2 0 0 1 2 2v14l-7-3-7 3V6a2 2 0 0 1 2-2Z" stroke="currentColor" strokeWidth="1.75" strokeLinejoin="round" />
+    </svg>
+  );
+}
 
 type AgentTab = "policy" | "github";
 
@@ -346,20 +362,25 @@ function ChatPageInner() {
         <div id="ask-panel" role="tabpanel" aria-label="Ask answers">
           {messages.length === 0 ? (
             <div className="chat-empty">
-              <div className="chat-hero-orb" aria-hidden />
-              <h1>{emptyTitle}</h1>
-              <p className="muted">{emptyCopy}</p>
+              <AskHeroArt
+                variant={workspaceId ? "space" : askingCode ? "code" : "policy"}
+              />
+              <div className="chat-empty-copy">
+                <h1>{emptyTitle}</h1>
+                <p className="muted">{emptyCopy}</p>
+              </div>
               {!workspaceId && (
-                <div className="suggested-chips">
+                <div className="suggested-chips suggested-chips-bento">
                   {(askingCode ? CODE_SUGGESTED_QUESTIONS : POLICY_SUGGESTED_QUESTIONS).map(
                     (q) => (
                       <button
                         key={q}
                         type="button"
-                        className="suggested-chip"
+                        className="suggested-chip suggested-chip-card"
                         onClick={() => ask(q)}
                       >
-                        {q}
+                        <ChipIcon kind={askingCode ? "code" : "policy"} />
+                        <span>{q}</span>
                       </button>
                     )
                   )}
@@ -394,7 +415,19 @@ function ChatPageInner() {
             disabled={busy || !input.trim()}
             aria-label="Send question"
           >
-            {busy ? "…" : "↑"}
+            {busy ? (
+              <span className="composer-spinner" aria-hidden />
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path
+                  d="M12 19V5M12 5l-6 6M12 5l6 6"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            )}
           </button>
         </form>
       </div>

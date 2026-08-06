@@ -2,6 +2,7 @@ import { useState } from "react";
 import { api, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
 import { DriveFolderPicker } from "./DriveFolderPicker";
 import { JobStatusBadge } from "./JobStatusBadge";
+import { ProviderMark } from "./ProviderMark";
 
 const PROVIDER_LABELS: Record<string, string> = {
   notion: "Notion",
@@ -113,16 +114,17 @@ export function ConnectionCard({
   const [configError, setConfigError] = useState<string | null>(null);
 
   return (
-    <div className="card">
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          gap: "1rem",
-        }}
-      >
-        <h3 style={{ fontSize: "1.05rem" }}>{PROVIDER_LABELS[provider]}</h3>
+    <div className={`card source-studio-card source-studio-card--${provider}${connection ? " is-linked" : ""}`}>
+      <div className="source-studio-top">
+        <div className="source-studio-title">
+          <ProviderMark provider={provider} />
+          <div>
+            <h3>{PROVIDER_LABELS[provider]}</h3>
+            <p className="source-studio-kind">
+              {isLive ? "Live answers" : "Synced documents"}
+            </p>
+          </div>
+        </div>
         {connection ? (
           <span className="badge badge-verified">Linked</span>
         ) : (
@@ -140,27 +142,25 @@ export function ConnectionCard({
       )}
 
       {isLive && connection && (
-        <div className="stack" style={{ marginTop: "0.9rem", gap: "0.55rem" }}>
+        <div className="stack source-live-copy" style={{ marginTop: "0.75rem", gap: "0.4rem" }}>
           <p className="muted" style={{ margin: 0 }}>
             {repoSelection === "all"
-              ? "All repositories in this organization are available."
+              ? "Ready to answer questions about your repos."
               : repos.length > 0
-                ? `${repos.length} repositor${repos.length === 1 ? "y" : "ies"} available.`
-                : "No repositories are available yet — refresh, or add them to the installation on GitHub."}
+                ? `Ready for ${repos.length} repo${repos.length === 1 ? "" : "s"}.`
+                : "No repos linked yet — refresh the list, or update access on GitHub."}
           </p>
           {repoSelection !== "all" && repos.length > 0 && (
-            <p className="muted" style={{ margin: 0, fontSize: "0.85rem" }}>
+            <p className="muted source-live-repos" style={{ margin: 0 }}>
               {repos
-                .slice(0, 5)
-                .map((r) => r.full_name)
-                .join(", ")}
-              {repos.length > 5 ? ` +${repos.length - 5} more` : ""}
+                .slice(0, 4)
+                .map((r) => r.full_name.split("/").pop() || r.full_name)
+                .join(" · ")}
+              {repos.length > 4 ? ` · +${repos.length - 4} more` : ""}
             </p>
           )}
-          <p className="muted" style={{ margin: 0, fontSize: "0.85rem" }}>
-            Answers are read live from GitHub when a question is asked, so
-            nothing is stored or needs syncing. Which repositories are included
-            is chosen on GitHub.
+          <p className="muted source-live-hint" style={{ margin: 0 }}>
+            Ask in the Code tab — answers come straight from GitHub.
           </p>
           {scopeError && <div className="banner banner-warn">{scopeError}</div>}
         </div>
@@ -238,9 +238,9 @@ export function ConnectionCard({
             type="button"
             onClick={refreshScope}
             disabled={refreshingScope}
-            title="Re-read which repositories this installation can see"
+            title="Update the list of repos Folio can see"
           >
-            {refreshingScope ? "Refreshing…" : "Refresh repositories"}
+            {refreshingScope ? "Refreshing…" : "Refresh list"}
           </button>
         )}
         {connection && !isLive && !needsFolder && needsUpdate && (

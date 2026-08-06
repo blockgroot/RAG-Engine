@@ -5,6 +5,22 @@ import Link from "next/link";
 import { AuthShell } from "@/components/AuthShell";
 import { api, ApiError } from "@/lib/api";
 
+function SuccessMark() {
+  return (
+    <div className="auth-v2-success-icon" aria-hidden>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+        <path
+          d="M5 13l4 4L19 7"
+          stroke="currentColor"
+          strokeWidth="2.4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </div>
+  );
+}
+
 export default function SignupPage() {
   const [email, setEmail] = useState("");
   const [companyName, setCompanyName] = useState("");
@@ -28,6 +44,7 @@ export default function SignupPage() {
 
   return (
     <AuthShell
+      variant="signup"
       footer={
         <p>
           Already have an account? <Link href="/login">Sign in</Link>
@@ -38,20 +55,17 @@ export default function SignupPage() {
         <p className="auth-v2-card-kicker">Get started</p>
         <h2>Request your organization</h2>
         <p className="muted">
-          Requests are reviewed before an organization is created. Once approved,
-          you&rsquo;ll be the admin — connect sources, sync policies, invite your
-          team.
+          We review every request. Once approved, you&rsquo;ll set up sources and
+          invite your team.
         </p>
       </div>
 
       {submitted ? (
         <div className="auth-v2-success stack">
-          <div className="auth-v2-success-icon" aria-hidden>
-            ✓
-          </div>
+          <SuccessMark />
           <p>
-            Thanks! Your request to create <strong>{companyName}</strong> has been
-            received. We&rsquo;ll email you once it&rsquo;s approved.
+            Thanks! Your request for <strong>{companyName}</strong> is in. We&rsquo;ll
+            email you when it&rsquo;s approved.
           </p>
         </div>
       ) : (

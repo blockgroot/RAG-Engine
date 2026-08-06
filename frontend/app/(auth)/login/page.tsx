@@ -5,6 +5,22 @@ import Link from "next/link";
 import { AuthShell } from "@/components/AuthShell";
 import { api, ApiError } from "@/lib/api";
 
+function SuccessMark() {
+  return (
+    <div className="auth-v2-success-icon" aria-hidden>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+        <path
+          d="M5 13l4 4L19 7"
+          stroke="currentColor"
+          strokeWidth="2.4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </div>
+  );
+}
+
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [submitted, setSubmitted] = useState(false);
@@ -29,6 +45,7 @@ export default function LoginPage() {
 
   return (
     <AuthShell
+      variant="login"
       footer={
         <p>
           First time here? <Link href="/signup">Set up your company</Link>
@@ -39,19 +56,17 @@ export default function LoginPage() {
         <p className="auth-v2-card-kicker">Welcome back</p>
         <h2>Sign in to Folio</h2>
         <p className="muted">
-          Enter your work email and we&rsquo;ll send a one-time sign-in link. No
-          password needed.
+          Enter your work email — we&rsquo;ll send a one-time link. No password
+          needed.
         </p>
       </div>
 
       {submitted ? (
         <div className="auth-v2-success stack">
-          <div className="auth-v2-success-icon" aria-hidden>
-            ✓
-          </div>
+          <SuccessMark />
           <p>
-            If that email is eligible, we&rsquo;ve sent a sign-in link. Check your
-            inbox — it expires shortly and works once.
+            Check your inbox for a sign-in link. It expires shortly and works
+            once.
           </p>
           {devLink && (
             <p className="muted">
