@@ -3,18 +3,29 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
+import { AskHeroArt } from "@/components/AskHeroArt";
 import { ChatMessageView, Message } from "@/components/ChatMessage";
 import { useMe } from "@/lib/useMe";
 import { streamChat } from "@/lib/sse";
 import { api } from "@/lib/api";
 import { JOB_POLL_MS } from "@/lib/jobPoll";
 
-const POLICY_SUGGESTED_QUESTIONS = [
-  "How many days of paid leave do I get?",
-  "What's the remote work policy?",
-  "How do I claim a medical reimbursement?",
-  "What are the maternity/paternity leave rules?",
-];
+function ChipIcon({ kind }: { kind: "policy" | "code" }) {
+  if (kind === "code") {
+    return (
+      <svg className="suggested-chip-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+        <path d="M8 8 4 12l4 4M16 8l4 4-4 4M14 6l-4 12" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  return (
+    <svg className="suggested-chip-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path d="M7 4h10a2 2 0 0 1 2 2v14l-7-3-7 3V6a2 2 0 0 1 2-2Z" stroke="currentColor" strokeWidth="1.75" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+type AgentTab = "policy" | "github";
 
 export default function ChatPage() {
   return (
@@ -49,6 +60,50 @@ function ChatPageInner() {
   const [readyToAsk, setReadyToAsk] = useState<boolean | null>(null);
   const [workspaceSyncing, setWorkspaceSyncing] = useState(false);
   const [justSynced, setJustSynced] = useState(false);
+  const [suggestedQuestions, setSuggestedQuestions] = useState<string[]>([]);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+
+
+  // Which agent answers. The tab only appears when GitHub is actually
+  // connected -- offering "Code" with nothing behind it would just produce
+  // fallbacks. Read from /me (not /admin/connections) so ordinary members see
+  // it too; they can ask repo questions, they just can't manage the connection.
+  // A workspace never shows it: a sub-workspace answers from its own connected
+  // content only, and GitHub is org-level (see the plan's non-goals).
+  const [agentTab, setAgentTab] = useState<AgentTab>("policy");
+  const showAgentTabs = !workspaceId && Boolean(me?.github_connected);
+  // Policies need a successful ingest before they can answer; GitHub does not,
+  // because it is read live. So an org with only GitHub connected must not be
+  // held behind the policy readiness gate.
+  const policiesReady = readyToAsk !== false;
+  const askingCode = showAgentTabs && (agentTab === "github" || !policiesReady);
+
+  useEffect(() => {
+    if (showAgentTabs && !policiesReady) setAgentTab("github");
+  }, [showAgentTabs, policiesReady]);
+
+  // Starter chips from connected sources (document titles / GitHub repos).
+  useEffect(() => {
+    if (!me) return;
+    let cancelled = false;
+    const agent = askingCode ? "github" : "policy";
+    setSuggestionsLoading(true);
+    api
+      .chatSuggestions(agent, workspaceId)
+      .then((res) => {
+        if (!cancelled) setSuggestedQuestions(res.questions || []);
+      })
+      .catch(() => {
+        if (!cancelled) setSuggestedQuestions([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSuggestionsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [me, askingCode, workspaceId]);
+
 
   useEffect(() => {
     if (!me) return;
@@ -149,7 +204,10 @@ function ChatPageInner() {
     setMessages((prev) => [...prev, { role: "user", text: question }]);
     setMessages((prev) => [...prev, { role: "assistant", text: "", streaming: true }]);
 
-    const convId = await ensureConversation();
+    // GitHub answers are standalone: the agent has no conversation memory, and
+    // POST /chat/conversations rejects agent="github" rather than handing back
+    // an id that would silently do nothing. So skip the conversation entirely.
+    const convId = askingCode ? null : await ensureConversation();
 
     await streamChat(
       question,
@@ -181,7 +239,8 @@ function ChatPageInner() {
           setBusy(false);
         },
       },
-      workspaceId
+      workspaceId,
+      askingCode ? "github" : "policy"
     );
 
     requestAnimationFrame(() => {
@@ -202,7 +261,9 @@ function ChatPageInner() {
     );
   }
 
-  if (readyToAsk === false) {
+  // GitHub answers need no ingest, so only block when there is genuinely
+  // nothing this user could ask about yet.
+  if (readyToAsk === false && !showAgentTabs) {
     const syncing = workspaceId ? workspaceSyncing : me.sync_in_progress;
     return (
       <AppShell me={me} variant="app">
@@ -241,6 +302,22 @@ function ChatPageInner() {
     );
   }
 
+  const emptyTitle = workspaceId
+    ? "Ask this space"
+    : askingCode
+      ? "Ask your code"
+      : "Ask your company";
+  const emptyCopy = workspaceId
+    ? "Answers come only from the notes and docs connected to this space."
+    : askingCode
+      ? "Repository and commit answers are read live from GitHub — always current, never stale."
+      : "Leave, benefits, remote work, and more — grounded in your connected policies.";
+  const composerPlaceholder = workspaceId
+    ? "Ask something about this space…"
+    : askingCode
+      ? "Ask about a repository or a commit…"
+      : "Ask about leave, benefits, remote work…";
+
   return (
     <AppShell me={me} variant="app">
       <div className="chat-page">
@@ -251,37 +328,90 @@ function ChatPageInner() {
               : "You’re all set — company policies are ready for questions."}
           </div>
         )}
-        {messages.length === 0 ? (
-          <div className="chat-empty">
-            <h1>Ask a question</h1>
-            <p className="muted">
-              {workspaceId
-                ? "Ask about the notes and docs connected to this space."
-                : "Ask about leave, benefits, remote work, and more — answers come from your company policies."}
-            </p>
-            {!workspaceId && (
-              <div className="suggested-chips">
-                {POLICY_SUGGESTED_QUESTIONS.map((q) => (
-                  <button key={q} type="button" className="suggested-chip" onClick={() => ask(q)}>
-                    {q}
-                  </button>
-                ))}
+
+        <div className="chat-topbar">
+          <div className="chat-topbar-copy">
+            <p className="chat-kicker">{workspaceId ? "Space" : "Workspace"}</p>
+            <h1>{askingCode ? "Code" : workspaceId ? "Space Ask" : "Ask"}</h1>
+          </div>
+          {showAgentTabs && (
+            <div className="agent-tabs" role="tablist" aria-label="What to ask about">
+              <button
+                type="button"
+                role="tab"
+                id="tab-policies"
+                aria-controls="ask-panel"
+                aria-selected={!askingCode}
+                className={`agent-tab${!askingCode ? " is-active" : ""}`}
+                onClick={() => setAgentTab("policy")}
+                disabled={busy || !policiesReady}
+                title={
+                  policiesReady ? undefined : "Company policies are still being prepared."
+                }
+              >
+                Policies
+              </button>
+              <button
+                type="button"
+                role="tab"
+                id="tab-code"
+                aria-controls="ask-panel"
+                aria-selected={askingCode}
+                className={`agent-tab${askingCode ? " is-active" : ""}`}
+                onClick={() => setAgentTab("github")}
+                disabled={busy}
+              >
+                Code
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div id="ask-panel" role="tabpanel" aria-label="Ask answers">
+          {messages.length === 0 ? (
+            <div className="chat-empty">
+              <AskHeroArt
+                variant={workspaceId ? "space" : askingCode ? "code" : "policy"}
+              />
+              <div className="chat-empty-copy">
+                <h1>{emptyTitle}</h1>
+                <p className="muted">{emptyCopy}</p>
               </div>
-            )}
-          </div>
-        ) : (
-          <div className="chat-log" ref={logRef}>
-            {messages.map((m, i) => (
-              <ChatMessageView key={i} message={m} />
-            ))}
-          </div>
-        )}
-        <form onSubmit={handleSubmit} className="chat-composer">
+              {suggestionsLoading ? (
+                <p className="muted suggested-loading">Loading suggestions…</p>
+              ) : suggestedQuestions.length > 0 ? (
+                <div className="suggested-chips suggested-chips-bento">
+                  {suggestedQuestions.map((q) => (
+                    <button
+                      key={q}
+                      type="button"
+                      className="suggested-chip suggested-chip-card"
+                      onClick={() => ask(q)}
+                    >
+                      <ChipIcon kind={askingCode ? "code" : "policy"} />
+                      <span>{q}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="chat-log" ref={logRef} aria-live="polite">
+              {messages.map((m, i) => (
+                <ChatMessageView key={i} message={m} />
+              ))}
+            </div>
+          )}
+        </div>
+
+        <form onSubmit={handleSubmit} className="chat-composer" aria-label="Ask a question">
+          <label className="sr-only" htmlFor="ask-input">
+            Your question
+          </label>
           <input
+            id="ask-input"
             className="chat-composer-input"
-            placeholder={
-              workspaceId ? "Ask something about this space…" : "Ask about leave, benefits, remote work…"
-            }
+            placeholder={composerPlaceholder}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             disabled={busy}
@@ -291,9 +421,21 @@ function ChatPageInner() {
             className="chat-composer-send"
             type="submit"
             disabled={busy || !input.trim()}
-            aria-label="Send"
+            aria-label="Send question"
           >
-            {busy ? "…" : "↑"}
+            {busy ? (
+              <span className="composer-spinner" aria-hidden />
+            ) : (
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <path
+                  d="M12 19V5M12 5l-6 6M12 5l6 6"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            )}
           </button>
         </form>
       </div>

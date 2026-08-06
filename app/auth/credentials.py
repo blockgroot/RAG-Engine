@@ -32,6 +32,18 @@ from .base import OAuthTokens
 # without adding a retry loop.
 _REFRESH_SAFETY_MARGIN = timedelta(minutes=5)
 
+# In-process cache of minted GitHub installation tokens, keyed by
+# ``(org_id, workspace_id, installation_id)``. GitHub installation tokens are
+# valid for an hour, so minting one per question would burn rate limit and add a
+# round-trip for no benefit. Deliberately process-local (not Postgres): it holds
+# live credentials, it is cheap to rebuild after a restart, and a shared cache
+# would need its own encryption + invalidation story for zero gain.
+#
+# The key includes ``org_id`` so a cache hit can never hand one tenant another
+# tenant's token — the same "scope is part of the key, never assumed" discipline
+# every query in this module follows.
+_INSTALLATION_TOKEN_CACHE: dict[tuple[str, str | None, str], tuple[str, datetime]] = {}
+
 
 @dataclass(frozen=True)
 class OAuthConnectionInfo:
@@ -167,6 +179,15 @@ def get_live_connection_token(
     # optional/heavier deps elsewhere in this codebase).
     from .factory import build_oauth_provider
 
+    # GitHub is the one provider where the token callers need is NOT the token
+    # we stored: the stored value is the *user* access token (proof of who
+    # connected), while reading repositories requires a short-lived
+    # *installation* token minted from the App's private key. Handled here, in
+    # front of the generic refresh logic, so no caller has to know that —
+    # exactly why this function exists (see the docstring's D10 note).
+    if provider == "github":
+        return _github_installation_token(org_id, workspace_id)
+
     with get_connection() as conn:
         row = conn.execute(
             "SELECT access_token_encrypted, refresh_token_encrypted, expires_at "
@@ -236,6 +257,45 @@ def get_live_connection_token(
         )
 
     return new_tokens.access_token
+
+
+def _github_installation_token(org_id: str, workspace_id: str | None = None) -> str:
+    """Return a valid GitHub installation access token for this connection.
+
+    Reads ``installation_id`` from the connection's ``source_config`` (written by
+    the connect callback after verifying it against the authorizing user — see
+    ``github_oauth.py``), mints a token from the App private key, and caches it
+    until shortly before it expires.
+
+    Note what is deliberately NOT done: the stored user access token is never
+    returned as a fallback. If minting can't happen, the caller gets an error, not
+    a credential that would fail confusingly at the first repo read.
+    """
+    from .github_app import mint_installation_token
+
+    config = get_connection_config(org_id, "github", workspace_id) or {}
+    installation_id = config.get("installation_id")
+    if not installation_id:
+        raise ConfigurationError(
+            "This GitHub connection has no installation id recorded, so no "
+            "repository token can be issued. Reconnect GitHub to fix this."
+        )
+
+    cache_key = (org_id, workspace_id, str(installation_id))
+    cached = _INSTALLATION_TOKEN_CACHE.get(cache_key)
+    now = datetime.now(timezone.utc)
+    if cached and cached[1] - now > _REFRESH_SAFETY_MARGIN:
+        return cached[0]
+
+    minted = mint_installation_token(str(installation_id))
+    # No expiry reported (shouldn't happen — GitHub always sends one) means we
+    # can't reason about validity, so don't cache it rather than cache it wrongly.
+    if minted.expires_at is not None:
+        expires_at = minted.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        _INSTALLATION_TOKEN_CACHE[cache_key] = (minted.token, expires_at)
+    return minted.token
 
 
 def list_connections(

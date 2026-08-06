@@ -49,6 +49,17 @@ export interface Me {
   latest_doc_count: number | null;
   /** Safe to open Ask only after a full ingest job has succeeded. */
   ready_to_ask: boolean;
+  /**
+   * True when this org has an org-wide GitHub connection, so the chat UI can
+   * offer its "Code" tab. Reported on /me rather than read from
+   * /admin/connections because that route is admin-only and members must be
+   * able to ask repository questions too. A boolean only -- repository names
+   * stay behind require_admin.
+   *
+   * Note this is independent of `ready_to_ask`: GitHub answers are read live
+   * and need no ingest, so the Code tab works even before any policy sync.
+   */
+  github_connected: boolean;
 }
 
 export interface MemberRecord {
@@ -68,9 +79,34 @@ export interface SyncChanges {
   has_changes: boolean;
 }
 
+/** One repository a GitHub installation is authorized to read. */
+export interface GitHubRepoRef {
+  full_name: string;
+  description: string | null;
+  topics: string[];
+}
+
 export interface ConnectionSourceConfig {
+  // Google Drive: the folder the admin picked.
   folder_id?: string;
   folder_name?: string;
+  // GitHub: what the admin actually authorized on GitHub's install screen.
+  // "all" means every repo of the connected account (including ones created
+  // later); "selected" means exactly `repos`. Stored rather than assumed --
+  // connecting GitHub does not by itself grant everything.
+  installation_id?: string;
+  account_login?: string;
+  repository_selection?: "all" | "selected";
+  repos?: GitHubRepoRef[];
+}
+
+export interface GitHubScopeResponse {
+  connection_id: string;
+  provider: "github";
+  account_login: string;
+  repository_selection: "all" | "selected";
+  repo_count: number;
+  repos: GitHubRepoRef[];
 }
 
 export interface ConnectionRecord {
@@ -183,6 +219,18 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ folder_url: folderUrl }),
     }),
+  /**
+   * Re-read which repositories a GitHub installation may see.
+   *
+   * The GitHub analogue of Drive's "check for changes" -- but for *scope*, not
+   * content. Nothing is ever ingested from GitHub, so there is no content to
+   * sync; the only thing that can drift is which repos the admin authorized on
+   * GitHub's own install screen.
+   */
+  refreshConnectionScope: (connectionId: string) =>
+    request<GitHubScopeResponse>(`/admin/connections/${connectionId}/refresh-scope`, {
+      method: "POST",
+    }),
   checkConnectionChanges: (connectionId: string) =>
     request<SyncChanges>(`/admin/connections/${connectionId}/changes`),
   triggerIngest: (connectionId: string) =>
@@ -198,6 +246,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify(workspaceId ? { workspace_id: workspaceId } : {}),
     }),
+
+  /** Starter chips from connected sources (docs / GitHub repos) — not hardcoded. */
+  chatSuggestions: (agent: "policy" | "github", workspaceId?: string | null) => {
+    const params = new URLSearchParams({ agent });
+    if (workspaceId) params.set("workspace_id", workspaceId);
+    return request<{ agent: string; questions: string[] }>(
+      `/chat/suggestions?${params.toString()}`
+    );
+  },
 
   // --- Workspace-within-a-Workspace ---
 

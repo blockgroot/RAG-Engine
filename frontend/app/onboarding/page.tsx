@@ -3,6 +3,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
+import { DriveFolderPicker } from "@/components/DriveFolderPicker";
 import { useMe } from "@/lib/useMe";
 import { api, ConnectionRecord, JobRecord, MemberRecord, Me } from "@/lib/api";
 import { isSetupComplete } from "@/lib/routing";
@@ -50,8 +51,6 @@ function OnboardingInner() {
   const [pollToken, setPollToken] = useState(0);
   const [watchedJobId, setWatchedJobId] = useState<string | null>(null);
   const [localMe, setLocalMe] = useState<Me | null>(null);
-  const [folderUrl, setFolderUrl] = useState("");
-  const [savingFolder, setSavingFolder] = useState(false);
   const prevJobStatus = useRef<string | null>(null);
   const announcedSuccess = useRef(false);
   const bootstrapped = useRef(false);
@@ -203,27 +202,6 @@ function OnboardingInner() {
     prevJobStatus.current = curr;
   }, [displayJob, applyMeSnapshot, announceReady]);
 
-  async function handleSaveFolder(e: React.FormEvent) {
-    e.preventDefault();
-    if (!primary || primary.provider !== "google") return;
-    setSavingFolder(true);
-    setError(null);
-    try {
-      const result = await api.setConnectionConfig(primary.id, folderUrl.trim());
-      setConnections((prev) =>
-        prev.map((c) =>
-          c.id === primary.id ? { ...c, source_config: result.config } : c
-        )
-      );
-      setFolderUrl("");
-      setMessage("Folder saved. You can sync your policies now.");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save folder.");
-    } finally {
-      setSavingFolder(false);
-    }
-  }
-
   async function handleIngest() {
     if (!primary || !canSync || syncInProgress) return;
     setBusy(true);
@@ -330,28 +308,23 @@ function OnboardingInner() {
                 : "Bring in the shared policy pages, then wait here until it finishes."}
             </p>
 
-            {needsFolder && (
-              <form onSubmit={handleSaveFolder} className="stack">
-                <div className="field">
-                  <label htmlFor="onboarding-folder">Drive folder URL</label>
-                  <input
-                    id="onboarding-folder"
-                    className="input"
-                    type="text"
-                    required
-                    placeholder="https://drive.google.com/drive/folders/…"
-                    value={folderUrl}
-                    onChange={(e) => setFolderUrl(e.target.value)}
-                  />
-                </div>
-                <button
-                  className="button"
-                  type="submit"
-                  disabled={savingFolder || !folderUrl.trim()}
-                >
-                  {savingFolder ? "Saving…" : "Save folder"}
-                </button>
-              </form>
+            {needsFolder && primary && (
+              <DriveFolderPicker
+                connectionId={primary.id}
+                inputId="onboarding-folder"
+                onSaved={(config) => {
+                  setConnections((prev) =>
+                    prev.map((c) =>
+                      c.id === primary.id ? { ...c, source_config: config } : c
+                    )
+                  );
+                  setError(null);
+                  setMessage("Folder saved. You can sync your policies now.");
+                }}
+                onError={(message) => {
+                  if (message) setError(message);
+                }}
+              />
             )}
 
             {syncInProgress && (

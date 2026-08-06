@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
-import { api, ConnectionRecord, DriveFolder, JobRecord, SyncChanges } from "@/lib/api";
+import { useState } from "react";
+import { api, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
+import { DriveFolderPicker } from "./DriveFolderPicker";
 import { JobStatusBadge } from "./JobStatusBadge";
-
-const FOLDER_SEARCH_DEBOUNCE_MS = 300;
+import { ProviderMark } from "./ProviderMark";
 
 const PROVIDER_LABELS: Record<string, string> = {
   notion: "Notion",
@@ -73,94 +73,58 @@ export function ConnectionCard({
    * calls are routed to the workspace-scoped endpoints. */
   workspaceId?: string;
 }) {
-  const available = provider === "notion" || provider === "google";
-  const syncInProgress = lastJob != null && ACTIVE.has(lastJob.status);
-  const needsUpdate = Boolean(changes?.has_changes);
+  const available = provider === "notion" || provider === "google" || provider === "github";
+  // GitHub is a "live" source: nothing is ever fetched, chunked, embedded, or
+  // stored, so this card must hide every ingestion-shaped control (sync status,
+  // change counts, Update/Check). Showing them would promise a sync that does
+  // not exist -- and the API refuses those calls for GitHub anyway.
+  const isLive = provider === "github";
+  const syncInProgress = !isLive && lastJob != null && ACTIVE.has(lastJob.status);
+  const needsUpdate = !isLive && Boolean(changes?.has_changes);
   const folderConfigured = Boolean(connection?.source_config?.folder_id);
   const needsFolder = provider === "google" && connection && !folderConfigured;
 
-  const [folderUrl, setFolderUrl] = useState("");
-  const [savingConfig, setSavingConfig] = useState(false);
-  const [configError, setConfigError] = useState<string | null>(null);
+  // What the admin actually authorized on GitHub's install screen.
+  const repoSelection = connection?.source_config?.repository_selection;
+  const repos = connection?.source_config?.repos ?? [];
+  const [refreshingScope, setRefreshingScope] = useState(false);
+  const [scopeError, setScopeError] = useState<string | null>(null);
 
-  // Drive folder-picker dropdown: search-as-you-type against folders the
-  // connected account can see, so connecting a folder no longer requires
-  // copy-pasting its URL out of Drive (a plain URL/id paste still works as a
-  // fallback via "Save folder" below).
-  const [folderResults, setFolderResults] = useState<DriveFolder[]>([]);
-  const [searchingFolders, setSearchingFolders] = useState(false);
-  const [folderSearchError, setFolderSearchError] = useState<string | null>(null);
-  const [dropdownOpen, setDropdownOpen] = useState(false);
-
-  useEffect(() => {
-    if (!needsFolder || !dropdownOpen || !connection) return;
-    let cancelled = false;
-    setSearchingFolders(true);
-    const timer = setTimeout(async () => {
-      try {
-        const { folders } = workspaceId
-          ? await api.searchWorkspaceConnectionDriveFolders(workspaceId, connection.id, folderUrl.trim())
-          : await api.searchConnectionDriveFolders(connection.id, folderUrl.trim());
-        if (cancelled) return;
-        setFolderResults(folders);
-        setFolderSearchError(null);
-      } catch (err) {
-        if (cancelled) return;
-        setFolderResults([]);
-        setFolderSearchError(err instanceof Error ? err.message : "Could not search Drive folders.");
-      } finally {
-        if (!cancelled) setSearchingFolders(false);
-      }
-    }, FOLDER_SEARCH_DEBOUNCE_MS);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [folderUrl, dropdownOpen, needsFolder, connection?.id, workspaceId]);
-
-  async function saveFolder(value: string) {
-    if (!connection || !value) return;
-    setSavingConfig(true);
-    setConfigError(null);
+  async function refreshScope() {
+    if (!connection) return;
+    setRefreshingScope(true);
+    setScopeError(null);
     try {
-      const result = workspaceId
-        ? await api.setWorkspaceConnectionConfig(workspaceId, connection.id, value)
-        : await api.setConnectionConfig(connection.id, value);
-      setFolderUrl("");
-      setFolderResults([]);
-      setDropdownOpen(false);
+      const scope = await api.refreshConnectionScope(connection.id);
       onConfigSaved?.({
         ...connection,
-        source_config: result.config,
+        source_config: {
+          ...connection.source_config,
+          repository_selection: scope.repository_selection,
+          repos: scope.repos,
+        },
       });
     } catch (err) {
-      setConfigError(err instanceof Error ? err.message : "Could not save folder.");
+      setScopeError(err instanceof Error ? err.message : "Could not refresh repositories.");
     } finally {
-      setSavingConfig(false);
+      setRefreshingScope(false);
     }
   }
 
-  function handleSaveFolder(e: React.FormEvent) {
-    e.preventDefault();
-    saveFolder(folderUrl.trim());
-  }
-
-  function handleSelectFolder(folder: DriveFolder) {
-    saveFolder(folder.id);
-  }
+  const [configError, setConfigError] = useState<string | null>(null);
 
   return (
-    <div className="card">
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          gap: "1rem",
-        }}
-      >
-        <h3 style={{ fontSize: "1.05rem" }}>{PROVIDER_LABELS[provider]}</h3>
+    <div className={`card source-studio-card source-studio-card--${provider}${connection ? " is-linked" : ""}`}>
+      <div className="source-studio-top">
+        <div className="source-studio-title">
+          <ProviderMark provider={provider} />
+          <div>
+            <h3>{PROVIDER_LABELS[provider]}</h3>
+            <p className="source-studio-kind">
+              {isLive ? "Live answers" : "Synced documents"}
+            </p>
+          </div>
+        </div>
         {connection ? (
           <span className="badge badge-verified">Linked</span>
         ) : (
@@ -177,61 +141,48 @@ export function ConnectionCard({
         </p>
       )}
 
-      {needsFolder && (
-        <form onSubmit={handleSaveFolder} className="stack" style={{ marginTop: "0.9rem" }}>
+      {isLive && connection && (
+        <div className="stack source-live-copy" style={{ marginTop: "0.75rem", gap: "0.4rem" }}>
           <p className="muted" style={{ margin: 0 }}>
-            Choose a Drive folder to use.
+            {repoSelection === "all"
+              ? "Ready to answer questions about your repos."
+              : repos.length > 0
+                ? `Ready for ${repos.length} repo${repos.length === 1 ? "" : "s"}.`
+                : "No repos linked yet — refresh the list, or update access on GitHub."}
           </p>
-          <div className="field" style={{ position: "relative" }}>
-            <label htmlFor={`folder-${provider}`}>Folder</label>
-            <input
-              id={`folder-${provider}`}
-              className="input"
-              type="text"
-              required
-              autoComplete="off"
-              placeholder="Search folders or paste a link…"
-              value={folderUrl}
-              onChange={(e) => setFolderUrl(e.target.value)}
-              onFocus={() => setDropdownOpen(true)}
-              onBlur={() => setTimeout(() => setDropdownOpen(false), 150)}
-            />
-            {dropdownOpen && (searchingFolders || folderResults.length > 0 || folderSearchError) && (
-              <div className="folder-dropdown" role="listbox">
-                {searchingFolders && <div className="folder-dropdown-status">Searching…</div>}
-                {!searchingFolders && folderSearchError && (
-                  <div className="folder-dropdown-status">{folderSearchError}</div>
-                )}
-                {!searchingFolders && !folderSearchError && folderResults.length === 0 && (
-                  <div className="folder-dropdown-status">
-                    No matches — paste a folder link instead.
-                  </div>
-                )}
-                {!searchingFolders &&
-                  folderResults.map((folder) => (
-                    <button
-                      key={folder.id}
-                      type="button"
-                      className="folder-dropdown-item"
-                      // Keep the input focused so onBlur doesn't close the
-                      // dropdown before this click registers.
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => handleSelectFolder(folder)}
-                    >
-                      {folder.name}
-                    </button>
-                  ))}
-              </div>
-            )}
-          </div>
-          {configError && <div className="banner banner-warn">{configError}</div>}
-          <button className="button" type="submit" disabled={savingConfig || !folderUrl.trim()}>
-            {savingConfig ? "Saving…" : "Save folder"}
-          </button>
-        </form>
+          {repoSelection !== "all" && repos.length > 0 && (
+            <p className="muted source-live-repos" style={{ margin: 0 }}>
+              {repos
+                .slice(0, 4)
+                .map((r) => r.full_name.split("/").pop() || r.full_name)
+                .join(" · ")}
+              {repos.length > 4 ? ` · +${repos.length - 4} more` : ""}
+            </p>
+          )}
+          <p className="muted source-live-hint" style={{ margin: 0 }}>
+            Ask in the Code tab — answers come straight from GitHub.
+          </p>
+          {scopeError && <div className="banner banner-warn">{scopeError}</div>}
+        </div>
       )}
 
-      {lastJob && (
+      {needsFolder && connection && (
+        <div className="stack" style={{ marginTop: "0.9rem" }}>
+          <DriveFolderPicker
+            connectionId={connection.id}
+            workspaceId={workspaceId}
+            inputId={`folder-${provider}`}
+            onSaved={(config) => {
+              setConfigError(null);
+              onConfigSaved?.({ ...connection, source_config: config });
+            }}
+            onError={(message) => setConfigError(message || null)}
+          />
+          {configError && <div className="banner banner-warn">{configError}</div>}
+        </div>
+      )}
+
+      {lastJob && !isLive && (
         <p
           className="muted"
           style={{ marginTop: "0.55rem", display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
@@ -266,13 +217,13 @@ export function ConnectionCard({
         </p>
       )}
 
-      {connection && checkingChanges && (
+      {connection && checkingChanges && !isLive && (
         <p className="muted" style={{ marginTop: "0.65rem" }}>
           Checking…
         </p>
       )}
 
-      <div style={{ marginTop: "1rem", display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
+      <div className="source-card-actions">
         {available && !connection && (
           <a
             className="button"
@@ -281,7 +232,18 @@ export function ConnectionCard({
             Connect {PROVIDER_LABELS[provider]}
           </a>
         )}
-        {connection && !needsFolder && needsUpdate && (
+        {connection && isLive && !workspaceId && (
+          <button
+            className="button button-secondary"
+            type="button"
+            onClick={refreshScope}
+            disabled={refreshingScope}
+            title="Update the list of repos Folio can see"
+          >
+            {refreshingScope ? "Refreshing…" : "Refresh list"}
+          </button>
+        )}
+        {connection && !isLive && !needsFolder && needsUpdate && (
           <button
             className="button"
             type="button"
@@ -291,9 +253,9 @@ export function ConnectionCard({
             {syncInProgress ? "Updating…" : "Update"}
           </button>
         )}
-        {connection && !needsFolder && !syncInProgress && onCheckAgain && (
+        {connection && !isLive && !needsFolder && !syncInProgress && onCheckAgain && (
           <button
-            className="button-secondary"
+            className="button button-secondary"
             type="button"
             onClick={onCheckAgain}
             disabled={checkingChanges}

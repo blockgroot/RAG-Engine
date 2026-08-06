@@ -1,0 +1,117 @@
+/**
+ * Decorative header scenes for admin/explore pages.
+ * Soft UI + dimensional layering — SVG only, motion via CSS.
+ */
+export type PageSceneVariant = "sources" | "spaces" | "people";
+
+export function PageSceneArt({ variant }: { variant: PageSceneVariant }) {
+  const label =
+    variant === "sources" ? "Connected knowledge" : variant === "spaces" ? "Team rooms" : "Your people";
+
+  return (
+    <div className={`page-scene page-scene--${variant}`} aria-hidden>
+      <svg className="page-scene-svg" viewBox="0 0 320 200" fill="none" role="presentation">
+        <defs>
+          <linearGradient id={`psMesh-${variant}`} x1="0" y1="0" x2="1" y2="1">
+            <stop stopColor="#99f6e4" stopOpacity="0.5" />
+            <stop offset="0.5" stopColor="#5eead4" stopOpacity="0.22" />
+            <stop offset="1" stopColor="#0f766e" stopOpacity="0.12" />
+          </linearGradient>
+          <linearGradient id={`psPanel-${variant}`} x1="0" y1="0" x2="1" y2="1">
+            <stop stopColor="#ffffff" />
+            <stop offset="1" stopColor="#f0fdfa" />
+          </linearGradient>
+          <filter id={`psSoft-${variant}`} x="-25%" y="-25%" width="150%" height="150%">
+            <feDropShadow dx="0" dy="10" stdDeviation="12" floodColor="#0f766e" floodOpacity="0.16" />
+          </filter>
+        </defs>
+
+        <ellipse className="ps-blob ps-blob-a" cx="70" cy="55" rx="58" ry="42" fill={`url(#psMesh-${variant})`} />
+        <ellipse className="ps-blob ps-blob-b" cx="260" cy="150" rx="64" ry="46" fill={`url(#psMesh-${variant})`} />
+
+        {variant === "sources" && (
+          <>
+            <g className="ps-float ps-float-1" filter={`url(#psSoft-${variant})`}>
+              <rect x="36" y="42" width="100" height="64" rx="14" fill={`url(#psPanel-${variant})`} stroke="#e4e7ec" />
+              <rect x="50" y="56" width="28" height="28" rx="8" fill="#ccfbf1" />
+              <rect x="88" y="60" width="34" height="7" rx="3.5" fill="#d0d5dd" />
+              <rect x="88" y="74" width="24" height="6" rx="3" fill="#e4e7ec" />
+            </g>
+            <g className="ps-float ps-float-2" filter={`url(#psSoft-${variant})`}>
+              <rect x="184" y="28" width="100" height="64" rx="14" fill={`url(#psPanel-${variant})`} stroke="#e4e7ec" />
+              <rect x="198" y="42" width="28" height="28" rx="8" fill="#ecfdf5" />
+              <rect x="236" y="46" width="34" height="7" rx="3.5" fill="#d0d5dd" />
+              <rect x="236" y="60" width="24" height="6" rx="3" fill="#e4e7ec" />
+            </g>
+            <g className="ps-float ps-float-3" filter={`url(#psSoft-${variant})`}>
+              <rect x="96" y="118" width="128" height="52" rx="14" fill={`url(#psPanel-${variant})`} stroke="#e4e7ec" />
+              <circle cx="122" cy="144" r="10" fill="#14b8a6" />
+              <rect x="142" y="136" width="60" height="7" rx="3.5" fill="#98a2b3" />
+              <rect x="142" y="150" width="42" height="6" rx="3" fill="#d0d5dd" />
+            </g>
+            <path
+              className="ps-arc"
+              d="M136 74C148 92 156 108 160 124"
+              stroke="#14b8a6"
+              strokeWidth="1.5"
+              strokeDasharray="4 5"
+              opacity="0.5"
+            />
+            <path
+              className="ps-arc ps-arc-delay"
+              d="M184 74C172 92 166 108 160 124"
+              stroke="#0f766e"
+              strokeWidth="1.5"
+              strokeDasharray="4 5"
+              opacity="0.4"
+            />
+          </>
+        )}
+
+        {variant === "spaces" && (
+          <>
+            <g className="ps-float ps-float-1" filter={`url(#psSoft-${variant})`}>
+              <rect x="48" y="48" width="88" height="88" rx="18" fill={`url(#psPanel-${variant})`} stroke="#e4e7ec" />
+              <rect x="64" y="66" width="56" height="8" rx="4" fill="#0f766e" opacity="0.35" />
+              <rect x="64" y="84" width="40" height="6" rx="3" fill="#d0d5dd" />
+              <rect x="64" y="98" width="48" height="6" rx="3" fill="#e4e7ec" />
+            </g>
+            <g className="ps-float ps-float-2" filter={`url(#psSoft-${variant})`}>
+              <rect x="168" y="36" width="100" height="72" rx="16" fill={`url(#psPanel-${variant})`} stroke="#e4e7ec" />
+              <circle cx="196" cy="64" r="14" fill="#ccfbf1" />
+              <rect x="220" y="56" width="32" height="7" rx="3.5" fill="#d0d5dd" />
+              <rect x="220" y="70" width="24" height="6" rx="3" fill="#e4e7ec" />
+            </g>
+            <g className="ps-float ps-float-3" filter={`url(#psSoft-${variant})`}>
+              <rect x="152" y="124" width="116" height="48" rx="14" fill={`url(#psPanel-${variant})`} stroke="#e4e7ec" />
+              <rect x="168" y="140" width="20" height="20" rx="6" fill="#14b8a6" opacity="0.85" />
+              <rect x="198" y="142" width="52" height="7" rx="3.5" fill="#98a2b3" />
+              <rect x="198" y="156" width="36" height="6" rx="3" fill="#d0d5dd" />
+            </g>
+          </>
+        )}
+
+        {variant === "people" && (
+          <>
+            <g className="ps-float ps-float-1" filter={`url(#psSoft-${variant})`}>
+              <circle cx="110" cy="88" r="36" fill={`url(#psPanel-${variant})`} stroke="#e4e7ec" />
+              <circle cx="110" cy="78" r="12" fill="#ccfbf1" />
+              <path d="M90 108c4-10 12-16 20-16s16 6 20 16" fill="#14b8a6" opacity="0.45" />
+            </g>
+            <g className="ps-float ps-float-2" filter={`url(#psSoft-${variant})`}>
+              <circle cx="198" cy="72" r="28" fill={`url(#psPanel-${variant})`} stroke="#e4e7ec" />
+              <circle cx="198" cy="64" r="9" fill="#ecfdf5" />
+              <path d="M182 92c3-8 9-12 16-12s13 4 16 12" fill="#0f766e" opacity="0.35" />
+            </g>
+            <g className="ps-float ps-float-3" filter={`url(#psSoft-${variant})`}>
+              <rect x="88" y="138" width="144" height="40" rx="14" fill={`url(#psPanel-${variant})`} stroke="#e4e7ec" />
+              <rect x="106" y="152" width="72" height="8" rx="4" fill="#d0d5dd" />
+              <rect x="190" y="150" width="28" height="12" rx="6" fill="#ccfbf1" />
+            </g>
+          </>
+        )}
+      </svg>
+      <span className="page-scene-badge">{label}</span>
+    </div>
+  );
+}

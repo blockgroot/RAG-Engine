@@ -53,59 +53,92 @@ export default function WorkspacesPage() {
 
   return (
     <AppShell me={me} variant="app">
-      <main className="page-wide stack">
+      <main className="page-wide studio-page stack">
         <PageHeader
           eyebrow="Spaces"
           title="Your team spaces"
           description="Private rooms for project notes — separate from company policies."
+          scene="spaces"
+          meta={
+            <>
+              <span className="studio-chip">{workspaces.length} space{workspaces.length === 1 ? "" : "s"}</span>
+              <span className="studio-chip studio-chip-ok">Org-isolated</span>
+            </>
+          }
         />
 
-        <section className="panel">
-          <div className="panel-head">
-            <h2>New space</h2>
-          </div>
-          <form onSubmit={handleCreate} className="stack" style={{ maxWidth: 480 }}>
-            <div className="field">
-              <label htmlFor="workspace-name">Name</label>
-              <input
-                id="workspace-name"
-                className="input"
-                type="text"
-                placeholder="e.g. Q3 planning notes"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                disabled={creating}
-              />
+        <div className="spaces-layout">
+          <section className="studio-panel create-space-panel" aria-labelledby="new-space-title">
+            <div className="studio-panel-glow" aria-hidden />
+            <div className="studio-section-head">
+              <h2 id="new-space-title">Create a space</h2>
+              <p className="muted">
+                Invite teammates later — answers stay inside this room only.
+              </p>
             </div>
-            {error && <div className="banner banner-warn">{error}</div>}
-            <button className="button" type="submit" disabled={creating || !name.trim()} style={{ width: "fit-content" }}>
-              {creating ? "Creating…" : "Create space"}
-            </button>
-          </form>
-        </section>
+            <form onSubmit={handleCreate} className="create-space-form">
+              <div className="field">
+                <label htmlFor="workspace-name">Name</label>
+                <input
+                  id="workspace-name"
+                  className="input"
+                  type="text"
+                  placeholder="e.g. Q3 planning notes"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  disabled={creating}
+                />
+              </div>
+              {error && <div className="banner banner-warn">{error}</div>}
+              <button
+                className="button"
+                type="submit"
+                disabled={creating || !name.trim()}
+              >
+                {creating ? "Creating…" : "Create space"}
+              </button>
+            </form>
+          </section>
 
-        <section className="stack">
-          <div className="panel-head" style={{ marginBottom: 0 }}>
-            <h2>Your spaces</h2>
-          </div>
-          {loadingList ? (
-            <p className="muted">Loading your spaces…</p>
-          ) : workspaces.length === 0 ? (
-            <p className="muted">No spaces yet — create one above to get started.</p>
-          ) : (
-            <div className="tile-grid">
-              {workspaces.map((w) => (
-                <Link key={w.id} href={`/workspaces/${w.id}`} className="workspace-tile">
-                  <div className="workspace-tile-top">
-                    <h3>{w.name}</h3>
-                    <span className="badge">{w.role === "owner" ? "Owner" : "Member"}</span>
-                  </div>
-                  <span className="workspace-tile-cta">Open →</span>
-                </Link>
-              ))}
+          <section className="studio-section spaces-list-section" aria-labelledby="your-spaces-title">
+            <div className="studio-section-head">
+              <h2 id="your-spaces-title">Your spaces</h2>
+              <p className="muted">Open a room to connect sources, invite people, and ask.</p>
             </div>
-          )}
-        </section>
+            {loadingList ? (
+              <div className="studio-skeleton-grid" aria-busy="true">
+                <div className="studio-skeleton" />
+                <div className="studio-skeleton" />
+              </div>
+            ) : workspaces.length === 0 ? (
+              <div className="studio-empty">
+                <div className="studio-empty-mark" aria-hidden />
+                <h3>No spaces yet</h3>
+                <p className="muted">Create one on the left to start a private notes room.</p>
+              </div>
+            ) : (
+              <div className="tile-grid spaces-bento">
+                {workspaces.map((w, i) => (
+                  <Link
+                    key={w.id}
+                    href={`/workspaces/${w.id}`}
+                    className="workspace-tile"
+                    style={{ animationDelay: `${0.08 + i * 0.06}s` }}
+                  >
+                    <span className="workspace-tile-mark" aria-hidden>
+                      {(w.name || "S").trim().charAt(0).toUpperCase()}
+                    </span>
+                    <div className="workspace-tile-top">
+                      <h3>{w.name}</h3>
+                      <span className="badge">{w.role === "owner" ? "Owner" : "Member"}</span>
+                    </div>
+                    <span className="workspace-tile-cta">Open space</span>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
       </main>
     </AppShell>
   );

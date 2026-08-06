@@ -10,6 +10,8 @@ Public API:
 from .base import OAuthProvider, OAuthTokens
 from .notion_oauth import NotionOAuthProvider
 from .google_oauth import GoogleOAuthProvider
+from .github_oauth import GitHubAppProvider
+from .github_app import InstallationToken, mint_installation_token
 from .factory import build_oauth_provider
 from .credentials import (
     OAuthConnectionInfo,
@@ -60,6 +62,9 @@ __all__ = [
     "OAuthTokens",
     "NotionOAuthProvider",
     "GoogleOAuthProvider",
+    "GitHubAppProvider",
+    "InstallationToken",
+    "mint_installation_token",
     "build_oauth_provider",
     "OAuthConnectionInfo",
     "save_connection",

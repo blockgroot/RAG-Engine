@@ -387,3 +387,56 @@ def test_workspace_chat_uses_workspace_agent(client_and_session, store, org_clea
     done = json.loads([e for e in events if e[0] == "done"][0][1])
     assert done["source"] == "workspace"
     assert "October 15th" in done["answer"]
+
+
+@requires_db
+def test_suggestions_from_connected_sources(client_and_session, store):
+    """Chips come from this org's docs / GitHub repos — not hardcoded copy."""
+    client, cookies, org_id, _ = client_and_session
+    from app.db.connection import get_connection
+    import json as _json
+
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO documents (org_id, title, source_uri) VALUES (%s, %s, %s)",
+            (org_id, "Parental Leave Handbook", "notion://example"),
+        )
+        conn.execute(
+            """
+            INSERT INTO oauth_connections (
+              org_id, provider, external_workspace_id, external_workspace_name,
+              access_token_encrypted, source_config
+            ) VALUES (
+              %s, 'github', 'inst-1', '18sana', %s, %s::jsonb
+            )
+            """,
+            (
+                org_id,
+                "encrypted-test",
+                _json.dumps(
+                    {
+                        "repository_selection": "selected",
+                        "repos": [
+                            {
+                                "full_name": "18sana/LiveDemoRepo",
+                                "description": "Demo app",
+                                "topics": [],
+                            }
+                        ],
+                    }
+                ),
+            ),
+        )
+        conn.commit()
+
+    policy = client.get("/chat/suggestions?agent=policy", cookies=cookies)
+    assert policy.status_code == 200
+    pq = policy.json()["questions"]
+    assert pq and any("Parental Leave Handbook" in q for q in pq)
+    assert all("maternity" not in q.lower() for q in pq)
+
+    code = client.get("/chat/suggestions?agent=github", cookies=cookies)
+    assert code.status_code == 200
+    cq = code.json()["questions"]
+    assert cq and any("LiveDemoRepo" in q for q in cq)
+    assert all("Fact-Verification" not in q for q in cq)

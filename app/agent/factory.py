@@ -16,9 +16,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from ..config.settings import RagSettings, WorkspaceAgentSettings
+from ..config.settings import GitHubAgentSettings, RagSettings, WorkspaceAgentSettings
+from ..llm import build_llm_provider
 from ..rag import RagPipeline, build_rag_pipeline
 from ..rag.prompts import WORKSPACE_PROMPT_PROFILE
+from .github_agent import GitHubAgent
 from .policy_agent import PolicyAgent
 from .workspace_agent import WorkspaceAgent
 
@@ -53,3 +55,34 @@ def build_workspace_agent(
         pipeline_kwargs.setdefault("web_search", None)
         pipeline = build_rag_pipeline(**pipeline_kwargs)
     return WorkspaceAgent(pipeline)
+
+
+def build_github_agent(
+    llm=None,
+    reader_builder=None,
+    settings: GitHubAgentSettings | None = None,
+) -> GitHubAgent:
+    """Build a ``GitHubAgent`` from configuration.
+
+    Unlike ``build_policy_agent``/``build_workspace_agent`` there is no pipeline
+    to construct — this agent has no retrieval (see ``github_agent.py``), so it
+    needs only an LLM and a way to build a tenant-scoped reader.
+
+    ``reader_builder`` defaults to ``githublive.build_github_reader``, imported
+    lazily so constructing an agent doesn't drag in the DB/credentials layer at
+    module-import time, and so tests can inject a fake without touching Postgres.
+    It stays a *builder* because a reader is tenant-scoped and must be created
+    per request from the ``org_id`` being served.
+    """
+    if reader_builder is None:
+        from ..githublive import build_github_reader
+
+        reader_builder = build_github_reader
+
+    resolved = settings or GitHubAgentSettings.from_env()
+    return GitHubAgent(
+        llm=llm or build_llm_provider(),
+        reader_builder=reader_builder,
+        fallback_response=resolved.fallback_response,
+        settings=resolved,
+    )

@@ -51,6 +51,9 @@ export default function ConnectionsPage() {
     const next: Record<string, SyncChanges> = {};
     await Promise.all(
       list.map(async (c) => {
+        // GitHub has no ingestion at all -- nothing is stored, so there is no
+        // "changed since last sync" to compute and the API refuses this call.
+        if (c.provider === "github") return;
         // Google needs a folder before change-check works.
         if (c.provider === "google" && !c.source_config?.folder_id) return;
         try {
@@ -165,14 +168,33 @@ export default function ConnectionsPage() {
   }
 
   const lastJobs = latestJobByConnection(jobs);
+  const linkedCount = connections.length;
+  const needsAttention = PROVIDERS.filter((p) => {
+    const c = connections.find((x) => x.provider === p);
+    if (!c) return true;
+    if (p === "google" && !c.source_config?.folder_id) return true;
+    return Boolean(changesById[c.id]?.has_changes);
+  }).length;
 
   return (
     <AppShell me={me} variant="admin">
-      <main className="page-wide stack">
+      <main className="page-wide studio-page stack">
         <PageHeader
           eyebrow="Company"
-          title="Company policies"
-          description="Connect Notion or Drive, then keep them in sync."
+          title="Sources"
+          description="Connect Notion, Google Drive, and GitHub — policies sync; code is answered live."
+          scene="sources"
+          meta={
+            <>
+              <span className="studio-chip studio-chip-ok">{linkedCount} linked</span>
+              <span className="studio-chip">{PROVIDERS.length} providers</span>
+              {needsAttention > 0 ? (
+                <span className="studio-chip studio-chip-warn">{needsAttention} need attention</span>
+              ) : (
+                <span className="studio-chip studio-chip-ok">All set</span>
+              )}
+            </>
+          }
         />
         {message && (
           <div
@@ -187,31 +209,37 @@ export default function ConnectionsPage() {
           </div>
         )}
         {error && <div className="banner banner-warn">{error}</div>}
-        <div className="stack">
-          {PROVIDERS.map((provider) => {
-            const connection = connections.find((c) => c.provider === provider);
-            return (
-              <ConnectionCard
-                key={provider}
-                provider={provider}
-                connection={connection}
-                lastJob={connection ? lastJobs[connection.id] : undefined}
-                changes={connection ? changesById[connection.id] : null}
-                checkingChanges={Boolean(connection) && checking}
-                onUpdate={handleUpdate}
-                onCheckAgain={
-                  connection ? () => refreshChanges(connections) : undefined
-                }
-                onConfigSaved={(updated) => {
-                  setConnections((prev) =>
-                    prev.map((c) => (c.id === updated.id ? updated : c))
-                  );
-                  refreshChanges([updated]);
-                }}
-              />
-            );
-          })}
-        </div>
+        <section className="studio-section" aria-label="Source connections">
+          <div className="studio-section-head">
+            <h2>Your connections</h2>
+            <p className="muted">Each source keeps its own sync boundary — never mixed across providers.</p>
+          </div>
+          <div className="source-bento">
+            {PROVIDERS.map((provider) => {
+              const connection = connections.find((c) => c.provider === provider);
+              return (
+                <ConnectionCard
+                  key={provider}
+                  provider={provider}
+                  connection={connection}
+                  lastJob={connection ? lastJobs[connection.id] : undefined}
+                  changes={connection ? changesById[connection.id] : null}
+                  checkingChanges={Boolean(connection) && checking}
+                  onUpdate={handleUpdate}
+                  onCheckAgain={
+                    connection ? () => refreshChanges(connections) : undefined
+                  }
+                  onConfigSaved={(updated) => {
+                    setConnections((prev) =>
+                      prev.map((c) => (c.id === updated.id ? updated : c))
+                    );
+                    refreshChanges([updated]);
+                  }}
+                />
+              );
+            })}
+          </div>
+        </section>
       </main>
     </AppShell>
   );

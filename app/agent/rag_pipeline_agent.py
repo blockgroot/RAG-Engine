@@ -93,9 +93,40 @@ class RagPipelineAgent(Agent):
         )
 
     @staticmethod
+    def _display_chunk_content(content: str) -> str:
+        """Drop the ingest-time contextual prefix for citation UI.
+
+        Stored chunks are often ``"<LLM context>\n\n<original>"``. The prefix
+        helps retrieval but reads like meta-commentary ("This chunk falls
+        within…") in the sources panel — show the original excerpt instead.
+        """
+        text = (content or "").strip()
+        if "\n\n" not in text:
+            return text
+        prefix, rest = text.split("\n\n", 1)
+        rest = rest.strip()
+        if not rest:
+            return text
+        # Only strip when the first block looks like a short situating blurb.
+        if len(prefix) <= 400 and len(rest) >= len(prefix):
+            return rest
+        return text
+
+    @staticmethod
+    def _citation_reference(chunk: RetrievedChunk) -> str:
+        """Human-readable locator — document title, never a raw UUID."""
+        title = (chunk.document_title or "").strip()
+        part = int(chunk.chunk_index) + 1  # 1-based for readers
+        if title:
+            return f"{title} · excerpt {part}"
+        # Last resort if the JOIN missed (tests / odd stores): keep locator
+        # stable but mark it as an excerpt, not a database id.
+        return f"Document excerpt {part}"
+
+    @staticmethod
     def _to_citation(chunk: RetrievedChunk) -> Citation:
         return Citation(
-            content=chunk.content,
-            reference=f"{chunk.document_id}#{chunk.chunk_index}",
+            content=RagPipelineAgent._display_chunk_content(chunk.content),
+            reference=RagPipelineAgent._citation_reference(chunk),
             score=chunk.score,
         )

@@ -42,6 +42,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Re
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from ..auth import (
+    GitHubAppProvider,
     build_oauth_provider,
     consume_approve_token,
     consume_magic_link_token,
@@ -56,13 +57,15 @@ from ..auth import (
     get_request_by_reject_token,
     get_user_by_email,
     save_connection,
+    set_connection_config,
     send_magic_link_email_safe,
     send_signup_approved_email_safe,
     send_signup_rejected_email_safe,
     send_signup_request_notification_email_safe,
 )
 from ..config.settings import ApiSettings, AuthSettings, EmailSettings
-from ..core.exceptions import AuthError, ConfigurationError, OAuthError
+from ..core.exceptions import AuthError, ConfigurationError, OAuthError, SourceError
+from ..githublive import refresh_installation_scope
 from ..vectorstore import build_vector_store
 from ..workspaces import assert_member
 from .deps import SESSION_COOKIE_NAME, get_session
@@ -228,6 +231,19 @@ def authorize(provider: str, workspace_id: str | None = None, session=Depends(ge
         if session.role != "admin":
             raise HTTPException(status_code=403, detail="Admin role required")
     else:
+        # GitHub connects at the ORG level only. Allowing a workspace-scoped
+        # GitHub connection would introduce repo-level access control inside an
+        # org — an access-control dimension this system does not have anywhere
+        # else, and an explicit non-goal of the GitHub plan. Enforced here, not
+        # only in the UI, so a hand-crafted URL can't create one either.
+        if provider == "github":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "GitHub connects at the organization level and cannot be "
+                    "connected to an individual workspace."
+                ),
+            )
         try:
             role = assert_member(workspace_id, session.org_id, session.user_id)
         except AuthError as exc:
@@ -251,13 +267,56 @@ def callback(
     provider: str,
     code: str,
     state: str,
+    installation_id: str | None = None,
+    setup_action: str | None = None,
     settings: ApiSettings = Depends(ApiSettings.from_env),
 ):
+    """Finish a connect flow.
+
+    ``installation_id``/``setup_action`` are GitHub-only extras (a GitHub App
+    install redirect carries them; Notion and Google do not). Both are treated
+    as **untrusted** — ``installation_id`` is verified against the authorizing
+    user's own installations inside
+    ``GitHubAppProvider.exchange_code_with_installation`` before anything is
+    persisted, because GitHub's docs warn it can be spoofed (see
+    ``app/auth/github_oauth.py``). ``setup_action`` is accepted only so the
+    redirect doesn't 422 on an unexpected query parameter; nothing branches on
+    it.
+    """
     try:
         org_id, workspace_id = consume_state(state, provider=provider)
         oauth_provider = build_oauth_provider(provider)
-        tokens = oauth_provider.exchange_code(code)
-        save_connection(org_id, provider, tokens, workspace_id=workspace_id)
+
+        if isinstance(oauth_provider, GitHubAppProvider):
+            tokens, verified_installation_id = (
+                oauth_provider.exchange_code_with_installation(code, installation_id or "")
+            )
+            save_connection(org_id, provider, tokens, workspace_id=workspace_id)
+            # The installation id is how every later content call mints a token
+            # (see credentials.get_live_connection_token), so it must be stored
+            # AFTER the connection row exists — set_connection_config requires it.
+            set_connection_config(
+                org_id,
+                provider,
+                {
+                    "installation_id": verified_installation_id,
+                    "account_login": tokens.external_workspace_id,
+                },
+                workspace_id=workspace_id,
+            )
+            # Then record what the admin ACTUALLY authorized on GitHub's install
+            # screen ("All repositories" vs a chosen subset) — decision D5b.
+            # Best-effort: a failure here leaves a connected row whose scope is
+            # empty, which fails *closed* (resolve_repo refuses everything) and
+            # is fixable by refreshing scope, so it must not abort a connect that
+            # otherwise succeeded.
+            try:
+                refresh_installation_scope(org_id, workspace_id)
+            except (OAuthError, ConfigurationError, SourceError):
+                pass
+        else:
+            tokens = oauth_provider.exchange_code(code)
+            save_connection(org_id, provider, tokens, workspace_id=workspace_id)
     except (OAuthError, ConfigurationError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

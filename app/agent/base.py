@@ -34,8 +34,8 @@ class Citation:
 
     - ``content``    the source text the answer drew on.
     - ``reference``  a stable, human-meaningful locator for the source. For the
-      policy agent this is ``"<document_id>#<chunk_index>"``; other agents may use
-      a URL or path.
+      policy/workspace agent this is ``"<document title> · excerpt N"``; other
+      agents may use a repo path (e.g. ``owner/repo#readme``).
     - ``score``      retrieval similarity in ``[0, 1]`` when available.
     """
 
@@ -54,8 +54,9 @@ class AgentResponse:
       web search); ``False`` for the fallback. Callers branch on this bool.
     - ``source``     provenance of the answer: ``"policy"`` (internal policy
       docs, ``PolicyAgent``), ``"workspace"`` (a sub-workspace's own connected
-      content, ``WorkspaceAgent``), ``"web"`` (web-search fallback), or
-      ``"none"`` (fixed fallback / refusal).
+      content, ``WorkspaceAgent``), ``"github"`` (a live GitHub API read,
+      ``GitHubAgent`` — never a stored/embedded copy), ``"web"`` (web-search
+      fallback), or ``"none"`` (fixed fallback / refusal).
     - ``citations``  the evidence the answer was grounded on (empty for web answers
       and refusals).
     - ``resolved_question``  the standalone question actually used after any

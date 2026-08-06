@@ -1,22 +1,27 @@
 import type { Metadata } from "next";
-import { Outfit } from "next/font/google";
+import { Plus_Jakarta_Sans } from "next/font/google";
 import "./globals.css";
 
-const outfit = Outfit({
+/* Friendly SaaS pairing from ui-ux-pro-max — modern alternative to Inter. */
+const plusJakarta = Plus_Jakarta_Sans({
   subsets: ["latin"],
-  variable: "--font-outfit",
+  variable: "--font-folio",
   weight: ["400", "500", "600", "700"],
 });
 
 export const metadata: Metadata = {
-  title: "Folio",
+  title: {
+    default: "Folio",
+    template: "%s · Folio",
+  },
   description: "Ask questions grounded in your own documents.",
+  applicationName: "Folio",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" data-theme="light" className={outfit.variable}>
-      <body className={outfit.className}>{children}</body>
+    <html lang="en" data-theme="light" className={plusJakarta.variable}>
+      <body className={plusJakarta.className}>{children}</body>
     </html>
   );
 }

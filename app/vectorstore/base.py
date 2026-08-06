@@ -25,6 +25,9 @@ class RetrievedChunk:
     document_id: str
     chunk_index: int
     org_id: str
+    # Human title from ``documents.title`` when the store JOINed it (preferred
+    # for citation UI). Optional so fakes / reuse paths stay lightweight.
+    document_title: str | None = None
 
 
 @dataclass(frozen=True)

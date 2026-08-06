@@ -43,6 +43,16 @@ DEFAULT_WORKSPACE_FALLBACK_RESPONSE = (
     "I don't have anything about that in this workspace's connected content."
 )
 
+# The GitHub agent's refusal. Distinct copy because the *reason* differs: there
+# is no retrieval here, so a refusal means "no tool could supply evidence for
+# this", not "nothing matched in the corpus" — and the actionable next step for
+# the user is different too (name a repo, or check it's in the installation).
+DEFAULT_GITHUB_FALLBACK_RESPONSE = (
+    "I couldn't find that in the connected GitHub repositories. Try naming the "
+    "repository, or check that it's included in this organization's GitHub "
+    "installation."
+)
+
 # Connection-pool sizing for the Postgres backing store.
 DEFAULT_DB_POOL_MIN_SIZE = 1
 DEFAULT_DB_POOL_MAX_SIZE = 10
@@ -440,6 +450,115 @@ class GoogleSettings:
             client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
             redirect_uri=os.getenv("GOOGLE_REDIRECT_URI"),
             scopes=os.getenv("GOOGLE_OAUTH_SCOPES", DEFAULT_GOOGLE_OAUTH_SCOPES),
+        )
+
+
+@dataclass(frozen=True)
+class GitHubSettings:
+    """Configuration for the GitHub App "Connect" flow (GitHub Integration D1).
+
+    Like ``GoogleSettings`` there is deliberately **no** static-token path: a
+    GitHub App installed on the customer's GitHub organization is the only
+    supported credential, because repo access is then granted (and enforced) by
+    GitHub's own install screen rather than by a field in our database — the
+    same externally-enforced tenant boundary that made per-org Notion secrets
+    the right call (CLAUDE.md §2).
+
+    ``private_key`` is new secret material: an RS256 PEM used *only* to sign
+    the short-lived App JWT that mints installation tokens
+    (``app/auth/github_app.py``). It is never logged and never leaves the
+    process. ``app_slug`` is the App's URL slug, needed to build the install
+    URL — GitHub's install page lives at ``/apps/<slug>/installations/new``,
+    not at an OAuth authorize endpoint.
+    """
+
+    app_slug: str | None = None
+    client_id: str | None = None
+    client_secret: str | None = None
+    private_key: str | None = None
+
+    @classmethod
+    def from_env(cls) -> "GitHubSettings":
+        raw_key = os.getenv("GITHUB_APP_PRIVATE_KEY")
+        return cls(
+            app_slug=os.getenv("GITHUB_APP_SLUG"),
+            client_id=os.getenv("GITHUB_CLIENT_ID"),
+            client_secret=os.getenv("GITHUB_CLIENT_SECRET"),
+            # Accept a ``\n``-escaped single-line value so a multi-line PEM
+            # survives .env files and secret managers that only hold flat
+            # strings. A real multi-line value passes through untouched.
+            private_key=raw_key.replace("\\n", "\n") if raw_key else None,
+        )
+
+
+@dataclass(frozen=True)
+class GitHubAgentSettings:
+    """Configuration specific to ``GitHubAgent``.
+
+    Only the fallback string, mirroring ``WorkspaceAgentSettings`` — but for a
+    different reason. There, the string must stay consistent across one
+    pipeline's gate/prompt/refusal-detection. Here there is no pipeline at all:
+    the agent returns this string whenever no tool could supply evidence, so it
+    has exactly one consumer and simply needs to be configurable.
+    """
+
+    fallback_response: str = DEFAULT_GITHUB_FALLBACK_RESPONSE
+    # When the first answer declares its evidence insufficient (MODE: C), fetch
+    # complementary evidence ONCE and regenerate. Bounded exactly like
+    # RECOVERY_ENABLED on the RAG side: at most one extra round, never a loop
+    # chasing better evidence. Added after a live question hit a repo whose
+    # README was an unmodified project template -- recent commit subjects
+    # described the project fine, but nothing went looking for them.
+    evidence_recovery_enabled: bool = True
+    recovery_commit_count: int = 10
+
+    @classmethod
+    def from_env(cls) -> "GitHubAgentSettings":
+        return cls(
+            fallback_response=os.getenv("GITHUB_FALLBACK_RESPONSE")
+            or DEFAULT_GITHUB_FALLBACK_RESPONSE,
+            evidence_recovery_enabled=os.getenv(
+                "GITHUB_EVIDENCE_RECOVERY_ENABLED", "true"
+            ).lower()
+            != "false",
+            recovery_commit_count=int(os.getenv("GITHUB_RECOVERY_COMMIT_COUNT", "10")),
+        )
+
+
+@dataclass(frozen=True)
+class GitHubLiveSettings:
+    """Bounds on live GitHub reads (GitHub Integration Plan Phase 5).
+
+    Every value here exists to stop an unbounded payload reaching a prompt. That
+    is not a tidiness concern: GitHub documents that a commit diff can span 300
+    files per page up to 3 000 total and that "larger diffs may time out", and a
+    README can be arbitrarily long. Feeding either in whole would blow the
+    context window and, worse, could silently drop the part of the evidence the
+    answer depended on. Truncation here is always *marked* so the model can see
+    the evidence is partial (risk T6).
+
+    Unlike the RAG path there is no cache behind these calls, so timeouts are the
+    only thing standing between a slow GitHub and a slow answer (risk T8).
+    """
+
+    enabled: bool = True
+    timeout: float = 10.0
+    readme_max_bytes: int = 40_000
+    patch_max_bytes: int = 4_000
+    max_files_per_commit: int = 25
+    max_commits: int = 20
+    max_attempts: int = 3
+
+    @classmethod
+    def from_env(cls) -> "GitHubLiveSettings":
+        return cls(
+            enabled=os.getenv("GITHUB_LIVE_ENABLED", "true").lower() != "false",
+            timeout=float(os.getenv("GITHUB_LIVE_TIMEOUT", "10.0")),
+            readme_max_bytes=int(os.getenv("GITHUB_README_MAX_BYTES", "40000")),
+            patch_max_bytes=int(os.getenv("GITHUB_PATCH_MAX_BYTES", "4000")),
+            max_files_per_commit=int(os.getenv("GITHUB_MAX_FILES_PER_COMMIT", "25")),
+            max_commits=int(os.getenv("GITHUB_MAX_COMMITS", "20")),
+            max_attempts=int(os.getenv("GITHUB_LIVE_MAX_ATTEMPTS", "3")),
         )
 
 

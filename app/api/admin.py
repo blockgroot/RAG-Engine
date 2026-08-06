@@ -23,6 +23,7 @@ from ..auth import (
 )
 from ..config.settings import ApiSettings, EmailSettings
 from ..core.exceptions import ConfigurationError, SourceError
+from ..githublive import refresh_installation_scope
 from ..ingestion import detect_source_changes
 from ..jobs import enqueue, get_job, has_active_job, list_jobs
 from ..sources import (
@@ -50,6 +51,30 @@ def _build_connection_adapter(org_id: str, provider: str):
     token = get_live_connection_token(org_id, provider)
     config = get_connection_config(org_id, provider)
     return build_source_adapter(provider, token=token, config=config)
+
+
+def _reject_if_github(provider: str, what: str) -> None:
+    """GitHub connections have no ingestion — refuse sync-shaped operations.
+
+    Notion and Drive are *ingested* (fetch → chunk → embed → store). GitHub is
+    read **live** at question time and never indexed, so every sync-shaped
+    endpoint is meaningless for it.
+
+    This matters most for ``/ingest``: without this guard it would enqueue a job
+    the worker cannot run, and the admin would see a queued job fail minutes
+    later with an obscure "Unknown source type" error. Refusing up front states
+    the actual truth — there is nothing to sync because nothing is stored.
+    """
+    if provider == "github":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{what} does not apply to GitHub. GitHub repositories are read "
+                "live when a question is asked, so there is nothing to sync or "
+                "configure here — the repositories in scope are chosen on "
+                "GitHub's own installation screen."
+            ),
+        )
 
 
 @router.post("/members")
@@ -206,6 +231,52 @@ def put_connection_config(
     }
 
 
+@router.post("/connections/{connection_id}/refresh-scope")
+def refresh_connection_scope(
+    connection_id: str, session: SessionClaims = Depends(require_admin)
+):
+    """Re-read which repositories a GitHub installation is allowed to see.
+
+    The authorized repo list is stored at connect time rather than fetched per
+    question (it changes only when an admin edits the installation on GitHub, so
+    re-listing every time would spend rate limit and latency re-learning
+    something static). The cost of that choice is staleness: a repo added on
+    GitHub afterwards isn't visible to us until someone refreshes. This endpoint
+    is that refresh — it is the GitHub analogue of Drive's "check for changes",
+    for scope rather than content.
+    """
+    conn = _owned_connection(session.org_id, connection_id)
+    if conn.provider != "github":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Repository scope refresh only applies to GitHub "
+                f"(this connection is {conn.provider!r})."
+            ),
+        )
+
+    try:
+        scope = refresh_installation_scope(session.org_id)
+    except (ConfigurationError, SourceError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "connection_id": connection_id,
+        "provider": "github",
+        "account_login": scope.account_login,
+        "repository_selection": scope.repository_selection,
+        "repo_count": len(scope.repos),
+        "repos": [
+            {
+                "full_name": repo.full_name,
+                "description": repo.description,
+                "topics": list(repo.topics),
+            }
+            for repo in scope.repos
+        ],
+    }
+
+
 @router.get("/connections/{connection_id}/changes")
 def connection_changes(connection_id: str, session: SessionClaims = Depends(require_admin)):
     """Metadata-only: which remote pages are new/updated/removed vs our store.
@@ -213,6 +284,7 @@ def connection_changes(connection_id: str, session: SessionClaims = Depends(requ
     Does not download page bodies or embed — safe to call on Sources page load.
     """
     conn = _owned_connection(session.org_id, connection_id)
+    _reject_if_github(conn.provider, "Change checking")
 
     try:
         adapter = _build_connection_adapter(session.org_id, conn.provider)
@@ -237,7 +309,8 @@ def trigger_ingest(connection_id: str, session: SessionClaims = Depends(require_
     # verify via list_connections (already org-scoped) before enqueuing —
     # never let an admin enqueue a job against a connection_id that isn't
     # actually theirs.
-    _owned_connection(session.org_id, connection_id)
+    conn = _owned_connection(session.org_id, connection_id)
+    _reject_if_github(conn.provider, "Syncing")
 
     if has_active_job(session.org_id, connection_id):
         raise HTTPException(
