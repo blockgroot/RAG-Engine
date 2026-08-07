@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
@@ -45,6 +45,8 @@ function updateCompleteMessage(docCount: number | null | undefined): string {
 export default function WorkspaceDetailPage() {
   const params = useParams<{ id: string }>();
   const workspaceId = params.id;
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const { me, loading } = useMe({ enforceSetupFlow: false });
 
   const [workspace, setWorkspace] = useState<WorkspaceDetail | null>(null);
@@ -133,6 +135,36 @@ export default function WorkspaceDetailPage() {
       if (active.length > 0) setPollToken((n) => n + 1);
     }).catch(() => {});
   }, [me, workspaceId, refreshChanges, refreshWorkspace]);
+
+  // After GitHub/Notion/Drive OAuth, the API redirects here with ?connected=.
+  // Reload connections and unlock Ask — no manual "Refresh list" needed for a
+  // fresh connect (scope is written during the callback).
+  useEffect(() => {
+    const connected = searchParams.get("connected");
+    if (!connected || !me) return;
+    const label =
+      connected === "github"
+        ? "GitHub"
+        : connected === "google"
+          ? "Google Drive"
+          : connected === "notion"
+            ? "Notion"
+            : connected;
+    setMessage(
+      connected === "github"
+        ? `${label} connected to this space. You and invited colleagues can ask in the Code tab — only these repos, not the company GitHub.`
+        : `${label} connected to this space.`
+    );
+    void refreshWorkspace();
+    api
+      .listWorkspaceConnections(workspaceId)
+      .then((list) => {
+        setConnections(list);
+        refreshChanges(list);
+      })
+      .catch(() => {});
+    router.replace(`/workspaces/${workspaceId}`, { scroll: false });
+  }, [me, searchParams, workspaceId, refreshWorkspace, refreshChanges, router]);
 
   useEffect(() => {
     if (!me) return;
@@ -255,7 +287,10 @@ export default function WorkspaceDetailPage() {
 
   const isOwner = workspace?.role === "owner";
   const lastJobs = latestJobByConnection(jobs);
-  const readyToAsk = Boolean(workspace?.ready_to_ask);
+  const docsReady = Boolean(workspace?.ready_to_ask);
+  const githubReady = Boolean(workspace?.github_connected);
+  // Same idea as org Ask: docs need an ingest; GitHub is live — either unlocks Ask.
+  const canAsk = docsReady || githubReady;
 
   return (
     <AppShell me={me} variant="app">
@@ -263,9 +298,9 @@ export default function WorkspaceDetailPage() {
         <PageHeader
           eyebrow="Space"
           title={workspace?.name || "…"}
-          description="Answers come only from this space’s docs."
+          description="Answers come only from this space’s connected docs and repos — not the company-wide sources."
           actions={
-            readyToAsk ? (
+            canAsk ? (
               <Link href={`/chat?workspace=${workspaceId}`} className="button">
                 Ask →
               </Link>
@@ -287,15 +322,15 @@ export default function WorkspaceDetailPage() {
         )}
         {error && <div className="banner banner-warn">{error}</div>}
 
-        {!readyToAsk && (
+        {!canAsk && (
           <div className="banner banner-wait" role="status">
             <strong>Not ready to ask yet</strong>
             <p className="muted" style={{ margin: "0.35rem 0 0" }}>
               {workspace?.sync_in_progress
                 ? "Still importing documents…"
                 : isOwner
-                  ? "Connect a source below, then update once."
-                  : "Waiting on the owner to connect documents."}
+                  ? "Connect Notion, Drive, or GitHub below. For docs, sync once; for GitHub, Ask unlocks as soon as it’s linked."
+                  : "Waiting on the owner to connect a source."}
             </p>
           </div>
         )}
@@ -344,9 +379,9 @@ export default function WorkspaceDetailPage() {
           <section className="stack">
             <div className="panel-head" style={{ marginBottom: 0 }}>
               <div>
-                <h2>Documents for this space</h2>
+                <h2>Sources for this space</h2>
                 <p className="muted" style={{ marginTop: "0.35rem" }}>
-                  Where this space gets its answers.
+                  Docs sync; GitHub is live. Colleagues you invite can ask here — only what you connect to this space.
                 </p>
               </div>
             </div>

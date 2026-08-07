@@ -243,7 +243,7 @@ export function ConnectionCard({
             type="button"
             onClick={refreshScope}
             disabled={refreshingScope}
-            title="Update the list of repos Folio can see"
+            title="Only needed if you changed repo access on GitHub after connecting"
           >
             {refreshingScope ? "Refreshing…" : "Refresh list"}
           </button>
