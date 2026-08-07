@@ -55,6 +55,7 @@ silently do nothing.
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections.abc import Iterator
 
@@ -69,7 +70,36 @@ from fastapi.responses import StreamingResponse
 # time.sleep here doesn't block the event loop or other requests) — it does
 # not touch RagPipeline.answer_stream, which stays instant/deterministic for
 # tests and the CLI.
-_CHUNK_DELAY_SECONDS = 0.02
+#
+# Default ~50ms per *word* reads as a typewriter, not a dump. Override with
+# CHAT_STREAM_WORD_DELAY_MS (0 disables pacing — used by API tests).
+def _stream_word_delay_seconds() -> float:
+    raw = os.getenv("CHAT_STREAM_WORD_DELAY_MS")
+    if raw is None or raw.strip() == "":
+        return 0.05
+    try:
+        return max(0.0, float(raw) / 1000.0)
+    except ValueError:
+        return 0.05
+
+
+def _word_chunks(text: str) -> Iterator[str]:
+    """Yield one word at a time (trailing whitespace stays with the word)."""
+    if not text:
+        return
+    i = 0
+    n = len(text)
+    while i < n:
+        j = i
+        while j < n and not text[j].isspace():
+            j += 1
+        while j < n and text[j].isspace():
+            j += 1
+        if j == i:
+            yield text[i:]
+            return
+        yield text[i:j]
+        i = j
 
 from ..agent.github_agent import GitHubAgent
 from ..agent.policy_agent import PolicyAgent
@@ -97,27 +127,30 @@ AGENT_POLICY = "policy"
 
 def _select_agent(
     workspace_id: str | None,
-    policy_agent: PolicyAgent,
-    workspace_agent: WorkspaceAgent,
-    github_agent: GitHubAgent | None = None,
     requested_agent: str | None = None,
 ) -> RagPipelineAgent | GitHubAgent:
     """One place that decides which agent answers a request (see module docstring).
 
     Deterministic by construction — no LLM classifies anything here.
 
-    ``requested_agent == "github"`` now wins over ``workspace_id`` (it used to be
+    Agents are loaded *lazily*: only the chosen one is constructed. FastAPI
+    ``Depends(get_policy_agent)`` + ``Depends(get_workspace_agent)`` used to
+    resolve *both* on every ``/chat/stream`` call, which loaded BGE-M3 and the
+    cross-encoder twice into a 16GB machine and hung the Mac in swap — even for
+    a GitHub-only question that needs neither model.
+
+    ``requested_agent == "github"`` wins over ``workspace_id`` (it used to be
     the other way round). That inversion is only safe because the caller threads
     ``workspace_id`` into ``GitHubAgent.answer``, which resolves its token and
     repo allowlist from ``(org_id, workspace_id)`` together — a workspace with no
     GitHub connection therefore raises and falls back, never reads the org-wide
     installation. If you ever change that scoping, restore this ordering.
     """
-    if requested_agent == AGENT_GITHUB and github_agent is not None:
-        return github_agent
+    if requested_agent == AGENT_GITHUB:
+        return get_github_agent()
     if workspace_id is not None:
-        return workspace_agent
-    return policy_agent
+        return get_workspace_agent()
+    return get_policy_agent()
 
 
 def _conversation_belongs_to_scope(
@@ -237,8 +270,6 @@ def _document_titles_for_scope(org_id: str, workspace_id: str | None) -> list[st
 def create_conversation(
     body: dict | None = None,
     session: SessionClaims = Depends(get_session),
-    policy_agent: PolicyAgent = Depends(get_policy_agent),
-    workspace_agent: WorkspaceAgent = Depends(get_workspace_agent),
 ):
     workspace_id = (body or {}).get("workspace_id")
     if workspace_id is not None:
@@ -258,7 +289,7 @@ def create_conversation(
             detail="GitHub questions are answered standalone and do not use conversations.",
         )
 
-    agent = _select_agent(workspace_id, policy_agent, workspace_agent)
+    agent = _select_agent(workspace_id)
     if agent.pipeline.memory is None:
         raise HTTPException(status_code=503, detail="Conversation memory is not enabled")
 
@@ -285,7 +316,7 @@ def _stream_answer(
     workspace_id: str | None = None,
 ) -> Iterator[str]:
     try:
-        chunks, result = agent.answer_stream(
+        _chunks, result = agent.answer_stream(
             question, org_id, conversation_id=conversation_id, workspace_id=workspace_id
         )
     except LLMProviderError as exc:
@@ -295,9 +326,13 @@ def _stream_answer(
         yield _sse_event("error", {"message": _user_facing_llm_error(exc)})
         return
 
-    for chunk in chunks:
+    # Prefer word pacing over the pipeline's coarse char slices — the answer
+    # is already final in ``result`` (``chunks`` would still dump in one go).
+    delay = _stream_word_delay_seconds()
+    for chunk in _word_chunks(result.answer):
         yield _sse_event("token", chunk)
-        time.sleep(_CHUNK_DELAY_SECONDS)
+        if delay:
+            time.sleep(delay)
     yield _sse_event(
         "done",
         {
@@ -318,9 +353,6 @@ def _stream_answer(
 def chat_stream(
     body: dict,
     session: SessionClaims = Depends(get_session),
-    policy_agent: PolicyAgent = Depends(get_policy_agent),
-    workspace_agent: WorkspaceAgent = Depends(get_workspace_agent),
-    github_agent: GitHubAgent = Depends(get_github_agent),
 ):
     check_rate_limit(f"chat:{session.org_id}:{session.user_id}")
 
@@ -342,9 +374,7 @@ def chat_stream(
     ):
         raise HTTPException(status_code=404, detail="No such conversation for this organization")
 
-    agent = _select_agent(
-        workspace_id, policy_agent, workspace_agent, github_agent, requested_agent
-    )
+    agent = _select_agent(workspace_id, requested_agent)
     return StreamingResponse(
         _stream_answer(agent, question, session.org_id, conversation_id, workspace_id=workspace_id),
         media_type="text/event-stream",

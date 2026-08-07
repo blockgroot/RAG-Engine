@@ -85,6 +85,17 @@ function ChatPageInner() {
   const policiesReady = readyToAsk !== false;
   const askingCode = showAgentTabs && (agentTab === "github" || !policiesReady);
 
+  // Policies and Code are separate surfaces (different agents, different
+  // starters). Switching tabs must open that tab's empty template — not leave
+  // the other tab's thread on screen with only the placeholder changed.
+  function switchAgentTab(next: AgentTab) {
+    if (next === agentTab || busy) return;
+    setAgentTab(next);
+    setMessages([]);
+    setInput("");
+    conversationId.current = null;
+  }
+
   useEffect(() => {
     if (showAgentTabs && !policiesReady) setAgentTab("github");
   }, [showAgentTabs, policiesReady]);
@@ -356,7 +367,7 @@ function ChatPageInner() {
                 aria-controls="ask-panel"
                 aria-selected={!askingCode}
                 className={`agent-tab${!askingCode ? " is-active" : ""}`}
-                onClick={() => setAgentTab("policy")}
+                onClick={() => switchAgentTab("policy")}
                 disabled={busy || !policiesReady}
                 title={
                   policiesReady ? undefined : "Company policies are still being prepared."
@@ -371,7 +382,7 @@ function ChatPageInner() {
                 aria-controls="ask-panel"
                 aria-selected={askingCode}
                 className={`agent-tab${askingCode ? " is-active" : ""}`}
-                onClick={() => setAgentTab("github")}
+                onClick={() => switchAgentTab("github")}
                 disabled={busy}
               >
                 Code

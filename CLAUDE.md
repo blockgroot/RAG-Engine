@@ -792,6 +792,15 @@ tests/          # pytest; isolation (P2, extended with workspace-vs-org-wide and
 
 ## 4. Known gotchas & past decisions worth remembering
 
+- **Local BGE-M3 + reranker can hang a 16GB Mac.** Each model is multi-GB in
+  RSS. Chat used to ``Depends`` both ``get_policy_agent`` and
+  ``get_workspace_agent`` on every ``/chat/stream``, loading *two* copies and
+  pushing the machine into swap (device freezes, no response). Fix: lazy agent
+  selection + process-wide singleton embedder/reranker factories. Still avoid
+  ``uvicorn --reload`` during demos (parent+child), and prefer Code/GitHub chat
+  when you do not need retrieval — it never loads those models. Kill-switch:
+  ``RETRIEVAL_RERANK_ENABLED=false``.
+
 - **Not every schema.sql addition has the ALTER-ordering hazard.**
   `org_signup_requests` (signup-approval queue, §2/§5) is a plain
   `CREATE TABLE IF NOT EXISTS` with no `ALTER TABLE ... ADD COLUMN` on an

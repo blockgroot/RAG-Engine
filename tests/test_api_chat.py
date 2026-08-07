@@ -33,6 +33,8 @@ WORKSPACE_FALLBACK = "I don't have anything about that in this workspace's conne
 @pytest.fixture(autouse=True)
 def _auth_env(monkeypatch):
     monkeypatch.setenv("AUTH_JWT_SECRET", "test-jwt-secret-do-not-use-in-prod")
+    # Word-paced SSE sleeps in production; keep API tests instant.
+    monkeypatch.setenv("CHAT_STREAM_WORD_DELAY_MS", "0")
 
 
 def _fake_agent(org_id: str, *, memory=None) -> PolicyAgent:
@@ -80,8 +82,7 @@ def _fake_workspace_agent(org_id: str, *, memory=None) -> WorkspaceAgent:
 
 
 @pytest.fixture
-def client_and_session(store, org_cleanup):
-    from app.api.deps import get_policy_agent, get_workspace_agent
+def client_and_session(store, org_cleanup, monkeypatch):
     from app.api.main import create_app
     from app.auth import create_admin, create_session_token
 
@@ -92,13 +93,12 @@ def client_and_session(store, org_cleanup):
 
     app = create_app()
     memory = build_conversation_store()
-    app.dependency_overrides[get_policy_agent] = lambda: _fake_agent(org_id, memory=memory)
-    # Every chat route now also depends on get_workspace_agent (Workspace Agent
-    # split routing) even for org-wide requests -- override it too so no test
-    # accidentally builds the real, heavy singleton (embedding/reranker models).
-    app.dependency_overrides[get_workspace_agent] = lambda: _fake_workspace_agent(
-        org_id, memory=memory
-    )
+    policy = _fake_agent(org_id, memory=memory)
+    workspace = _fake_workspace_agent(org_id, memory=memory)
+    # Chat loads agents lazily via get_* (no FastAPI Depends) — monkeypatch so
+    # tests never construct the real embedding/reranker singletons.
+    monkeypatch.setattr("app.api.chat.get_policy_agent", lambda: policy)
+    monkeypatch.setattr("app.api.chat.get_workspace_agent", lambda: workspace)
 
     client = TestClient(app)
     return client, {"session": token}, org_id, memory
@@ -176,9 +176,8 @@ def test_chat_stream_rejects_conversation_id_from_another_org(
 
 
 @requires_db
-def test_chat_stream_emits_error_event_when_llm_is_rate_limited(client_and_session):
+def test_chat_stream_emits_error_event_when_llm_is_rate_limited(client_and_session, monkeypatch):
     """FreeLLMAPI 429 must not crash the ASGI stream — surface a chat error."""
-    from app.api.deps import get_policy_agent
     from app.core.exceptions import LLMProviderError
 
     client, cookies, _org_id, _ = client_and_session
@@ -189,7 +188,7 @@ def test_chat_stream_emits_error_event_when_llm_is_rate_limited(client_and_sessi
                 "LLM API error: Error code: 429 - All models exhausted"
             )
 
-    client.app.dependency_overrides[get_policy_agent] = lambda: _BoomAgent()
+    monkeypatch.setattr("app.api.chat.get_policy_agent", lambda: _BoomAgent())
 
     response = client.post(
         "/chat/stream",
@@ -440,3 +439,11 @@ def test_suggestions_from_connected_sources(client_and_session, store):
     cq = code.json()["questions"]
     assert cq and any("LiveDemoRepo" in q for q in cq)
     assert all("Fact-Verification" not in q for q in cq)
+
+
+def test_word_chunks_keeps_trailing_whitespace():
+    from app.api.chat import _word_chunks
+
+    assert list(_word_chunks("Hello world. ")) == ["Hello ", "world. "]
+    assert list(_word_chunks("")) == []
+    assert "".join(_word_chunks("a  b\nc")) == "a  b\nc"

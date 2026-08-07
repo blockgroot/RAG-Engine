@@ -33,6 +33,15 @@ class LocalEmbeddingProvider(EmbeddingProvider):
         if not self.model_name:
             raise ConfigurationError("Missing required embedding config: EMBEDDING_MODEL")
 
+        # Cap BLAS/tokenizer threads before torch loads. Unbounded OpenMP on
+        # Apple Silicon + two large models is a common "whole Mac freezes"
+        # pattern while the process is still technically making progress.
+        import os
+
+        os.environ.setdefault("OMP_NUM_THREADS", "1")
+        os.environ.setdefault("MKL_NUM_THREADS", "1")
+        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
         # Import lazily so the app doesn't pay the (heavy) import cost unless
         # local embeddings are actually used.
         try:
