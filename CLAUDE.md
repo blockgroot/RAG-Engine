@@ -1720,7 +1720,23 @@ genuinely fresh database, not an already-migrated one.
   shared table) were both tested and did not reproduce. What remains is genuine
   *tuning* (recall/latency trade-offs at scale), not a suspected defect.
 - LLM provider-level prompt caching for the large fixed grounded-prompt prefix —
-  lower priority next to query-result cache (Phase 19).
+  **no longer "lower priority": measured, and it is the largest remaining
+  per-question cost on the wire.** The grounded prompt is **2,319 tokens for a
+  typical 5-chunk question, of which 2,219 (96%) is fixed instruction
+  scaffold** — the retrieved context is ~100 tokens. Two useful facts fall out
+  of that. (1) The prompt is **already ordered optimally for caching**: 98% of
+  the string is a byte-identical prefix across different questions, because
+  CONTEXT and QUESTION are appended last. So enabling provider caching needs
+  *no restructuring* — it is a provider/model capability question, not a code
+  change. Keep it that way: never move CONTEXT or QUESTION earlier in the
+  prompt, or the cacheable prefix collapses. (2) The alternative lever,
+  compressing the scaffold, is **deliberately not attempted** — every rule in
+  it was added to fix a specific observed failure (meta-language leakage,
+  invented conclusions, citation markers reaching the reader, MODE-tag
+  parsing), so trimming it is a grounding risk, and it cannot currently be
+  validated because the golden set needs a working LLM quota (see the 15 rpm
+  finding in §4). Fix the quota first, then compress against the golden set —
+  not the other way round.
 
 **Google Drive/Docs integration (on `feature/google-integration`).** Second
 external source alongside Notion — Phases 1–7 of `GOOGLE_INTEGRATION_PLAN.md`:

@@ -322,3 +322,47 @@ def test_a_question_is_embedded_exactly_once(store, org_cleanup, embedder):
 
     repeats = {text: n for text, n in embedded.items() if n > 1}
     assert not repeats, f"the same text was embedded more than once: {repeats}"
+
+
+# -- 5. the grounded prompt stays cacheable ----------------------------------
+
+
+def test_the_grounded_prompt_keeps_a_stable_cacheable_prefix():
+    """CONTEXT and QUESTION must stay LAST in the prompt.
+
+    Measured: the grounded prompt is ~2,319 tokens for a 5-chunk question, of
+    which ~2,219 (96%) is fixed instruction scaffold resent on every question.
+    That is only cheap if a provider can cache it, and a provider can only cache
+    a byte-identical *prefix*. Today 98% of the string is shared across
+    different questions because the variable parts are appended at the end.
+
+    Moving CONTEXT or QUESTION earlier would collapse the cacheable prefix and
+    silently make every question pay full price — invisible in any output, which
+    is exactly why it needs a test rather than a comment.
+    """
+    from app.rag.prompts import build_grounded_prompt
+
+    a = build_grounded_prompt("How many leave days?", ["chunk about leave"], "fb")
+    b = build_grounded_prompt("What is the dress code?", ["chunk about dress"], "fb")
+
+    shared = 0
+    while shared < min(len(a), len(b)) and a[shared] == b[shared]:
+        shared += 1
+
+    assert shared / len(a) > 0.90, (
+        f"cacheable prefix collapsed to {shared / len(a):.0%} of the prompt — "
+        "did CONTEXT or QUESTION move earlier?"
+    )
+    # The whole instruction scaffold — up to and including the CONTEXT header —
+    # must fall INSIDE the shared prefix. Anything question-specific appearing
+    # before it would end the cacheable region early.
+    assert "CONTEXT:" in a[:shared], (
+        "the prompt diverges before the CONTEXT header, so the instruction "
+        "scaffold is no longer a stable cacheable prefix"
+    )
+    # (The literal word "QUESTION" appears throughout the rules, so checking for
+    # it proves nothing — check the actual question text instead.)
+    assert "How many leave days?" not in a[:shared], (
+        "the question text appears inside the shared prefix — the prompt would "
+        "need rebuilding per question with nothing cacheable after it"
+    )
