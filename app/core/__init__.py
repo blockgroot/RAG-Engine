@@ -4,6 +4,7 @@ from .exceptions import (
     ProviderError,
     ConfigurationError,
     LLMProviderError,
+    LLMRateLimitError,
     EmbeddingProviderError,
 )
 
@@ -11,5 +12,6 @@ __all__ = [
     "ProviderError",
     "ConfigurationError",
     "LLMProviderError",
+    "LLMRateLimitError",
     "EmbeddingProviderError",
 ]

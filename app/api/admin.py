@@ -26,6 +26,7 @@ from ..core.exceptions import ConfigurationError, SourceError
 from ..githublive import refresh_installation_scope
 from ..ingestion import detect_source_changes
 from ..jobs import enqueue, get_job, has_active_job, list_jobs
+from .serialize import job_payload
 from ..sources import (
     build_source_adapter,
     extract_drive_folder_id,
@@ -324,19 +325,7 @@ def trigger_ingest(connection_id: str, session: SessionClaims = Depends(require_
 
 @router.get("/jobs")
 def get_jobs(session: SessionClaims = Depends(require_admin)):
-    return [
-        {
-            "id": j.id,
-            "connection_id": j.connection_id,
-            "status": j.status,
-            "doc_count": j.doc_count,
-            "error": j.error,
-            "started_at": j.started_at.isoformat() if j.started_at else None,
-            "finished_at": j.finished_at.isoformat() if j.finished_at else None,
-            "created_at": j.created_at.isoformat(),
-        }
-        for j in list_jobs(session.org_id)
-    ]
+    return [job_payload(j) for j in list_jobs(session.org_id)]
 
 
 @router.get("/jobs/{job_id}")
@@ -344,13 +333,4 @@ def get_job_status(job_id: str, session: SessionClaims = Depends(require_admin))
     job = get_job(session.org_id, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="No such job for this organization")
-    return {
-        "id": job.id,
-        "connection_id": job.connection_id,
-        "status": job.status,
-        "doc_count": job.doc_count,
-        "error": job.error,
-        "started_at": job.started_at.isoformat() if job.started_at else None,
-        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
-        "created_at": job.created_at.isoformat(),
-    }
+    return job_payload(job)

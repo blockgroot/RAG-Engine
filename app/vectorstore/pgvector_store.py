@@ -158,6 +158,22 @@ class PgVectorStore(VectorStore):
         Phase 18: ranks matching chunks with in-process Okapi BM25 (see
         ``bm25_ranking.py``) instead of Postgres ``ts_rank``. Each row still
         carries cosine similarity vs ``query_embedding`` in ``score`` for the gate.
+
+        **Bounded candidate set.** This query used to have no ``LIMIT``: a common
+        term matched *every* such chunk, and for each one Postgres computed a
+        cosine distance, joined ``documents``, and shipped the full text back —
+        all to keep ``top_k`` (30) of them. Measured on a 400-chunk corpus, the
+        term "leave" pulled 160 rows to return 30, and that ratio grows linearly
+        with the corpus, so it is a scaling cliff rather than a constant cost.
+        Now Postgres orders by ``ts_rank`` and keeps the best
+        ``keyword_candidate_limit`` rows, and the expensive per-row work (cosine,
+        title join, content transfer) happens only for the survivors.
+
+        **Honest caveat:** on a corpus where a term matches more than the limit,
+        BM25 now ranks the top-N by ``ts_rank`` rather than every match, and its
+        IDF is computed over that subset. The default is set high enough to be a
+        no-op at realistic corpus sizes — where it *does* bite, the old
+        behaviour was pathological anyway.
         """
         if not query_embedding:
             raise EmbeddingProviderError("query_embedding is empty")
@@ -168,19 +184,38 @@ class PgVectorStore(VectorStore):
         with get_connection(self._settings) as conn:
             rows = conn.execute(
                 """
-                SELECT c.content,
-                       c.document_id::text,
-                       c.chunk_index,
-                       c.org_id::text,
-                       1 - (c.embedding <=> %s) AS score,
+                WITH matched AS (
+                    SELECT c.content,
+                           c.document_id,
+                           c.chunk_index,
+                           c.org_id,
+                           c.embedding
+                    FROM chunks c
+                    WHERE c.org_id = %s::uuid
+                      AND c.workspace_id IS NOT DISTINCT FROM %s::uuid
+                      AND c.content_tsv @@ websearch_to_tsquery('english', %s)
+                    ORDER BY ts_rank(
+                        c.content_tsv, websearch_to_tsquery('english', %s)
+                    ) DESC
+                    LIMIT %s
+                )
+                SELECT m.content,
+                       m.document_id::text,
+                       m.chunk_index,
+                       m.org_id::text,
+                       1 - (m.embedding <=> %s) AS score,
                        d.title
-                FROM chunks c
-                LEFT JOIN documents d ON d.id = c.document_id
-                WHERE c.org_id = %s::uuid
-                  AND c.workspace_id IS NOT DISTINCT FROM %s::uuid
-                  AND c.content_tsv @@ websearch_to_tsquery('english', %s)
+                FROM matched m
+                LEFT JOIN documents d ON d.id = m.document_id
                 """,
-                (vector, org_id, workspace_id, query_text),
+                (
+                    org_id,
+                    workspace_id,
+                    query_text,
+                    query_text,
+                    self._settings.keyword_candidate_limit,
+                    vector,
+                ),
             ).fetchall()
 
         if not rows:

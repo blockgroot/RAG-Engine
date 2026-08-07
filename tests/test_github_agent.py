@@ -358,44 +358,65 @@ class _Sentinel:
         self.name = name
 
 
-def test_routing_sends_a_github_request_to_the_github_agent():
+def _patch_agents(monkeypatch, *, policy, workspace, github):
+    """``_select_agent`` loads agents lazily via get_* — stub those, not args."""
+    monkeypatch.setattr("app.api.chat.get_policy_agent", lambda: policy)
+    monkeypatch.setattr("app.api.chat.get_workspace_agent", lambda: workspace)
+    monkeypatch.setattr("app.api.chat.get_github_agent", lambda: github)
+
+
+def test_routing_sends_a_github_request_to_the_github_agent(monkeypatch):
     from app.api.chat import _select_agent
 
     policy, workspace, github = _Sentinel("p"), _Sentinel("w"), _Sentinel("g")
+    _patch_agents(monkeypatch, policy=policy, workspace=workspace, github=github)
 
-    chosen = _select_agent(None, policy, workspace, github, "github")
-
-    assert chosen is github
+    assert _select_agent(None, "github") is github
 
 
-def test_routing_defaults_to_the_policy_agent():
+def test_routing_defaults_to_the_policy_agent(monkeypatch):
     from app.api.chat import _select_agent
 
     policy, workspace, github = _Sentinel("p"), _Sentinel("w"), _Sentinel("g")
+    _patch_agents(monkeypatch, policy=policy, workspace=workspace, github=github)
 
-    assert _select_agent(None, policy, workspace, github, None) is policy
-    assert _select_agent(None, policy, workspace, github, "policy") is policy
+    assert _select_agent(None, None) is policy
+    assert _select_agent(None, "policy") is policy
     # An unrecognized value must not fall through to GitHub.
-    assert _select_agent(None, policy, workspace, github, "nonsense") is policy
+    assert _select_agent(None, "nonsense") is policy
 
 
-def test_workspace_scope_wins_over_a_requested_github_agent():
-    """A narrower data boundary must never be widened by a source choice."""
+def test_a_requested_github_agent_now_wins_over_workspace_scope(monkeypatch):
+    """INVERTED when workspace-scoped GitHub connections landed.
+
+    This used to assert the opposite ("a narrower data boundary must never be
+    widened by a source choice"), which was right while GitHub was org-level only:
+    routing a workspace question to GitHub would have served org-wide code inside
+    a workspace. Now a workspace has its own installation, and the ``workspace_id``
+    is threaded into the agent, so Code-in-a-workspace reads only that
+    workspace's repos. Kept as an inverted assertion rather than deleted so the
+    reversal stays visible.
+
+    A workspace question with no explicit agent still goes to WorkspaceAgent.
+    """
     from app.api.chat import _select_agent
 
     policy, workspace, github = _Sentinel("p"), _Sentinel("w"), _Sentinel("g")
+    _patch_agents(monkeypatch, policy=policy, workspace=workspace, github=github)
 
-    chosen = _select_agent("ws-1", policy, workspace, github, "github")
+    assert _select_agent("ws-1", "github") is github
+    assert _select_agent("ws-1", None) is workspace
+    assert _select_agent("ws-1", "policy") is workspace
 
-    assert chosen is workspace
 
-
-def test_routing_falls_back_to_policy_when_no_github_agent_is_available():
+def test_routing_github_request_uses_github_agent_not_policy(monkeypatch):
+    """Lazy load still routes agent=github to GitHubAgent (no silent policy fallthrough)."""
     from app.api.chat import _select_agent
 
-    policy, workspace = _Sentinel("p"), _Sentinel("w")
+    policy, workspace, github = _Sentinel("p"), _Sentinel("w"), _Sentinel("g")
+    _patch_agents(monkeypatch, policy=policy, workspace=workspace, github=github)
 
-    assert _select_agent(None, policy, workspace, None, "github") is policy
+    assert _select_agent(None, "github") is github
 
 
 def test_github_agent_streams_the_already_decided_answer():

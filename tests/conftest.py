@@ -7,6 +7,7 @@ against the real store, not a mock). They are skipped automatically if
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -32,6 +33,19 @@ from app.websearch import build_web_search_provider  # noqa: E402
 
 # Keep pre-recovery fixtures deterministic; recovery is covered in test_recovery.py.
 _RECOVERY_OFF = RecoverySettings(enabled=False)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_model_warmup_in_tests():
+    """Keep API tests from loading multi-GB models they never use.
+
+    ``create_app``'s lifespan warms the embedder/reranker so the first real
+    question doesn't pay the model load. That is right in production and pure
+    waste here: most API tests (auth, admin, GitHub) never retrieve anything,
+    and the tests that do already share session-scoped provider fixtures.
+    """
+    os.environ.setdefault("MODEL_WARMUP_ON_STARTUP", "false")
+    yield
 
 
 @pytest.fixture(scope="session", autouse=True)

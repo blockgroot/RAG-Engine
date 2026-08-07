@@ -35,7 +35,7 @@ import httpx
 
 from ..config.settings import GoogleSettings
 from ..core.exceptions import ConfigurationError, OAuthError
-from .base import OAuthProvider, OAuthTokens
+from .base import OAuthProvider, OAuthTokens, compute_expires_at
 
 _AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 _TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -92,7 +92,7 @@ class GoogleOAuthProvider(OAuthProvider):
             raise OAuthError("Google OAuth response missing access_token")
 
         self._verify_granted_scopes(data.get("scope", ""))
-        expires_at = self._compute_expires_at(data.get("expires_in"))
+        expires_at = compute_expires_at(data.get("expires_in"))
         workspace_id, workspace_name = self._resolve_identity(access_token)
 
         return OAuthTokens(
@@ -150,7 +150,7 @@ class GoogleOAuthProvider(OAuthProvider):
         return OAuthTokens(
             access_token=access_token,
             refresh_token=None,
-            expires_at=self._compute_expires_at(data.get("expires_in")),
+            expires_at=compute_expires_at(data.get("expires_in")),
             external_workspace_id="",
             external_workspace_name=None,
         )
@@ -196,12 +196,3 @@ class GoogleOAuthProvider(OAuthProvider):
                 "approve all requested permissions."
             )
 
-    @staticmethod
-    def _compute_expires_at(expires_in: object) -> datetime | None:
-        if expires_in is None:
-            return None
-        try:
-            seconds = int(expires_in)
-        except (TypeError, ValueError):
-            return None
-        return datetime.now(timezone.utc) + timedelta(seconds=seconds)

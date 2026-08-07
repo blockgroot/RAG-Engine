@@ -2,6 +2,11 @@
 
 Picks the local or remote backend from configuration and returns something
 satisfying the ``EmbeddingProvider`` interface.
+
+Local models are process-wide singletons keyed by ``(model, device)``. Loading
+BGE-M3 twice (policy agent + workspace agent, or API + in-process ingest
+worker) roughly doubles RSS and is enough to thrash a 16GB laptop into swap.
+Remote providers stay uncached — they hold no heavy weights.
 """
 
 from __future__ import annotations
@@ -12,6 +17,15 @@ from .base import EmbeddingProvider
 from .local import LocalEmbeddingProvider
 from .remote import RemoteEmbeddingProvider
 
+# (model, device) -> provider. Cleared only via ``clear_embedding_provider_cache``
+# (tests that must force a fresh load).
+_local_cache: dict[tuple[str, str | None], LocalEmbeddingProvider] = {}
+
+
+def clear_embedding_provider_cache() -> None:
+    """Drop cached local embedders (tests / explicit process recycle)."""
+    _local_cache.clear()
+
 
 def build_embedding_provider(
     settings: EmbeddingSettings | None = None,
@@ -20,7 +34,13 @@ def build_embedding_provider(
     settings = settings or EmbeddingSettings.from_env()
 
     if settings.backend == "local":
-        return LocalEmbeddingProvider(model=settings.model, device=settings.device)
+        key = (settings.model, settings.device)
+        cached = _local_cache.get(key)
+        if cached is not None:
+            return cached
+        provider = LocalEmbeddingProvider(model=settings.model, device=settings.device)
+        _local_cache[key] = provider
+        return provider
     if settings.backend == "remote":
         return RemoteEmbeddingProvider(
             model=settings.model,

@@ -5,17 +5,17 @@ import "./globals.css";
 /* Friendly SaaS pairing from ui-ux-pro-max — modern alternative to Inter. */
 const plusJakarta = Plus_Jakarta_Sans({
   subsets: ["latin"],
-  variable: "--font-folio",
+  variable: "--font-brand",
   weight: ["400", "500", "600", "700"],
 });
 
 export const metadata: Metadata = {
   title: {
-    default: "Folio",
-    template: "%s · Folio",
+    default: "Handbook",
+    template: "%s · Handbook",
   },
   description: "Ask questions grounded in your own documents.",
-  applicationName: "Folio",
+  applicationName: "Handbook",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

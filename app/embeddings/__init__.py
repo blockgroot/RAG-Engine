@@ -9,11 +9,12 @@ Public API:
 from .base import EmbeddingProvider
 from .local import LocalEmbeddingProvider
 from .remote import RemoteEmbeddingProvider
-from .factory import build_embedding_provider
+from .factory import build_embedding_provider, clear_embedding_provider_cache
 
 __all__ = [
     "EmbeddingProvider",
     "LocalEmbeddingProvider",
     "RemoteEmbeddingProvider",
     "build_embedding_provider",
+    "clear_embedding_provider_cache",
 ]

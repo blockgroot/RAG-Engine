@@ -95,7 +95,12 @@ export function ConnectionCard({
     setRefreshingScope(true);
     setScopeError(null);
     try {
-      const scope = await api.refreshConnectionScope(connection.id);
+      // Routed to the workspace endpoint when this card manages a workspace's
+      // own connection, so a refresh can never re-read the org-wide scope into
+      // a workspace row (or vice versa).
+      const scope = workspaceId
+        ? await api.refreshWorkspaceConnectionScope(workspaceId, connection.id)
+        : await api.refreshConnectionScope(connection.id);
       onConfigSaved?.({
         ...connection,
         source_config: {
@@ -232,13 +237,13 @@ export function ConnectionCard({
             Connect {PROVIDER_LABELS[provider]}
           </a>
         )}
-        {connection && isLive && !workspaceId && (
+        {connection && isLive && (
           <button
             className="button button-secondary"
             type="button"
             onClick={refreshScope}
             disabled={refreshingScope}
-            title="Update the list of repos Folio can see"
+            title="Only needed if you changed repo access on GitHub after connecting"
           >
             {refreshingScope ? "Refreshing…" : "Refresh list"}
           </button>

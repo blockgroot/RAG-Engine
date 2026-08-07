@@ -208,7 +208,9 @@ function SignupSceneSvg() {
 export function AuthSceneArt({ variant = "login" }: { variant?: "login" | "signup" }) {
   const isSignup = variant === "signup";
 
-  const title = isSignup ? "Bring your company into Folio" : "Welcome back — no password needed";
+  // "Handbook" is a common noun, so "bring your company into Handbook" reads as
+  // a typo. Possessive phrasing makes the name work as a product name instead.
+  const title = isSignup ? "Set up your company's Handbook" : "Welcome back — no password needed";
   const blurb = isSignup
     ? "Tell us who you are. We review each request, then you connect sources and invite your team."
     : "Enter your work email and we’ll send a one-time sign-in link. Secure, fast, forgettable.";
@@ -220,7 +222,7 @@ export function AuthSceneArt({ variant = "login" }: { variant?: "login" | "signu
   return (
     <div className={`auth-scene auth-scene--${variant}`}>
       <div className="auth-scene-copy">
-        <p className="auth-scene-kicker">Folio</p>
+        <p className="auth-scene-kicker">Handbook</p>
         <h1 className="auth-scene-title">{title}</h1>
         <p className="auth-scene-blurb">{blurb}</p>
         <ul className="auth-scene-points">

@@ -136,12 +136,22 @@ export interface JobRecord {
   status: "queued" | "running" | "succeeded" | "failed";
   doc_count: number | null;
   error: string | null;
+  /** Live progress — these change while `status` is still "running". */
+  phase: string | null;
+  total_documents: number | null;
+  processed_documents: number;
   started_at: string | null;
   finished_at: string | null;
   created_at: string;
 }
 
 export interface MagicLinkResponse {
+  // "sent"       — an account exists and a link was emailed.
+  // "no_account" — nothing was sent; the caller should be told why.
+  // The backend deliberately distinguishes these (it used to return one
+  // identical message either way) so someone whose company has not onboarded
+  // is not left waiting on an email that is never coming.
+  status: "sent" | "no_account";
   message: string;
   // Only ever set when the backend has no real email sender configured
   // (EMAIL_SENDER=console, i.e. local dev) — lets the UI offer a direct link
@@ -172,6 +182,13 @@ export interface WorkspaceDetail extends WorkspaceRecord {
   latest_job_status: string | null;
   latest_doc_count: number | null;
   ready_to_ask: boolean;
+  /**
+   * True when THIS workspace has its own GitHub connection. Scoped to the
+   * workspace on purpose: an org-wide GitHub connection must not light up a
+   * workspace's Code tab, or a member would be offered code they aren't scoped
+   * to read.
+   */
+  github_connected: boolean;
 }
 
 export interface WorkspaceMemberRecord {
@@ -283,6 +300,12 @@ export const api = {
     request<ConnectionConfigResponse>(
       `/workspaces/${workspaceId}/connections/${connectionId}/config`,
       { method: "PUT", body: JSON.stringify({ folder_url: folderUrl }) }
+    ),
+  /** Workspace equivalent of refreshConnectionScope (owner-only server-side). */
+  refreshWorkspaceConnectionScope: (workspaceId: string, connectionId: string) =>
+    request<GitHubScopeResponse>(
+      `/workspaces/${workspaceId}/connections/${connectionId}/refresh-scope`,
+      { method: "POST" }
     ),
   checkWorkspaceConnectionChanges: (workspaceId: string, connectionId: string) =>
     request<SyncChanges>(`/workspaces/${workspaceId}/connections/${connectionId}/changes`),

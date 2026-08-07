@@ -32,8 +32,12 @@ def get_policy_agent() -> PolicyAgent:
 
     Building a ``PolicyAgent`` from config loads the local embedding model and
     cross-encoder reranker — expensive per-call, so it happens once per
-    process and is reused across requests, the same way ``scripts/cli.py``
-    builds it once per session rather than once per turn.
+    process and is reused across requests. Local embedder/reranker factories
+    are also process-wide singletons, so a later ``get_workspace_agent()``
+    shares the same weights instead of loading a second copy into RAM.
+
+    Chat routes call this lazily (only when policy answers are needed) — do
+    not ``Depends()`` it alongside ``get_workspace_agent`` on every request.
     """
     return build_policy_agent()
 

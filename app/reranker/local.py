@@ -24,6 +24,12 @@ class CrossEncoderReranker(Reranker):
         self.model_name = model or DEFAULT_MODEL
         self.device = device or None
 
+        import os
+
+        os.environ.setdefault("OMP_NUM_THREADS", "1")
+        os.environ.setdefault("MKL_NUM_THREADS", "1")
+        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
         try:
             from sentence_transformers import CrossEncoder
         except ImportError as exc:

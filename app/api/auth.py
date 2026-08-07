@@ -16,9 +16,19 @@ session issuance — there is exactly one way to log in, admin or employee:
    signup request was approved, or a member an admin invited via
    ``/admin/members``). An email with no existing account has no path to a
    first login here — only an admin invite or an approved signup request
-   creates one. There is deliberately no response-content difference between
-   "no account" and "email sent" so this endpoint can't be used to enumerate
-   registered accounts.
+   creates one.
+
+   **This endpoint DOES tell the caller whether an account exists** (``status``
+   is ``sent`` or ``no_account``). That is a deliberate reversal of the original
+   design, which returned one identical message either way so the endpoint could
+   not be used to enumerate accounts. It was changed on request because the
+   uniform response stranded real users: someone whose company has not onboarded
+   got "check your inbox" and waited for an email that was never coming, with no
+   way to find out why. The accepted cost is that this endpoint is now an
+   enumeration oracle. It is mitigated, not eliminated, by per-IP rate limiting
+   (``check_rate_limit``) so existence can be checked but not harvested in bulk.
+   To restore the original guarantee, collapse the two returns back into one
+   message and drop ``status`` from the response.
 3. OAuth connect (``/auth/{provider}/authorize`` + ``/auth/{provider}/callback``)
    — admin-only, requires an existing session, used to link an org's Notion
    (etc.) workspace. Fully separate from magic-link auth; it never issues a
@@ -63,9 +73,10 @@ from ..auth import (
     send_signup_rejected_email_safe,
     send_signup_request_notification_email_safe,
 )
-from ..config.settings import ApiSettings, AuthSettings, EmailSettings
+from ..config.settings import ApiSettings, AuthSettings, EmailSettings, RateLimitSettings
 from ..core.exceptions import AuthError, ConfigurationError, OAuthError, SourceError
 from ..githublive import refresh_installation_scope
+from ..security.rate_limit import check_rate_limit
 from ..vectorstore import build_vector_store
 from ..workspaces import assert_member
 from .deps import SESSION_COOKIE_NAME, get_session
@@ -145,31 +156,60 @@ def signup(body: dict, background_tasks: BackgroundTasks, http_request: Request)
 def request_magic_link(
     body: dict,
     background_tasks: BackgroundTasks,
+    request: Request,
     settings: ApiSettings = Depends(ApiSettings.from_env),
 ):
     email = (body.get("email") or "").strip().lower()
     if not email or "@" not in email:
         raise HTTPException(status_code=400, detail="A valid email is required")
 
+    # This endpoint now REPORTS whether an account exists (see the docstring
+    # note below), which makes it an enumeration surface. Rate-limit it per
+    # client so the answer cannot be harvested in bulk: knowing one address is
+    # unregistered is a support answer, sweeping a whole domain is recon.
+    # Keyed on the caller's IP because there is no session here by definition.
+    client_ip = (request.client.host if request.client else "unknown")
+    check_rate_limit(
+        f"magic-link:{client_ip}",
+        limit=RateLimitSettings.from_env().auth_requests_per_window,
+    )
+
     # Only an EXISTING account (created at signup, or by an admin invite via
     # /admin/members) ever gets a link — there is no auto-join path left that
-    # creates a first account here. An unknown email is a silent no-op.
+    # creates a first account here.
     user = get_user_by_email(email)
     dev_link = None
-    if user is not None and user.org_id is not None:
+    known = user is not None and user.org_id is not None
+    if known:
         token = create_magic_link_token(email)
         base = (settings.frontend_url or "").rstrip("/")
         link = f"{base}/verify?token={token}"
         background_tasks.add_task(send_magic_link_email_safe, email, link)
         dev_link = _dev_link(link)
 
-    # The "message" text is always identical — never reveal whether the email
-    # is known. "dev_link" DOES vary with whether an account exists, but it's
-    # only ever non-None in console-email mode (no SMTP configured, i.e. local
-    # dev with no real inbox and no real attacker) — in any deployment where
-    # the anti-enumeration guarantee actually matters, EMAIL_SENDER=smtp and
-    # this is always None, so the response is identical either way.
-    return {"message": "If that email is eligible, a sign-in link has been sent.", "dev_link": dev_link}
+    if known:
+        return {
+            "status": "sent",
+            "message": "A sign-in link is on its way. It expires shortly and works once.",
+            "dev_link": dev_link,
+        }
+
+    # NOTE ON WORDING: we say "no account", NOT "your organisation is not
+    # registered", because the backend cannot tell those apart. `org_domains`
+    # was removed, so there is no domain->org mapping: an unknown email may
+    # belong to a company that IS set up and simply has not invited this person
+    # yet. Claiming the organisation does not exist would be wrong in exactly
+    # the common case (a new hire at an existing customer) and would send them
+    # to sign their company up a second time.
+    return {
+        "status": "no_account",
+        "message": (
+            "We couldn't find an account for that email. If your company already "
+            "uses Handbook, ask an admin to invite you. If not, you can set your "
+            "company up."
+        ),
+        "dev_link": None,
+    }
 
 
 @router.get("/magic-link/verify")
@@ -231,19 +271,18 @@ def authorize(provider: str, workspace_id: str | None = None, session=Depends(ge
         if session.role != "admin":
             raise HTTPException(status_code=403, detail="Admin role required")
     else:
-        # GitHub connects at the ORG level only. Allowing a workspace-scoped
-        # GitHub connection would introduce repo-level access control inside an
-        # org — an access-control dimension this system does not have anywhere
-        # else, and an explicit non-goal of the GitHub plan. Enforced here, not
-        # only in the UI, so a hand-crafted URL can't create one either.
-        if provider == "github":
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "GitHub connects at the organization level and cannot be "
-                    "connected to an individual workspace."
-                ),
-            )
+        # GitHub was org-level-only when first built (a per-workspace repo subset
+        # introduces repo-level access control inside an org, which nothing else
+        # here has). That restriction was lifted on request: a workspace owner may
+        # connect their own installation, which makes workspace membership a real
+        # access boundary over code as well as documents.
+        #
+        # What keeps that safe is NOT a check here but the scoping downstream:
+        # every GitHub read resolves its token and repo allowlist from
+        # ``(org_id, workspace_id)`` together, so a workspace with no GitHub
+        # connection raises rather than falling back to the org-wide one. See
+        # tests/test_github_workspace_scope.py — that no-fallback property is the
+        # whole reason this is safe, so do not "helpfully" add a fallback.
         try:
             role = assert_member(workspace_id, session.org_id, session.user_id)
         except AuthError as exc:
@@ -260,6 +299,37 @@ def authorize(provider: str, workspace_id: str | None = None, session=Depends(ge
 
     state = create_state(session.org_id, provider, workspace_id=workspace_id)
     return RedirectResponse(url=oauth_provider.authorize_url(state))
+
+
+def _reject_org_installation_for_workspace(org_id: str, installation_id: str) -> None:
+    """Refuse a workspace connect that reuses the org-wide GitHub installation.
+
+    Compares against the org-wide row's stored ``installation_id`` rather than
+    the account *type*, because the type is the wrong test: a company whose
+    GitHub is a User account would be wrongly rejected, and an employee whose
+    personal repos live under some other Organization would be wrongly allowed.
+    What actually matters is simply "is this the same installation the company
+    already connected" — if so, the workspace would read the company's repos.
+    """
+    from ..githublive import load_scope
+
+    try:
+        org_scope = load_scope(org_id)
+    except ConfigurationError:
+        return  # no org-wide GitHub connection, so nothing to collide with
+
+    if org_scope.installation_id and str(org_scope.installation_id) == str(
+        installation_id
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "That is your organization's shared GitHub installation, which is "
+                "already connected company-wide. A space should connect your own "
+                "personal GitHub account instead — pick your personal account on "
+                "GitHub's install screen, or install the app there first."
+            ),
+        )
 
 
 @router.get("/{provider}/callback")
@@ -288,9 +358,38 @@ def callback(
         oauth_provider = build_oauth_provider(provider)
 
         if isinstance(oauth_provider, GitHubAppProvider):
-            tokens, verified_installation_id = (
-                oauth_provider.exchange_code_with_installation(code, installation_id or "")
-            )
+            # Install redirect includes installation_id. Plain user OAuth (used
+            # so an *already-installed* App can still create a workspace row)
+            # does not — resolve the installation from /user/installations.
+            if installation_id:
+                tokens, verified_installation_id = (
+                    oauth_provider.exchange_code_with_installation(
+                        code, installation_id
+                    )
+                )
+            else:
+                resolved = oauth_provider.exchange_code_resolve_installation(
+                    code,
+                    prefer_user_account=(workspace_id is not None),
+                )
+                if resolved is None:
+                    # App not installed yet — send them to the install screen
+                    # with a fresh state (this one was already consumed).
+                    fresh = create_state(org_id, provider, workspace_id=workspace_id)
+                    return RedirectResponse(url=oauth_provider.install_url(fresh))
+                tokens, verified_installation_id = resolved
+
+            # A workspace connect means "connect MY personal GitHub". If it lands
+            # on the SAME installation the org-wide connection already uses, the
+            # workspace would read exactly the company's repos — two rows, one
+            # installation, no isolation. That is the "repos getting mixed"
+            # failure, and it happens easily: GitHub's install redirect hands back
+            # whichever installation the employee picked, and an employee who
+            # already has the App on the company org can pick it by accident.
+            # Refuse rather than silently widen the workspace's reach.
+            if workspace_id is not None:
+                _reject_org_installation_for_workspace(org_id, verified_installation_id)
+
             save_connection(org_id, provider, tokens, workspace_id=workspace_id)
             # The installation id is how every later content call mints a token
             # (see credentials.get_live_connection_token), so it must be stored
@@ -429,14 +528,14 @@ def _page(title: str, body: str) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{html.escape(title)} · Folio</title>
+  <title>{html.escape(title)} · Handbook</title>
   <style>{_PAGE_STYLE}</style>
 </head>
 <body>
   <div class="panel">
     <div class="brand-lockup">
       <span class="brand-mark" aria-hidden="true"></span>
-      <span class="brand-name">Folio</span>
+      <span class="brand-name">Handbook</span>
     </div>
     {body}
   </div>

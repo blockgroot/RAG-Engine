@@ -17,7 +17,26 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+
+
+def compute_expires_at(expires_in: object) -> datetime | None:
+    """Turn an OAuth ``expires_in`` (seconds) into an absolute UTC deadline.
+
+    Shared by every provider because they all receive the same field from the
+    same wire format and were each carrying an identical private copy. Tolerant
+    by design: providers legitimately omit ``expires_in`` for non-expiring
+    tokens (Notion), and a malformed value should mean "unknown expiry" — which
+    downstream treats as "do not proactively refresh" — rather than crashing a
+    connect flow that otherwise succeeded.
+    """
+    if expires_in is None:
+        return None
+    try:
+        seconds = int(expires_in)
+    except (TypeError, ValueError):
+        return None
+    return datetime.now(timezone.utc) + timedelta(seconds=seconds)
 
 
 @dataclass(frozen=True)

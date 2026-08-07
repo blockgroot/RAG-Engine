@@ -30,6 +30,40 @@ function pickDisplayJob(
   return mine.find((j) => ACTIVE.has(j.status)) ?? mine[0];
 }
 
+/**
+ * Turn a job row into something that visibly changes.
+ *
+ * The old copy was a fixed "This can take a few minutes" next to a spinner, so
+ * a healthy multi-minute sync and a dead one rendered identically — which is
+ * why refreshing "showed the same thing". These read the live progress fields
+ * instead, and fall back to the old wording only before the first report
+ * arrives (or against a backend that predates them).
+ */
+function syncHeadline(job: JobRecord | undefined): string {
+  if (job?.phase === "listing") return "Looking at what's there…";
+  return "Bringing your policies in…";
+}
+
+function syncDetail(job: JobRecord | undefined): string {
+  const total = job?.total_documents ?? null;
+  if (job?.phase === "listing") {
+    return "Checking your source for pages that are new or changed.";
+  }
+  if (total != null && total > 0) {
+    const done = job?.processed_documents ?? 0;
+    return `${done} of ${total} page${total === 1 ? "" : "s"} done. Keep this page open until it finishes.`;
+  }
+  if (total === 0) return "Nothing new to bring in — finishing up.";
+  return "This can take a few minutes. Keep this page open until it finishes.";
+}
+
+function syncPercent(job: JobRecord | undefined): number | null {
+  const total = job?.total_documents ?? null;
+  if (total == null || total <= 0) return null;
+  const done = job?.processed_documents ?? 0;
+  return Math.min(100, Math.round((done / total) * 100));
+}
+
 function syncCompleteMessage(docCount: number | null | undefined): string {
   if (docCount != null) {
     return `You’re ready — ${docCount} policy document${docCount === 1 ? "" : "s"} loaded. Start asking anytime.`;
@@ -331,11 +365,25 @@ function OnboardingInner() {
               <div className="banner banner-wait" role="status" aria-live="polite">
                 <div className="sync-wait-row">
                   <span className="sync-spinner" aria-hidden />
-                  <div>
-                    <strong>Bringing your policies in…</strong>
+                  <div style={{ flex: 1 }}>
+                    <strong>{syncHeadline(activeJob)}</strong>
                     <p className="muted" style={{ margin: "0.35rem 0 0" }}>
-                      This can take a few minutes. Keep this page open until it finishes.
+                      {syncDetail(activeJob)}
                     </p>
+                    {syncPercent(activeJob) != null && (
+                      <div
+                        className="sync-progress"
+                        role="progressbar"
+                        aria-valuenow={syncPercent(activeJob) ?? 0}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                      >
+                        <div
+                          className="sync-progress-bar"
+                          style={{ width: `${syncPercent(activeJob)}%` }}
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>

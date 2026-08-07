@@ -12,11 +12,22 @@ def test_github_suggestions_use_connected_repo_names_only():
         {"full_name": "18sana/SaveNServe", "description": None},
     ]
     qs = build_github_suggestions(repos)
-    assert qs
+    assert len(qs) == 4
     assert all("payments" not in q.lower() for q in qs)
     assert any("RAG" in q for q in qs)
     assert any("Fact-Verification-Engine" in q for q in qs)
-    assert len(qs) <= 4
+
+
+def test_github_suggestions_fill_four_chips_with_one_repo():
+    qs = build_github_suggestions(
+        [{"full_name": "18-sana/Chain-Guard", "description": "Security checks"}]
+    )
+    assert len(qs) == 4
+    assert all("Chain-Guard" in q for q in qs)
+    assert any("repository do" in q for q in qs)
+    assert any("changed recently" in q for q in qs)
+    assert any("run" in q and "locally" in q for q in qs)
+    assert any("README" in q for q in qs)
 
 
 def test_github_suggestions_empty_without_repos():
