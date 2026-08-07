@@ -17,7 +17,7 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from ..core.exceptions import LLMProviderError
+from ..core.exceptions import LLMProviderError, LLMRateLimitError
 from ..llm.base import LLMProvider
 from ..llm.metering import log_llm_call
 from ..security.untrusted import scrub_untrusted_text
@@ -26,11 +26,21 @@ from ..security.untrusted import scrub_untrusted_text
 # large documents (a couple of thousand tokens of surrounding context is plenty).
 MAX_DOC_CHARS = 8000
 
-# Ingest is an offline batch job, so a couple of short retries cost little and
-# recover most transient endpoint blips (429s, brief timeouts) that would
-# otherwise silently cost a chunk its context prefix.
+# Ingest is an offline batch job, so a couple of retries cost little and recover
+# transient endpoint blips that would otherwise silently cost a chunk its
+# context prefix.
 _MAX_ATTEMPTS = 3
 _RETRY_BACKOFF_SECONDS = 0.5
+
+# A quota rejection is NOT a transient blip and must not be retried on the
+# generic backoff. Observed against Gemini's free tier: a hard 15 requests per
+# minute, with the server itself asking for a ~41s wait. Retrying that after
+# 0.5s just spends another request against the same exhausted budget — it makes
+# the rate limiting worse and still ends in a silent quality loss. So when the
+# server names a delay we honour it, capped so one bad chunk cannot stall a
+# whole ingest run; when it names one longer than the cap, we stop retrying
+# rather than pretend a shorter wait will help.
+_MAX_RATE_LIMIT_WAIT_SECONDS = 45.0
 
 
 def _build_prompt(document_text: str, chunk: str) -> str:
@@ -80,6 +90,17 @@ def contextualize_chunk(
             context = llm.generate(prompt).strip()
             log_llm_call("ingest-context", llm, org_id=org_id)
             return f"{context}\n\n{chunk}" if context else chunk
+        except LLMRateLimitError as exc:
+            # Quota, not a blip — respect the window the server named, or give
+            # up if it is longer than we are willing to stall the run for.
+            if attempt == _MAX_ATTEMPTS - 1:
+                return chunk
+            wait = exc.retry_after
+            if wait is None:
+                wait = _RETRY_BACKOFF_SECONDS * (2**attempt)
+            if wait > _MAX_RATE_LIMIT_WAIT_SECONDS:
+                return chunk
+            time.sleep(wait)
         except LLMProviderError:
             if attempt == _MAX_ATTEMPTS - 1:
                 return chunk

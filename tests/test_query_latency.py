@@ -255,3 +255,59 @@ def test_a_generous_limit_leaves_results_unchanged(store, org_cleanup, embedder)
         )]
 
     assert hits_with(2000) == hits_with(100000)
+
+
+# -- 4. the query is embedded once, not twice --------------------------------
+
+
+class _CountingEmbedder:
+    """Wraps a real embedder and records every call's inputs."""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self.calls: list[list[str]] = []
+
+    def embed(self, texts):
+        self.calls.append(list(texts))
+        return self._inner.embed(texts)
+
+
+@requires_db
+def test_a_question_is_embedded_exactly_once(store, org_cleanup, embedder):
+    """``_run`` embeds the normalized question for the Phase 8 reuse check, and
+    ``_retrieve_for_subquestions`` used to embed the *identical string* again.
+
+    A single BGE-M3 encode measures ~38ms — the most expensive CPU step on the
+    query path — so this was ~38ms of duplicate work on every non-decomposed
+    question. It is invisible inside either function; only counting calls across
+    a whole request reveals it, which is why the regression test is shaped this
+    way rather than asserting on a timing.
+    """
+    from app.rag.factory import build_rag_pipeline
+
+    org_id = store.create_organization(f"Embed Once {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+
+    chunks = ["Full-time employees receive 25 days of paid annual leave a year."]
+    store.upsert_source_document(
+        org_id,
+        provider="test",
+        external_id="doc-1",
+        title="Annual Leave",
+        chunks=chunks,
+        embeddings=embedder.embed(chunks),
+        source_uri=None,
+        last_modified=None,
+    )
+
+    counting = _CountingEmbedder(embedder)
+    pipeline = build_rag_pipeline(
+        embedder=counting, store=store, memory=None, web_search=None
+    )
+
+    pipeline.answer("How many annual leave days do full-time employees get?", org_id)
+
+    question_embeds = [c for c in counting.calls if len(c) == 1]
+    assert len(question_embeds) == 1, (
+        f"question embedded {len(question_embeds)}x: {question_embeds}"
+    )

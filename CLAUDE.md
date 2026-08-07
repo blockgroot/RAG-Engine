@@ -1104,6 +1104,28 @@ tests/          # pytest; isolation (P2, extended with workspace-vs-org-wide and
   for exact accounting (or against an endpoint that rate-limits hard). Do not
   raise the default blindly: the ceiling here is the LLM endpoint's tolerance,
   not our CPU.
+- **The endpoint quota is the real constraint, and a 429 is NOT a transient
+  blip — treat it separately (`LLMRateLimitError`).** Diagnosed from a live
+  failure, and it retroactively explains most of this repo's "free-LLM-endpoint
+  flakiness": the configured model (`gemini-3.1-flash-lite`, Gemini's free
+  tier) allows a hard **15 requests per minute**, and the server itself asks for
+  a ~41s wait. That is why tests pass alone and fail in a full suite, and why
+  the suite's failure count wandered (6 → 7 → 11 → 13) with no code change.
+  Consequences worth keeping straight: (1) `OpenAICompatProvider` now raises
+  `LLMRateLimitError` (a **subclass** of `LLMProviderError`, so every existing
+  `except LLMProviderError` is unaffected) carrying `retry_after`, parsed from
+  `Retry-After` *or* Gemini's body hint (`"retryDelay": "41s"`), since Gemini's
+  OpenAI-compatible endpoint sets no header. (2) `contextualize_chunk` honours
+  that window instead of its generic 0.5s backoff — retrying a per-minute quota
+  after 500ms just spends another request against the same exhausted budget —
+  and **gives up rather than waiting** beyond `_MAX_RATE_LIMIT_WAIT_SECONDS`
+  (45s) so one chunk cannot stall a whole run. (3) **`INGEST_CONTEXTUAL_CONCURRENCY=8`
+  is wrong for a 15 RPM endpoint** — a burst of 8 exhausts the budget in
+  seconds and each 429 silently drops that chunk's context prefix, i.e. a fast
+  ingest that quietly produced worse retrieval. The default suits a local or
+  paid endpoint; on a free/metered one set 1–2, or point ingest at a different
+  model via `LLM_AUX_MODEL`. The default was left at 8 rather than tuned to one
+  deployment's quota, but the trap is now documented in `.env.example`.
 - **An ingestion job reports live progress — without it the UI cannot tell
   "working" from "hung".** `ingestion_jobs` gained `phase` /
   `total_documents` / `processed_documents`, written as each document finishes.
@@ -1182,6 +1204,40 @@ tests/          # pytest; isolation (P2, extended with workspace-vs-org-wide and
   discipline everywhere else. Fixing it would change retrieval behaviour, so it
   was left alone during a behaviour-preserving pass. Fix it deliberately, with
   the Phase 17 regression cases re-run, not as a drive-by.
+- **The query was embedded TWICE on the common path — fixed, and the shape of
+  the bug is worth remembering.** `_run` embeds the normalized question up front
+  (it needs the vector for the Phase 8 reuse check), then, when the question is
+  *not* decomposed, `_retrieve_for_subquestions` unconditionally embedded
+  `sub_questions[0]` — the identical string. A single BGE-M3 encode measures
+  **~38ms** locally, the most expensive CPU step on the query path, so this was
+  ~38ms of pure duplicate work on every non-decomposed question. Fixed by
+  threading a `known_vectors` map through, keyed **by text** so a mismatched or
+  stale vector can never be picked up (a miss just embeds as before). Proven by
+  counting `embed()` calls across one question: **2 → 1**, same answer, same
+  `top_score`. The general lesson: a value computed for one purpose (the reuse
+  check) and silently recomputed for another is invisible in any single
+  function — only call-counting across the whole request finds it.
+- **HNSW behaves correctly at BOTH scales — measured, and two suspected defects
+  did not reproduce.** Worth recording so nobody "fixes" a non-problem.
+  (1) At small corpus size (400 chunks) the planner **ignores** the HNSW index
+  and does a bitmap scan on `(org_id, workspace_id)` + top-N sort — 4.5ms. That
+  looks alarming but is *correct and better*: brute force at that size is fast
+  and gives **exact** nearest neighbours, where HNSW is approximate.
+  (2) At 20k chunks the planner switches to `Index Scan using
+  idx_chunks_embedding` — 2.3ms. So it picks the right strategy on its own.
+  (3) The real multi-tenant fear — HNSW post-filtering causing a *small* org in
+  a large shared table to silently get back fewer than `top_k` chunks — was
+  tested directly (30k chunks for one org, 40 for another, query the small one)
+  and **did not reproduce**: it returned the full 30, with and without
+  `hnsw.iterative_scan`. Re-run that probe before assuming otherwise.
+  **Do not force HNSW usage at small scale to "use the index"** — that would
+  trade exact results for approximate ones, i.e. a functional change.
+- **A composite `(org_id, workspace_id)` index on `chunks` was considered and
+  NOT added.** The EXPLAIN shows two bitmap index scans `BitmapAnd`-ed, which
+  looks like the textbook case for one composite index — but measured, that step
+  costs ~0.03ms of a 4.5ms query. The cost is entirely the distance sort. Adding
+  an index for 0.7% of a query's time is maintenance and write-amplification for
+  nothing; revisit only if a profile shows the filter, not the sort, dominating.
 - **The reranker downloads ~2.2GB on first use** (`bge-reranker-v2-m3`), then is
   cached; inference is ~0.3s for 30 candidates after warmup. Swap to
   `bge-reranker-base` / `cross-encoder/ms-marco-MiniLM-L-6-v2` via `RERANKER_MODEL`
@@ -1658,7 +1714,11 @@ genuinely fresh database, not an already-migrated one.
 
 **Backlog (deliberately unscheduled this round — do not drop silently):**
 - HNSW index build/query parameter tuning (`m`, `ef_construction`, `ef_search`) —
-  matters at corpus scale not yet reached.
+  matters at corpus scale not yet reached. **Partly retired by measurement**
+  (see §4's "HNSW behaves correctly at both scales") — the two specific fears
+  behind this item (index never used; small tenant under-returning in a large
+  shared table) were both tested and did not reproduce. What remains is genuine
+  *tuning* (recall/latency trade-offs at scale), not a suspected defect.
 - LLM provider-level prompt caching for the large fixed grounded-prompt prefix —
   lower priority next to query-result cache (Phase 19).
 

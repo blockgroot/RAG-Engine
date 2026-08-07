@@ -475,7 +475,14 @@ class RagPipeline:
             else:
                 sub_questions = [retrieval_question]
             hits, top_score = self._retrieve_for_subquestions(
-                org_id, question, sub_questions, workspace_id=workspace_id
+                org_id,
+                question,
+                sub_questions,
+                workspace_id=workspace_id,
+                # Already embedded above for the reuse check; without this the
+                # identical string is encoded a second time (~38ms) on every
+                # non-decomposed question.
+                known_vectors={retrieval_question: query_vec},
             )
 
         top_score_before = top_score
@@ -675,12 +682,34 @@ class RagPipeline:
         sub_questions: list[str],
         *,
         workspace_id: str | None = None,
+        known_vectors: dict[str, list[float]] | None = None,
     ) -> tuple[list[RetrievedChunk], float | None]:
-        if len(sub_questions) == 1:
-            vec = self._embedder.embed([sub_questions[0]])[0]
-            return self._retrieve_once(org_id, sub_questions[0], vec, workspace_id=workspace_id)
+        """Retrieve for one or more sub-questions.
 
-        vectors = self._embedder.embed(sub_questions)
+        ``known_vectors`` lets the caller hand in embeddings it has already
+        computed. On the common (non-decomposed) path the pipeline embeds the
+        normalized question up front — for the reuse check — and this method
+        used to embed *the identical string* a second time. A single BGE-M3
+        encode measures ~38ms locally, the most expensive CPU step on the query
+        path, so that was ~38ms of pure duplicate work on every question.
+        Keyed by text so a stale or mismatched vector cannot be picked up: a
+        miss simply embeds as before.
+        """
+        known = known_vectors or {}
+
+        if len(sub_questions) == 1:
+            only = sub_questions[0]
+            vec = known.get(only)
+            if vec is None:
+                vec = self._embedder.embed([only])[0]
+            return self._retrieve_once(org_id, only, vec, workspace_id=workspace_id)
+
+        # Embed only what the caller has not already computed, in one batch.
+        missing = [s for s in sub_questions if s not in known]
+        if missing:
+            fresh = self._embedder.embed(missing)
+            known = {**known, **dict(zip(missing, fresh))}
+        vectors = [known[s] for s in sub_questions]
         primary_text, primary_vec = sub_questions[0], vectors[0]
         extra = list(zip(sub_questions[1:], vectors[1:]))
 

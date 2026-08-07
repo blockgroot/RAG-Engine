@@ -116,6 +116,52 @@ def test_a_transient_llm_failure_is_retried_rather_than_silently_dropped():
     assert out == ["CONTEXT\n\nbody"]
 
 
+def test_a_quota_rejection_waits_the_window_the_server_named(monkeypatch):
+    """A 429 is not a blip and must not be retried on the generic backoff.
+
+    Observed live against Gemini's free tier: a hard 15 requests/minute, with
+    the server itself asking for ~41s. Retrying that after 0.5s spends another
+    request against the same exhausted budget — it makes the rate limiting worse
+    *and* still ends in a silent quality loss.
+    """
+    from app.core.exceptions import LLMRateLimitError
+
+    slept: list[float] = []
+    monkeypatch.setattr("app.ingestion.contextualize.time.sleep", slept.append)
+
+    class _RateLimitedOnce:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate(self, prompt, *, max_tokens=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise LLMRateLimitError("429", retry_after=12.0)
+            return "CONTEXT"
+
+    out = contextualize_chunks(_RateLimitedOnce(), "doc", ["body"], concurrency=1)
+
+    assert slept == [12.0], f"ignored the server's retry window: {slept}"
+    assert out == ["CONTEXT\n\nbody"]
+
+
+def test_a_quota_window_longer_than_we_will_stall_for_gives_up(monkeypatch):
+    """Honouring the window must not let one chunk stall the whole run."""
+    from app.core.exceptions import LLMRateLimitError
+
+    slept: list[float] = []
+    monkeypatch.setattr("app.ingestion.contextualize.time.sleep", slept.append)
+
+    class _LongWait:
+        def generate(self, prompt, *, max_tokens=None):
+            raise LLMRateLimitError("429", retry_after=600.0)
+
+    out = contextualize_chunks(_LongWait(), "doc", ["body"], concurrency=1)
+
+    assert slept == [], "slept on a window we said we would not wait for"
+    assert out == ["body"]
+
+
 def test_a_persistently_failing_llm_still_degrades_to_the_raw_chunk():
     """Retries must not turn a bad endpoint into a failed ingest."""
     from app.core.exceptions import LLMProviderError
