@@ -14,6 +14,7 @@ LLM call fails or returns nothing, we fall back to the original chunk unchanged.
 
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from ..core.exceptions import LLMProviderError
@@ -24,6 +25,12 @@ from ..security.untrusted import scrub_untrusted_text
 # Cap how much of the document we send as context, to bound cost/latency on very
 # large documents (a couple of thousand tokens of surrounding context is plenty).
 MAX_DOC_CHARS = 8000
+
+# Ingest is an offline batch job, so a couple of short retries cost little and
+# recover most transient endpoint blips (429s, brief timeouts) that would
+# otherwise silently cost a chunk its context prefix.
+_MAX_ATTEMPTS = 3
+_RETRY_BACKOFF_SECONDS = 0.5
 
 
 def _build_prompt(document_text: str, chunk: str) -> str:
@@ -55,13 +62,29 @@ def contextualize_chunk(
     *,
     org_id: str | None = None,
 ) -> str:
-    """Prepend a short generated context to a single chunk (best-effort)."""
-    try:
-        context = llm.generate(_build_prompt(document_text, chunk)).strip()
-        log_llm_call("ingest-context", llm, org_id=org_id)
-    except LLMProviderError:
-        return chunk
-    return f"{context}\n\n{chunk}" if context else chunk
+    """Prepend a short generated context to a single chunk (best-effort).
+
+    Retries a bounded number of times before giving up. "Best-effort" is the
+    right *failure* policy — a chunk without its context prefix is still a
+    usable chunk, and failing the whole ingest over one call would be worse —
+    but it degrades **silently**, so a transient blip costs that chunk its
+    retrieval context with nothing in the result to say so. Since ingest is an
+    offline batch job, a short backoff is nearly free and turns most transient
+    failures into successes. This matters more now that these calls run
+    concurrently: more in-flight requests means more chances to hit a
+    rate limit, and every one of them would otherwise be a silent quality loss.
+    """
+    prompt = _build_prompt(document_text, chunk)
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            context = llm.generate(prompt).strip()
+            log_llm_call("ingest-context", llm, org_id=org_id)
+            return f"{context}\n\n{chunk}" if context else chunk
+        except LLMProviderError:
+            if attempt == _MAX_ATTEMPTS - 1:
+                return chunk
+            time.sleep(_RETRY_BACKOFF_SECONDS * (2**attempt))
+    return chunk
 
 
 def contextualize_chunks(

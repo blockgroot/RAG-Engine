@@ -89,6 +89,46 @@ def test_parallel_contextualization_preserves_chunk_order():
     assert [r.split("\n\n")[0] for r in result] == [f"ctx-{i}" for i in range(5)]
 
 
+def test_a_transient_llm_failure_is_retried_rather_than_silently_dropped():
+    """Best-effort must not mean "one blip costs this chunk its context".
+
+    The degradation is invisible in the result — the chunk still stores fine,
+    just without its retrieval context — so a transient 429 would quietly cost
+    retrieval quality with nothing to show for it.
+    """
+    from app.core.exceptions import LLMProviderError
+
+    class _FlakyOnce:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate(self, prompt, *, max_tokens=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise LLMProviderError("rate limited")
+            return "CONTEXT"
+
+    llm = _FlakyOnce()
+
+    out = contextualize_chunks(llm, "doc", ["body"], concurrency=1)
+
+    assert llm.calls == 2
+    assert out == ["CONTEXT\n\nbody"]
+
+
+def test_a_persistently_failing_llm_still_degrades_to_the_raw_chunk():
+    """Retries must not turn a bad endpoint into a failed ingest."""
+    from app.core.exceptions import LLMProviderError
+
+    class _AlwaysFails:
+        def generate(self, prompt, *, max_tokens=None):
+            raise LLMProviderError("endpoint down")
+
+    out = contextualize_chunks(_AlwaysFails(), "doc", ["body"], concurrency=1)
+
+    assert out == ["body"]
+
+
 def test_concurrency_one_keeps_the_old_serial_behaviour():
     """The kill-switch has to genuinely serialize, not just cap the pool."""
     llm = _SlowLLM(delay=0.01)
