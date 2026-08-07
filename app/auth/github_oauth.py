@@ -292,7 +292,17 @@ class GitHubAppProvider(OAuthProvider):
             account = installation.get("account") or {}
             if account.get("type") == preferred_type:
                 return installation
-        # Fallback: any installation of our App the user can see.
+
+        if prefer_user_account:
+            # A workspace connect is explicitly "connect MY personal GitHub".
+            # Falling back to an Organization installation here is how a personal
+            # space silently became a window onto the whole company org — so
+            # return None instead and let the caller send them to GitHub's
+            # install screen, where they can install on their own account.
+            return None
+
+        # Org-wide connect: prefer an Organization installation but accept any,
+        # since a small company may only ever have a User-account install.
         return installations[0]
 
     def _verify_installation(

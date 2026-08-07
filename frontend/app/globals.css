@@ -583,6 +583,11 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
   display: flex;
   flex-direction: column;
 }
+.chat-scroll-anchor {
+  width: 1px;
+  height: 1px;
+  flex-shrink: 0;
+}
 .chat-log {
   flex: 1;
   overflow-y: auto;

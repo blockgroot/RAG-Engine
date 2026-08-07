@@ -895,6 +895,28 @@ tests/          # pytest; isolation (P2, extended with workspace-vs-org-wide and
   complete Folio's connect — there is no ``code``/``state``. Org "Refresh
   list" updating while a workspace still shows disconnected is the smoking
   gun: refresh only touches the existing org-wide row.
+- **A workspace GitHub connect must never land on the ORG's installation —
+  this is how "the repos got mixed".** The intended flow is: an employee makes a
+  space, invites colleagues, connects *their personal* GitHub, and the space
+  answers only about their own repos. Two paths broke that, both now closed:
+  (1) when GitHub's install redirect carried an `installation_id`, the callback
+  accepted it via `exchange_code_with_installation`, which verifies the id
+  belongs to the authorizing user but says nothing about *whose account* it is —
+  so an employee who already had the App on the company org could bind the
+  company installation to their personal space, and `prefer_user_account` was
+  only consulted on the *other* branch; (2) `_pick_installation` fell back to
+  `installations[0]`, so a workspace connect with only an Organization
+  installation silently bound that one. Both ended with the workspace row and the
+  org-wide row holding the **same `installation_id`** — identical repos, two
+  connections, zero isolation. Now: `_pick_installation(prefer_user_account=True)`
+  returns `None` rather than falling back (the caller then sends them to the
+  install screen to install on their own account), and
+  `_reject_org_installation_for_workspace` 400s a workspace connect whose
+  installation id equals the org-wide one. **It compares installation ids, not
+  account *type*** — deliberately: a company whose GitHub is a User account would
+  be wrongly rejected by a type check, and an employee whose personal repos sit
+  under some other Organization would be wrongly allowed. Proven by
+  `tests/test_github_workspace_install_isolation.py`.
 - **`state` surviving the install redirect is NOT confirmed by GitHub's docs**
   (they document `installation_id` on the setup redirect, not `state`). The
   implementation assumes it does. **Verify against a real App before trusting

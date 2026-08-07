@@ -56,6 +56,7 @@ function ChatPageInner() {
   const [busy, setBusy] = useState(false);
   const conversationId = useRef<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
   const [readyToAsk, setReadyToAsk] = useState<boolean | null>(null);
   const [workspaceSyncing, setWorkspaceSyncing] = useState(false);
@@ -122,6 +123,16 @@ function ChatPageInner() {
     };
   }, [me, askingCode, workspaceId]);
 
+  // Keep the latest turn in view on send, while tokens stream, and when done.
+  // scrollIntoView walks scrollable ancestors (chat-log and/or app-body); the
+  // old one-shot logRef.scrollTo after streamChat often no-oped when the outer
+  // shell was the real scroller, and never followed streaming tokens.
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({
+      behavior: busy ? "auto" : "smooth",
+      block: "end",
+    });
+  }, [messages, busy]);
 
   useEffect(() => {
     if (!me) return;
@@ -262,9 +273,6 @@ function ChatPageInner() {
       askingCode ? "github" : "policy"
     );
 
-    requestAnimationFrame(() => {
-      logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
-    });
   }
 
   function handleSubmit(e: React.FormEvent) {
@@ -424,6 +432,7 @@ function ChatPageInner() {
               {messages.map((m, i) => (
                 <ChatMessageView key={i} message={m} />
               ))}
+              <div ref={bottomRef} aria-hidden className="chat-scroll-anchor" />
             </div>
           )}
         </div>
