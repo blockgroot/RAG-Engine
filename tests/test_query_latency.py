@@ -23,6 +23,7 @@ sub-questions.
 from __future__ import annotations
 
 import uuid
+from collections import Counter
 
 import pytest
 
@@ -282,6 +283,14 @@ def test_a_question_is_embedded_exactly_once(store, org_cleanup, embedder):
     question. It is invisible inside either function; only counting calls across
     a whole request reveals it, which is why the regression test is shaped this
     way rather than asserting on a timing.
+
+    The assertion is "no *text* is embedded twice" rather than "exactly one
+    single-item embed". The first version of this test used the latter and was
+    fragile: when the LLM endpoint rate-limits, generation can look insufficient
+    and trigger the bounded recovery path, which legitimately embeds *different*
+    single-item queries. Counting single-item calls conflated that real extra
+    work with the duplicate work being guarded against. Re-embedding the same
+    string is the actual defect, so that is what is asserted.
     """
     from app.rag.factory import build_rag_pipeline
 
@@ -307,7 +316,9 @@ def test_a_question_is_embedded_exactly_once(store, org_cleanup, embedder):
 
     pipeline.answer("How many annual leave days do full-time employees get?", org_id)
 
-    question_embeds = [c for c in counting.calls if len(c) == 1]
-    assert len(question_embeds) == 1, (
-        f"question embedded {len(question_embeds)}x: {question_embeds}"
-    )
+    embedded: Counter[str] = Counter()
+    for call in counting.calls:
+        embedded.update(call)
+
+    repeats = {text: n for text, n in embedded.items() if n > 1}
+    assert not repeats, f"the same text was embedded more than once: {repeats}"
