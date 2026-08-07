@@ -43,7 +43,7 @@ import httpx
 
 from ..config.settings import GitHubSettings
 from ..core.exceptions import ConfigurationError, OAuthError
-from .base import OAuthProvider, OAuthTokens
+from .base import OAuthProvider, OAuthTokens, compute_expires_at
 
 _INSTALL_URL_TEMPLATE = "https://github.com/apps/{slug}/installations/new"
 _TOKEN_URL = "https://github.com/login/oauth/access_token"
@@ -135,7 +135,7 @@ class GitHubAppProvider(OAuthProvider):
             OAuthTokens(
                 access_token=access_token,
                 refresh_token=data.get("refresh_token"),
-                expires_at=self._compute_expires_at(data.get("expires_in")),
+                expires_at=compute_expires_at(data.get("expires_in")),
                 external_workspace_id=account_login,
                 external_workspace_name=(
                     f"{account_login} ({account_type})" if account_type else account_login
@@ -189,7 +189,7 @@ class GitHubAppProvider(OAuthProvider):
             OAuthTokens(
                 access_token=access_token,
                 refresh_token=data.get("refresh_token"),
-                expires_at=self._compute_expires_at(data.get("expires_in")),
+                expires_at=compute_expires_at(data.get("expires_in")),
                 external_workspace_id=login,
                 external_workspace_name=(
                     f"{login} ({account_type})" if account_type else login
@@ -230,7 +230,7 @@ class GitHubAppProvider(OAuthProvider):
         return OAuthTokens(
             access_token=access_token,
             refresh_token=data.get("refresh_token"),
-            expires_at=self._compute_expires_at(data.get("expires_in")),
+            expires_at=compute_expires_at(data.get("expires_in")),
             # The caller already knows the identity from the row being refreshed.
             external_workspace_id="",
             external_workspace_name=None,
@@ -333,12 +333,3 @@ class GitHubAppProvider(OAuthProvider):
             "organization you intend to link."
         )
 
-    @staticmethod
-    def _compute_expires_at(expires_in: object) -> datetime | None:
-        if expires_in is None:
-            return None
-        try:
-            seconds = int(expires_in)
-        except (TypeError, ValueError):
-            return None
-        return datetime.now(timezone.utc) + timedelta(seconds=seconds)

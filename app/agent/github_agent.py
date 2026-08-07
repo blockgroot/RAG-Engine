@@ -41,6 +41,7 @@ from collections.abc import Callable, Iterator
 
 from ..config.settings import GitHubAgentSettings
 from ..core.exceptions import ConfigurationError, LLMProviderError, ProviderError, SourceError
+from ..core.streaming import chunk_answer
 from ..githublive.base import CommitDetail, CommitSummary, GitHubReader, RepoReadme
 from ..llm.base import LLMProvider
 from ..rag.prompts import (
@@ -270,12 +271,7 @@ class GitHubAgent(Agent):
             question, org_id, conversation_id=conversation_id, workspace_id=workspace_id
         )
 
-        def _chunks() -> Iterator[str]:
-            text = result.answer
-            for i in range(0, len(text), chunk_chars):
-                yield text[i : i + chunk_chars]
-
-        return _chunks(), result
+        return chunk_answer(result.answer, chunk_chars), result
 
     # -- internals ---------------------------------------------------------
 

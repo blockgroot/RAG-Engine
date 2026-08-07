@@ -30,7 +30,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from ..config.settings import ApiSettings
+from ..config.settings import ApiSettings, env_bool
 from ..db import close_pool
 from ..rag import shutdown_summary_folds
 from . import admin as admin_router
@@ -48,13 +48,6 @@ from . import workspaces as workspaces_router
 load_dotenv()
 
 logger = logging.getLogger(__name__)
-
-
-def _env_flag(name: str, default: bool = True) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
@@ -109,7 +102,7 @@ def _start_model_warmup() -> threading.Thread | None:
     machine, or when running the API purely for GitHub chat (see CLAUDE.md §4 on
     the 16GB-Mac hazard).
     """
-    if not _env_flag("MODEL_WARMUP_ON_STARTUP", default=True):
+    if not env_bool("MODEL_WARMUP_ON_STARTUP", default=True):
         return None
 
     def _warm() -> None:
@@ -142,7 +135,7 @@ async def lifespan(_app: FastAPI):
     stop = threading.Event()
     worker: threading.Thread | None = None
     _start_model_warmup()
-    if _env_flag("INGEST_WORKER_IN_API", default=True):
+    if env_bool("INGEST_WORKER_IN_API", default=True):
         worker = _start_in_api_worker(stop)
     try:
         yield

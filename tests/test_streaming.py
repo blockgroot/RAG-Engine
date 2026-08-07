@@ -122,3 +122,39 @@ def test_answer_stream_with_tagged_mode_b_still_chunks_correctly():
     assert "".join(chunks) == direct.answer == streamed.answer
     assert "MODE:" not in streamed.answer
     assert streamed.response_mode == "B"
+
+
+# -- the shared chunker (app/core/streaming.py) -------------------------------
+#
+# RagPipeline and GitHubAgent carried byte-identical copies of this loop. It now
+# lives in one place so the two agents cannot drift on how text reaches SSE —
+# the *reasoning* for chunking a finished answer differs per agent and stays in
+# their docstrings; the mechanics do not.
+
+
+def test_chunk_answer_reassembles_to_the_original_text():
+    from app.core.streaming import chunk_answer
+
+    text = "Full-time employees receive 25 days of paid annual leave per year."
+
+    assert "".join(chunk_answer(text, 7)) == text
+    assert all(len(c) <= 7 for c in chunk_answer(text, 7))
+
+
+def test_chunk_answer_handles_the_edges_the_inline_copies_did_not():
+    """Empty text and a non-positive size were unguarded in both copies.
+
+    ``range(0, n, 0)`` raises and a negative step loops forever, so a caller
+    passing 0 would have hung an SSE stream rather than getting the answer.
+    """
+    from app.core.streaming import chunk_answer
+
+    assert list(chunk_answer("", 40)) == []
+    assert list(chunk_answer("hello", 0)) == ["hello"]
+    assert list(chunk_answer("hello", -5)) == ["hello"]
+
+
+def test_a_chunk_size_larger_than_the_text_yields_one_piece():
+    from app.core.streaming import chunk_answer
+
+    assert list(chunk_answer("short", 1000)) == ["short"]

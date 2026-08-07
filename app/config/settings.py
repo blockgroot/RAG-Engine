@@ -158,7 +158,7 @@ def _env_positive_int(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
-def _env_bool(name: str, default: bool) -> bool:
+def env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
         return default
@@ -643,7 +643,7 @@ class ReuseSettings:
     @classmethod
     def from_env(cls) -> "ReuseSettings":
         return cls(
-            enabled=_env_bool("RETRIEVAL_REUSE_ENABLED", DEFAULT_RETRIEVAL_REUSE_ENABLED),
+            enabled=env_bool("RETRIEVAL_REUSE_ENABLED", DEFAULT_RETRIEVAL_REUSE_ENABLED),
             threshold=float(
                 os.getenv("RETRIEVAL_REUSE_THRESHOLD") or DEFAULT_RETRIEVAL_REUSE_THRESHOLD
             ),
@@ -673,7 +673,7 @@ class RecoverySettings:
     @classmethod
     def from_env(cls) -> "RecoverySettings":
         return cls(
-            enabled=_env_bool("RECOVERY_ENABLED", DEFAULT_RECOVERY_ENABLED),
+            enabled=env_bool("RECOVERY_ENABLED", DEFAULT_RECOVERY_ENABLED),
             max_queries=int(os.getenv("RECOVERY_MAX_QUERIES") or DEFAULT_RECOVERY_MAX_QUERIES),
         )
 
@@ -692,7 +692,7 @@ class DecomposeSettings:
     @classmethod
     def from_env(cls) -> "DecomposeSettings":
         return cls(
-            enabled=_env_bool("DECOMPOSE_ENABLED", DEFAULT_DECOMPOSE_ENABLED),
+            enabled=env_bool("DECOMPOSE_ENABLED", DEFAULT_DECOMPOSE_ENABLED),
         )
 
 
@@ -725,7 +725,7 @@ class QueryCacheSettings:
     @classmethod
     def from_env(cls) -> "QueryCacheSettings":
         return cls(
-            enabled=_env_bool("QUERY_CACHE_ENABLED", DEFAULT_QUERY_CACHE_ENABLED),
+            enabled=env_bool("QUERY_CACHE_ENABLED", DEFAULT_QUERY_CACHE_ENABLED),
             ttl_seconds=int(os.getenv("QUERY_CACHE_TTL_SECONDS") or DEFAULT_QUERY_CACHE_TTL_SECONDS),
         )
 
@@ -741,7 +741,7 @@ class RateLimitSettings:
     @classmethod
     def from_env(cls) -> "RateLimitSettings":
         return cls(
-            enabled=_env_bool("RATE_LIMIT_ENABLED", DEFAULT_RATE_LIMIT_ENABLED),
+            enabled=env_bool("RATE_LIMIT_ENABLED", DEFAULT_RATE_LIMIT_ENABLED),
             chat_requests_per_window=int(
                 os.getenv("RATE_LIMIT_CHAT_REQUESTS") or DEFAULT_RATE_LIMIT_CHAT_REQUESTS
             ),
@@ -790,7 +790,7 @@ class QueryNormSettings:
     @classmethod
     def from_env(cls) -> "QueryNormSettings":
         return cls(
-            enabled=_env_bool("QUERY_NORM_ENABLED", DEFAULT_QUERY_NORM_ENABLED),
+            enabled=env_bool("QUERY_NORM_ENABLED", DEFAULT_QUERY_NORM_ENABLED),
             max_edit_distance=int(
                 os.getenv("QUERY_NORM_MAX_EDIT_DISTANCE")
                 or DEFAULT_QUERY_NORM_MAX_EDIT_DISTANCE
@@ -823,7 +823,7 @@ class WebSearchSettings:
     @classmethod
     def from_env(cls) -> "WebSearchSettings":
         return cls(
-            enabled=_env_bool("WEB_SEARCH_ENABLED", DEFAULT_WEB_SEARCH_ENABLED),
+            enabled=env_bool("WEB_SEARCH_ENABLED", DEFAULT_WEB_SEARCH_ENABLED),
             provider=(os.getenv("WEB_SEARCH_PROVIDER") or DEFAULT_WEB_SEARCH_PROVIDER).lower(),
             api_key=os.getenv("WEB_SEARCH_API_KEY"),
             max_results=int(os.getenv("WEB_SEARCH_MAX_RESULTS") or DEFAULT_WEB_SEARCH_MAX_RESULTS),
@@ -852,7 +852,7 @@ class ContextualSettings:
     @classmethod
     def from_env(cls) -> "ContextualSettings":
         return cls(
-            enabled=_env_bool("INGEST_CONTEXTUAL_ENABLED", DEFAULT_CONTEXTUAL_ENABLED),
+            enabled=env_bool("INGEST_CONTEXTUAL_ENABLED", DEFAULT_CONTEXTUAL_ENABLED),
             concurrency=_env_positive_int(
                 "INGEST_CONTEXTUAL_CONCURRENCY", DEFAULT_CONTEXTUAL_CONCURRENCY
             ),
@@ -878,8 +878,8 @@ class RetrievalSettings:
     @classmethod
     def from_env(cls) -> "RetrievalSettings":
         return cls(
-            hybrid_enabled=_env_bool("RETRIEVAL_HYBRID_ENABLED", DEFAULT_RETRIEVAL_HYBRID_ENABLED),
-            rerank_enabled=_env_bool("RETRIEVAL_RERANK_ENABLED", DEFAULT_RETRIEVAL_RERANK_ENABLED),
+            hybrid_enabled=env_bool("RETRIEVAL_HYBRID_ENABLED", DEFAULT_RETRIEVAL_HYBRID_ENABLED),
+            rerank_enabled=env_bool("RETRIEVAL_RERANK_ENABLED", DEFAULT_RETRIEVAL_RERANK_ENABLED),
             candidate_pool=int(
                 os.getenv("RETRIEVAL_CANDIDATE_POOL") or DEFAULT_RETRIEVAL_CANDIDATE_POOL
             ),

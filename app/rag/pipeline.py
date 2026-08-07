@@ -74,6 +74,7 @@ from ..config.settings import (
     WebSearchSettings,
 )
 from ..core.exceptions import LLMProviderError, WebSearchError
+from ..core.streaming import chunk_answer
 from ..embeddings.base import EmbeddingProvider
 from ..llm.base import LLMProvider
 from ..llm.metering import AUX_LLM_STAGES, log_llm_call
@@ -426,12 +427,7 @@ class RagPipeline:
             question, org_id, conversation_id=conversation_id, workspace_id=workspace_id
         )
 
-        def _chunks() -> Iterator[str]:
-            text = result.answer
-            for i in range(0, len(text), chunk_chars):
-                yield text[i : i + chunk_chars]
-
-        return _chunks(), result
+        return chunk_answer(result.answer, chunk_chars), result
 
     # -- retrieval / gate / generation / recovery --------------------------
 
