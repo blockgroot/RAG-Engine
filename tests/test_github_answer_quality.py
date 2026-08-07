@@ -318,6 +318,36 @@ def test_mode_tag_never_leaks_into_the_user_visible_answer():
     assert "MODE" not in response.answer
     assert response.answer == "Clean answer."
 
+
+def test_the_answer_prompt_forbids_narrating_our_own_truncation():
+    """Observed in the UI: a real answer ended with
+
+        "(Note: The provided text was truncated, so this covers everything up
+        to the architecture documentation links.)"
+
+    The *honesty* is required — CLAUDE.md §4 is explicit that silently-shortened
+    evidence is the dangerous case, because the model would otherwise answer
+    confidently from half a README. What leaked is the **framing**: "the
+    provided text" is our plumbing, not something the reader asked about. So the
+    rule stays and the phrasing is constrained.
+
+    This is the same class of bug as the MODE-tag leak above, but it cannot be
+    stripped mechanically the way a tag can — it is free prose, so the fix has
+    to live in the prompt.
+    """
+    from app.rag.prompts import build_github_answer_prompt
+
+    prompt = build_github_answer_prompt("What does it do?", "EVIDENCE")
+
+    # The requirement to disclose an incomplete read must survive.
+    assert "truncated" in prompt
+
+    # ...but the model must be told how to say it.
+    lowered = prompt.lower()
+    for banned in ("provided text", "reader's terms"):
+        assert banned in lowered, f"prompt no longer constrains phrasing: {banned!r}"
+
+
 def test_about_only_mode_a_fetches_commits_for_richer_answer():
     """README 404 + Mode A from catalog description still recovers commits.
 
