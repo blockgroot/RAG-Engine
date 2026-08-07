@@ -1,0 +1,257 @@
+"""Query-path latency work — behaviour must be identical, only cheaper.
+
+Three independent costs on the read path, each measured before being changed:
+
+1. **The corpus was refetched per question.** ``_normalize_for_retrieval``
+   eagerly called ``list_chunk_texts`` — an unbounded ``SELECT content FROM
+   chunks WHERE org_id = ...`` — while the normalizer caches its per-org
+   dictionary for the life of the process. So every question after the first
+   shipped the whole corpus over the wire and discarded it unread, and a
+   decomposed question did it once *per sub-question*.
+2. **Independent searches ran serially.** Vector and keyword for one query, and
+   every sub-question's pair, are independent round trips that were issued one
+   after another.
+3. **The keyword search was unbounded.** Every chunk matching the tsquery came
+   back with full content plus a computed cosine, to keep 30 of them.
+
+These tests pin the *behaviour* (identical results), not the timings — a
+wall-clock assertion would be flaky on shared CI. The speedups were measured
+separately on a 400-chunk corpus: ~40% for one question, ~48% for three
+sub-questions.
+"""
+
+from __future__ import annotations
+
+import uuid
+
+import pytest
+
+from app.config.settings import QueryNormSettings
+from app.rag.query_normalize import CorpusSpellNormalizer
+from app.rag.retrieval import HybridRetriever
+from app.vectorstore.base import RetrievedChunk
+
+from .conftest import requires_db
+
+_ON = QueryNormSettings(enabled=True)
+
+
+# -- 1. the corpus is read once, not once per question ------------------------
+
+
+def test_corpus_is_read_only_on_a_dictionary_cache_miss():
+    """The whole point: the thunk must not be called on a cache hit."""
+    calls = {"n": 0}
+
+    def corpus():
+        calls["n"] += 1
+        return ["annual leave entitlement policy handbook"]
+
+    norm = CorpusSpellNormalizer(_ON)
+    for _ in range(5):
+        norm.normalize("what is the anual leave", "org-1", corpus)
+
+    assert calls["n"] == 1, "corpus was refetched despite a cached dictionary"
+
+
+def test_each_org_still_builds_its_own_dictionary():
+    """Laziness must not accidentally share one org's vocabulary with another."""
+    seen: list[str] = []
+
+    def corpus_for(org: str):
+        def thunk():
+            seen.append(org)
+            return [f"{org}specificvocabulary term"]
+
+        return thunk
+
+    norm = CorpusSpellNormalizer(_ON)
+    norm.normalize("hello there", "org-a", corpus_for("org-a"))
+    norm.normalize("hello there", "org-b", corpus_for("org-b"))
+
+    assert seen == ["org-a", "org-b"]
+
+
+def test_a_plain_iterable_still_works():
+    """Scripts and tests pass a list; that path must behave identically."""
+    norm = CorpusSpellNormalizer(_ON)
+
+    out = norm.normalize("what is the anual leave", "org-1", ["annual leave policy"])
+
+    assert "annual" in out
+
+
+def test_normalization_survives_a_store_that_cannot_list_chunks():
+    """A store without the optional capability must degrade, not raise."""
+
+    def exploding():
+        raise NotImplementedError
+
+    norm = CorpusSpellNormalizer(_ON)
+
+    assert norm.normalize("anual leave", "org-1", exploding) == "anual leave"
+
+
+# -- 2. concurrent first stage returns exactly what serial did ----------------
+
+
+class _RecordingStore:
+    """Fake store that records call order and returns deterministic hits."""
+
+    def __init__(self) -> None:
+        self.vector_calls: list[str] = []
+        self.keyword_calls: list[str] = []
+
+    def _hit(self, tag: str, i: int, score: float) -> RetrievedChunk:
+        return RetrievedChunk(
+            content=f"{tag}-{i}",
+            score=score,
+            document_id=f"doc-{tag}-{i}",
+            chunk_index=i,
+            org_id="org-1",
+            document_title=tag,
+        )
+
+    def query(self, org_id, query_embedding, top_k=5, workspace_id=None):
+        tag = f"v{int(query_embedding[0])}"
+        self.vector_calls.append(tag)
+        return [self._hit(tag, i, 0.9 - i * 0.1) for i in range(3)]
+
+    def keyword_search(self, org_id, query_text, query_embedding, top_k=30, workspace_id=None):
+        self.keyword_calls.append(query_text)
+        return [self._hit(f"k-{query_text}", i, 0.5 - i * 0.1) for i in range(2)]
+
+
+def _serial_equivalent(retriever, store, org_id, pairs, pool):
+    """What the old sequential loop produced, for a direct comparison."""
+    out = []
+    for q_text, q_vec in pairs:
+        v = store.query(org_id, q_vec, top_k=pool)
+        k = store.keyword_search(org_id, q_text, q_vec, top_k=pool)
+        out.append(retriever._rrf_fuse([v, k], retriever._settings.rrf_k))
+    return out
+
+
+def test_concurrent_first_stage_matches_the_serial_result_exactly():
+    """RRF fusion is order-sensitive, so completion order must not leak in."""
+    store = _RecordingStore()
+    retriever = HybridRetriever(store, reranker=None)
+    pairs = [("first question", [1.0]), ("second question", [2.0]), ("third", [3.0])]
+
+    concurrent = retriever._first_stage_all("org-1", pairs, 30)
+    expected = _serial_equivalent(retriever, store, "org-1", pairs, 30)
+
+    assert [[c.document_id for c in lst] for lst in concurrent] == [
+        [c.document_id for c in lst] for lst in expected
+    ]
+
+
+def test_every_sub_question_is_searched_exactly_once():
+    """Concurrency must not drop or duplicate a sub-question."""
+    store = _RecordingStore()
+    retriever = HybridRetriever(store, reranker=None)
+    pairs = [("alpha", [1.0]), ("beta", [2.0]), ("gamma", [3.0])]
+
+    retriever._first_stage_all("org-1", pairs, 30)
+
+    assert sorted(store.keyword_calls) == ["alpha", "beta", "gamma"]
+    assert len(store.vector_calls) == 3
+
+
+def test_a_store_without_keyword_search_still_returns_vector_hits():
+    """The NotImplementedError fallback has to survive the move into a thread."""
+
+    class _VectorOnly(_RecordingStore):
+        def keyword_search(self, *a, **kw):
+            raise NotImplementedError
+
+    retriever = HybridRetriever(_VectorOnly(), reranker=None)
+
+    lists = retriever._first_stage_all("org-1", [("q", [1.0])], 30)
+
+    assert len(lists) == 1 and lists[0], "vector hits were lost with keyword search absent"
+
+
+# -- 3. the keyword search is bounded ----------------------------------------
+
+
+@requires_db
+def test_keyword_search_respects_the_candidate_limit(store, org_cleanup, embedder):
+    """A common term must not pull the whole corpus back to return top_k.
+
+    Measured before the fix on a 400-chunk corpus: the term "leave" fetched 160
+    rows to return 30, a ratio that grows linearly with corpus size.
+    """
+    from app.config.settings import DatabaseSettings
+    from app.vectorstore.pgvector_store import PgVectorStore
+
+    org_id = store.create_organization(f"KW Limit {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+
+    chunks = [f"annual leave policy section {i} for department {i}" for i in range(25)]
+    store.upsert_source_document(
+        org_id,
+        provider="test",
+        external_id="doc-1",
+        title="Leave",
+        chunks=chunks,
+        embeddings=embedder.embed(chunks),
+        source_uri=None,
+        last_modified=None,
+    )
+
+    base = DatabaseSettings.from_env()
+    capped = PgVectorStore(
+        settings=DatabaseSettings(
+            url=base.url,
+            embedding_dim=base.embedding_dim,
+            pool_min_size=base.pool_min_size,
+            pool_max_size=base.pool_max_size,
+            keyword_candidate_limit=5,
+        )
+    )
+    vec = embedder.embed(["annual leave"])[0]
+
+    hits = capped.keyword_search(org_id, "leave", vec, top_k=30)
+
+    assert 0 < len(hits) <= 5, "candidate limit did not bound the result set"
+
+
+@requires_db
+def test_a_generous_limit_leaves_results_unchanged(store, org_cleanup, embedder):
+    """At realistic corpus sizes the cap must be a genuine no-op."""
+    from app.config.settings import DatabaseSettings
+    from app.vectorstore.pgvector_store import PgVectorStore
+
+    org_id = store.create_organization(f"KW NoOp {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+
+    chunks = [f"annual leave policy section {i}" for i in range(12)]
+    store.upsert_source_document(
+        org_id,
+        provider="test",
+        external_id="doc-1",
+        title="Leave",
+        chunks=chunks,
+        embeddings=embedder.embed(chunks),
+        source_uri=None,
+        last_modified=None,
+    )
+    vec = embedder.embed(["annual leave"])[0]
+    base = DatabaseSettings.from_env()
+
+    def hits_with(limit: int):
+        s = PgVectorStore(
+            settings=DatabaseSettings(
+                url=base.url,
+                embedding_dim=base.embedding_dim,
+                pool_min_size=base.pool_min_size,
+                pool_max_size=base.pool_max_size,
+                keyword_candidate_limit=limit,
+            )
+        )
+        return [(h.document_id, h.chunk_index) for h in s.keyword_search(
+            org_id, "leave", vec, top_k=30
+        )]
+
+    assert hits_with(2000) == hits_with(100000)

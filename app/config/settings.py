@@ -56,6 +56,7 @@ DEFAULT_GITHUB_FALLBACK_RESPONSE = (
 # Connection-pool sizing for the Postgres backing store.
 DEFAULT_DB_POOL_MIN_SIZE = 1
 DEFAULT_DB_POOL_MAX_SIZE = 10
+DEFAULT_KEYWORD_CANDIDATE_LIMIT = 2000   # rows BM25 may rank for one query
 
 # External content sources (Phase 4). Only "notion" exists so far.
 DEFAULT_SOURCE_TYPE = "notion"
@@ -238,6 +239,11 @@ class DatabaseSettings:
     embedding_dim: int = DEFAULT_EMBEDDING_DIM
     pool_min_size: int = DEFAULT_DB_POOL_MIN_SIZE
     pool_max_size: int = DEFAULT_DB_POOL_MAX_SIZE
+    # Ceiling on rows the keyword (BM25) search pulls back for one query. The
+    # query was previously unbounded, so a common term's cost grew with the
+    # corpus. Set high enough to be a no-op at realistic sizes; see
+    # ``PgVectorStore.keyword_search`` for what changes past it.
+    keyword_candidate_limit: int = DEFAULT_KEYWORD_CANDIDATE_LIMIT
 
     @classmethod
     def from_env(cls) -> "DatabaseSettings":
@@ -246,6 +252,9 @@ class DatabaseSettings:
             embedding_dim=int(os.getenv("EMBEDDING_DIM") or DEFAULT_EMBEDDING_DIM),
             pool_min_size=int(os.getenv("DB_POOL_MIN_SIZE") or DEFAULT_DB_POOL_MIN_SIZE),
             pool_max_size=int(os.getenv("DB_POOL_MAX_SIZE") or DEFAULT_DB_POOL_MAX_SIZE),
+            keyword_candidate_limit=_env_positive_int(
+                "KEYWORD_CANDIDATE_LIMIT", DEFAULT_KEYWORD_CANDIDATE_LIMIT
+            ),
         )
 
 

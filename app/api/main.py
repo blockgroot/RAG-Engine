@@ -91,10 +91,57 @@ def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
     return thread
 
 
+def _start_model_warmup() -> threading.Thread | None:
+    """Load the embedder (and reranker) in the background at startup.
+
+    Both are multi-GB local models loaded lazily on first use, so without this
+    the *first* person to ask a question pays the entire model-load cost inside
+    their request — seconds of apparently-hung chat, once per process restart.
+    Warming moves that cost to boot, where nobody is waiting on it.
+
+    Runs on a daemon thread rather than blocking ``lifespan`` so the API still
+    starts (and serves login, admin, and GitHub chat, none of which need these
+    models) while the weights load. Failures are swallowed deliberately: warmup
+    is an optimization, and a machine that cannot load the models should fail on
+    the first retrieval request with a real error, not refuse to boot at all.
+
+    Opt out with ``MODEL_WARMUP_ON_STARTUP=false`` — worth doing on a low-RAM
+    machine, or when running the API purely for GitHub chat (see CLAUDE.md §4 on
+    the 16GB-Mac hazard).
+    """
+    if not _env_flag("MODEL_WARMUP_ON_STARTUP", default=True):
+        return None
+
+    def _warm() -> None:
+        try:
+            from ..embeddings import build_embedding_provider
+
+            # Encode one trivial string: constructing the provider loads the
+            # weights, but the first real encode still pays lazy CUDA/MPS graph
+            # setup, so do both here rather than leaving half the cost behind.
+            build_embedding_provider().embed(["warmup"])
+        except Exception:  # noqa: BLE001 - warmup must never block startup
+            logger.warning("embedding model warmup failed", exc_info=True)
+
+        try:
+            from ..config.settings import RetrievalSettings
+            from ..reranker import build_reranker
+
+            if RetrievalSettings.from_env().rerank_enabled:
+                build_reranker()
+        except Exception:  # noqa: BLE001
+            logger.warning("reranker warmup failed", exc_info=True)
+
+    thread = threading.Thread(target=_warm, name="model-warmup", daemon=True)
+    thread.start()
+    return thread
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     stop = threading.Event()
     worker: threading.Thread | None = None
+    _start_model_warmup()
     if _env_flag("INGEST_WORKER_IN_API", default=True):
         worker = _start_in_api_worker(stop)
     try:

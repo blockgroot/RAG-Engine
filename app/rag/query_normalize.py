@@ -37,7 +37,7 @@ import logging
 import re
 import threading
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from symspellpy import SymSpell, Verbosity
 
@@ -213,11 +213,23 @@ class CorpusSpellNormalizer:
             else:
                 self._by_org.pop(org_id, None)
 
-    def normalize(self, question: str, org_id: str, corpus_texts: Iterable[str]) -> str:
+    def normalize(
+        self,
+        question: str,
+        org_id: str,
+        corpus_texts: Iterable[str] | Callable[[], Iterable[str]],
+    ) -> str:
         """Return ``question`` with OOV tokens corrected toward corpus vocab.
 
         If normalization is disabled or the corpus is empty, returns ``question``
         unchanged. Never raises — spelling is best-effort bookkeeping for recall.
+
+        ``corpus_texts`` may be a **callable** returning the texts, which is how
+        callers should pass it: the per-org dictionary is cached for the life of
+        the process, so on every query after the first the texts were fetched,
+        shipped over the wire, and thrown away unread. Passing a thunk means the
+        corpus is only read on an actual cache miss. A plain iterable still
+        works (tests, scripts) and behaves identically.
         """
         if not self._settings.enabled or not question.strip():
             return question
@@ -274,14 +286,23 @@ class CorpusSpellNormalizer:
                 buf.append(tok)
         return "".join(buf)
 
-    def _symspell_for(self, org_id: str, corpus_texts: Iterable[str]) -> SymSpell | None:
+    def _symspell_for(
+        self,
+        org_id: str,
+        corpus_texts: Iterable[str] | Callable[[], Iterable[str]],
+    ) -> SymSpell | None:
         with self._lock:
             cached = self._by_org.get(org_id)
             if cached is not None:
                 return cached
 
+        # Only now is the corpus actually needed. Resolving the thunk here
+        # rather than at the call site is the whole point: the early return
+        # above is taken on every query after the first.
+        texts = corpus_texts() if callable(corpus_texts) else corpus_texts
+
         counts = build_vocab_counts(
-            corpus_texts, min_word_length=self._settings.min_word_length
+            texts, min_word_length=self._settings.min_word_length
         )
         if not counts:
             return None

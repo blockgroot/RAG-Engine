@@ -1081,16 +1081,34 @@ class RagPipeline:
         return f"{WEB_ANSWER_LABEL}\n\n{answer}\n\nSources:\n{sources}"
 
     def _normalize_for_retrieval(self, question: str, org_id: str) -> str:
-        """Cheap corpus-vocab spelling fix for the retrieval key (Phase 17)."""
+        """Cheap corpus-vocab spelling fix for the retrieval key (Phase 17).
+
+        The corpus is passed as a **thunk**, not fetched here. ``list_chunk_texts``
+        is an unbounded ``SELECT content FROM chunks WHERE org_id = ...`` — the
+        org's entire corpus text over the wire — and the normalizer caches its
+        per-org dictionary for the life of the process, so eagerly fetching meant
+        shipping the whole corpus on every question only to discard it unread
+        (and once *per sub-question* on a decomposed query). Now it is read only
+        on a genuine cache miss.
+        """
         if not self._query_norm.enabled:
             return question
+
+        def corpus() -> list[str]:
+            # `list_chunk_texts` is optional on the VectorStore interface. An
+            # empty corpus makes normalize() a no-op, which is exactly the old
+            # behaviour — and it must be handled *here* rather than letting the
+            # error reach normalize(), which would log it as an exception on
+            # every single query.
+            try:
+                return self._store.list_chunk_texts(org_id)
+            except NotImplementedError:
+                return []
+
         try:
-            texts = self._store.list_chunk_texts(org_id)
-        except NotImplementedError:
-            return question
+            return self._query_norm.normalize(question, org_id, corpus)
         except Exception:  # noqa: BLE001
             return question
-        return self._query_norm.normalize(question, org_id, texts)
 
     # -- Capability A: conversation memory helpers -------------------------
 

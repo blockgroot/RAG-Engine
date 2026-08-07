@@ -1121,6 +1121,67 @@ tests/          # pytest; isolation (P2, extended with workspace-vs-org-wide and
   collapsed into `app/api/serialize.py::job_payload` — they had already drifted
   once, and adding three fields to four places is how a field silently never
   reaches the UI.
+- **Query-path latency: three costs removed, all behaviour-preserving, each
+  measured before being changed.** The rule for this pass was "same answers,
+  less work" — no gate, prompt, ranking, or scoping logic was touched.
+  (1) **The corpus was refetched on every question.** `_normalize_for_retrieval`
+  eagerly called `list_chunk_texts(org_id)` — an unbounded `SELECT content FROM
+  chunks WHERE org_id = ...` — while `CorpusSpellNormalizer` caches its per-org
+  SymSpell dictionary for the life of the process and *nothing invalidates it*.
+  So every question after the first shipped the org's entire corpus text over
+  the wire and discarded it unread, and a decomposed question did it once per
+  sub-question. `normalize()` now accepts a **thunk**, resolved only on a real
+  cache miss (measured 3 fetches → 1 across 3 questions). The `NotImplementedError`
+  fallback moved *inside* the thunk deliberately: letting it reach `normalize()`
+  would log an exception on every query for stores lacking the optional
+  capability.
+  (2) **Independent searches ran serially.** Vector and keyword for one query,
+  and every sub-question's pair, are independent DB round trips issued one after
+  another — a 3-part compound question serialized 6 queries. `_first_stage_all`
+  runs them on a pool capped at `_MAX_RETRIEVAL_WORKERS = 4`, well under
+  `DB_POOL_MAX_SIZE` (10) so one question cannot drain the shared pool. Results
+  are reassembled **by index, not completion order** — RRF fusion is
+  order-sensitive across lists. **Honest measurement:** this is worth *nothing*
+  on a toy corpus (10 chunks: 4ms → 4ms, thread overhead cancels a
+  sub-millisecond query) and clearly worth it at realistic scale (400 chunks:
+  ~40% for one question, ~48% for three sub-questions). Don't re-benchmark it on
+  the golden corpus and conclude it's useless.
+  (3) **`keyword_search` was unbounded.** Every chunk matching the tsquery came
+  back with a computed cosine, a `documents` join, and its full text — to keep
+  30. Measured: 160 rows to return 30 on 400 chunks, a ratio that grows linearly
+  with the corpus. Postgres now orders by `ts_rank` and keeps
+  `KEYWORD_CANDIDATE_LIMIT` (2000) rows, with the per-row cosine/join/transfer
+  moved *after* the cut via a CTE. **This is the one change with a behavioural
+  edge:** past the limit BM25 ranks the top-N by `ts_rank` rather than every
+  match, and its IDF is computed over that subset. The default is high enough to
+  be a no-op at realistic sizes, and where it bites the old behaviour was
+  pathological. Regression: `tests/test_query_latency.py`.
+- **Models are warmed at API startup, not inside the first question**
+  (`_start_model_warmup`, `MODEL_WARMUP_ON_STARTUP`, default on). BGE-M3 and the
+  reranker load lazily, so the first person to ask anything after a restart paid
+  the whole multi-GB load inside their request. Warmup runs on a **daemon
+  thread**, not blocking `lifespan`, so login/admin/GitHub chat — none of which
+  need these models — stay available while weights load, and a machine that
+  can't load them fails on the first retrieval with a real error rather than
+  refusing to boot. Disabled in the test suite via an autouse conftest fixture:
+  most API tests never retrieve, and the ones that do already share
+  session-scoped provider fixtures.
+- **Redis was considered for this pass and deliberately NOT added.** The
+  instinct is reasonable — but none of the three costs above was "our cache is
+  too slow"; every one was work that didn't need doing at all, and a Postgres
+  `query_answer_cache` already exists (Phase 19). Redis would add a second
+  datastore to run, back up, secure, and fail independently, against §1's
+  single self-hosted image, while fixing none of them. If caching genuinely
+  becomes the bottleneck later, an in-process LRU is the next step; a network
+  hop is the one after that, and only with signals showing it's needed.
+- **Known, deliberately unfixed: `list_chunk_texts` ignores `workspace_id`.** A
+  workspace question builds its spelling dictionary from the whole *org's* chunk
+  text. This is not a content leak — only vocabulary is derived and no chunk is
+  ever returned — but org-wide documents can influence how a workspace query is
+  spelled, which is inconsistent with the "a workspace sees only its own rows"
+  discipline everywhere else. Fixing it would change retrieval behaviour, so it
+  was left alone during a behaviour-preserving pass. Fix it deliberately, with
+  the Phase 17 regression cases re-run, not as a drive-by.
 - **The reranker downloads ~2.2GB on first use** (`bge-reranker-v2-m3`), then is
   cached; inference is ~0.3s for 30 candidates after warmup. Swap to
   `bge-reranker-base` / `cross-encoder/ms-marco-MiniLM-L-6-v2` via `RERANKER_MODEL`
