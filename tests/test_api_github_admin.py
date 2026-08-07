@@ -240,7 +240,7 @@ def test_a_workspace_owner_may_connect_github(client, store, org_cleanup, monkey
     )
 
     assert response.status_code in (302, 307)
-    assert "installations/new" in response.headers["location"]
+    assert "login/oauth/authorize" in response.headers["location"]
 
 
 @requires_db

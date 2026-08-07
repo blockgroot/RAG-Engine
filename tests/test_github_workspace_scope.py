@@ -168,7 +168,7 @@ def test_a_workspace_owner_may_now_start_a_github_connect(client, store, org_cle
     )
 
     assert response.status_code in (302, 307)
-    assert "github.com/apps/acme-rag/installations/new" in response.headers["location"]
+    assert "github.com/login/oauth/authorize" in response.headers["location"]
 
 
 @requires_db

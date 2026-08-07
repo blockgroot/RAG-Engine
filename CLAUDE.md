@@ -876,10 +876,16 @@ tests/          # pytest; isolation (P2, extended with workspace-vs-org-wide and
   endpoint returns a **form-encoded** body and `response.json()` blows up — a
   classic first-integration trap, and the reason `github_oauth.py` sets it
   explicitly.
-- **GitHub's install URL is `/apps/<slug>/installations/new`, not an OAuth
-  authorize endpoint.** Installing is what grants repository access; a plain
-  `/login/oauth/authorize` would authorize a *user* without installing anything,
-  leaving a token that cannot read the org's repos.
+- **GitHub connect starts with user OAuth; install only if needed.**
+  ``authorize_url`` is ``/login/oauth/authorize`` so an *already-installed*
+  App (common: org Sources connected first, then a workspace) still returns
+  to our callback and creates the workspace ``oauth_connections`` row. If
+  OAuth finds no installation, the callback redirects to
+  ``/apps/<slug>/installations/new``. Editing GitHub's install *settings*
+  page and clicking the homepage link (``localhost:3000``) does **not**
+  complete Folio's connect — there is no ``code``/``state``. Org "Refresh
+  list" updating while a workspace still shows disconnected is the smoking
+  gun: refresh only touches the existing org-wide row.
 - **`state` surviving the install redirect is NOT confirmed by GitHub's docs**
   (they document `installation_id` on the setup redirect, not `state`). The
   implementation assumes it does. **Verify against a real App before trusting

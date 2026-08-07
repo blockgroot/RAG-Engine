@@ -287,9 +287,27 @@ def callback(
         oauth_provider = build_oauth_provider(provider)
 
         if isinstance(oauth_provider, GitHubAppProvider):
-            tokens, verified_installation_id = (
-                oauth_provider.exchange_code_with_installation(code, installation_id or "")
-            )
+            # Install redirect includes installation_id. Plain user OAuth (used
+            # so an *already-installed* App can still create a workspace row)
+            # does not — resolve the installation from /user/installations.
+            if installation_id:
+                tokens, verified_installation_id = (
+                    oauth_provider.exchange_code_with_installation(
+                        code, installation_id
+                    )
+                )
+            else:
+                resolved = oauth_provider.exchange_code_resolve_installation(
+                    code,
+                    prefer_user_account=(workspace_id is not None),
+                )
+                if resolved is None:
+                    # App not installed yet — send them to the install screen
+                    # with a fresh state (this one was already consumed).
+                    fresh = create_state(org_id, provider, workspace_id=workspace_id)
+                    return RedirectResponse(url=oauth_provider.install_url(fresh))
+                tokens, verified_installation_id = resolved
+
             save_connection(org_id, provider, tokens, workspace_id=workspace_id)
             # The installation id is how every later content call mints a token
             # (see credentials.get_live_connection_token), so it must be stored
