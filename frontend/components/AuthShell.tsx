@@ -29,7 +29,7 @@ export function AuthShell({
       <header className="landing-topnav">
         <Link href="/" className="landing-brand">
           <span className="brand-mark" aria-hidden />
-          <span>Folio</span>
+          <span>Handbook</span>
         </Link>
         <nav className="landing-topnav-actions" aria-label="Account">
           {variant === "login" ? (

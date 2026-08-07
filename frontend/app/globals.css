@@ -1,12 +1,12 @@
 /*
-  Aesthetic: "Folio Depth" — Soft UI Evolution + dimensional layering
+  Aesthetic: "Handbook Depth" — Soft UI Evolution + dimensional layering
   (ui-ux-pro-max). Enterprise Work AI clarity with illustrated empty states,
   product mock, and purposeful motion. Display: Plus Jakarta Sans · teal accent.
 */
 
 :root {
-  --font-display: var(--font-folio), "Avenir Next", "Segoe UI", sans-serif;
-  --font-body: var(--font-folio), "Avenir Next", "Segoe UI", sans-serif;
+  --font-display: var(--font-brand), "Avenir Next", "Segoe UI", sans-serif;
+  --font-body: var(--font-brand), "Avenir Next", "Segoe UI", sans-serif;
   --font-ui-fallback: "Avenir Next", "Segoe UI", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
@@ -57,7 +57,7 @@ html, body {
   margin: 0;
   padding: 0;
   color: var(--ink);
-  font-family: var(--font-folio), var(--font-body), var(--font-ui-fallback);
+  font-family: var(--font-brand), var(--font-body), var(--font-ui-fallback);
   overflow-x: hidden;
 }
 
@@ -100,7 +100,7 @@ button:focus:not(:focus-visible) {
 }
 
 h1, h2, h3 {
-  font-family: var(--font-folio), var(--font-display), var(--font-ui-fallback);
+  font-family: var(--font-brand), var(--font-display), var(--font-ui-fallback);
   font-weight: 650;
   letter-spacing: -0.03em;
   margin: 0;
@@ -158,7 +158,7 @@ button { font-family: inherit; }
 }
 .brand-text { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
 .brand-name {
-  font-family: var(--font-folio), var(--font-display), var(--font-ui-fallback);
+  font-family: var(--font-brand), var(--font-display), var(--font-ui-fallback);
   font-weight: 650;
   font-size: 1.05rem;
   letter-spacing: -0.02em;

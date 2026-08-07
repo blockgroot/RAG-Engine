@@ -74,7 +74,7 @@ class GitHubAppProvider(OAuthProvider):
         That is correct for a first install, but when BrowseSource is already
         installed on the account (common: org Sources connected earlier, then a
         workspace tries to connect), GitHub opens the *settings* page for the
-        existing installation instead of completing our callback — Folio never
+        existing installation instead of completing our callback — Handbook never
         gets ``code``/``state``, so the workspace row is never created. Org
         "Refresh list" still works because that row already existed.
 

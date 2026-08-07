@@ -488,14 +488,14 @@ def _page(title: str, body: str) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{html.escape(title)} · Folio</title>
+  <title>{html.escape(title)} · Handbook</title>
   <style>{_PAGE_STYLE}</style>
 </head>
 <body>
   <div class="panel">
     <div class="brand-lockup">
       <span class="brand-mark" aria-hidden="true"></span>
-      <span class="brand-name">Folio</span>
+      <span class="brand-name">Handbook</span>
     </div>
     {body}
   </div>

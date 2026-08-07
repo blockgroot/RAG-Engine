@@ -54,7 +54,7 @@ export default function LoginPage() {
     >
       <div className="auth-v2-card-head">
         <p className="auth-v2-card-kicker">Welcome back</p>
-        <h2>Sign in to Folio</h2>
+        <h2>Sign in to Handbook</h2>
         <p className="muted">
           Enter your work email — we&rsquo;ll send a one-time link. No password
           needed.

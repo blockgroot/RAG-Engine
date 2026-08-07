@@ -892,7 +892,7 @@ tests/          # pytest; isolation (P2, extended with workspace-vs-org-wide and
   OAuth finds no installation, the callback redirects to
   ``/apps/<slug>/installations/new``. Editing GitHub's install *settings*
   page and clicking the homepage link (``localhost:3000``) does **not**
-  complete Folio's connect — there is no ``code``/``state``. Org "Refresh
+  complete Handbook's connect — there is no ``code``/``state``. Org "Refresh
   list" updating while a workspace still shows disconnected is the smoking
   gun: refresh only touches the existing org-wide row.
 - **A workspace GitHub connect must never land on the ORG's installation —
