@@ -1087,6 +1087,40 @@ tests/          # pytest; isolation (P2, extended with workspace-vs-org-wide and
   include the context prefix, and both the embedding and the keyword index benefit.
   It's best-effort (falls back to the raw chunk on LLM error) and adds one LLM call
   per chunk *at ingest only* — never at query time.
+- **Ingest contextualization is the ingestion bottleneck, and it now runs in
+  parallel (`INGEST_CONTEXTUAL_CONCURRENCY`, default 8).** "One LLM call per
+  chunk at ingest only" is cheap per call but was issued strictly serially, so a
+  page of 10 chunks meant 10 sequential round trips and a whole workspace meant
+  hundreds — the reason a sync sat at "Syncing…" for minutes. The calls are
+  independent by construction, so they now go through a bounded
+  `ThreadPoolExecutor`; `Executor.map` preserves order, which matters because
+  completion order becoming *storage* order would silently corrupt what gets
+  embedded (pinned by
+  `test_ingest_progress.py::test_parallel_contextualization_preserves_chunk_order`).
+  Safe because `LLMProvider.generate` holds no per-call state and the
+  `openai`/`httpx` client is thread-safe. **Known, accepted cost:** `last_usage`
+  is a shared mutable field, so `log_llm_call`'s per-chunk token attribution
+  becomes approximate under concurrency — set `INGEST_CONTEXTUAL_CONCURRENCY=1`
+  for exact accounting (or against an endpoint that rate-limits hard). Do not
+  raise the default blindly: the ceiling here is the LLM endpoint's tolerance,
+  not our CPU.
+- **An ingestion job reports live progress — without it the UI cannot tell
+  "working" from "hung".** `ingestion_jobs` gained `phase` /
+  `total_documents` / `processed_documents`, written as each document finishes.
+  Before, a job was binary (`queued`→`running`→`succeeded`) with `doc_count`
+  set only at the very end, so every poll during a multi-minute sync returned
+  **byte-identical JSON** — the real reason refreshing the onboarding page
+  "showed the same thing". That was a missing-data bug, not a polling bug;
+  shortening the 8s poll interval would have made it worse, not better.
+  `RagPipeline`-style discipline applies: progress is observability and must
+  never be load-bearing, so `queue.update_progress` swallows its own failures
+  and `ingest_source`'s `report()` wrapper swallows the sink's — a dead
+  progress backend costs a stale spinner, never a lost sync. `update_progress`
+  writes only the fields passed, so advancing the counter can't wipe the phase.
+  The four duplicated job-serialization dicts in `admin.py`/`workspaces.py`
+  collapsed into `app/api/serialize.py::job_payload` — they had already drifted
+  once, and adding three fields to four places is how a field silently never
+  reaches the UI.
 - **The reranker downloads ~2.2GB on first use** (`bge-reranker-v2-m3`), then is
   cached; inference is ~0.3s for 30 candidates after warmup. Swap to
   `bge-reranker-base` / `cross-encoder/ms-marco-MiniLM-L-6-v2` via `RERANKER_MODEL`
@@ -1152,7 +1186,7 @@ Defined in `app/db/schema.sql`. Current tables:
 | `conversation_last_retrieval` | (Phase 8) The chunks retrieved on a conversation's most recent turn, for the pre-retrieval reuse check. One upserted row per conversation: `conversation_id` (PK), `org_id`, `chunks` (TEXT holding a JSON array of `{content, document_id, chunk_index, org_id}` — no embeddings), `updated_at`. |
 | `users` | (Phase 10) An application user. `id`, `email` (UNIQUE), `org_id` (nullable — but never issued a session while null), `role` (`admin`\|`member`), `created_at`. Phase 21: `sessions_revoked_at` — sessions with JWT `iat` ≤ this timestamp are rejected. |
 | `oauth_connections` | (Phase 10) One org's OAuth credential for one provider. `id`, `org_id`, `provider`, `external_workspace_id`, `external_workspace_name`, `access_token_encrypted`, `refresh_token_encrypted`, `expires_at`, `connected_by_user_id`, `created_at`. `UNIQUE (org_id, provider)` — one row per org per provider, so a lookup can never be cross-tenant-ambiguous. Tokens are encrypted via `app/security/crypto.py`; this table never stores plaintext. Google Integration: optional **`source_config` JSONB** (e.g. `{folder_id, folder_name}`) — preserved on reconnect (upsert does not clobber it). |
-| `ingestion_jobs` | (Phase 10/12) A durable, pollable record of an admin-triggered fetch→chunk→embed→store run. `id`, `org_id`, `connection_id`, `status` (`queued`\|`running`\|`succeeded`\|`failed`), `doc_count`, `error`, `started_at`, `finished_at`, `created_at`. Consumed by a Postgres-backed worker (`SELECT ... FOR UPDATE SKIP LOCKED`), not an in-process background task. |
+| `ingestion_jobs` | (Phase 10/12) A durable, pollable record of an admin-triggered fetch→chunk→embed→store run. `id`, `org_id`, `connection_id`, `status` (`queued`\|`running`\|`succeeded`\|`failed`), `doc_count`, `error`, `started_at`, `finished_at`, `created_at`. Consumed by a Postgres-backed worker (`SELECT ... FOR UPDATE SKIP LOCKED`), not an in-process background task. Live progress: `phase` (`listing`\|`indexing`), `total_documents`, `processed_documents` — written *during* the run, unlike `doc_count` which is the terminal figure; they are what let a poller distinguish a working sync from a hung one (see §4). Added via `ALTER TABLE ... ADD COLUMN` placed **after** this table's own `CREATE TABLE`, same ordering rule as `workspace_id`. |
 | `magic_link_tokens` | (Phase 13) Single-use employee login tokens. `token_hash` (PK — only a SHA-256 hash is ever stored, never the token), `email`, `expires_at`, `consumed_at`, `created_at`. |
 | `oauth_states` | (Phase 13) Single-use, server-side OAuth `state` values for CSRF/replay protection on the admin connect flow. `state` (PK), `org_id`, `provider`, `expires_at`, `consumed_at`, `created_at`. |
 | `query_answer_cache` | (Phase 19) Short-TTL cache of standalone Q→A results keyed by `(org_id, normalized_question_hash)`. Workspace-within-a-Workspace: the hash input folds in `workspace_id` (no new column) so an org-wide and a workspace's cache entry for the same question text never collide. |

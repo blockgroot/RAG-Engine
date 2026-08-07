@@ -71,6 +71,7 @@ DEFAULT_MEMORY_RECENT_TURNS = 3
 # hybrid search + cross-encoder reranking (query-time). See app/rag/retrieval.py
 # and CLAUDE.md §2/§4 for the reasoning behind each value.
 DEFAULT_CONTEXTUAL_ENABLED = True          # prepend LLM context to each chunk at ingest
+DEFAULT_CONTEXTUAL_CONCURRENCY = 8         # parallel context calls per document
 DEFAULT_RETRIEVAL_HYBRID_ENABLED = True    # fuse vector + keyword (BM25-style) search
 DEFAULT_RETRIEVAL_RERANK_ENABLED = True    # cross-encoder rerank of the candidate pool
 DEFAULT_RETRIEVAL_CANDIDATE_POOL = 16      # how many candidates to fetch/rerank before top_k
@@ -143,6 +144,17 @@ DEFAULT_API_PORT = 8000
 # Outbound email for magic links (Phase 10). "console" (default, dev) prints the
 # link instead of sending it — no external dependency required to run locally.
 DEFAULT_EMAIL_SENDER = "console"
+
+
+def _env_positive_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -816,13 +828,26 @@ class ContextualSettings:
 
     When enabled, a short LLM-generated context is prepended to each chunk before
     it is embedded and stored, so the chunk carries its surrounding meaning.
+
+    ``concurrency`` is how many of those per-chunk calls run at once within a
+    single document. It exists because this was the ingestion bottleneck by a
+    wide margin: the calls are independent, network-bound, and were issued
+    strictly one after another, so a 15-page workspace could sit at "Syncing…"
+    for minutes while the CPU did nothing. Set to 1 to restore the old serial
+    behaviour (e.g. against an endpoint that rate-limits aggressively).
     """
 
     enabled: bool = DEFAULT_CONTEXTUAL_ENABLED
+    concurrency: int = DEFAULT_CONTEXTUAL_CONCURRENCY
 
     @classmethod
     def from_env(cls) -> "ContextualSettings":
-        return cls(enabled=_env_bool("INGEST_CONTEXTUAL_ENABLED", DEFAULT_CONTEXTUAL_ENABLED))
+        return cls(
+            enabled=_env_bool("INGEST_CONTEXTUAL_ENABLED", DEFAULT_CONTEXTUAL_ENABLED),
+            concurrency=_env_positive_int(
+                "INGEST_CONTEXTUAL_CONCURRENCY", DEFAULT_CONTEXTUAL_CONCURRENCY
+            ),
+        )
 
 
 @dataclass(frozen=True)

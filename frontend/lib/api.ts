@@ -136,6 +136,10 @@ export interface JobRecord {
   status: "queued" | "running" | "succeeded" | "failed";
   doc_count: number | null;
   error: string | null;
+  /** Live progress — these change while `status` is still "running". */
+  phase: string | null;
+  total_documents: number | null;
+  processed_documents: number;
   started_at: string | null;
   finished_at: string | null;
   created_at: string;

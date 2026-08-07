@@ -14,6 +14,8 @@ LLM call fails or returns nothing, we fall back to the original chunk unchanged.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from ..core.exceptions import LLMProviderError
 from ..llm.base import LLMProvider
 from ..llm.metering import log_llm_call
@@ -68,8 +70,40 @@ def contextualize_chunks(
     chunks: list[str],
     *,
     org_id: str | None = None,
+    concurrency: int = 1,
 ) -> list[str]:
-    """Contextualize every chunk of one document, in order."""
-    return [
-        contextualize_chunk(llm, document_text, chunk, org_id=org_id) for chunk in chunks
-    ]
+    """Contextualize every chunk of one document, in order.
+
+    With ``concurrency > 1`` the per-chunk calls are issued from a bounded
+    thread pool. This was *the* ingestion bottleneck: one page of 10 chunks
+    meant 10 strictly-serial network round trips, and a whole workspace meant
+    hundreds — minutes of wall clock spent waiting, not computing. The calls
+    are independent by construction (each sees the same document text and its
+    own chunk), so ordering only matters for the *result*, which
+    ``Executor.map`` preserves regardless of completion order.
+
+    Safe to parallelize because ``LLMProvider.generate`` holds no per-call
+    state and the underlying ``openai``/``httpx`` client is thread-safe. The
+    one shared mutable field is ``last_usage``, read by ``log_llm_call`` for
+    token metering — under concurrency those per-chunk token counts become
+    approximate (a call may read a sibling's usage). That is an accepted cost:
+    metering is observability, and ingest-context is the one stage where the
+    numbers are least load-bearing. Set ``concurrency=1`` to get exact
+    accounting back.
+    """
+    if len(chunks) <= 1 or concurrency <= 1:
+        return [
+            contextualize_chunk(llm, document_text, chunk, org_id=org_id)
+            for chunk in chunks
+        ]
+
+    workers = min(concurrency, len(chunks))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(
+            pool.map(
+                lambda chunk: contextualize_chunk(
+                    llm, document_text, chunk, org_id=org_id
+                ),
+                chunks,
+            )
+        )

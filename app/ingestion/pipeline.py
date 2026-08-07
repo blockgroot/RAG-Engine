@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Callable
 
 from ..config.settings import ChunkingSettings, ContextualSettings
 from ..embeddings import build_embedding_provider
@@ -24,6 +25,12 @@ from ..llm.base import LLMProvider
 from ..sources.base import SourceAdapter, SourceRef
 from ..vectorstore import build_vector_store
 from ..vectorstore.base import VectorStore
+
+
+# (phase, processed, total) -> None. Reported as each document finishes so a
+# caller (the job worker) can persist live progress; the pipeline itself stays
+# storage-agnostic and never imports app/jobs.
+ProgressCallback = Callable[[str, int, int], None]
 
 
 def _aware(dt: datetime | None) -> datetime | None:
@@ -154,6 +161,7 @@ def ingest_source(
     contextual: ContextualSettings | None = None,
     incremental: bool = True,
     workspace_id: str | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> IngestResult:
     """Ingest documents from ``adapter`` into ``org_id``.
 
@@ -179,6 +187,16 @@ def ingest_source(
     if contextual.enabled and llm is None:
         llm = build_aux_llm_provider()
 
+    def report(phase: str, processed: int, total: int) -> None:
+        """Surface progress without letting observability break the run."""
+        if on_progress is None:
+            return
+        try:
+            on_progress(phase, processed, total)
+        except Exception:  # noqa: BLE001 - a progress sink must never fail ingestion
+            pass
+
+    report("listing", 0, 0)
     refs = adapter.list_documents()
     stored = {
         d.external_id: d
@@ -206,7 +224,11 @@ def ingest_source(
     added_n = 0
     updated_n = 0
 
-    for ref, is_update in [(r, False) for r in to_add] + [(r, True) for r in to_update]:
+    work = [(r, False) for r in to_add] + [(r, True) for r in to_update]
+    total_work = len(work)
+    report("indexing", 0, total_work)
+
+    for done, (ref, is_update) in enumerate(work, start=1):
         doc = adapter.fetch_document(ref.external_id)
         clean = preprocess(sanitize_ingest_text(doc.content))
         chunks = chunk_text(clean, chunking)
@@ -222,10 +244,13 @@ def ingest_source(
                 workspace_id=workspace_id,
             )
             skipped += 1
+            report("indexing", done, total_work)
             continue
 
         if contextual.enabled and llm is not None:
-            chunks = contextualize_chunks(llm, clean, chunks, org_id=org_id)
+            chunks = contextualize_chunks(
+                llm, clean, chunks, org_id=org_id, concurrency=contextual.concurrency
+            )
 
         embeddings = embedder.embed(chunks)
         document_id = store.upsert_source_document(
@@ -245,6 +270,7 @@ def ingest_source(
             updated_n += 1
         else:
             added_n += 1
+        report("indexing", done, total_work)
 
     return IngestResult(
         documents_ingested=added_n + updated_n,

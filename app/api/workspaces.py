@@ -36,6 +36,7 @@ from ..sources import (
 from ..db.connection import get_connection
 from ..workspaces import create_workspace, invite_member, list_my_workspaces, list_workspace_members
 from .deps import SessionClaims, get_session, get_workspace_role, require_workspace_owner
+from .serialize import job_payload
 from .setup_status import content_setup_status
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
@@ -332,19 +333,7 @@ def trigger_ingest(
 
 @router.get("/{workspace_id}/jobs")
 def get_jobs(workspace_id: str, session: SessionClaims = Depends(get_session), _role: str = Depends(get_workspace_role)):
-    return [
-        {
-            "id": j.id,
-            "connection_id": j.connection_id,
-            "status": j.status,
-            "doc_count": j.doc_count,
-            "error": j.error,
-            "started_at": j.started_at.isoformat() if j.started_at else None,
-            "finished_at": j.finished_at.isoformat() if j.finished_at else None,
-            "created_at": j.created_at.isoformat(),
-        }
-        for j in list_jobs(session.org_id, workspace_id=workspace_id)
-    ]
+    return [job_payload(j) for j in list_jobs(session.org_id, workspace_id=workspace_id)]
 
 
 @router.get("/{workspace_id}/jobs/{job_id}")
@@ -357,13 +346,4 @@ def get_job_status(
     job = get_job(session.org_id, job_id)
     if job is None or job.workspace_id != workspace_id:
         raise HTTPException(status_code=404, detail="No such job for this workspace")
-    return {
-        "id": job.id,
-        "connection_id": job.connection_id,
-        "status": job.status,
-        "doc_count": job.doc_count,
-        "error": job.error,
-        "started_at": job.started_at.isoformat() if job.started_at else None,
-        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
-        "created_at": job.created_at.isoformat(),
-    }
+    return job_payload(job)

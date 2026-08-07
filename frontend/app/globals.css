@@ -991,6 +991,21 @@ table .role-chip.role-admin,
 }
 @keyframes sync-spin { to { transform: rotate(360deg); } }
 
+/* Determinate progress for a sync, shown only once the page count is known. */
+.sync-progress {
+  margin-top: 0.6rem;
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  overflow: hidden;
+}
+.sync-progress-bar {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.4s ease;
+}
+
 .waiting-card { max-width: 480px; margin-top: var(--space-4); }
 .pulse-dot {
   width: 10px;

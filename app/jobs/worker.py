@@ -30,12 +30,24 @@ def run_once() -> queue.IngestionJob | None:
         token = get_live_connection_token(job.org_id, provider, workspace_id=job.workspace_id)
         config = get_connection_config(job.org_id, provider, workspace_id=job.workspace_id)
         adapter = build_source_adapter(provider, token=token, config=config)
+
+        def report(phase: str, processed: int, total: int) -> None:
+            """Persist live progress so a poller sees the run advance.
+
+            Without this the job row is unchanged from ``running`` until the
+            very end, so a multi-minute sync looks identical to a hung one.
+            """
+            queue.update_progress(
+                job.id, phase=phase, processed=processed, total=total
+            )
+
         result = ingest_source(
             adapter,
             job.org_id,
             provider=provider,
             incremental=True,
             workspace_id=job.workspace_id,
+            on_progress=report,
         )
         # doc_count = pages written this run (added + updated), not remote total.
         queue.mark_succeeded(job.id, result.documents_ingested)
