@@ -16,9 +16,19 @@ session issuance — there is exactly one way to log in, admin or employee:
    signup request was approved, or a member an admin invited via
    ``/admin/members``). An email with no existing account has no path to a
    first login here — only an admin invite or an approved signup request
-   creates one. There is deliberately no response-content difference between
-   "no account" and "email sent" so this endpoint can't be used to enumerate
-   registered accounts.
+   creates one.
+
+   **This endpoint DOES tell the caller whether an account exists** (``status``
+   is ``sent`` or ``no_account``). That is a deliberate reversal of the original
+   design, which returned one identical message either way so the endpoint could
+   not be used to enumerate accounts. It was changed on request because the
+   uniform response stranded real users: someone whose company has not onboarded
+   got "check your inbox" and waited for an email that was never coming, with no
+   way to find out why. The accepted cost is that this endpoint is now an
+   enumeration oracle. It is mitigated, not eliminated, by per-IP rate limiting
+   (``check_rate_limit``) so existence can be checked but not harvested in bulk.
+   To restore the original guarantee, collapse the two returns back into one
+   message and drop ``status`` from the response.
 3. OAuth connect (``/auth/{provider}/authorize`` + ``/auth/{provider}/callback``)
    — admin-only, requires an existing session, used to link an org's Notion
    (etc.) workspace. Fully separate from magic-link auth; it never issues a
@@ -63,9 +73,10 @@ from ..auth import (
     send_signup_rejected_email_safe,
     send_signup_request_notification_email_safe,
 )
-from ..config.settings import ApiSettings, AuthSettings, EmailSettings
+from ..config.settings import ApiSettings, AuthSettings, EmailSettings, RateLimitSettings
 from ..core.exceptions import AuthError, ConfigurationError, OAuthError, SourceError
 from ..githublive import refresh_installation_scope
+from ..security.rate_limit import check_rate_limit
 from ..vectorstore import build_vector_store
 from ..workspaces import assert_member
 from .deps import SESSION_COOKIE_NAME, get_session
@@ -145,31 +156,60 @@ def signup(body: dict, background_tasks: BackgroundTasks, http_request: Request)
 def request_magic_link(
     body: dict,
     background_tasks: BackgroundTasks,
+    request: Request,
     settings: ApiSettings = Depends(ApiSettings.from_env),
 ):
     email = (body.get("email") or "").strip().lower()
     if not email or "@" not in email:
         raise HTTPException(status_code=400, detail="A valid email is required")
 
+    # This endpoint now REPORTS whether an account exists (see the docstring
+    # note below), which makes it an enumeration surface. Rate-limit it per
+    # client so the answer cannot be harvested in bulk: knowing one address is
+    # unregistered is a support answer, sweeping a whole domain is recon.
+    # Keyed on the caller's IP because there is no session here by definition.
+    client_ip = (request.client.host if request.client else "unknown")
+    check_rate_limit(
+        f"magic-link:{client_ip}",
+        limit=RateLimitSettings.from_env().auth_requests_per_window,
+    )
+
     # Only an EXISTING account (created at signup, or by an admin invite via
     # /admin/members) ever gets a link — there is no auto-join path left that
-    # creates a first account here. An unknown email is a silent no-op.
+    # creates a first account here.
     user = get_user_by_email(email)
     dev_link = None
-    if user is not None and user.org_id is not None:
+    known = user is not None and user.org_id is not None
+    if known:
         token = create_magic_link_token(email)
         base = (settings.frontend_url or "").rstrip("/")
         link = f"{base}/verify?token={token}"
         background_tasks.add_task(send_magic_link_email_safe, email, link)
         dev_link = _dev_link(link)
 
-    # The "message" text is always identical — never reveal whether the email
-    # is known. "dev_link" DOES vary with whether an account exists, but it's
-    # only ever non-None in console-email mode (no SMTP configured, i.e. local
-    # dev with no real inbox and no real attacker) — in any deployment where
-    # the anti-enumeration guarantee actually matters, EMAIL_SENDER=smtp and
-    # this is always None, so the response is identical either way.
-    return {"message": "If that email is eligible, a sign-in link has been sent.", "dev_link": dev_link}
+    if known:
+        return {
+            "status": "sent",
+            "message": "A sign-in link is on its way. It expires shortly and works once.",
+            "dev_link": dev_link,
+        }
+
+    # NOTE ON WORDING: we say "no account", NOT "your organisation is not
+    # registered", because the backend cannot tell those apart. `org_domains`
+    # was removed, so there is no domain->org mapping: an unknown email may
+    # belong to a company that IS set up and simply has not invited this person
+    # yet. Claiming the organisation does not exist would be wrong in exactly
+    # the common case (a new hire at an existing customer) and would send them
+    # to sign their company up a second time.
+    return {
+        "status": "no_account",
+        "message": (
+            "We couldn't find an account for that email. If your company already "
+            "uses Handbook, ask an admin to invite you. If not, you can set your "
+            "company up."
+        ),
+        "dev_link": None,
+    }
 
 
 @router.get("/magic-link/verify")

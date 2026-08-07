@@ -369,9 +369,27 @@ their policy documents; their employees ask questions and get answers grounded i
     DNS-verified AND had auto-join explicitly enabled by an admin; **this domain
     auto-join mechanism was removed in a later simplification pass — see the
     bullet below — and replaced by direct admin-invited members.** The response
-    to a magic-link request is **always the same generic message**, whether or
-    not the email is known — this endpoint must never be usable to enumerate
-    registered accounts. Magic-link
+    to a magic-link request **used to be an identical generic message** whether
+    or not the email was known, so the endpoint could not be used to enumerate
+    accounts. **That was REVERSED on request** — it now returns
+    `status: "sent" | "no_account"` and says which. Why: the uniform response
+    stranded real people. Someone whose company had not onboarded was told to
+    check their inbox for a mail that was never sent, with no way to learn why,
+    and the frontend made it worse by discarding the server's careful
+    "if that email is eligible…" and asserting a link *had* been sent. **The
+    accepted cost is that this endpoint is now an account-enumeration oracle**;
+    it is *mitigated, not eliminated*, by per-IP rate limiting
+    (`RATE_LIMIT_AUTH_REQUESTS`, its own budget — reusing the chat limit would
+    couple an anonymous per-IP endpoint to an authenticated per-org one, and an
+    office behind one NAT shares this bucket). **Wording constraint that is easy
+    to get wrong:** the message says *no account for this email*, never *your
+    organisation is not registered* — `org_domains` was dropped, so there is no
+    domain→org mapping and the backend genuinely cannot tell "company not a
+    customer" from "customer who hasn't invited you", the latter being the
+    common new-hire case. Pinned by
+    `test_magic_link_never_claims_the_organisation_is_unregistered`. To restore
+    the original guarantee, collapse the two returns into one message and drop
+    `status`. Magic-link
     tokens and OAuth `state` values are single-use and server-side (only a
     SHA-256 hash of a magic-link token is ever stored), consumed atomically on
     lookup so a captured link/URL can't be replayed. **A session is never issued

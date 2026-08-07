@@ -106,6 +106,10 @@ DEFAULT_QUERY_CACHE_TTL_SECONDS = 300
 # API rate limiting (Phase 21) — chat/query endpoint.
 DEFAULT_RATE_LIMIT_ENABLED = True
 DEFAULT_RATE_LIMIT_CHAT_REQUESTS = 30
+# Unauthenticated magic-link requests per IP per window. Higher than chat
+# because a whole office behind one NAT shares this bucket, but far below
+# what bulk account enumeration needs.
+DEFAULT_RATE_LIMIT_AUTH_REQUESTS = 60
 DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
 
 # Ingestion sanitization (Phase 21).
@@ -736,6 +740,12 @@ class RateLimitSettings:
 
     enabled: bool = DEFAULT_RATE_LIMIT_ENABLED
     chat_requests_per_window: int = DEFAULT_RATE_LIMIT_CHAT_REQUESTS
+    # Separate budget for the unauthenticated magic-link endpoint. It must NOT
+    # share the chat limit: chat is per-org and per-session, this is per-IP with
+    # no session at all, so a whole office behind one NAT shares a single
+    # bucket. Sized to bound bulk account enumeration (see app/api/auth.py)
+    # while leaving room for everyone in a company to sign in at once.
+    auth_requests_per_window: int = DEFAULT_RATE_LIMIT_AUTH_REQUESTS
     window_seconds: int = DEFAULT_RATE_LIMIT_WINDOW_SECONDS
 
     @classmethod
@@ -744,6 +754,9 @@ class RateLimitSettings:
             enabled=env_bool("RATE_LIMIT_ENABLED", DEFAULT_RATE_LIMIT_ENABLED),
             chat_requests_per_window=int(
                 os.getenv("RATE_LIMIT_CHAT_REQUESTS") or DEFAULT_RATE_LIMIT_CHAT_REQUESTS
+            ),
+            auth_requests_per_window=int(
+                os.getenv("RATE_LIMIT_AUTH_REQUESTS") or DEFAULT_RATE_LIMIT_AUTH_REQUESTS
             ),
             window_seconds=int(
                 os.getenv("RATE_LIMIT_WINDOW_SECONDS") or DEFAULT_RATE_LIMIT_WINDOW_SECONDS

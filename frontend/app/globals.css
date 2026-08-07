@@ -2672,3 +2672,36 @@ table .role-chip.role-admin,
     animation: none !important;
   }
 }
+
+/* ── "No account for that email" ──────────────────────────────────────────
+   Distinct from both success and error: nothing went wrong, the person simply
+   is not set up yet. Uses the warning/fallback hue rather than the destructive
+   one, and leads with actions instead of an apology.
+*/
+.auth-v2-notfound {
+  align-items: center;
+  text-align: center;
+  gap: var(--space-2);
+}
+.auth-v2-notfound-icon {
+  display: grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 50%;
+  color: var(--provenance-none);
+  background: color-mix(in srgb, var(--provenance-none) 12%, transparent);
+}
+.auth-v2-notfound-title {
+  margin: 0 0 0.3rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+.auth-v2-notfound-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  justify-content: center;
+  width: 100%;
+}
+.auth-v2-notfound-actions > * { flex: 1 1 10rem; }

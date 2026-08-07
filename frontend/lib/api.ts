@@ -146,6 +146,12 @@ export interface JobRecord {
 }
 
 export interface MagicLinkResponse {
+  // "sent"       — an account exists and a link was emailed.
+  // "no_account" — nothing was sent; the caller should be told why.
+  // The backend deliberately distinguishes these (it used to return one
+  // identical message either way) so someone whose company has not onboarded
+  // is not left waiting on an email that is never coming.
+  status: "sent" | "no_account";
   message: string;
   // Only ever set when the backend has no real email sender configured
   // (EMAIL_SENDER=console, i.e. local dev) — lets the UI offer a direct link

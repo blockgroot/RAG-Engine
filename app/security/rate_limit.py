@@ -21,15 +21,27 @@ def _window_start(now: datetime, window_seconds: int) -> datetime:
     return datetime.fromtimestamp(start, tz=timezone.utc)
 
 
-def check_rate_limit(scope_key: str, *, settings: RateLimitSettings | None = None) -> None:
-    """Increment the counter for ``scope_key``; raise 429 if over limit."""
+def check_rate_limit(
+    scope_key: str,
+    *,
+    settings: RateLimitSettings | None = None,
+    limit: int | None = None,
+) -> None:
+    """Increment the counter for ``scope_key``; raise 429 if over limit.
+
+    ``limit`` overrides the default chat budget. It exists because the endpoints
+    guarded here have genuinely different shapes: chat is authenticated and
+    scoped per org, while the magic-link endpoint is anonymous and scoped per
+    IP — so an office behind one NAT shares a single bucket there and needs a
+    more generous allowance than one user's chat session.
+    """
     settings = settings or RateLimitSettings.from_env()
     if not settings.enabled:
         return
 
     now = datetime.now(timezone.utc)
     window = _window_start(now, settings.window_seconds)
-    limit = settings.chat_requests_per_window
+    limit = limit if limit is not None else settings.chat_requests_per_window
 
     with get_connection() as conn:
         row = conn.execute(
