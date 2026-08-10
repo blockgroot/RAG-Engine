@@ -7,6 +7,7 @@ import { ConnectionCard } from "@/components/ConnectionCard";
 import { useMe } from "@/lib/useMe";
 import { api, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
 import { ACTIVE_JOB_STATUSES, useJobPolling } from "@/lib/jobPoll";
+import { clearedSyncChanges } from "@/lib/syncChanges";
 
 const PROVIDERS: ("notion" | "google" | "github")[] = ["notion", "google", "github"];
 const ACTIVE_STATUSES = ACTIVE_JOB_STATUSES;
@@ -45,10 +46,14 @@ export default function ConnectionsPage() {
   const bannerRef = useRef<HTMLDivElement | null>(null);
   const connectionsRef = useRef<ConnectionRecord[]>([]);
 
+  const changesGen = useRef(0);
+
   const refreshChanges = useCallback(async (list: ConnectionRecord[]) => {
     if (list.length === 0) return;
+    const gen = ++changesGen.current;
     setChecking(true);
     const next: Record<string, SyncChanges> = {};
+    const failedIds: string[] = [];
     await Promise.all(
       list.map(async (c) => {
         // GitHub has no ingestion at all -- nothing is stored, so there is no
@@ -59,11 +64,18 @@ export default function ConnectionsPage() {
         try {
           next[c.id] = await api.checkConnectionChanges(c.id);
         } catch {
-          // Source blip — leave prior state; don't block the page.
+          // Drop prior has_changes so a failed re-check after sync cannot
+          // leave a sticky Update button.
+          failedIds.push(c.id);
         }
       })
     );
-    setChangesById((prev) => ({ ...prev, ...next }));
+    if (gen !== changesGen.current) return; // newer check won
+    setChangesById((prev) => {
+      const merged = { ...prev, ...next };
+      for (const id of failedIds) delete merged[id];
+      return merged;
+    });
     setChecking(false);
   }, []);
 
@@ -126,6 +138,12 @@ export default function ConnectionsPage() {
         if (curr === "succeeded") {
           setMessage(updateCompleteMessage(job.doc_count));
           setError(null);
+          // Hide Update immediately — Drive change-check is slow; without this
+          // a stale has_changes from before the sync keeps the button up.
+          setChangesById((prev) => ({
+            ...prev,
+            [connectionId]: clearedSyncChanges(connectionId),
+          }));
           refreshChanges(connections);
           requestAnimationFrame(() => {
             bannerRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -139,11 +157,20 @@ export default function ConnectionsPage() {
     }
   }, [jobs, connections, refreshChanges]);
 
+  const updateInFlight = useRef<Set<string>>(new Set());
+
   async function handleUpdate(connectionId: string) {
     const latest = latestJobByConnection(jobs)[connectionId];
     if (latest && ACTIVE_STATUSES.has(latest.status)) return;
+    if (updateInFlight.current.has(connectionId)) return;
+    updateInFlight.current.add(connectionId);
     setError(null);
     setMessage("Updating…");
+    // Optimistic: don't keep offering Update while the job is starting.
+    setChangesById((prev) => ({
+      ...prev,
+      [connectionId]: clearedSyncChanges(connectionId),
+    }));
     try {
       const { job_id } = await api.triggerIngest(connectionId);
       setWatchedJobId(job_id);
@@ -156,6 +183,8 @@ export default function ConnectionsPage() {
       setError(err instanceof Error ? err.message : "Could not start the update.");
       setMessage(null);
       setWatchedJobId(null);
+    } finally {
+      updateInFlight.current.delete(connectionId);
     }
   }
 

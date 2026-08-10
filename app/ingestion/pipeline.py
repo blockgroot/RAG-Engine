@@ -226,9 +226,14 @@ def ingest_source(
 
     work = [(r, False) for r in to_add] + [(r, True) for r in to_update]
     total_work = len(work)
-    report("indexing", 0, total_work)
+    # Report before the first page so the UI is not stuck on "listing" while
+    # we fetch/contextualize/embed page 1 (that used to look like a hang at 0/N).
+    report("preparing", 0, total_work)
 
     for done, (ref, is_update) in enumerate(work, start=1):
+        # processed stays at done-1 until this page is fully stored — but phase
+        # advances so pollers can see movement inside a long document.
+        report("preparing", done - 1, total_work)
         doc = adapter.fetch_document(ref.external_id)
         clean = preprocess(sanitize_ingest_text(doc.content))
         chunks = chunk_text(clean, chunking)
@@ -248,10 +253,12 @@ def ingest_source(
             continue
 
         if contextual.enabled and llm is not None:
+            report("contextualizing", done - 1, total_work)
             chunks = contextualize_chunks(
                 llm, clean, chunks, org_id=org_id, concurrency=contextual.concurrency
             )
 
+        report("embedding", done - 1, total_work)
         embeddings = embedder.embed(chunks)
         document_id = store.upsert_source_document(
             org_id,

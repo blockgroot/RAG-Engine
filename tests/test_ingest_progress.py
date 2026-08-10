@@ -260,9 +260,13 @@ def test_ingest_reports_progress_as_each_document_completes():
     # after enqueue already shows something other than a bare "running".
     assert seen[0][0] == "listing"
 
+    # Mid-document phases so the UI is not stuck at "0 of N" while page 1 embeds.
+    assert ("preparing", 0, 4) in seen
+    assert ("embedding", 0, 4) in seen
+
+    # Completed-page ticks (processed advances only after each page is stored).
     indexing = [s for s in seen if s[0] == "indexing"]
-    assert indexing[0] == ("indexing", 0, 4), "total must be known before work starts"
-    assert [done for _, done, _ in indexing] == [0, 1, 2, 3, 4]
+    assert [done for _, done, _ in indexing] == [1, 2, 3, 4]
     assert all(total == 4 for _, _, total in indexing)
 
 

@@ -25,7 +25,7 @@ from ..config.settings import ApiSettings, EmailSettings
 from ..core.exceptions import ConfigurationError, SourceError
 from ..githublive import refresh_installation_scope
 from ..ingestion import detect_source_changes
-from ..jobs import enqueue, get_job, has_active_job, list_jobs
+from ..jobs import JobAlreadyActiveError, enqueue, get_job, has_active_job, list_jobs
 from .serialize import job_payload
 from ..sources import (
     build_source_adapter,
@@ -319,7 +319,10 @@ def trigger_ingest(connection_id: str, session: SessionClaims = Depends(require_
             detail="A sync is already in progress for this connection",
         )
 
-    job_id = enqueue(session.org_id, connection_id)
+    try:
+        job_id = enqueue(session.org_id, connection_id)
+    except JobAlreadyActiveError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"job_id": job_id, "status": "queued"}
 
 

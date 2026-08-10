@@ -26,7 +26,7 @@ from ..auth import (
 from ..core.exceptions import ConfigurationError, NotFoundError, SourceError
 from ..githublive import refresh_installation_scope
 from ..ingestion import detect_source_changes
-from ..jobs import enqueue, get_job, has_active_job, list_jobs
+from ..jobs import JobAlreadyActiveError, enqueue, get_job, has_active_job, list_jobs
 from ..sources import (
     build_source_adapter,
     extract_drive_folder_id,
@@ -327,7 +327,10 @@ def trigger_ingest(
         raise HTTPException(
             status_code=409, detail="A sync is already in progress for this connection"
         )
-    job_id = enqueue(session.org_id, connection_id, workspace_id=workspace_id)
+    try:
+        job_id = enqueue(session.org_id, connection_id, workspace_id=workspace_id)
+    except JobAlreadyActiveError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"job_id": job_id, "status": "queued"}
 
 

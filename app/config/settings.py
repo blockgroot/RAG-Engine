@@ -71,8 +71,9 @@ DEFAULT_MEMORY_RECENT_TURNS = 3
 # Retrieval improvements (Phase 6): contextual retrieval (ingest-time),
 # hybrid search + cross-encoder reranking (query-time). See app/rag/retrieval.py
 # and CLAUDE.md §2/§4 for the reasoning behind each value.
-DEFAULT_CONTEXTUAL_ENABLED = True          # prepend LLM context to each chunk at ingest
-DEFAULT_CONTEXTUAL_CONCURRENCY = 8         # parallel context calls per document
+DEFAULT_CONTEXTUAL_ENABLED = False         # off by default: free-tier LLM makes onboarding multi-minute
+DEFAULT_CONTEXTUAL_CONCURRENCY = 2         # when enabled; keep low vs 15 RPM free endpoints
+DEFAULT_EMBED_BATCH_SIZE = 16              # encode in batches (avoids OOM on large docs)
 DEFAULT_RETRIEVAL_HYBRID_ENABLED = True    # fuse vector + keyword (BM25-style) search
 DEFAULT_RETRIEVAL_RERANK_ENABLED = True    # cross-encoder rerank of the candidate pool
 DEFAULT_RETRIEVAL_CANDIDATE_POOL = 16      # how many candidates to fetch/rerank before top_k
@@ -208,6 +209,8 @@ class EmbeddingSettings:
     - ``model``    embedding model id
     - ``device``   optional device for the local backend (cpu/cuda/mps)
     - ``api_key`` / ``base_url``  used only by the remote backend
+    - ``batch_size``  encode at most this many texts per ``encode`` call so a
+      long document (dozens of chunks) cannot OOM the local model in one shot
     """
 
     backend: str
@@ -216,6 +219,7 @@ class EmbeddingSettings:
     api_key: str | None
     base_url: str | None
     timeout: float = DEFAULT_TIMEOUT
+    batch_size: int = DEFAULT_EMBED_BATCH_SIZE
 
     @classmethod
     def from_env(cls) -> "EmbeddingSettings":
@@ -226,6 +230,9 @@ class EmbeddingSettings:
             api_key=os.getenv("EMBEDDING_API_KEY"),
             base_url=os.getenv("EMBEDDING_BASE_URL"),
             timeout=float(os.getenv("EMBEDDING_TIMEOUT") or DEFAULT_TIMEOUT),
+            batch_size=max(
+                1, int(os.getenv("EMBED_BATCH_SIZE") or DEFAULT_EMBED_BATCH_SIZE)
+            ),
         )
 
 
@@ -847,6 +854,10 @@ class WebSearchSettings:
 @dataclass(frozen=True)
 class ContextualSettings:
     """Contextual-retrieval config (Phase 6, ingest-time).
+
+    Default **off**: on free/metered LLM endpoints (e.g. Gemini 15 RPM) one
+    call per chunk stalls onboarding for minutes with progress stuck at 0/N.
+    Enable when you have quota — retrieval quality improves; sync gets slower.
 
     When enabled, a short LLM-generated context is prepended to each chunk before
     it is embedded and stored, so the chunk carries its surrounding meaning.
