@@ -36,6 +36,8 @@ from .users import (
     list_members,
     revoke_user_sessions,
     remove_member,
+    promote_to_admin,
+    demote_to_member,
 )
 from .magic_link import create_magic_link_token, consume_magic_link_token
 from .signup_requests import (
@@ -89,6 +91,8 @@ __all__ = [
     "list_members",
     "revoke_user_sessions",
     "remove_member",
+    "promote_to_admin",
+    "demote_to_member",
     "create_magic_link_token",
     "consume_magic_link_token",
     "SignupRequest",

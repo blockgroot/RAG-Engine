@@ -106,8 +106,49 @@ def list_my_workspaces(org_id: str, user_id: str) -> list[WorkspaceInfo]:
 def list_workspace_members(workspace_id: str) -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT u.email, wm.role, wm.joined_at FROM workspace_members wm "
+            "SELECT u.id::text, u.email, wm.role, wm.joined_at FROM workspace_members wm "
             "JOIN users u ON u.id = wm.user_id WHERE wm.workspace_id = %s ORDER BY wm.joined_at",
             (workspace_id,),
         ).fetchall()
-    return [{"email": r[0], "role": r[1], "joined_at": r[2]} for r in rows]
+    return [
+        {"user_id": r[0], "email": r[1], "role": r[2], "joined_at": r[3]} for r in rows
+    ]
+
+
+def make_workspace_owner(
+    workspace_id: str, org_id: str, acting_user_id: str, target_user_id: str
+) -> None:
+    """Promote an existing workspace member to ``owner``.
+
+    Required so an org admin can remove a departing sole space-owner after
+    transferring ownership — without this, ``remove_member`` correctly blocks
+    and there is no in-product way to unblock. Allows multiple owners (additive
+    promote, not a transfer) so the departing owner can still be removed next.
+    """
+    acting_role = assert_member(workspace_id, org_id, acting_user_id)
+    if acting_role != "owner":
+        raise AuthError("Only a space owner can make someone else an owner")
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT role FROM workspace_members "
+            "WHERE workspace_id = %s::uuid AND user_id = %s::uuid",
+            (workspace_id, target_user_id),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError("That person is not a member of this space")
+        if row[0] == "owner":
+            raise AuthError("That person is already an owner of this space")
+        # Confirm target is still in the same org (membership alone shouldn't
+        # outlive an org boundary, but pair the check with org_id explicitly).
+        org_row = conn.execute(
+            "SELECT 1 FROM users WHERE id = %s::uuid AND org_id = %s::uuid",
+            (target_user_id, org_id),
+        ).fetchone()
+        if org_row is None:
+            raise NotFoundError("That person is not a member of this organization")
+        conn.execute(
+            "UPDATE workspace_members SET role = 'owner' "
+            "WHERE workspace_id = %s::uuid AND user_id = %s::uuid",
+            (workspace_id, target_user_id),
+        )

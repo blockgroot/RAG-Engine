@@ -210,6 +210,7 @@ export interface WorkspaceDetail extends WorkspaceRecord {
 }
 
 export interface WorkspaceMemberRecord {
+  user_id: string;
   email: string;
   role: "owner" | "member";
   joined_at: string;
@@ -245,6 +246,14 @@ export const api = {
     ),
   revokeMemberSessions: (userId: string) =>
     request<{ status: string; user_id: string }>(`/admin/members/${userId}/revoke-sessions`, {
+      method: "POST",
+    }),
+  promoteMember: (userId: string) =>
+    request<{ id: string; email: string; role: string }>(`/admin/members/${userId}/promote`, {
+      method: "POST",
+    }),
+  demoteMember: (userId: string) =>
+    request<{ id: string; email: string; role: string }>(`/admin/members/${userId}/demote`, {
       method: "POST",
     }),
   removeMember: (userId: string) =>
@@ -323,6 +332,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ email }),
     }),
+  makeWorkspaceOwner: (workspaceId: string, userId: string) =>
+    request<{ status: string; user_id: string }>(
+      `/workspaces/${workspaceId}/members/${userId}/make-owner`,
+      { method: "POST" }
+    ),
   listWorkspaceConnections: (workspaceId: string) =>
     request<ConnectionRecord[]>(`/workspaces/${workspaceId}/connections`),
   searchWorkspaceConnectionDriveFolders: (workspaceId: string, connectionId: string, q: string) =>

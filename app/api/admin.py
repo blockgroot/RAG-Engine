@@ -11,12 +11,14 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from ..auth import (
     create_magic_link_token,
+    demote_to_member,
     get_connection_config,
     get_live_connection_token,
     get_user_by_email,
     invite_member,
     list_connections,
     list_members,
+    promote_to_admin,
     remove_member,
     revoke_user_sessions,
     send_magic_link_email_safe,
@@ -138,6 +140,30 @@ def revoke_member_sessions(user_id: str, session: SessionClaims = Depends(requir
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"status": "revoked", "user_id": user_id}
+
+
+@router.post("/members/{user_id}/promote")
+def promote_org_member(user_id: str, session: SessionClaims = Depends(require_admin)):
+    """Promote a member to admin so succession is possible before someone leaves."""
+    try:
+        user = promote_to_admin(user_id, session.org_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except AuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"id": user.id, "email": user.email, "role": user.role}
+
+
+@router.post("/members/{user_id}/demote")
+def demote_org_member(user_id: str, session: SessionClaims = Depends(require_admin)):
+    """Demote an admin to member. Refuses if they are the last admin."""
+    try:
+        user = demote_to_member(user_id, session.org_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except AuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"id": user.id, "email": user.email, "role": user.role}
 
 
 @router.delete("/members/{user_id}")

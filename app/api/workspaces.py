@@ -23,7 +23,13 @@ from ..auth import (
     list_connections,
     set_connection_config,
 )
-from ..core.exceptions import ConfigurationError, NotFoundError, OAuthReauthRequiredError, SourceError
+from ..core.exceptions import (
+    AuthError,
+    ConfigurationError,
+    NotFoundError,
+    OAuthReauthRequiredError,
+    SourceError,
+)
 from ..githublive import refresh_installation_scope
 from ..ingestion import detect_source_changes
 from ..jobs import JobAlreadyActiveError, enqueue, get_job, has_active_job, list_jobs
@@ -34,7 +40,13 @@ from ..sources import (
     validate_drive_folder,
 )
 from ..db.connection import get_connection
-from ..workspaces import create_workspace, invite_member, list_my_workspaces, list_workspace_members
+from ..workspaces import (
+    create_workspace,
+    invite_member,
+    list_my_workspaces,
+    list_workspace_members,
+    make_workspace_owner,
+)
 from .connection_ops import (
     disconnect_connection,
     folder_id_changed,
@@ -148,6 +160,23 @@ def invite(
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"status": "invited", "email": email}
+
+
+@router.post("/{workspace_id}/members/{user_id}/make-owner")
+def make_owner(
+    workspace_id: str,
+    user_id: str,
+    session: SessionClaims = Depends(get_session),
+    _role: str = Depends(require_workspace_owner),
+):
+    """Promote a space member to owner (needed before removing a sole owner)."""
+    try:
+        make_workspace_owner(workspace_id, session.org_id, session.user_id, user_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except AuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "owner", "user_id": user_id}
 
 
 def _owned_workspace_connection(org_id: str, workspace_id: str, connection_id: str):

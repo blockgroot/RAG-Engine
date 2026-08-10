@@ -62,7 +62,52 @@ export default function MembersPage() {
     }
   }
 
+
+  async function handlePromote(userId: string, email: string) {
+    if (busyId) return;
+    if (!window.confirm(`Make ${email} an admin? They will be able to manage people and sources.`)) {
+      return;
+    }
+    setBusyId(userId);
+    setError(null);
+    setMessage(null);
+    try {
+      await api.promoteMember(userId);
+      setMessage(`${email} is now an admin.`);
+      refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not promote that person.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handleDemote(userId: string, email: string) {
+    if (busyId) return;
+    const admins = members.filter((m) => m.role === "admin").length;
+    if (admins <= 1) {
+      setError("Cannot demote the last admin. Promote someone else first.");
+      return;
+    }
+    if (!window.confirm(`Demote ${email} to member? They will lose admin access immediately.`)) {
+      return;
+    }
+    setBusyId(userId);
+    setError(null);
+    setMessage(null);
+    try {
+      await api.demoteMember(userId);
+      setMessage(`${email} is now a member.`);
+      refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not demote that person.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   async function handleRemove(userId: string, email: string) {
+
     if (busyId) return;
     if (userId === me?.user_id) {
       setError("You cannot remove your own account.");
@@ -102,7 +147,7 @@ export default function MembersPage() {
         <PageHeader
           eyebrow="Company"
           title="People"
-          description="Invite teammates with their work email — they join your company only."
+          description="Invite teammates, make admins for succession, and remove people who leave."
           scene="people"
           meta={
             <>
@@ -181,26 +226,58 @@ export default function MembersPage() {
                         </span>
                       </div>
                       <span className={`role-chip role-${m.role}`}>{m.role}</span>
-                      {m.id !== me.user_id && (
-                        <div className="people-card-actions">
+                      <div className="people-card-actions">
+                        {m.role === "member" && (
                           <button
                             type="button"
                             className="button button-secondary"
                             disabled={busyId === m.id}
-                            onClick={() => handleRevoke(m.id, m.email)}
+                            onClick={() => handlePromote(m.id, m.email)}
                           >
-                            {busyId === m.id ? "…" : "Revoke sessions"}
+                            {busyId === m.id ? "…" : "Make admin"}
                           </button>
+                        )}
+                        {m.role === "admin" && m.id !== me.user_id && (
                           <button
                             type="button"
                             className="button button-secondary"
-                            disabled={busyId === m.id}
-                            onClick={() => handleRemove(m.id, m.email)}
+                            disabled={busyId === m.id || adminCount <= 1}
+                            title={
+                              adminCount <= 1
+                                ? "Promote someone else before demoting the last admin"
+                                : undefined
+                            }
+                            onClick={() => handleDemote(m.id, m.email)}
                           >
-                            Remove
+                            {busyId === m.id ? "…" : "Demote"}
                           </button>
-                        </div>
-                      )}
+                        )}
+                        {m.id !== me.user_id && (
+                          <>
+                            <button
+                              type="button"
+                              className="button button-secondary"
+                              disabled={busyId === m.id}
+                              onClick={() => handleRevoke(m.id, m.email)}
+                            >
+                              {busyId === m.id ? "…" : "Revoke sessions"}
+                            </button>
+                            <button
+                              type="button"
+                              className="button button-secondary"
+                              disabled={busyId === m.id || (m.role === "admin" && adminCount <= 1)}
+                              title={
+                                m.role === "admin" && adminCount <= 1
+                                  ? "Promote someone else before removing the last admin"
+                                  : undefined
+                              }
+                              onClick={() => handleRemove(m.id, m.email)}
+                            >
+                              Remove
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </li>
                   );
                 })}

@@ -15,6 +15,7 @@ from .store import (
     invite_member,
     list_my_workspaces,
     list_workspace_members,
+    make_workspace_owner,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "invite_member",
     "list_my_workspaces",
     "list_workspace_members",
+    "make_workspace_owner",
 ]

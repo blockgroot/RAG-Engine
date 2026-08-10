@@ -72,6 +72,7 @@ export default function WorkspaceDetailPage() {
 
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviting, setInviting] = useState(false);
+  const [makeOwnerBusy, setMakeOwnerBusy] = useState<string | null>(null);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteMessage, setInviteMessage] = useState<string | null>(null);
 
@@ -264,7 +265,27 @@ export default function WorkspaceDetailPage() {
     }
   }, [jobs, connections, refreshChanges, refreshWorkspace]);
 
+
+  async function handleMakeOwner(userId: string, email: string) {
+    if (makeOwnerBusy) return;
+    if (!window.confirm(`Make ${email} an owner of this space?`)) return;
+    setMakeOwnerBusy(userId);
+    setInviteError(null);
+    setInviteMessage(null);
+    try {
+      await api.makeWorkspaceOwner(workspaceId, userId);
+      setInviteMessage(`${email} is now an owner.`);
+      const updated = await api.listWorkspaceMembers(workspaceId);
+      setMembers(updated);
+    } catch (err) {
+      setInviteError(err instanceof Error ? err.message : "Could not make that person an owner.");
+    } finally {
+      setMakeOwnerBusy(null);
+    }
+  }
+
   async function handleInvite(e: React.FormEvent) {
+
     e.preventDefault();
     const email = inviteEmail.trim();
     if (!email || inviting) return;
@@ -414,9 +435,21 @@ export default function WorkspaceDetailPage() {
           </div>
           <div className="stack" style={{ gap: "0.45rem" }}>
             {members.map((m) => (
-              <div key={m.email} style={{ display: "flex", justifyContent: "space-between", gap: "1rem" }}>
+              <div key={m.user_id || m.email} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "1rem" }}>
                 <span>{m.email}</span>
-                <span className="badge">{m.role === "owner" ? "Owner" : "Member"}</span>
+                <span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  <span className="badge">{m.role === "owner" ? "Owner" : "Member"}</span>
+                  {isOwner && m.role === "member" && (
+                    <button
+                      type="button"
+                      className="button button-secondary"
+                      disabled={makeOwnerBusy === m.user_id}
+                      onClick={() => handleMakeOwner(m.user_id, m.email)}
+                    >
+                      {makeOwnerBusy === m.user_id ? "…" : "Make owner"}
+                    </button>
+                  )}
+                </span>
               </div>
             ))}
           </div>
