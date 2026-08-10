@@ -10,19 +10,31 @@ const FOLDER_SEARCH_DEBOUNCE_MS = 300;
  *
  * Selecting a result saves by folder id; pasting a Drive URL/id and clicking
  * Save still works as a fallback — same UX as Sources / personal workspaces.
+ *
+ * ``mode="change"`` is for swapping an already-saved folder: same API, clearer
+ * copy, and Cancel to dismiss without saving.
  */
 export function DriveFolderPicker({
   connectionId,
   workspaceId,
   inputId = "drive-folder",
+  mode = "set",
+  currentFolderId,
+  currentFolderName,
   onSaved,
   onError,
+  onCancel,
 }: {
   connectionId: string;
   workspaceId?: string;
   inputId?: string;
+  mode?: "set" | "change";
+  /** When set, saving the same id is a no-op (closes via onCancel if provided). */
+  currentFolderId?: string | null;
+  currentFolderName?: string | null;
   onSaved: (config: ConnectionSourceConfig) => void;
   onError?: (message: string) => void;
+  onCancel?: () => void;
 }) {
   const [folderUrl, setFolderUrl] = useState("");
   const [saving, setSaving] = useState(false);
@@ -65,6 +77,14 @@ export function DriveFolderPicker({
 
   async function saveFolder(value: string) {
     if (!value) return;
+    // Same folder already linked (bare id or URL containing it) — dismiss.
+    if (
+      currentFolderId &&
+      (value === currentFolderId || value.includes(currentFolderId))
+    ) {
+      onCancel?.();
+      return;
+    }
     setSaving(true);
     onError?.("");
     try {
@@ -88,13 +108,19 @@ export function DriveFolderPicker({
     saveFolder(folderUrl.trim());
   }
 
+  const isChange = mode === "change";
+
   return (
     <form onSubmit={handleSubmit} className="stack">
       <p className="muted" style={{ margin: 0 }}>
-        Choose a Drive folder to use.
+        {isChange
+          ? currentFolderName
+            ? `Currently: ${currentFolderName}. Pick a different folder — Update will drop docs that are no longer in scope.`
+            : "Pick a different Drive folder. Update will drop docs that are no longer in scope."
+          : "Choose a Drive folder to use."}
       </p>
       <div className="field" style={{ position: "relative" }}>
-        <label htmlFor={inputId}>Folder</label>
+        <label htmlFor={inputId}>{isChange ? "New folder" : "Folder"}</label>
         <input
           id={inputId}
           className="input"
@@ -128,14 +154,27 @@ export function DriveFolderPicker({
                   onClick={() => saveFolder(folder.id)}
                 >
                   {folder.name}
+                  {currentFolderId && folder.id === currentFolderId ? " (current)" : ""}
                 </button>
               ))}
           </div>
         )}
       </div>
-      <button className="button" type="submit" disabled={saving || !folderUrl.trim()}>
-        {saving ? "Saving…" : "Save folder"}
-      </button>
+      <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
+        <button className="button" type="submit" disabled={saving || !folderUrl.trim()}>
+          {saving ? "Saving…" : isChange ? "Save new folder" : "Save folder"}
+        </button>
+        {isChange && onCancel && (
+          <button
+            className="button button-secondary"
+            type="button"
+            disabled={saving}
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+        )}
+      </div>
     </form>
   );
 }

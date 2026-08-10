@@ -424,7 +424,15 @@ function OnboardingInner() {
                 <p className="muted" style={{ margin: 0 }}>
                   Sync runs in the background. Add a teammate now — they can sign in once policies are ready.
                 </p>
-                <form onSubmit={handleInvite} className="stack" style={{ gap: "0.65rem" }}>
+                <form
+                  onSubmit={handleInvite}
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    alignItems: "center",
+                    gap: "0.85rem",
+                  }}
+                >
                   <input
                     className="input"
                     type="email"
@@ -433,6 +441,7 @@ function OnboardingInner() {
                     value={inviteEmail}
                     onChange={(e) => setInviteEmail(e.target.value)}
                     autoComplete="email"
+                    style={{ flex: "1 1 12rem", minWidth: "12rem" }}
                   />
                   <button className="button button-secondary" type="submit" disabled={!inviteEmail.trim()}>
                     Send invite
