@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
@@ -33,6 +33,20 @@ function updateCompleteMessage(docCount: number | null | undefined): string {
 }
 
 export default function ConnectionsPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="page">
+          <p className="muted">Loading…</p>
+        </main>
+      }
+    >
+      <ConnectionsPageInner />
+    </Suspense>
+  );
+}
+
+function ConnectionsPageInner() {
   const { me, loading } = useMe({ requireAdmin: true });
   const searchParams = useSearchParams();
   const router = useRouter();

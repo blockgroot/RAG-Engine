@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
@@ -46,6 +46,20 @@ function updateCompleteMessage(docCount: number | null | undefined): string {
 }
 
 export default function WorkspaceDetailPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="page">
+          <p className="muted">Loading…</p>
+        </main>
+      }
+    >
+      <WorkspaceDetailPageInner />
+    </Suspense>
+  );
+}
+
+function WorkspaceDetailPageInner() {
   const params = useParams<{ id: string }>();
   const workspaceId = params.id;
   const searchParams = useSearchParams();
