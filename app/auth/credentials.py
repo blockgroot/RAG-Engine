@@ -378,3 +378,41 @@ def get_connection_config(
     if not row:
         return None
     return row[0]
+
+
+def clear_installation_token_cache(
+    org_id: str, workspace_id: str | None = None
+) -> None:
+    """Drop cached GitHub installation tokens for this tenant scope."""
+    doomed = [k for k in _INSTALLATION_TOKEN_CACHE if k[0] == org_id and k[1] == workspace_id]
+    for key in doomed:
+        _INSTALLATION_TOKEN_CACHE.pop(key, None)
+
+
+def delete_connection(
+    org_id: str, connection_id: str, *, workspace_id: str | None = None
+) -> str:
+    """Delete one OAuth connection row owned by this org (and optional workspace).
+
+    Returns the provider name so callers can purge indexed docs for Notion/Drive.
+    Raises ``ConfigurationError`` when the id is missing or not in scope —
+    never deletes across a tenant or workspace boundary.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            DELETE FROM oauth_connections
+            WHERE id = %s::uuid
+              AND org_id = %s::uuid
+              AND workspace_id IS NOT DISTINCT FROM %s::uuid
+            RETURNING provider
+            """,
+            (connection_id, org_id, workspace_id),
+        ).fetchone()
+    if not row:
+        raise ConfigurationError("No such connection for this organization.")
+    provider = row[0]
+    if provider == "github":
+        clear_installation_token_cache(org_id, workspace_id)
+    return provider
+

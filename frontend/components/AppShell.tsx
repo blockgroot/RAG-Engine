@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
-import { Me } from "@/lib/api";
+import { usePathname, useRouter } from "next/navigation";
+import { api, Me } from "@/lib/api";
 import { canAccessAdminPortal, isSetupComplete } from "@/lib/routing";
 
 type Variant = "app" | "onboarding" | "admin";
@@ -80,6 +80,17 @@ export function AppShell({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
+  const router = useRouter();
+  async function handleSignOut() {
+    try {
+      await api.logout();
+    } catch {
+      /* still clear local route */
+    }
+    router.replace("/login");
+    router.refresh();
+  }
+
   const setupDone = me ? isSetupComplete(me) : false;
   const showAdmin = me ? canAccessAdminPortal(me) : false;
   const homeHref = setupDone || me?.role === "member" ? "/chat" : "/onboarding";
@@ -194,6 +205,13 @@ export function AppShell({
                 </span>
               </div>
             </div>
+            <button
+              type="button"
+              className="rail-sign-out"
+              onClick={handleSignOut}
+            >
+              Sign out
+            </button>
           </div>
         )}
       </aside>

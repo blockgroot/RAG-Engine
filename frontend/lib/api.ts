@@ -12,10 +12,24 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** Machine-readable code when the API returns structured detail (e.g. oauth_reauth_required). */
+  code: string | null;
+  constructor(status: number, message: string, code: string | null = null) {
     super(message);
     this.status = status;
+    this.code = code;
   }
+}
+
+function parseApiDetail(detail: unknown): { message: string; code: string | null } {
+  if (typeof detail === "string") return { message: detail, code: null };
+  if (detail && typeof detail === "object") {
+    const d = detail as { message?: unknown; code?: unknown; detail?: unknown };
+    if (typeof d.message === "string") {
+      return { message: d.message, code: typeof d.code === "string" ? d.code : null };
+    }
+  }
+  return { message: "Request failed", code: null };
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -29,7 +43,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new ApiError(response.status, body.detail || "Request failed");
+    const parsed = parseApiDetail(body.detail ?? body);
+    throw new ApiError(response.status, parsed.message, parsed.code);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
@@ -122,6 +137,9 @@ export interface ConnectionConfigResponse {
   connection_id: string;
   provider: string;
   config: ConnectionSourceConfig;
+  /** True when PUT replaced a different Drive folder_id (old corpus purged). */
+  folder_changed?: boolean;
+  documents_purged?: number;
 }
 
 /** One Drive folder the connected account can see (folder-picker dropdown). */
@@ -211,6 +229,8 @@ export const api = {
     }),
 
   me: () => request<Me>("/me"),
+  logout: () =>
+    request<{ status: string }>("/auth/logout", { method: "POST" }),
 
   connectUrl: (provider: string) => `${API_BASE_URL}/auth/${provider}/authorize`,
 
@@ -223,6 +243,14 @@ export const api = {
         body: JSON.stringify({ email }),
       }
     ),
+  revokeMemberSessions: (userId: string) =>
+    request<{ status: string; user_id: string }>(`/admin/members/${userId}/revoke-sessions`, {
+      method: "POST",
+    }),
+  removeMember: (userId: string) =>
+    request<{ status: string; user_id: string }>(`/admin/members/${userId}`, {
+      method: "DELETE",
+    }),
 
   listConnections: () => request<ConnectionRecord[]>("/admin/connections"),
   getConnectionConfig: (connectionId: string) =>
@@ -254,6 +282,11 @@ export const api = {
     request<{ job_id: string; status: string }>(`/admin/connections/${connectionId}/ingest`, {
       method: "POST",
     }),
+  disconnectConnection: (connectionId: string) =>
+    request<{ status: string; provider: string; documents_purged: number }>(
+      `/admin/connections/${connectionId}`,
+      { method: "DELETE" }
+    ),
 
   listJobs: () => request<JobRecord[]>("/admin/jobs"),
   getJob: (jobId: string) => request<JobRecord>(`/admin/jobs/${jobId}`),
@@ -313,6 +346,11 @@ export const api = {
     request<{ job_id: string; status: string }>(
       `/workspaces/${workspaceId}/connections/${connectionId}/ingest`,
       { method: "POST" }
+    ),
+  disconnectWorkspaceConnection: (workspaceId: string, connectionId: string) =>
+    request<{ status: string; provider: string; documents_purged: number }>(
+      `/workspaces/${workspaceId}/connections/${connectionId}`,
+      { method: "DELETE" }
     ),
   listWorkspaceJobs: (workspaceId: string) =>
     request<JobRecord[]>(`/workspaces/${workspaceId}/jobs`),

@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from ..core.exceptions import AuthError
 from ..db.connection import get_connection
 
 ROLE_ADMIN = "admin"
@@ -100,3 +101,44 @@ def revoke_user_sessions(user_id: str, org_id: str) -> None:
         ).fetchone()
     if row is None:
         raise ValueError("User not found in this organization")
+
+
+def remove_member(user_id: str, org_id: str, *, acting_user_id: str) -> None:
+    """Remove an invited member (or another admin) from ``org_id``.
+
+    Guards:
+    - cannot remove yourself (use Sign out; transferring ownership is separate)
+    - cannot remove the last remaining admin
+    - target must belong to this org
+
+    Nulls ``oauth_connections.connected_by_user_id`` first (that FK has no
+    ON DELETE clause) so a user who once connected a source can still leave.
+    ``workspace_members`` cascades via ON DELETE CASCADE on ``users``.
+    """
+    if user_id == acting_user_id:
+        raise AuthError("You cannot remove your own account.")
+
+    with get_connection() as conn:
+        target = conn.execute(
+            "SELECT role FROM users WHERE id = %s::uuid AND org_id = %s::uuid",
+            (user_id, org_id),
+        ).fetchone()
+        if target is None:
+            raise ValueError("User not found in this organization")
+        if target[0] == ROLE_ADMIN:
+            admin_n = conn.execute(
+                "SELECT count(*) FROM users WHERE org_id = %s::uuid AND role = %s",
+                (org_id, ROLE_ADMIN),
+            ).fetchone()[0]
+            if admin_n <= 1:
+                raise AuthError("Cannot remove the last admin of this organization.")
+        conn.execute(
+            "UPDATE oauth_connections SET connected_by_user_id = NULL "
+            "WHERE connected_by_user_id = %s::uuid AND org_id = %s::uuid",
+            (user_id, org_id),
+        )
+        conn.execute(
+            "DELETE FROM users WHERE id = %s::uuid AND org_id = %s::uuid",
+            (user_id, org_id),
+        )
+

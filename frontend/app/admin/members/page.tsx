@@ -13,6 +13,7 @@ export default function MembersPage() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   function refresh() {
     api.listMembers().then(setMembers);
@@ -41,6 +42,46 @@ export default function MembersPage() {
       setError(err instanceof Error ? err.message : "Could not invite that email.");
     } finally {
       setSending(false);
+    }
+  }
+
+
+  async function handleRevoke(userId: string, email: string) {
+    if (busyId) return;
+    if (!window.confirm(`Sign out all sessions for ${email}?`)) return;
+    setBusyId(userId);
+    setError(null);
+    setMessage(null);
+    try {
+      await api.revokeMemberSessions(userId);
+      setMessage(`Sessions revoked for ${email}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not revoke sessions.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handleRemove(userId: string, email: string) {
+    if (busyId) return;
+    if (userId === me?.user_id) {
+      setError("You cannot remove your own account.");
+      return;
+    }
+    if (!window.confirm(`Remove ${email} from this company? They will lose access immediately.`)) {
+      return;
+    }
+    setBusyId(userId);
+    setError(null);
+    setMessage(null);
+    try {
+      await api.removeMember(userId);
+      setMessage(`Removed ${email}.`);
+      refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not remove that person.");
+    } finally {
+      setBusyId(null);
     }
   }
 
@@ -140,6 +181,26 @@ export default function MembersPage() {
                         </span>
                       </div>
                       <span className={`role-chip role-${m.role}`}>{m.role}</span>
+                      {m.id !== me.user_id && (
+                        <div className="people-card-actions">
+                          <button
+                            type="button"
+                            className="button button-secondary"
+                            disabled={busyId === m.id}
+                            onClick={() => handleRevoke(m.id, m.email)}
+                          >
+                            {busyId === m.id ? "…" : "Revoke sessions"}
+                          </button>
+                          <button
+                            type="button"
+                            className="button button-secondary"
+                            disabled={busyId === m.id}
+                            onClick={() => handleRemove(m.id, m.email)}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      )}
                     </li>
                   );
                 })}

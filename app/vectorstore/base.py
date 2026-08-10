@@ -211,3 +211,18 @@ class VectorStore(ABC):
         cannot disambiguate their documents — ``workspace_id`` closes that gap.
         """
         raise NotImplementedError("this vector store does not support source document delete")
+
+    def delete_all_source_documents(
+        self,
+        org_id: str,
+        provider: str,
+        workspace_id: str | None = None,
+    ) -> int:
+        """Delete every ingested page for ``provider`` in this org/workspace scope.
+
+        Used when Disconnecting a Notion/Drive connection or swapping a Drive
+        folder so answers cannot keep citing revoked content. Chunks cascade.
+        """
+        raise NotImplementedError(
+            "this vector store does not support bulk source document delete"
+        )

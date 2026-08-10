@@ -17,12 +17,13 @@ from ..auth import (
     invite_member,
     list_connections,
     list_members,
+    remove_member,
     revoke_user_sessions,
     send_magic_link_email_safe,
     set_connection_config,
 )
 from ..config.settings import ApiSettings, EmailSettings
-from ..core.exceptions import ConfigurationError, SourceError
+from ..core.exceptions import AuthError, ConfigurationError, OAuthReauthRequiredError, SourceError
 from ..githublive import refresh_installation_scope
 from ..ingestion import detect_source_changes
 from ..jobs import JobAlreadyActiveError, enqueue, get_job, has_active_job, list_jobs
@@ -32,6 +33,12 @@ from ..sources import (
     extract_drive_folder_id,
     search_drive_folders,
     validate_drive_folder,
+)
+from .connection_ops import (
+    disconnect_connection,
+    folder_id_changed,
+    purge_provider_documents,
+    raise_token_http,
 )
 from .deps import SessionClaims, require_admin
 
@@ -133,6 +140,18 @@ def revoke_member_sessions(user_id: str, session: SessionClaims = Depends(requir
     return {"status": "revoked", "user_id": user_id}
 
 
+@router.delete("/members/{user_id}")
+def remove_org_member(user_id: str, session: SessionClaims = Depends(require_admin)):
+    """Remove a teammate from this organization (and cascade workspace membership)."""
+    try:
+        remove_member(user_id, session.org_id, acting_user_id=session.user_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except AuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "removed", "user_id": user_id}
+
+
 @router.get("/connections")
 def get_connections(session: SessionClaims = Depends(require_admin)):
     return [
@@ -181,8 +200,8 @@ def search_connection_drive_folders(
     try:
         token = get_live_connection_token(session.org_id, conn.provider)
         folders = search_drive_folders(token, q)
-    except SourceError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (SourceError, ConfigurationError, OAuthReauthRequiredError) as exc:
+        raise_token_http(exc)
     return {"folders": folders}
 
 
@@ -219,16 +238,22 @@ def put_connection_config(
         folder_id = extract_drive_folder_id(folder_url)
         token = get_live_connection_token(session.org_id, conn.provider)
         config = validate_drive_folder(token, folder_id)
+        swapped = folder_id_changed(session.org_id, conn.provider, config["folder_id"])
         set_connection_config(session.org_id, conn.provider, config)
-    except ConfigurationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except SourceError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (ConfigurationError, SourceError, OAuthReauthRequiredError) as exc:
+        raise_token_http(exc)
+
+    purged = 0
+    if swapped:
+        # Drop the old folder's corpus immediately so Ask cannot keep citing it.
+        purged = purge_provider_documents(session.org_id, conn.provider)
 
     return {
         "connection_id": connection_id,
         "provider": conn.provider,
         "config": config,
+        "folder_changed": swapped,
+        "documents_purged": purged,
     }
 
 
@@ -258,8 +283,8 @@ def refresh_connection_scope(
 
     try:
         scope = refresh_installation_scope(session.org_id)
-    except (ConfigurationError, SourceError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (ConfigurationError, SourceError, OAuthReauthRequiredError) as exc:
+        raise_token_http(exc)
 
     return {
         "connection_id": connection_id,
@@ -290,8 +315,8 @@ def connection_changes(connection_id: str, session: SessionClaims = Depends(requ
     try:
         adapter = _build_connection_adapter(session.org_id, conn.provider)
         report = detect_source_changes(adapter, session.org_id, provider=conn.provider)
-    except ConfigurationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (ConfigurationError, SourceError, OAuthReauthRequiredError) as exc:
+        raise_token_http(exc)
 
     return {
         "connection_id": connection_id,
@@ -302,6 +327,21 @@ def connection_changes(connection_id: str, session: SessionClaims = Depends(requ
         "remote_total": report.remote_total,
         "has_changes": report.has_changes,
     }
+
+
+
+
+@router.delete("/connections/{connection_id}")
+def delete_org_connection(
+    connection_id: str, session: SessionClaims = Depends(require_admin)
+):
+    """Disconnect a source: drop OAuth credentials and purge indexed docs."""
+    _owned_connection(session.org_id, connection_id)  # 404 if foreign
+    try:
+        result = disconnect_connection(session.org_id, connection_id)
+    except ConfigurationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "disconnected", **result}
 
 
 @router.post("/connections/{connection_id}/ingest")

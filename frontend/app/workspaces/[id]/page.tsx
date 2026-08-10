@@ -9,6 +9,7 @@ import { ConnectionCard } from "@/components/ConnectionCard";
 import { useMe } from "@/lib/useMe";
 import {
   api,
+  ApiError,
   ConnectionRecord,
   JobRecord,
   SyncChanges,
@@ -59,6 +60,7 @@ export default function WorkspaceDetailPage() {
   const [notFound, setNotFound] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reauthById, setReauthById] = useState<Record<string, boolean>>({});
   /** Structured OAuth refusal (not a single bulk paragraph). */
   const [connectNotice, setConnectNotice] = useState<{
     title: string;
@@ -106,10 +108,14 @@ export default function WorkspaceDetailPage() {
           if (c.provider === "google" && !c.source_config?.folder_id) return;
           try {
             next[c.id] = await api.checkWorkspaceConnectionChanges(workspaceId, c.id);
-          } catch {
+            setReauthById((prev) => ({ ...prev, [c.id]: false }));
+          } catch (err) {
             // Drop prior has_changes so a failed re-check after sync cannot
             // leave a sticky Update button.
             failedIds.push(c.id);
+            if (err instanceof ApiError && err.code === "oauth_reauth_required") {
+              setReauthById((prev) => ({ ...prev, [c.id]: true }));
+            }
           }
         })
       );
@@ -468,6 +474,26 @@ export default function WorkspaceDetailPage() {
                     setConnections((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
                     refreshChanges([updated]);
                     void refreshWorkspace();
+                  }}
+                  onDisconnected={(connectionId) => {
+                    setConnections((prev) => prev.filter((c) => c.id !== connectionId));
+                    setChangesById((prev) => {
+                      const next = { ...prev };
+                      delete next[connectionId];
+                      return next;
+                    });
+                    setReauthById((prev) => {
+                      const next = { ...prev };
+                      delete next[connectionId];
+                      return next;
+                    });
+                    setMessage("Disconnected. Indexed docs for that source were removed.");
+                    void refreshWorkspace();
+                  }}
+                  needsReauth={Boolean(connection && reauthById[connection.id])}
+                  onNeedsReauth={(needed) => {
+                    if (!connection) return;
+                    setReauthById((prev) => ({ ...prev, [connection.id]: needed }));
                   }}
                   workspaceId={workspaceId}
                 />

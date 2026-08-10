@@ -49,7 +49,7 @@ from __future__ import annotations
 import html
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from ..auth import (
     GitHubAppProvider,
@@ -251,6 +251,20 @@ def verify_magic_link(token: str, settings: ApiSettings = Depends(ApiSettings.fr
         # Keep it tied to the same setting so the cookie's lifetime always
         # matches the token's.
         max_age=AuthSettings.from_env().session_ttl_minutes * 60,
+    )
+    return response
+
+
+@router.post("/logout")
+def logout():
+    """Clear the session cookie. Idempotent — safe even when already signed out."""
+    response = JSONResponse({"status": "signed_out"})
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        path="/",
+        httponly=True,
+        secure=True,
+        samesite="lax",
     )
     return response
 

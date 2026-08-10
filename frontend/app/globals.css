@@ -2800,3 +2800,38 @@ table .role-chip.role-admin,
   text-align: center;
   white-space: normal;
 }
+
+
+.people-card-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.15rem;
+  width: 100%;
+}
+.people-card-actions .button {
+  font-size: 0.8rem;
+  padding: 0.35rem 0.7rem;
+}
+
+
+.rail-sign-out {
+  margin-top: 0.65rem;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 550;
+  padding: 0.45rem 0.7rem;
+  cursor: pointer;
+}
+.rail-sign-out:hover {
+  color: var(--ink);
+  border-color: var(--ink-faint, var(--border));
+  background: rgba(15, 118, 110, 0.06);
+}

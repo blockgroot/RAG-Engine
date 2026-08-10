@@ -5,7 +5,7 @@ import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { ConnectionCard } from "@/components/ConnectionCard";
 import { useMe } from "@/lib/useMe";
-import { api, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
+import { api, ApiError, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
 import { ACTIVE_JOB_STATUSES, useJobPolling } from "@/lib/jobPoll";
 import { clearedSyncChanges } from "@/lib/syncChanges";
 
@@ -38,6 +38,7 @@ export default function ConnectionsPage() {
   const [checking, setChecking] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reauthById, setReauthById] = useState<Record<string, boolean>>({});
   /** Bumped when an update starts so job polling resumes (it stops when idle). */
   const [pollToken, setPollToken] = useState(0);
   const [watchedJobId, setWatchedJobId] = useState<string | null>(null);
@@ -63,10 +64,14 @@ export default function ConnectionsPage() {
         if (c.provider === "google" && !c.source_config?.folder_id) return;
         try {
           next[c.id] = await api.checkConnectionChanges(c.id);
-        } catch {
+          setReauthById((prev) => ({ ...prev, [c.id]: false }));
+        } catch (err) {
           // Drop prior has_changes so a failed re-check after sync cannot
           // leave a sticky Update button.
           failedIds.push(c.id);
+          if (err instanceof ApiError && err.code === "oauth_reauth_required") {
+            setReauthById((prev) => ({ ...prev, [c.id]: true }));
+          }
         }
       })
     );
@@ -263,6 +268,25 @@ export default function ConnectionsPage() {
                       prev.map((c) => (c.id === updated.id ? updated : c))
                     );
                     refreshChanges([updated]);
+                  }}
+                  onDisconnected={(connectionId) => {
+                    setConnections((prev) => prev.filter((c) => c.id !== connectionId));
+                    setChangesById((prev) => {
+                      const next = { ...prev };
+                      delete next[connectionId];
+                      return next;
+                    });
+                    setReauthById((prev) => {
+                      const next = { ...prev };
+                      delete next[connectionId];
+                      return next;
+                    });
+                    setMessage("Disconnected. Indexed docs for that source were removed.");
+                  }}
+                  needsReauth={Boolean(connection && reauthById[connection.id])}
+                  onNeedsReauth={(needed) => {
+                    if (!connection) return;
+                    setReauthById((prev) => ({ ...prev, [connection.id]: needed }));
                   }}
                 />
               );
