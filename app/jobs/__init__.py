@@ -8,6 +8,7 @@ Public API:
 
 from .queue import (
     IngestionJob,
+    JobAlreadyActiveError,
     enqueue,
     has_active_job,
     claim_next,
@@ -22,6 +23,7 @@ from .worker import run_once, run_forever
 
 __all__ = [
     "IngestionJob",
+    "JobAlreadyActiveError",
     "enqueue",
     "has_active_job",
     "claim_next",

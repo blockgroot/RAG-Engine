@@ -25,10 +25,12 @@ class LocalEmbeddingProvider(EmbeddingProvider):
         model: str | None = None,
         device: str | None = None,
         normalize: bool = True,
+        batch_size: int = 16,
     ) -> None:
         self.model_name = model or DEFAULT_MODEL
         self.device = device or None
         self.normalize = normalize
+        self.batch_size = max(1, batch_size)
 
         if not self.model_name:
             raise ConfigurationError("Missing required embedding config: EMBEDDING_MODEL")
@@ -64,16 +66,23 @@ class LocalEmbeddingProvider(EmbeddingProvider):
         if not texts:
             return []
 
+        # Batch so a 25+ chunk policy page cannot OOM / hang a single encode.
+        out: list[list[float]] = []
         try:
-            vectors = self._model.encode(
-                texts,
-                normalize_embeddings=self.normalize,
-                convert_to_numpy=True,
-            )
+            for start in range(0, len(texts), self.batch_size):
+                batch = texts[start : start + self.batch_size]
+                vectors = self._model.encode(
+                    batch,
+                    normalize_embeddings=self.normalize,
+                    convert_to_numpy=True,
+                    batch_size=min(self.batch_size, len(batch)),
+                    show_progress_bar=False,
+                )
+                out.extend(vectors.tolist())
         except Exception as exc:
             raise EmbeddingProviderError(
                 f"Failed to encode {len(texts)} text(s) with {self.model_name!r}",
                 cause=exc,
             ) from exc
 
-        return vectors.tolist()
+        return out

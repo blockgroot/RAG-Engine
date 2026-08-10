@@ -218,6 +218,63 @@ def test_search_workspace_drive_folders_returns_matches(client, owner_org, monke
 
 
 @requires_db
+def test_put_workspace_google_config_overwrites_existing_folder(
+    client, owner_org, monkeypatch
+):
+    """Change folder: workspace owner can replace the linked Drive folder."""
+    org_id, owner, cookies = owner_org
+    create_resp = client.post("/workspaces", json={"name": "Meeting Notes"}, cookies=cookies)
+    workspace_id = create_resp.json()["id"]
+    connection_id = _save_workspace_google(org_id, workspace_id)
+
+    class FakeResponse:
+        def __init__(self, folder_id: str, name: str):
+            self.status_code = 200
+            self._folder_id = folder_id
+            self._name = name
+
+        def json(self):
+            return {
+                "id": self._folder_id,
+                "name": self._name,
+                "mimeType": "application/vnd.google-apps.folder",
+            }
+
+    calls = {"n": 0}
+
+    def fake_get(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeResponse("ws-folder-old", "Old Notes")
+        return FakeResponse("ws-folder-new", "New Notes")
+
+    monkeypatch.setattr("app.sources.google_drive_utils.httpx.get", fake_get)
+
+    first = client.put(
+        f"/workspaces/{workspace_id}/connections/{connection_id}/config",
+        json={"folder_url": "ws-folder-old"},
+        cookies=cookies,
+    )
+    assert first.status_code == 200
+    assert first.json()["config"]["folder_id"] == "ws-folder-old"
+
+    second = client.put(
+        f"/workspaces/{workspace_id}/connections/{connection_id}/config",
+        json={"folder_url": "ws-folder-new"},
+        cookies=cookies,
+    )
+    assert second.status_code == 200
+    assert second.json()["config"]["folder_id"] == "ws-folder-new"
+    assert second.json()["config"]["folder_name"] == "New Notes"
+
+    listed = client.get(
+        f"/workspaces/{workspace_id}/connections", cookies=cookies
+    ).json()
+    google = next(c for c in listed if c["id"] == connection_id)
+    assert google["source_config"]["folder_id"] == "ws-folder-new"
+
+
+@requires_db
 def test_search_workspace_drive_folders_requires_owner_role(client, store, org_cleanup):
     org_id = store.create_organization(f"Workspace Drive Search Role Org {uuid.uuid4().hex[:8]}")
     org_cleanup.append(org_id)

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
 import { DriveFolderPicker } from "./DriveFolderPicker";
 import { JobStatusBadge } from "./JobStatusBadge";
@@ -84,7 +84,7 @@ function manageExternalTitle(provider: "notion" | "google" | "github"): string {
     return "Open GitHub to add or remove repositories for this install";
   }
   if (provider === "google") {
-    return "Open the connected Drive folder to add or remove files";
+    return "Open the linked Drive folder to add or remove files inside it";
   }
   return "Open Notion to share or unshare pages with this integration";
 }
@@ -95,7 +95,9 @@ function manageExternalTitle(provider: "notion" | "google" | "github"): string {
  * differ, and "Update policies" runs an incremental upsert.
  *
  * Google also needs a folder URL before any sync — Drive has no Notion-style
- * "whatever was shared with the integration" boundary.
+ * "whatever was shared with the integration" boundary. Once a folder is set,
+ * "Change folder" reuses the same config PUT (org or workspace) so the admin
+ * can repoint scope without reconnecting OAuth.
  */
 export function ConnectionCard({
   provider,
@@ -131,6 +133,8 @@ export function ConnectionCard({
   const needsUpdate = !isLive && Boolean(changes?.has_changes);
   const folderConfigured = Boolean(connection?.source_config?.folder_id);
   const needsFolder = provider === "google" && connection && !folderConfigured;
+  const [changingFolder, setChangingFolder] = useState(false);
+  const [folderHint, setFolderHint] = useState<string | null>(null);
 
   // What the admin actually authorized on GitHub's install screen.
   const repoSelection = connection?.source_config?.repository_selection;
@@ -171,6 +175,11 @@ export function ConnectionCard({
   }
 
   const [configError, setConfigError] = useState<string | null>(null);
+
+  // Drop the post-change hint once an Update is running — the job badge takes over.
+  useEffect(() => {
+    if (syncInProgress) setFolderHint(null);
+  }, [syncInProgress]);
 
   // Docs: after Check with no remote changes — same "Up to date" chip as a
   // successful sync job. Prefer not to claim up-to-date while an update is due.
@@ -251,12 +260,46 @@ export function ConnectionCard({
             inputId={`folder-${provider}`}
             onSaved={(config) => {
               setConfigError(null);
+              setFolderHint(null);
               onConfigSaved?.({ ...connection, source_config: config });
             }}
             onError={(message) => setConfigError(message || null)}
           />
           {configError && <div className="banner banner-warn">{configError}</div>}
         </div>
+      )}
+
+      {provider === "google" && connection && folderConfigured && changingFolder && (
+        <div className="stack" style={{ marginTop: "0.9rem" }}>
+          <DriveFolderPicker
+            connectionId={connection.id}
+            workspaceId={workspaceId}
+            inputId={`folder-change-${provider}`}
+            mode="change"
+            currentFolderId={connection.source_config?.folder_id}
+            currentFolderName={connection.source_config?.folder_name}
+            onSaved={(config) => {
+              setConfigError(null);
+              setChangingFolder(false);
+              setFolderHint(
+                "Folder updated. Check, then Update to index the new folder — docs outside it will be removed."
+              );
+              onConfigSaved?.({ ...connection, source_config: config });
+            }}
+            onError={(message) => setConfigError(message || null)}
+            onCancel={() => {
+              setChangingFolder(false);
+              setConfigError(null);
+            }}
+          />
+          {configError && <div className="banner banner-warn">{configError}</div>}
+        </div>
+      )}
+
+      {folderHint && !changingFolder && (
+        <p className="muted" style={{ marginTop: "0.65rem" }}>
+          {folderHint}
+        </p>
       )}
 
       {showDocsJobBadge && lastJob && (
@@ -341,6 +384,24 @@ export function ConnectionCard({
             {manageExternalLabel(provider)}
           </a>
         )}
+        {provider === "google" &&
+          connection &&
+          folderConfigured &&
+          !changingFolder &&
+          !syncInProgress && (
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={() => {
+                setChangingFolder(true);
+                setFolderHint(null);
+                setConfigError(null);
+              }}
+              title="Point this connection at a different Drive folder"
+            >
+              Change folder
+            </button>
+          )}
         {connection && isLive && (
           <button
             className="button button-secondary"

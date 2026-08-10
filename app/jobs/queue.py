@@ -20,8 +20,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from psycopg.errors import UniqueViolation
+
 from ..core.exceptions import ConfigurationError
-from ..db.connection import get_connection
+from ..db.connection import DatabaseError, get_connection
 
 DEFAULT_REAP_TIMEOUT_MINUTES = 30
 
@@ -74,6 +76,10 @@ _SELECT_COLUMNS = (
 )
 
 
+class JobAlreadyActiveError(Exception):
+    """Raised when enqueue would create a second queued/running job for a connection."""
+
+
 def has_active_job(org_id: str, connection_id: str) -> bool:
     """True if this connection already has a queued or running job."""
     with get_connection() as conn:
@@ -93,13 +99,27 @@ def enqueue(org_id: str, connection_id: str, workspace_id: str | None = None) ->
     ``workspace_id`` (Workspace-within-a-Workspace): ``None`` (default) is
     today's org-wide admin-triggered job, unchanged. Non-``None`` records
     which sub-workspace this job's fetched content should be stored under.
+
+    Refuses a second active job for the same connection (unique partial index
+    ``idx_ingestion_jobs_one_active_per_connection``) so parallel ingest POSTs
+    cannot both succeed — raises ``JobAlreadyActiveError``.
     """
-    with get_connection() as conn:
-        row = conn.execute(
-            "INSERT INTO ingestion_jobs (org_id, connection_id, status, workspace_id) "
-            "VALUES (%s, %s, 'queued', %s) RETURNING id::text",
-            (org_id, connection_id, workspace_id),
-        ).fetchone()
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "INSERT INTO ingestion_jobs (org_id, connection_id, status, workspace_id) "
+                "VALUES (%s, %s, 'queued', %s) RETURNING id::text",
+                (org_id, connection_id, workspace_id),
+            ).fetchone()
+    except DatabaseError as exc:
+        # Parallel POST /ingest: unique partial index on active jobs.
+        if isinstance(exc.__cause__, UniqueViolation) or "idx_ingestion_jobs_one_active" in str(
+            exc
+        ):
+            raise JobAlreadyActiveError(
+                "A sync is already in progress for this connection"
+            ) from exc
+        raise
     return row[0]
 
 

@@ -46,6 +46,17 @@ def _connected_org(store, org_cleanup):
 
 
 @requires_db
+def test_enqueue_rejects_second_active_job(_connected_org):
+    org_id, connection_id = _connected_org
+    queue.enqueue(org_id, connection_id)
+    try:
+        queue.enqueue(org_id, connection_id)
+        assert False, "expected JobAlreadyActiveError"
+    except queue.JobAlreadyActiveError:
+        pass
+
+
+@requires_db
 def test_enqueue_and_get_job(_connected_org):
     org_id, connection_id = _connected_org
     job_id = queue.enqueue(org_id, connection_id)
@@ -72,7 +83,8 @@ def test_get_job_scoped_to_org_never_returns_another_orgs_job(_connected_org, st
 @requires_db
 def test_list_jobs_scoped_to_org(_connected_org, store, org_cleanup):
     org_id, connection_id = _connected_org
-    queue.enqueue(org_id, connection_id)
+    first = queue.enqueue(org_id, connection_id)
+    queue.mark_succeeded(first, 0)
     queue.enqueue(org_id, connection_id)
 
     other_org, other_connection = _make_connected_org(store, org_cleanup)
@@ -100,10 +112,14 @@ def _make_connected_org(store, org_cleanup):
 
 
 @requires_db
-def test_claim_next_returns_queued_jobs_oldest_first_and_marks_running(_connected_org):
+def test_claim_next_returns_queued_jobs_oldest_first_and_marks_running(
+    _connected_org, store, org_cleanup
+):
     org_id, connection_id = _connected_org
+    other_org, other_connection = _make_connected_org(store, org_cleanup)
+    # Two connections: one active job per connection is enforced.
     first = queue.enqueue(org_id, connection_id)
-    second = queue.enqueue(org_id, connection_id)
+    second = queue.enqueue(other_org, other_connection)
 
     claimed = queue.claim_next()
     assert claimed is not None
@@ -112,7 +128,7 @@ def test_claim_next_returns_queued_jobs_oldest_first_and_marks_running(_connecte
     assert claimed.started_at is not None
 
     # The second job is still queued and untouched.
-    still_queued = queue.get_job(org_id, second)
+    still_queued = queue.get_job(other_org, second)
     assert still_queued.status == "queued"
 
 

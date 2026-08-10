@@ -16,6 +16,7 @@ import {
   WorkspaceMemberRecord,
 } from "@/lib/api";
 import { ACTIVE_JOB_STATUSES, useJobPolling } from "@/lib/jobPoll";
+import { clearedSyncChanges } from "@/lib/syncChanges";
 
 // GitHub is now offered per workspace (it used to be org-level only). A
 // workspace owner connects their own installation, so the workspace's Code
@@ -88,11 +89,15 @@ export default function WorkspaceDetailPage() {
     }
   }, [workspaceId]);
 
+  const changesGen = useRef(0);
+
   const refreshChanges = useCallback(
     async (list: ConnectionRecord[]) => {
       if (list.length === 0) return;
+      const gen = ++changesGen.current;
       setChecking(true);
       const next: Record<string, SyncChanges> = {};
+      const failedIds: string[] = [];
       await Promise.all(
         list.map(async (c) => {
           // GitHub is read live and never ingested, so there is no "changed since
@@ -102,11 +107,18 @@ export default function WorkspaceDetailPage() {
           try {
             next[c.id] = await api.checkWorkspaceConnectionChanges(workspaceId, c.id);
           } catch {
-            // ignore transient source errors
+            // Drop prior has_changes so a failed re-check after sync cannot
+            // leave a sticky Update button.
+            failedIds.push(c.id);
           }
         })
       );
-      setChangesById((prev) => ({ ...prev, ...next }));
+      if (gen !== changesGen.current) return; // newer check won
+      setChangesById((prev) => {
+        const merged = { ...prev, ...next };
+        for (const id of failedIds) delete merged[id];
+        return merged;
+      });
       setChecking(false);
     },
     [workspaceId]
@@ -228,6 +240,10 @@ export default function WorkspaceDetailPage() {
         if (curr === "succeeded") {
           setMessage(updateCompleteMessage(job.doc_count));
           setError(null);
+          setChangesById((prev) => ({
+            ...prev,
+            [connectionId]: clearedSyncChanges(connectionId),
+          }));
           refreshChanges(connections);
           void refreshWorkspace();
           requestAnimationFrame(() => {
@@ -262,11 +278,19 @@ export default function WorkspaceDetailPage() {
     }
   }
 
+  const updateInFlight = useRef<Set<string>>(new Set());
+
   async function handleUpdate(connectionId: string) {
     const latest = latestJobByConnection(jobs)[connectionId];
     if (latest && ACTIVE_STATUSES.has(latest.status)) return;
+    if (updateInFlight.current.has(connectionId)) return;
+    updateInFlight.current.add(connectionId);
     setError(null);
     setMessage("Updating…");
+    setChangesById((prev) => ({
+      ...prev,
+      [connectionId]: clearedSyncChanges(connectionId),
+    }));
     try {
       const { job_id } = await api.triggerWorkspaceIngest(workspaceId, connectionId);
       setWatchedJobId(job_id);
@@ -280,6 +304,8 @@ export default function WorkspaceDetailPage() {
       setError(err instanceof Error ? err.message : "Could not start the update.");
       setMessage(null);
       setWatchedJobId(null);
+    } finally {
+      updateInFlight.current.delete(connectionId);
     }
   }
 

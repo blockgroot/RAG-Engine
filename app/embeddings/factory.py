@@ -19,7 +19,7 @@ from .remote import RemoteEmbeddingProvider
 
 # (model, device) -> provider. Cleared only via ``clear_embedding_provider_cache``
 # (tests that must force a fresh load).
-_local_cache: dict[tuple[str, str | None], LocalEmbeddingProvider] = {}
+_local_cache: dict[tuple[str, str | None, int], LocalEmbeddingProvider] = {}
 
 
 def clear_embedding_provider_cache() -> None:
@@ -34,11 +34,13 @@ def build_embedding_provider(
     settings = settings or EmbeddingSettings.from_env()
 
     if settings.backend == "local":
-        key = (settings.model, settings.device)
+        key = (settings.model, settings.device, settings.batch_size)
         cached = _local_cache.get(key)
         if cached is not None:
             return cached
-        provider = LocalEmbeddingProvider(model=settings.model, device=settings.device)
+        provider = LocalEmbeddingProvider(
+            model=settings.model, device=settings.device, batch_size=settings.batch_size
+        )
         _local_cache[key] = provider
         return provider
     if settings.backend == "remote":

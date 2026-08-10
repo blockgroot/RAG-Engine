@@ -40,21 +40,29 @@ function pickDisplayJob(
  * arrives (or against a backend that predates them).
  */
 function syncHeadline(job: JobRecord | undefined): string {
-  if (job?.phase === "listing") return "Looking at what's there…";
+  const phase = job?.phase;
+  if (phase === "listing") return "Looking at what's there…";
+  if (phase === "preparing") return "Opening the next page…";
+  if (phase === "contextualizing") return "Adding search context…";
+  if (phase === "embedding") return "Indexing for search…";
   return "Bringing your policies in…";
 }
 
 function syncDetail(job: JobRecord | undefined): string {
   const total = job?.total_documents ?? null;
+  const done = job?.processed_documents ?? 0;
   if (job?.phase === "listing") {
     return "Checking your source for pages that are new or changed.";
   }
   if (total != null && total > 0) {
-    const done = job?.processed_documents ?? 0;
-    return `${done} of ${total} page${total === 1 ? "" : "s"} done. Keep this page open until it finishes.`;
+    const current = Math.min(total, done + 1);
+    if (done < total) {
+      return `Page ${current} of ${total} — ${done} stored so far. You can invite people below while this finishes.`;
+    }
+    return `${done} of ${total} pages done.`;
   }
   if (total === 0) return "Nothing new to bring in — finishing up.";
-  return "This can take a few minutes. Keep this page open until it finishes.";
+  return "This usually takes under a minute. Search quality may keep improving briefly in the background.";
 }
 
 function syncPercent(job: JobRecord | undefined): number | null {
@@ -408,6 +416,38 @@ function OnboardingInner() {
                       ? "Try again"
                       : "Bring them in"}
               </button>
+            )}
+
+            {(syncInProgress || displayJob?.status === "failed") && (
+              <div className="stack" style={{ marginTop: "1.25rem" }}>
+                <h3 style={{ margin: 0, fontSize: "1rem" }}>Invite while you wait</h3>
+                <p className="muted" style={{ margin: 0 }}>
+                  Sync runs in the background. Add a teammate now — they can sign in once policies are ready.
+                </p>
+                <form
+                  onSubmit={handleInvite}
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    alignItems: "center",
+                    gap: "0.85rem",
+                  }}
+                >
+                  <input
+                    className="input"
+                    type="email"
+                    required
+                    placeholder="teammate@company.com"
+                    value={inviteEmail}
+                    onChange={(e) => setInviteEmail(e.target.value)}
+                    autoComplete="email"
+                    style={{ flex: "1 1 12rem", minWidth: "12rem" }}
+                  />
+                  <button className="button button-secondary" type="submit" disabled={!inviteEmail.trim()}>
+                    Send invite
+                  </button>
+                </form>
+              </div>
             )}
           </section>
         )}
