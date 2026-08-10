@@ -1,13 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { ConnectionCard } from "@/components/ConnectionCard";
 import { useMe } from "@/lib/useMe";
-import { api, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
+import { api, ApiError, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
 import { ACTIVE_JOB_STATUSES, useJobPolling } from "@/lib/jobPoll";
 import { clearedSyncChanges } from "@/lib/syncChanges";
+import { syncPagesDetail, syncPhaseHeadline } from "@/lib/syncProgress";
 
 const PROVIDERS: ("notion" | "google" | "github")[] = ["notion", "google", "github"];
 const ACTIVE_STATUSES = ACTIVE_JOB_STATUSES;
@@ -32,12 +34,15 @@ function updateCompleteMessage(docCount: number | null | undefined): string {
 
 export default function ConnectionsPage() {
   const { me, loading } = useMe({ requireAdmin: true });
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const [connections, setConnections] = useState<ConnectionRecord[]>([]);
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [changesById, setChangesById] = useState<Record<string, SyncChanges>>({});
   const [checking, setChecking] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reauthById, setReauthById] = useState<Record<string, boolean>>({});
   /** Bumped when an update starts so job polling resumes (it stops when idle). */
   const [pollToken, setPollToken] = useState(0);
   const [watchedJobId, setWatchedJobId] = useState<string | null>(null);
@@ -45,6 +50,20 @@ export default function ConnectionsPage() {
   const loaded = useRef(false);
   const bannerRef = useRef<HTMLDivElement | null>(null);
   const connectionsRef = useRef<ConnectionRecord[]>([]);
+
+  useEffect(() => {
+    const connectError = searchParams.get("connect_error");
+    if (!connectError) return;
+    if (connectError === "github_same_install" || connectError === "github_install_in_use") {
+      setError(
+        "That GitHub account is already linked to a space. Company Sources and each space must use different GitHub accounts — pick another on the chooser, or disconnect it from the space first."
+      );
+    } else {
+      setError("Could not finish connecting GitHub. Try again.");
+    }
+    router.replace("/admin/connections", { scroll: false });
+  }, [searchParams, router]);
+
 
   const changesGen = useRef(0);
 
@@ -56,17 +75,55 @@ export default function ConnectionsPage() {
     const failedIds: string[] = [];
     await Promise.all(
       list.map(async (c) => {
-        // GitHub has no ingestion at all -- nothing is stored, so there is no
-        // "changed since last sync" to compute and the API refuses this call.
-        if (c.provider === "github") return;
+        // GitHub has no change-check; probe credential mint on load so a dead
+        // install shows Reconnect without waiting for Refresh list.
+        if (c.provider === "github") {
+          try {
+            await api.checkConnectionHealth(c.id);
+            setReauthById((prev) => ({ ...prev, [c.id]: false }));
+            setConnections((prev) =>
+              prev.map((row) =>
+                row.id === c.id ? { ...row, needs_reauth: false, reauth_reason: null } : row
+              )
+            );
+          } catch (err) {
+            if (err instanceof ApiError && err.code === "oauth_reauth_required") {
+              setReauthById((prev) => ({ ...prev, [c.id]: true }));
+              setConnections((prev) =>
+                prev.map((row) =>
+                  row.id === c.id
+                    ? { ...row, needs_reauth: true, reauth_reason: err.message }
+                    : row
+                )
+              );
+            }
+          }
+          return;
+        }
         // Google needs a folder before change-check works.
         if (c.provider === "google" && !c.source_config?.folder_id) return;
         try {
           next[c.id] = await api.checkConnectionChanges(c.id);
-        } catch {
+          setReauthById((prev) => ({ ...prev, [c.id]: false }));
+          setConnections((prev) =>
+            prev.map((row) =>
+              row.id === c.id ? { ...row, needs_reauth: false, reauth_reason: null } : row
+            )
+          );
+        } catch (err) {
           // Drop prior has_changes so a failed re-check after sync cannot
           // leave a sticky Update button.
           failedIds.push(c.id);
+          if (err instanceof ApiError && err.code === "oauth_reauth_required") {
+            setReauthById((prev) => ({ ...prev, [c.id]: true }));
+            setConnections((prev) =>
+              prev.map((row) =>
+                row.id === c.id
+                  ? { ...row, needs_reauth: true, reauth_reason: err.message }
+                  : row
+              )
+            );
+          }
         }
       })
     );
@@ -88,6 +145,9 @@ export default function ConnectionsPage() {
     loaded.current = true;
     api.listConnections().then((list) => {
       setConnections(list);
+      setReauthById(
+        Object.fromEntries(list.filter((c) => c.needs_reauth).map((c) => [c.id, true]))
+      );
       refreshChanges(list);
     });
     api.listJobs().then((list) => {
@@ -134,7 +194,10 @@ export default function ConnectionsPage() {
     for (const [connectionId, job] of Object.entries(latest)) {
       const prev = prevStatuses.current[connectionId];
       const curr = job.status;
-      if (prev && ACTIVE_STATUSES.has(prev) && !ACTIVE_STATUSES.has(curr)) {
+      if (ACTIVE_STATUSES.has(curr)) {
+        setMessage(`${syncPhaseHeadline(job)} ${syncPagesDetail(job)}`);
+        setError(null);
+      } else if (prev && ACTIVE_STATUSES.has(prev) && !ACTIVE_STATUSES.has(curr)) {
         if (curr === "succeeded") {
           setMessage(updateCompleteMessage(job.doc_count));
           setError(null);
@@ -211,7 +274,7 @@ export default function ConnectionsPage() {
         <PageHeader
           eyebrow="Company"
           title="Sources"
-          description="Connect Notion, Google Drive, and GitHub — policies sync; code is answered live."
+          description="Connect Notion, Google Drive, and company GitHub. Spaces need their own GitHub account — never the same install as here."
           scene="sources"
           meta={
             <>
@@ -263,6 +326,25 @@ export default function ConnectionsPage() {
                       prev.map((c) => (c.id === updated.id ? updated : c))
                     );
                     refreshChanges([updated]);
+                  }}
+                  onDisconnected={(connectionId) => {
+                    setConnections((prev) => prev.filter((c) => c.id !== connectionId));
+                    setChangesById((prev) => {
+                      const next = { ...prev };
+                      delete next[connectionId];
+                      return next;
+                    });
+                    setReauthById((prev) => {
+                      const next = { ...prev };
+                      delete next[connectionId];
+                      return next;
+                    });
+                    setMessage("Disconnected. Indexed docs for that source were removed.");
+                  }}
+                  needsReauth={Boolean(connection && (connection.needs_reauth || reauthById[connection.id]))}
+                  onNeedsReauth={(needed) => {
+                    if (!connection) return;
+                    setReauthById((prev) => ({ ...prev, [connection.id]: needed }));
                   }}
                 />
               );

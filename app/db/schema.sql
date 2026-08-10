@@ -328,6 +328,13 @@ CREATE UNIQUE INDEX idx_oauth_connections_org_provider_workspace
 -- column. Nullable with no default: most providers (Notion) never set it.
 ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS source_config JSONB;
 
+-- Connection health: sticky "needs reconnect" so Sources can show a Reconnect
+-- CTA after an admin leaves / token dies, without relying on in-memory React
+-- state from the last failed change-check. Cleared on reconnect or a successful
+-- live call; set when refresh or an upstream 401/unauthorized hits.
+ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS needs_reauth BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS reauth_reason TEXT;
+
 -- Admin-triggered ingestion jobs (Phase 10/12). A durable, pollable record of a
 -- background fetch->chunk->embed->store run so an admin sees progress instead
 -- of a blocking script. Consumed by a Postgres-backed worker (app/jobs/), not
@@ -403,6 +410,27 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 -- which workspace so the callback knows to save the resulting connection
 -- scoped to it (NULL = today's org-wide connect flow, unchanged).
 ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
+
+-- GitHub connect: after user OAuth, the callback lists every App installation
+-- this user can see and parks the user token here so the frontend can prompt
+-- "which account?" before we bind Company Sources vs a space. Single-use,
+-- short TTL — same trust model as oauth_states / magic_link_tokens. Tokens
+-- are Fernet-encrypted at rest; only hashes aren't needed because possession
+-- of the random ``token`` is the capability (like oauth state).
+CREATE TABLE IF NOT EXISTS github_install_pending (
+    token                      TEXT PRIMARY KEY,
+    org_id                     UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    workspace_id               UUID REFERENCES workspaces (id) ON DELETE CASCADE,
+    access_token_encrypted     TEXT NOT NULL,
+    refresh_token_encrypted    TEXT,
+    token_expires_at           TIMESTAMPTZ,
+    expires_at                 TIMESTAMPTZ NOT NULL,
+    consumed_at                TIMESTAMPTZ,
+    created_at                 TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_github_install_pending_expires
+    ON github_install_pending (expires_at);
+
 
 -- Short-TTL cache for repeated standalone policy questions (Phase 19).
 CREATE TABLE IF NOT EXISTS query_answer_cache (

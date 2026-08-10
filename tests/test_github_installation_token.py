@@ -127,7 +127,9 @@ def test_missing_installation_id_raises_an_actionable_error(store, org_cleanup, 
     calls: list = []
     _fake_mint(monkeypatch, calls)
 
-    with pytest.raises(ConfigurationError) as excinfo:
+    from app.core.exceptions import OAuthReauthRequiredError
+
+    with pytest.raises(OAuthReauthRequiredError) as excinfo:
         get_live_connection_token(org_id, "github")
 
     assert "reconnect" in str(excinfo.value).lower()

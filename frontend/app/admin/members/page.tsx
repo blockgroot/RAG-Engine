@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { useMe } from "@/lib/useMe";
@@ -11,26 +11,42 @@ export default function MembersPage() {
   const [members, setMembers] = useState<MemberRecord[]>([]);
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [inviteMessage, setInviteMessage] = useState<string | null>(null);
+  const [rosterError, setRosterError] = useState<string | null>(null);
+  const [rosterMessage, setRosterMessage] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const clearRosterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   function refresh() {
     api.listMembers().then(setMembers);
   }
 
+  function flashRoster(ok: string | null, err: string | null = null) {
+    if (clearRosterTimer.current) clearTimeout(clearRosterTimer.current);
+    setRosterError(err);
+    setRosterMessage(ok);
+    if (ok) {
+      clearRosterTimer.current = setTimeout(() => setRosterMessage(null), 4000);
+    }
+  }
+
   useEffect(() => {
     if (me) refresh();
+    return () => {
+      if (clearRosterTimer.current) clearTimeout(clearRosterTimer.current);
+    };
   }, [me]);
 
   async function handleInvite(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
-    setMessage(null);
+    setInviteError(null);
+    setInviteMessage(null);
     setSending(true);
     try {
       const invited = await api.inviteMember(email.trim().toLowerCase());
       const who = email.trim().toLowerCase();
-      setMessage(
+      setInviteMessage(
         invited.dev_link
           ? `Invite sent to ${who}. Dev link: ${invited.dev_link}`
           : `Invite sent to ${who}.`
@@ -38,9 +54,87 @@ export default function MembersPage() {
       setEmail("");
       refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not invite that email.");
+      setInviteError(err instanceof Error ? err.message : "Could not invite that email.");
     } finally {
       setSending(false);
+    }
+  }
+
+  async function handleRevoke(userId: string, memberEmail: string) {
+    if (busyId) return;
+    if (!window.confirm(`Sign out all sessions for ${memberEmail}?`)) return;
+    setBusyId(userId);
+    flashRoster(null);
+    try {
+      await api.revokeMemberSessions(userId);
+      flashRoster(`Signed out all sessions for ${memberEmail}.`);
+    } catch (err) {
+      flashRoster(null, err instanceof Error ? err.message : "Could not revoke sessions.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handlePromote(userId: string, memberEmail: string) {
+    if (busyId) return;
+    if (!window.confirm(`Make ${memberEmail} an admin? They will be able to manage people and sources.`)) {
+      return;
+    }
+    setBusyId(userId);
+    flashRoster(null);
+    try {
+      await api.promoteMember(userId);
+      flashRoster(`${memberEmail} is now an admin.`);
+      refresh();
+    } catch (err) {
+      flashRoster(null, err instanceof Error ? err.message : "Could not promote that person.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handleDemote(userId: string, memberEmail: string) {
+    if (busyId) return;
+    const admins = members.filter((m) => m.role === "admin").length;
+    if (admins <= 1) {
+      flashRoster(null, "Cannot demote the last admin. Promote someone else first.");
+      return;
+    }
+    if (!window.confirm(`Demote ${memberEmail} to member? They will lose admin access immediately.`)) {
+      return;
+    }
+    setBusyId(userId);
+    flashRoster(null);
+    try {
+      await api.demoteMember(userId);
+      flashRoster(`Demoted ${memberEmail} — they are a member again.`);
+      refresh();
+    } catch (err) {
+      flashRoster(null, err instanceof Error ? err.message : "Could not demote that person.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handleRemove(userId: string, memberEmail: string) {
+    if (busyId) return;
+    if (userId === me?.user_id) {
+      flashRoster(null, "You cannot remove your own account.");
+      return;
+    }
+    if (!window.confirm(`Remove ${memberEmail} from this company? They will lose access immediately.`)) {
+      return;
+    }
+    setBusyId(userId);
+    flashRoster(null);
+    try {
+      await api.removeMember(userId);
+      flashRoster(`Removed ${memberEmail}.`);
+      refresh();
+    } catch (err) {
+      flashRoster(null, err instanceof Error ? err.message : "Could not remove that person.");
+    } finally {
+      setBusyId(null);
     }
   }
 
@@ -61,7 +155,7 @@ export default function MembersPage() {
         <PageHeader
           eyebrow="Company"
           title="People"
-          description="Invite teammates with their work email — they join your company only."
+          description="Invite teammates, make admins for succession, and remove people who leave. Always keep at least one other admin before you leave."
           scene="people"
           meta={
             <>
@@ -96,14 +190,14 @@ export default function MembersPage() {
               <button className="button" type="submit" disabled={sending || !email.trim()}>
                 {sending ? "Sending…" : "Send invite"}
               </button>
-              {error && (
+              {inviteError && (
                 <div className="banner banner-warn" role="alert">
-                  {error}
+                  {inviteError}
                 </div>
               )}
-              {message && (
+              {inviteMessage && (
                 <div className="banner banner-ok" role="status">
-                  {message}
+                  {inviteMessage}
                 </div>
               )}
             </form>
@@ -114,6 +208,16 @@ export default function MembersPage() {
               <h2 id="roster-title">Team roster</h2>
               <p className="muted">Everyone who can ask in this company.</p>
             </div>
+            {rosterError && (
+              <div className="banner banner-warn" role="alert" style={{ marginBottom: "0.75rem" }}>
+                {rosterError}
+              </div>
+            )}
+            {rosterMessage && (
+              <div className="banner banner-ok" role="status" style={{ marginBottom: "0.75rem" }}>
+                {rosterMessage}
+              </div>
+            )}
             {members.length === 0 ? (
               <div className="studio-empty">
                 <div className="studio-empty-mark" aria-hidden />
@@ -140,6 +244,58 @@ export default function MembersPage() {
                         </span>
                       </div>
                       <span className={`role-chip role-${m.role}`}>{m.role}</span>
+                      <div className="people-card-actions">
+                        {m.role === "member" && (
+                          <button
+                            type="button"
+                            className="button button-secondary"
+                            disabled={busyId === m.id}
+                            onClick={() => handlePromote(m.id, m.email)}
+                          >
+                            {busyId === m.id ? "…" : "Make admin"}
+                          </button>
+                        )}
+                        {m.role === "admin" && m.id !== me.user_id && (
+                          <button
+                            type="button"
+                            className="button button-secondary"
+                            disabled={busyId === m.id || adminCount <= 1}
+                            title={
+                              adminCount <= 1
+                                ? "Promote someone else before demoting the last admin"
+                                : undefined
+                            }
+                            onClick={() => handleDemote(m.id, m.email)}
+                          >
+                            {busyId === m.id ? "…" : "Demote"}
+                          </button>
+                        )}
+                        {m.id !== me.user_id && (
+                          <>
+                            <button
+                              type="button"
+                              className="button button-secondary"
+                              disabled={busyId === m.id}
+                              onClick={() => handleRevoke(m.id, m.email)}
+                            >
+                              {busyId === m.id ? "…" : "Revoke sessions"}
+                            </button>
+                            <button
+                              type="button"
+                              className="button button-secondary"
+                              disabled={busyId === m.id || (m.role === "admin" && adminCount <= 1)}
+                              title={
+                                m.role === "admin" && adminCount <= 1
+                                  ? "Promote someone else before removing the last admin"
+                                  : undefined
+                              }
+                              onClick={() => handleRemove(m.id, m.email)}
+                            >
+                              Remove
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </li>
                   );
                 })}

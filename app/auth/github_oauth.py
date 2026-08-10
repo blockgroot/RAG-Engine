@@ -144,21 +144,16 @@ class GitHubAppProvider(OAuthProvider):
             installation_id,
         )
 
-    def exchange_code_resolve_installation(
-        self,
-        code: str,
-        *,
-        prefer_user_account: bool = False,
-    ) -> tuple[OAuthTokens, str] | None:
-        """Exchange ``code``, then pick an installation this user already has.
+    def exchange_code_list_installations(
+        self, code: str
+    ) -> tuple[str, str | None, datetime | None, list[dict]]:
+        """Exchange ``code`` and list App installations this user can see.
 
-        Used when the callback has no ``installation_id`` (plain user OAuth).
-        Returns ``None`` when the App is not installed on any account the user
-        can see — caller should send them to ``install_url``.
-
-        ``prefer_user_account=True`` (workspace connect) prefers a User
-        installation over an Organization one, so a personal space does not
-        silently bind the company GitHub org install when both exist.
+        Used by the connect callback when GitHub did not already hand an
+        ``installation_id``: we park the user token and let the UI prompt
+        which account to bind (Company Sources vs a space) instead of
+        silently auto-picking — that auto-pick is how the same personal
+        install ended up on both surfaces.
         """
         data = self._post_token_exchange(code)
         access_token = data.get("access_token")
@@ -167,8 +162,58 @@ class GitHubAppProvider(OAuthProvider):
                 "GitHub OAuth response missing access_token "
                 f"(error: {data.get('error', 'unknown')})."
             )
-
         installations = self._list_installations(access_token)
+        return (
+            access_token,
+            data.get("refresh_token"),
+            compute_expires_at(data.get("expires_in")),
+            installations,
+        )
+
+    def tokens_for_installation(
+        self,
+        access_token: str,
+        installation_id: str,
+        *,
+        refresh_token: str | None = None,
+        expires_at: datetime | None = None,
+    ) -> tuple[OAuthTokens, str]:
+        """Verify ``installation_id`` against the user token and build tokens."""
+        account_login, account_type = self._verify_installation(
+            access_token, installation_id
+        )
+        return (
+            OAuthTokens(
+                access_token=access_token,
+                refresh_token=refresh_token,
+                expires_at=expires_at,
+                external_workspace_id=account_login,
+                external_workspace_name=(
+                    f"{account_login} ({account_type})" if account_type else account_login
+                ),
+            ),
+            str(installation_id),
+        )
+
+    def exchange_code_resolve_installation(
+        self,
+        code: str,
+        *,
+        prefer_user_account: bool = False,
+    ) -> tuple[OAuthTokens, str] | None:
+        """Exchange ``code``, then pick an installation this user already has.
+
+        Kept for unit tests and offline callers. The HTTP connect callback
+        no longer auto-picks — it uses ``exchange_code_list_installations``
+        and the install-chooser UI instead.
+
+        ``prefer_user_account=True`` (workspace connect) prefers a User
+        installation over an Organization one, so a personal space does not
+        silently bind the company GitHub org install when both exist.
+        """
+        access_token, refresh_token, expires_at, installations = (
+            self.exchange_code_list_installations(code)
+        )
         if not installations:
             return None
 
@@ -178,24 +223,11 @@ class GitHubAppProvider(OAuthProvider):
         if chosen is None:
             return None
 
-        installation_id = str(chosen.get("id"))
-        account = chosen.get("account") or {}
-        login = account.get("login")
-        if not login:
-            raise OAuthError("GitHub installation record is missing account.login.")
-        account_type = account.get("type")
-
-        return (
-            OAuthTokens(
-                access_token=access_token,
-                refresh_token=data.get("refresh_token"),
-                expires_at=compute_expires_at(data.get("expires_in")),
-                external_workspace_id=login,
-                external_workspace_name=(
-                    f"{login} ({account_type})" if account_type else login
-                ),
-            ),
-            installation_id,
+        return self.tokens_for_installation(
+            access_token,
+            str(chosen.get("id")),
+            refresh_token=refresh_token,
+            expires_at=expires_at,
         )
 
     def refresh(self, refresh_token: str) -> OAuthTokens:

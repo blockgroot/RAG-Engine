@@ -399,3 +399,83 @@ def test_org_me_ready_to_ask_ignores_workspace_only_sync(client, owner_org):
 
     ws = client.get(f"/workspaces/{workspace_id}", cookies=cookies).json()
     assert ws["ready_to_ask"] is True
+
+
+@requires_db
+def test_owner_can_delete_workspace_and_cascades_scoped_docs(client, owner_org):
+    org_id, owner, cookies = owner_org
+    created = client.post("/workspaces", json={"name": "Temp Space"}, cookies=cookies).json()
+    workspace_id = created["id"]
+
+    # Org-wide doc must survive; workspace doc must go with the space.
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO documents (org_id, title, source_provider, source_external_id)
+            VALUES (%s::uuid, 'Org Policy', 'notion', 'org-doc')
+            """,
+            (org_id,),
+        )
+        conn.execute(
+            """
+            INSERT INTO documents (org_id, title, source_provider, source_external_id, workspace_id)
+            VALUES (%s::uuid, 'Space Notes', 'notion', 'ws-doc', %s::uuid)
+            """,
+            (org_id, workspace_id),
+        )
+
+    deleted = client.delete(f"/workspaces/{workspace_id}", cookies=cookies)
+    assert deleted.status_code == 200
+    assert deleted.json()["status"] == "deleted"
+
+    assert client.get(f"/workspaces/{workspace_id}", cookies=cookies).status_code == 403
+    listed = client.get("/workspaces", cookies=cookies).json()
+    assert all(w["id"] != workspace_id for w in listed)
+
+    with get_connection() as conn:
+        org_docs = conn.execute(
+            "SELECT title FROM documents WHERE org_id = %s::uuid AND workspace_id IS NULL",
+            (org_id,),
+        ).fetchall()
+        ws_docs = conn.execute(
+            "SELECT 1 FROM documents WHERE workspace_id = %s::uuid",
+            (workspace_id,),
+        ).fetchall()
+    assert [r[0] for r in org_docs] == ["Org Policy"]
+    assert ws_docs == []
+
+
+@requires_db
+def test_member_cannot_delete_workspace(client, owner_org):
+    org_id, owner, cookies = owner_org
+    workspace_id = client.post(
+        "/workspaces", json={"name": "Shared"}, cookies=cookies
+    ).json()["id"]
+    member = invite_org_member(f"member-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    client.post(
+        f"/workspaces/{workspace_id}/members",
+        json={"email": member.email},
+        cookies=cookies,
+    )
+    member_cookies = {"session": create_session_token(member)}
+    refused = client.delete(f"/workspaces/{workspace_id}", cookies=member_cookies)
+    assert refused.status_code == 403
+    # Space still exists for the owner.
+    assert client.get(f"/workspaces/{workspace_id}", cookies=cookies).status_code == 200
+
+
+@requires_db
+def test_foreign_org_cannot_delete_workspace(client, owner_org, store, org_cleanup):
+    org_id, owner, cookies = owner_org
+    workspace_id = client.post(
+        "/workspaces", json={"name": "Private"}, cookies=cookies
+    ).json()["id"]
+
+    other_org = store.create_organization(f"Other Org {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(other_org)
+    stranger = create_admin(f"stranger-{uuid.uuid4().hex[:8]}@example.com", other_org)
+    stranger_cookies = {"session": create_session_token(stranger)}
+
+    refused = client.delete(f"/workspaces/{workspace_id}", cookies=stranger_cookies)
+    assert refused.status_code == 403
+    assert client.get(f"/workspaces/{workspace_id}", cookies=cookies).status_code == 200

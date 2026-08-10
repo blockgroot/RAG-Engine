@@ -632,6 +632,21 @@ their policy documents; their employees ask questions and get answers grounded i
   deliberate given this is a low-risk internal tool with an already-hardened cookie
   (httpOnly+Secure+SameSite=Lax) and no refresh-token flow; revisit with a proper
   refresh mechanism if the risk profile changes.
+- **Admin succession / offboarding (sized to current need).** `get_session` re-reads
+  live `users.role` on every request (JWT role is a snapshot only) so promote/demote
+  take effect under the 30-day TTL. `POST /admin/members/{id}/promote` and
+  `/demote` (last-admin guarded; demote also sets `sessions_revoked_at`);
+  `DELETE /admin/members/{id}` remains the real offboard (revoke alone still
+  allows magic-link re-entry). Removing a sole workspace owner while other
+  members remain is blocked until `POST /workspaces/{id}/members/{id}/make-owner`;
+  a solely-owned empty space is deleted with the user. A locked sole-admin org
+  stays an **operator-only** break-glass (manual SQL / ops) — never a public
+  reclaim flow.
+- **Connection health (reconnect visibility).** ``oauth_connections.needs_reauth`` /
+  ``reauth_reason`` stick after terminal auth failure (token refresh, Notion
+  unauthorized, worker ingest); cleared on reconnect or a successful live call;
+  returned on Sources list so Reconnect survives reload. Auth-shaped
+  ``SourceError`` maps to ``oauth_reauth_required`` (not only Google refresh).
 - **Workspace-within-a-Workspace: a `workspace_id` isolation axis nests INSIDE
   `org_id`, everywhere `org_id` already scopes a row — it never replaces it.**
   An employee can create a personal sub-workspace inside their own org, invite

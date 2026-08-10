@@ -32,7 +32,10 @@ export function DriveFolderPicker({
   /** When set, saving the same id is a no-op (closes via onCancel if provided). */
   currentFolderId?: string | null;
   currentFolderName?: string | null;
-  onSaved: (config: ConnectionSourceConfig) => void;
+  onSaved: (
+    config: ConnectionSourceConfig,
+    meta?: { folder_changed?: boolean; documents_purged?: number }
+  ) => void;
   onError?: (message: string) => void;
   onCancel?: () => void;
 }) {
@@ -94,7 +97,10 @@ export function DriveFolderPicker({
       setFolderUrl("");
       setFolderResults([]);
       setDropdownOpen(false);
-      onSaved(result.config);
+      onSaved(result.config, {
+        folder_changed: result.folder_changed,
+        documents_purged: result.documents_purged,
+      });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Could not save folder.";
       onError?.(message);

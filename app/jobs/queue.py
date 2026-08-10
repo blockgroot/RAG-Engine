@@ -207,6 +207,30 @@ def mark_failed(job_id: str, error: str) -> None:
         )
 
 
+
+def requeue_interrupted_running() -> int:
+    """Return orphaned ``running`` jobs to ``queued`` after a worker crash/reload.
+
+    The in-API worker dies whenever ``uvicorn --reload`` recycles the process,
+    leaving jobs stuck on ``running`` while the UI says Updating. Re-queuing is
+    safe because ``ingest_source(incremental=True)`` skips pages already stored
+    (matched ``last_modified``) and continues with what is left -- the user must
+    not have to click Update again, and we must not re-embed the whole folder.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            UPDATE ingestion_jobs
+            SET status = 'queued',
+                started_at = NULL,
+                error = NULL
+            WHERE status = 'running'
+            RETURNING id
+            """
+        ).fetchall()
+    return len(rows)
+
+
 def reap_stuck(timeout_minutes: int = DEFAULT_REAP_TIMEOUT_MINUTES) -> int:
     """Flip any ``running`` job stuck past ``timeout_minutes`` to ``failed``.
 

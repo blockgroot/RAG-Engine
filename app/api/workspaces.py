@@ -23,7 +23,13 @@ from ..auth import (
     list_connections,
     set_connection_config,
 )
-from ..core.exceptions import ConfigurationError, NotFoundError, SourceError
+from ..core.exceptions import (
+    AuthError,
+    ConfigurationError,
+    NotFoundError,
+    OAuthReauthRequiredError,
+    SourceError,
+)
 from ..githublive import refresh_installation_scope
 from ..ingestion import detect_source_changes
 from ..jobs import JobAlreadyActiveError, enqueue, get_job, has_active_job, list_jobs
@@ -34,7 +40,21 @@ from ..sources import (
     validate_drive_folder,
 )
 from ..db.connection import get_connection
-from ..workspaces import create_workspace, invite_member, list_my_workspaces, list_workspace_members
+from ..workspaces import (
+    create_workspace,
+    delete_workspace,
+    invite_member,
+    list_my_workspaces,
+    list_workspace_members,
+    make_workspace_owner,
+)
+from .connection_ops import (
+    disconnect_connection,
+    folder_id_changed,
+    note_live_success,
+    purge_provider_documents,
+    raise_token_http,
+)
 from .deps import SessionClaims, get_session, get_workspace_role, require_workspace_owner
 from .serialize import job_payload
 from .setup_status import content_setup_status
@@ -93,6 +113,28 @@ def get_workspace(
     }
 
 
+
+@router.delete("/{workspace_id}")
+def delete_space(
+    workspace_id: str,
+    session: SessionClaims = Depends(get_session),
+    _role: str = Depends(require_workspace_owner),
+):
+    """Owner-only: permanently delete this space and its scoped content.
+
+    Org-wide policies and org GitHub are untouched. Workspace docs, connections,
+    conversations, and membership cascade away with the ``workspaces`` row.
+    """
+    try:
+        delete_workspace(workspace_id, session.org_id, session.user_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except AuthError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"status": "deleted", "workspace_id": workspace_id}
+
+
+
 def _workspace_github_connected(org_id: str, workspace_id: str) -> bool:
     """True only when this workspace has its OWN github connection row."""
     with get_connection() as conn:
@@ -144,6 +186,23 @@ def invite(
     return {"status": "invited", "email": email}
 
 
+@router.post("/{workspace_id}/members/{user_id}/make-owner")
+def make_owner(
+    workspace_id: str,
+    user_id: str,
+    session: SessionClaims = Depends(get_session),
+    _role: str = Depends(require_workspace_owner),
+):
+    """Promote a space member to owner (needed before removing a sole owner)."""
+    try:
+        make_workspace_owner(workspace_id, session.org_id, session.user_id, user_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except AuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "owner", "user_id": user_id}
+
+
 def _owned_workspace_connection(org_id: str, workspace_id: str, connection_id: str):
     """Return the connection if it belongs to this (org_id, workspace_id), else 404."""
     owned = {c.id: c for c in list_connections(org_id, workspace_id=workspace_id)}
@@ -162,6 +221,8 @@ def get_connections(workspace_id: str, session: SessionClaims = Depends(get_sess
             "external_workspace_name": c.external_workspace_name,
             "created_at": c.created_at.isoformat(),
             "source_config": c.source_config,
+            "needs_reauth": c.needs_reauth,
+            "reauth_reason": c.reauth_reason,
         }
         for c in list_connections(session.org_id, workspace_id=workspace_id)
     ]
@@ -192,8 +253,13 @@ def search_connection_drive_folders(
     try:
         token = get_live_connection_token(session.org_id, conn.provider, workspace_id=workspace_id)
         folders = search_drive_folders(token, q)
-    except SourceError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (SourceError, ConfigurationError, OAuthReauthRequiredError) as exc:
+        raise_token_http(
+            exc,
+            org_id=session.org_id,
+            provider=conn.provider,
+            workspace_id=workspace_id,
+        )
     return {"folders": folders}
 
 
@@ -229,12 +295,29 @@ def put_connection_config(
         folder_id = extract_drive_folder_id(folder_url)
         token = get_live_connection_token(session.org_id, conn.provider, workspace_id=workspace_id)
         config = validate_drive_folder(token, folder_id)
+        swapped = folder_id_changed(
+            session.org_id, conn.provider, config["folder_id"], workspace_id=workspace_id
+        )
         set_connection_config(session.org_id, conn.provider, config, workspace_id=workspace_id)
-    except ConfigurationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except SourceError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"connection_id": connection_id, "provider": conn.provider, "config": config}
+    except (ConfigurationError, SourceError, OAuthReauthRequiredError) as exc:
+        raise_token_http(
+            exc,
+            org_id=session.org_id,
+            provider=conn.provider,
+            workspace_id=workspace_id,
+        )
+    purged = 0
+    if swapped:
+        purged = purge_provider_documents(
+            session.org_id, conn.provider, workspace_id=workspace_id
+        )
+    return {
+        "connection_id": connection_id,
+        "provider": conn.provider,
+        "config": config,
+        "folder_changed": swapped,
+        "documents_purged": purged,
+    }
 
 
 @router.post("/{workspace_id}/connections/{connection_id}/refresh-scope")
@@ -264,8 +347,16 @@ def refresh_workspace_connection_scope(
 
     try:
         scope = refresh_installation_scope(session.org_id, workspace_id)
-    except (ConfigurationError, SourceError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        note_live_success(
+            session.org_id, "github", workspace_id=workspace_id
+        )
+    except (ConfigurationError, SourceError, OAuthReauthRequiredError) as exc:
+        raise_token_http(
+            exc,
+            org_id=session.org_id,
+            provider=conn.provider,
+            workspace_id=workspace_id,
+        )
 
     return {
         "connection_id": connection_id,
@@ -281,6 +372,38 @@ def refresh_workspace_connection_scope(
             }
             for repo in scope.repos
         ],
+    }
+
+
+
+@router.get("/{workspace_id}/connections/{connection_id}/health")
+def workspace_connection_health(
+    workspace_id: str,
+    connection_id: str,
+    session: SessionClaims = Depends(get_session),
+    _role: str = Depends(get_workspace_role),
+):
+    """Probe stored credentials for this space (GitHub on-load equivalent)."""
+    conn = _owned_workspace_connection(session.org_id, workspace_id, connection_id)
+    try:
+        get_live_connection_token(
+            session.org_id, conn.provider, workspace_id=workspace_id
+        )
+        note_live_success(
+            session.org_id, conn.provider, workspace_id=workspace_id
+        )
+    except (ConfigurationError, SourceError, OAuthReauthRequiredError) as exc:
+        raise_token_http(
+            exc,
+            org_id=session.org_id,
+            provider=conn.provider,
+            workspace_id=workspace_id,
+        )
+    return {
+        "connection_id": connection_id,
+        "provider": conn.provider,
+        "status": "ok",
+        "needs_reauth": False,
     }
 
 
@@ -300,8 +423,16 @@ def connection_changes(
         report = detect_source_changes(
             adapter, session.org_id, provider=conn.provider, workspace_id=workspace_id
         )
-    except ConfigurationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        note_live_success(
+            session.org_id, conn.provider, workspace_id=workspace_id
+        )
+    except (ConfigurationError, SourceError, OAuthReauthRequiredError) as exc:
+        raise_token_http(
+            exc,
+            org_id=session.org_id,
+            provider=conn.provider,
+            workspace_id=workspace_id,
+        )
 
     return {
         "connection_id": connection_id,
@@ -312,6 +443,26 @@ def connection_changes(
         "remote_total": report.remote_total,
         "has_changes": report.has_changes,
     }
+
+
+
+
+@router.delete("/{workspace_id}/connections/{connection_id}")
+def delete_workspace_connection(
+    workspace_id: str,
+    connection_id: str,
+    session: SessionClaims = Depends(get_session),
+    _role: str = Depends(require_workspace_owner),
+):
+    """Disconnect a personal space source and purge its indexed docs."""
+    _owned_workspace_connection(session.org_id, workspace_id, connection_id)
+    try:
+        result = disconnect_connection(
+            session.org_id, connection_id, workspace_id=workspace_id
+        )
+    except ConfigurationError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "disconnected", **result}
 
 
 @router.post("/{workspace_id}/connections/{connection_id}/ingest")

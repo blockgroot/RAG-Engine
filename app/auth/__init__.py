@@ -21,6 +21,11 @@ from .credentials import (
     list_connections,
     set_connection_config,
     get_connection_config,
+    delete_connection,
+    clear_installation_token_cache,
+    looks_like_auth_failure,
+    mark_needs_reauth,
+    clear_needs_reauth,
 )
 from .users import (
     User,
@@ -33,6 +38,9 @@ from .users import (
     invite_member,
     list_members,
     revoke_user_sessions,
+    remove_member,
+    promote_to_admin,
+    demote_to_member,
 )
 from .magic_link import create_magic_link_token, consume_magic_link_token
 from .signup_requests import (
@@ -73,6 +81,11 @@ __all__ = [
     "list_connections",
     "set_connection_config",
     "get_connection_config",
+    "clear_installation_token_cache",
+    "looks_like_auth_failure",
+    "mark_needs_reauth",
+    "clear_needs_reauth",
+    "delete_connection",
     "User",
     "ROLE_ADMIN",
     "ROLE_MEMBER",
@@ -83,6 +96,9 @@ __all__ = [
     "invite_member",
     "list_members",
     "revoke_user_sessions",
+    "remove_member",
+    "promote_to_admin",
+    "demote_to_member",
     "create_magic_link_token",
     "consume_magic_link_token",
     "SignupRequest",

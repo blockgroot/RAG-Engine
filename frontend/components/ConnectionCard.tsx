@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
+import { api, ApiError, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
+import { syncPagesDetail, syncPercent, syncPhaseHeadline } from "@/lib/syncProgress";
 import { DriveFolderPicker } from "./DriveFolderPicker";
 import { JobStatusBadge } from "./JobStatusBadge";
 import { ProviderMark } from "./ProviderMark";
@@ -108,6 +109,9 @@ export function ConnectionCard({
   onUpdate,
   onCheckAgain,
   onConfigSaved,
+  onDisconnected,
+  needsReauth = false,
+  onNeedsReauth,
   workspaceId,
 }: {
   provider: "notion" | "google" | "github";
@@ -118,6 +122,11 @@ export function ConnectionCard({
   onUpdate: (connectionId: string) => void;
   onCheckAgain?: () => void;
   onConfigSaved?: (connection: ConnectionRecord) => void;
+  /** After Disconnect — parent drops the connection from local state. */
+  onDisconnected?: (connectionId: string) => void;
+  /** Parent sets this when Check/Update got oauth_reauth_required. */
+  needsReauth?: boolean;
+  onNeedsReauth?: (needed: boolean) => void;
   /** When set, this card manages a personal sub-workspace connection instead
    * of the org-wide one (Workspace-within-a-Workspace) -- connect/config
    * calls are routed to the workspace-scoped endpoints. */
@@ -135,6 +144,8 @@ export function ConnectionCard({
   const needsFolder = provider === "google" && connection && !folderConfigured;
   const [changingFolder, setChangingFolder] = useState(false);
   const [folderHint, setFolderHint] = useState<string | null>(null);
+  const [disconnecting, setDisconnecting] = useState(false);
+  const [disconnectError, setDisconnectError] = useState<string | null>(null);
 
   // What the admin actually authorized on GitHub's install screen.
   const repoSelection = connection?.source_config?.repository_selection;
@@ -168,6 +179,7 @@ export function ConnectionCard({
       setGithubListFresh(true);
     } catch (err) {
       setGithubListFresh(false);
+      noteReauth(err);
       setScopeError(err instanceof Error ? err.message : "Could not refresh repositories.");
     } finally {
       setRefreshingScope(false);
@@ -199,6 +211,39 @@ export function ConnectionCard({
   const showGithubUpToDate =
     isLive && Boolean(connection) && githubListFresh && !refreshingScope && !scopeError;
 
+  async function handleDisconnect() {
+    if (!connection || disconnecting) return;
+    const label = PROVIDER_LABELS[provider];
+    const ok = window.confirm(
+      isLive
+        ? `Disconnect ${label}? Live answers for this scope will stop until you connect again.`
+        : `Disconnect ${label}? Indexed documents for this source will be deleted and answers will stop using them.`
+    );
+    if (!ok) return;
+    setDisconnecting(true);
+    setDisconnectError(null);
+    try {
+      if (workspaceId) {
+        await api.disconnectWorkspaceConnection(workspaceId, connection.id);
+      } else {
+        await api.disconnectConnection(connection.id);
+      }
+      onDisconnected?.(connection.id);
+    } catch (err) {
+      setDisconnectError(err instanceof Error ? err.message : "Could not disconnect.");
+    } finally {
+      setDisconnecting(false);
+    }
+  }
+
+  function noteReauth(err: unknown) {
+    if (err instanceof ApiError && err.code === "oauth_reauth_required") {
+      onNeedsReauth?.(true);
+      return true;
+    }
+    return false;
+  }
+
   return (
     <div className={`card source-studio-card source-studio-card--${provider}${connection ? " is-linked" : ""}`}>
       <div className="source-studio-top">
@@ -207,7 +252,13 @@ export function ConnectionCard({
           <div>
             <h3>{PROVIDER_LABELS[provider]}</h3>
             <p className="source-studio-kind">
-              {isLive ? "Live answers" : "Synced documents"}
+              {provider === "github"
+                ? workspaceId
+                  ? "This space only — pick a different GitHub account than Company Sources"
+                  : "Company-wide Code tab — usually a GitHub Organization"
+                : isLive
+                  ? "Live answers"
+                  : "Synced documents"}
             </p>
           </div>
         </div>
@@ -278,11 +329,17 @@ export function ConnectionCard({
             mode="change"
             currentFolderId={connection.source_config?.folder_id}
             currentFolderName={connection.source_config?.folder_name}
-            onSaved={(config) => {
+            onSaved={(config, meta) => {
               setConfigError(null);
               setChangingFolder(false);
+              onNeedsReauth?.(false);
+              const purged = meta?.documents_purged ?? 0;
               setFolderHint(
-                "Folder updated. Check, then Update to index the new folder — docs outside it will be removed."
+                meta?.folder_changed
+                  ? purged > 0
+                    ? `Folder updated · ${purged} old page${purged === 1 ? "" : "s"} removed. Run Update to index the new folder.`
+                    : "Folder updated. Run Update to index the new folder."
+                  : "Folder saved."
               );
               onConfigSaved?.({ ...connection, source_config: config });
             }}
@@ -303,26 +360,49 @@ export function ConnectionCard({
       )}
 
       {showDocsJobBadge && lastJob && (
-        <p
-          className="muted"
-          style={{ marginTop: "0.55rem", display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
-        >
-          <JobStatusBadge status={lastJob.status} />
-          {ACTIVE.has(lastJob.status)
-            ? "Updating…"
-            : lastJob.status === "succeeded"
-              ? (() => {
-                  const when = friendlyWhen(lastJob.finished_at || lastJob.created_at);
-                  const count = lastJob.doc_count;
-                  if (count != null && count > 0) {
-                    return `${when} · ${count} page${count === 1 ? "" : "s"}`;
-                  }
-                  return when;
-                })()
-              : lastJob.status === "failed"
-                ? "Update failed — try again"
-                : null}
-        </p>
+        <div className="stack" style={{ marginTop: "0.55rem", gap: "0.35rem" }}>
+          <p
+            className="muted"
+            style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
+          >
+            <JobStatusBadge status={lastJob.status} />
+            {ACTIVE.has(lastJob.status)
+              ? syncPhaseHeadline(lastJob)
+              : lastJob.status === "succeeded"
+                ? (() => {
+                    const when = friendlyWhen(lastJob.finished_at || lastJob.created_at);
+                    const count = lastJob.doc_count;
+                    if (count != null && count > 0) {
+                      return `${when} · ${count} page${count === 1 ? "" : "s"}`;
+                    }
+                    return when;
+                  })()
+                : lastJob.status === "failed"
+                  ? "Update failed — try again"
+                  : null}
+          </p>
+          {ACTIVE.has(lastJob.status) && (
+            <>
+              <p className="muted" style={{ margin: 0, fontSize: "0.85rem" }}>
+                {syncPagesDetail(lastJob)}
+              </p>
+              {syncPercent(lastJob) != null && (
+                <div
+                  className="sync-progress"
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={syncPercent(lastJob) ?? 0}
+                >
+                  <div
+                    className="sync-progress-bar"
+                    style={{ width: `${syncPercent(lastJob)}%` }}
+                  />
+                </div>
+              )}
+            </>
+          )}
+        </div>
       )}
 
       {/* Check found nothing new, and there is no job badge yet (e.g. Drive). */}
@@ -364,13 +444,33 @@ export function ConnectionCard({
         </p>
       )}
 
+      {needsReauth && connection && (
+        <div className="banner banner-warn" style={{ marginTop: "0.75rem" }} role="alert">
+          Access expired — reconnect {PROVIDER_LABELS[provider]} to continue.
+          {connection.reauth_reason ? (
+            <span className="muted" style={{ display: "block", marginTop: "0.35rem" }}>
+              {connection.reauth_reason}
+            </span>
+          ) : null}
+        </div>
+      )}
+      {disconnectError && (
+        <div className="banner banner-warn" style={{ marginTop: "0.75rem" }} role="alert">
+          {disconnectError}
+        </div>
+      )}
+
       <div className="source-card-actions">
         {available && !connection && (
           <a
             className="button"
             href={workspaceId ? api.connectWorkspaceUrl(workspaceId, provider) : api.connectUrl(provider)}
           >
-            Connect {PROVIDER_LABELS[provider]}
+            {provider === "github"
+              ? workspaceId
+                ? "Connect personal GitHub"
+                : "Connect company GitHub"
+              : `Connect ${PROVIDER_LABELS[provider]}`}
           </a>
         )}
         {connection && manageHref && (
@@ -431,6 +531,25 @@ export function ConnectionCard({
             disabled={checkingChanges}
           >
             {checkingChanges ? "Checking…" : "Check"}
+          </button>
+        )}
+        {connection && needsReauth && (
+          <a
+            className="button"
+            href={workspaceId ? api.connectWorkspaceUrl(workspaceId, provider) : api.connectUrl(provider)}
+          >
+            Reconnect {PROVIDER_LABELS[provider]}
+          </a>
+        )}
+        {connection && !syncInProgress && !disconnecting && (
+          <button
+            className="button button-secondary"
+            type="button"
+            onClick={handleDisconnect}
+            disabled={disconnecting}
+            title="Remove this connection and its indexed documents"
+          >
+            {disconnecting ? "Disconnecting…" : "Disconnect"}
           </button>
         )}
       </div>

@@ -80,6 +80,11 @@ def get_session(request: Request) -> SessionClaims:
     A JWT alone is not enough after a DB wipe / org delete: the signed claims
     can outlive the rows they point at. Without this check, Connect Notion and
     other FK-backed writes 500 with foreign-key errors instead of a clean 401.
+
+    ``role`` is re-read from ``users`` on every request (not taken from the JWT).
+    Sessions live up to 30 days; promote/demote must take effect immediately
+    without waiting for re-login. The JWT still carries ``role`` for
+    observability / older clients; authorization uses the live value.
     """
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if not token:
@@ -91,7 +96,7 @@ def get_session(request: Request) -> SessionClaims:
 
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT u.sessions_revoked_at FROM users u "
+            "SELECT u.sessions_revoked_at, u.role FROM users u "
             "JOIN organizations o ON o.id = u.org_id "
             "WHERE u.id = %s AND u.org_id = %s",
             (claims.user_id, claims.org_id),
@@ -101,10 +106,15 @@ def get_session(request: Request) -> SessionClaims:
             status_code=401,
             detail="Session is no longer valid — please sign in again",
         )
-    revoked_at = row[0]
+    revoked_at, live_role = row
     if revoked_at is not None and claims.issued_at <= revoked_at:
         raise HTTPException(status_code=401, detail="Session has been revoked")
-    return claims
+    return SessionClaims(
+        user_id=claims.user_id,
+        org_id=claims.org_id,
+        role=live_role,
+        issued_at=claims.issued_at,
+    )
 
 
 def require_admin(session: SessionClaims = Depends(get_session)) -> SessionClaims:

@@ -9,6 +9,7 @@ import { ConnectionCard } from "@/components/ConnectionCard";
 import { useMe } from "@/lib/useMe";
 import {
   api,
+  ApiError,
   ConnectionRecord,
   JobRecord,
   SyncChanges,
@@ -17,6 +18,7 @@ import {
 } from "@/lib/api";
 import { ACTIVE_JOB_STATUSES, useJobPolling } from "@/lib/jobPoll";
 import { clearedSyncChanges } from "@/lib/syncChanges";
+import { syncPagesDetail, syncPhaseHeadline } from "@/lib/syncProgress";
 
 // GitHub is now offered per workspace (it used to be org-level only). A
 // workspace owner connects their own installation, so the workspace's Code
@@ -59,6 +61,7 @@ export default function WorkspaceDetailPage() {
   const [notFound, setNotFound] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reauthById, setReauthById] = useState<Record<string, boolean>>({});
   /** Structured OAuth refusal (not a single bulk paragraph). */
   const [connectNotice, setConnectNotice] = useState<{
     title: string;
@@ -70,6 +73,8 @@ export default function WorkspaceDetailPage() {
 
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviting, setInviting] = useState(false);
+  const [makeOwnerBusy, setMakeOwnerBusy] = useState<string | null>(null);
+  const [deletingSpace, setDeletingSpace] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteMessage, setInviteMessage] = useState<string | null>(null);
 
@@ -100,16 +105,54 @@ export default function WorkspaceDetailPage() {
       const failedIds: string[] = [];
       await Promise.all(
         list.map(async (c) => {
-          // GitHub is read live and never ingested, so there is no "changed since
-          // last sync" to compute -- and the API refuses this call for it.
-          if (c.provider === "github") return;
+          // GitHub has no change-check; probe credential mint instead so
+          // needs_reauth is not refresh-list-only.
+          if (c.provider === "github") {
+            try {
+              await api.checkWorkspaceConnectionHealth(workspaceId, c.id);
+              setReauthById((prev) => ({ ...prev, [c.id]: false }));
+              setConnections((prev) =>
+                prev.map((row) =>
+                  row.id === c.id ? { ...row, needs_reauth: false, reauth_reason: null } : row
+                )
+              );
+            } catch (err) {
+              if (err instanceof ApiError && err.code === "oauth_reauth_required") {
+                setReauthById((prev) => ({ ...prev, [c.id]: true }));
+                setConnections((prev) =>
+                  prev.map((row) =>
+                    row.id === c.id
+                      ? { ...row, needs_reauth: true, reauth_reason: err.message }
+                      : row
+                  )
+                );
+              }
+            }
+            return;
+          }
           if (c.provider === "google" && !c.source_config?.folder_id) return;
           try {
             next[c.id] = await api.checkWorkspaceConnectionChanges(workspaceId, c.id);
-          } catch {
+            setReauthById((prev) => ({ ...prev, [c.id]: false }));
+            setConnections((prev) =>
+              prev.map((row) =>
+                row.id === c.id ? { ...row, needs_reauth: false, reauth_reason: null } : row
+              )
+            );
+          } catch (err) {
             // Drop prior has_changes so a failed re-check after sync cannot
             // leave a sticky Update button.
             failedIds.push(c.id);
+            if (err instanceof ApiError && err.code === "oauth_reauth_required") {
+              setReauthById((prev) => ({ ...prev, [c.id]: true }));
+              setConnections((prev) =>
+                prev.map((row) =>
+                  row.id === c.id
+                    ? { ...row, needs_reauth: true, reauth_reason: err.message }
+                    : row
+                )
+              );
+            }
           }
         })
       );
@@ -142,6 +185,9 @@ export default function WorkspaceDetailPage() {
       .listWorkspaceConnections(workspaceId)
       .then((list) => {
         setConnections(list);
+        setReauthById(
+          Object.fromEntries(list.filter((c) => c.needs_reauth).map((c) => [c.id, true]))
+        );
         refreshChanges(list);
       })
       .catch(() => {});
@@ -159,14 +205,20 @@ export default function WorkspaceDetailPage() {
   useEffect(() => {
     if (!me) return;
     const connectError = searchParams.get("connect_error");
-    if (connectError === "github_same_install") {
+    if (connectError === "github_same_install" || connectError === "github_install_in_use") {
       setError(null);
       setConnectNotice({
-        title: "This space can’t use the company GitHub connection",
-        why: "Company → Sources already uses that GitHub account. If this space reused it, company Code and space Code would show the same repos.",
+        title:
+          connectError === "github_install_in_use"
+            ? "That GitHub account is already linked elsewhere"
+            : "This space can’t reuse the company GitHub connection",
+        why:
+          connectError === "github_install_in_use"
+            ? "Another space (or Company → Sources) already uses that GitHub App install. Company Code and space Code must stay on different accounts."
+            : "Company → Sources already uses that GitHub account. If this space reused it, company Code and space Code would show the same repos.",
         options: [
-          "Put company GitHub on a GitHub Organization, reconnect it under Company → Sources, then connect this space with your personal account.",
-          "Or disconnect GitHub from Company → Sources, then connect it only on this space.",
+          "Choose a different GitHub account on the picker (Organization for company, personal for this space).",
+          "Or disconnect GitHub from the other Folio surface first, then connect it here.",
           "Or skip GitHub here and ask from the main Ask → Code tab instead.",
         ],
       });
@@ -194,6 +246,9 @@ export default function WorkspaceDetailPage() {
       .listWorkspaceConnections(workspaceId)
       .then((list) => {
         setConnections(list);
+        setReauthById(
+          Object.fromEntries(list.filter((c) => c.needs_reauth).map((c) => [c.id, true]))
+        );
         refreshChanges(list);
       })
       .catch(() => {});
@@ -236,7 +291,10 @@ export default function WorkspaceDetailPage() {
     for (const [connectionId, job] of Object.entries(latest)) {
       const prev = prevStatuses.current[connectionId];
       const curr = job.status;
-      if (prev && ACTIVE_STATUSES.has(prev) && !ACTIVE_STATUSES.has(curr)) {
+      if (ACTIVE_STATUSES.has(curr)) {
+        setMessage(`${syncPhaseHeadline(job)} ${syncPagesDetail(job)}`);
+        setError(null);
+      } else if (prev && ACTIVE_STATUSES.has(prev) && !ACTIVE_STATUSES.has(curr)) {
         if (curr === "succeeded") {
           setMessage(updateCompleteMessage(job.doc_count));
           setError(null);
@@ -258,7 +316,27 @@ export default function WorkspaceDetailPage() {
     }
   }, [jobs, connections, refreshChanges, refreshWorkspace]);
 
+
+  async function handleMakeOwner(userId: string, email: string) {
+    if (makeOwnerBusy) return;
+    if (!window.confirm(`Make ${email} an owner of this space?`)) return;
+    setMakeOwnerBusy(userId);
+    setInviteError(null);
+    setInviteMessage(null);
+    try {
+      await api.makeWorkspaceOwner(workspaceId, userId);
+      setInviteMessage(`${email} is now an owner.`);
+      const updated = await api.listWorkspaceMembers(workspaceId);
+      setMembers(updated);
+    } catch (err) {
+      setInviteError(err instanceof Error ? err.message : "Could not make that person an owner.");
+    } finally {
+      setMakeOwnerBusy(null);
+    }
+  }
+
   async function handleInvite(e: React.FormEvent) {
+
     e.preventDefault();
     const email = inviteEmail.trim();
     if (!email || inviting) return;
@@ -306,6 +384,28 @@ export default function WorkspaceDetailPage() {
       setWatchedJobId(null);
     } finally {
       updateInFlight.current.delete(connectionId);
+    }
+  }
+
+
+  async function handleDeleteSpace() {
+    if (deletingSpace || !workspace) return;
+    const name = workspace.name;
+    if (
+      !window.confirm(
+        `Delete “${name}” permanently? Everyone loses access, and this space’s documents, connections, and chats are removed. Company-wide policies are not affected. This cannot be undone.`
+      )
+    ) {
+      return;
+    }
+    setDeletingSpace(true);
+    setError(null);
+    try {
+      await api.deleteWorkspace(workspaceId);
+      router.push("/workspaces");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete this space.");
+      setDeletingSpace(false);
     }
   }
 
@@ -408,9 +508,21 @@ export default function WorkspaceDetailPage() {
           </div>
           <div className="stack" style={{ gap: "0.45rem" }}>
             {members.map((m) => (
-              <div key={m.email} style={{ display: "flex", justifyContent: "space-between", gap: "1rem" }}>
+              <div key={m.user_id || m.email} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "1rem" }}>
                 <span>{m.email}</span>
-                <span className="badge">{m.role === "owner" ? "Owner" : "Member"}</span>
+                <span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  <span className="badge">{m.role === "owner" ? "Owner" : "Member"}</span>
+                  {isOwner && m.role === "member" && (
+                    <button
+                      type="button"
+                      className="button button-secondary"
+                      disabled={makeOwnerBusy === m.user_id}
+                      onClick={() => handleMakeOwner(m.user_id, m.email)}
+                    >
+                      {makeOwnerBusy === m.user_id ? "…" : "Make owner"}
+                    </button>
+                  )}
+                </span>
               </div>
             ))}
           </div>
@@ -469,6 +581,26 @@ export default function WorkspaceDetailPage() {
                     refreshChanges([updated]);
                     void refreshWorkspace();
                   }}
+                  onDisconnected={(connectionId) => {
+                    setConnections((prev) => prev.filter((c) => c.id !== connectionId));
+                    setChangesById((prev) => {
+                      const next = { ...prev };
+                      delete next[connectionId];
+                      return next;
+                    });
+                    setReauthById((prev) => {
+                      const next = { ...prev };
+                      delete next[connectionId];
+                      return next;
+                    });
+                    setMessage("Disconnected. Indexed docs for that source were removed.");
+                    void refreshWorkspace();
+                  }}
+                  needsReauth={Boolean(connection && (connection.needs_reauth || reauthById[connection.id]))}
+                  onNeedsReauth={(needed) => {
+                    if (!connection) return;
+                    setReauthById((prev) => ({ ...prev, [connection.id]: needed }));
+                  }}
                   workspaceId={workspaceId}
                 />
               );
@@ -476,6 +608,29 @@ export default function WorkspaceDetailPage() {
           </section>
         ) : (
           <p className="muted">Only the owner can connect or change documents for this space.</p>
+        )}
+
+        {isOwner && (
+          <section className="panel stack" style={{ borderColor: "var(--warn, #b45309)" }}>
+            <div className="panel-head">
+              <div>
+                <h2>Delete this space</h2>
+                <p className="muted" style={{ marginTop: "0.35rem" }}>
+                  Permanently removes this space, its members’ access here, connected sources,
+                  and indexed documents for this space only — not company-wide policies.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="button button-secondary"
+              disabled={deletingSpace}
+              onClick={() => void handleDeleteSpace()}
+              style={{ width: "fit-content" }}
+            >
+              {deletingSpace ? "Deleting…" : "Delete space"}
+            </button>
+          </section>
         )}
       </main>
     </AppShell>

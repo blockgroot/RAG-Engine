@@ -12,10 +12,24 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** Machine-readable code when the API returns structured detail (e.g. oauth_reauth_required). */
+  code: string | null;
+  constructor(status: number, message: string, code: string | null = null) {
     super(message);
     this.status = status;
+    this.code = code;
   }
+}
+
+function parseApiDetail(detail: unknown): { message: string; code: string | null } {
+  if (typeof detail === "string") return { message: detail, code: null };
+  if (detail && typeof detail === "object") {
+    const d = detail as { message?: unknown; code?: unknown; detail?: unknown };
+    if (typeof d.message === "string") {
+      return { message: d.message, code: typeof d.code === "string" ? d.code : null };
+    }
+  }
+  return { message: "Request failed", code: null };
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -29,7 +43,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new ApiError(response.status, body.detail || "Request failed");
+    const parsed = parseApiDetail(body.detail ?? body);
+    throw new ApiError(response.status, parsed.message, parsed.code);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
@@ -116,12 +131,18 @@ export interface ConnectionRecord {
   created_at: string;
   /** Non-secret ingestion scope (e.g. Google Drive folder). */
   source_config?: ConnectionSourceConfig | null;
+  /** Sticky reconnect signal from the server (survives page reload). */
+  needs_reauth?: boolean;
+  reauth_reason?: string | null;
 }
 
 export interface ConnectionConfigResponse {
   connection_id: string;
   provider: string;
   config: ConnectionSourceConfig;
+  /** True when PUT replaced a different Drive folder_id (old corpus purged). */
+  folder_changed?: boolean;
+  documents_purged?: number;
 }
 
 /** One Drive folder the connected account can see (folder-picker dropdown). */
@@ -192,6 +213,7 @@ export interface WorkspaceDetail extends WorkspaceRecord {
 }
 
 export interface WorkspaceMemberRecord {
+  user_id: string;
   email: string;
   role: "owner" | "member";
   joined_at: string;
@@ -211,8 +233,36 @@ export const api = {
     }),
 
   me: () => request<Me>("/me"),
+  logout: () =>
+    request<{ status: string }>("/auth/logout", { method: "POST" }),
 
   connectUrl: (provider: string) => `${API_BASE_URL}/auth/${provider}/authorize`,
+
+  githubInstallPending: (token: string) =>
+    request<{
+      scope: "org" | "workspace";
+      workspace_id: string | null;
+      installations: Array<{
+        id: string;
+        login: string;
+        account_type: string;
+        available: boolean;
+        unavailable_reason: string | null;
+      }>;
+      hint: string;
+      install_another_url: string;
+      switch_account_url: string;
+    }>(`/auth/github/installations/pending/${encodeURIComponent(token)}`),
+
+  chooseGitHubInstall: (token: string, installationId: string) =>
+    request<{ redirect_to: string }>(
+      `/auth/github/installations/pending/${encodeURIComponent(token)}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ installation_id: installationId }),
+      }
+    ),
+
 
   listMembers: () => request<MemberRecord[]>("/admin/members"),
   inviteMember: (email: string) =>
@@ -223,6 +273,22 @@ export const api = {
         body: JSON.stringify({ email }),
       }
     ),
+  revokeMemberSessions: (userId: string) =>
+    request<{ status: string; user_id: string }>(`/admin/members/${userId}/revoke-sessions`, {
+      method: "POST",
+    }),
+  promoteMember: (userId: string) =>
+    request<{ id: string; email: string; role: string }>(`/admin/members/${userId}/promote`, {
+      method: "POST",
+    }),
+  demoteMember: (userId: string) =>
+    request<{ id: string; email: string; role: string }>(`/admin/members/${userId}/demote`, {
+      method: "POST",
+    }),
+  removeMember: (userId: string) =>
+    request<{ status: string; user_id: string }>(`/admin/members/${userId}`, {
+      method: "DELETE",
+    }),
 
   listConnections: () => request<ConnectionRecord[]>("/admin/connections"),
   getConnectionConfig: (connectionId: string) =>
@@ -244,6 +310,10 @@ export const api = {
    * sync; the only thing that can drift is which repos the admin authorized on
    * GitHub's own install screen.
    */
+  checkConnectionHealth: (connectionId: string) =>
+    request<{ connection_id: string; provider: string; status: string; needs_reauth: boolean }>(
+      `/admin/connections/${connectionId}/health`
+    ),
   refreshConnectionScope: (connectionId: string) =>
     request<GitHubScopeResponse>(`/admin/connections/${connectionId}/refresh-scope`, {
       method: "POST",
@@ -254,6 +324,11 @@ export const api = {
     request<{ job_id: string; status: string }>(`/admin/connections/${connectionId}/ingest`, {
       method: "POST",
     }),
+  disconnectConnection: (connectionId: string) =>
+    request<{ status: string; provider: string; documents_purged: number }>(
+      `/admin/connections/${connectionId}`,
+      { method: "DELETE" }
+    ),
 
   listJobs: () => request<JobRecord[]>("/admin/jobs"),
   getJob: (jobId: string) => request<JobRecord>(`/admin/jobs/${jobId}`),
@@ -283,6 +358,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ name }),
     }),
+  deleteWorkspace: (workspaceId: string) =>
+    request<{ status: string; workspace_id: string }>(`/workspaces/${workspaceId}`, {
+      method: "DELETE",
+    }),
   listWorkspaceMembers: (workspaceId: string) =>
     request<WorkspaceMemberRecord[]>(`/workspaces/${workspaceId}/members`),
   inviteWorkspaceMember: (workspaceId: string, email: string) =>
@@ -290,6 +369,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ email }),
     }),
+  makeWorkspaceOwner: (workspaceId: string, userId: string) =>
+    request<{ status: string; user_id: string }>(
+      `/workspaces/${workspaceId}/members/${userId}/make-owner`,
+      { method: "POST" }
+    ),
   listWorkspaceConnections: (workspaceId: string) =>
     request<ConnectionRecord[]>(`/workspaces/${workspaceId}/connections`),
   searchWorkspaceConnectionDriveFolders: (workspaceId: string, connectionId: string, q: string) =>
@@ -302,6 +386,10 @@ export const api = {
       { method: "PUT", body: JSON.stringify({ folder_url: folderUrl }) }
     ),
   /** Workspace equivalent of refreshConnectionScope (owner-only server-side). */
+  checkWorkspaceConnectionHealth: (workspaceId: string, connectionId: string) =>
+    request<{ connection_id: string; provider: string; status: string; needs_reauth: boolean }>(
+      `/workspaces/${workspaceId}/connections/${connectionId}/health`
+    ),
   refreshWorkspaceConnectionScope: (workspaceId: string, connectionId: string) =>
     request<GitHubScopeResponse>(
       `/workspaces/${workspaceId}/connections/${connectionId}/refresh-scope`,
@@ -313,6 +401,11 @@ export const api = {
     request<{ job_id: string; status: string }>(
       `/workspaces/${workspaceId}/connections/${connectionId}/ingest`,
       { method: "POST" }
+    ),
+  disconnectWorkspaceConnection: (workspaceId: string, connectionId: string) =>
+    request<{ status: string; provider: string; documents_purged: number }>(
+      `/workspaces/${workspaceId}/connections/${connectionId}`,
+      { method: "DELETE" }
     ),
   listWorkspaceJobs: (workspaceId: string) =>
     request<JobRecord[]>(`/workspaces/${workspaceId}/jobs`),

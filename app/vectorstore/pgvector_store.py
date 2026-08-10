@@ -446,3 +446,22 @@ class PgVectorStore(VectorStore):
             ).fetchall()
         return len(rows)
 
+    def delete_all_source_documents(
+        self,
+        org_id: str,
+        provider: str,
+        workspace_id: str | None = None,
+    ) -> int:
+        with get_connection(self._settings) as conn:
+            rows = conn.execute(
+                """
+                DELETE FROM documents
+                WHERE org_id = %s::uuid
+                  AND source_provider = %s
+                  AND workspace_id IS NOT DISTINCT FROM %s::uuid
+                RETURNING id
+                """,
+                (org_id, provider, workspace_id),
+            ).fetchall()
+        return len(rows)
+

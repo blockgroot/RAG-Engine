@@ -55,6 +55,7 @@ silently do nothing.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from collections.abc import Iterator
@@ -119,6 +120,8 @@ from .deps import (
 
 from .suggestions import build_github_suggestions, build_policy_suggestions
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 AGENT_GITHUB = "github"
@@ -173,19 +176,23 @@ def _conversation_belongs_to_scope(
 
 
 def _user_facing_llm_error(exc: BaseException) -> str:
-    """Map provider failures to a short message the chat UI can show."""
+    """Map provider failures to a short, non-technical message for chat.
+
+    Never leak operator knobs (``LLM_BASE_URL``, keys, route pools) into the
+    product UI — those belong in logs. Callers should still log ``exc``.
+    """
     text = str(exc).lower()
     cause = getattr(exc, "cause", None)
     if cause is not None:
         text = f"{text} {cause}".lower()
     if "429" in text or "rate limit" in text or "exhausted" in text:
         return (
-            "The AI service is temporarily rate-limited (all free routes busy). "
-            "Wait a minute and try again, or add more keys / switch LLM_BASE_URL."
+            "I'm getting a lot of requests right now and couldn't finish that "
+            "answer. Please wait a moment and try again."
         )
     if "timeout" in text:
-        return "The AI service timed out. Please try again."
-    return "The AI service is unavailable right now. Please try again shortly."
+        return "That took too long to answer. Please try again."
+    return "I couldn't reach the answer service just now. Please try again shortly."
 
 
 @router.get("/suggestions")
@@ -219,7 +226,9 @@ def list_suggestions(
     titles = _document_titles_for_scope(session.org_id, workspace_id)
     return {
         "agent": AGENT_POLICY,
-        "questions": build_policy_suggestions(titles),
+        "questions": build_policy_suggestions(
+            titles, workspace=workspace_id is not None
+        ),
     }
 
 
@@ -320,9 +329,11 @@ def _stream_answer(
             question, org_id, conversation_id=conversation_id, workspace_id=workspace_id
         )
     except LLMProviderError as exc:
+        logger.warning("Chat LLM failure: %s", exc, exc_info=True)
         yield _sse_event("error", {"message": _user_facing_llm_error(exc)})
         return
     except ProviderError as exc:
+        logger.warning("Chat provider failure: %s", exc, exc_info=True)
         yield _sse_event("error", {"message": _user_facing_llm_error(exc)})
         return
 

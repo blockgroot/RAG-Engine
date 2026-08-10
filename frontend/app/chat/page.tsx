@@ -263,7 +263,7 @@ function ChatPageInner() {
         onError: (message) => {
           setMessages((prev) => {
             const next = [...prev];
-            next[next.length - 1] = { role: "assistant", text: `Error: ${message}` };
+            next[next.length - 1] = { role: "assistant", text: message };
             return next;
           });
           setBusy(false);
