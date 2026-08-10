@@ -43,14 +43,21 @@ _pool_url: str | None = None
 def _configure(conn: "psycopg.Connection") -> None:
     """Run once per pooled connection: register pgvector type adapters.
 
-    Registering needs the ``vector`` extension to exist. In normal operation the
-    schema is applied (extension created) before the pool is ever used, so this
-    succeeds. It is kept tolerant only as defense against a fresh-DB edge case.
+    Registering needs the ``vector`` extension to exist. Swallowing a miss used
+    to leave connections in the pool that cannot bind numpy/``Vector`` values —
+    after ``docker compose down -v`` + re-init that surfaces as
+    ``cannot adapt type 'ndarray'`` on ingest. Fail closed here; callers that
+    hit a brand-new DB should run ``scripts/init_db.py`` first.
     """
     try:
         register_vector(conn)
-    except psycopg.ProgrammingError:
+    except psycopg.ProgrammingError as exc:
         conn.rollback()
+        raise DatabaseError(
+            "pgvector adapters could not be registered — is the schema applied "
+            "(scripts/init_db.py)?",
+            cause=exc,
+        ) from exc
 
 
 def get_pool(settings: DatabaseSettings | None = None) -> ConnectionPool:
@@ -101,6 +108,18 @@ def get_connection(settings: DatabaseSettings | None = None) -> Iterator["psycop
     pool = get_pool(settings)
     try:
         with pool.connection() as conn:
+            # Re-register on checkout: a connection created before the extension
+            # existed, or recycled after a DB wipe, otherwise keeps dumping
+            # embeddings as bare ndarrays and Postgres rejects them.
+            try:
+                register_vector(conn)
+            except psycopg.ProgrammingError as exc:
+                conn.rollback()
+                raise DatabaseError(
+                    "pgvector adapters could not be registered — is the schema "
+                    "applied (scripts/init_db.py)?",
+                    cause=exc,
+                ) from exc
             yield conn
     except psycopg.Error as exc:
         raise DatabaseError(f"Database operation failed: {exc}", cause=exc) from exc

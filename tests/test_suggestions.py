@@ -37,10 +37,21 @@ def test_github_suggestions_empty_without_repos():
 
 def test_policy_suggestions_use_document_titles():
     qs = build_policy_suggestions(["Leave Policy", "Remote Work Guide", "Benefits"])
-    assert len(qs) == 3
+    assert len(qs) == 4
     assert any("Leave Policy" in q for q in qs)
     assert any("Remote Work Guide" in q for q in qs)
+    assert any("Benefits" in q for q in qs)
     assert not any("maternity" in q.lower() for q in qs)
+
+
+def test_policy_suggestions_fill_four_chips_with_one_document():
+    qs = build_policy_suggestions(["Flayer Sync Meeting Notes"])
+    assert len(qs) == 4
+    assert all("Flayer Sync Meeting Notes" in q for q in qs)
+    assert any("cover" in q for q in qs)
+    assert any("key rules" in q for q in qs)
+    assert any("Summarize" in q for q in qs)
+    assert any("should I know" in q for q in qs)
 
 
 def test_policy_suggestions_empty_without_titles():

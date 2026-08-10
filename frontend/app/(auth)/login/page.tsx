@@ -92,24 +92,24 @@ export default function LoginPage() {
           offered because either may apply.
         */
         <div className="auth-v2-notfound stack" role="status">
-          <div className="auth-v2-notfound-icon" aria-hidden>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-              <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.9" />
-              <path
-                d="M12 7.6v5.2"
-                stroke="currentColor"
-                strokeWidth="1.9"
-                strokeLinecap="round"
-              />
-              <circle cx="12" cy="16.4" r="1.1" fill="currentColor" />
-            </svg>
-          </div>
-          <div>
+          <div className="auth-v2-notfound-headline">
+            <div className="auth-v2-notfound-icon" aria-hidden>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.9" />
+                <path
+                  d="M12 7.6v5.2"
+                  stroke="currentColor"
+                  strokeWidth="1.9"
+                  strokeLinecap="round"
+                />
+                <circle cx="12" cy="16.4" r="1.1" fill="currentColor" />
+              </svg>
+            </div>
             <p className="auth-v2-notfound-title">
               No account for <strong>{sentTo}</strong>
             </p>
-            <p className="muted">{result.message}</p>
           </div>
+          <p className="muted auth-v2-notfound-copy">{result.message}</p>
           <div className="auth-v2-notfound-actions">
             <Link href="/signup" className="button">
               Set up your company

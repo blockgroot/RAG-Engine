@@ -41,6 +41,54 @@ function friendlyWhen(iso: string | null | undefined): string {
 }
 
 
+/** Provider-side screens where the admin adds/removes what Folio can see. */
+function githubInstallSettingsUrl(installationId: string): string {
+  return `https://github.com/settings/installations/${encodeURIComponent(installationId)}`;
+}
+
+function googleFolderUrl(folderId: string): string {
+  return `https://drive.google.com/drive/folders/${encodeURIComponent(folderId)}`;
+}
+
+/** Notion has no single "pick pages" URL — sharing is per-page in the app. */
+const NOTION_MANAGE_URL = "https://www.notion.so";
+
+function manageExternalHref(
+  provider: "notion" | "google" | "github",
+  connection: ConnectionRecord
+): string | null {
+  if (provider === "github") {
+    const id = connection.source_config?.installation_id;
+    return id ? githubInstallSettingsUrl(id) : null;
+  }
+  if (provider === "google") {
+    const folderId = connection.source_config?.folder_id;
+    return folderId
+      ? googleFolderUrl(folderId)
+      : "https://drive.google.com/drive/my-drive";
+  }
+  if (provider === "notion") {
+    return NOTION_MANAGE_URL;
+  }
+  return null;
+}
+
+function manageExternalLabel(provider: "notion" | "google" | "github"): string {
+  if (provider === "github") return "Manage on GitHub";
+  if (provider === "google") return "Manage on Drive";
+  return "Manage in Notion";
+}
+
+function manageExternalTitle(provider: "notion" | "google" | "github"): string {
+  if (provider === "github") {
+    return "Open GitHub to add or remove repositories for this install";
+  }
+  if (provider === "google") {
+    return "Open the connected Drive folder to add or remove files";
+  }
+  return "Open Notion to share or unshare pages with this integration";
+}
+
 /**
  * Provider card: connected sources no longer show a blunt "Sync now" that
  * re-dumps everything. Instead we surface a change notice when remote pages
@@ -87,8 +135,12 @@ export function ConnectionCard({
   // What the admin actually authorized on GitHub's install screen.
   const repoSelection = connection?.source_config?.repository_selection;
   const repos = connection?.source_config?.repos ?? [];
+  const installationId = connection?.source_config?.installation_id;
+  const manageHref = connection ? manageExternalHref(provider, connection) : null;
   const [refreshingScope, setRefreshingScope] = useState(false);
   const [scopeError, setScopeError] = useState<string | null>(null);
+  /** Set after a successful GitHub "Refresh list" so we can show Up to date. */
+  const [githubListFresh, setGithubListFresh] = useState(false);
 
   async function refreshScope() {
     if (!connection) return;
@@ -109,7 +161,9 @@ export function ConnectionCard({
           repos: scope.repos,
         },
       });
+      setGithubListFresh(true);
     } catch (err) {
+      setGithubListFresh(false);
       setScopeError(err instanceof Error ? err.message : "Could not refresh repositories.");
     } finally {
       setRefreshingScope(false);
@@ -117,6 +171,24 @@ export function ConnectionCard({
   }
 
   const [configError, setConfigError] = useState<string | null>(null);
+
+  // Docs: after Check with no remote changes — same "Up to date" chip as a
+  // successful sync job. Prefer not to claim up-to-date while an update is due.
+  const docsCheckedFresh =
+    !isLive &&
+    Boolean(connection) &&
+    !needsFolder &&
+    !syncInProgress &&
+    !checkingChanges &&
+    !needsUpdate &&
+    changes != null &&
+    !changes.has_changes;
+
+  // While Check is in flight, hide a stale "Up to date" so the Checking… line is clear.
+  const showDocsJobBadge =
+    !isLive && Boolean(lastJob) && !needsUpdate && !checkingChanges;
+  const showGithubUpToDate =
+    isLive && Boolean(connection) && githubListFresh && !refreshingScope && !scopeError;
 
   return (
     <div className={`card source-studio-card source-studio-card--${provider}${connection ? " is-linked" : ""}`}>
@@ -153,7 +225,7 @@ export function ConnectionCard({
               ? "Ready to answer questions about your repos."
               : repos.length > 0
                 ? `Ready for ${repos.length} repo${repos.length === 1 ? "" : "s"}.`
-                : "No repos linked yet — refresh the list, or update access on GitHub."}
+                : "No repos linked yet — manage access on GitHub, then refresh the list."}
           </p>
           {repoSelection !== "all" && repos.length > 0 && (
             <p className="muted source-live-repos" style={{ margin: 0 }}>
@@ -165,7 +237,7 @@ export function ConnectionCard({
             </p>
           )}
           <p className="muted source-live-hint" style={{ margin: 0 }}>
-            Ask in the Code tab — answers come straight from GitHub.
+            To add or remove repos, manage access on GitHub, then Refresh list here.
           </p>
           {scopeError && <div className="banner banner-warn">{scopeError}</div>}
         </div>
@@ -187,7 +259,7 @@ export function ConnectionCard({
         </div>
       )}
 
-      {lastJob && !isLive && (
+      {showDocsJobBadge && lastJob && (
         <p
           className="muted"
           style={{ marginTop: "0.55rem", display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
@@ -207,6 +279,27 @@ export function ConnectionCard({
               : lastJob.status === "failed"
                 ? "Update failed — try again"
                 : null}
+        </p>
+      )}
+
+      {/* Check found nothing new, and there is no job badge yet (e.g. Drive). */}
+      {docsCheckedFresh && !showDocsJobBadge && (
+        <p
+          className="muted"
+          style={{ marginTop: "0.55rem", display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
+        >
+          <span className="badge badge-verified">Up to date</span>
+          <span>No changes</span>
+        </p>
+      )}
+
+      {showGithubUpToDate && (
+        <p
+          className="muted"
+          style={{ marginTop: "0.55rem", display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
+        >
+          <span className="badge badge-verified">Up to date</span>
+          <span>Repo list refreshed</span>
         </p>
       )}
 
@@ -237,13 +330,24 @@ export function ConnectionCard({
             Connect {PROVIDER_LABELS[provider]}
           </a>
         )}
+        {connection && manageHref && (
+          <a
+            className="button button-secondary"
+            href={manageHref}
+            target="_blank"
+            rel="noreferrer"
+            title={manageExternalTitle(provider)}
+          >
+            {manageExternalLabel(provider)}
+          </a>
+        )}
         {connection && isLive && (
           <button
             className="button button-secondary"
             type="button"
             onClick={refreshScope}
             disabled={refreshingScope}
-            title="Only needed if you changed repo access on GitHub after connecting"
+            title="Pull the latest repo list after you change access on GitHub"
           >
             {refreshingScope ? "Refreshing…" : "Refresh list"}
           </button>

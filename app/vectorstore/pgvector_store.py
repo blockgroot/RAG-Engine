@@ -8,6 +8,7 @@ not any index, is what guarantees tenant isolation.
 from __future__ import annotations
 
 import numpy as np
+from pgvector import Vector
 
 from ..config.settings import DatabaseSettings
 from ..core.exceptions import EmbeddingProviderError, ProviderError
@@ -16,6 +17,18 @@ from datetime import datetime
 
 from .base import OrganizationRef, RetrievedChunk, StoredSourceDocument, VectorStore
 from .bm25_ranking import bm25_rank
+
+def _to_db_vector(embedding: list[float] | np.ndarray) -> Vector:
+    """Bind an embedding so psycopg dumps it as pgvector ``vector``, not ndarray.
+
+    ``register_vector`` makes ``Vector`` dump correctly; a raw ``np.ndarray``
+    still fails with ``cannot adapt type 'ndarray'`` when adapters are missing
+    or when some cursor paths skip them — wrapping is the reliable path.
+    """
+    arr = np.asarray(embedding, dtype=np.float32).reshape(-1)
+    if arr.size == 0:
+        raise EmbeddingProviderError("embedding is empty")
+    return Vector(arr.tolist())
 
 
 class PgVectorStore(VectorStore):
@@ -79,7 +92,7 @@ class PgVectorStore(VectorStore):
                     document_id,
                     index,
                     content,
-                    np.asarray(embedding, dtype=np.float32),
+                    _to_db_vector(embedding),
                     workspace_id,
                 )
                 for index, (content, embedding) in enumerate(zip(chunks, embeddings))
@@ -104,7 +117,7 @@ class PgVectorStore(VectorStore):
         if not query_embedding:
             raise EmbeddingProviderError("query_embedding is empty")
 
-        vector = np.asarray(query_embedding, dtype=np.float32)
+        vector = _to_db_vector(query_embedding)
         with get_connection(self._settings) as conn:
             rows = conn.execute(
                 """
@@ -180,7 +193,7 @@ class PgVectorStore(VectorStore):
         if not query_text.strip():
             return []
 
-        vector = np.asarray(query_embedding, dtype=np.float32)
+        vector = _to_db_vector(query_embedding)
         with get_connection(self._settings) as conn:
             rows = conn.execute(
                 """
@@ -342,7 +355,7 @@ class PgVectorStore(VectorStore):
                     document_id,
                     index,
                     content,
-                    np.asarray(embedding, dtype=np.float32),
+                    _to_db_vector(embedding),
                     workspace_id,
                 )
                 for index, (content, embedding) in enumerate(zip(chunks, embeddings))

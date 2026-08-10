@@ -54,6 +54,7 @@ def _env(monkeypatch):
     monkeypatch.setenv("GITHUB_CLIENT_ID", "Iv1.abc123")
     monkeypatch.setenv("GITHUB_CLIENT_SECRET", "s3cret")
     monkeypatch.setenv("GITHUB_APP_PRIVATE_KEY", "unused-minting-is-faked")
+    monkeypatch.setenv("FRONTEND_URL", "http://localhost:3000")
 
 
 @pytest.fixture
@@ -137,9 +138,10 @@ def test_a_workspace_cannot_bind_the_company_org_installation_via_install_redire
         follow_redirects=False,
     )
 
-    assert response.status_code == 400
-    detail = response.json()["detail"].lower()
-    assert "personal" in detail or "already" in detail
+    assert response.status_code in (302, 307)
+    location = response.headers["location"]
+    assert f"/workspaces/{workspace_id}" in location
+    assert "connect_error=github_same_install" in location
 
     # And crucially: no workspace connection was created.
     from app.core.exceptions import ConfigurationError

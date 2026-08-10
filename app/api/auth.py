@@ -301,8 +301,8 @@ def authorize(provider: str, workspace_id: str | None = None, session=Depends(ge
     return RedirectResponse(url=oauth_provider.authorize_url(state))
 
 
-def _reject_org_installation_for_workspace(org_id: str, installation_id: str) -> None:
-    """Refuse a workspace connect that reuses the org-wide GitHub installation.
+def _workspace_github_install_collides(org_id: str, installation_id: str) -> bool:
+    """True when ``installation_id`` is already the org-wide Company → Sources install.
 
     Compares against the org-wide row's stored ``installation_id`` rather than
     the account *type*, because the type is the wrong test: a company whose
@@ -316,20 +316,11 @@ def _reject_org_installation_for_workspace(org_id: str, installation_id: str) ->
     try:
         org_scope = load_scope(org_id)
     except ConfigurationError:
-        return  # no org-wide GitHub connection, so nothing to collide with
-
-    if org_scope.installation_id and str(org_scope.installation_id) == str(
-        installation_id
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "That is your organization's shared GitHub installation, which is "
-                "already connected company-wide. A space should connect your own "
-                "personal GitHub account instead — pick your personal account on "
-                "GitHub's install screen, or install the app there first."
-            ),
-        )
+        return False
+    return bool(
+        org_scope.installation_id
+        and str(org_scope.installation_id) == str(installation_id)
+    )
 
 
 @router.get("/{provider}/callback")
@@ -382,13 +373,17 @@ def callback(
             # A workspace connect means "connect MY personal GitHub". If it lands
             # on the SAME installation the org-wide connection already uses, the
             # workspace would read exactly the company's repos — two rows, one
-            # installation, no isolation. That is the "repos getting mixed"
-            # failure, and it happens easily: GitHub's install redirect hands back
-            # whichever installation the employee picked, and an employee who
-            # already has the App on the company org can pick it by accident.
-            # Refuse rather than silently widen the workspace's reach.
-            if workspace_id is not None:
-                _reject_org_installation_for_workspace(org_id, verified_installation_id)
+            # installation, no isolation. Refuse and send them back to the space
+            # UI with a readable banner (not a raw JSON 400 in the browser).
+            if workspace_id is not None and _workspace_github_install_collides(
+                org_id, verified_installation_id
+            ):
+                base = (settings.frontend_url or "").rstrip("/")
+                target = (
+                    f"/workspaces/{workspace_id}"
+                    "?connect_error=github_same_install"
+                )
+                return RedirectResponse(url=f"{base}{target}" if base else target)
 
             save_connection(org_id, provider, tokens, workspace_id=workspace_id)
             # The installation id is how every later content call mints a token

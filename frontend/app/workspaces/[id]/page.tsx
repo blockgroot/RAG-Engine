@@ -58,6 +58,12 @@ export default function WorkspaceDetailPage() {
   const [notFound, setNotFound] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Structured OAuth refusal (not a single bulk paragraph). */
+  const [connectNotice, setConnectNotice] = useState<{
+    title: string;
+    why: string;
+    options: string[];
+  } | null>(null);
   const [pollToken, setPollToken] = useState(0);
   const [watchedJobId, setWatchedJobId] = useState<string | null>(null);
 
@@ -136,12 +142,28 @@ export default function WorkspaceDetailPage() {
     }).catch(() => {});
   }, [me, workspaceId, refreshChanges, refreshWorkspace]);
 
-  // After GitHub/Notion/Drive OAuth, the API redirects here with ?connected=.
-  // Reload connections and unlock Ask — no manual "Refresh list" needed for a
-  // fresh connect (scope is written during the callback).
+  // After GitHub/Notion/Drive OAuth, the API redirects here with ?connected=
+  // (success) or ?connect_error= (refused — e.g. same GitHub install as Company).
   useEffect(() => {
+    if (!me) return;
+    const connectError = searchParams.get("connect_error");
+    if (connectError === "github_same_install") {
+      setError(null);
+      setConnectNotice({
+        title: "This space can’t use the company GitHub connection",
+        why: "Company → Sources already uses that GitHub account. If this space reused it, company Code and space Code would show the same repos.",
+        options: [
+          "Put company GitHub on a GitHub Organization, reconnect it under Company → Sources, then connect this space with your personal account.",
+          "Or disconnect GitHub from Company → Sources, then connect it only on this space.",
+          "Or skip GitHub here and ask from the main Ask → Code tab instead.",
+        ],
+      });
+      router.replace(`/workspaces/${workspaceId}`, { scroll: false });
+      return;
+    }
+
     const connected = searchParams.get("connected");
-    if (!connected || !me) return;
+    if (!connected) return;
     const label =
       connected === "github"
         ? "GitHub"
@@ -318,6 +340,25 @@ export default function WorkspaceDetailPage() {
             aria-live="polite"
           >
             {message}
+          </div>
+        )}
+        {connectNotice && (
+          <div className="banner banner-warn connect-notice" role="alert">
+            <p className="connect-notice-title">{connectNotice.title}</p>
+            <p className="connect-notice-why">{connectNotice.why}</p>
+            <p className="connect-notice-label">What you can do</p>
+            <ol className="connect-notice-options">
+              {connectNotice.options.map((step) => (
+                <li key={step}>{step}</li>
+              ))}
+            </ol>
+            <button
+              type="button"
+              className="button button-secondary connect-notice-dismiss"
+              onClick={() => setConnectNotice(null)}
+            >
+              Dismiss
+            </button>
           </div>
         )}
         {error && <div className="banner banner-warn">{error}</div>}

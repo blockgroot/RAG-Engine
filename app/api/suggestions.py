@@ -23,12 +23,29 @@ _GITHUB_TEMPLATES = (
     "Summarize the README for {name}.",
 )
 
+# Policy / space starters grounded in real document titles. Always fill up to
+# ``_MAX`` even with a single ingested page — templates rotate over titles so
+# nothing invents fake docs.
+_POLICY_TEMPLATES = (
+    'What does "{title}" cover?',
+    'What are the key rules in "{title}"?',
+    'Summarize "{title}" for an employee.',
+    'What should I know from "{title}"?',
+)
+
 
 def _repo_short_name(full_name: str) -> str:
     name = (full_name or "").strip()
     if not name:
         return ""
     return name.rsplit("/", 1)[-1]
+
+
+def _display_title(title: str, *, max_len: int = 64) -> str:
+    """Keep chip text readable — long Notion titles get a soft trim."""
+    if len(title) <= max_len:
+        return title
+    return title[: max_len - 1].rstrip() + "…"
 
 
 def build_github_suggestions(repos: list[dict[str, Any]]) -> list[str]:
@@ -79,7 +96,11 @@ def build_github_suggestions(repos: list[dict[str, Any]]) -> list[str]:
 
 
 def build_policy_suggestions(titles: list[str]) -> list[str]:
-    """Turn ingested document titles into short Policies-tab starter questions."""
+    """Turn ingested document titles into short Policies / Space Ask chips.
+
+    Empty titles → empty output. With one document, all four templates use that
+    title; with several, templates rotate across titles (same shape as GitHub).
+    """
     cleaned: list[str] = []
     seen: set[str] = set()
     for raw in titles:
@@ -96,14 +117,9 @@ def build_policy_suggestions(titles: list[str]) -> list[str]:
         return []
 
     questions: list[str] = []
-    templates = (
-        'What does "{title}" cover?',
-        'What are the key rules in "{title}"?',
-        'Summarize "{title}" for an employee.',
-        'What should I know from "{title}"?',
-    )
-    for i, title in enumerate(cleaned[:_MAX]):
-        # Keep chip text readable — long Notion titles get a soft trim.
-        display = title if len(title) <= 64 else title[:61].rstrip() + "…"
-        questions.append(templates[i % len(templates)].format(title=display))
+    for i, template in enumerate(_POLICY_TEMPLATES):
+        if len(questions) >= _MAX:
+            break
+        title = cleaned[i % len(cleaned)]
+        questions.append(template.format(title=_display_title(title)))
     return questions
