@@ -71,8 +71,9 @@ DEFAULT_MEMORY_RECENT_TURNS = 3
 # Retrieval improvements (Phase 6): contextual retrieval (ingest-time),
 # hybrid search + cross-encoder reranking (query-time). See app/rag/retrieval.py
 # and CLAUDE.md §2/§4 for the reasoning behind each value.
-DEFAULT_CONTEXTUAL_ENABLED = False         # off by default: free-tier LLM makes onboarding multi-minute
-DEFAULT_CONTEXTUAL_CONCURRENCY = 2         # when enabled; keep low vs 15 RPM free endpoints
+DEFAULT_CONTEXTUAL_ENABLED = True          # keep the Phase 6 quality path
+DEFAULT_CONTEXTUAL_DEFER = True            # run it AFTER sync succeeds (no onboarding stall)
+DEFAULT_CONTEXTUAL_CONCURRENCY = 2         # background enrich; keep low vs 15 RPM free endpoints
 DEFAULT_EMBED_BATCH_SIZE = 16              # encode in batches (avoids OOM on large docs)
 DEFAULT_RETRIEVAL_HYBRID_ENABLED = True    # fuse vector + keyword (BM25-style) search
 DEFAULT_RETRIEVAL_RERANK_ENABLED = True    # cross-encoder rerank of the candidate pool
@@ -855,28 +856,28 @@ class WebSearchSettings:
 class ContextualSettings:
     """Contextual-retrieval config (Phase 6, ingest-time).
 
-    Default **off**: on free/metered LLM endpoints (e.g. Gemini 15 RPM) one
-    call per chunk stalls onboarding for minutes with progress stuck at 0/N.
-    Enable when you have quota — retrieval quality improves; sync gets slower.
-
     When enabled, a short LLM-generated context is prepended to each chunk before
     it is embedded and stored, so the chunk carries its surrounding meaning.
 
-    ``concurrency`` is how many of those per-chunk calls run at once within a
-    single document. It exists because this was the ingestion bottleneck by a
-    wide margin: the calls are independent, network-bound, and were issued
-    strictly one after another, so a 15-page workspace could sit at "Syncing…"
-    for minutes while the CPU did nothing. Set to 1 to restore the old serial
-    behaviour (e.g. against an endpoint that rate-limits aggressively).
+    ``defer`` (default **on**): sync first embeds raw chunks and marks the job
+    succeeded so onboarding/chat unlock immediately; contextualize + re-embed
+    then runs in the worker as a best-effort ``enriching`` phase. That keeps the
+    Phase 6 quality intent without free-tier Gemini stalling users at "0 of N".
+    Set ``INGEST_CONTEXTUAL_DEFER=false`` for the old inline (blocking) behaviour.
+
+    ``concurrency`` is how many per-chunk calls run at once within one document
+    during inline or deferred enrich. Keep low (1–2) on free/metered endpoints.
     """
 
     enabled: bool = DEFAULT_CONTEXTUAL_ENABLED
+    defer: bool = DEFAULT_CONTEXTUAL_DEFER
     concurrency: int = DEFAULT_CONTEXTUAL_CONCURRENCY
 
     @classmethod
     def from_env(cls) -> "ContextualSettings":
         return cls(
             enabled=env_bool("INGEST_CONTEXTUAL_ENABLED", DEFAULT_CONTEXTUAL_ENABLED),
+            defer=env_bool("INGEST_CONTEXTUAL_DEFER", DEFAULT_CONTEXTUAL_DEFER),
             concurrency=_env_positive_int(
                 "INGEST_CONTEXTUAL_CONCURRENCY", DEFAULT_CONTEXTUAL_CONCURRENCY
             ),

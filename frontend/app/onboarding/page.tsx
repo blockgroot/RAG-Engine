@@ -62,7 +62,7 @@ function syncDetail(job: JobRecord | undefined): string {
     return `${done} of ${total} pages done.`;
   }
   if (total === 0) return "Nothing new to bring in — finishing up.";
-  return "This usually takes under a minute. You can invite people below while it runs.";
+  return "This usually takes under a minute. Search quality may keep improving briefly in the background.";
 }
 
 function syncPercent(job: JobRecord | undefined): number | null {

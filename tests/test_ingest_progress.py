@@ -222,10 +222,14 @@ class _FakeAdapter:
 
 
 class _FakeStore:
+    def __init__(self):
+        self.last_chunks: list[str] = []
+
     def list_source_documents(self, org_id, provider, workspace_id=None):
         return []
 
     def upsert_source_document(self, org_id, **kwargs):
+        self.last_chunks = list(kwargs.get("chunks") or [])
         return "doc-id"
 
     def acknowledge_source_document(self, org_id, **kwargs):
@@ -362,3 +366,56 @@ def test_a_job_that_never_reported_progress_still_serializes(_connected_org):
     assert payload["phase"] is None
     assert payload["total_documents"] is None
     assert payload["processed_documents"] == 0
+
+
+def test_deferred_contextual_skips_llm_during_fast_sync():
+    """Defer mode must not call the LLM while unlocking the product."""
+
+    class _BoomLLM:
+        def generate(self, prompt: str) -> str:
+            raise AssertionError("LLM must not run during deferred fast sync")
+
+    result = ingest_source(
+        _FakeAdapter(pages=2),
+        "org-1",
+        provider="notion",
+        embedder=_FakeEmbedder(),
+        store=_FakeStore(),
+        llm=_BoomLLM(),
+        contextual=ContextualSettings(enabled=True, defer=True, concurrency=1),
+    )
+    assert result.documents_added == 2
+    assert result.ingested_external_ids == ["p0", "p1"]
+
+
+def test_enrich_source_contextual_rewrites_chunks_with_llm_prefix():
+    from app.ingestion.pipeline import enrich_source_contextual
+
+    class _PrefixLLM:
+        def generate(self, prompt: str) -> str:
+            return "Section: leave policy."
+
+    store = _FakeStore()
+    # Seed raw chunks via fast deferred ingest.
+    ingest_source(
+        _FakeAdapter(pages=1),
+        "org-1",
+        provider="notion",
+        embedder=_FakeEmbedder(),
+        store=store,
+        contextual=ContextualSettings(enabled=True, defer=True),
+    )
+    n = enrich_source_contextual(
+        _FakeAdapter(pages=1),
+        "org-1",
+        provider="notion",
+        external_ids=["p0"],
+        embedder=_FakeEmbedder(),
+        store=store,
+        llm=_PrefixLLM(),
+        contextual=ContextualSettings(enabled=True, defer=True, concurrency=1),
+    )
+    assert n == 1
+    # FakeStore keeps last upserted chunks on .last_chunks
+    assert store.last_chunks
+    assert store.last_chunks[0].startswith("Section: leave policy.")
