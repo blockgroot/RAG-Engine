@@ -93,7 +93,6 @@ def test_revoked_session_rejected(admin_org):
 
 @requires_db
 def test_chat_rate_limit_returns_429(store, org_cleanup, monkeypatch):
-    from app.api.deps import get_policy_agent
     from app.api.main import create_app
     from app.auth import create_admin, create_session_token
     from tests.test_api_chat import _fake_agent
@@ -101,6 +100,7 @@ def test_chat_rate_limit_returns_429(store, org_cleanup, monkeypatch):
     monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
     monkeypatch.setenv("RATE_LIMIT_CHAT_REQUESTS", "2")
     monkeypatch.setenv("RATE_LIMIT_WINDOW_SECONDS", "60")
+    monkeypatch.setenv("CHAT_STREAM_WORD_DELAY_MS", "0")
 
     org_id = store.create_organization(f"RateLimitOrg-{uuid.uuid4().hex[:8]}")
     org_cleanup.append(org_id)
@@ -108,7 +108,8 @@ def test_chat_rate_limit_returns_429(store, org_cleanup, monkeypatch):
     cookies = {"session": create_session_token(user)}
 
     app = create_app()
-    app.dependency_overrides[get_policy_agent] = lambda: _fake_agent(org_id)
+    fake = _fake_agent(org_id)
+    monkeypatch.setattr("app.api.chat.get_policy_agent", lambda: fake)
     client = TestClient(app)
 
     for _ in range(2):

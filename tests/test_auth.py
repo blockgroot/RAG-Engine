@@ -229,3 +229,40 @@ def test_reconnect_replaces_existing_connection(store, org_cleanup):
 
     assert get_connection_token(org_id, "notion") == "ntn_new"
     assert len(list_connections(org_id)) == 1  # replaced, not duplicated
+
+
+# -- the shared OAuth expiry helper (app/auth/base.py) ------------------------
+#
+# GitHubAppProvider and GoogleOAuthProvider each carried an identical private
+# `_compute_expires_at`. Same wire field, same parsing, two copies — now one.
+
+
+def test_compute_expires_at_converts_seconds_to_an_absolute_deadline():
+    from datetime import datetime, timezone
+
+    from app.auth.base import compute_expires_at
+
+    before = datetime.now(timezone.utc)
+    got = compute_expires_at(3600)
+
+    assert got is not None
+    delta = (got - before).total_seconds()
+    assert 3595 <= delta <= 3605
+
+
+def test_compute_expires_at_treats_missing_or_malformed_values_as_unknown():
+    """Tolerant by design: a non-expiring token (Notion) omits the field, and a
+    malformed value should mean "unknown expiry" — which downstream reads as
+    "do not proactively refresh" — not a crashed connect flow."""
+    from app.auth.base import compute_expires_at
+
+    assert compute_expires_at(None) is None
+    assert compute_expires_at("not-a-number") is None
+    assert compute_expires_at(object()) is None
+
+
+def test_compute_expires_at_accepts_a_numeric_string():
+    """Providers legitimately send expires_in as a JSON string."""
+    from app.auth.base import compute_expires_at
+
+    assert compute_expires_at("3600") is not None

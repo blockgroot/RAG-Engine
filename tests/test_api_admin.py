@@ -294,6 +294,57 @@ def test_put_google_config_parses_url_and_validates_folder(client, admin_org, mo
 
 
 @requires_db
+def test_put_google_config_overwrites_existing_folder(client, admin_org, monkeypatch):
+    """Change folder: a second PUT replaces the stored folder_id (org Sources)."""
+    org_id, cookies = admin_org
+    connection_id = _save_google(org_id)
+
+    class FakeResponse:
+        def __init__(self, folder_id: str, name: str):
+            self.status_code = 200
+            self._folder_id = folder_id
+            self._name = name
+
+        def json(self):
+            return {
+                "id": self._folder_id,
+                "name": self._name,
+                "mimeType": "application/vnd.google-apps.folder",
+            }
+
+    calls = {"n": 0}
+
+    def fake_get(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeResponse("folder-old", "Old Policies")
+        return FakeResponse("folder-new", "New Policies")
+
+    monkeypatch.setattr("app.sources.google_drive_utils.httpx.get", fake_get)
+
+    first = client.put(
+        f"/admin/connections/{connection_id}/config",
+        json={"folder_url": "folder-old"},
+        cookies=cookies,
+    )
+    assert first.status_code == 200
+    assert first.json()["config"]["folder_id"] == "folder-old"
+
+    second = client.put(
+        f"/admin/connections/{connection_id}/config",
+        json={"folder_url": "folder-new"},
+        cookies=cookies,
+    )
+    assert second.status_code == 200
+    assert second.json()["config"]["folder_id"] == "folder-new"
+    assert second.json()["config"]["folder_name"] == "New Policies"
+
+    got = client.get(f"/admin/connections/{connection_id}/config", cookies=cookies).json()
+    assert got["config"]["folder_id"] == "folder-new"
+    assert got["config"]["folder_name"] == "New Policies"
+
+
+@requires_db
 def test_search_drive_folders_returns_matches_and_filters_by_name(client, admin_org, monkeypatch):
     org_id, cookies = admin_org
     connection_id = _save_google(org_id)

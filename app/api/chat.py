@@ -21,17 +21,29 @@ is entirely deterministic — no LLM ever classifies a question to pick an agent
 because a non-deterministic step in front of the tenant-scoped path is exactly
 what the confidence gate's design philosophy avoids.
 
-- ``workspace_id`` set          -> ``WorkspaceAgent`` (a sub-workspace's own
-  connected content, its own pipeline — see app/agent/workspace_agent.py)
 - ``agent == "github"``         -> ``GitHubAgent`` (live GitHub API reads, no
-  retrieval at all — see app/agent/github_agent.py)
+  retrieval at all — see app/agent/github_agent.py). The ``workspace_id``, when
+  present, is threaded through to the agent, so a workspace's Code answers come
+  from **that workspace's own** installation.
+- ``workspace_id`` set          -> ``WorkspaceAgent`` (a sub-workspace's own
+  connected documents, its own pipeline — see app/agent/workspace_agent.py)
 - otherwise                     -> ``PolicyAgent``, exactly as before
 
-The explicit ``agent`` field exists because GitHub connects at the **org** level,
-so an org commonly has Notion/Drive policies *and* GitHub connected at once. At
-org scope "route by connected source" cannot disambiguate, so the client names
-the target (rendered as a "Policies | Code" tab). Naming it also keeps the user
-informed about which corpus answered, rather than guessing on their behalf.
+The explicit ``agent`` field exists because a single scope can have documents
+*and* GitHub connected at once — true org-wide, and now true per workspace too —
+so "route by connected source" cannot disambiguate. The client names the target
+(rendered as a "Policies | Code" tab), which also keeps the user informed about
+which corpus answered rather than guessing on their behalf.
+
+**Ordering note (this changed).** ``workspace_id`` used to outrank the requested
+agent, so that a workspace question could never be served org-wide GitHub
+content. Workspace-scoped GitHub connections made that unnecessary *and* wrong:
+``agent="github"`` now wins, and safety comes from the agent being handed the
+``workspace_id`` — every GitHub read resolves its token and repo allowlist from
+``(org_id, workspace_id)`` together, so a workspace with no GitHub connection
+raises rather than silently reading the org-wide one. That no-fallback property
+is what makes this ordering safe; it is proven in
+tests/test_github_workspace_scope.py.
 
 **v1 limitation, deliberate:** ``GitHubAgent`` has no conversation memory, so a
 GitHub question is always standalone — follow-ups like "and the commit before
@@ -43,6 +55,7 @@ silently do nothing.
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections.abc import Iterator
 
@@ -57,7 +70,36 @@ from fastapi.responses import StreamingResponse
 # time.sleep here doesn't block the event loop or other requests) — it does
 # not touch RagPipeline.answer_stream, which stays instant/deterministic for
 # tests and the CLI.
-_CHUNK_DELAY_SECONDS = 0.02
+#
+# Default ~50ms per *word* reads as a typewriter, not a dump. Override with
+# CHAT_STREAM_WORD_DELAY_MS (0 disables pacing — used by API tests).
+def _stream_word_delay_seconds() -> float:
+    raw = os.getenv("CHAT_STREAM_WORD_DELAY_MS")
+    if raw is None or raw.strip() == "":
+        return 0.05
+    try:
+        return max(0.0, float(raw) / 1000.0)
+    except ValueError:
+        return 0.05
+
+
+def _word_chunks(text: str) -> Iterator[str]:
+    """Yield one word at a time (trailing whitespace stays with the word)."""
+    if not text:
+        return
+    i = 0
+    n = len(text)
+    while i < n:
+        j = i
+        while j < n and not text[j].isspace():
+            j += 1
+        while j < n and text[j].isspace():
+            j += 1
+        if j == i:
+            yield text[i:]
+            return
+        yield text[i:j]
+        i = j
 
 from ..agent.github_agent import GitHubAgent
 from ..agent.policy_agent import PolicyAgent
@@ -85,23 +127,30 @@ AGENT_POLICY = "policy"
 
 def _select_agent(
     workspace_id: str | None,
-    policy_agent: PolicyAgent,
-    workspace_agent: WorkspaceAgent,
-    github_agent: GitHubAgent | None = None,
     requested_agent: str | None = None,
 ) -> RagPipelineAgent | GitHubAgent:
     """One place that decides which agent answers a request (see module docstring).
 
-    Deterministic by construction. ``workspace_id`` wins over ``requested_agent``
-    because a sub-workspace is a narrower data boundary than a source choice: a
-    workspace member asking inside their workspace must never be silently served
-    org-wide GitHub content instead.
+    Deterministic by construction — no LLM classifies anything here.
+
+    Agents are loaded *lazily*: only the chosen one is constructed. FastAPI
+    ``Depends(get_policy_agent)`` + ``Depends(get_workspace_agent)`` used to
+    resolve *both* on every ``/chat/stream`` call, which loaded BGE-M3 and the
+    cross-encoder twice into a 16GB machine and hung the Mac in swap — even for
+    a GitHub-only question that needs neither model.
+
+    ``requested_agent == "github"`` wins over ``workspace_id`` (it used to be
+    the other way round). That inversion is only safe because the caller threads
+    ``workspace_id`` into ``GitHubAgent.answer``, which resolves its token and
+    repo allowlist from ``(org_id, workspace_id)`` together — a workspace with no
+    GitHub connection therefore raises and falls back, never reads the org-wide
+    installation. If you ever change that scoping, restore this ordering.
     """
+    if requested_agent == AGENT_GITHUB:
+        return get_github_agent()
     if workspace_id is not None:
-        return workspace_agent
-    if requested_agent == AGENT_GITHUB and github_agent is not None:
-        return github_agent
-    return policy_agent
+        return get_workspace_agent()
+    return get_policy_agent()
 
 
 def _conversation_belongs_to_scope(
@@ -161,11 +210,11 @@ def list_suggestions(
 
     requested = (agent or AGENT_POLICY).strip().lower()
     if requested == AGENT_GITHUB:
-        # GitHub is org-level only — workspace Ask has no Code tab.
-        if workspace_id is not None:
-            return {"agent": AGENT_GITHUB, "questions": []}
-        questions = build_github_suggestions(_github_repos_for_org(session.org_id))
-        return {"agent": AGENT_GITHUB, "questions": questions}
+        # Scoped exactly like the answer path: a workspace's chips come from that
+        # workspace's own installation, never the org-wide one, so the suggestions
+        # can't advertise repos the workspace cannot actually read.
+        repos = _github_repos_for_scope(session.org_id, workspace_id)
+        return {"agent": AGENT_GITHUB, "questions": build_github_suggestions(repos)}
 
     titles = _document_titles_for_scope(session.org_id, workspace_id)
     return {
@@ -174,13 +223,21 @@ def list_suggestions(
     }
 
 
-def _github_repos_for_org(org_id: str) -> list[dict]:
-    """Repo list from the org-wide GitHub connection's ``source_config``."""
+def _github_repos_for_scope(org_id: str, workspace_id: str | None = None) -> list[dict]:
+    """Repo list from this scope's GitHub connection's ``source_config``.
+
+    ``IS NOT DISTINCT FROM`` pairs ``workspace_id`` with ``org_id`` rather than
+    matching it alone — the same discipline every scoped query here follows. With
+    ``workspace_id=None`` it selects the org-wide row exactly as before; with a
+    workspace id it selects only that workspace's row, and returns ``[]`` (not the
+    org's repos) when the workspace has no GitHub connection.
+    """
     with get_connection() as conn:
         row = conn.execute(
             "SELECT source_config FROM oauth_connections "
-            "WHERE org_id = %s AND provider = 'github' AND workspace_id IS NULL",
-            (org_id,),
+            "WHERE org_id = %s AND provider = 'github' "
+            "AND workspace_id IS NOT DISTINCT FROM %s",
+            (org_id, workspace_id),
         ).fetchone()
     if not row or row[0] is None:
         return []
@@ -213,8 +270,6 @@ def _document_titles_for_scope(org_id: str, workspace_id: str | None) -> list[st
 def create_conversation(
     body: dict | None = None,
     session: SessionClaims = Depends(get_session),
-    policy_agent: PolicyAgent = Depends(get_policy_agent),
-    workspace_agent: WorkspaceAgent = Depends(get_workspace_agent),
 ):
     workspace_id = (body or {}).get("workspace_id")
     if workspace_id is not None:
@@ -225,14 +280,16 @@ def create_conversation(
 
     # GitHubAgent has no conversation memory (see module docstring), so handing
     # back a conversation id for it would imply follow-up context that doesn't
-    # exist. Refuse plainly instead of failing quietly later.
-    if (body or {}).get("agent") == AGENT_GITHUB and workspace_id is None:
+    # exist. Refuse plainly instead of failing quietly later. Applies in a
+    # workspace too, now that a workspace can have its own GitHub connection —
+    # the missing capability is the agent's, not the scope's.
+    if (body or {}).get("agent") == AGENT_GITHUB:
         raise HTTPException(
             status_code=400,
             detail="GitHub questions are answered standalone and do not use conversations.",
         )
 
-    agent = _select_agent(workspace_id, policy_agent, workspace_agent)
+    agent = _select_agent(workspace_id)
     if agent.pipeline.memory is None:
         raise HTTPException(status_code=503, detail="Conversation memory is not enabled")
 
@@ -259,7 +316,7 @@ def _stream_answer(
     workspace_id: str | None = None,
 ) -> Iterator[str]:
     try:
-        chunks, result = agent.answer_stream(
+        _chunks, result = agent.answer_stream(
             question, org_id, conversation_id=conversation_id, workspace_id=workspace_id
         )
     except LLMProviderError as exc:
@@ -269,9 +326,13 @@ def _stream_answer(
         yield _sse_event("error", {"message": _user_facing_llm_error(exc)})
         return
 
-    for chunk in chunks:
+    # Prefer word pacing over the pipeline's coarse char slices — the answer
+    # is already final in ``result`` (``chunks`` would still dump in one go).
+    delay = _stream_word_delay_seconds()
+    for chunk in _word_chunks(result.answer):
         yield _sse_event("token", chunk)
-        time.sleep(_CHUNK_DELAY_SECONDS)
+        if delay:
+            time.sleep(delay)
     yield _sse_event(
         "done",
         {
@@ -292,9 +353,6 @@ def _stream_answer(
 def chat_stream(
     body: dict,
     session: SessionClaims = Depends(get_session),
-    policy_agent: PolicyAgent = Depends(get_policy_agent),
-    workspace_agent: WorkspaceAgent = Depends(get_workspace_agent),
-    github_agent: GitHubAgent = Depends(get_github_agent),
 ):
     check_rate_limit(f"chat:{session.org_id}:{session.user_id}")
 
@@ -316,9 +374,7 @@ def chat_stream(
     ):
         raise HTTPException(status_code=404, detail="No such conversation for this organization")
 
-    agent = _select_agent(
-        workspace_id, policy_agent, workspace_agent, github_agent, requested_agent
-    )
+    agent = _select_agent(workspace_id, requested_agent)
     return StreamingResponse(
         _stream_answer(agent, question, session.org_id, conversation_id, workspace_id=workspace_id),
         media_type="text/event-stream",

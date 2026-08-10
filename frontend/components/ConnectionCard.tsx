@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
 import { DriveFolderPicker } from "./DriveFolderPicker";
 import { JobStatusBadge } from "./JobStatusBadge";
@@ -41,13 +41,63 @@ function friendlyWhen(iso: string | null | undefined): string {
 }
 
 
+/** Provider-side screens where the admin adds/removes what Folio can see. */
+function githubInstallSettingsUrl(installationId: string): string {
+  return `https://github.com/settings/installations/${encodeURIComponent(installationId)}`;
+}
+
+function googleFolderUrl(folderId: string): string {
+  return `https://drive.google.com/drive/folders/${encodeURIComponent(folderId)}`;
+}
+
+/** Notion has no single "pick pages" URL — sharing is per-page in the app. */
+const NOTION_MANAGE_URL = "https://www.notion.so";
+
+function manageExternalHref(
+  provider: "notion" | "google" | "github",
+  connection: ConnectionRecord
+): string | null {
+  if (provider === "github") {
+    const id = connection.source_config?.installation_id;
+    return id ? githubInstallSettingsUrl(id) : null;
+  }
+  if (provider === "google") {
+    const folderId = connection.source_config?.folder_id;
+    return folderId
+      ? googleFolderUrl(folderId)
+      : "https://drive.google.com/drive/my-drive";
+  }
+  if (provider === "notion") {
+    return NOTION_MANAGE_URL;
+  }
+  return null;
+}
+
+function manageExternalLabel(provider: "notion" | "google" | "github"): string {
+  if (provider === "github") return "Manage on GitHub";
+  if (provider === "google") return "Manage on Drive";
+  return "Manage in Notion";
+}
+
+function manageExternalTitle(provider: "notion" | "google" | "github"): string {
+  if (provider === "github") {
+    return "Open GitHub to add or remove repositories for this install";
+  }
+  if (provider === "google") {
+    return "Open the linked Drive folder to add or remove files inside it";
+  }
+  return "Open Notion to share or unshare pages with this integration";
+}
+
 /**
  * Provider card: connected sources no longer show a blunt "Sync now" that
  * re-dumps everything. Instead we surface a change notice when remote pages
  * differ, and "Update policies" runs an incremental upsert.
  *
  * Google also needs a folder URL before any sync — Drive has no Notion-style
- * "whatever was shared with the integration" boundary.
+ * "whatever was shared with the integration" boundary. Once a folder is set,
+ * "Change folder" reuses the same config PUT (org or workspace) so the admin
+ * can repoint scope without reconnecting OAuth.
  */
 export function ConnectionCard({
   provider,
@@ -83,19 +133,30 @@ export function ConnectionCard({
   const needsUpdate = !isLive && Boolean(changes?.has_changes);
   const folderConfigured = Boolean(connection?.source_config?.folder_id);
   const needsFolder = provider === "google" && connection && !folderConfigured;
+  const [changingFolder, setChangingFolder] = useState(false);
+  const [folderHint, setFolderHint] = useState<string | null>(null);
 
   // What the admin actually authorized on GitHub's install screen.
   const repoSelection = connection?.source_config?.repository_selection;
   const repos = connection?.source_config?.repos ?? [];
+  const installationId = connection?.source_config?.installation_id;
+  const manageHref = connection ? manageExternalHref(provider, connection) : null;
   const [refreshingScope, setRefreshingScope] = useState(false);
   const [scopeError, setScopeError] = useState<string | null>(null);
+  /** Set after a successful GitHub "Refresh list" so we can show Up to date. */
+  const [githubListFresh, setGithubListFresh] = useState(false);
 
   async function refreshScope() {
     if (!connection) return;
     setRefreshingScope(true);
     setScopeError(null);
     try {
-      const scope = await api.refreshConnectionScope(connection.id);
+      // Routed to the workspace endpoint when this card manages a workspace's
+      // own connection, so a refresh can never re-read the org-wide scope into
+      // a workspace row (or vice versa).
+      const scope = workspaceId
+        ? await api.refreshWorkspaceConnectionScope(workspaceId, connection.id)
+        : await api.refreshConnectionScope(connection.id);
       onConfigSaved?.({
         ...connection,
         source_config: {
@@ -104,7 +165,9 @@ export function ConnectionCard({
           repos: scope.repos,
         },
       });
+      setGithubListFresh(true);
     } catch (err) {
+      setGithubListFresh(false);
       setScopeError(err instanceof Error ? err.message : "Could not refresh repositories.");
     } finally {
       setRefreshingScope(false);
@@ -112,6 +175,29 @@ export function ConnectionCard({
   }
 
   const [configError, setConfigError] = useState<string | null>(null);
+
+  // Drop the post-change hint once an Update is running — the job badge takes over.
+  useEffect(() => {
+    if (syncInProgress) setFolderHint(null);
+  }, [syncInProgress]);
+
+  // Docs: after Check with no remote changes — same "Up to date" chip as a
+  // successful sync job. Prefer not to claim up-to-date while an update is due.
+  const docsCheckedFresh =
+    !isLive &&
+    Boolean(connection) &&
+    !needsFolder &&
+    !syncInProgress &&
+    !checkingChanges &&
+    !needsUpdate &&
+    changes != null &&
+    !changes.has_changes;
+
+  // While Check is in flight, hide a stale "Up to date" so the Checking… line is clear.
+  const showDocsJobBadge =
+    !isLive && Boolean(lastJob) && !needsUpdate && !checkingChanges;
+  const showGithubUpToDate =
+    isLive && Boolean(connection) && githubListFresh && !refreshingScope && !scopeError;
 
   return (
     <div className={`card source-studio-card source-studio-card--${provider}${connection ? " is-linked" : ""}`}>
@@ -148,7 +234,7 @@ export function ConnectionCard({
               ? "Ready to answer questions about your repos."
               : repos.length > 0
                 ? `Ready for ${repos.length} repo${repos.length === 1 ? "" : "s"}.`
-                : "No repos linked yet — refresh the list, or update access on GitHub."}
+                : "No repos linked yet — manage access on GitHub, then refresh the list."}
           </p>
           {repoSelection !== "all" && repos.length > 0 && (
             <p className="muted source-live-repos" style={{ margin: 0 }}>
@@ -160,7 +246,7 @@ export function ConnectionCard({
             </p>
           )}
           <p className="muted source-live-hint" style={{ margin: 0 }}>
-            Ask in the Code tab — answers come straight from GitHub.
+            To add or remove repos, manage access on GitHub, then Refresh list here.
           </p>
           {scopeError && <div className="banner banner-warn">{scopeError}</div>}
         </div>
@@ -174,6 +260,7 @@ export function ConnectionCard({
             inputId={`folder-${provider}`}
             onSaved={(config) => {
               setConfigError(null);
+              setFolderHint(null);
               onConfigSaved?.({ ...connection, source_config: config });
             }}
             onError={(message) => setConfigError(message || null)}
@@ -182,7 +269,40 @@ export function ConnectionCard({
         </div>
       )}
 
-      {lastJob && !isLive && (
+      {provider === "google" && connection && folderConfigured && changingFolder && (
+        <div className="stack" style={{ marginTop: "0.9rem" }}>
+          <DriveFolderPicker
+            connectionId={connection.id}
+            workspaceId={workspaceId}
+            inputId={`folder-change-${provider}`}
+            mode="change"
+            currentFolderId={connection.source_config?.folder_id}
+            currentFolderName={connection.source_config?.folder_name}
+            onSaved={(config) => {
+              setConfigError(null);
+              setChangingFolder(false);
+              setFolderHint(
+                "Folder updated. Check, then Update to index the new folder — docs outside it will be removed."
+              );
+              onConfigSaved?.({ ...connection, source_config: config });
+            }}
+            onError={(message) => setConfigError(message || null)}
+            onCancel={() => {
+              setChangingFolder(false);
+              setConfigError(null);
+            }}
+          />
+          {configError && <div className="banner banner-warn">{configError}</div>}
+        </div>
+      )}
+
+      {folderHint && !changingFolder && (
+        <p className="muted" style={{ marginTop: "0.65rem" }}>
+          {folderHint}
+        </p>
+      )}
+
+      {showDocsJobBadge && lastJob && (
         <p
           className="muted"
           style={{ marginTop: "0.55rem", display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
@@ -202,6 +322,27 @@ export function ConnectionCard({
               : lastJob.status === "failed"
                 ? "Update failed — try again"
                 : null}
+        </p>
+      )}
+
+      {/* Check found nothing new, and there is no job badge yet (e.g. Drive). */}
+      {docsCheckedFresh && !showDocsJobBadge && (
+        <p
+          className="muted"
+          style={{ marginTop: "0.55rem", display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
+        >
+          <span className="badge badge-verified">Up to date</span>
+          <span>No changes</span>
+        </p>
+      )}
+
+      {showGithubUpToDate && (
+        <p
+          className="muted"
+          style={{ marginTop: "0.55rem", display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
+        >
+          <span className="badge badge-verified">Up to date</span>
+          <span>Repo list refreshed</span>
         </p>
       )}
 
@@ -232,13 +373,42 @@ export function ConnectionCard({
             Connect {PROVIDER_LABELS[provider]}
           </a>
         )}
-        {connection && isLive && !workspaceId && (
+        {connection && manageHref && (
+          <a
+            className="button button-secondary"
+            href={manageHref}
+            target="_blank"
+            rel="noreferrer"
+            title={manageExternalTitle(provider)}
+          >
+            {manageExternalLabel(provider)}
+          </a>
+        )}
+        {provider === "google" &&
+          connection &&
+          folderConfigured &&
+          !changingFolder &&
+          !syncInProgress && (
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={() => {
+                setChangingFolder(true);
+                setFolderHint(null);
+                setConfigError(null);
+              }}
+              title="Point this connection at a different Drive folder"
+            >
+              Change folder
+            </button>
+          )}
+        {connection && isLive && (
           <button
             className="button button-secondary"
             type="button"
             onClick={refreshScope}
             disabled={refreshingScope}
-            title="Update the list of repos Folio can see"
+            title="Pull the latest repo list after you change access on GitHub"
           >
             {refreshingScope ? "Refreshing…" : "Refresh list"}
           </button>

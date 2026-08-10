@@ -13,6 +13,26 @@ from typing import Any
 
 _MAX = 4
 
+# Code starters the GitHub agent can actually answer (README / commits / about).
+# Always fill up to ``_MAX`` chips even with a single connected repo — the empty
+# Code page should feel complete, not half-empty.
+_GITHUB_TEMPLATES = (
+    "What does the {name} repository do?",
+    "What changed recently in {name}?",
+    "How do I run {name} locally?",
+    "Summarize the README for {name}.",
+)
+
+# Policy / space starters grounded in real document titles. Always fill up to
+# ``_MAX`` even with a single ingested page — templates rotate over titles so
+# nothing invents fake docs.
+_POLICY_TEMPLATES = (
+    'What does "{title}" cover?',
+    'What are the key rules in "{title}"?',
+    'Summarize "{title}" for an employee.',
+    'What should I know from "{title}"?',
+)
+
 
 def _repo_short_name(full_name: str) -> str:
     name = (full_name or "").strip()
@@ -21,11 +41,21 @@ def _repo_short_name(full_name: str) -> str:
     return name.rsplit("/", 1)[-1]
 
 
+def _display_title(title: str, *, max_len: int = 64) -> str:
+    """Keep chip text readable — long Notion titles get a soft trim."""
+    if len(title) <= max_len:
+        return title
+    return title[: max_len - 1].rstrip() + "…"
+
+
 def build_github_suggestions(repos: list[dict[str, Any]]) -> list[str]:
     """Turn authorized repo rows into short Code-tab starter questions.
 
     ``repos`` is the JSON list stored on the GitHub connection (each item at
     least ``full_name``). Empty input → empty output (UI hides the chips).
+
+    With one repo, all four templates use that name. With several, templates
+    rotate across repos so chips stay varied without inventing fake repos.
     """
     cleaned: list[tuple[str, str]] = []
     seen: set[str] = set()
@@ -40,36 +70,37 @@ def build_github_suggestions(repos: list[dict[str, Any]]) -> list[str]:
         if key in seen:
             continue
         seen.add(key)
-        desc = (item.get("description") or "").strip() if isinstance(item.get("description"), str) else ""
+        desc = (
+            (item.get("description") or "").strip()
+            if isinstance(item.get("description"), str)
+            else ""
+        )
         cleaned.append((short, desc))
 
     if not cleaned:
         return []
 
-    # Prefer repos that have a description for "what does it do" — they usually
-    # answer cleanly from catalog metadata even when the README is a stub.
+    # Prefer repos that have a description for early "what does it do" chips —
+    # they usually answer cleanly from catalog metadata even when the README is
+    # a stub.
     ranked = sorted(cleaned, key=lambda pair: (0 if pair[1] else 1, pair[0].lower()))
+    names = [short for short, _ in ranked]
+
     questions: list[str] = []
-
-    # Up to two overview questions.
-    for short, _desc in ranked[:2]:
-        questions.append(f"What does the {short} repository do?")
+    for i, template in enumerate(_GITHUB_TEMPLATES):
         if len(questions) >= _MAX:
-            return questions
-
-    # Recent activity on another repo when available, else the first.
-    activity_repo = ranked[2][0] if len(ranked) > 2 else ranked[0][0]
-    questions.append(f"What changed recently in {activity_repo}?")
-    if len(questions) >= _MAX:
-        return questions
-
-    # Setup / README-shaped ask on the first repo.
-    questions.append(f"How do I run {ranked[0][0]} locally?")
-    return questions[:_MAX]
+            break
+        name = names[i % len(names)]
+        questions.append(template.format(name=name))
+    return questions
 
 
 def build_policy_suggestions(titles: list[str]) -> list[str]:
-    """Turn ingested document titles into short Policies-tab starter questions."""
+    """Turn ingested document titles into short Policies / Space Ask chips.
+
+    Empty titles → empty output. With one document, all four templates use that
+    title; with several, templates rotate across titles (same shape as GitHub).
+    """
     cleaned: list[str] = []
     seen: set[str] = set()
     for raw in titles:
@@ -86,14 +117,9 @@ def build_policy_suggestions(titles: list[str]) -> list[str]:
         return []
 
     questions: list[str] = []
-    templates = (
-        'What does "{title}" cover?',
-        'What are the key rules in "{title}"?',
-        'Summarize "{title}" for an employee.',
-        'What should I know from "{title}"?',
-    )
-    for i, title in enumerate(cleaned[:_MAX]):
-        # Keep chip text readable — long Notion titles get a soft trim.
-        display = title if len(title) <= 64 else title[:61].rstrip() + "…"
-        questions.append(templates[i % len(templates)].format(title=display))
+    for i, template in enumerate(_POLICY_TEMPLATES):
+        if len(questions) >= _MAX:
+            break
+        title = cleaned[i % len(cleaned)]
+        questions.append(template.format(title=_display_title(title)))
     return questions

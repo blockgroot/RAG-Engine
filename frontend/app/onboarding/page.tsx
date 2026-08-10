@@ -30,6 +30,48 @@ function pickDisplayJob(
   return mine.find((j) => ACTIVE.has(j.status)) ?? mine[0];
 }
 
+/**
+ * Turn a job row into something that visibly changes.
+ *
+ * The old copy was a fixed "This can take a few minutes" next to a spinner, so
+ * a healthy multi-minute sync and a dead one rendered identically — which is
+ * why refreshing "showed the same thing". These read the live progress fields
+ * instead, and fall back to the old wording only before the first report
+ * arrives (or against a backend that predates them).
+ */
+function syncHeadline(job: JobRecord | undefined): string {
+  const phase = job?.phase;
+  if (phase === "listing") return "Looking at what's there…";
+  if (phase === "preparing") return "Opening the next page…";
+  if (phase === "contextualizing") return "Adding search context…";
+  if (phase === "embedding") return "Indexing for search…";
+  return "Bringing your policies in…";
+}
+
+function syncDetail(job: JobRecord | undefined): string {
+  const total = job?.total_documents ?? null;
+  const done = job?.processed_documents ?? 0;
+  if (job?.phase === "listing") {
+    return "Checking your source for pages that are new or changed.";
+  }
+  if (total != null && total > 0) {
+    const current = Math.min(total, done + 1);
+    if (done < total) {
+      return `Page ${current} of ${total} — ${done} stored so far. You can invite people below while this finishes.`;
+    }
+    return `${done} of ${total} pages done.`;
+  }
+  if (total === 0) return "Nothing new to bring in — finishing up.";
+  return "This usually takes under a minute. Search quality may keep improving briefly in the background.";
+}
+
+function syncPercent(job: JobRecord | undefined): number | null {
+  const total = job?.total_documents ?? null;
+  if (total == null || total <= 0) return null;
+  const done = job?.processed_documents ?? 0;
+  return Math.min(100, Math.round((done / total) * 100));
+}
+
 function syncCompleteMessage(docCount: number | null | undefined): string {
   if (docCount != null) {
     return `You’re ready — ${docCount} policy document${docCount === 1 ? "" : "s"} loaded. Start asking anytime.`;
@@ -331,11 +373,25 @@ function OnboardingInner() {
               <div className="banner banner-wait" role="status" aria-live="polite">
                 <div className="sync-wait-row">
                   <span className="sync-spinner" aria-hidden />
-                  <div>
-                    <strong>Bringing your policies in…</strong>
+                  <div style={{ flex: 1 }}>
+                    <strong>{syncHeadline(activeJob)}</strong>
                     <p className="muted" style={{ margin: "0.35rem 0 0" }}>
-                      This can take a few minutes. Keep this page open until it finishes.
+                      {syncDetail(activeJob)}
                     </p>
+                    {syncPercent(activeJob) != null && (
+                      <div
+                        className="sync-progress"
+                        role="progressbar"
+                        aria-valuenow={syncPercent(activeJob) ?? 0}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                      >
+                        <div
+                          className="sync-progress-bar"
+                          style={{ width: `${syncPercent(activeJob)}%` }}
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -360,6 +416,38 @@ function OnboardingInner() {
                       ? "Try again"
                       : "Bring them in"}
               </button>
+            )}
+
+            {(syncInProgress || displayJob?.status === "failed") && (
+              <div className="stack" style={{ marginTop: "1.25rem" }}>
+                <h3 style={{ margin: 0, fontSize: "1rem" }}>Invite while you wait</h3>
+                <p className="muted" style={{ margin: 0 }}>
+                  Sync runs in the background. Add a teammate now — they can sign in once policies are ready.
+                </p>
+                <form
+                  onSubmit={handleInvite}
+                  style={{
+                    display: "flex",
+                    flexWrap: "wrap",
+                    alignItems: "center",
+                    gap: "0.85rem",
+                  }}
+                >
+                  <input
+                    className="input"
+                    type="email"
+                    required
+                    placeholder="teammate@company.com"
+                    value={inviteEmail}
+                    onChange={(e) => setInviteEmail(e.target.value)}
+                    autoComplete="email"
+                    style={{ flex: "1 1 12rem", minWidth: "12rem" }}
+                  />
+                  <button className="button button-secondary" type="submit" disabled={!inviteEmail.trim()}>
+                    Send invite
+                  </button>
+                </form>
+              </div>
             )}
           </section>
         )}

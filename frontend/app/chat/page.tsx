@@ -56,6 +56,7 @@ function ChatPageInner() {
   const [busy, setBusy] = useState(false);
   const conversationId = useRef<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
   const [readyToAsk, setReadyToAsk] = useState<boolean | null>(null);
   const [workspaceSyncing, setWorkspaceSyncing] = useState(false);
@@ -66,17 +67,35 @@ function ChatPageInner() {
 
   // Which agent answers. The tab only appears when GitHub is actually
   // connected -- offering "Code" with nothing behind it would just produce
-  // fallbacks. Read from /me (not /admin/connections) so ordinary members see
-  // it too; they can ask repo questions, they just can't manage the connection.
-  // A workspace never shows it: a sub-workspace answers from its own connected
-  // content only, and GitHub is org-level (see the plan's non-goals).
+  // fallbacks.
+  //
+  // Two independent signals, deliberately not merged: org-wide chat reads
+  // /me.github_connected (available to every member, unlike admin-only
+  // /admin/connections), while a workspace reads that WORKSPACE's own
+  // github_connected from GET /workspaces/{id}. An org-wide connection must not
+  // light up a workspace's Code tab -- the workspace answers only from its own
+  // installation, so offering the tab would promise code it cannot read.
   const [agentTab, setAgentTab] = useState<AgentTab>("policy");
-  const showAgentTabs = !workspaceId && Boolean(me?.github_connected);
+  const [workspaceGithub, setWorkspaceGithub] = useState(false);
+  const showAgentTabs = workspaceId
+    ? workspaceGithub
+    : Boolean(me?.github_connected);
   // Policies need a successful ingest before they can answer; GitHub does not,
   // because it is read live. So an org with only GitHub connected must not be
   // held behind the policy readiness gate.
   const policiesReady = readyToAsk !== false;
   const askingCode = showAgentTabs && (agentTab === "github" || !policiesReady);
+
+  // Policies and Code are separate surfaces (different agents, different
+  // starters). Switching tabs must open that tab's empty template — not leave
+  // the other tab's thread on screen with only the placeholder changed.
+  function switchAgentTab(next: AgentTab) {
+    if (next === agentTab || busy) return;
+    setAgentTab(next);
+    setMessages([]);
+    setInput("");
+    conversationId.current = null;
+  }
 
   useEffect(() => {
     if (showAgentTabs && !policiesReady) setAgentTab("github");
@@ -104,6 +123,16 @@ function ChatPageInner() {
     };
   }, [me, askingCode, workspaceId]);
 
+  // Keep the latest turn in view on send, while tokens stream, and when done.
+  // scrollIntoView walks scrollable ancestors (chat-log and/or app-body); the
+  // old one-shot logRef.scrollTo after streamChat often no-oped when the outer
+  // shell was the real scroller, and never followed streaming tokens.
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({
+      behavior: busy ? "auto" : "smooth",
+      block: "end",
+    });
+  }, [messages, busy]);
 
   useEffect(() => {
     if (!me) return;
@@ -121,6 +150,7 @@ function ChatPageInner() {
         if (cancelled) return;
         setWorkspaceSyncing(ws.sync_in_progress);
         setReadyToAsk(ws.ready_to_ask);
+        setWorkspaceGithub(Boolean(ws.github_connected));
       })
       .catch(() => {
         if (!cancelled) setReadyToAsk(false);
@@ -243,9 +273,6 @@ function ChatPageInner() {
       askingCode ? "github" : "policy"
     );
 
-    requestAnimationFrame(() => {
-      logRef.current?.scrollTo({ top: logRef.current.scrollHeight, behavior: "smooth" });
-    });
   }
 
   function handleSubmit(e: React.FormEvent) {
@@ -302,20 +329,25 @@ function ChatPageInner() {
     );
   }
 
-  const emptyTitle = workspaceId
-    ? "Ask this space"
-    : askingCode
-      ? "Ask your code"
+  // Code copy takes precedence over the workspace copy: a workspace can now have
+  // its own GitHub connection, so "this space" wording would misdescribe what is
+  // actually being asked.
+  const emptyTitle = askingCode
+    ? workspaceId
+      ? "Ask this space’s code"
+      : "Ask your code"
+    : workspaceId
+      ? "Ask this space"
       : "Ask your company";
-  const emptyCopy = workspaceId
-    ? "Answers come only from the notes and docs connected to this space."
-    : askingCode
-      ? "Repository and commit answers are read live from GitHub — always current, never stale."
+  const emptyCopy = askingCode
+    ? "Repository and commit answers are read live from GitHub — always current, never stale."
+    : workspaceId
+      ? "Answers come only from the notes and docs connected to this space."
       : "Leave, benefits, remote work, and more — grounded in your connected policies.";
-  const composerPlaceholder = workspaceId
-    ? "Ask something about this space…"
-    : askingCode
-      ? "Ask about a repository or a commit…"
+  const composerPlaceholder = askingCode
+    ? "Ask about a repository or a commit…"
+    : workspaceId
+      ? "Ask something about this space…"
       : "Ask about leave, benefits, remote work…";
 
   return (
@@ -343,7 +375,7 @@ function ChatPageInner() {
                 aria-controls="ask-panel"
                 aria-selected={!askingCode}
                 className={`agent-tab${!askingCode ? " is-active" : ""}`}
-                onClick={() => setAgentTab("policy")}
+                onClick={() => switchAgentTab("policy")}
                 disabled={busy || !policiesReady}
                 title={
                   policiesReady ? undefined : "Company policies are still being prepared."
@@ -358,7 +390,7 @@ function ChatPageInner() {
                 aria-controls="ask-panel"
                 aria-selected={askingCode}
                 className={`agent-tab${askingCode ? " is-active" : ""}`}
-                onClick={() => setAgentTab("github")}
+                onClick={() => switchAgentTab("github")}
                 disabled={busy}
               >
                 Code
@@ -400,6 +432,7 @@ function ChatPageInner() {
               {messages.map((m, i) => (
                 <ChatMessageView key={i} message={m} />
               ))}
+              <div ref={bottomRef} aria-hidden className="chat-scroll-anchor" />
             </div>
           )}
         </div>

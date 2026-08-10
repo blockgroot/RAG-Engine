@@ -250,21 +250,57 @@ def test_magic_link_request_for_invited_member_returns_generic_message(
     org_id, email = _invited_member
     response = client.post("/auth/magic-link", json={"email": email})
     assert response.status_code == 200
-    assert "sign-in link" in response.json()["message"].lower()
+    payload = response.json()
+    assert payload["status"] == "sent"
+    assert "sign-in link" in payload["message"].lower()
 
 
 @requires_db
-def test_magic_link_request_for_unknown_email_returns_same_generic_message_but_creates_nothing(
-    client,
-):
+def test_magic_link_request_for_unknown_email_says_so_and_creates_nothing(client):
+    """An unknown email is now TOLD it has no account, and still gets nothing.
+
+    This reverses the original anti-enumeration guarantee (one identical message
+    either way) on request: the uniform response stranded real users, who were
+    told to check an inbox for a mail that was never sent and had no way to find
+    out why. The accepted cost is that this endpoint can now be used to test
+    whether an address has an account; it is bounded by per-IP rate limiting,
+    not prevented.
+
+    The *creates nothing* half of the old test still matters just as much and is
+    kept: reporting "no account" must not tempt anyone into quietly creating one.
+    """
     email = "alice@never-invited.example"
     response = client.post("/auth/magic-link", json={"email": email})
     assert response.status_code == 200
-    assert "sign-in link" in response.json()["message"].lower()
+
+    payload = response.json()
+    assert payload["status"] == "no_account"
+    assert payload["dev_link"] is None
 
     from app.auth.users import get_user_by_email
 
     assert get_user_by_email(email) is None  # no account was ever created for it
+
+
+@requires_db
+def test_magic_link_never_claims_the_organisation_is_unregistered(client):
+    """Wording guard: the backend cannot know that, so it must not say it.
+
+    `org_domains` was removed, so there is no domain->org mapping. An unknown
+    email may well belong to a company that IS set up and simply has not invited
+    this person yet — the common case for a new hire. Saying "your organisation
+    is not registered" would be wrong exactly then, and would push them to sign
+    their company up a second time.
+    """
+    response = client.post("/auth/magic-link", json={"email": "bob@already-a-customer.example"})
+    message = response.json()["message"].lower()
+
+    assert "no account" in message or "couldn't find an account" in message
+    for forbidden in ("organisation is not registered", "organization is not registered",
+                      "organisation not found", "organization not found"):
+        assert forbidden not in message, f"claims something the backend cannot know: {forbidden!r}"
+    # ...and it must still point at both real remedies.
+    assert "admin" in message and "set your company up" in message
 
 
 @requires_db
@@ -580,3 +616,50 @@ def test_workspace_oauth_callback_saves_connection_scoped_to_workspace(
             (org_id,),
         ).fetchone()
     assert org_wide is None
+
+
+@requires_db
+def test_magic_link_is_rate_limited_per_ip(client, monkeypatch):
+    """The mitigation that makes reporting account existence acceptable.
+
+    Telling one caller "no account for that address" is a support answer;
+    letting them sweep a whole company's address book is reconnaissance. This
+    bounds the second without blocking the first. It is a mitigation, not a
+    fix — an attacker with many IPs still gets through, which is the accepted
+    cost of the explicit message.
+
+    Deliberately uses its OWN budget rather than the chat one: this endpoint is
+    anonymous and keyed per IP, so an office behind a single NAT shares one
+    bucket and needs more headroom than a single user's chat session.
+    """
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "true")
+    monkeypatch.setenv("RATE_LIMIT_AUTH_REQUESTS", "3")
+
+    # Every test in this file shares one scope key (TestClient always reports
+    # the same host), and the window is fixed-length rather than per-test — so
+    # without clearing it, earlier magic-link tests have already spent the
+    # budget and even the first request here would 429. That shared-bucket
+    # behaviour is correct in production; it just has to be reset to assert on.
+    with get_connection() as conn:
+        conn.execute("DELETE FROM api_rate_counters WHERE scope_key LIKE %s", ("magic-link:%",))
+
+    email = f"probe-{uuid.uuid4().hex[:8]}@nowhere.example"
+
+    codes = [
+        client.post("/auth/magic-link", json={"email": email}).status_code
+        for _ in range(6)
+    ]
+
+    assert codes[0] == 200, "the first request must always be served"
+    assert 429 in codes, f"bulk probing was never throttled: {codes}"
+
+
+@requires_db
+def test_rate_limit_uses_a_separate_budget_from_chat():
+    """Reusing the chat limit here would couple two unrelated risk profiles."""
+    from app.config.settings import RateLimitSettings
+
+    settings = RateLimitSettings.from_env()
+
+    assert hasattr(settings, "auth_requests_per_window")
+    assert settings.auth_requests_per_window != settings.chat_requests_per_window

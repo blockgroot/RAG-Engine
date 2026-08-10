@@ -17,13 +17,57 @@ same ``LLMProvider`` interface — nothing downstream changes.
 
 from __future__ import annotations
 
-from openai import OpenAI, APIError, APITimeoutError, APIConnectionError
+import re
 
-from ..core.exceptions import ConfigurationError, LLMProviderError
+from openai import (
+    OpenAI,
+    APIError,
+    APITimeoutError,
+    APIConnectionError,
+    RateLimitError,
+)
+
+from ..core.exceptions import (
+    ConfigurationError,
+    LLMProviderError,
+    LLMRateLimitError,
+)
 from .base import ChatResult, LLMProvider, ToolCall
 from .usage import TokenUsage
 
 DEFAULT_TIMEOUT = 60.0
+
+# Providers advertise the wait differently. Gemini's OpenAI-compatible endpoint
+# does not set Retry-After; it puts the delay in the body ("retryDelay": "41s",
+# and prose like "Please retry in 41.35s"). Read the header first, then fall
+# back to the body, so a quota rejection can be honoured rather than guessed at.
+_RETRY_DELAY_PATTERNS = (
+    re.compile(r"'?retryDelay'?\s*:\s*'?\"?(\d+(?:\.\d+)?)s"),
+    re.compile(r"retry in (\d+(?:\.\d+)?)s"),
+)
+
+
+def _retry_after_seconds(exc: Exception) -> float | None:
+    """Best-effort extraction of how long the server wants us to wait."""
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is not None:
+        raw = headers.get("retry-after") or headers.get("Retry-After")
+        if raw:
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                pass
+
+    text = str(exc)
+    for pattern in _RETRY_DELAY_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            try:
+                return float(match.group(1))
+            except ValueError:
+                continue
+    return None
 
 
 class OpenAICompatProvider(LLMProvider):
@@ -72,6 +116,12 @@ class OpenAICompatProvider(LLMProvider):
                 f"Could not connect to LLM endpoint at {self.base_url or 'default OpenAI'}",
                 cause=exc,
             ) from exc
+        except RateLimitError as exc:
+            raise LLMRateLimitError(
+                f"LLM rate limit / quota exceeded: {exc}",
+                cause=exc,
+                retry_after=_retry_after_seconds(exc),
+            ) from exc
         except APIError as exc:
             raise LLMProviderError(f"LLM API error: {exc}", cause=exc) from exc
 
@@ -115,6 +165,12 @@ class OpenAICompatProvider(LLMProvider):
             raise LLMProviderError(
                 f"Could not connect to LLM endpoint at {self.base_url or 'default OpenAI'}",
                 cause=exc,
+            ) from exc
+        except RateLimitError as exc:
+            raise LLMRateLimitError(
+                f"LLM rate limit / quota exceeded: {exc}",
+                cause=exc,
+                retry_after=_retry_after_seconds(exc),
             ) from exc
         except APIError as exc:
             raise LLMProviderError(f"LLM API error: {exc}", cause=exc) from exc

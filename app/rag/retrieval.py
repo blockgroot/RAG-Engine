@@ -19,11 +19,20 @@ pipeline's threshold logic behaves exactly as before.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from ..config.settings import RagSettings, RetrievalSettings
 from ..reranker.base import Reranker
 from ..vectorstore.base import RetrievedChunk, VectorStore
+
+
+# Ceiling on concurrent first-stage searches for ONE question. Each in-flight
+# search holds a pooled connection, and DB_POOL_MAX_SIZE defaults to 10 shared
+# across the whole process — so this stays well under it, leaving room for
+# concurrent requests. Raising it trades tail latency for pool contention: past
+# the pool size the extra tasks just queue on a connection instead of a query.
+_MAX_RETRIEVAL_WORKERS = 4
 
 
 @dataclass(frozen=True)
@@ -80,11 +89,9 @@ class HybridRetriever:
         if extra_queries:
             query_pairs.extend(extra_queries)
 
-        ranked_lists: list[list[RetrievedChunk]] = []
-        for q_text, q_vec in query_pairs:
-            ranked_lists.append(
-                self._first_stage(org_id, q_text, q_vec, pool, workspace_id=workspace_id)
-            )
+        ranked_lists = self._first_stage_all(
+            org_id, query_pairs, pool, workspace_id=workspace_id
+        )
 
         if len(ranked_lists) == 1:
             candidates = ranked_lists[0]
@@ -104,28 +111,67 @@ class HybridRetriever:
 
         return RetrievalResult(hits=final, gate_score=gate_score)
 
-    def _first_stage(
+    def _first_stage_all(
         self,
         org_id: str,
-        query_text: str,
-        query_embedding: list[float],
+        query_pairs: list[tuple[str, list[float]]],
         pool: int,
         *,
         workspace_id: str | None = None,
-    ) -> list[RetrievedChunk]:
-        vec_hits = self._store.query(
-            org_id, query_embedding, top_k=pool, workspace_id=workspace_id
-        )
+    ) -> list[list[RetrievedChunk]]:
+        """Run every first-stage search concurrently, one ranked list per query.
 
-        if self._settings.hybrid_enabled:
-            try:
-                kw_hits = self._store.keyword_search(
-                    org_id, query_text, query_embedding, top_k=pool, workspace_id=workspace_id
+        These searches are independent database round trips — vector and keyword
+        for one query, and every sub-question's pair — but they used to run
+        strictly one after another, so a three-part compound question serialized
+        six queries whose latency is almost entirely waiting on Postgres. The
+        pool is deliberately capped: each task takes a connection, and a large
+        decomposition must not be able to drain the shared pool.
+
+        Ordering is preserved by index, not completion, because RRF fusion is
+        order-sensitive across lists.
+        """
+        tasks: list[tuple[int, str, str, list[float]]] = []
+        for i, (q_text, q_vec) in enumerate(query_pairs):
+            tasks.append((i, "vector", q_text, q_vec))
+            if self._settings.hybrid_enabled:
+                tasks.append((i, "keyword", q_text, q_vec))
+
+        results: dict[tuple[int, str], list[RetrievedChunk]] = {}
+
+        def run(task) -> tuple[tuple[int, str], list[RetrievedChunk]]:
+            i, kind, q_text, q_vec = task
+            if kind == "vector":
+                hits = self._store.query(
+                    org_id, q_vec, top_k=pool, workspace_id=workspace_id
                 )
-            except NotImplementedError:
-                kw_hits = []
-            return self._rrf_fuse([vec_hits, kw_hits], self._settings.rrf_k)
-        return list(vec_hits)
+            else:
+                try:
+                    hits = self._store.keyword_search(
+                        org_id, q_text, q_vec, top_k=pool, workspace_id=workspace_id
+                    )
+                except NotImplementedError:
+                    hits = []
+            return (i, kind), list(hits)
+
+        if len(tasks) == 1:
+            key, hits = run(tasks[0])
+            results[key] = hits
+        else:
+            workers = min(len(tasks), _MAX_RETRIEVAL_WORKERS)
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                for key, hits in ex.map(run, tasks):
+                    results[key] = hits
+
+        ranked: list[list[RetrievedChunk]] = []
+        for i in range(len(query_pairs)):
+            vec_hits = results.get((i, "vector"), [])
+            if self._settings.hybrid_enabled:
+                kw_hits = results.get((i, "keyword"), [])
+                ranked.append(self._rrf_fuse([vec_hits, kw_hits], self._settings.rrf_k))
+            else:
+                ranked.append(vec_hits)
+        return ranked
 
     @staticmethod
     def _rrf_fuse(

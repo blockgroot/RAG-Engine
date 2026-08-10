@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
@@ -16,13 +16,15 @@ import {
   WorkspaceMemberRecord,
 } from "@/lib/api";
 import { ACTIVE_JOB_STATUSES, useJobPolling } from "@/lib/jobPoll";
+import { clearedSyncChanges } from "@/lib/syncChanges";
 
-// GitHub is deliberately absent: it connects at the ORG level only. A personal
-// sub-workspace answers from its own connected documents, and repo-level access
-// control inside an org is an access-control dimension this system doesn't have
-// (see the GitHub plan's non-goals). The API refuses a workspace-scoped GitHub
-// connect too -- this just keeps the UI from offering it.
-const PROVIDERS: ("notion" | "google")[] = ["notion", "google"];
+// GitHub is now offered per workspace (it used to be org-level only). A
+// workspace owner connects their own installation, so the workspace's Code
+// answers come from that installation alone -- never the org-wide one, and a
+// workspace with no GitHub connection gets the fallback rather than the org's
+// repos. That no-fallback scoping is what makes this safe; see
+// tests/test_github_workspace_scope.py.
+const PROVIDERS: ("notion" | "google" | "github")[] = ["notion", "google", "github"];
 const ACTIVE_STATUSES = ACTIVE_JOB_STATUSES;
 
 function latestJobByConnection(jobs: JobRecord[]): Record<string, JobRecord> {
@@ -44,6 +46,8 @@ function updateCompleteMessage(docCount: number | null | undefined): string {
 export default function WorkspaceDetailPage() {
   const params = useParams<{ id: string }>();
   const workspaceId = params.id;
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const { me, loading } = useMe({ enforceSetupFlow: false });
 
   const [workspace, setWorkspace] = useState<WorkspaceDetail | null>(null);
@@ -55,6 +59,12 @@ export default function WorkspaceDetailPage() {
   const [notFound, setNotFound] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Structured OAuth refusal (not a single bulk paragraph). */
+  const [connectNotice, setConnectNotice] = useState<{
+    title: string;
+    why: string;
+    options: string[];
+  } | null>(null);
   const [pollToken, setPollToken] = useState(0);
   const [watchedJobId, setWatchedJobId] = useState<string | null>(null);
 
@@ -79,22 +89,36 @@ export default function WorkspaceDetailPage() {
     }
   }, [workspaceId]);
 
+  const changesGen = useRef(0);
+
   const refreshChanges = useCallback(
     async (list: ConnectionRecord[]) => {
       if (list.length === 0) return;
+      const gen = ++changesGen.current;
       setChecking(true);
       const next: Record<string, SyncChanges> = {};
+      const failedIds: string[] = [];
       await Promise.all(
         list.map(async (c) => {
+          // GitHub is read live and never ingested, so there is no "changed since
+          // last sync" to compute -- and the API refuses this call for it.
+          if (c.provider === "github") return;
           if (c.provider === "google" && !c.source_config?.folder_id) return;
           try {
             next[c.id] = await api.checkWorkspaceConnectionChanges(workspaceId, c.id);
           } catch {
-            // ignore transient source errors
+            // Drop prior has_changes so a failed re-check after sync cannot
+            // leave a sticky Update button.
+            failedIds.push(c.id);
           }
         })
       );
-      setChangesById((prev) => ({ ...prev, ...next }));
+      if (gen !== changesGen.current) return; // newer check won
+      setChangesById((prev) => {
+        const merged = { ...prev, ...next };
+        for (const id of failedIds) delete merged[id];
+        return merged;
+      });
       setChecking(false);
     },
     [workspaceId]
@@ -129,6 +153,52 @@ export default function WorkspaceDetailPage() {
       if (active.length > 0) setPollToken((n) => n + 1);
     }).catch(() => {});
   }, [me, workspaceId, refreshChanges, refreshWorkspace]);
+
+  // After GitHub/Notion/Drive OAuth, the API redirects here with ?connected=
+  // (success) or ?connect_error= (refused — e.g. same GitHub install as Company).
+  useEffect(() => {
+    if (!me) return;
+    const connectError = searchParams.get("connect_error");
+    if (connectError === "github_same_install") {
+      setError(null);
+      setConnectNotice({
+        title: "This space can’t use the company GitHub connection",
+        why: "Company → Sources already uses that GitHub account. If this space reused it, company Code and space Code would show the same repos.",
+        options: [
+          "Put company GitHub on a GitHub Organization, reconnect it under Company → Sources, then connect this space with your personal account.",
+          "Or disconnect GitHub from Company → Sources, then connect it only on this space.",
+          "Or skip GitHub here and ask from the main Ask → Code tab instead.",
+        ],
+      });
+      router.replace(`/workspaces/${workspaceId}`, { scroll: false });
+      return;
+    }
+
+    const connected = searchParams.get("connected");
+    if (!connected) return;
+    const label =
+      connected === "github"
+        ? "GitHub"
+        : connected === "google"
+          ? "Google Drive"
+          : connected === "notion"
+            ? "Notion"
+            : connected;
+    setMessage(
+      connected === "github"
+        ? `${label} connected to this space. You and invited colleagues can ask in the Code tab — only these repos, not the company GitHub.`
+        : `${label} connected to this space.`
+    );
+    void refreshWorkspace();
+    api
+      .listWorkspaceConnections(workspaceId)
+      .then((list) => {
+        setConnections(list);
+        refreshChanges(list);
+      })
+      .catch(() => {});
+    router.replace(`/workspaces/${workspaceId}`, { scroll: false });
+  }, [me, searchParams, workspaceId, refreshWorkspace, refreshChanges, router]);
 
   useEffect(() => {
     if (!me) return;
@@ -170,6 +240,10 @@ export default function WorkspaceDetailPage() {
         if (curr === "succeeded") {
           setMessage(updateCompleteMessage(job.doc_count));
           setError(null);
+          setChangesById((prev) => ({
+            ...prev,
+            [connectionId]: clearedSyncChanges(connectionId),
+          }));
           refreshChanges(connections);
           void refreshWorkspace();
           requestAnimationFrame(() => {
@@ -204,11 +278,19 @@ export default function WorkspaceDetailPage() {
     }
   }
 
+  const updateInFlight = useRef<Set<string>>(new Set());
+
   async function handleUpdate(connectionId: string) {
     const latest = latestJobByConnection(jobs)[connectionId];
     if (latest && ACTIVE_STATUSES.has(latest.status)) return;
+    if (updateInFlight.current.has(connectionId)) return;
+    updateInFlight.current.add(connectionId);
     setError(null);
     setMessage("Updating…");
+    setChangesById((prev) => ({
+      ...prev,
+      [connectionId]: clearedSyncChanges(connectionId),
+    }));
     try {
       const { job_id } = await api.triggerWorkspaceIngest(workspaceId, connectionId);
       setWatchedJobId(job_id);
@@ -222,6 +304,8 @@ export default function WorkspaceDetailPage() {
       setError(err instanceof Error ? err.message : "Could not start the update.");
       setMessage(null);
       setWatchedJobId(null);
+    } finally {
+      updateInFlight.current.delete(connectionId);
     }
   }
 
@@ -251,7 +335,10 @@ export default function WorkspaceDetailPage() {
 
   const isOwner = workspace?.role === "owner";
   const lastJobs = latestJobByConnection(jobs);
-  const readyToAsk = Boolean(workspace?.ready_to_ask);
+  const docsReady = Boolean(workspace?.ready_to_ask);
+  const githubReady = Boolean(workspace?.github_connected);
+  // Same idea as org Ask: docs need an ingest; GitHub is live — either unlocks Ask.
+  const canAsk = docsReady || githubReady;
 
   return (
     <AppShell me={me} variant="app">
@@ -259,9 +346,9 @@ export default function WorkspaceDetailPage() {
         <PageHeader
           eyebrow="Space"
           title={workspace?.name || "…"}
-          description="Answers come only from this space’s docs."
+          description="Answers come only from this space’s connected docs and repos — not the company-wide sources."
           actions={
-            readyToAsk ? (
+            canAsk ? (
               <Link href={`/chat?workspace=${workspaceId}`} className="button">
                 Ask →
               </Link>
@@ -281,17 +368,36 @@ export default function WorkspaceDetailPage() {
             {message}
           </div>
         )}
+        {connectNotice && (
+          <div className="banner banner-warn connect-notice" role="alert">
+            <p className="connect-notice-title">{connectNotice.title}</p>
+            <p className="connect-notice-why">{connectNotice.why}</p>
+            <p className="connect-notice-label">What you can do</p>
+            <ol className="connect-notice-options">
+              {connectNotice.options.map((step) => (
+                <li key={step}>{step}</li>
+              ))}
+            </ol>
+            <button
+              type="button"
+              className="button button-secondary connect-notice-dismiss"
+              onClick={() => setConnectNotice(null)}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         {error && <div className="banner banner-warn">{error}</div>}
 
-        {!readyToAsk && (
+        {!canAsk && (
           <div className="banner banner-wait" role="status">
             <strong>Not ready to ask yet</strong>
             <p className="muted" style={{ margin: "0.35rem 0 0" }}>
               {workspace?.sync_in_progress
                 ? "Still importing documents…"
                 : isOwner
-                  ? "Connect a source below, then update once."
-                  : "Waiting on the owner to connect documents."}
+                  ? "Connect Notion, Drive, or GitHub below. For docs, sync once; for GitHub, Ask unlocks as soon as it’s linked."
+                  : "Waiting on the owner to connect a source."}
             </p>
           </div>
         )}
@@ -340,9 +446,9 @@ export default function WorkspaceDetailPage() {
           <section className="stack">
             <div className="panel-head" style={{ marginBottom: 0 }}>
               <div>
-                <h2>Documents for this space</h2>
+                <h2>Sources for this space</h2>
                 <p className="muted" style={{ marginTop: "0.35rem" }}>
-                  Where this space gets its answers.
+                  Docs sync; GitHub is live. Colleagues you invite can ask here — only what you connect to this space.
                 </p>
               </div>
             </div>

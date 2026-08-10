@@ -55,17 +55,21 @@ def github_env(monkeypatch):
 # -- authorize_url ---------------------------------------------------------
 
 
-def test_authorize_url_points_at_the_install_page_not_an_oauth_endpoint():
-    """Installation is what grants repo access, so we send admins to install.
+def test_authorize_url_starts_with_user_oauth_so_reconnect_works():
+    """Already-installed Apps never complete via /installations/new alone.
 
-    A plain ``/login/oauth/authorize`` URL would authorize a *user* without
-    ever installing the App, leaving us with a token that can't read the org's
-    repos.
+    User OAuth always returns to our callback; if no installation exists yet,
+    the callback redirects to ``install_url``.
     """
-    url = GitHubAppProvider(_settings()).authorize_url("st4te")
+    provider = GitHubAppProvider(_settings())
+    url = provider.authorize_url("st4te")
 
-    assert url.startswith("https://github.com/apps/acme-rag/installations/new")
+    assert url.startswith("https://github.com/login/oauth/authorize?")
+    assert "client_id=Iv1.abc123" in url
     assert "state=st4te" in url
+    assert provider.install_url("st4te").startswith(
+        "https://github.com/apps/acme-rag/installations/new"
+    )
 
 
 def test_provider_requires_full_configuration():
@@ -203,3 +207,39 @@ def test_factory_builds_the_github_provider(github_env):
 def test_factory_still_rejects_unknown_providers():
     with pytest.raises(ConfigurationError):
         build_oauth_provider("slack")
+
+
+def test_resolve_installation_prefers_user_account_for_workspace_connect(monkeypatch):
+    _wire(
+        monkeypatch,
+        token_payload={"access_token": "ghu_x"},
+        installations_payload={
+            "installations": [
+                {
+                    "id": 111,
+                    "account": {"login": "acme-inc", "type": "Organization"},
+                },
+                {
+                    "id": 222,
+                    "account": {"login": "18-sana", "type": "User"},
+                },
+            ]
+        },
+    )
+    tokens, iid = GitHubAppProvider(_settings()).exchange_code_resolve_installation(
+        "code", prefer_user_account=True
+    )
+    assert iid == "222"
+    assert tokens.external_workspace_id == "18-sana"
+
+
+def test_resolve_installation_returns_none_when_app_not_installed(monkeypatch):
+    _wire(
+        monkeypatch,
+        token_payload={"access_token": "ghu_x"},
+        installations_payload={"installations": []},
+    )
+    assert (
+        GitHubAppProvider(_settings()).exchange_code_resolve_installation("code")
+        is None
+    )

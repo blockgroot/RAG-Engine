@@ -369,9 +369,27 @@ their policy documents; their employees ask questions and get answers grounded i
     DNS-verified AND had auto-join explicitly enabled by an admin; **this domain
     auto-join mechanism was removed in a later simplification pass — see the
     bullet below — and replaced by direct admin-invited members.** The response
-    to a magic-link request is **always the same generic message**, whether or
-    not the email is known — this endpoint must never be usable to enumerate
-    registered accounts. Magic-link
+    to a magic-link request **used to be an identical generic message** whether
+    or not the email was known, so the endpoint could not be used to enumerate
+    accounts. **That was REVERSED on request** — it now returns
+    `status: "sent" | "no_account"` and says which. Why: the uniform response
+    stranded real people. Someone whose company had not onboarded was told to
+    check their inbox for a mail that was never sent, with no way to learn why,
+    and the frontend made it worse by discarding the server's careful
+    "if that email is eligible…" and asserting a link *had* been sent. **The
+    accepted cost is that this endpoint is now an account-enumeration oracle**;
+    it is *mitigated, not eliminated*, by per-IP rate limiting
+    (`RATE_LIMIT_AUTH_REQUESTS`, its own budget — reusing the chat limit would
+    couple an anonymous per-IP endpoint to an authenticated per-org one, and an
+    office behind one NAT shares this bucket). **Wording constraint that is easy
+    to get wrong:** the message says *no account for this email*, never *your
+    organisation is not registered* — `org_domains` was dropped, so there is no
+    domain→org mapping and the backend genuinely cannot tell "company not a
+    customer" from "customer who hasn't invited you", the latter being the
+    common new-hire case. Pinned by
+    `test_magic_link_never_claims_the_organisation_is_unregistered`. To restore
+    the original guarantee, collapse the two returns into one message and drop
+    `status`. Magic-link
     tokens and OAuth `state` values are single-use and server-side (only a
     SHA-256 hash of a magic-link token is ever stored), consumed atomically on
     lookup so a captured link/URL can't be replayed. **A session is never issued
@@ -466,24 +484,46 @@ their policy documents; their employees ask questions and get answers grounded i
   the installation), it can go stale, which is why
   `POST /admin/connections/{id}/refresh-scope` exists — the GitHub analogue of
   Drive's "check for changes", for *scope* rather than content.
-- **GitHub connects at the ORG level only — workspace-scoped GitHub is an
-  explicit non-goal.** Nothing else in this system has a scoping layer between
-  org and individual member, so a per-workspace repo subset would introduce
-  repo-level ACLs inside an org: a genuinely new access-control dimension, built
-  speculatively. Enforced **server-side** in `/auth/{provider}/authorize` (a
-  hand-crafted `?workspace_id=` URL is refused with 400), not merely hidden in
-  the UI. Same deferral reasoning as domain auto-join below.
-- **Agent routing stays deterministic — no LLM picks the agent.** GitHub is
-  org-level, so an org commonly has Notion/Drive policies *and* GitHub connected
-  at once, and "route by connected source" cannot disambiguate at org scope. So
+- **GitHub is connectable per WORKSPACE as well as per org — this REVERSES the
+  original org-level-only non-goal.** The first design refused a workspace-scoped
+  GitHub connection (server-side, with a 400 on a hand-crafted `?workspace_id=`
+  URL) on the grounds that a per-workspace repo subset introduces repo-level
+  ACLs inside an org — a new access-control dimension built speculatively. That
+  was overturned on request. The consequence is real and worth stating plainly:
+  **workspace membership is now an access boundary over code, not just over
+  documents.** A workspace owner connects their own installation, and its repos
+  are readable by that workspace's members.
+  **The one property that makes this safe** is not a check in the router but the
+  scoping underneath: `load_scope`, `get_live_connection_token`,
+  `refresh_installation_scope`, and the suggestions query all pair
+  `workspace_id` with `org_id` (`IS NOT DISTINCT FROM`, or `= %s` where a
+  workspace is required), so a workspace with **no** GitHub connection raises
+  `ConfigurationError` → fixed fallback, and **never** reads the org-wide
+  installation. A silent fallback would mean inviting a colleague into a
+  meeting-notes workspace quietly handed them the whole company's code. Proven by
+  `tests/test_github_workspace_scope.py::test_a_workspace_without_github_never_falls_back_to_the_org_connection`
+  — do not "helpfully" add a fallback there. Connecting stays **owner-only**
+  (`require_workspace_owner`), which matters more for code than it did for docs:
+  a member who could connect GitHub could widen what the whole workspace reads.
+  `GET /workspaces/{id}` reports a workspace-scoped `github_connected` (an
+  org-wide connection must not light up a workspace's Code tab), and
+  `POST /workspaces/{id}/connections/{cid}/refresh-scope` is the workspace
+  analogue of the admin route.
+- **Agent routing stays deterministic — no LLM picks the agent.** A single scope
+  can have documents *and* GitHub connected at once (true org-wide, and now true
+  per workspace), so "route by connected source" cannot disambiguate. So
   `POST /chat/stream` takes an explicit `{"agent": "policy"|"github"}` (a
   "Policies | Code" tab in the chat header). `_select_agent` remains the one
-  place the decision is made; `workspace_id` outranks the requested agent (a
-  sub-workspace is a narrower boundary than a source choice), and an
-  unrecognized value falls through to `PolicyAgent`, never to GitHub. An
-  aux-LLM intent classifier was rejected: it would put a non-deterministic step
-  in front of the tenant-scoped path, which is exactly what the confidence
-  gate's design philosophy avoids.
+  place the decision is made, and an unrecognized value falls through to
+  `PolicyAgent`, never to GitHub. An aux-LLM intent classifier was rejected: it
+  would put a non-deterministic step in front of the tenant-scoped path, which is
+  exactly what the confidence gate's design philosophy avoids.
+  **Ordering inverted when workspace-scoped GitHub landed:** `agent="github"` now
+  outranks `workspace_id`, where previously `workspace_id` won. The old ordering
+  existed so a workspace question could never be served *org-wide* code; that is
+  now handled properly by the agent receiving the `workspace_id` and building a
+  workspace-scoped reader (see the bullet above). If that scoping is ever
+  weakened, restore the old ordering.
 - **Domain-based auto-join was removed in favor of direct admin-invited
   members — deferred, not wrong.** Phase 13 originally gated employee login on
   a per-org `org_domains` claim (an admin typed a domain, toggled
@@ -770,6 +810,15 @@ tests/          # pytest; isolation (P2, extended with workspace-vs-org-wide and
 
 ## 4. Known gotchas & past decisions worth remembering
 
+- **Local BGE-M3 + reranker can hang a 16GB Mac.** Each model is multi-GB in
+  RSS. Chat used to ``Depends`` both ``get_policy_agent`` and
+  ``get_workspace_agent`` on every ``/chat/stream``, loading *two* copies and
+  pushing the machine into swap (device freezes, no response). Fix: lazy agent
+  selection + process-wide singleton embedder/reranker factories. Still avoid
+  ``uvicorn --reload`` during demos (parent+child), and prefer Code/GitHub chat
+  when you do not need retrieval — it never loads those models. Kill-switch:
+  ``RETRIEVAL_RERANK_ENABLED=false``.
+
 - **Not every schema.sql addition has the ALTER-ordering hazard.**
   `org_signup_requests` (signup-approval queue, §2/§5) is a plain
   `CREATE TABLE IF NOT EXISTS` with no `ALTER TABLE ... ADD COLUMN` on an
@@ -854,10 +903,38 @@ tests/          # pytest; isolation (P2, extended with workspace-vs-org-wide and
   endpoint returns a **form-encoded** body and `response.json()` blows up — a
   classic first-integration trap, and the reason `github_oauth.py` sets it
   explicitly.
-- **GitHub's install URL is `/apps/<slug>/installations/new`, not an OAuth
-  authorize endpoint.** Installing is what grants repository access; a plain
-  `/login/oauth/authorize` would authorize a *user* without installing anything,
-  leaving a token that cannot read the org's repos.
+- **GitHub connect starts with user OAuth; install only if needed.**
+  ``authorize_url`` is ``/login/oauth/authorize`` so an *already-installed*
+  App (common: org Sources connected first, then a workspace) still returns
+  to our callback and creates the workspace ``oauth_connections`` row. If
+  OAuth finds no installation, the callback redirects to
+  ``/apps/<slug>/installations/new``. Editing GitHub's install *settings*
+  page and clicking the homepage link (``localhost:3000``) does **not**
+  complete Handbook's connect — there is no ``code``/``state``. Org "Refresh
+  list" updating while a workspace still shows disconnected is the smoking
+  gun: refresh only touches the existing org-wide row.
+- **A workspace GitHub connect must never land on the ORG's installation —
+  this is how "the repos got mixed".** The intended flow is: an employee makes a
+  space, invites colleagues, connects *their personal* GitHub, and the space
+  answers only about their own repos. Two paths broke that, both now closed:
+  (1) when GitHub's install redirect carried an `installation_id`, the callback
+  accepted it via `exchange_code_with_installation`, which verifies the id
+  belongs to the authorizing user but says nothing about *whose account* it is —
+  so an employee who already had the App on the company org could bind the
+  company installation to their personal space, and `prefer_user_account` was
+  only consulted on the *other* branch; (2) `_pick_installation` fell back to
+  `installations[0]`, so a workspace connect with only an Organization
+  installation silently bound that one. Both ended with the workspace row and the
+  org-wide row holding the **same `installation_id`** — identical repos, two
+  connections, zero isolation. Now: `_pick_installation(prefer_user_account=True)`
+  returns `None` rather than falling back (the caller then sends them to the
+  install screen to install on their own account), and
+  `_reject_org_installation_for_workspace` 400s a workspace connect whose
+  installation id equals the org-wide one. **It compares installation ids, not
+  account *type*** — deliberately: a company whose GitHub is a User account would
+  be wrongly rejected by a type check, and an employee whose personal repos sit
+  under some other Organization would be wrongly allowed. Proven by
+  `tests/test_github_workspace_install_isolation.py`.
 - **`state` surviving the install redirect is NOT confirmed by GitHub's docs**
   (they document `installation_id` on the setup redirect, not `state`). The
   implementation assumes it does. **Verify against a real App before trusting
@@ -1028,6 +1105,157 @@ tests/          # pytest; isolation (P2, extended with workspace-vs-org-wide and
   include the context prefix, and both the embedding and the keyword index benefit.
   It's best-effort (falls back to the raw chunk on LLM error) and adds one LLM call
   per chunk *at ingest only* — never at query time.
+- **Ingest contextualization is the ingestion bottleneck, and it now runs in
+  parallel (`INGEST_CONTEXTUAL_CONCURRENCY`, default 8).** "One LLM call per
+  chunk at ingest only" is cheap per call but was issued strictly serially, so a
+  page of 10 chunks meant 10 sequential round trips and a whole workspace meant
+  hundreds — the reason a sync sat at "Syncing…" for minutes. The calls are
+  independent by construction, so they now go through a bounded
+  `ThreadPoolExecutor`; `Executor.map` preserves order, which matters because
+  completion order becoming *storage* order would silently corrupt what gets
+  embedded (pinned by
+  `test_ingest_progress.py::test_parallel_contextualization_preserves_chunk_order`).
+  Safe because `LLMProvider.generate` holds no per-call state and the
+  `openai`/`httpx` client is thread-safe. **Known, accepted cost:** `last_usage`
+  is a shared mutable field, so `log_llm_call`'s per-chunk token attribution
+  becomes approximate under concurrency — set `INGEST_CONTEXTUAL_CONCURRENCY=1`
+  for exact accounting (or against an endpoint that rate-limits hard). Do not
+  raise the default blindly: the ceiling here is the LLM endpoint's tolerance,
+  not our CPU.
+- **The endpoint quota is the real constraint, and a 429 is NOT a transient
+  blip — treat it separately (`LLMRateLimitError`).** Diagnosed from a live
+  failure, and it retroactively explains most of this repo's "free-LLM-endpoint
+  flakiness": the configured model (`gemini-3.1-flash-lite`, Gemini's free
+  tier) allows a hard **15 requests per minute**, and the server itself asks for
+  a ~41s wait. That is why tests pass alone and fail in a full suite, and why
+  the suite's failure count wandered (6 → 7 → 11 → 13) with no code change.
+  Consequences worth keeping straight: (1) `OpenAICompatProvider` now raises
+  `LLMRateLimitError` (a **subclass** of `LLMProviderError`, so every existing
+  `except LLMProviderError` is unaffected) carrying `retry_after`, parsed from
+  `Retry-After` *or* Gemini's body hint (`"retryDelay": "41s"`), since Gemini's
+  OpenAI-compatible endpoint sets no header. (2) `contextualize_chunk` honours
+  that window instead of its generic 0.5s backoff — retrying a per-minute quota
+  after 500ms just spends another request against the same exhausted budget —
+  and **gives up rather than waiting** beyond `_MAX_RATE_LIMIT_WAIT_SECONDS`
+  (45s) so one chunk cannot stall a whole run. (3) **`INGEST_CONTEXTUAL_CONCURRENCY=8`
+  is wrong for a 15 RPM endpoint** — a burst of 8 exhausts the budget in
+  seconds and each 429 silently drops that chunk's context prefix, i.e. a fast
+  ingest that quietly produced worse retrieval. The default suits a local or
+  paid endpoint; on a free/metered one set 1–2, or point ingest at a different
+  model via `LLM_AUX_MODEL`. The default was left at 8 rather than tuned to one
+  deployment's quota, but the trap is now documented in `.env.example`.
+- **An ingestion job reports live progress — without it the UI cannot tell
+  "working" from "hung".** `ingestion_jobs` gained `phase` /
+  `total_documents` / `processed_documents`, written as each document finishes.
+  Before, a job was binary (`queued`→`running`→`succeeded`) with `doc_count`
+  set only at the very end, so every poll during a multi-minute sync returned
+  **byte-identical JSON** — the real reason refreshing the onboarding page
+  "showed the same thing". That was a missing-data bug, not a polling bug;
+  shortening the 8s poll interval would have made it worse, not better.
+  `RagPipeline`-style discipline applies: progress is observability and must
+  never be load-bearing, so `queue.update_progress` swallows its own failures
+  and `ingest_source`'s `report()` wrapper swallows the sink's — a dead
+  progress backend costs a stale spinner, never a lost sync. `update_progress`
+  writes only the fields passed, so advancing the counter can't wipe the phase.
+  The four duplicated job-serialization dicts in `admin.py`/`workspaces.py`
+  collapsed into `app/api/serialize.py::job_payload` — they had already drifted
+  once, and adding three fields to four places is how a field silently never
+  reaches the UI.
+- **Query-path latency: three costs removed, all behaviour-preserving, each
+  measured before being changed.** The rule for this pass was "same answers,
+  less work" — no gate, prompt, ranking, or scoping logic was touched.
+  (1) **The corpus was refetched on every question.** `_normalize_for_retrieval`
+  eagerly called `list_chunk_texts(org_id)` — an unbounded `SELECT content FROM
+  chunks WHERE org_id = ...` — while `CorpusSpellNormalizer` caches its per-org
+  SymSpell dictionary for the life of the process and *nothing invalidates it*.
+  So every question after the first shipped the org's entire corpus text over
+  the wire and discarded it unread, and a decomposed question did it once per
+  sub-question. `normalize()` now accepts a **thunk**, resolved only on a real
+  cache miss (measured 3 fetches → 1 across 3 questions). The `NotImplementedError`
+  fallback moved *inside* the thunk deliberately: letting it reach `normalize()`
+  would log an exception on every query for stores lacking the optional
+  capability.
+  (2) **Independent searches ran serially.** Vector and keyword for one query,
+  and every sub-question's pair, are independent DB round trips issued one after
+  another — a 3-part compound question serialized 6 queries. `_first_stage_all`
+  runs them on a pool capped at `_MAX_RETRIEVAL_WORKERS = 4`, well under
+  `DB_POOL_MAX_SIZE` (10) so one question cannot drain the shared pool. Results
+  are reassembled **by index, not completion order** — RRF fusion is
+  order-sensitive across lists. **Honest measurement:** this is worth *nothing*
+  on a toy corpus (10 chunks: 4ms → 4ms, thread overhead cancels a
+  sub-millisecond query) and clearly worth it at realistic scale (400 chunks:
+  ~40% for one question, ~48% for three sub-questions). Don't re-benchmark it on
+  the golden corpus and conclude it's useless.
+  (3) **`keyword_search` was unbounded.** Every chunk matching the tsquery came
+  back with a computed cosine, a `documents` join, and its full text — to keep
+  30. Measured: 160 rows to return 30 on 400 chunks, a ratio that grows linearly
+  with the corpus. Postgres now orders by `ts_rank` and keeps
+  `KEYWORD_CANDIDATE_LIMIT` (2000) rows, with the per-row cosine/join/transfer
+  moved *after* the cut via a CTE. **This is the one change with a behavioural
+  edge:** past the limit BM25 ranks the top-N by `ts_rank` rather than every
+  match, and its IDF is computed over that subset. The default is high enough to
+  be a no-op at realistic sizes, and where it bites the old behaviour was
+  pathological. Regression: `tests/test_query_latency.py`.
+- **Models are warmed at API startup, not inside the first question**
+  (`_start_model_warmup`, `MODEL_WARMUP_ON_STARTUP`, default on). BGE-M3 and the
+  reranker load lazily, so the first person to ask anything after a restart paid
+  the whole multi-GB load inside their request. Warmup runs on a **daemon
+  thread**, not blocking `lifespan`, so login/admin/GitHub chat — none of which
+  need these models — stay available while weights load, and a machine that
+  can't load them fails on the first retrieval with a real error rather than
+  refusing to boot. Disabled in the test suite via an autouse conftest fixture:
+  most API tests never retrieve, and the ones that do already share
+  session-scoped provider fixtures.
+- **Redis was considered for this pass and deliberately NOT added.** The
+  instinct is reasonable — but none of the three costs above was "our cache is
+  too slow"; every one was work that didn't need doing at all, and a Postgres
+  `query_answer_cache` already exists (Phase 19). Redis would add a second
+  datastore to run, back up, secure, and fail independently, against §1's
+  single self-hosted image, while fixing none of them. If caching genuinely
+  becomes the bottleneck later, an in-process LRU is the next step; a network
+  hop is the one after that, and only with signals showing it's needed.
+- **Known, deliberately unfixed: `list_chunk_texts` ignores `workspace_id`.** A
+  workspace question builds its spelling dictionary from the whole *org's* chunk
+  text. This is not a content leak — only vocabulary is derived and no chunk is
+  ever returned — but org-wide documents can influence how a workspace query is
+  spelled, which is inconsistent with the "a workspace sees only its own rows"
+  discipline everywhere else. Fixing it would change retrieval behaviour, so it
+  was left alone during a behaviour-preserving pass. Fix it deliberately, with
+  the Phase 17 regression cases re-run, not as a drive-by.
+- **The query was embedded TWICE on the common path — fixed, and the shape of
+  the bug is worth remembering.** `_run` embeds the normalized question up front
+  (it needs the vector for the Phase 8 reuse check), then, when the question is
+  *not* decomposed, `_retrieve_for_subquestions` unconditionally embedded
+  `sub_questions[0]` — the identical string. A single BGE-M3 encode measures
+  **~38ms** locally, the most expensive CPU step on the query path, so this was
+  ~38ms of pure duplicate work on every non-decomposed question. Fixed by
+  threading a `known_vectors` map through, keyed **by text** so a mismatched or
+  stale vector can never be picked up (a miss just embeds as before). Proven by
+  counting `embed()` calls across one question: **2 → 1**, same answer, same
+  `top_score`. The general lesson: a value computed for one purpose (the reuse
+  check) and silently recomputed for another is invisible in any single
+  function — only call-counting across the whole request finds it.
+- **HNSW behaves correctly at BOTH scales — measured, and two suspected defects
+  did not reproduce.** Worth recording so nobody "fixes" a non-problem.
+  (1) At small corpus size (400 chunks) the planner **ignores** the HNSW index
+  and does a bitmap scan on `(org_id, workspace_id)` + top-N sort — 4.5ms. That
+  looks alarming but is *correct and better*: brute force at that size is fast
+  and gives **exact** nearest neighbours, where HNSW is approximate.
+  (2) At 20k chunks the planner switches to `Index Scan using
+  idx_chunks_embedding` — 2.3ms. So it picks the right strategy on its own.
+  (3) The real multi-tenant fear — HNSW post-filtering causing a *small* org in
+  a large shared table to silently get back fewer than `top_k` chunks — was
+  tested directly (30k chunks for one org, 40 for another, query the small one)
+  and **did not reproduce**: it returned the full 30, with and without
+  `hnsw.iterative_scan`. Re-run that probe before assuming otherwise.
+  **Do not force HNSW usage at small scale to "use the index"** — that would
+  trade exact results for approximate ones, i.e. a functional change.
+- **A composite `(org_id, workspace_id)` index on `chunks` was considered and
+  NOT added.** The EXPLAIN shows two bitmap index scans `BitmapAnd`-ed, which
+  looks like the textbook case for one composite index — but measured, that step
+  costs ~0.03ms of a 4.5ms query. The cost is entirely the distance sort. Adding
+  an index for 0.7% of a query's time is maintenance and write-amplification for
+  nothing; revisit only if a profile shows the filter, not the sort, dominating.
 - **The reranker downloads ~2.2GB on first use** (`bge-reranker-v2-m3`), then is
   cached; inference is ~0.3s for 30 candidates after warmup. Swap to
   `bge-reranker-base` / `cross-encoder/ms-marco-MiniLM-L-6-v2` via `RERANKER_MODEL`
@@ -1093,7 +1321,7 @@ Defined in `app/db/schema.sql`. Current tables:
 | `conversation_last_retrieval` | (Phase 8) The chunks retrieved on a conversation's most recent turn, for the pre-retrieval reuse check. One upserted row per conversation: `conversation_id` (PK), `org_id`, `chunks` (TEXT holding a JSON array of `{content, document_id, chunk_index, org_id}` — no embeddings), `updated_at`. |
 | `users` | (Phase 10) An application user. `id`, `email` (UNIQUE), `org_id` (nullable — but never issued a session while null), `role` (`admin`\|`member`), `created_at`. Phase 21: `sessions_revoked_at` — sessions with JWT `iat` ≤ this timestamp are rejected. |
 | `oauth_connections` | (Phase 10) One org's OAuth credential for one provider. `id`, `org_id`, `provider`, `external_workspace_id`, `external_workspace_name`, `access_token_encrypted`, `refresh_token_encrypted`, `expires_at`, `connected_by_user_id`, `created_at`. `UNIQUE (org_id, provider)` — one row per org per provider, so a lookup can never be cross-tenant-ambiguous. Tokens are encrypted via `app/security/crypto.py`; this table never stores plaintext. Google Integration: optional **`source_config` JSONB** (e.g. `{folder_id, folder_name}`) — preserved on reconnect (upsert does not clobber it). |
-| `ingestion_jobs` | (Phase 10/12) A durable, pollable record of an admin-triggered fetch→chunk→embed→store run. `id`, `org_id`, `connection_id`, `status` (`queued`\|`running`\|`succeeded`\|`failed`), `doc_count`, `error`, `started_at`, `finished_at`, `created_at`. Consumed by a Postgres-backed worker (`SELECT ... FOR UPDATE SKIP LOCKED`), not an in-process background task. |
+| `ingestion_jobs` | (Phase 10/12) A durable, pollable record of an admin-triggered fetch→chunk→embed→store run. `id`, `org_id`, `connection_id`, `status` (`queued`\|`running`\|`succeeded`\|`failed`), `doc_count`, `error`, `started_at`, `finished_at`, `created_at`. Consumed by a Postgres-backed worker (`SELECT ... FOR UPDATE SKIP LOCKED`), not an in-process background task. Live progress: `phase` (`listing`\|`indexing`), `total_documents`, `processed_documents` — written *during* the run, unlike `doc_count` which is the terminal figure; they are what let a poller distinguish a working sync from a hung one (see §4). Added via `ALTER TABLE ... ADD COLUMN` placed **after** this table's own `CREATE TABLE`, same ordering rule as `workspace_id`. |
 | `magic_link_tokens` | (Phase 13) Single-use employee login tokens. `token_hash` (PK — only a SHA-256 hash is ever stored, never the token), `email`, `expires_at`, `consumed_at`, `created_at`. |
 | `oauth_states` | (Phase 13) Single-use, server-side OAuth `state` values for CSRF/replay protection on the admin connect flow. `state` (PK), `org_id`, `provider`, `expires_at`, `consumed_at`, `created_at`. |
 | `query_answer_cache` | (Phase 19) Short-TTL cache of standalone Q→A results keyed by `(org_id, normalized_question_hash)`. Workspace-within-a-Workspace: the hash input folds in `workspace_id` (no new column) so an org-wide and a workspace's cache entry for the same question text never collide. |
@@ -1504,9 +1732,29 @@ genuinely fresh database, not an already-migrated one.
 
 **Backlog (deliberately unscheduled this round — do not drop silently):**
 - HNSW index build/query parameter tuning (`m`, `ef_construction`, `ef_search`) —
-  matters at corpus scale not yet reached.
+  matters at corpus scale not yet reached. **Partly retired by measurement**
+  (see §4's "HNSW behaves correctly at both scales") — the two specific fears
+  behind this item (index never used; small tenant under-returning in a large
+  shared table) were both tested and did not reproduce. What remains is genuine
+  *tuning* (recall/latency trade-offs at scale), not a suspected defect.
 - LLM provider-level prompt caching for the large fixed grounded-prompt prefix —
-  lower priority next to query-result cache (Phase 19).
+  **no longer "lower priority": measured, and it is the largest remaining
+  per-question cost on the wire.** The grounded prompt is **2,319 tokens for a
+  typical 5-chunk question, of which 2,219 (96%) is fixed instruction
+  scaffold** — the retrieved context is ~100 tokens. Two useful facts fall out
+  of that. (1) The prompt is **already ordered optimally for caching**: 98% of
+  the string is a byte-identical prefix across different questions, because
+  CONTEXT and QUESTION are appended last. So enabling provider caching needs
+  *no restructuring* — it is a provider/model capability question, not a code
+  change. Keep it that way: never move CONTEXT or QUESTION earlier in the
+  prompt, or the cacheable prefix collapses. (2) The alternative lever,
+  compressing the scaffold, is **deliberately not attempted** — every rule in
+  it was added to fix a specific observed failure (meta-language leakage,
+  invented conclusions, citation markers reaching the reader, MODE-tag
+  parsing), so trimming it is a grounding risk, and it cannot currently be
+  validated because the golden set needs a working LLM quota (see the 15 rpm
+  finding in §4). Fix the quota first, then compress against the golden set —
+  not the other way round.
 
 **Google Drive/Docs integration (on `feature/google-integration`).** Second
 external source alongside Notion — Phases 1–7 of `GOOGLE_INTEGRATION_PLAN.md`:

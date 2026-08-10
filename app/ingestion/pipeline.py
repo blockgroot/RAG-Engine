@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Callable
 
 from ..config.settings import ChunkingSettings, ContextualSettings
 from ..embeddings import build_embedding_provider
@@ -24,6 +25,12 @@ from ..llm.base import LLMProvider
 from ..sources.base import SourceAdapter, SourceRef
 from ..vectorstore import build_vector_store
 from ..vectorstore.base import VectorStore
+
+
+# (phase, processed, total) -> None. Reported as each document finishes so a
+# caller (the job worker) can persist live progress; the pipeline itself stays
+# storage-agnostic and never imports app/jobs.
+ProgressCallback = Callable[[str, int, int], None]
 
 
 def _aware(dt: datetime | None) -> datetime | None:
@@ -61,6 +68,8 @@ class IngestResult:
     chunks_stored: int = 0
     documents_skipped: int = 0  # fetched but had no usable text
     document_ids: list[str] = field(default_factory=list)
+    # External ids written this run — used by deferred contextual enrich.
+    ingested_external_ids: list[str] = field(default_factory=list)
 
 
 def detect_source_changes(
@@ -154,6 +163,7 @@ def ingest_source(
     contextual: ContextualSettings | None = None,
     incremental: bool = True,
     workspace_id: str | None = None,
+    on_progress: ProgressCallback | None = None,
 ) -> IngestResult:
     """Ingest documents from ``adapter`` into ``org_id``.
 
@@ -176,9 +186,22 @@ def ingest_source(
     embedder = embedder or build_embedding_provider()
     store = store or build_vector_store()
     contextual = contextual or ContextualSettings.from_env()
-    if contextual.enabled and llm is None:
+    # Inline contextualize only when enabled AND not deferred. Deferred mode
+    # embeds raw chunks here so sync can finish; enrich runs after success.
+    apply_contextual_inline = contextual.enabled and not contextual.defer
+    if apply_contextual_inline and llm is None:
         llm = build_aux_llm_provider()
 
+    def report(phase: str, processed: int, total: int) -> None:
+        """Surface progress without letting observability break the run."""
+        if on_progress is None:
+            return
+        try:
+            on_progress(phase, processed, total)
+        except Exception:  # noqa: BLE001 - a progress sink must never fail ingestion
+            pass
+
+    report("listing", 0, 0)
     refs = adapter.list_documents()
     stored = {
         d.external_id: d
@@ -203,10 +226,20 @@ def ingest_source(
     chunks_total = 0
     skipped = 0
     doc_ids: list[str] = []
+    ingested_external_ids: list[str] = []
     added_n = 0
     updated_n = 0
 
-    for ref, is_update in [(r, False) for r in to_add] + [(r, True) for r in to_update]:
+    work = [(r, False) for r in to_add] + [(r, True) for r in to_update]
+    total_work = len(work)
+    # Report before the first page so the UI is not stuck on "listing" while
+    # we fetch/contextualize/embed page 1 (that used to look like a hang at 0/N).
+    report("preparing", 0, total_work)
+
+    for done, (ref, is_update) in enumerate(work, start=1):
+        # processed stays at done-1 until this page is fully stored — but phase
+        # advances so pollers can see movement inside a long document.
+        report("preparing", done - 1, total_work)
         doc = adapter.fetch_document(ref.external_id)
         clean = preprocess(sanitize_ingest_text(doc.content))
         chunks = chunk_text(clean, chunking)
@@ -222,11 +255,16 @@ def ingest_source(
                 workspace_id=workspace_id,
             )
             skipped += 1
+            report("indexing", done, total_work)
             continue
 
-        if contextual.enabled and llm is not None:
-            chunks = contextualize_chunks(llm, clean, chunks, org_id=org_id)
+        if apply_contextual_inline and llm is not None:
+            report("contextualizing", done - 1, total_work)
+            chunks = contextualize_chunks(
+                llm, clean, chunks, org_id=org_id, concurrency=contextual.concurrency
+            )
 
+        report("embedding", done - 1, total_work)
         embeddings = embedder.embed(chunks)
         document_id = store.upsert_source_document(
             org_id,
@@ -240,11 +278,13 @@ def ingest_source(
             workspace_id=workspace_id,
         )
         doc_ids.append(document_id)
+        ingested_external_ids.append(doc.external_id)
         chunks_total += len(chunks)
         if is_update:
             updated_n += 1
         else:
             added_n += 1
+        report("indexing", done, total_work)
 
     return IngestResult(
         documents_ingested=added_n + updated_n,
@@ -255,4 +295,75 @@ def ingest_source(
         chunks_stored=chunks_total,
         documents_skipped=skipped,
         document_ids=doc_ids,
+        ingested_external_ids=ingested_external_ids,
     )
+
+
+def enrich_source_contextual(
+    adapter: SourceAdapter,
+    org_id: str,
+    *,
+    provider: str,
+    external_ids: list[str],
+    embedder: EmbeddingProvider | None = None,
+    store: VectorStore | None = None,
+    chunking: ChunkingSettings | None = None,
+    llm: LLMProvider | None = None,
+    contextual: ContextualSettings | None = None,
+    workspace_id: str | None = None,
+    on_progress: ProgressCallback | None = None,
+) -> int:
+    """Re-apply contextual retrieval to pages already stored by a fast sync.
+
+    Best-effort: failures on one page skip that page and continue. Returns how
+    many pages were successfully re-embedded with context prefixes. Does not
+    change sync bookkeeping (last_modified already set by the fast pass).
+    """
+    if not external_ids:
+        return 0
+    contextual = contextual or ContextualSettings.from_env()
+    if not contextual.enabled:
+        return 0
+    embedder = embedder or build_embedding_provider()
+    store = store or build_vector_store()
+    llm = llm or build_aux_llm_provider()
+
+    def report(phase: str, processed: int, total: int) -> None:
+        if on_progress is None:
+            return
+        try:
+            on_progress(phase, processed, total)
+        except Exception:  # noqa: BLE001
+            pass
+
+    total = len(external_ids)
+    enriched = 0
+    report("enriching", 0, total)
+    for i, external_id in enumerate(external_ids, start=1):
+        try:
+            doc = adapter.fetch_document(external_id)
+            clean = preprocess(sanitize_ingest_text(doc.content))
+            chunks = chunk_text(clean, chunking)
+            if not chunks:
+                report("enriching", i, total)
+                continue
+            chunks = contextualize_chunks(
+                llm, clean, chunks, org_id=org_id, concurrency=contextual.concurrency
+            )
+            embeddings = embedder.embed(chunks)
+            store.upsert_source_document(
+                org_id,
+                provider=provider,
+                external_id=doc.external_id,
+                title=doc.title,
+                chunks=chunks,
+                embeddings=embeddings,
+                source_uri=doc.source_uri,
+                last_modified=doc.last_modified,
+                workspace_id=workspace_id,
+            )
+            enriched += 1
+        except Exception:  # noqa: BLE001 - one bad page must not abort enrich
+            pass
+        report("enriching", i, total)
+    return enriched

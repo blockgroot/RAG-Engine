@@ -100,7 +100,7 @@ export function AppShell({
         <Link href={homeHref} className="brand">
           <span className="brand-mark" aria-hidden />
           <span className="brand-text">
-            <span className="brand-name">Folio</span>
+            <span className="brand-name">Handbook</span>
             <span className="brand-tag">Work answers, grounded</span>
           </span>
         </Link>

@@ -207,16 +207,27 @@ def test_refresh_scope_never_touches_another_orgs_connection(
 
 
 @requires_db
-def test_github_cannot_be_connected_to_a_workspace(client, store, org_cleanup):
-    """Org-level only — enforced server-side, not just hidden in the UI.
+def test_a_workspace_owner_may_connect_github(client, store, org_cleanup, monkeypatch):
+    """REVERSED, deliberately and on request.
 
-    A workspace-scoped GitHub connection would mean repo-level access control
-    inside an org, which is an explicit non-goal (nothing else in this system
-    has a scoping layer between org and individual member).
+    This test previously asserted a 400: workspace-scoped GitHub was an explicit
+    non-goal, because a per-workspace repo subset introduces repo-level access
+    control inside an org — a dimension nothing else in this system has. That
+    decision was overturned, so the assertion is inverted rather than deleted, to
+    keep the reversal visible in the history.
+
+    What makes it safe is enforced elsewhere and tested in
+    ``tests/test_github_workspace_scope.py``: a workspace's GitHub answers come
+    from that workspace's OWN installation, and a workspace with no GitHub
+    connection never falls back to the org-wide one.
     """
     from app.workspaces import create_workspace
 
-    org_id = store.create_organization(f"GH WS Guard Org {uuid.uuid4().hex[:8]}")
+    monkeypatch.setenv("GITHUB_APP_SLUG", "acme-rag")
+    monkeypatch.setenv("GITHUB_CLIENT_ID", "Iv1.abc123")
+    monkeypatch.setenv("GITHUB_CLIENT_SECRET", "s3cret")
+
+    org_id = store.create_organization(f"GH WS Connect Org {uuid.uuid4().hex[:8]}")
     org_cleanup.append(org_id)
     owner = create_admin(f"owner-{uuid.uuid4().hex[:8]}@example.com", org_id)
     workspace_id = create_workspace(org_id, "Personal Notes", owner.id)
@@ -228,8 +239,8 @@ def test_github_cannot_be_connected_to_a_workspace(client, store, org_cleanup):
         follow_redirects=False,
     )
 
-    assert response.status_code == 400
-    assert "organization level" in response.json()["detail"]
+    assert response.status_code in (302, 307)
+    assert "login/oauth/authorize" in response.headers["location"]
 
 
 @requires_db

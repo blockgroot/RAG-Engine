@@ -12,11 +12,22 @@ def test_github_suggestions_use_connected_repo_names_only():
         {"full_name": "18sana/SaveNServe", "description": None},
     ]
     qs = build_github_suggestions(repos)
-    assert qs
+    assert len(qs) == 4
     assert all("payments" not in q.lower() for q in qs)
     assert any("RAG" in q for q in qs)
     assert any("Fact-Verification-Engine" in q for q in qs)
-    assert len(qs) <= 4
+
+
+def test_github_suggestions_fill_four_chips_with_one_repo():
+    qs = build_github_suggestions(
+        [{"full_name": "18-sana/Chain-Guard", "description": "Security checks"}]
+    )
+    assert len(qs) == 4
+    assert all("Chain-Guard" in q for q in qs)
+    assert any("repository do" in q for q in qs)
+    assert any("changed recently" in q for q in qs)
+    assert any("run" in q and "locally" in q for q in qs)
+    assert any("README" in q for q in qs)
 
 
 def test_github_suggestions_empty_without_repos():
@@ -26,10 +37,21 @@ def test_github_suggestions_empty_without_repos():
 
 def test_policy_suggestions_use_document_titles():
     qs = build_policy_suggestions(["Leave Policy", "Remote Work Guide", "Benefits"])
-    assert len(qs) == 3
+    assert len(qs) == 4
     assert any("Leave Policy" in q for q in qs)
     assert any("Remote Work Guide" in q for q in qs)
+    assert any("Benefits" in q for q in qs)
     assert not any("maternity" in q.lower() for q in qs)
+
+
+def test_policy_suggestions_fill_four_chips_with_one_document():
+    qs = build_policy_suggestions(["Flayer Sync Meeting Notes"])
+    assert len(qs) == 4
+    assert all("Flayer Sync Meeting Notes" in q for q in qs)
+    assert any("cover" in q for q in qs)
+    assert any("key rules" in q for q in qs)
+    assert any("Summarize" in q for q in qs)
+    assert any("should I know" in q for q in qs)
 
 
 def test_policy_suggestions_empty_without_titles():

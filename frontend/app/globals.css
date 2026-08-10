@@ -1,12 +1,12 @@
 /*
-  Aesthetic: "Folio Depth" — Soft UI Evolution + dimensional layering
+  Aesthetic: "Handbook Depth" — Soft UI Evolution + dimensional layering
   (ui-ux-pro-max). Enterprise Work AI clarity with illustrated empty states,
   product mock, and purposeful motion. Display: Plus Jakarta Sans · teal accent.
 */
 
 :root {
-  --font-display: var(--font-folio), "Avenir Next", "Segoe UI", sans-serif;
-  --font-body: var(--font-folio), "Avenir Next", "Segoe UI", sans-serif;
+  --font-display: var(--font-brand), "Avenir Next", "Segoe UI", sans-serif;
+  --font-body: var(--font-brand), "Avenir Next", "Segoe UI", sans-serif;
   --font-ui-fallback: "Avenir Next", "Segoe UI", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
@@ -57,7 +57,7 @@ html, body {
   margin: 0;
   padding: 0;
   color: var(--ink);
-  font-family: var(--font-folio), var(--font-body), var(--font-ui-fallback);
+  font-family: var(--font-brand), var(--font-body), var(--font-ui-fallback);
   overflow-x: hidden;
 }
 
@@ -100,7 +100,7 @@ button:focus:not(:focus-visible) {
 }
 
 h1, h2, h3 {
-  font-family: var(--font-folio), var(--font-display), var(--font-ui-fallback);
+  font-family: var(--font-brand), var(--font-display), var(--font-ui-fallback);
   font-weight: 650;
   letter-spacing: -0.03em;
   margin: 0;
@@ -158,7 +158,7 @@ button { font-family: inherit; }
 }
 .brand-text { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
 .brand-name {
-  font-family: var(--font-folio), var(--font-display), var(--font-ui-fallback);
+  font-family: var(--font-brand), var(--font-display), var(--font-ui-fallback);
   font-weight: 650;
   font-size: 1.05rem;
   letter-spacing: -0.02em;
@@ -361,6 +361,20 @@ button { font-family: inherit; }
   justify-content: space-between;
   align-items: flex-start;
   gap: 0.75rem;
+  min-width: 0; /* grid child must shrink so title wraps beside badge */
+}
+.workspace-tile-top h3 {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  font-size: 1.08rem;
+  letter-spacing: -0.02em;
+  overflow-wrap: anywhere;
+  line-height: 1.3;
+}
+.workspace-tile-top .badge {
+  flex: 0 0 auto;
+  align-self: flex-start;
 }
 .workspace-tile h3 {
   font-size: 1.08rem;
@@ -582,6 +596,11 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+.chat-scroll-anchor {
+  width: 1px;
+  height: 1px;
+  flex-shrink: 0;
 }
 .chat-log {
   flex: 1;
@@ -939,6 +958,53 @@ table .role-chip.role-admin,
   position: relative;
   z-index: 1;
 }
+
+.connect-notice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.55rem;
+  text-align: left;
+}
+.connect-notice-title {
+  margin: 0;
+  font-weight: 700;
+  font-size: 0.98rem;
+  color: var(--ink);
+}
+.connect-notice-why {
+  margin: 0;
+  color: var(--ink-muted);
+  line-height: 1.5;
+  max-width: 42rem;
+}
+.connect-notice-label {
+  margin: 0.25rem 0 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+.connect-notice-options {
+  margin: 0;
+  padding-left: 1.25rem;
+  display: grid;
+  gap: 0.45rem;
+  max-width: 42rem;
+  color: var(--ink);
+  line-height: 1.45;
+}
+.connect-notice-options li::marker {
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+.connect-notice-dismiss {
+  margin-top: 0.35rem;
+  align-self: flex-start;
+}
+
+
 .invite-form .banner {
   margin: 0;
   position: relative;
@@ -985,6 +1051,21 @@ table .role-chip.role-admin,
   animation: sync-spin 0.8s linear infinite;
 }
 @keyframes sync-spin { to { transform: rotate(360deg); } }
+
+/* Determinate progress for a sync, shown only once the page count is known. */
+.sync-progress {
+  margin-top: 0.6rem;
+  height: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  overflow: hidden;
+}
+.sync-progress-bar {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.4s ease;
+}
 
 .waiting-card { max-width: 480px; margin-top: var(--space-4); }
 .pulse-dot {
@@ -1954,7 +2035,8 @@ table .role-chip.role-admin,
 .auth-v2-card-head .muted { line-height: 1.55; }
 .auth-v2-submit {
   width: 100%; justify-content: center; border-radius: 999px; padding: 0.95rem 1.2rem;
-  margin-top: 0.25rem;
+  /* Keep clear air under the email field — 0.25rem used to override .stack spacing. */
+  margin-top: 1.15rem;
 }
 .auth-v2-success { gap: 0.75rem; }
 .auth-v2-success-icon {
@@ -2530,7 +2612,7 @@ table .role-chip.role-admin,
   background: linear-gradient(145deg, #14b8a6, var(--accent-strong));
   box-shadow: 0 10px 20px -12px rgba(15, 118, 110, 0.7);
 }
-.workspace-tile-top { grid-column: 2; align-items: flex-start; }
+.workspace-tile-top { grid-column: 2; min-width: 0; align-items: flex-start; }
 .workspace-tile-cta {
   grid-column: 2;
   font-weight: 700;
@@ -2651,4 +2733,70 @@ table .role-chip.role-admin,
   .ps-arc, .studio-empty-mark, .studio-skeleton {
     animation: none !important;
   }
+}
+
+/* ── "No account for that email" ──────────────────────────────────────────
+   Distinct from both success and error: nothing went wrong, the person simply
+   is not set up yet. Uses the warning/fallback hue rather than the destructive
+   one, and leads with actions instead of an apology.
+*/
+.auth-v2-notfound {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  text-align: left;
+  gap: 0.85rem;
+  width: 100%;
+}
+.auth-v2-notfound > * + * {
+  margin-top: 0;
+}
+.auth-v2-notfound-headline {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  width: 100%;
+  text-align: left;
+}
+.auth-v2-notfound-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 2.35rem;
+  height: 2.35rem;
+  border-radius: 50%;
+  color: var(--provenance-none);
+  background: color-mix(in srgb, var(--provenance-none) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--provenance-none) 28%, transparent);
+}
+.auth-v2-notfound-title {
+  margin: 0;
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.auth-v2-notfound-copy {
+  margin: 0;
+  text-align: left;
+  line-height: 1.5;
+}
+.auth-v2-notfound-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  justify-content: stretch;
+  align-items: stretch;
+  width: 100%;
+  margin-top: 0.15rem;
+}
+.auth-v2-notfound-actions > * {
+  flex: 1 1 10rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.85rem;
+  text-align: center;
+  white-space: normal;
 }

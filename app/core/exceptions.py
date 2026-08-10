@@ -25,6 +25,35 @@ class LLMProviderError(ProviderError):
     """Raised when a chat/completion call fails."""
 
 
+class LLMRateLimitError(LLMProviderError):
+    """Raised when the LLM endpoint rejects a call for quota/rate reasons (429).
+
+    Kept distinct from a generic ``LLMProviderError`` because the *correct
+    response differs*: a connection blip is worth retrying in milliseconds,
+    while a quota rejection must be retried only after the window the server
+    names — retrying a per-minute quota after 500ms simply burns another
+    request against the same exhausted budget and makes the problem worse.
+
+    Subclasses ``LLMProviderError`` deliberately, so every existing
+    ``except LLMProviderError`` site keeps working unchanged and only callers
+    that want the distinction have to care.
+
+    ``retry_after`` is the server-advertised wait in seconds when it supplies
+    one (``Retry-After`` header, or a provider-specific hint in the body),
+    otherwise ``None``.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        cause: Exception | None = None,
+        retry_after: float | None = None,
+    ) -> None:
+        super().__init__(message, cause=cause)
+        self.retry_after = retry_after
+
+
 class EmbeddingProviderError(ProviderError):
     """Raised when an embedding call fails."""
 

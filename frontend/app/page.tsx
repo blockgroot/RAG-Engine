@@ -51,7 +51,7 @@ export default function RootPage() {
       <header className="landing-topnav">
         <Link href="/" className="landing-brand">
           <span className="brand-mark" aria-hidden />
-          <span>Folio</span>
+          <span>Handbook</span>
         </Link>
         <nav className="landing-topnav-actions" aria-label="Account">
           <Link href="/login" className="landing-nav-link">
@@ -67,7 +67,7 @@ export default function RootPage() {
         <div className="landing-hero-copy">
           <p className="landing-eyebrow">Work AI that works</p>
           <h1 id="landing-title" className="landing-title">
-            Folio
+            Handbook
           </h1>
           <p className="landing-subtitle">
             Ask your company&rsquo;s policies and code — answers stay grounded in
@@ -90,7 +90,7 @@ export default function RootPage() {
         <LandingProductArt />
       </section>
 
-      <section className="landing-strip" aria-label="How Folio helps">
+      <section className="landing-strip" aria-label="How Handbook helps">
         <div className="landing-strip-item">
           <span className="landing-strip-icon" aria-hidden>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none">

@@ -56,6 +56,7 @@ DEFAULT_GITHUB_FALLBACK_RESPONSE = (
 # Connection-pool sizing for the Postgres backing store.
 DEFAULT_DB_POOL_MIN_SIZE = 1
 DEFAULT_DB_POOL_MAX_SIZE = 10
+DEFAULT_KEYWORD_CANDIDATE_LIMIT = 2000   # rows BM25 may rank for one query
 
 # External content sources (Phase 4). Only "notion" exists so far.
 DEFAULT_SOURCE_TYPE = "notion"
@@ -70,7 +71,10 @@ DEFAULT_MEMORY_RECENT_TURNS = 3
 # Retrieval improvements (Phase 6): contextual retrieval (ingest-time),
 # hybrid search + cross-encoder reranking (query-time). See app/rag/retrieval.py
 # and CLAUDE.md §2/§4 for the reasoning behind each value.
-DEFAULT_CONTEXTUAL_ENABLED = True          # prepend LLM context to each chunk at ingest
+DEFAULT_CONTEXTUAL_ENABLED = True          # keep the Phase 6 quality path
+DEFAULT_CONTEXTUAL_DEFER = True            # run it AFTER sync succeeds (no onboarding stall)
+DEFAULT_CONTEXTUAL_CONCURRENCY = 2         # background enrich; keep low vs 15 RPM free endpoints
+DEFAULT_EMBED_BATCH_SIZE = 16              # encode in batches (avoids OOM on large docs)
 DEFAULT_RETRIEVAL_HYBRID_ENABLED = True    # fuse vector + keyword (BM25-style) search
 DEFAULT_RETRIEVAL_RERANK_ENABLED = True    # cross-encoder rerank of the candidate pool
 DEFAULT_RETRIEVAL_CANDIDATE_POOL = 16      # how many candidates to fetch/rerank before top_k
@@ -104,6 +108,10 @@ DEFAULT_QUERY_CACHE_TTL_SECONDS = 300
 # API rate limiting (Phase 21) — chat/query endpoint.
 DEFAULT_RATE_LIMIT_ENABLED = True
 DEFAULT_RATE_LIMIT_CHAT_REQUESTS = 30
+# Unauthenticated magic-link requests per IP per window. Higher than chat
+# because a whole office behind one NAT shares this bucket, but far below
+# what bulk account enumeration needs.
+DEFAULT_RATE_LIMIT_AUTH_REQUESTS = 60
 DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
 
 # Ingestion sanitization (Phase 21).
@@ -145,7 +153,18 @@ DEFAULT_API_PORT = 8000
 DEFAULT_EMAIL_SENDER = "console"
 
 
-def _env_bool(name: str, default: bool) -> bool:
+def _env_positive_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def env_bool(name: str, default: bool) -> bool:
     raw = os.getenv(name)
     if raw is None:
         return default
@@ -191,6 +210,8 @@ class EmbeddingSettings:
     - ``model``    embedding model id
     - ``device``   optional device for the local backend (cpu/cuda/mps)
     - ``api_key`` / ``base_url``  used only by the remote backend
+    - ``batch_size``  encode at most this many texts per ``encode`` call so a
+      long document (dozens of chunks) cannot OOM the local model in one shot
     """
 
     backend: str
@@ -199,6 +220,7 @@ class EmbeddingSettings:
     api_key: str | None
     base_url: str | None
     timeout: float = DEFAULT_TIMEOUT
+    batch_size: int = DEFAULT_EMBED_BATCH_SIZE
 
     @classmethod
     def from_env(cls) -> "EmbeddingSettings":
@@ -209,6 +231,9 @@ class EmbeddingSettings:
             api_key=os.getenv("EMBEDDING_API_KEY"),
             base_url=os.getenv("EMBEDDING_BASE_URL"),
             timeout=float(os.getenv("EMBEDDING_TIMEOUT") or DEFAULT_TIMEOUT),
+            batch_size=max(
+                1, int(os.getenv("EMBED_BATCH_SIZE") or DEFAULT_EMBED_BATCH_SIZE)
+            ),
         )
 
 
@@ -226,6 +251,11 @@ class DatabaseSettings:
     embedding_dim: int = DEFAULT_EMBEDDING_DIM
     pool_min_size: int = DEFAULT_DB_POOL_MIN_SIZE
     pool_max_size: int = DEFAULT_DB_POOL_MAX_SIZE
+    # Ceiling on rows the keyword (BM25) search pulls back for one query. The
+    # query was previously unbounded, so a common term's cost grew with the
+    # corpus. Set high enough to be a no-op at realistic sizes; see
+    # ``PgVectorStore.keyword_search`` for what changes past it.
+    keyword_candidate_limit: int = DEFAULT_KEYWORD_CANDIDATE_LIMIT
 
     @classmethod
     def from_env(cls) -> "DatabaseSettings":
@@ -234,6 +264,9 @@ class DatabaseSettings:
             embedding_dim=int(os.getenv("EMBEDDING_DIM") or DEFAULT_EMBEDDING_DIM),
             pool_min_size=int(os.getenv("DB_POOL_MIN_SIZE") or DEFAULT_DB_POOL_MIN_SIZE),
             pool_max_size=int(os.getenv("DB_POOL_MAX_SIZE") or DEFAULT_DB_POOL_MAX_SIZE),
+            keyword_candidate_limit=_env_positive_int(
+                "KEYWORD_CANDIDATE_LIMIT", DEFAULT_KEYWORD_CANDIDATE_LIMIT
+            ),
         )
 
 
@@ -622,7 +655,7 @@ class ReuseSettings:
     @classmethod
     def from_env(cls) -> "ReuseSettings":
         return cls(
-            enabled=_env_bool("RETRIEVAL_REUSE_ENABLED", DEFAULT_RETRIEVAL_REUSE_ENABLED),
+            enabled=env_bool("RETRIEVAL_REUSE_ENABLED", DEFAULT_RETRIEVAL_REUSE_ENABLED),
             threshold=float(
                 os.getenv("RETRIEVAL_REUSE_THRESHOLD") or DEFAULT_RETRIEVAL_REUSE_THRESHOLD
             ),
@@ -652,7 +685,7 @@ class RecoverySettings:
     @classmethod
     def from_env(cls) -> "RecoverySettings":
         return cls(
-            enabled=_env_bool("RECOVERY_ENABLED", DEFAULT_RECOVERY_ENABLED),
+            enabled=env_bool("RECOVERY_ENABLED", DEFAULT_RECOVERY_ENABLED),
             max_queries=int(os.getenv("RECOVERY_MAX_QUERIES") or DEFAULT_RECOVERY_MAX_QUERIES),
         )
 
@@ -671,7 +704,7 @@ class DecomposeSettings:
     @classmethod
     def from_env(cls) -> "DecomposeSettings":
         return cls(
-            enabled=_env_bool("DECOMPOSE_ENABLED", DEFAULT_DECOMPOSE_ENABLED),
+            enabled=env_bool("DECOMPOSE_ENABLED", DEFAULT_DECOMPOSE_ENABLED),
         )
 
 
@@ -704,7 +737,7 @@ class QueryCacheSettings:
     @classmethod
     def from_env(cls) -> "QueryCacheSettings":
         return cls(
-            enabled=_env_bool("QUERY_CACHE_ENABLED", DEFAULT_QUERY_CACHE_ENABLED),
+            enabled=env_bool("QUERY_CACHE_ENABLED", DEFAULT_QUERY_CACHE_ENABLED),
             ttl_seconds=int(os.getenv("QUERY_CACHE_TTL_SECONDS") or DEFAULT_QUERY_CACHE_TTL_SECONDS),
         )
 
@@ -715,14 +748,23 @@ class RateLimitSettings:
 
     enabled: bool = DEFAULT_RATE_LIMIT_ENABLED
     chat_requests_per_window: int = DEFAULT_RATE_LIMIT_CHAT_REQUESTS
+    # Separate budget for the unauthenticated magic-link endpoint. It must NOT
+    # share the chat limit: chat is per-org and per-session, this is per-IP with
+    # no session at all, so a whole office behind one NAT shares a single
+    # bucket. Sized to bound bulk account enumeration (see app/api/auth.py)
+    # while leaving room for everyone in a company to sign in at once.
+    auth_requests_per_window: int = DEFAULT_RATE_LIMIT_AUTH_REQUESTS
     window_seconds: int = DEFAULT_RATE_LIMIT_WINDOW_SECONDS
 
     @classmethod
     def from_env(cls) -> "RateLimitSettings":
         return cls(
-            enabled=_env_bool("RATE_LIMIT_ENABLED", DEFAULT_RATE_LIMIT_ENABLED),
+            enabled=env_bool("RATE_LIMIT_ENABLED", DEFAULT_RATE_LIMIT_ENABLED),
             chat_requests_per_window=int(
                 os.getenv("RATE_LIMIT_CHAT_REQUESTS") or DEFAULT_RATE_LIMIT_CHAT_REQUESTS
+            ),
+            auth_requests_per_window=int(
+                os.getenv("RATE_LIMIT_AUTH_REQUESTS") or DEFAULT_RATE_LIMIT_AUTH_REQUESTS
             ),
             window_seconds=int(
                 os.getenv("RATE_LIMIT_WINDOW_SECONDS") or DEFAULT_RATE_LIMIT_WINDOW_SECONDS
@@ -769,7 +811,7 @@ class QueryNormSettings:
     @classmethod
     def from_env(cls) -> "QueryNormSettings":
         return cls(
-            enabled=_env_bool("QUERY_NORM_ENABLED", DEFAULT_QUERY_NORM_ENABLED),
+            enabled=env_bool("QUERY_NORM_ENABLED", DEFAULT_QUERY_NORM_ENABLED),
             max_edit_distance=int(
                 os.getenv("QUERY_NORM_MAX_EDIT_DISTANCE")
                 or DEFAULT_QUERY_NORM_MAX_EDIT_DISTANCE
@@ -802,7 +844,7 @@ class WebSearchSettings:
     @classmethod
     def from_env(cls) -> "WebSearchSettings":
         return cls(
-            enabled=_env_bool("WEB_SEARCH_ENABLED", DEFAULT_WEB_SEARCH_ENABLED),
+            enabled=env_bool("WEB_SEARCH_ENABLED", DEFAULT_WEB_SEARCH_ENABLED),
             provider=(os.getenv("WEB_SEARCH_PROVIDER") or DEFAULT_WEB_SEARCH_PROVIDER).lower(),
             api_key=os.getenv("WEB_SEARCH_API_KEY"),
             max_results=int(os.getenv("WEB_SEARCH_MAX_RESULTS") or DEFAULT_WEB_SEARCH_MAX_RESULTS),
@@ -816,13 +858,30 @@ class ContextualSettings:
 
     When enabled, a short LLM-generated context is prepended to each chunk before
     it is embedded and stored, so the chunk carries its surrounding meaning.
+
+    ``defer`` (default **on**): sync first embeds raw chunks and marks the job
+    succeeded so onboarding/chat unlock immediately; contextualize + re-embed
+    then runs in the worker as a best-effort ``enriching`` phase. That keeps the
+    Phase 6 quality intent without free-tier Gemini stalling users at "0 of N".
+    Set ``INGEST_CONTEXTUAL_DEFER=false`` for the old inline (blocking) behaviour.
+
+    ``concurrency`` is how many per-chunk calls run at once within one document
+    during inline or deferred enrich. Keep low (1–2) on free/metered endpoints.
     """
 
     enabled: bool = DEFAULT_CONTEXTUAL_ENABLED
+    defer: bool = DEFAULT_CONTEXTUAL_DEFER
+    concurrency: int = DEFAULT_CONTEXTUAL_CONCURRENCY
 
     @classmethod
     def from_env(cls) -> "ContextualSettings":
-        return cls(enabled=_env_bool("INGEST_CONTEXTUAL_ENABLED", DEFAULT_CONTEXTUAL_ENABLED))
+        return cls(
+            enabled=env_bool("INGEST_CONTEXTUAL_ENABLED", DEFAULT_CONTEXTUAL_ENABLED),
+            defer=env_bool("INGEST_CONTEXTUAL_DEFER", DEFAULT_CONTEXTUAL_DEFER),
+            concurrency=_env_positive_int(
+                "INGEST_CONTEXTUAL_CONCURRENCY", DEFAULT_CONTEXTUAL_CONCURRENCY
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -844,8 +903,8 @@ class RetrievalSettings:
     @classmethod
     def from_env(cls) -> "RetrievalSettings":
         return cls(
-            hybrid_enabled=_env_bool("RETRIEVAL_HYBRID_ENABLED", DEFAULT_RETRIEVAL_HYBRID_ENABLED),
-            rerank_enabled=_env_bool("RETRIEVAL_RERANK_ENABLED", DEFAULT_RETRIEVAL_RERANK_ENABLED),
+            hybrid_enabled=env_bool("RETRIEVAL_HYBRID_ENABLED", DEFAULT_RETRIEVAL_HYBRID_ENABLED),
+            rerank_enabled=env_bool("RETRIEVAL_RERANK_ENABLED", DEFAULT_RETRIEVAL_RERANK_ENABLED),
             candidate_pool=int(
                 os.getenv("RETRIEVAL_CANDIDATE_POOL") or DEFAULT_RETRIEVAL_CANDIDATE_POOL
             ),

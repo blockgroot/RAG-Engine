@@ -352,6 +352,23 @@ CREATE INDEX IF NOT EXISTS idx_ingestion_jobs_status ON ingestion_jobs (status);
 -- this ALTER would otherwise fail since the table wouldn't exist yet.
 ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
 
+-- Live progress. Without these a job is binary (queued -> running -> succeeded)
+-- and `doc_count` is only written at the very end, so every poll during a
+-- multi-minute sync returned byte-identical JSON and the UI could only spin —
+-- indistinguishable, to the person watching, from a hung sync. These columns
+-- are what make the spinner truthful. Same ALTER-after-CREATE ordering rule as
+-- `workspace_id` above.
+ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS phase TEXT;
+ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS total_documents INT;
+ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS processed_documents INT NOT NULL DEFAULT 0;
+
+-- At most one queued/running job per connection. Without this, two parallel
+-- POST /ingest calls can both pass has_active_job() and enqueue twice — the
+-- second run often re-embeds the same pages and makes Update look "stuck".
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ingestion_jobs_one_active_per_connection
+    ON ingestion_jobs (connection_id)
+    WHERE status IN ('queued', 'running');
+
 -- Single-use magic-link login tokens (Phase 13). Only a HASH of the token is
 -- stored (never the token itself), so a DB read can't be used to log in as
 -- someone. `consumed_at` makes a token single-use even if it leaks (e.g. in a
