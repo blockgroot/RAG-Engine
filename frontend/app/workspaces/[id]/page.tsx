@@ -103,19 +103,53 @@ export default function WorkspaceDetailPage() {
       const failedIds: string[] = [];
       await Promise.all(
         list.map(async (c) => {
-          // GitHub is read live and never ingested, so there is no "changed since
-          // last sync" to compute -- and the API refuses this call for it.
-          if (c.provider === "github") return;
+          // GitHub has no change-check; probe credential mint instead so
+          // needs_reauth is not refresh-list-only.
+          if (c.provider === "github") {
+            try {
+              await api.checkWorkspaceConnectionHealth(workspaceId, c.id);
+              setReauthById((prev) => ({ ...prev, [c.id]: false }));
+              setConnections((prev) =>
+                prev.map((row) =>
+                  row.id === c.id ? { ...row, needs_reauth: false, reauth_reason: null } : row
+                )
+              );
+            } catch (err) {
+              if (err instanceof ApiError && err.code === "oauth_reauth_required") {
+                setReauthById((prev) => ({ ...prev, [c.id]: true }));
+                setConnections((prev) =>
+                  prev.map((row) =>
+                    row.id === c.id
+                      ? { ...row, needs_reauth: true, reauth_reason: err.message }
+                      : row
+                  )
+                );
+              }
+            }
+            return;
+          }
           if (c.provider === "google" && !c.source_config?.folder_id) return;
           try {
             next[c.id] = await api.checkWorkspaceConnectionChanges(workspaceId, c.id);
             setReauthById((prev) => ({ ...prev, [c.id]: false }));
+            setConnections((prev) =>
+              prev.map((row) =>
+                row.id === c.id ? { ...row, needs_reauth: false, reauth_reason: null } : row
+              )
+            );
           } catch (err) {
             // Drop prior has_changes so a failed re-check after sync cannot
             // leave a sticky Update button.
             failedIds.push(c.id);
             if (err instanceof ApiError && err.code === "oauth_reauth_required") {
               setReauthById((prev) => ({ ...prev, [c.id]: true }));
+              setConnections((prev) =>
+                prev.map((row) =>
+                  row.id === c.id
+                    ? { ...row, needs_reauth: true, reauth_reason: err.message }
+                    : row
+                )
+              );
             }
           }
         })
@@ -149,6 +183,9 @@ export default function WorkspaceDetailPage() {
       .listWorkspaceConnections(workspaceId)
       .then((list) => {
         setConnections(list);
+        setReauthById(
+          Object.fromEntries(list.filter((c) => c.needs_reauth).map((c) => [c.id, true]))
+        );
         refreshChanges(list);
       })
       .catch(() => {});
@@ -201,6 +238,9 @@ export default function WorkspaceDetailPage() {
       .listWorkspaceConnections(workspaceId)
       .then((list) => {
         setConnections(list);
+        setReauthById(
+          Object.fromEntries(list.filter((c) => c.needs_reauth).map((c) => [c.id, true]))
+        );
         refreshChanges(list);
       })
       .catch(() => {});
@@ -523,7 +563,7 @@ export default function WorkspaceDetailPage() {
                     setMessage("Disconnected. Indexed docs for that source were removed.");
                     void refreshWorkspace();
                   }}
-                  needsReauth={Boolean(connection && reauthById[connection.id])}
+                  needsReauth={Boolean(connection && (connection.needs_reauth || reauthById[connection.id]))}
                   onNeedsReauth={(needed) => {
                     if (!connection) return;
                     setReauthById((prev) => ({ ...prev, [connection.id]: needed }));

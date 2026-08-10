@@ -131,6 +131,9 @@ export interface ConnectionRecord {
   created_at: string;
   /** Non-secret ingestion scope (e.g. Google Drive folder). */
   source_config?: ConnectionSourceConfig | null;
+  /** Sticky reconnect signal from the server (survives page reload). */
+  needs_reauth?: boolean;
+  reauth_reason?: string | null;
 }
 
 export interface ConnectionConfigResponse {
@@ -281,6 +284,10 @@ export const api = {
    * sync; the only thing that can drift is which repos the admin authorized on
    * GitHub's own install screen.
    */
+  checkConnectionHealth: (connectionId: string) =>
+    request<{ connection_id: string; provider: string; status: string; needs_reauth: boolean }>(
+      `/admin/connections/${connectionId}/health`
+    ),
   refreshConnectionScope: (connectionId: string) =>
     request<GitHubScopeResponse>(`/admin/connections/${connectionId}/refresh-scope`, {
       method: "POST",
@@ -349,6 +356,10 @@ export const api = {
       { method: "PUT", body: JSON.stringify({ folder_url: folderUrl }) }
     ),
   /** Workspace equivalent of refreshConnectionScope (owner-only server-side). */
+  checkWorkspaceConnectionHealth: (workspaceId: string, connectionId: string) =>
+    request<{ connection_id: string; provider: string; status: string; needs_reauth: boolean }>(
+      `/workspaces/${workspaceId}/connections/${connectionId}/health`
+    ),
   refreshWorkspaceConnectionScope: (workspaceId: string, connectionId: string) =>
     request<GitHubScopeResponse>(
       `/workspaces/${workspaceId}/connections/${connectionId}/refresh-scope`,

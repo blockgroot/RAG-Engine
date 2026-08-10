@@ -417,6 +417,11 @@ export function ConnectionCard({
       {needsReauth && connection && (
         <div className="banner banner-warn" style={{ marginTop: "0.75rem" }} role="alert">
           Access expired — reconnect {PROVIDER_LABELS[provider]} to continue.
+          {connection.reauth_reason ? (
+            <span className="muted" style={{ display: "block", marginTop: "0.35rem" }}>
+              {connection.reauth_reason}
+            </span>
+          ) : null}
         </div>
       )}
       {disconnectError && (

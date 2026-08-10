@@ -9,6 +9,11 @@ from __future__ import annotations
 from fastapi import HTTPException
 
 from ..auth import delete_connection, get_connection_config
+from ..auth.credentials import (
+    clear_needs_reauth,
+    looks_like_auth_failure,
+    mark_needs_reauth,
+)
 from ..core.exceptions import ConfigurationError, OAuthReauthRequiredError, SourceError
 from ..vectorstore import build_vector_store
 
@@ -58,20 +63,45 @@ def folder_id_changed(
     return bool(old) and old != new_folder_id
 
 
-def raise_token_http(exc: Exception) -> None:
+def raise_token_http(
+    exc: Exception,
+    *,
+    org_id: str | None = None,
+    provider: str | None = None,
+    workspace_id: str | None = None,
+) -> None:
     """Map credential failures to actionable HTTP errors (never bare 500).
 
-    ``OAuthReauthRequiredError`` → 401 with a structured detail the frontend
-    uses for a Reconnect CTA. Other config/source errors → 400.
+    ``OAuthReauthRequiredError`` and auth-shaped ``SourceError`` (Notion 401,
+    invalid_grant, …) → 401 with ``oauth_reauth_required`` so the frontend can
+    show Reconnect. Also sticks ``needs_reauth`` on the connection row when
+    org/provider are known, so the flag survives a page reload.
+    Other config/source errors → 400.
     """
-    if isinstance(exc, OAuthReauthRequiredError):
+    auth_exc: Exception = exc
+    if isinstance(exc, SourceError) and looks_like_auth_failure(exc):
+        auth_exc = OAuthReauthRequiredError(
+            "This connection's access has expired or been revoked; reconnect "
+            "it to continue.",
+            cause=exc,
+        )
+    if isinstance(auth_exc, OAuthReauthRequiredError):
+        if org_id and provider:
+            mark_needs_reauth(org_id, provider, workspace_id, str(auth_exc))
         raise HTTPException(
             status_code=401,
             detail={
                 "code": "oauth_reauth_required",
-                "message": str(exc),
+                "message": str(auth_exc),
             },
         ) from exc
     if isinstance(exc, (ConfigurationError, SourceError)):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     raise exc
+
+
+def note_live_success(
+    org_id: str, provider: str, *, workspace_id: str | None = None
+) -> None:
+    """Clear sticky reauth after a successful live provider call."""
+    clear_needs_reauth(org_id, provider, workspace_id=workspace_id)

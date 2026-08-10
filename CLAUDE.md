@@ -641,7 +641,12 @@ their policy documents; their employees ask questions and get answers grounded i
   members remain is blocked until `POST /workspaces/{id}/members/{id}/make-owner`;
   a solely-owned empty space is deleted with the user. A locked sole-admin org
   stays an **operator-only** break-glass (manual SQL / ops) — never a public
-  reclaim flow. Connection-health / reconnect visibility is a separate follow-up.
+  reclaim flow.
+- **Connection health (reconnect visibility).** ``oauth_connections.needs_reauth`` /
+  ``reauth_reason`` stick after terminal auth failure (token refresh, Notion
+  unauthorized, worker ingest); cleared on reconnect or a successful live call;
+  returned on Sources list so Reconnect survives reload. Auth-shaped
+  ``SourceError`` maps to ``oauth_reauth_required`` (not only Google refresh).
 - **Workspace-within-a-Workspace: a `workspace_id` isolation axis nests INSIDE
   `org_id`, everywhere `org_id` already scopes a row — it never replaces it.**
   An employee can create a personal sub-workspace inside their own org, invite

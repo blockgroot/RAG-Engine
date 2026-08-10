@@ -50,6 +50,7 @@ from ..workspaces import (
 from .connection_ops import (
     disconnect_connection,
     folder_id_changed,
+    note_live_success,
     purge_provider_documents,
     raise_token_http,
 )
@@ -197,6 +198,8 @@ def get_connections(workspace_id: str, session: SessionClaims = Depends(get_sess
             "external_workspace_name": c.external_workspace_name,
             "created_at": c.created_at.isoformat(),
             "source_config": c.source_config,
+            "needs_reauth": c.needs_reauth,
+            "reauth_reason": c.reauth_reason,
         }
         for c in list_connections(session.org_id, workspace_id=workspace_id)
     ]
@@ -228,7 +231,12 @@ def search_connection_drive_folders(
         token = get_live_connection_token(session.org_id, conn.provider, workspace_id=workspace_id)
         folders = search_drive_folders(token, q)
     except (SourceError, ConfigurationError, OAuthReauthRequiredError) as exc:
-        raise_token_http(exc)
+        raise_token_http(
+            exc,
+            org_id=session.org_id,
+            provider=conn.provider,
+            workspace_id=workspace_id,
+        )
     return {"folders": folders}
 
 
@@ -269,7 +277,12 @@ def put_connection_config(
         )
         set_connection_config(session.org_id, conn.provider, config, workspace_id=workspace_id)
     except (ConfigurationError, SourceError, OAuthReauthRequiredError) as exc:
-        raise_token_http(exc)
+        raise_token_http(
+            exc,
+            org_id=session.org_id,
+            provider=conn.provider,
+            workspace_id=workspace_id,
+        )
     purged = 0
     if swapped:
         purged = purge_provider_documents(
@@ -311,8 +324,16 @@ def refresh_workspace_connection_scope(
 
     try:
         scope = refresh_installation_scope(session.org_id, workspace_id)
+        note_live_success(
+            session.org_id, "github", workspace_id=workspace_id
+        )
     except (ConfigurationError, SourceError, OAuthReauthRequiredError) as exc:
-        raise_token_http(exc)
+        raise_token_http(
+            exc,
+            org_id=session.org_id,
+            provider=conn.provider,
+            workspace_id=workspace_id,
+        )
 
     return {
         "connection_id": connection_id,
@@ -328,6 +349,38 @@ def refresh_workspace_connection_scope(
             }
             for repo in scope.repos
         ],
+    }
+
+
+
+@router.get("/{workspace_id}/connections/{connection_id}/health")
+def workspace_connection_health(
+    workspace_id: str,
+    connection_id: str,
+    session: SessionClaims = Depends(get_session),
+    _role: str = Depends(get_workspace_role),
+):
+    """Probe stored credentials for this space (GitHub on-load equivalent)."""
+    conn = _owned_workspace_connection(session.org_id, workspace_id, connection_id)
+    try:
+        get_live_connection_token(
+            session.org_id, conn.provider, workspace_id=workspace_id
+        )
+        note_live_success(
+            session.org_id, conn.provider, workspace_id=workspace_id
+        )
+    except (ConfigurationError, SourceError, OAuthReauthRequiredError) as exc:
+        raise_token_http(
+            exc,
+            org_id=session.org_id,
+            provider=conn.provider,
+            workspace_id=workspace_id,
+        )
+    return {
+        "connection_id": connection_id,
+        "provider": conn.provider,
+        "status": "ok",
+        "needs_reauth": False,
     }
 
 
@@ -347,8 +400,16 @@ def connection_changes(
         report = detect_source_changes(
             adapter, session.org_id, provider=conn.provider, workspace_id=workspace_id
         )
+        note_live_success(
+            session.org_id, conn.provider, workspace_id=workspace_id
+        )
     except (ConfigurationError, SourceError, OAuthReauthRequiredError) as exc:
-        raise_token_http(exc)
+        raise_token_http(
+            exc,
+            org_id=session.org_id,
+            provider=conn.provider,
+            workspace_id=workspace_id,
+        )
 
     return {
         "connection_id": connection_id,

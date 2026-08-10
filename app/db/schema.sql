@@ -328,6 +328,13 @@ CREATE UNIQUE INDEX idx_oauth_connections_org_provider_workspace
 -- column. Nullable with no default: most providers (Notion) never set it.
 ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS source_config JSONB;
 
+-- Connection health: sticky "needs reconnect" so Sources can show a Reconnect
+-- CTA after an admin leaves / token dies, without relying on in-memory React
+-- state from the last failed change-check. Cleared on reconnect or a successful
+-- live call; set when refresh or an upstream 401/unauthorized hits.
+ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS needs_reauth BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS reauth_reason TEXT;
+
 -- Admin-triggered ingestion jobs (Phase 10/12). A durable, pollable record of a
 -- background fetch->chunk->embed->store run so an admin sees progress instead
 -- of a blocking script. Consumed by a Postgres-backed worker (app/jobs/), not

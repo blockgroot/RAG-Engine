@@ -15,7 +15,13 @@ from __future__ import annotations
 import logging
 
 from ..auth import get_connection_config, get_live_connection_token
+from ..auth.credentials import (
+    clear_needs_reauth,
+    looks_like_auth_failure,
+    mark_needs_reauth,
+)
 from ..config.settings import ContextualSettings
+from ..core.exceptions import OAuthReauthRequiredError
 from ..ingestion.pipeline import enrich_source_contextual, ingest_source
 from ..sources import build_source_adapter
 from . import queue
@@ -35,6 +41,7 @@ def run_once() -> queue.IngestionJob | None:
     if job is None:
         return None
 
+    provider = None
     try:
         provider = queue.get_connection_provider(job.connection_id, job.org_id)
         token = get_live_connection_token(job.org_id, provider, workspace_id=job.workspace_id)
@@ -61,6 +68,7 @@ def run_once() -> queue.IngestionJob | None:
         )
         # Unlock the product as soon as raw chunks are stored.
         queue.mark_succeeded(job.id, result.documents_ingested)
+        clear_needs_reauth(job.org_id, provider, job.workspace_id)
 
         contextual = ContextualSettings.from_env()
         if (
@@ -85,6 +93,17 @@ def run_once() -> queue.IngestionJob | None:
                     exc,
                 )
     except Exception as exc:  # noqa: BLE001 - a job failure must never crash the worker
+        if provider and (
+            isinstance(exc, OAuthReauthRequiredError) or looks_like_auth_failure(exc)
+        ):
+            try:
+                mark_needs_reauth(
+                    job.org_id, provider, job.workspace_id, str(exc)
+                )
+            except Exception:  # noqa: BLE001 - health flag must not mask the job error
+                logger.warning(
+                    "Could not mark needs_reauth for job %s", job.id, exc_info=True
+                )
         queue.mark_failed(job.id, str(exc))
 
     return queue.get_job(job.org_id, job.id)

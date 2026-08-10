@@ -57,6 +57,10 @@ class OAuthConnectionInfo:
     # Provider-specific ingestion scope (e.g. Google's folder_id/folder_name).
     # Never secrets — safe to return on the admin connections list.
     source_config: dict | None = None
+    # Sticky reconnect signal (set on terminal auth failure; cleared on reconnect
+    # or a successful live provider call). Safe / non-secret.
+    needs_reauth: bool = False
+    reauth_reason: str | None = None
 
 
 def save_connection(
@@ -104,7 +108,9 @@ def save_connection(
                 access_token_encrypted  = EXCLUDED.access_token_encrypted,
                 refresh_token_encrypted = EXCLUDED.refresh_token_encrypted,
                 expires_at              = EXCLUDED.expires_at,
-                connected_by_user_id    = EXCLUDED.connected_by_user_id
+                connected_by_user_id    = EXCLUDED.connected_by_user_id,
+                needs_reauth            = false,
+                reauth_reason           = NULL
             RETURNING id
             """,
             (
@@ -226,13 +232,16 @@ def get_live_connection_token(
         # Provider doesn't support/need refresh (e.g. Notion) — stored token
         # stands unchanged.
         return access_token
-    except OAuthReauthRequiredError:
+    except OAuthReauthRequiredError as exc:
+        mark_needs_reauth(org_id, provider, workspace_id, str(exc))
         raise
     except Exception as exc:  # noqa: BLE001 - map any other refresh failure to a terminal error
-        raise OAuthReauthRequiredError(
+        wrapped = OAuthReauthRequiredError(
             f"Refreshing the {provider!r} connection failed; reconnect it to continue.",
             cause=exc,
-        ) from exc
+        )
+        mark_needs_reauth(org_id, provider, workspace_id, str(wrapped))
+        raise wrapped from exc
 
     new_access_encrypted = encrypt(new_tokens.access_token)
     # Don't overwrite a stored refresh token with None — Google frequently
@@ -276,10 +285,12 @@ def _github_installation_token(org_id: str, workspace_id: str | None = None) -> 
     config = get_connection_config(org_id, "github", workspace_id) or {}
     installation_id = config.get("installation_id")
     if not installation_id:
-        raise ConfigurationError(
+        msg = (
             "This GitHub connection has no installation id recorded, so no "
             "repository token can be issued. Reconnect GitHub to fix this."
         )
+        mark_needs_reauth(org_id, "github", workspace_id, msg)
+        raise OAuthReauthRequiredError(msg)
 
     cache_key = (org_id, workspace_id, str(installation_id))
     cached = _INSTALLATION_TOKEN_CACHE.get(cache_key)
@@ -287,7 +298,28 @@ def _github_installation_token(org_id: str, workspace_id: str | None = None) -> 
     if cached and cached[1] - now > _REFRESH_SAFETY_MARGIN:
         return cached[0]
 
-    minted = mint_installation_token(str(installation_id))
+    try:
+        minted = mint_installation_token(str(installation_id))
+    except Exception as exc:  # noqa: BLE001 - mint failure is terminal for this install
+        # Missing/uninstalled App, bad PEM, or GitHub 401/404 on the install —
+        # all need reconnect, not a soft retry. ConfigurationError (no install id)
+        # is raised above; OAuthError comes from the mint HTTP call.
+        from ..core.exceptions import ConfigurationError, OAuthError
+
+        if isinstance(exc, (OAuthError, ConfigurationError, OAuthReauthRequiredError)) or looks_like_auth_failure(
+            exc
+        ):
+            wrapped = (
+                exc
+                if isinstance(exc, OAuthReauthRequiredError)
+                else OAuthReauthRequiredError(
+                    "GitHub installation access failed; reconnect GitHub to continue.",
+                    cause=exc,
+                )
+            )
+            mark_needs_reauth(org_id, "github", workspace_id, str(wrapped))
+            raise wrapped from exc
+        raise
     # No expiry reported (shouldn't happen — GitHub always sends one) means we
     # can't reason about validity, so don't cache it rather than cache it wrongly.
     if minted.expires_at is not None:
@@ -296,6 +328,87 @@ def _github_installation_token(org_id: str, workspace_id: str | None = None) -> 
             expires_at = expires_at.replace(tzinfo=timezone.utc)
         _INSTALLATION_TOKEN_CACHE[cache_key] = (minted.token, expires_at)
     return minted.token
+
+
+def looks_like_auth_failure(exc: BaseException) -> bool:
+    """True when ``exc`` (or its cause chain) is credential death, not a blip.
+
+    Conservative on purpose: a Drive 403 on one file must not force reconnect.
+    We treat HTTP 401, Notion ``unauthorized``, and explicit invalid_grant /
+    invalid_token / revoked language as terminal auth failures.
+    """
+    cur: BaseException | None = exc
+    for _ in range(8):
+        if cur is None:
+            break
+        status = getattr(cur, "status_code", None)
+        if status == 401:
+            return True
+        code = getattr(cur, "code", None)
+        if isinstance(code, str) and code.lower() in {
+            "unauthorized",
+            "invalid_grant",
+            "invalid_token",
+        }:
+            return True
+        if code == 401:
+            return True
+        msg = str(cur).lower()
+        needles = (
+            "unauthorized",
+            "invalid_grant",
+            "invalid_token",
+            "token has been revoked",
+            "token revoked",
+            "authentication failed",
+            "must reconnect",
+            "oauth_reauth",
+        )
+        if any(n in msg for n in needles):
+            return True
+        nxt = getattr(cur, "cause", None)
+        if nxt is None:
+            nxt = cur.__cause__
+        cur = nxt if isinstance(nxt, BaseException) else None
+    return False
+
+
+def mark_needs_reauth(
+    org_id: str,
+    provider: str,
+    workspace_id: str | None = None,
+    reason: str | None = None,
+) -> None:
+    """Sticky flag so Sources can show Reconnect without re-probing."""
+    detail = (reason or "").strip() or None
+    if detail and len(detail) > 500:
+        detail = detail[:497] + "..."
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE oauth_connections
+            SET needs_reauth = true, reauth_reason = %s
+            WHERE org_id = %s AND provider = %s
+              AND workspace_id IS NOT DISTINCT FROM %s
+            """,
+            (detail, org_id, provider, workspace_id),
+        )
+
+
+def clear_needs_reauth(
+    org_id: str, provider: str, workspace_id: str | None = None
+) -> None:
+    """Clear after reconnect or a successful live provider call."""
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE oauth_connections
+            SET needs_reauth = false, reauth_reason = NULL
+            WHERE org_id = %s AND provider = %s
+              AND workspace_id IS NOT DISTINCT FROM %s
+            """,
+            (org_id, provider, workspace_id),
+        )
 
 
 def list_connections(
@@ -310,7 +423,8 @@ def list_connections(
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT id::text, provider, external_workspace_id, "
-            "external_workspace_name, created_at, source_config "
+            "external_workspace_name, created_at, source_config, "
+            "needs_reauth, reauth_reason "
             "FROM oauth_connections "
             "WHERE org_id = %s AND workspace_id IS NOT DISTINCT FROM %s "
             "ORDER BY created_at DESC",
@@ -324,6 +438,8 @@ def list_connections(
             external_workspace_name=r[3],
             created_at=r[4],
             source_config=r[5],
+            needs_reauth=bool(r[6]),
+            reauth_reason=r[7],
         )
         for r in rows
     ]

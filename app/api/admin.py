@@ -39,6 +39,7 @@ from ..sources import (
 from .connection_ops import (
     disconnect_connection,
     folder_id_changed,
+    note_live_success,
     purge_provider_documents,
     raise_token_http,
 )
@@ -187,6 +188,8 @@ def get_connections(session: SessionClaims = Depends(require_admin)):
             "external_workspace_name": c.external_workspace_name,
             "created_at": c.created_at.isoformat(),
             "source_config": c.source_config,
+            "needs_reauth": c.needs_reauth,
+            "reauth_reason": c.reauth_reason,
         }
         for c in list_connections(session.org_id)
     ]
@@ -226,8 +229,13 @@ def search_connection_drive_folders(
     try:
         token = get_live_connection_token(session.org_id, conn.provider)
         folders = search_drive_folders(token, q)
+        note_live_success(session.org_id, conn.provider)
     except (SourceError, ConfigurationError, OAuthReauthRequiredError) as exc:
-        raise_token_http(exc)
+        raise_token_http(
+            exc,
+            org_id=session.org_id,
+            provider=conn.provider,
+        )
     return {"folders": folders}
 
 
@@ -266,8 +274,13 @@ def put_connection_config(
         config = validate_drive_folder(token, folder_id)
         swapped = folder_id_changed(session.org_id, conn.provider, config["folder_id"])
         set_connection_config(session.org_id, conn.provider, config)
+        note_live_success(session.org_id, conn.provider)
     except (ConfigurationError, SourceError, OAuthReauthRequiredError) as exc:
-        raise_token_http(exc)
+        raise_token_http(
+            exc,
+            org_id=session.org_id,
+            provider=conn.provider,
+        )
 
     purged = 0
     if swapped:
@@ -309,8 +322,13 @@ def refresh_connection_scope(
 
     try:
         scope = refresh_installation_scope(session.org_id)
+        note_live_success(session.org_id, "github")
     except (ConfigurationError, SourceError, OAuthReauthRequiredError) as exc:
-        raise_token_http(exc)
+        raise_token_http(
+            exc,
+            org_id=session.org_id,
+            provider=conn.provider,
+        )
 
     return {
         "connection_id": connection_id,
@@ -329,6 +347,33 @@ def refresh_connection_scope(
     }
 
 
+
+@router.get("/connections/{connection_id}/health")
+def connection_health(connection_id: str, session: SessionClaims = Depends(require_admin)):
+    """Probe whether stored credentials still work (no corpus mutation).
+
+    Used on Sources load for GitHub (which has no change-check). Minting an
+    installation token hits GitHub and is enough to detect an uninstalled App
+    or dead install without rewriting the stored repo list.
+    """
+    conn = _owned_connection(session.org_id, connection_id)
+    try:
+        get_live_connection_token(session.org_id, conn.provider)
+        note_live_success(session.org_id, conn.provider)
+    except (ConfigurationError, SourceError, OAuthReauthRequiredError) as exc:
+        raise_token_http(
+            exc,
+            org_id=session.org_id,
+            provider=conn.provider,
+        )
+    return {
+        "connection_id": connection_id,
+        "provider": conn.provider,
+        "status": "ok",
+        "needs_reauth": False,
+    }
+
+
 @router.get("/connections/{connection_id}/changes")
 def connection_changes(connection_id: str, session: SessionClaims = Depends(require_admin)):
     """Metadata-only: which remote pages are new/updated/removed vs our store.
@@ -341,8 +386,13 @@ def connection_changes(connection_id: str, session: SessionClaims = Depends(requ
     try:
         adapter = _build_connection_adapter(session.org_id, conn.provider)
         report = detect_source_changes(adapter, session.org_id, provider=conn.provider)
+        note_live_success(session.org_id, conn.provider)
     except (ConfigurationError, SourceError, OAuthReauthRequiredError) as exc:
-        raise_token_http(exc)
+        raise_token_http(
+            exc,
+            org_id=session.org_id,
+            provider=conn.provider,
+        )
 
     return {
         "connection_id": connection_id,
