@@ -64,6 +64,15 @@ def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
             "Set INGEST_WORKER_IN_API=false to use scripts/run_worker.py instead.",
             poll_interval,
         )
+        try:
+            n = queue.requeue_interrupted_running()
+            if n:
+                logger.info(
+                    "Re-queued %s interrupted ingestion job(s) after worker start",
+                    n,
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to re-queue interrupted ingestion jobs")
         last_reap = 0.0
         while not stop.is_set():
             try:

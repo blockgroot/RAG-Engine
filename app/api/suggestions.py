@@ -23,13 +23,19 @@ _GITHUB_TEMPLATES = (
     "Summarize the README for {name}.",
 )
 
-# Policy / space starters grounded in real document titles. Always fill up to
-# ``_MAX`` even with a single ingested page — templates rotate over titles so
-# nothing invents fake docs.
-_POLICY_TEMPLATES = (
+# Org-wide Policies tab — company handbook phrasing.
+_ORG_POLICY_TEMPLATES = (
     'What does "{title}" cover?',
     'What are the key rules in "{title}"?',
     'Summarize "{title}" for an employee.',
+    'What should I know from "{title}"?',
+)
+
+# Space Ask — notes/docs connected to that space, not HR "employee" framing.
+_WORKSPACE_DOC_TEMPLATES = (
+    'What does "{title}" cover?',
+    'What are the main points in "{title}"?',
+    'Summarize "{title}".',
     'What should I know from "{title}"?',
 )
 
@@ -95,11 +101,15 @@ def build_github_suggestions(repos: list[dict[str, Any]]) -> list[str]:
     return questions
 
 
-def build_policy_suggestions(titles: list[str]) -> list[str]:
+def build_policy_suggestions(
+    titles: list[str], *, workspace: bool = False
+) -> list[str]:
     """Turn ingested document titles into short Policies / Space Ask chips.
 
-    Empty titles → empty output. With one document, all four templates use that
-    title; with several, templates rotate across titles (same shape as GitHub).
+    ``workspace=True`` uses note-oriented phrasing (no "for an employee" /
+    "key rules" company-handbook copy). Empty titles → empty output. With one
+    document, all four templates use that title; with several, templates
+    rotate across titles (same shape as GitHub).
     """
     cleaned: list[str] = []
     seen: set[str] = set()
@@ -116,8 +126,9 @@ def build_policy_suggestions(titles: list[str]) -> list[str]:
     if not cleaned:
         return []
 
+    templates = _WORKSPACE_DOC_TEMPLATES if workspace else _ORG_POLICY_TEMPLATES
     questions: list[str] = []
-    for i, template in enumerate(_POLICY_TEMPLATES):
+    for i, template in enumerate(templates):
         if len(questions) >= _MAX:
             break
         title = cleaned[i % len(cleaned)]

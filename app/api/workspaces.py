@@ -42,6 +42,7 @@ from ..sources import (
 from ..db.connection import get_connection
 from ..workspaces import (
     create_workspace,
+    delete_workspace,
     invite_member,
     list_my_workspaces,
     list_workspace_members,
@@ -110,6 +111,28 @@ def get_workspace(
         "github_connected": _workspace_github_connected(session.org_id, workspace_id),
         **status,
     }
+
+
+
+@router.delete("/{workspace_id}")
+def delete_space(
+    workspace_id: str,
+    session: SessionClaims = Depends(get_session),
+    _role: str = Depends(require_workspace_owner),
+):
+    """Owner-only: permanently delete this space and its scoped content.
+
+    Org-wide policies and org GitHub are untouched. Workspace docs, connections,
+    conversations, and membership cascade away with the ``workspaces`` row.
+    """
+    try:
+        delete_workspace(workspace_id, session.org_id, session.user_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except AuthError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"status": "deleted", "workspace_id": workspace_id}
+
 
 
 def _workspace_github_connected(org_id: str, workspace_id: str) -> bool:

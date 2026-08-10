@@ -411,6 +411,27 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 -- scoped to it (NULL = today's org-wide connect flow, unchanged).
 ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
 
+-- GitHub connect: after user OAuth, the callback lists every App installation
+-- this user can see and parks the user token here so the frontend can prompt
+-- "which account?" before we bind Company Sources vs a space. Single-use,
+-- short TTL — same trust model as oauth_states / magic_link_tokens. Tokens
+-- are Fernet-encrypted at rest; only hashes aren't needed because possession
+-- of the random ``token`` is the capability (like oauth state).
+CREATE TABLE IF NOT EXISTS github_install_pending (
+    token                      TEXT PRIMARY KEY,
+    org_id                     UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    workspace_id               UUID REFERENCES workspaces (id) ON DELETE CASCADE,
+    access_token_encrypted     TEXT NOT NULL,
+    refresh_token_encrypted    TEXT,
+    token_expires_at           TIMESTAMPTZ,
+    expires_at                 TIMESTAMPTZ NOT NULL,
+    consumed_at                TIMESTAMPTZ,
+    created_at                 TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_github_install_pending_expires
+    ON github_install_pending (expires_at);
+
+
 -- Short-TTL cache for repeated standalone policy questions (Phase 19).
 CREATE TABLE IF NOT EXISTS query_answer_cache (
     org_id               UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,

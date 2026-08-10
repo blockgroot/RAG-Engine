@@ -203,15 +203,11 @@ export function AppShell({
                 <span className={`role-chip role-${me.role}`}>
                   {me.role === "admin" ? "Admin" : "Member"}
                 </span>
+                <button type="button" className="rail-sign-out" onClick={handleSignOut}>
+                  Sign out
+                </button>
               </div>
             </div>
-            <button
-              type="button"
-              className="rail-sign-out"
-              onClick={handleSignOut}
-            >
-              Sign out
-            </button>
           </div>
         )}
       </aside>

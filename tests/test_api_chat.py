@@ -200,7 +200,9 @@ def test_chat_stream_emits_error_event_when_llm_is_rate_limited(client_and_sessi
     assert events, "expected an SSE error event"
     assert events[0][0] == "error"
     payload = json.loads(events[0][1])
-    assert "rate-limited" in payload["message"].lower()
+    assert "try again" in payload["message"].lower()
+    assert "llm_base_url" not in payload["message"].lower()
+    assert "free routes" not in payload["message"].lower()
 
 
 def test_user_facing_llm_error_detects_exhausted_routes():
@@ -210,7 +212,9 @@ def test_user_facing_llm_error_detects_exhausted_routes():
     msg = _user_facing_llm_error(
         LLMProviderError("Error code: 429 - All models exhausted: 60 routes checked")
     )
-    assert "rate-limited" in msg.lower()
+    assert "try again" in msg.lower()
+    assert "llm_base_url" not in msg.lower()
+    assert "free routes" not in msg.lower()
 
 
 @requires_db

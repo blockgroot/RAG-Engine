@@ -163,6 +163,28 @@ def test_mark_succeeded_and_mark_failed(_connected_org):
     assert job2.error == "boom"
 
 
+
+
+@requires_db
+def test_requeue_interrupted_running_returns_orphans_to_queued(_connected_org):
+    """Worker crash/reload must resume, not leave Updating forever."""
+    org_id, connection_id = _connected_org
+    job_id = queue.enqueue(org_id, connection_id)
+    claimed = queue.claim_next()
+    assert claimed is not None and claimed.status == "running"
+
+    n = queue.requeue_interrupted_running()
+    assert n >= 1
+    job = queue.get_job(org_id, job_id)
+    assert job.status == "queued"
+    assert job.started_at is None
+
+    # Can be claimed again (incremental ingest will skip already-stored pages).
+    again = queue.claim_next()
+    assert again is not None
+    assert again.id == job_id
+
+
 @requires_db
 def test_reap_stuck_flips_old_running_jobs_to_failed(_connected_org):
     org_id, connection_id = _connected_org

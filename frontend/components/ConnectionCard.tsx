@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, ApiError, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
+import { syncPagesDetail, syncPercent, syncPhaseHeadline } from "@/lib/syncProgress";
 import { DriveFolderPicker } from "./DriveFolderPicker";
 import { JobStatusBadge } from "./JobStatusBadge";
 import { ProviderMark } from "./ProviderMark";
@@ -251,7 +252,13 @@ export function ConnectionCard({
           <div>
             <h3>{PROVIDER_LABELS[provider]}</h3>
             <p className="source-studio-kind">
-              {isLive ? "Live answers" : "Synced documents"}
+              {provider === "github"
+                ? workspaceId
+                  ? "This space only — pick a different GitHub account than Company Sources"
+                  : "Company-wide Code tab — usually a GitHub Organization"
+                : isLive
+                  ? "Live answers"
+                  : "Synced documents"}
             </p>
           </div>
         </div>
@@ -353,26 +360,49 @@ export function ConnectionCard({
       )}
 
       {showDocsJobBadge && lastJob && (
-        <p
-          className="muted"
-          style={{ marginTop: "0.55rem", display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
-        >
-          <JobStatusBadge status={lastJob.status} />
-          {ACTIVE.has(lastJob.status)
-            ? "Updating…"
-            : lastJob.status === "succeeded"
-              ? (() => {
-                  const when = friendlyWhen(lastJob.finished_at || lastJob.created_at);
-                  const count = lastJob.doc_count;
-                  if (count != null && count > 0) {
-                    return `${when} · ${count} page${count === 1 ? "" : "s"}`;
-                  }
-                  return when;
-                })()
-              : lastJob.status === "failed"
-                ? "Update failed — try again"
-                : null}
-        </p>
+        <div className="stack" style={{ marginTop: "0.55rem", gap: "0.35rem" }}>
+          <p
+            className="muted"
+            style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}
+          >
+            <JobStatusBadge status={lastJob.status} />
+            {ACTIVE.has(lastJob.status)
+              ? syncPhaseHeadline(lastJob)
+              : lastJob.status === "succeeded"
+                ? (() => {
+                    const when = friendlyWhen(lastJob.finished_at || lastJob.created_at);
+                    const count = lastJob.doc_count;
+                    if (count != null && count > 0) {
+                      return `${when} · ${count} page${count === 1 ? "" : "s"}`;
+                    }
+                    return when;
+                  })()
+                : lastJob.status === "failed"
+                  ? "Update failed — try again"
+                  : null}
+          </p>
+          {ACTIVE.has(lastJob.status) && (
+            <>
+              <p className="muted" style={{ margin: 0, fontSize: "0.85rem" }}>
+                {syncPagesDetail(lastJob)}
+              </p>
+              {syncPercent(lastJob) != null && (
+                <div
+                  className="sync-progress"
+                  role="progressbar"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={syncPercent(lastJob) ?? 0}
+                >
+                  <div
+                    className="sync-progress-bar"
+                    style={{ width: `${syncPercent(lastJob)}%` }}
+                  />
+                </div>
+              )}
+            </>
+          )}
+        </div>
       )}
 
       {/* Check found nothing new, and there is no job badge yet (e.g. Drive). */}
@@ -436,7 +466,11 @@ export function ConnectionCard({
             className="button"
             href={workspaceId ? api.connectWorkspaceUrl(workspaceId, provider) : api.connectUrl(provider)}
           >
-            Connect {PROVIDER_LABELS[provider]}
+            {provider === "github"
+              ? workspaceId
+                ? "Connect personal GitHub"
+                : "Connect company GitHub"
+              : `Connect ${PROVIDER_LABELS[provider]}`}
           </a>
         )}
         {connection && manageHref && (

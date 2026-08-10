@@ -18,6 +18,7 @@ import {
 } from "@/lib/api";
 import { ACTIVE_JOB_STATUSES, useJobPolling } from "@/lib/jobPoll";
 import { clearedSyncChanges } from "@/lib/syncChanges";
+import { syncPagesDetail, syncPhaseHeadline } from "@/lib/syncProgress";
 
 // GitHub is now offered per workspace (it used to be org-level only). A
 // workspace owner connects their own installation, so the workspace's Code
@@ -73,6 +74,7 @@ export default function WorkspaceDetailPage() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviting, setInviting] = useState(false);
   const [makeOwnerBusy, setMakeOwnerBusy] = useState<string | null>(null);
+  const [deletingSpace, setDeletingSpace] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteMessage, setInviteMessage] = useState<string | null>(null);
 
@@ -203,14 +205,20 @@ export default function WorkspaceDetailPage() {
   useEffect(() => {
     if (!me) return;
     const connectError = searchParams.get("connect_error");
-    if (connectError === "github_same_install") {
+    if (connectError === "github_same_install" || connectError === "github_install_in_use") {
       setError(null);
       setConnectNotice({
-        title: "This space can’t use the company GitHub connection",
-        why: "Company → Sources already uses that GitHub account. If this space reused it, company Code and space Code would show the same repos.",
+        title:
+          connectError === "github_install_in_use"
+            ? "That GitHub account is already linked elsewhere"
+            : "This space can’t reuse the company GitHub connection",
+        why:
+          connectError === "github_install_in_use"
+            ? "Another space (or Company → Sources) already uses that GitHub App install. Company Code and space Code must stay on different accounts."
+            : "Company → Sources already uses that GitHub account. If this space reused it, company Code and space Code would show the same repos.",
         options: [
-          "Put company GitHub on a GitHub Organization, reconnect it under Company → Sources, then connect this space with your personal account.",
-          "Or disconnect GitHub from Company → Sources, then connect it only on this space.",
+          "Choose a different GitHub account on the picker (Organization for company, personal for this space).",
+          "Or disconnect GitHub from the other Folio surface first, then connect it here.",
           "Or skip GitHub here and ask from the main Ask → Code tab instead.",
         ],
       });
@@ -283,7 +291,10 @@ export default function WorkspaceDetailPage() {
     for (const [connectionId, job] of Object.entries(latest)) {
       const prev = prevStatuses.current[connectionId];
       const curr = job.status;
-      if (prev && ACTIVE_STATUSES.has(prev) && !ACTIVE_STATUSES.has(curr)) {
+      if (ACTIVE_STATUSES.has(curr)) {
+        setMessage(`${syncPhaseHeadline(job)} ${syncPagesDetail(job)}`);
+        setError(null);
+      } else if (prev && ACTIVE_STATUSES.has(prev) && !ACTIVE_STATUSES.has(curr)) {
         if (curr === "succeeded") {
           setMessage(updateCompleteMessage(job.doc_count));
           setError(null);
@@ -373,6 +384,28 @@ export default function WorkspaceDetailPage() {
       setWatchedJobId(null);
     } finally {
       updateInFlight.current.delete(connectionId);
+    }
+  }
+
+
+  async function handleDeleteSpace() {
+    if (deletingSpace || !workspace) return;
+    const name = workspace.name;
+    if (
+      !window.confirm(
+        `Delete “${name}” permanently? Everyone loses access, and this space’s documents, connections, and chats are removed. Company-wide policies are not affected. This cannot be undone.`
+      )
+    ) {
+      return;
+    }
+    setDeletingSpace(true);
+    setError(null);
+    try {
+      await api.deleteWorkspace(workspaceId);
+      router.push("/workspaces");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete this space.");
+      setDeletingSpace(false);
     }
   }
 
@@ -575,6 +608,29 @@ export default function WorkspaceDetailPage() {
           </section>
         ) : (
           <p className="muted">Only the owner can connect or change documents for this space.</p>
+        )}
+
+        {isOwner && (
+          <section className="panel stack" style={{ borderColor: "var(--warn, #b45309)" }}>
+            <div className="panel-head">
+              <div>
+                <h2>Delete this space</h2>
+                <p className="muted" style={{ marginTop: "0.35rem" }}>
+                  Permanently removes this space, its members’ access here, connected sources,
+                  and indexed documents for this space only — not company-wide policies.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="button button-secondary"
+              disabled={deletingSpace}
+              onClick={() => void handleDeleteSpace()}
+              style={{ width: "fit-content" }}
+            >
+              {deletingSpace ? "Deleting…" : "Delete space"}
+            </button>
+          </section>
         )}
       </main>
     </AppShell>

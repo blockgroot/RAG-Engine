@@ -129,7 +129,7 @@ export default function WorkspacesPage() {
                       {(w.name || "S").trim().charAt(0).toUpperCase()}
                     </span>
                     <div className="workspace-tile-top">
-                      <h3>{w.name}</h3>
+                      <h3 title={w.name}>{w.name}</h3>
                       <span className="badge">{w.role === "owner" ? "Owner" : "Member"}</span>
                     </div>
                     <span className="workspace-tile-cta">Open space</span>

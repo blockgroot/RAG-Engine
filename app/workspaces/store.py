@@ -152,3 +152,35 @@ def make_workspace_owner(
             "WHERE workspace_id = %s::uuid AND user_id = %s::uuid",
             (workspace_id, target_user_id),
         )
+
+
+def delete_workspace(workspace_id: str, org_id: str, acting_user_id: str) -> None:
+    """Permanently delete a space and all of its scoped content.
+
+    Owner-only (caller must already have passed ``require_workspace_owner`` or
+    we re-check here). Always pairs ``workspace_id`` with ``org_id`` so a
+    forged id from another tenant cannot match. Cascades members, documents,
+    chunks, conversations, oauth_connections, and jobs via schema FKs.
+    """
+    role = assert_member(workspace_id, org_id, acting_user_id)
+    if role != "owner":
+        raise AuthError("Only a space owner can delete this space")
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "DELETE FROM workspaces WHERE id = %s::uuid AND org_id = %s::uuid "
+            "RETURNING id",
+            (workspace_id, org_id),
+        ).fetchone()
+    if row is None:
+        raise NotFoundError("Workspace not found")
+
+    # Installation tokens are process-local; CASCADE drops the DB row but not
+    # the in-memory cache entry for this workspace scope.
+    try:
+        from ..auth.credentials import clear_installation_token_cache
+
+        clear_installation_token_cache(org_id, workspace_id)
+    except Exception:  # noqa: BLE001 - cache clear must not undo a successful delete
+        pass
+

@@ -238,6 +238,32 @@ export const api = {
 
   connectUrl: (provider: string) => `${API_BASE_URL}/auth/${provider}/authorize`,
 
+  githubInstallPending: (token: string) =>
+    request<{
+      scope: "org" | "workspace";
+      workspace_id: string | null;
+      installations: Array<{
+        id: string;
+        login: string;
+        account_type: string;
+        available: boolean;
+        unavailable_reason: string | null;
+      }>;
+      hint: string;
+      install_another_url: string;
+      switch_account_url: string;
+    }>(`/auth/github/installations/pending/${encodeURIComponent(token)}`),
+
+  chooseGitHubInstall: (token: string, installationId: string) =>
+    request<{ redirect_to: string }>(
+      `/auth/github/installations/pending/${encodeURIComponent(token)}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ installation_id: installationId }),
+      }
+    ),
+
+
   listMembers: () => request<MemberRecord[]>("/admin/members"),
   inviteMember: (email: string) =>
     request<{ id: string; email: string; role: string; dev_link?: string | null }>(
@@ -331,6 +357,10 @@ export const api = {
     request<WorkspaceRecord>("/workspaces", {
       method: "POST",
       body: JSON.stringify({ name }),
+    }),
+  deleteWorkspace: (workspaceId: string) =>
+    request<{ status: string; workspace_id: string }>(`/workspaces/${workspaceId}`, {
+      method: "DELETE",
     }),
   listWorkspaceMembers: (workspaceId: string) =>
     request<WorkspaceMemberRecord[]>(`/workspaces/${workspaceId}/members`),

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { ConnectionCard } from "@/components/ConnectionCard";
@@ -8,6 +9,7 @@ import { useMe } from "@/lib/useMe";
 import { api, ApiError, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
 import { ACTIVE_JOB_STATUSES, useJobPolling } from "@/lib/jobPoll";
 import { clearedSyncChanges } from "@/lib/syncChanges";
+import { syncPagesDetail, syncPhaseHeadline } from "@/lib/syncProgress";
 
 const PROVIDERS: ("notion" | "google" | "github")[] = ["notion", "google", "github"];
 const ACTIVE_STATUSES = ACTIVE_JOB_STATUSES;
@@ -32,6 +34,8 @@ function updateCompleteMessage(docCount: number | null | undefined): string {
 
 export default function ConnectionsPage() {
   const { me, loading } = useMe({ requireAdmin: true });
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const [connections, setConnections] = useState<ConnectionRecord[]>([]);
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [changesById, setChangesById] = useState<Record<string, SyncChanges>>({});
@@ -46,6 +50,20 @@ export default function ConnectionsPage() {
   const loaded = useRef(false);
   const bannerRef = useRef<HTMLDivElement | null>(null);
   const connectionsRef = useRef<ConnectionRecord[]>([]);
+
+  useEffect(() => {
+    const connectError = searchParams.get("connect_error");
+    if (!connectError) return;
+    if (connectError === "github_same_install" || connectError === "github_install_in_use") {
+      setError(
+        "That GitHub account is already linked to a space. Company Sources and each space must use different GitHub accounts — pick another on the chooser, or disconnect it from the space first."
+      );
+    } else {
+      setError("Could not finish connecting GitHub. Try again.");
+    }
+    router.replace("/admin/connections", { scroll: false });
+  }, [searchParams, router]);
+
 
   const changesGen = useRef(0);
 
@@ -176,7 +194,10 @@ export default function ConnectionsPage() {
     for (const [connectionId, job] of Object.entries(latest)) {
       const prev = prevStatuses.current[connectionId];
       const curr = job.status;
-      if (prev && ACTIVE_STATUSES.has(prev) && !ACTIVE_STATUSES.has(curr)) {
+      if (ACTIVE_STATUSES.has(curr)) {
+        setMessage(`${syncPhaseHeadline(job)} ${syncPagesDetail(job)}`);
+        setError(null);
+      } else if (prev && ACTIVE_STATUSES.has(prev) && !ACTIVE_STATUSES.has(curr)) {
         if (curr === "succeeded") {
           setMessage(updateCompleteMessage(job.doc_count));
           setError(null);
@@ -253,7 +274,7 @@ export default function ConnectionsPage() {
         <PageHeader
           eyebrow="Company"
           title="Sources"
-          description="Connect Notion, Google Drive, and GitHub — policies sync; code is answered live."
+          description="Connect Notion, Google Drive, and company GitHub. Spaces need their own GitHub account — never the same install as here."
           scene="sources"
           meta={
             <>

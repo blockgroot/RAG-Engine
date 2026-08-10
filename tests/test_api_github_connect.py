@@ -148,37 +148,25 @@ def test_callback_survives_a_scope_read_failure_and_fails_closed(
 
 
 @requires_db
-def test_callback_without_installation_id_resolves_existing_install(
+def test_callback_without_installation_id_sends_chooser_for_existing_installs(
     client, store, org_cleanup, monkeypatch
 ):
-    """Already-installed Apps complete via user OAuth (no installation_id on redirect)."""
+    """Already-installed Apps go to the account picker (no silent auto-bind)."""
     org_id = store.create_organization("GH Connect Resolve Org")
     org_cleanup.append(org_id)
     create_admin(f"admin-{uuid.uuid4().hex[:8]}@example.com", org_id)
 
     from app.auth.github_oauth import GitHubAppProvider
 
-    def _resolve(self, code, *, prefer_user_account=False):
-        assert prefer_user_account is False  # org-wide connect
+    def _list(self, code):
         return (
-            OAuthTokens(
-                access_token="ghu_user_token",
-                refresh_token=None,
-                expires_at=None,
-                external_workspace_id="18-sana",
-                external_workspace_name="18-sana (User)",
-            ),
-            "9999",
+            "ghu_user_token",
+            None,
+            None,
+            [{"id": 9999, "account": {"login": "18-sana", "type": "User"}}],
         )
 
-    monkeypatch.setattr(
-        GitHubAppProvider, "exchange_code_resolve_installation", _resolve
-    )
-    _fake_token(monkeypatch)
-    monkeypatch.setattr(
-        "app.githublive.scope.fetch_installation_repos",
-        lambda token, **kw: ("selected", [_RepoRef("18-sana/Chain-Guard")]),
-    )
+    monkeypatch.setattr(GitHubAppProvider, "exchange_code_list_installations", _list)
 
     state = create_state(org_id, "github")
     response = client.get(
@@ -186,10 +174,7 @@ def test_callback_without_installation_id_resolves_existing_install(
     )
 
     assert response.status_code in (302, 307)
-    scope = load_scope(org_id)
-    assert scope.installation_id == "9999"
-    assert scope.account_login == "18-sana"
-    assert {r.full_name for r in scope.repos} == {"18-sana/Chain-Guard"}
+    assert "/connect/github/choose?pending=" in response.headers["location"]
 
 
 @requires_db
@@ -204,8 +189,8 @@ def test_callback_without_installation_id_redirects_to_install_when_none(
 
     monkeypatch.setattr(
         GitHubAppProvider,
-        "exchange_code_resolve_installation",
-        lambda self, code, *, prefer_user_account=False: None,
+        "exchange_code_list_installations",
+        lambda self, code: ("ghu", None, None, []),
     )
 
     state = create_state(org_id, "github")
@@ -220,10 +205,10 @@ def test_callback_without_installation_id_redirects_to_install_when_none(
 
 
 @requires_db
-def test_workspace_callback_prefers_user_account_installation(
+def test_workspace_callback_also_sends_chooser_instead_of_auto_binding(
     client, store, org_cleanup, monkeypatch
 ):
-    """A workspace connect must not silently bind the company org install."""
+    """A workspace connect lists installs for explicit choice — never auto-binds."""
     from app.workspaces.store import create_workspace
 
     org_id = store.create_organization("GH Workspace Resolve Org")
@@ -233,28 +218,18 @@ def test_workspace_callback_prefers_user_account_installation(
 
     from app.auth.github_oauth import GitHubAppProvider
 
-    seen: dict[str, bool] = {}
-
-    def _resolve(self, code, *, prefer_user_account=False):
-        seen["prefer_user_account"] = prefer_user_account
-        return (
-            OAuthTokens(
-                access_token="ghu_user_token",
-                refresh_token=None,
-                expires_at=None,
-                external_workspace_id="18-sana",
-                external_workspace_name="18-sana (User)",
-            ),
-            "2222",
-        )
-
     monkeypatch.setattr(
-        GitHubAppProvider, "exchange_code_resolve_installation", _resolve
-    )
-    _fake_token(monkeypatch)
-    monkeypatch.setattr(
-        "app.githublive.scope.fetch_installation_repos",
-        lambda token, **kw: ("selected", [_RepoRef("18-sana/Chain-Guard")]),
+        GitHubAppProvider,
+        "exchange_code_list_installations",
+        lambda self, code: (
+            "ghu_user_token",
+            None,
+            None,
+            [
+                {"id": 1, "account": {"login": "acme-inc", "type": "Organization"}},
+                {"id": 2222, "account": {"login": "18-sana", "type": "User"}},
+            ],
+        ),
     )
 
     state = create_state(org_id, "github", workspace_id=workspace_id)
@@ -263,10 +238,7 @@ def test_workspace_callback_prefers_user_account_installation(
     )
 
     assert response.status_code in (302, 307)
-    assert seen["prefer_user_account"] is True
-    scope = load_scope(org_id, workspace_id=workspace_id)
-    assert scope.installation_id == "2222"
-    assert scope.account_login == "18-sana"
+    assert "/connect/github/choose?pending=" in response.headers["location"]
 
 
 class _RepoRef:

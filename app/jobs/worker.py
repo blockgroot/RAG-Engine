@@ -113,6 +113,15 @@ def run_forever(*, poll_interval: float = 5.0, reap_interval: int = 60) -> None:
     """Poll for queued jobs forever, reaping stuck ``running`` jobs periodically."""
     import time
 
+    try:
+        n = queue.requeue_interrupted_running()
+        if n:
+            logger.info(
+                "Re-queued %s interrupted ingestion job(s) after worker start", n
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to re-queue interrupted ingestion jobs")
+
     last_reap = 0.0
     while True:
         now = time.monotonic()

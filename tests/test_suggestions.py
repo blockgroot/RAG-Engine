@@ -45,13 +45,25 @@ def test_policy_suggestions_use_document_titles():
 
 
 def test_policy_suggestions_fill_four_chips_with_one_document():
-    qs = build_policy_suggestions(["Flayer Sync Meeting Notes"])
+    qs = build_policy_suggestions(["Leave Policy"])
     assert len(qs) == 4
-    assert all("Flayer Sync Meeting Notes" in q for q in qs)
+    assert all("Leave Policy" in q for q in qs)
     assert any("cover" in q for q in qs)
     assert any("key rules" in q for q in qs)
-    assert any("Summarize" in q for q in qs)
+    assert any("for an employee" in q for q in qs)
     assert any("should I know" in q for q in qs)
+
+
+def test_workspace_suggestions_sound_like_notes_not_hr_policy():
+    qs = build_policy_suggestions(
+        ["Part-1 Foundations of Artificial Intelligence"], workspace=True
+    )
+    assert len(qs) == 4
+    assert all("Part-1 Foundations" in q for q in qs)
+    assert not any("employee" in q.lower() for q in qs)
+    assert not any("key rules" in q.lower() for q in qs)
+    assert any(q.startswith('Summarize "') and q.endswith('".') for q in qs)
+    assert any("main points" in q for q in qs)
 
 
 def test_policy_suggestions_empty_without_titles():

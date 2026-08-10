@@ -315,26 +315,180 @@ def authorize(provider: str, workspace_id: str | None = None, session=Depends(ge
     return RedirectResponse(url=oauth_provider.authorize_url(state))
 
 
-def _workspace_github_install_collides(org_id: str, installation_id: str) -> bool:
-    """True when ``installation_id`` is already the org-wide Company → Sources install.
+def _frontend_redirect(settings: ApiSettings, path: str) -> RedirectResponse:
+    base = (settings.frontend_url or "").rstrip("/")
+    return RedirectResponse(url=f"{base}{path}" if base else path)
 
-    Compares against the org-wide row's stored ``installation_id`` rather than
-    the account *type*, because the type is the wrong test: a company whose
-    GitHub is a User account would be wrongly rejected, and an employee whose
-    personal repos live under some other Organization would be wrongly allowed.
-    What actually matters is simply "is this the same installation the company
-    already connected" — if so, the workspace would read the company's repos.
+
+def _github_conflict_error_code(conflict_workspace_id: str | None) -> str:
+    """Map a conflicting surface to a frontend banner code."""
+    # Org-wide conflict → the familiar "same as company" copy on spaces.
+    if conflict_workspace_id is None:
+        return "github_same_install"
+    return "github_install_in_use"
+
+
+def _github_connect_error_path(
+    workspace_id: str | None, code: str
+) -> str:
+    if workspace_id is not None:
+        return f"/workspaces/{workspace_id}?connect_error={code}"
+    return f"/admin/connections?connect_error={code}"
+
+
+def _github_connect_success_path(workspace_id: str | None) -> str:
+    if workspace_id is not None:
+        return f"/workspaces/{workspace_id}?connected=github"
+    return "/onboarding?connected=github"
+
+
+def _persist_github_connection(
+    org_id: str,
+    workspace_id: str | None,
+    tokens,
+    installation_id: str,
+) -> str | None:
+    """Save the GitHub connection or return a connect_error code.
+
+    Enforces **org-wide uniqueness of ``installation_id``**: Company Sources and
+    every space must bind different GitHub App installs. Reconnecting the same
+    surface with the same install is allowed.
     """
-    from ..githublive import load_scope
+    from ..auth.github_installations import find_github_installation_conflict
+
+    conflict = find_github_installation_conflict(
+        org_id, installation_id, for_workspace_id=workspace_id
+    )
+    if conflict is not None:
+        return _github_conflict_error_code(conflict.workspace_id)
+
+    save_connection(org_id, "github", tokens, workspace_id=workspace_id)
+    set_connection_config(
+        org_id,
+        "github",
+        {
+            "installation_id": installation_id,
+            "account_login": tokens.external_workspace_id,
+        },
+        workspace_id=workspace_id,
+    )
+    try:
+        refresh_installation_scope(org_id, workspace_id)
+    except (OAuthError, ConfigurationError, SourceError):
+        pass
+    return None
+
+
+@router.get("/github/installations/pending/{token}")
+def github_install_pending_detail(token: str):
+    """List GitHub App installs the user may bind, with availability flags.
+
+    Possession of ``token`` is the capability (same model as oauth ``state``).
+    Installs already used by another Folio surface in this org are marked
+    unavailable so Company Sources and a space cannot share one personal id.
+    """
+    from ..auth.github_installations import (
+        find_github_installation_conflict,
+        summarize_installation,
+    )
+    from ..auth.github_pending import get_github_install_pending
 
     try:
-        org_scope = load_scope(org_id)
-    except ConfigurationError:
-        return False
-    return bool(
-        org_scope.installation_id
-        and str(org_scope.installation_id) == str(installation_id)
+        pending = get_github_install_pending(token)
+        provider = build_oauth_provider("github")
+        assert isinstance(provider, GitHubAppProvider)
+        raw = provider._list_installations(pending.access_token)
+    except (OAuthError, ConfigurationError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    choices = []
+    for item in raw:
+        summary = summarize_installation(item)
+        conflict = find_github_installation_conflict(
+            pending.org_id,
+            summary["id"],
+            for_workspace_id=pending.workspace_id,
+        )
+        available = conflict is None and bool(summary["login"])
+        reason = None
+        if conflict is not None:
+            reason = (
+                "Already linked under Company → Sources"
+                if conflict.workspace_id is None
+                else "Already linked to another space in this company"
+            )
+        choices.append({**summary, "available": available, "unavailable_reason": reason})
+
+    # Fresh state so "Connect another account" can open GitHub's install
+    # screen and still return to our callback for the same Folio surface.
+    fresh_state = create_state(
+        pending.org_id, "github", workspace_id=pending.workspace_id
     )
+    install_another_url = provider.install_url(fresh_state)
+    # Logout first so GitHub shows the account picker; return_to is a path on
+    # github.com (install URL without the host).
+    from urllib.parse import urlparse, urlencode
+
+    install_path = urlparse(install_another_url).path
+    install_query = urlparse(install_another_url).query
+    return_to = install_path + (f"?{install_query}" if install_query else "")
+    switch_account_url = (
+        "https://github.com/logout?" + urlencode({"return_to": return_to})
+    )
+
+    return {
+        "scope": "workspace" if pending.workspace_id else "org",
+        "workspace_id": pending.workspace_id,
+        "installations": choices,
+        "hint": (
+            "Pick the GitHub account this *space* should use. It must be different "
+            "from Company → Sources."
+            if pending.workspace_id
+            else "Pick the GitHub account for *Company → Sources* (usually your "
+            "company Organization). Spaces will need a different account."
+        ),
+        "install_another_url": install_another_url,
+        "switch_account_url": switch_account_url,
+    }
+
+
+@router.post("/github/installations/pending/{token}")
+def github_install_pending_choose(
+    token: str,
+    body: dict,
+    settings: ApiSettings = Depends(ApiSettings.from_env),
+):
+    """Complete connect after the user picks an installation on the choose page."""
+    from ..auth.github_pending import consume_github_install_pending
+
+    installation_id = str((body or {}).get("installation_id") or "").strip()
+    if not installation_id:
+        raise HTTPException(status_code=400, detail="installation_id is required")
+
+    try:
+        pending = consume_github_install_pending(token)
+        provider = build_oauth_provider("github")
+        assert isinstance(provider, GitHubAppProvider)
+        tokens, verified_id = provider.tokens_for_installation(
+            pending.access_token,
+            installation_id,
+            refresh_token=pending.refresh_token,
+            expires_at=pending.token_expires_at,
+        )
+        error = _persist_github_connection(
+            pending.org_id, pending.workspace_id, tokens, verified_id
+        )
+    except (OAuthError, ConfigurationError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if error:
+        path = _github_connect_error_path(pending.workspace_id, error)
+    else:
+        path = _github_connect_success_path(pending.workspace_id)
+    # Return the absolute URL so the SPA can window.location without guessing
+    # FRONTEND_URL itself (API already knows it).
+    base = (settings.frontend_url or "").rstrip("/")
+    return {"redirect_to": f"{base}{path}" if base else path}
 
 
 @router.get("/{provider}/callback")
@@ -357,85 +511,63 @@ def callback(
     ``app/auth/github_oauth.py``). ``setup_action`` is accepted only so the
     redirect doesn't 422 on an unexpected query parameter; nothing branches on
     it.
+
+    GitHub without ``installation_id`` no longer auto-picks an install: it
+    parks the user token and sends the browser to the choose UI so Company
+    Sources vs a space never silently share one personal GitHub account.
     """
+    from ..auth.github_pending import create_github_install_pending
+
     try:
         org_id, workspace_id = consume_state(state, provider=provider)
         oauth_provider = build_oauth_provider(provider)
 
         if isinstance(oauth_provider, GitHubAppProvider):
-            # Install redirect includes installation_id. Plain user OAuth (used
-            # so an *already-installed* App can still create a workspace row)
-            # does not — resolve the installation from /user/installations.
             if installation_id:
+                # Came from GitHub's install screen — account was chosen there.
                 tokens, verified_installation_id = (
                     oauth_provider.exchange_code_with_installation(
                         code, installation_id
                     )
                 )
-            else:
-                resolved = oauth_provider.exchange_code_resolve_installation(
-                    code,
-                    prefer_user_account=(workspace_id is not None),
+                error = _persist_github_connection(
+                    org_id, workspace_id, tokens, verified_installation_id
                 )
-                if resolved is None:
-                    # App not installed yet — send them to the install screen
-                    # with a fresh state (this one was already consumed).
+                if error:
+                    return _frontend_redirect(
+                        settings, _github_connect_error_path(workspace_id, error)
+                    )
+            else:
+                access, refresh, expires_at, installations = (
+                    oauth_provider.exchange_code_list_installations(code)
+                )
+                if not installations:
                     fresh = create_state(org_id, provider, workspace_id=workspace_id)
                     return RedirectResponse(url=oauth_provider.install_url(fresh))
-                tokens, verified_installation_id = resolved
-
-            # A workspace connect means "connect MY personal GitHub". If it lands
-            # on the SAME installation the org-wide connection already uses, the
-            # workspace would read exactly the company's repos — two rows, one
-            # installation, no isolation. Refuse and send them back to the space
-            # UI with a readable banner (not a raw JSON 400 in the browser).
-            if workspace_id is not None and _workspace_github_install_collides(
-                org_id, verified_installation_id
-            ):
-                base = (settings.frontend_url or "").rstrip("/")
-                target = (
-                    f"/workspaces/{workspace_id}"
-                    "?connect_error=github_same_install"
+                pending = create_github_install_pending(
+                    org_id,
+                    workspace_id=workspace_id,
+                    access_token=access,
+                    refresh_token=refresh,
+                    token_expires_at=expires_at,
                 )
-                return RedirectResponse(url=f"{base}{target}" if base else target)
-
-            save_connection(org_id, provider, tokens, workspace_id=workspace_id)
-            # The installation id is how every later content call mints a token
-            # (see credentials.get_live_connection_token), so it must be stored
-            # AFTER the connection row exists — set_connection_config requires it.
-            set_connection_config(
-                org_id,
-                provider,
-                {
-                    "installation_id": verified_installation_id,
-                    "account_login": tokens.external_workspace_id,
-                },
-                workspace_id=workspace_id,
-            )
-            # Then record what the admin ACTUALLY authorized on GitHub's install
-            # screen ("All repositories" vs a chosen subset) — decision D5b.
-            # Best-effort: a failure here leaves a connected row whose scope is
-            # empty, which fails *closed* (resolve_repo refuses everything) and
-            # is fixable by refreshing scope, so it must not abort a connect that
-            # otherwise succeeded.
-            try:
-                refresh_installation_scope(org_id, workspace_id)
-            except (OAuthError, ConfigurationError, SourceError):
-                pass
+                return _frontend_redirect(
+                    settings, f"/connect/github/choose?pending={pending}"
+                )
         else:
             tokens = oauth_provider.exchange_code(code)
             save_connection(org_id, provider, tokens, workspace_id=workspace_id)
     except (OAuthError, ConfigurationError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    # Resume admin onboarding at the ingest step after OAuth returns. A
-    # workspace connect resumes in the workspace's own UI instead.
-    base = (settings.frontend_url or "").rstrip("/")
-    if workspace_id is not None:
-        target = f"/workspaces/{workspace_id}?connected={provider}"
-    else:
-        target = f"/onboarding?connected={provider}"
-    return RedirectResponse(url=f"{base}{target}" if base else target)
+    return _frontend_redirect(
+        settings,
+        (
+            f"/workspaces/{workspace_id}?connected={provider}"
+            if workspace_id is not None
+            else f"/onboarding?connected={provider}"
+        ),
+    )
 
 
 # A trimmed, self-contained copy of the subset of frontend/app/globals.css
