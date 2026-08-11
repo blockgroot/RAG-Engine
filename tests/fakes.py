@@ -88,6 +88,7 @@ class RecordingLLM(LLMProvider):
         recovery_queries: list[str] | None = None,
         decompose_subquestions: list[str] | None = None,
         raise_on_recovery: bool = False,
+        question_tone: str | None = "FACTUAL",
     ) -> None:
         self.prompts: list[str] = []
         self._answer = answer
@@ -98,6 +99,8 @@ class RecordingLLM(LLMProvider):
         self._recovery_queries = recovery_queries
         self._decompose_subquestions = decompose_subquestions
         self._raise_on_recovery = raise_on_recovery
+        self._question_tone = question_tone
+        self.tone_classify_calls = 0
         self.recovery_calls = 0
         self.decompose_calls = 0
         self.stages: list[str] = []
@@ -124,6 +127,9 @@ class RecordingLLM(LLMProvider):
             if self._decompose_subquestions is None:
                 return "SINGLE"
             return "\n".join(self._decompose_subquestions)
+        if "QUESTION_TONE_LABEL:" in prompt:
+            self.tone_classify_calls += 1
+            return self._question_tone or "FACTUAL"
         self.grounded_calls += 1
         if self._answers is not None:
             if self._answer_idx < len(self._answers):

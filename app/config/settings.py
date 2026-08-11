@@ -90,6 +90,7 @@ DEFAULT_RETRIEVAL_REUSE_THRESHOLD = 0.72
 
 # Bounded retrieval recovery (Retrieval Discovery Gap). First retrieve stays as
 # today; at most one optional recovery when evidence looks insufficient.
+DEFAULT_TONE_CLASSIFY_ENABLED = True
 DEFAULT_RECOVERY_ENABLED = True
 DEFAULT_RECOVERY_MAX_QUERIES = 2
 
@@ -659,6 +660,27 @@ class ReuseSettings:
             threshold=float(
                 os.getenv("RETRIEVAL_REUSE_THRESHOLD") or DEFAULT_RETRIEVAL_REUSE_THRESHOLD
             ),
+        )
+
+
+
+@dataclass(frozen=True)
+class ToneSettings:
+    """Semantic question-tone classification (factual vs supportive).
+
+    A cheap aux-LLM call labels whether the user is asking for policy
+    information or personally seeking help coping. Empathy is required only
+    for ``supportive``; policy-topic asks (even mental health) stay factual.
+    Kill-switch: ``TONE_CLASSIFY_ENABLED=false`` falls back to prompt-only
+    judgement with no empathy force/strip retry.
+    """
+
+    enabled: bool = DEFAULT_TONE_CLASSIFY_ENABLED
+
+    @classmethod
+    def from_env(cls) -> "ToneSettings":
+        return cls(
+            enabled=env_bool("TONE_CLASSIFY_ENABLED", DEFAULT_TONE_CLASSIFY_ENABLED),
         )
 
 

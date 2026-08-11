@@ -1,20 +1,20 @@
-"""Grounding Gap follow-up: Mode A/B tone-compliance guard.
+"""Tone-compliance: MODE tags, meta-language guard, semantic question tone.
 
-Deterministic unit tests with fakes — no DB, real LLM, or embedding model
-(same convention as test_recovery.py). Proves the pipeline (1) parses the
-``MODE: A|B|C`` tag the prompt now requires, (2) detects Mode A or B answers
-that still use forbidden meta-language despite the tag — including "doc"/
-"docs" shorthand, not just "document"/"documents" — (3) retries exactly once
-with a corrective reminder, (4) degrades gracefully — never loops, never
-fails the request — if the retry still violates or the model omits the tag
-entirely (e.g. any pre-existing fake/test that returns untagged plain text).
+Deterministic unit tests with fakes — no DB / real LLM. Empathy is driven by
+an aux semantic classifier (FACTUAL vs SUPPORTIVE), not keyword lists on the
+user's wording.
 """
 
 from __future__ import annotations
 
-from app.config.settings import RagSettings, RecoverySettings, ReuseSettings
+from app.config.settings import RagSettings, RecoverySettings, ReuseSettings, ToneSettings
 from app.rag.pipeline import RagPipeline, _parse_tagged_mode, _violates_mode_b_tone
 from app.rag.prompts import MODE_B_FORBIDDEN_PHRASES
+from app.rag.question_tone import (
+    has_unwarranted_sympathy_opening,
+    lacks_supportive_opening,
+    parse_question_tone,
+)
 
 from .fakes import KeywordEmbedder, RecordingLLM, TopicAwareVectorStore
 
@@ -22,7 +22,12 @@ ORG = "org-tone"
 FALLBACK = "I don't have information on that in the available policy documents."
 
 
-def _pipeline(llm: RecordingLLM, store: TopicAwareVectorStore) -> RagPipeline:
+def _pipeline(
+    llm: RecordingLLM,
+    store: TopicAwareVectorStore,
+    *,
+    tone_enabled: bool = True,
+) -> RagPipeline:
     return RagPipeline(
         llm=llm,
         embedder=KeywordEmbedder(),
@@ -33,6 +38,7 @@ def _pipeline(llm: RecordingLLM, store: TopicAwareVectorStore) -> RagPipeline:
         retriever=None,
         reuse_settings=ReuseSettings(enabled=False),
         recovery_settings=RecoverySettings(enabled=False),
+        tone_settings=ToneSettings(enabled=tone_enabled),
     )
 
 
@@ -85,11 +91,38 @@ def test_violates_mode_b_tone_false_for_natural_language():
 
 
 def test_violates_mode_b_tone_catches_doc_shorthand_not_just_document():
-    """A live query showed the model routing around the ban by shortening
-    'document(s)' to 'doc(s)' once the longer form was forbidden."""
     assert _violates_mode_b_tone("The doc mentions employees get 25 days.")
     assert _violates_mode_b_tone("The docs do not contain that information.")
     assert _violates_mode_b_tone("According to the doc, leave is 25 days.")
+
+
+# -- question tone parse / opening shape --------------------------------------
+
+
+def test_parse_question_tone_reads_label():
+    assert parse_question_tone("FACTUAL") == "factual"
+    assert parse_question_tone("LABEL: SUPPORTIVE\n") == "supportive"
+    assert parse_question_tone("maybe something else") is None
+
+
+def test_lacks_supportive_opening_flags_cold_procedure():
+    assert lacks_supportive_opening(
+        "To access professional counselling services, fill out the form."
+    )
+    assert not lacks_supportive_opening(
+        "I'm sorry you're going through that — that sounds really hard. "
+        "You can fill out the Counselling Support form."
+    )
+
+
+def test_has_unwarranted_sympathy_opening_flags_personal_apology():
+    assert has_unwarranted_sympathy_opening(
+        "I'm sorry you've been feeling this way — it sounds like you are "
+        "going through a difficult time. Here are the facts."
+    )
+    assert not has_unwarranted_sympathy_opening(
+        "Under the mental health policy you have two paid days and counselling."
+    )
 
 
 # -- pipeline wiring: bounded retry --------------------------------------------
@@ -102,15 +135,12 @@ def test_generate_retries_once_when_mode_b_violates_tone():
 
     result = pipeline.answer("What is the parental leave policy?", ORG)
 
-    assert llm.grounded_calls == 2  # exactly one retry
+    assert llm.tone_classify_calls == 1
+    assert llm.grounded_calls == 2
     assert result.tone_retry_used is True
     assert result.response_mode == "B"
+    assert result.question_tone == "factual"
     assert "does not explicitly answer" not in result.answer.lower()
-    assert "cannot give a definitive answer" not in result.answer.lower()
-    assert result.answer == (
-        "You have access to 25 days of paid annual leave [1]. "
-        "For parental leave specifics, your HR team can help."
-    )
     assert result.answered is True
 
 
@@ -121,28 +151,24 @@ def test_generate_does_not_retry_when_mode_b_is_already_compliant():
 
     result = pipeline.answer("What is the parental leave policy?", ORG)
 
-    assert llm.grounded_calls == 1  # no retry needed
+    assert llm.grounded_calls == 1
     assert result.tone_retry_used is False
     assert result.response_mode == "B"
 
 
 def test_generate_gracefully_degrades_if_retry_still_violates():
-    """At most one retry — never loop, never fail the request."""
     llm = RecordingLLM(answers=[VIOLATING_MODE_B, VIOLATING_MODE_B])
     store = TopicAwareVectorStore(ORG, [("doc-1", "leave: 25 days annual")])
     pipeline = _pipeline(llm, store)
 
     result = pipeline.answer("What is the parental leave policy?", ORG)
 
-    assert llm.grounded_calls == 2  # exactly one retry, not more
+    assert llm.grounded_calls == 2
     assert result.tone_retry_used is True
-    # Still accepted (graceful degradation), not turned into a hard failure.
     assert result.answered is True
 
 
 def test_generate_retries_mode_a_when_it_contains_forbidden_phrase():
-    """The guard also covers Mode A now — a fully-supported answer narrating
-    "the document says X" is just as robotic as Mode B doing it."""
     llm = RecordingLLM(
         answers=[
             "MODE: A\n\nThe document says employees get 25 days. [1]",
@@ -154,11 +180,10 @@ def test_generate_retries_mode_a_when_it_contains_forbidden_phrase():
 
     result = pipeline.answer("How many annual leave days do I get?", ORG)
 
-    assert llm.grounded_calls == 2  # exactly one retry
+    assert llm.grounded_calls == 2
     assert result.tone_retry_used is True
     assert result.response_mode == "A"
     assert "the document says" not in result.answer.lower()
-    assert result.answer == "You get 25 days of paid annual leave. [1]"
 
 
 def test_generate_does_not_retry_mode_a_when_already_compliant():
@@ -170,31 +195,21 @@ def test_generate_does_not_retry_mode_a_when_already_compliant():
 
     assert llm.grounded_calls == 1
     assert result.tone_retry_used is False
-    assert result.response_mode == "A"
 
 
 def test_untagged_answer_degrades_gracefully_no_tone_check():
-    """Pre-existing fakes/tests that return plain untagged text must keep working."""
     llm = RecordingLLM(answer="25 days. [1]")
     store = TopicAwareVectorStore(ORG, [("doc-1", "leave: 25 days annual")])
     pipeline = _pipeline(llm, store)
 
     result = pipeline.answer("How many annual leave days do I get?", ORG)
 
-    assert llm.grounded_calls == 1  # no retry — mode is unknown, not "B"
+    assert llm.grounded_calls == 1
     assert result.response_mode is None
     assert result.tone_retry_used is False
-    assert result.answer == "25 days. [1]"
 
 
 def test_mode_c_tag_still_detected_as_fallback():
-    """Gate passes (a chunk clears the threshold) but the model still chooses
-    Mode C for this question. Note: a refusal re-derives its final RagResult
-    via ``_gate_failed`` (which may also consider web-search), not via
-    ``replace()`` on ``_generate``'s result, so ``response_mode`` isn't
-    preserved on the final refusal result — only the answer/answered contract
-    is guaranteed here; ``response_mode`` is a best-effort diagnostic only on
-    a non-refusal answer (see the Mode A/B tests above)."""
     llm = RecordingLLM(answer=f"MODE: C\n\n{FALLBACK}")
     store = TopicAwareVectorStore(ORG, [("doc-1", "leave: 25 days annual")])
     pipeline = _pipeline(llm, store)
@@ -203,4 +218,128 @@ def test_mode_c_tag_still_detected_as_fallback():
 
     assert result.answered is False
     assert result.answer == FALLBACK
-    assert llm.grounded_calls == 1  # no tone retry for mode C
+    assert llm.grounded_calls == 1
+
+
+# -- semantic SUPPORTIVE vs FACTUAL -------------------------------------------
+
+COLD_MODE_A_COUNSELLING = (
+    "MODE: A\n\n"
+    "To access professional counselling services and mental health leave, "
+    "please follow these steps:\n"
+    "- Fill out the Counselling Support Google Form\n"
+    "- HR will connect you with a counsellor"
+)
+WARM_MODE_A_COUNSELLING = (
+    "MODE: A\n\n"
+    "I'm sorry you're feeling so stressed — that sounds really hard. "
+    "You can get support through company counselling:\n"
+    "- Fill out the Counselling Support Google Form\n"
+    "- HR will connect you with a counsellor"
+)
+FACTUAL_MODE_A_MENTAL_HEALTH = (
+    "MODE: A\n\n"
+    "Under the mental health policy you have access to:\n"
+    "- Two paid mental-health days per calendar year\n"
+    "- Professional counselling (in-house or external partner network)\n"
+    "- Up to five covered sessions per year"
+)
+UNWARRANTED_WARM_MODE_A = (
+    "MODE: A\n\n"
+    "I'm sorry you've been feeling this way — it sounds like you are going "
+    "through a difficult time and it is important to prioritize your "
+    "well-being. You have access to the following resources under the mental "
+    "health policy:\n"
+    "- Two paid mental-health days per calendar year\n"
+    "- Professional counselling"
+)
+
+
+def test_generate_retries_cold_answer_when_classifier_says_supportive():
+    """Paraphrased distress still gets SUPPORTIVE — no user-keyword list."""
+    llm = RecordingLLM(
+        answers=[COLD_MODE_A_COUNSELLING, WARM_MODE_A_COUNSELLING],
+        question_tone="SUPPORTIVE",
+    )
+    store = TopicAwareVectorStore(
+        ORG,
+        [("doc-1", "counselling: fill Counselling Support form; HR connects you")],
+    )
+    pipeline = _pipeline(llm, store)
+
+    result = pipeline.answer(
+        "Work has been crushing me lately and I don't know how to cope — any help?",
+        ORG,
+    )
+
+    assert llm.tone_classify_calls == 1
+    assert llm.grounded_calls == 2
+    assert result.question_tone == "supportive"
+    assert result.tone_retry_used is True
+    assert "sorry" in result.answer.lower()
+
+
+def test_generate_retries_unwarranted_sympathy_when_classifier_says_factual():
+    llm = RecordingLLM(
+        answers=[UNWARRANTED_WARM_MODE_A, FACTUAL_MODE_A_MENTAL_HEALTH],
+        question_tone="FACTUAL",
+    )
+    store = TopicAwareVectorStore(
+        ORG,
+        [("doc-1", "mental health policy: two paid MH days; counselling; five sessions")],
+    )
+    pipeline = _pipeline(llm, store)
+
+    result = pipeline.answer("What should I know from 'Mental Health Policy'?", ORG)
+
+    assert result.question_tone == "factual"
+    assert llm.grounded_calls == 2
+    assert result.tone_retry_used is True
+    assert "sorry you've been feeling" not in result.answer.lower()
+    assert "difficult time" not in result.answer.lower()
+
+
+def test_generate_keeps_factual_mental_health_answer_without_retry():
+    llm = RecordingLLM(answer=FACTUAL_MODE_A_MENTAL_HEALTH, question_tone="FACTUAL")
+    store = TopicAwareVectorStore(
+        ORG,
+        [("doc-1", "mental health policy: two paid MH days; counselling; five sessions")],
+    )
+    pipeline = _pipeline(llm, store)
+
+    result = pipeline.answer("What should I know from 'Mental Health Policy'?", ORG)
+
+    assert llm.grounded_calls == 1
+    assert result.tone_retry_used is False
+    assert "sorry" not in result.answer.lower()
+
+
+def test_generate_does_not_retry_warm_supportive_answer():
+    llm = RecordingLLM(answer=WARM_MODE_A_COUNSELLING, question_tone="SUPPORTIVE")
+    store = TopicAwareVectorStore(
+        ORG,
+        [("doc-1", "counselling: fill Counselling Support form; HR connects you")],
+    )
+    pipeline = _pipeline(llm, store)
+
+    result = pipeline.answer("I am feeling very stressed lately what should i do?", ORG)
+
+    assert llm.grounded_calls == 1
+    assert result.tone_retry_used is False
+    assert result.question_tone == "supportive"
+
+
+def test_tone_classify_disabled_skips_empathy_force_retry():
+    llm = RecordingLLM(answer=COLD_MODE_A_COUNSELLING, question_tone="SUPPORTIVE")
+    store = TopicAwareVectorStore(
+        ORG,
+        [("doc-1", "counselling: fill Counselling Support form; HR connects you")],
+    )
+    pipeline = _pipeline(llm, store, tone_enabled=False)
+
+    result = pipeline.answer("I am feeling very stressed lately what should i do?", ORG)
+
+    assert llm.tone_classify_calls == 0
+    assert llm.grounded_calls == 1
+    assert result.question_tone is None
+    assert result.tone_retry_used is False

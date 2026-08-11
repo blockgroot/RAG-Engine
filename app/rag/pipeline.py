@@ -71,6 +71,7 @@ from ..config.settings import (
     RecoverySettings,
     RequestBudgetSettings,
     ReuseSettings,
+    ToneSettings,
     WebSearchSettings,
 )
 from ..core.exceptions import LLMProviderError, WebSearchError
@@ -89,6 +90,13 @@ from .query_cache import QueryAnswerCache
 from .request_budget import RequestBudget
 from .summary_fold import schedule_summary_fold, wait_for_conversation_fold
 from .query_normalize import CorpusSpellNormalizer
+from .question_tone import (
+    QuestionTone,
+    build_question_tone_prompt,
+    has_unwarranted_sympathy_opening,
+    lacks_supportive_opening,
+    parse_question_tone,
+)
 from .prompts import (
     MODE_B_FORBIDDEN_PHRASES,
     POLICY_PROMPT_PROFILE,
@@ -96,6 +104,7 @@ from .prompts import (
     PromptProfile,
     build_decompose_prompt,
     build_grounded_prompt,
+    # question tone prompt lives in question_tone.py
     build_recovery_queries_prompt,
     build_rewrite_prompt,
     build_summary_prompt,
@@ -116,22 +125,42 @@ _MAX_RECOVERY_QUERY_LEN = 200
 # (see prompts.py rule 5). Case-insensitive; tolerant of extra whitespace.
 _MODE_TAG_RE = re.compile(r"^\s*MODE:\s*([ABC])\s*\n+(.*)", re.IGNORECASE | re.DOTALL)
 
-def _tone_retry_addendum(mode: str) -> str:
-    """Appended to the grounded prompt on the one bounded tone-compliance retry.
 
-    Mode-agnostic (applies to a violating Mode A or Mode B answer) so the
-    correction still names the mode the model actually declared, and asks it
-    to keep declaring the same mode on the corrected answer.
-    """
-    return (
+def _tone_retry_addendum(
+    mode: str,
+    *,
+    meta_language: bool = False,
+    missing_empathy: bool = False,
+    unwarranted_empathy: bool = False,
+) -> str:
+    """Appended to the grounded prompt on the one bounded tone-compliance retry."""
+    parts: list[str] = [
         f"\n\nIMPORTANT CORRECTION: your previous answer declared Mode {mode} "
-        "but used forbidden meta-language about sources (e.g. naming 'the "
-        "document(s)/doc(s)'/'handbook' directly, saying 'according to the "
-        "document', or saying you cannot give a definitive answer). Rewrite it: "
-        "state facts directly in a natural, conversational voice with no "
-        "meta-language about sources, following ALL of the rules for Mode "
-        f"{mode} above exactly. Still begin with 'MODE: {mode}'."
-    )
+        "but did not fully follow that mode's tone rules. Rewrite it, following "
+        f"ALL of the rules for Mode {mode} above exactly. Still begin with "
+        f"'MODE: {mode}'."
+    ]
+    if meta_language:
+        parts.append(
+            " Do not use forbidden meta-language about sources (e.g. naming "
+            "'the document(s)/doc(s)'/'handbook' directly, saying 'according "
+            "to the document', or saying you cannot give a definitive answer). "
+            "State facts directly in a natural, conversational voice."
+        )
+    if missing_empathy:
+        parts.append(
+            " REQUIRED_TONE is SUPPORTIVE — open with one brief, warm sentence "
+            "acknowledging how the user feels BEFORE any procedures, bullet "
+            "list, or company facts. Do not jump straight into 'To access…' / "
+            "form steps."
+        )
+    if unwarranted_empathy:
+        parts.append(
+            " REQUIRED_TONE is FACTUAL — the user asked for policy information, "
+            "not personal support. Do NOT open with sympathy such as 'I'm sorry "
+            "you've been feeling this way'. State the policy facts directly."
+        )
+    return "".join(parts)
 
 
 def _parse_tagged_mode(raw: str) -> tuple[str | None, str]:
@@ -188,9 +217,12 @@ class RagResult:
       answer (``None`` if it didn't include a parseable tag — the pipeline
       degrades gracefully rather than failing the request). A diagnostic.
     - ``tone_retry_used``  ``True`` when a declared Mode A or B answer used
-      forbidden meta-language and the pipeline retried the generation once with a
+      forbidden meta-language, or answered a distress/help-seeking question
+      without a warm opening, and the pipeline retried generation once with a
       corrective reminder (see ``RagPipeline._generate``). A diagnostic; never
       loops more than once.
+    - ``question_tone``  ``factual`` / ``supportive`` from the aux classifier
+      (``None`` if classify disabled/failed).
     - ``question_decomposed`` / ``sub_questions`` — Phase 18 compound-question
       split before retrieval (diagnostics).
     """
@@ -212,6 +244,7 @@ class RagResult:
     latency_ms: float | None = None
     response_mode: str | None = None
     tone_retry_used: bool = False
+    question_tone: str | None = None
     question_decomposed: bool = False
     sub_questions: list[str] = field(default_factory=list)
     cache_hit: bool = False
@@ -256,6 +289,7 @@ class RagPipeline:
         query_norm: CorpusSpellNormalizer | None = None,
         query_norm_settings: QueryNormSettings | None = None,
         prompt_profile: PromptProfile | None = None,
+        tone_settings: ToneSettings | None = None,
     ) -> None:
         self._llm = llm
         self._llm_aux = llm_aux or llm
@@ -271,6 +305,7 @@ class RagPipeline:
         self._reuse_settings = reuse_settings or ReuseSettings.from_env()
         # Bounded retrieval recovery (optional; at most one attempt per answer).
         self._recovery_settings = recovery_settings or RecoverySettings.from_env()
+        self._tone_settings = tone_settings or ToneSettings.from_env()
         self._decompose_settings = decompose_settings or DecomposeSettings.from_env()
         self._budget_settings = budget_settings or RequestBudgetSettings.from_env()
         self._query_cache = query_cache if query_cache is not None else QueryAnswerCache()
@@ -735,6 +770,40 @@ class RagPipeline:
         top_score = hits[0].score if hits else None
         return hits, top_score
 
+
+    def _classify_question_tone(
+        self,
+        question: str,
+        *,
+        org_id: str | None = None,
+        conversation_id: str | None = None,
+        budget: RequestBudget | None = None,
+    ) -> QuestionTone | None:
+        """Aux-LLM intent label: factual policy ask vs personal supportive ask.
+
+        Semantic (not keyword) so paraphrases still classify correctly. On
+        disable / timeout / parse failure returns ``None`` and the grounded
+        prompt falls back to judgement-only rules without forced empathy retry.
+        """
+        if not self._tone_settings.enabled:
+            return None
+        min_stage = self._budget_settings.min_stage_seconds
+        if budget is not None and not budget.can_spend(min_stage):
+            return None
+        try:
+            raw = self._generate_text(
+                "tone-classify",
+                build_question_tone_prompt(question),
+                org_id=org_id,
+                conversation_id=conversation_id,
+                max_tokens=16,
+            )
+        except Exception:
+            # Any classify failure (provider, transport, parse upstream) must
+            # degrade — never fail the user-facing answer path.
+            return None
+        return parse_question_tone(raw)
+
     def _generate(
         self,
         question: str,
@@ -750,11 +819,18 @@ class RagPipeline:
             [h.content for h in hits],
             self._settings.max_context_chars,
         )
+        question_tone = self._classify_question_tone(
+            question,
+            org_id=org_id,
+            conversation_id=conversation_id,
+            budget=budget,
+        )
         prompt = build_grounded_prompt(
             question=question,
             contexts=contexts,
             fallback_response=self._settings.fallback_response,
             profile=self._prompt_profile,
+            question_tone=question_tone,
         )
         answer_cap = self._settings.max_answer_tokens
         raw = self._generate_text(
@@ -768,15 +844,31 @@ class RagPipeline:
 
         tone_retry_used = False
         min_stage = self._budget_settings.min_stage_seconds
-        if (
+        meta_bad = mode in ("A", "B") and _violates_mode_b_tone(text)
+        empathy_bad = (
             mode in ("A", "B")
-            and _violates_mode_b_tone(text)
+            and question_tone == "supportive"
+            and lacks_supportive_opening(text)
+        )
+        unwarranted_empathy = (
+            mode in ("A", "B")
+            and question_tone == "factual"
+            and has_unwarranted_sympathy_opening(text)
+        )
+        if (
+            (meta_bad or empathy_bad or unwarranted_empathy)
             and budget is not None
             and budget.can_spend(min_stage)
         ):
             retry_raw = self._generate_text(
                 "tone-retry",
-                prompt + _tone_retry_addendum(mode),
+                prompt
+                + _tone_retry_addendum(
+                    mode or "A",
+                    meta_language=meta_bad,
+                    missing_empathy=empathy_bad,
+                    unwarranted_empathy=unwarranted_empathy,
+                ),
                 org_id=org_id,
                 conversation_id=conversation_id,
                 max_tokens=answer_cap,
@@ -796,6 +888,7 @@ class RagPipeline:
             retrieval_reused=retrieval_reused,
             response_mode=mode,
             tone_retry_used=tone_retry_used,
+            question_tone=question_tone,
         )
 
     def _recover_once(

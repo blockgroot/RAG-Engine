@@ -90,6 +90,7 @@ class RagPipelineAgent(Agent):
             latency_ms=result.latency_ms,
             response_mode=result.response_mode,
             tone_retry_used=result.tone_retry_used,
+            question_tone=result.question_tone,
         )
 
     @staticmethod

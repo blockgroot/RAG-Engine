@@ -19,6 +19,7 @@ AUX_LLM_STAGES = frozenset(
         "recovery-expand",
         "summary-fold",
         "ingest-context",
+        "tone-classify",
     }
 )
 
