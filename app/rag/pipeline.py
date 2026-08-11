@@ -71,13 +71,33 @@ from ..config.settings import (
     RecoverySettings,
     RequestBudgetSettings,
     ReuseSettings,
+    ToneSettings,
     WebSearchSettings,
+)
+from ..core.answer_sources import (
+    RECOVERY_REASON_GATE_MISS as _RECOVERY_REASON_GATE_MISS,
+    RECOVERY_REASON_INSUFFICIENT_EVIDENCE as _RECOVERY_REASON_INSUFFICIENT_EVIDENCE,
+    SOURCE_NONE,
+    SOURCE_POLICY,
+    SOURCE_WEB,
 )
 from ..core.exceptions import LLMProviderError, WebSearchError
 from ..core.streaming import chunk_answer
 from ..embeddings.base import EmbeddingProvider
 from ..llm.base import LLMProvider
 from ..llm.metering import AUX_LLM_STAGES, log_llm_call
+from ..llm.stages import (
+    STAGE_DECOMPOSE,
+    STAGE_EMPATHY_OPENER,
+    STAGE_GENERATE,
+    STAGE_RECOVERY_EXPAND,
+    STAGE_REWRITE,
+    STAGE_SUMMARY_FOLD,
+    STAGE_TONE_CLASSIFY,
+    STAGE_TONE_RETRY,
+    STAGE_WEB_ANSWER,
+    STAGE_WEB_DECISION,
+)
 from .query_signals import log_query_signal
 from ..memory.base import ConversationContext, ConversationStore, RetrievedChunkRecord
 from ..vectorstore.base import RetrievedChunk, VectorStore
@@ -89,8 +109,16 @@ from .query_cache import QueryAnswerCache
 from .request_budget import RequestBudget
 from .summary_fold import schedule_summary_fold, wait_for_conversation_fold
 from .query_normalize import CorpusSpellNormalizer
+from .source_meta import uses_source_meta_language
+from .question_tone import (
+    QuestionTone,
+    build_empathy_opener_prompt,
+    build_question_tone_prompt,
+    compose_supportive_answer,
+    normalize_opener,
+    parse_question_tone,
+)
 from .prompts import (
-    MODE_B_FORBIDDEN_PHRASES,
     POLICY_PROMPT_PROFILE,
     WEB_SEARCH_TOOL,
     PromptProfile,
@@ -106,9 +134,10 @@ from .prompts import (
 # Unmistakable banner so a web-sourced answer never blends with a policy answer.
 WEB_ANSWER_LABEL = "🌐 From a web search (NOT your organization's policy documents):"
 
-# Architectural recovery reasons (implementation of "evidence insufficient").
-RECOVERY_REASON_GATE_MISS = "gate_miss"
-RECOVERY_REASON_INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+# Re-exported here (canonical definition in core.answer_sources) so existing
+# `from app.rag.pipeline import RECOVERY_REASON_...` imports keep working.
+RECOVERY_REASON_GATE_MISS = _RECOVERY_REASON_GATE_MISS
+RECOVERY_REASON_INSUFFICIENT_EVIDENCE = _RECOVERY_REASON_INSUFFICIENT_EVIDENCE
 
 _MAX_RECOVERY_QUERY_LEN = 200
 
@@ -116,13 +145,9 @@ _MAX_RECOVERY_QUERY_LEN = 200
 # (see prompts.py rule 5). Case-insensitive; tolerant of extra whitespace.
 _MODE_TAG_RE = re.compile(r"^\s*MODE:\s*([ABC])\s*\n+(.*)", re.IGNORECASE | re.DOTALL)
 
-def _tone_retry_addendum(mode: str) -> str:
-    """Appended to the grounded prompt on the one bounded tone-compliance retry.
 
-    Mode-agnostic (applies to a violating Mode A or Mode B answer) so the
-    correction still names the mode the model actually declared, and asks it
-    to keep declaring the same mode on the corrected answer.
-    """
+def _tone_retry_addendum(mode: str) -> str:
+    """Appended on the one bounded meta-language tone-compliance retry."""
     return (
         f"\n\nIMPORTANT CORRECTION: your previous answer declared Mode {mode} "
         "but used forbidden meta-language about sources (e.g. naming 'the "
@@ -149,15 +174,12 @@ def _parse_tagged_mode(raw: str) -> tuple[str | None, str]:
 
 
 def _violates_mode_b_tone(text: str) -> bool:
-    """True if ``text`` uses any forbidden document-meta-language phrase.
+    """True if ``text`` narrates sources instead of stating facts.
 
-    Despite the name (kept for historical/import continuity), this now checks
-    the same phrase list used for BOTH Mode A and Mode B — a fully-supported
-    answer that narrates "the document says X" is just as robotic as Mode B
-    doing it. See ``MODE_B_FORBIDDEN_PHRASES`` in prompts.py.
+    Name kept for import continuity; applies to Modes A and B. Detection is
+    structural (``uses_source_meta_language``), not a phrase laundry list.
     """
-    low = text.lower()
-    return any(phrase in low for phrase in MODE_B_FORBIDDEN_PHRASES)
+    return uses_source_meta_language(text)
 
 
 @dataclass(frozen=True)
@@ -188,16 +210,19 @@ class RagResult:
       answer (``None`` if it didn't include a parseable tag — the pipeline
       degrades gracefully rather than failing the request). A diagnostic.
     - ``tone_retry_used``  ``True`` when a declared Mode A or B answer used
-      forbidden meta-language and the pipeline retried the generation once with a
+      forbidden meta-language, or answered a distress/help-seeking question
+      without a warm opening, and the pipeline retried generation once with a
       corrective reminder (see ``RagPipeline._generate``). A diagnostic; never
       loops more than once.
+    - ``question_tone``  ``factual`` / ``supportive`` from the aux classifier
+      (``None`` if classify disabled/failed).
     - ``question_decomposed`` / ``sub_questions`` — Phase 18 compound-question
       split before retrieval (diagnostics).
     """
 
     answer: str
     answered: bool
-    source: str = "policy"
+    source: str = SOURCE_POLICY
     sources: list[RetrievedChunk] = field(default_factory=list)
     top_score: float | None = None
     resolved_question: str | None = None
@@ -212,6 +237,7 @@ class RagResult:
     latency_ms: float | None = None
     response_mode: str | None = None
     tone_retry_used: bool = False
+    question_tone: str | None = None
     question_decomposed: bool = False
     sub_questions: list[str] = field(default_factory=list)
     cache_hit: bool = False
@@ -256,6 +282,7 @@ class RagPipeline:
         query_norm: CorpusSpellNormalizer | None = None,
         query_norm_settings: QueryNormSettings | None = None,
         prompt_profile: PromptProfile | None = None,
+        tone_settings: ToneSettings | None = None,
     ) -> None:
         self._llm = llm
         self._llm_aux = llm_aux or llm
@@ -271,6 +298,7 @@ class RagPipeline:
         self._reuse_settings = reuse_settings or ReuseSettings.from_env()
         # Bounded retrieval recovery (optional; at most one attempt per answer).
         self._recovery_settings = recovery_settings or RecoverySettings.from_env()
+        self._tone_settings = tone_settings or ToneSettings.from_env()
         self._decompose_settings = decompose_settings or DecomposeSettings.from_env()
         self._budget_settings = budget_settings or RequestBudgetSettings.from_env()
         self._query_cache = query_cache if query_cache is not None else QueryAnswerCache()
@@ -374,6 +402,9 @@ class RagPipeline:
             conversation_id=conversation_id,
             budget=budget,
             workspace_id=workspace_id,
+            # Tone/empathy must see the raw user turn — conversation rewrite
+            # is retrieval-oriented and often strips personal-distress framing.
+            user_question=question,
         )
 
         if conversation_id is None and not result.cache_hit:
@@ -439,12 +470,14 @@ class RagPipeline:
         conversation_id: str | None = None,
         budget: RequestBudget | None = None,
         workspace_id: str | None = None,
+        user_question: str | None = None,
     ) -> RagResult:
         """First retrieve as today; recover at most once if evidence is insufficient."""
         t0 = time.perf_counter()
         budget = budget or RequestBudget.from_settings(self._budget_settings)
         min_stage = self._budget_settings.min_stage_seconds
         budget_exhausted = False
+        tone_question = user_question or question
 
         # Phase 17: correct OOV query tokens toward this org's chunk vocabulary
         # before embed/retrieve/keyword. Generation still uses ``question``
@@ -546,6 +579,7 @@ class RagPipeline:
             org_id=org_id,
             conversation_id=conversation_id,
             budget=budget,
+            user_question=tone_question,
         )
 
         # Generation found evidence insufficient → one recovery if not yet used.
@@ -586,6 +620,7 @@ class RagPipeline:
                 org_id=org_id,
                 conversation_id=conversation_id,
                 budget=budget,
+                user_question=tone_question,
             )
         elif not budget.can_spend(min_stage):
             budget_exhausted = True
@@ -659,7 +694,7 @@ class RagPipeline:
             return [question], False
         try:
             raw = self._generate_text(
-                "decompose",
+                STAGE_DECOMPOSE,
                 build_decompose_prompt(question),
                 org_id=org_id,
                 conversation_id=conversation_id,
@@ -735,6 +770,59 @@ class RagPipeline:
         top_score = hits[0].score if hits else None
         return hits, top_score
 
+
+
+    def _classify_question_tone(
+        self,
+        question: str,
+        *,
+        org_id: str | None = None,
+        conversation_id: str | None = None,
+        budget: RequestBudget | None = None,
+    ) -> QuestionTone | None:
+        """Aux-LLM intent: factual policy ask vs personal supportive ask."""
+        if not self._tone_settings.enabled:
+            return None
+        min_stage = self._budget_settings.min_stage_seconds
+        if budget is not None and not budget.can_spend(min_stage):
+            return None
+        try:
+            raw = self._generate_text(
+                STAGE_TONE_CLASSIFY,
+                build_question_tone_prompt(question),
+                org_id=org_id,
+                conversation_id=conversation_id,
+                max_tokens=16,
+            )
+        except Exception:
+            return None
+        return parse_question_tone(raw)
+
+    def _empathy_opener(
+        self,
+        question: str,
+        *,
+        org_id: str | None = None,
+        conversation_id: str | None = None,
+        budget: RequestBudget | None = None,
+    ) -> str | None:
+        """One-sentence acknowledgment for SUPPORTIVE asks (aux LLM).
+
+        Best-effort: still attempt when the request budget is tight — skipping
+        the opener silently is worse UX than a short over-budget aux call.
+        """
+        try:
+            raw = self._generate_text(
+                STAGE_EMPATHY_OPENER,
+                build_empathy_opener_prompt(question),
+                org_id=org_id,
+                conversation_id=conversation_id,
+                max_tokens=60,
+            )
+        except Exception:
+            return None
+        return normalize_opener(raw)
+
     def _generate(
         self,
         question: str,
@@ -745,11 +833,33 @@ class RagPipeline:
         org_id: str | None = None,
         conversation_id: str | None = None,
         budget: RequestBudget | None = None,
+        user_question: str | None = None,
     ) -> RagResult:
         contexts = assemble_context_texts(
             [h.content for h in hits],
             self._settings.max_context_chars,
         )
+        # Classify/opener use the raw user turn when present (follow-up rewrite
+        # is for retrieval and often reads as a factual policy ask).
+        tone_source = user_question or question
+        question_tone = self._classify_question_tone(
+            tone_source,
+            org_id=org_id,
+            conversation_id=conversation_id,
+            budget=budget,
+        )
+        # Fetch opener before grounded generate so a tight request budget is
+        # less likely to skip empathy after the main completion.
+        opener: str | None = None
+        if question_tone == "supportive":
+            opener = self._empathy_opener(
+                tone_source,
+                org_id=org_id,
+                conversation_id=conversation_id,
+                budget=budget,
+            )
+
+        # Grounding prompt is tone-agnostic — empathy is composed below.
         prompt = build_grounded_prompt(
             question=question,
             contexts=contexts,
@@ -758,7 +868,7 @@ class RagPipeline:
         )
         answer_cap = self._settings.max_answer_tokens
         raw = self._generate_text(
-            "generate",
+            STAGE_GENERATE,
             prompt,
             org_id=org_id,
             conversation_id=conversation_id,
@@ -768,15 +878,15 @@ class RagPipeline:
 
         tone_retry_used = False
         min_stage = self._budget_settings.min_stage_seconds
+        meta_bad = mode in ("A", "B") and _violates_mode_b_tone(text)
         if (
-            mode in ("A", "B")
-            and _violates_mode_b_tone(text)
+            meta_bad
             and budget is not None
             and budget.can_spend(min_stage)
         ):
             retry_raw = self._generate_text(
-                "tone-retry",
-                prompt + _tone_retry_addendum(mode),
+                STAGE_TONE_RETRY,
+                prompt + _tone_retry_addendum(mode or "A"),
                 org_id=org_id,
                 conversation_id=conversation_id,
                 max_tokens=answer_cap,
@@ -787,15 +897,19 @@ class RagPipeline:
 
         answered = not self._is_refusal(text, self._settings.fallback_response)
         answer = text if answered else self._settings.fallback_response
+        if answered and opener:
+            answer = compose_supportive_answer(opener, answer)
+
         return RagResult(
             answer=answer,
             answered=answered,
-            source=self._prompt_profile.source_label if answered else "none",
+            source=self._prompt_profile.source_label if answered else SOURCE_NONE,
             sources=hits,
             top_score=top_score,
             retrieval_reused=retrieval_reused,
             response_mode=mode,
             tone_retry_used=tone_retry_used,
+            question_tone=question_tone,
         )
 
     def _recover_once(
@@ -872,7 +986,7 @@ class RagPipeline:
         prompt = build_recovery_queries_prompt(question, snippets)
         try:
             raw = self._generate_text(
-                "recovery-expand",
+                STAGE_RECOVERY_EXPAND,
                 prompt,
                 org_id=org_id,
                 conversation_id=conversation_id,
@@ -934,7 +1048,7 @@ class RagPipeline:
         return RagResult(
             answer=self._settings.fallback_response,
             answered=False,
-            source="none",
+            source=SOURCE_NONE,
             sources=hits,
             top_score=top_score,
             budget_exhausted=not budget.can_spend(min_stage),
@@ -1047,7 +1161,7 @@ class RagPipeline:
                 messages, tools=[WEB_SEARCH_TOOL], tool_choice="auto"
             )
             log_llm_call(
-                "web-decision",
+                STAGE_WEB_DECISION,
                 self._llm,
                 org_id=org_id,
                 conversation_id=conversation_id,
@@ -1076,7 +1190,7 @@ class RagPipeline:
         )
         try:
             raw = self._generate_text(
-                "web-answer",
+                STAGE_WEB_ANSWER,
                 build_web_answer_prompt(question, results_block),
                 org_id=org_id,
                 conversation_id=conversation_id,
@@ -1087,7 +1201,7 @@ class RagPipeline:
         return RagResult(
             answer=self._format_web_answer(raw, results),
             answered=True,
-            source="web",
+            source=SOURCE_WEB,
             sources=[],
             top_score=top_score,
         )
@@ -1149,7 +1263,7 @@ class RagPipeline:
         prompt = build_rewrite_prompt(question, context.summary, recent)
         try:
             rewritten = self._generate_text(
-                "rewrite",
+                STAGE_REWRITE,
                 prompt,
                 org_id=org_id,
                 conversation_id=conversation_id,
@@ -1189,7 +1303,7 @@ class RagPipeline:
         )
         try:
             summary = self._generate_text(
-                "summary-fold",
+                STAGE_SUMMARY_FOLD,
                 prompt,
                 conversation_id=conversation_id,
             ).strip()

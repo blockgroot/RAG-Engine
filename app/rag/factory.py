@@ -20,6 +20,7 @@ from ..config.settings import (
     RagSettings,
     QueryNormSettings,
     RecoverySettings,
+    ToneSettings,
     RetrievalSettings,
     ReuseSettings,
     WebSearchSettings,
@@ -54,6 +55,7 @@ def build_rag_pipeline(
     web_search: WebSearchProvider | None = _UNSET,  # type: ignore[assignment]
     retriever: HybridRetriever | None = _UNSET,  # type: ignore[assignment]
     recovery_settings: RecoverySettings | None = None,
+    tone_settings: ToneSettings | None = None,
     query_norm_settings: QueryNormSettings | None = None,
     prompt_profile: PromptProfile | None = None,
 ) -> RagPipeline:
@@ -105,6 +107,7 @@ def build_rag_pipeline(
         retriever=retriever,
         reuse_settings=ReuseSettings.from_env(),
         recovery_settings=recovery_settings or RecoverySettings.from_env(),
+        tone_settings=tone_settings or ToneSettings.from_env(),
         decompose_settings=DecomposeSettings.from_env(),
         query_norm_settings=query_norm_settings or QueryNormSettings.from_env(),
         prompt_profile=prompt_profile,

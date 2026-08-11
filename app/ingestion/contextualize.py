@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from ..core.exceptions import LLMProviderError, LLMRateLimitError
 from ..llm.base import LLMProvider
 from ..llm.metering import log_llm_call
+from ..llm.stages import STAGE_INGEST_CONTEXT
 from ..security.untrusted import scrub_untrusted_text
 
 # Cap how much of the document we send as context, to bound cost/latency on very
@@ -88,7 +89,7 @@ def contextualize_chunk(
     for attempt in range(_MAX_ATTEMPTS):
         try:
             context = llm.generate(prompt).strip()
-            log_llm_call("ingest-context", llm, org_id=org_id)
+            log_llm_call(STAGE_INGEST_CONTEXT, llm, org_id=org_id)
             return f"{context}\n\n{chunk}" if context else chunk
         except LLMRateLimitError as exc:
             # Quota, not a blip — respect the window the server named, or give

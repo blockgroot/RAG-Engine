@@ -90,6 +90,7 @@ DEFAULT_RETRIEVAL_REUSE_THRESHOLD = 0.72
 
 # Bounded retrieval recovery (Retrieval Discovery Gap). First retrieve stays as
 # today; at most one optional recovery when evidence looks insufficient.
+DEFAULT_TONE_CLASSIFY_ENABLED = True
 DEFAULT_RECOVERY_ENABLED = True
 DEFAULT_RECOVERY_MAX_QUERIES = 2
 
@@ -662,6 +663,27 @@ class ReuseSettings:
         )
 
 
+
+@dataclass(frozen=True)
+class ToneSettings:
+    """Semantic question-tone classification (factual vs supportive).
+
+    A cheap aux-LLM call labels whether the user is asking for policy
+    information or personally seeking help coping. Empathy is required only
+    for ``supportive``; policy-topic asks (even mental health) stay factual.
+    Kill-switch: ``TONE_CLASSIFY_ENABLED=false`` falls back to prompt-only
+    judgement with no empathy force/strip retry.
+    """
+
+    enabled: bool = DEFAULT_TONE_CLASSIFY_ENABLED
+
+    @classmethod
+    def from_env(cls) -> "ToneSettings":
+        return cls(
+            enabled=env_bool("TONE_CLASSIFY_ENABLED", DEFAULT_TONE_CLASSIFY_ENABLED),
+        )
+
+
 @dataclass(frozen=True)
 class RecoverySettings:
     """Bounded retrieval recovery for Retrieval Discovery Gaps.
@@ -914,16 +936,42 @@ class RetrievalSettings:
 
 @dataclass(frozen=True)
 class RerankerSettings:
-    """Cross-encoder reranker config (Phase 6)."""
+    """Cross-encoder / remote reranker config (Phase 6 + Jina remote).
 
+    - ``backend``  ``local`` (in-process CrossEncoder) or ``remote`` (HTTP
+      Jina-compatible ``/v1/rerank``). Remote is for cloud deploys that cannot
+      hold ``bge-reranker-v2-m3`` in RAM.
+    - ``api_key`` / ``base_url``  remote only. Key falls back to
+      ``EMBEDDING_API_KEY`` so one Jina key covers embed + rerank; base URL
+      falls back to ``EMBEDDING_BASE_URL`` then Jina's public endpoint.
+    """
+
+    backend: str = "local"
     model: str = DEFAULT_RERANKER_MODEL
     device: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    timeout: float = DEFAULT_TIMEOUT
 
     @classmethod
     def from_env(cls) -> "RerankerSettings":
+        backend = (os.getenv("RERANKER_BACKEND") or "local").lower()
+        default_model = (
+            "jina-reranker-v3" if backend == "remote" else DEFAULT_RERANKER_MODEL
+        )
+        api_key = os.getenv("RERANKER_API_KEY") or os.getenv("EMBEDDING_API_KEY")
+        base_url = (
+            os.getenv("RERANKER_BASE_URL")
+            or os.getenv("EMBEDDING_BASE_URL")
+            or ("https://api.jina.ai/v1" if backend == "remote" else None)
+        )
         return cls(
-            model=os.getenv("RERANKER_MODEL") or DEFAULT_RERANKER_MODEL,
+            backend=backend,
+            model=os.getenv("RERANKER_MODEL") or default_model,
             device=os.getenv("RERANKER_DEVICE") or None,
+            api_key=api_key,
+            base_url=base_url,
+            timeout=float(os.getenv("RERANKER_TIMEOUT") or DEFAULT_TIMEOUT),
         )
 
 

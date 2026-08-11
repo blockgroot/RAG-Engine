@@ -40,6 +40,11 @@ import re
 from collections.abc import Callable, Iterator
 
 from ..config.settings import GitHubAgentSettings
+from ..core.answer_sources import (
+    RECOVERY_REASON_INSUFFICIENT_EVIDENCE,
+    SOURCE_GITHUB,
+    SOURCE_NONE,
+)
 from ..core.exceptions import ConfigurationError, LLMProviderError, ProviderError, SourceError
 from ..core.streaming import chunk_answer
 from ..githublive.base import CommitDetail, CommitSummary, GitHubReader, RepoReadme
@@ -165,7 +170,7 @@ class GitHubAgent(Agent):
         return AgentResponse(
             answer=answer,
             grounded=True,
-            source="github",
+            source=SOURCE_GITHUB,
             citations=citations,
             response_mode=mode,
         )
@@ -242,11 +247,11 @@ class GitHubAgent(Agent):
         return AgentResponse(
             answer=answer,
             grounded=True,
-            source="github",
+            source=SOURCE_GITHUB,
             citations=list(citations) + list(commit_citations),
             response_mode=mode,
             recovery_used=True,
-            recovery_reason="insufficient_evidence",
+            recovery_reason=RECOVERY_REASON_INSUFFICIENT_EVIDENCE,
         )
 
     def answer_stream(
@@ -278,11 +283,11 @@ class GitHubAgent(Agent):
     def _fallback_response(self) -> AgentResponse:
         """The single place a GitHub refusal is constructed.
 
-        ``source="none"`` matches how the RAG agents label a refusal, so callers
+        ``SOURCE_NONE`` matches how the RAG agents label a refusal, so callers
         keep branching on the same values they already handle.
         """
         return AgentResponse(
-            answer=self._fallback, grounded=False, source="none", citations=[]
+            answer=self._fallback, grounded=False, source=SOURCE_NONE, citations=[]
         )
 
     def _decide_tool(self, question: str, repos) -> tuple[str, dict] | None:

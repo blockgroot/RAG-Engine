@@ -23,6 +23,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
+from ..core.answer_sources import SOURCE_POLICY
+
 
 @dataclass(frozen=True)
 class Citation:
@@ -72,12 +74,13 @@ class AgentResponse:
       ``top_score_before``, ``top_score_after``, ``latency_ms``.
     - ``response_mode``  the ``A``/``B``/``C`` tag the model declared (``None``
       if unparseable). ``tone_retry_used``  ``True`` if a declared Mode B
-      answer needed the one bounded tone-compliance retry. Both diagnostics.
+      answer needed the one bounded tone-compliance retry. ``question_tone``
+      is ``factual`` / ``supportive`` from the aux classifier (or ``None``).
     """
 
     answer: str
     grounded: bool
-    source: str = "policy"
+    source: str = SOURCE_POLICY
     citations: list[Citation] = field(default_factory=list)
     resolved_question: str | None = None
     top_score: float | None = None
@@ -91,6 +94,7 @@ class AgentResponse:
     latency_ms: float | None = None
     response_mode: str | None = None
     tone_retry_used: bool = False
+    question_tone: str | None = None
 
 
 class Agent(ABC):

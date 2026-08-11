@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from app.config.settings import DatabaseSettings, LLMSettings, RecoverySettings  # noqa: E402
+from app.config.settings import DatabaseSettings, LLMSettings, RecoverySettings, ToneSettings  # noqa: E402
 from app.db import apply_schema, close_pool, get_connection  # noqa: E402
 from app.embeddings import build_embedding_provider  # noqa: E402
 from app.memory import build_conversation_store  # noqa: E402
@@ -32,6 +32,7 @@ from app.vectorstore import build_vector_store  # noqa: E402
 from app.websearch import build_web_search_provider  # noqa: E402
 
 # Keep pre-recovery fixtures deterministic; recovery is covered in test_recovery.py.
+_TONE_OFF = ToneSettings(enabled=False)
 _RECOVERY_OFF = RecoverySettings(enabled=False)
 
 
@@ -105,7 +106,7 @@ def retriever(store, reranker):
 @pytest.fixture(scope="session")
 def rag(embedder, store, retriever):
     """Phase 3 pipeline: retrieve-gate-generate with the Phase 6 hybrid+rerank
-    retriever underneath (memory + web search + recovery OFF), so grounding tests
+    retriever underneath (memory + web search + recovery + tone-classify OFF), so grounding tests
     stay deterministic while exercising the improved retrieval path."""
     return build_rag_pipeline(
         embedder=embedder,
@@ -114,6 +115,7 @@ def rag(embedder, store, retriever):
         web_search=None,
         retriever=retriever,
         recovery_settings=_RECOVERY_OFF,
+        tone_settings=_TONE_OFF,
     )
 
 
@@ -129,6 +131,7 @@ def rag_workspace(embedder, store, retriever):
         web_search=None,
         retriever=retriever,
         recovery_settings=_RECOVERY_OFF,
+        tone_settings=_TONE_OFF,
         prompt_profile=WORKSPACE_PROMPT_PROFILE,
     )
 

@@ -30,6 +30,7 @@ def log_query_signal(
         "conversation_id": conversation_id,
         "top_score": result.top_score,
         "response_mode": result.response_mode,
+        "question_tone": result.question_tone,
         "answered": result.answered,
         "source": result.final_answer_source or result.source,
         "retrieval_reused": result.retrieval_reused,
