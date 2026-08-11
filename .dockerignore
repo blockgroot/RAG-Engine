@@ -1,0 +1,39 @@
+# Secrets — never bake these into an image layer.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Not needed in the deploy image (frontend deploys separately; tests/docs/
+# evaluation are dev-only). scripts/ is kept — Dockerfile COPYs two files out
+# of it and Docker cannot re-include a file whose parent dir is excluded.
+frontend/
+tests/
+evaluation/
+docs/
+.github/
+.vscode/
+.code-review-graph/
+graphify-out/
+*.md
+
+# Python / tooling
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# VCS / OS
+.git/
+.gitignore
+.DS_Store
+.idea/

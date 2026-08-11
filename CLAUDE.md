@@ -809,6 +809,10 @@ tests/          # pytest; isolation (P2, extended with workspace-vs-org-wide and
                 #   test_workspaces.py + test_workspace_rag.py + test_api_workspaces.py
                 #   (Workspace-within-a-Workspace: membership, RAG scoping, API).
 .github/workflows/eval.yml  # P7 CI: fast path-firing tier every push + nightly RAGAS tier
+Dockerfile                  # Backend deploy image — see §6 "Deployment" for the full story.
+requirements-deploy.txt     # Deploy-only deps (requirements.txt minus sentence-transformers).
+scripts/docker-entrypoint.sh  # Applies schema.sql (idempotent) then execs uvicorn.
+render.yaml                  # Render Blueprint: web service + Postgres, secrets left `sync: false`.
 ```
 
 **Conventions to follow (match, don't reinvent):**
@@ -824,6 +828,27 @@ tests/          # pytest; isolation (P2, extended with workspace-vs-org-wide and
 - The app depends on interfaces + `build_*()` factories, never concrete classes.
 
 ## 4. Known gotchas & past decisions worth remembering
+
+- **The deploy image needs `transformers` even with fully remote embedding +
+  reranking — but never `sentence-transformers`/torch.** Once
+  `EMBEDDING_BACKEND=remote` and `RERANKER_BACKEND=remote` point at a hosted
+  provider (e.g. Jina), neither `app/embeddings/local.py` nor
+  `app/reranker/local.py` ever import `sentence_transformers` (both do it
+  lazily, gated behind `backend == "local"`) — so it's droppable from the
+  deploy image. But `app/ingestion/chunk_tokens.py` imports
+  `transformers.AutoTokenizer` **unconditionally at module load** for
+  token-aware chunking, independent of which embedding backend is configured,
+  so dropping `transformers` too breaks the image at import time
+  (`ModuleNotFoundError` inside `app/ingestion/__init__.py`'s import chain —
+  caught by actually building and booting the image, not by inspection).
+  `transformers` alone needs no torch/tensorflow/flax backend for
+  `AutoTokenizer` (confirmed live: "PyTorch was not found. Models won't be
+  available and only tokenizers... can be used" — exactly the code path this
+  needs). `requirements-deploy.txt` documents this split; the Dockerfile also
+  pre-bakes the BGE-M3 tokenizer at build time
+  (`AutoTokenizer.from_pretrained('BAAI/bge-m3')`) so ingestion never depends
+  on reaching huggingface.co at runtime. Net image size ≈750MB vs. several GB
+  with torch included.
 
 - **Local BGE-M3 + reranker can hang a 16GB Mac.** Each model is multi-GB in
   RSS. Chat used to ``Depends`` both ``get_policy_agent`` and
@@ -1824,6 +1849,25 @@ does it decline when handed no evidence?) lives in
 story doesn't cover). That walkthrough is also what settles risk **T3** (§4): the
 `state` round-trip through the install redirect is unverified. Everything above
 was proven offline with faked HTTP.
+
+**Backend deployment (Docker + Render Blueprint).** Adds a `Dockerfile` +
+`requirements-deploy.txt` + `scripts/docker-entrypoint.sh` + `render.yaml` —
+no app code changed. One process serves the API and drains the ingestion
+queue (`INGEST_WORKER_IN_API=true` is already the default, Phase 12/13 —
+merging worker and API was a config flip, not new code). The entrypoint runs
+`scripts/init_db.py` (idempotent `schema.sql`) before `exec uvicorn`, so a
+fresh Postgres just works on first deploy, on any platform. `render.yaml`
+provisions a Render Postgres (pgvector-capable) and wires its
+`DATABASE_URL` in automatically; every other credential (LLM/embedding/
+reranker keys, `AUTH_ENCRYPTION_KEYS`, SMTP, OAuth client secrets) is marked
+`sync: false` so Render prompts for it in the dashboard rather than it living
+in the repo — `AUTH_JWT_SECRET` is the one exception, generated fresh per
+deploy via `generateValue: true`. Verified end-to-end locally: built the
+image, booted it against the existing `docker-compose.yml` Postgres
+(`host.docker.internal`), confirmed `GET /health` → `200`, schema applied,
+and no local embedding/reranker model ever loaded (see the `transformers`
+gotcha in §4, found by actually running this, not by inspection). The
+frontend is unaffected — this covers the backend only, per the ask.
 
 **Pending (not started)**
 - **Live end-to-end verification of Phases 10-14** against a real sandbox Notion

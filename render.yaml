@@ -1,0 +1,127 @@
+# Render Blueprint — one-click backend deploy.
+#
+# Usage: push this repo to GitHub/GitLab, then in the Render dashboard choose
+# "New +" -> "Blueprint" and point it at the repo. Render reads this file,
+# provisions the Postgres database and the web service, and wires the
+# DATABASE_URL between them automatically (`fromDatabase` below).
+#
+# Every other secret (LLM/embedding/reranker API keys, auth keys, SMTP creds,
+# OAuth client secrets) is intentionally left out of this file — `sync: false`
+# tells Render to prompt for the value in its dashboard instead of storing it
+# in the repo. Fill those in once, on first deploy, from your local `.env`
+# (never commit `.env` itself — see .gitignore).
+#
+# Render's managed Postgres supports the `vector` extension; app/db/schema.sql
+# runs `CREATE EXTENSION IF NOT EXISTS vector` itself via the entrypoint
+# (scripts/docker-entrypoint.sh -> scripts/init_db.py), so no manual DB setup
+# is needed beyond letting this blueprint provision the database.
+
+databases:
+  - name: rag-postgres
+    plan: starter
+    postgresMajorVersion: "17"
+
+services:
+  - type: web
+    name: rag-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: rag-postgres
+          property: connectionString
+
+      # -- LLM --
+      - key: LLM_MODEL
+        sync: false
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_BASE_URL
+        sync: false
+      - key: LLM_TIMEOUT
+        value: "45"
+
+      # -- Embedding (remote — see .env.example) --
+      - key: EMBEDDING_BACKEND
+        value: remote
+      - key: EMBEDDING_MODEL
+        sync: false
+      - key: EMBEDDING_API_KEY
+        sync: false
+      - key: EMBEDDING_BASE_URL
+        sync: false
+      - key: EMBEDDING_DIM
+        value: "1024"
+
+      # -- Reranker (remote) --
+      - key: RERANKER_BACKEND
+        value: remote
+      - key: RERANKER_MODEL
+        sync: false
+      - key: RETRIEVAL_RERANK_ENABLED
+        value: "true"
+
+      # -- Auth / security (generate fresh values for production, don't reuse dev) --
+      - key: AUTH_JWT_SECRET
+        generateValue: true
+      - key: AUTH_ENCRYPTION_KEYS
+        sync: false
+
+      # -- CORS / frontend --
+      - key: API_CORS_ORIGINS
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+
+      # -- Email (magic-link login) --
+      - key: EMAIL_SENDER
+        value: console
+      - key: EMAIL_SMTP_HOST
+        sync: false
+      - key: EMAIL_SMTP_PORT
+        sync: false
+      - key: EMAIL_SMTP_USERNAME
+        sync: false
+      - key: EMAIL_SMTP_PASSWORD
+        sync: false
+      - key: EMAIL_SMTP_FROM
+        sync: false
+      - key: OWNER_NOTIFICATION_EMAIL
+        sync: false
+
+      # -- Notion (per-org token or OAuth app) --
+      - key: NOTION_TOKEN
+        sync: false
+      - key: NOTION_CLIENT_ID
+        sync: false
+      - key: NOTION_CLIENT_SECRET
+        sync: false
+      - key: NOTION_REDIRECT_URI
+        sync: false
+
+      # -- Google Drive OAuth (optional) --
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_REDIRECT_URI
+        sync: false
+
+      # -- GitHub App (optional) --
+      - key: GITHUB_APP_SLUG
+        sync: false
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_APP_PRIVATE_KEY
+        sync: false
+
+      # -- Runtime tuning --
+      - key: MODEL_WARMUP_ON_STARTUP
+        value: "true"
+      - key: INGEST_WORKER_IN_API
+        value: "true"
