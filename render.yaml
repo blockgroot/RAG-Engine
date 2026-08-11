@@ -96,8 +96,12 @@ services:
         sync: false
 
       # -- Email (magic-link login) --
+      # Dashboard-owned, not pinned in this file. A `value: console` here would
+      # reset production back to log-only mail on every Blueprint sync.
+      # Free Render blocks outbound SMTP (25/465/587). Use EMAIL_SENDER=resend
+      # + EMAIL_RESEND_API_KEY, not smtp/gmail. console only prints to logs.
       - key: EMAIL_SENDER
-        value: console
+        sync: false
       - key: EMAIL_SMTP_HOST
         sync: false
       - key: EMAIL_SMTP_PORT
@@ -107,6 +111,8 @@ services:
       - key: EMAIL_SMTP_PASSWORD
         sync: false
       - key: EMAIL_SMTP_FROM
+        sync: false
+      - key: EMAIL_RESEND_API_KEY
         sync: false
       - key: OWNER_NOTIFICATION_EMAIL
         sync: false

@@ -846,6 +846,12 @@ render.yaml                  # Render Blueprint: web service + Postgres, secrets
 
 ## 4. Known gotchas & past decisions worth remembering
 
+- **Render free blocks outbound SMTP.** `EMAIL_SENDER=smtp` to `smtp.gmail.com:587`
+  fails with `Errno 101 Network is unreachable` — the TCP connection never
+  leaves the box (ports 25/465/587 are firewalled as of 2025-09). Use
+  `EMAIL_SENDER=resend` + `EMAIL_RESEND_API_KEY` (HTTPS, already-allowed port
+  443) or upgrade the instance. Do not debug Gmail app passwords for this
+  error; credentials are never reached.
 - **Do not point the browser at the Render host.** `SameSite=Lax` cookies set
   on `onrender.com` are not sent on `fetch` from `vercel.app`. The fix is the
   Next.js `/api` rewrite (`NEXT_PUBLIC_API_BASE_URL=/api`, `API_PROXY_TARGET=`
@@ -1928,9 +1934,9 @@ backend only, per the ask.
   credentials on demand, so leaking it is equivalent to leaking every connected
   org's repository access. `GitHubSettings.from_env` accepts a `\n`-escaped
   single-line value so it survives secret stores that can't hold newlines.
-- Email delivery is `console` (prints the link) by default; a real deployment needs
-  `EMAIL_SENDER=smtp` configured, or a transactional-email provider swapped in
-  behind `app/auth/email.py`.
+- Email delivery is `console` (prints the link) by default. On Render **free**,
+  SMTP is blocked — use `EMAIL_SENDER=resend` + `EMAIL_RESEND_API_KEY` (HTTPS).
+  `EMAIL_SENDER=smtp` is for local / a VPS / a paid Render instance.
 - Validate the Phase 8 reuse threshold (0.72) and the 0.35 gate using **production
   `rag.query_signals` logs** (Phase 22) plus a reuse hit/miss audit — no longer
   only hand-measured examples. A richer reuse signal (e.g. comparing the rewritten

@@ -1061,9 +1061,11 @@ class ApiSettings:
 class EmailSettings:
     """Outbound email configuration for magic-link delivery (Phase 10).
 
-    - ``sender``  ``"console"`` (default; prints the link, no dependency — dev
-      and self-hosted-without-SMTP path) or ``"smtp"``.
-    - ``smtp_*``  only read/required when ``sender == "smtp"``.
+    - ``sender``  ``"console"`` (default; prints the link), ``"smtp"``, or
+      ``"resend"`` (HTTPS — required on Render free, which blocks SMTP ports).
+    - ``smtp_*``  only read/required when ``sender == "smtp"``. ``smtp_from``
+      is also the From address for Resend.
+    - ``resend_api_key``  required when ``sender == "resend"``.
     - ``owner_notification_email``  where the "new org-signup request" email
       (with one-click approve/reject links) is sent. This is the ONLY review
       surface for the signup-approval queue — there is no admin UI or CLI, so
@@ -1077,6 +1079,7 @@ class EmailSettings:
     smtp_username: str | None = None
     smtp_password: str | None = None
     smtp_from: str | None = None
+    resend_api_key: str | None = None
     owner_notification_email: str | None = None
 
     @classmethod
@@ -1089,5 +1092,6 @@ class EmailSettings:
             smtp_username=os.getenv("EMAIL_SMTP_USERNAME"),
             smtp_password=os.getenv("EMAIL_SMTP_PASSWORD"),
             smtp_from=os.getenv("EMAIL_SMTP_FROM"),
+            resend_api_key=os.getenv("EMAIL_RESEND_API_KEY"),
             owner_notification_email=os.getenv("OWNER_NOTIFICATION_EMAIL"),
         )

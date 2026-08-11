@@ -3,13 +3,16 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { BrandGlyph } from "@/components/BrandGlyph";
 import { LandingProductArt } from "@/components/LandingProductArt";
+import { LandingShell } from "@/components/LandingShell";
+import { LandingSourcesOrbit } from "@/components/LandingSourcesOrbit";
 import { api } from "@/lib/api";
 import { homePathFor } from "@/lib/routing";
 
 /**
- * Public product landing (Glean-style single composition).
- * Signed-in users are forwarded into the app; everyone else sees the hero.
+ * Public product story. Signed-in users skip it; everyone else should leave
+ * knowing *what Handbook is* (grounded Q&A over your sources), not just a name.
  */
 export default function RootPage() {
   const router = useRouter();
@@ -39,88 +42,140 @@ export default function RootPage() {
   }
 
   return (
-    <main className="landing">
-      <div className="landing-atmosphere" aria-hidden>
-        <span className="landing-orb landing-orb-a" />
-        <span className="landing-orb landing-orb-b" />
-        <span className="landing-orb landing-orb-c" />
-        <span className="landing-grid" />
-        <span className="landing-sheen" />
-      </div>
-
-      <header className="landing-topnav">
-        <Link href="/" className="landing-brand">
-          <span className="brand-mark" aria-hidden />
-          <span>Handbook</span>
-        </Link>
-        <nav className="landing-topnav-actions" aria-label="Account">
-          <Link href="/login" className="landing-nav-link">
-            Sign in
-          </Link>
-          <Link href="/signup" className="button landing-cta-secondary">
-            Request access
-          </Link>
-        </nav>
-      </header>
-
-      <section className="landing-hero landing-hero-split" aria-labelledby="landing-title">
+    <LandingShell active="home">
+      <section className="landing-hero landing-hero-split landing-wrap" aria-labelledby="landing-title">
         <div className="landing-hero-copy">
-          <p className="landing-eyebrow">Work AI that works</p>
+          <p className="landing-eyebrow">Work AI that stays on your documents</p>
           <h1 id="landing-title" className="landing-title">
-            Handbook
+            Ask your company.
+            <br />
+            Get the real answer.
           </h1>
           <p className="landing-subtitle">
-            Ask your company&rsquo;s policies and code — answers stay grounded in
-            what you connected.
+            Employees ask about leave, expenses, and the codebase. Handbook
+            answers only from the Notion, Drive, or GitHub you connected — with
+            citations. If it isn&rsquo;t written down, we say so.
           </p>
           <div className="landing-cta-row">
-            <Link href="/login" className="button landing-cta-primary">
-              Sign in
-            </Link>
-            <Link href="/signup" className="button button-secondary landing-cta-ghost">
+            <Link href="/signup" className="button landing-cta-primary">
               Set up your company
             </Link>
+            <Link href="/how-it-works" className="button button-secondary landing-cta-ghost">
+              See how it works
+            </Link>
           </div>
-          <p className="landing-connectors" aria-label="Supported sources">
-            <span className="landing-connector-pill">Notion</span>
-            <span className="landing-connector-pill">Google Drive</span>
-            <span className="landing-connector-pill">GitHub</span>
-          </p>
         </div>
         <LandingProductArt />
       </section>
 
-      <section className="landing-strip" aria-label="How Handbook helps">
-        <div className="landing-strip-item">
-          <span className="landing-strip-icon" aria-hidden>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-              <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="1.75" />
-              <path d="M16.5 16.5 21 21" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
-            </svg>
-          </span>
-          <strong>Ask once</strong>
-          <span>Policies and repositories in one place</span>
+      <section id="what" className="landing-section landing-wrap" aria-labelledby="what-title">
+        <div className="landing-section-head">
+          <div>
+            <p className="landing-eyebrow">What it actually does</p>
+            <h2 id="what-title" className="landing-section-title">
+              One desk for policies and code.
+            </h2>
+          </div>
+          <p className="landing-section-lead">
+            Connect the sources you already use. People ask in plain language.
+            Handbook retrieves from <em>that</em> tenant only, then answers with
+            citations — or refuses when the documents don&rsquo;t cover it.
+          </p>
         </div>
-        <div className="landing-strip-item">
-          <span className="landing-strip-icon" aria-hidden>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-              <path d="M12 3v18M5 8l7-5 7 5M5 16l7 5 7-5" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </span>
-          <strong>Stay grounded</strong>
-          <span>Every answer shows where it came from</span>
-        </div>
-        <div className="landing-strip-item">
-          <span className="landing-strip-icon" aria-hidden>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-              <rect x="4" y="10" width="16" height="10" rx="2" stroke="currentColor" strokeWidth="1.75" />
-              <path d="M8 10V7a4 4 0 0 1 8 0v3" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
-            </svg>
-          </span>
-          <strong>Stay private</strong>
-          <span>Tenant isolation on every request</span>
+        <div className="landing-feature-grid">
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="notion" size={22} />
+            </span>
+            <h3>Policies, grounded</h3>
+            <p>
+              Leave, benefits, expenses — retrieved from the pages you ingested.
+              Every answer shows the source. Guessing is a product bug here, not
+              a feature.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="github" size={22} />
+            </span>
+            <h3>Code, live</h3>
+            <p>
+              The Code tab talks to GitHub at question time — READMEs and
+              commits, no stale index. Unauthorized repos never leave the
+              allowlist.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="workspace" size={22} />
+            </span>
+            <h3>Spaces inside the company</h3>
+            <p>
+              A workspace is a private desk for meeting notes or a project wiki.
+              Questions asked there never blend in org-wide HR docs.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark" aria-hidden>
+              <LockMark />
+            </span>
+            <h3>Your tenant, only</h3>
+            <p>
+              Isolation is a query filter, not a hope. Company A cannot retrieve
+              Company B. Magic-link login; admins invite the rest of the team.
+            </p>
+          </article>
         </div>
       </section>
-    </main>
+
+      <section id="sources" className="landing-section landing-section-orbit landing-wrap" aria-labelledby="sources-title">
+        <div className="landing-section-head">
+          <div>
+            <p className="landing-eyebrow">Connects to what you already have</p>
+            <h2 id="sources-title" className="landing-section-title">
+              Plug in the tools. Ask once.
+            </h2>
+          </div>
+          <p className="landing-section-lead">
+            An admin connects Notion or Drive and syncs. GitHub is live —
+            nothing to embed. Sign-in is email, not another password.
+          </p>
+        </div>
+        <LandingSourcesOrbit />
+      </section>
+
+      <section className="landing-close landing-wrap" aria-labelledby="close-title">
+        <h2 id="close-title">Ready when your documents are.</h2>
+        <p>
+          Request access, get approved, connect a source, and ask the question
+          your wiki already answered — without hunting for the page.
+        </p>
+        <div className="landing-cta-row">
+          <Link href="/signup" className="button landing-cta-primary">
+            Request access
+          </Link>
+          <Link href="/how-it-works" className="button button-secondary landing-cta-ghost">
+            How a question is answered
+          </Link>
+        </div>
+      </section>
+    </LandingShell>
+  );
+}
+
+function LockMark() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden>
+      <rect width="24" height="24" rx="6" fill="#0F766E" />
+      <path
+        d="M8.2 11.2V9.4a3.8 3.8 0 0 1 7.6 0v1.8"
+        stroke="#fff"
+        strokeWidth="1.6"
+        fill="none"
+        strokeLinecap="round"
+      />
+      <rect x="7.2" y="11.2" width="9.6" height="7.2" rx="1.6" fill="#99F6E4" />
+      <circle cx="12" cy="14.6" r="1.1" fill="#0F766E" />
+    </svg>
   );
 }

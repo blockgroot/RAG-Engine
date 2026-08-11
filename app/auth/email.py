@@ -1,16 +1,19 @@
 """Outbound email for magic links and the signup-approval queue (Phase 13).
 
 Minimal pluggable sender — not a full provider/factory package since there is
-only one real capability (send a message) and one production backend (SMTP);
-the interface is kept as a tiny function dispatch rather than a full ABC.
-``console`` (default) prints the link instead of sending it, so the whole
-login flow works locally / self-hosted with zero external dependency, per
-CLAUDE.md §1.
+only one real capability (send a message); the interface is a tiny function
+dispatch rather than a full ABC. Backends:
 
-SMTP sends are intentionally simple: connect → STARTTLS → login → send. That
-round-trip to a remote host (e.g. Gmail) routinely takes several seconds, so
-callers schedule these via FastAPI ``BackgroundTasks`` rather than blocking
-the HTTP response on it.
+- ``console`` (default) prints the link — local / self-hosted with zero
+  extra dependency, per CLAUDE.md §1.
+- ``smtp``  STARTTLS to a mail host. Works on a VPS or a *paid* Render
+  instance. Render's **free** web services block outbound ports 25/465/587
+  (Errno 101 Network is unreachable) — Gmail SMTP will never connect there.
+- ``resend``  HTTPS POST to Resend (port 443, already used for OAuth/LLM).
+  This is the Render-free path. ``httpx`` is already a dependency; no SDK.
+
+Callers schedule sends via FastAPI ``BackgroundTasks`` rather than blocking
+the HTTP response on a remote round-trip.
 """
 
 from __future__ import annotations
@@ -20,6 +23,8 @@ import logging
 import smtplib
 from email.message import EmailMessage
 
+import httpx
+
 from ..config.settings import EmailSettings
 from ..core.exceptions import ConfigurationError, ProviderError
 
@@ -28,6 +33,8 @@ logger = logging.getLogger(__name__)
 # Bound how long we wait on a hung SMTP peer; Gmail is usually faster but
 # DNS + STARTTLS + AUTH can still be multi-second on a cold connection.
 _SMTP_TIMEOUT_SECONDS = 20
+_RESEND_URL = "https://api.resend.com/emails"
+_RESEND_TIMEOUT_SECONDS = 20
 
 
 def _dispatch(
@@ -54,36 +61,102 @@ def _dispatch(
         return
 
     if settings.sender == "smtp":
-        if not (settings.smtp_host and settings.smtp_from):
-            raise ConfigurationError(
-                "EMAIL_SENDER=smtp requires EMAIL_SMTP_HOST and EMAIL_SMTP_FROM"
-            )
-        message = EmailMessage()
-        message["From"] = settings.smtp_from
-        message["To"] = to
-        message["Subject"] = subject
-        message.set_content(body)
-        if html_body is not None:
-            message.add_alternative(html_body, subtype="html")
-        try:
-            with smtplib.SMTP(
-                settings.smtp_host,
-                settings.smtp_port or 587,
-                timeout=_SMTP_TIMEOUT_SECONDS,
-            ) as smtp:
-                smtp.ehlo()
-                smtp.starttls()
-                smtp.ehlo()
-                if settings.smtp_username and settings.smtp_password:
-                    smtp.login(settings.smtp_username, settings.smtp_password)
-                smtp.send_message(message)
-        except (smtplib.SMTPException, OSError, TimeoutError) as exc:
-            raise ProviderError(f"Failed to send email via SMTP: {exc}", cause=exc) from exc
+        _send_smtp(to, subject, body, settings, html_body=html_body)
+        return
+
+    if settings.sender == "resend":
+        _send_resend(to, subject, body, settings, html_body=html_body)
         return
 
     raise ConfigurationError(
-        f"Unknown EMAIL_SENDER: {settings.sender!r} (expected 'console' or 'smtp')"
+        f"Unknown EMAIL_SENDER: {settings.sender!r} "
+        "(expected 'console', 'smtp', or 'resend')"
     )
+
+
+def _send_smtp(
+    to: str,
+    subject: str,
+    body: str,
+    settings: EmailSettings,
+    *,
+    html_body: str | None,
+) -> None:
+    if not (settings.smtp_host and settings.smtp_from):
+        raise ConfigurationError(
+            "EMAIL_SENDER=smtp requires EMAIL_SMTP_HOST and EMAIL_SMTP_FROM"
+        )
+    message = EmailMessage()
+    message["From"] = settings.smtp_from
+    message["To"] = to
+    message["Subject"] = subject
+    message.set_content(body)
+    if html_body is not None:
+        message.add_alternative(html_body, subtype="html")
+    try:
+        with smtplib.SMTP(
+            settings.smtp_host,
+            settings.smtp_port or 587,
+            timeout=_SMTP_TIMEOUT_SECONDS,
+        ) as smtp:
+            smtp.ehlo()
+            smtp.starttls()
+            smtp.ehlo()
+            if settings.smtp_username and settings.smtp_password:
+                smtp.login(settings.smtp_username, settings.smtp_password)
+            smtp.send_message(message)
+    except OSError as exc:
+        if getattr(exc, "errno", None) == 101 or "unreachable" in str(exc).lower():
+            raise ProviderError(
+                "Failed to send email via SMTP: network unreachable. "
+                "Render's free tier blocks outbound SMTP (ports 25/465/587). "
+                "Set EMAIL_SENDER=resend with EMAIL_RESEND_API_KEY, or upgrade "
+                "the Render instance.",
+                cause=exc,
+            ) from exc
+        raise ProviderError(f"Failed to send email via SMTP: {exc}", cause=exc) from exc
+    except (smtplib.SMTPException, TimeoutError) as exc:
+        raise ProviderError(f"Failed to send email via SMTP: {exc}", cause=exc) from exc
+
+
+def _send_resend(
+    to: str,
+    subject: str,
+    body: str,
+    settings: EmailSettings,
+    *,
+    html_body: str | None,
+) -> None:
+    if not settings.resend_api_key:
+        raise ConfigurationError(
+            "EMAIL_SENDER=resend requires EMAIL_RESEND_API_KEY"
+        )
+    if not settings.smtp_from:
+        raise ConfigurationError(
+            "EMAIL_SENDER=resend requires EMAIL_SMTP_FROM "
+            "(the From address Resend will send as)"
+        )
+    payload: dict = {
+        "from": settings.smtp_from,
+        "to": [to],
+        "subject": subject,
+        "text": body,
+    }
+    if html_body is not None:
+        payload["html"] = html_body
+    try:
+        with httpx.Client(timeout=_RESEND_TIMEOUT_SECONDS) as client:
+            response = client.post(
+                _RESEND_URL,
+                headers={"Authorization": f"Bearer {settings.resend_api_key}"},
+                json=payload,
+            )
+    except httpx.HTTPError as exc:
+        raise ProviderError(f"Failed to send email via Resend: {exc}", cause=exc) from exc
+    if response.status_code >= 400:
+        raise ProviderError(
+            f"Resend rejected the send ({response.status_code}): {response.text}"
+        )
 
 
 def send_magic_link_email(to: str, link: str, *, settings: EmailSettings | None = None) -> None:
