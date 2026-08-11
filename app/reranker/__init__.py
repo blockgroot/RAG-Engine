@@ -8,11 +8,13 @@ Public API:
 
 from .base import Reranker
 from .local import CrossEncoderReranker
+from .remote import RemoteReranker
 from .factory import build_reranker, clear_reranker_cache
 
 __all__ = [
     "Reranker",
     "CrossEncoderReranker",
+    "RemoteReranker",
     "build_reranker",
     "clear_reranker_cache",
 ]

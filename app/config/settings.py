@@ -914,16 +914,42 @@ class RetrievalSettings:
 
 @dataclass(frozen=True)
 class RerankerSettings:
-    """Cross-encoder reranker config (Phase 6)."""
+    """Cross-encoder / remote reranker config (Phase 6 + Jina remote).
 
+    - ``backend``  ``local`` (in-process CrossEncoder) or ``remote`` (HTTP
+      Jina-compatible ``/v1/rerank``). Remote is for cloud deploys that cannot
+      hold ``bge-reranker-v2-m3`` in RAM.
+    - ``api_key`` / ``base_url``  remote only. Key falls back to
+      ``EMBEDDING_API_KEY`` so one Jina key covers embed + rerank; base URL
+      falls back to ``EMBEDDING_BASE_URL`` then Jina's public endpoint.
+    """
+
+    backend: str = "local"
     model: str = DEFAULT_RERANKER_MODEL
     device: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    timeout: float = DEFAULT_TIMEOUT
 
     @classmethod
     def from_env(cls) -> "RerankerSettings":
+        backend = (os.getenv("RERANKER_BACKEND") or "local").lower()
+        default_model = (
+            "jina-reranker-v3" if backend == "remote" else DEFAULT_RERANKER_MODEL
+        )
+        api_key = os.getenv("RERANKER_API_KEY") or os.getenv("EMBEDDING_API_KEY")
+        base_url = (
+            os.getenv("RERANKER_BASE_URL")
+            or os.getenv("EMBEDDING_BASE_URL")
+            or ("https://api.jina.ai/v1" if backend == "remote" else None)
+        )
         return cls(
-            model=os.getenv("RERANKER_MODEL") or DEFAULT_RERANKER_MODEL,
+            backend=backend,
+            model=os.getenv("RERANKER_MODEL") or default_model,
             device=os.getenv("RERANKER_DEVICE") or None,
+            api_key=api_key,
+            base_url=base_url,
+            timeout=float(os.getenv("RERANKER_TIMEOUT") or DEFAULT_TIMEOUT),
         )
 
 
