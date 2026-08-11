@@ -79,7 +79,7 @@ from ..githublive import refresh_installation_scope
 from ..security.rate_limit import check_rate_limit
 from ..vectorstore import build_vector_store
 from ..workspaces import assert_member
-from .deps import SESSION_COOKIE_NAME, get_session
+from .deps import SESSION_COOKIE_FLAGS, SESSION_COOKIE_NAME, get_session
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -242,15 +242,14 @@ def verify_magic_link(token: str, settings: ApiSettings = Depends(ApiSettings.fr
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=session_token,
-        httponly=True,
-        secure=True,
-        samesite="lax",
         # Without max_age this is a browser-session cookie (cleared on
         # browser close) regardless of how long the JWT itself is valid for
         # — that would silently defeat the point of a long-lived session TTL.
         # Keep it tied to the same setting so the cookie's lifetime always
-        # matches the token's.
+        # matches the token's. Path=/ so a Set-Cookie on /api/auth/.../verify
+        # is still sent to /api/me after the Next.js rewrite.
         max_age=AuthSettings.from_env().session_ttl_minutes * 60,
+        **SESSION_COOKIE_FLAGS,
     )
     return response
 
@@ -261,10 +260,7 @@ def logout():
     response = JSONResponse({"status": "signed_out"})
     response.delete_cookie(
         key=SESSION_COOKIE_NAME,
-        path="/",
-        httponly=True,
-        secure=True,
-        samesite="lax",
+        **SESSION_COOKIE_FLAGS,
     )
     return response
 

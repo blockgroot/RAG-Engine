@@ -3,12 +3,23 @@
  *
  * `credentials: "include"` on every call — the session lives in an httpOnly
  * cookie, never in JS-accessible storage, so there is no token to smuggle out
- * via an XSS payload. The backend's own CORS config (API_CORS_ORIGINS) is
- * what actually authorizes cross-origin credentialed requests; this client
- * has no separate auth mechanism to get wrong.
+ * via an XSS payload.
+ *
+ * Default base is same-origin `/api`. `frontend/next.config.js` rewrites
+ * `/api/:path*` to FastAPI (`API_PROXY_TARGET`), so the cookie is first-party
+ * and SameSite=Lax works on a split Vercel/Render deploy. Set
+ * `NEXT_PUBLIC_API_BASE_URL` to an absolute URL only for local-direct
+ * (`http://localhost:8000`) or a same-site custom domain
+ * (`https://api.example.com`). CORS (`API_CORS_ORIGINS`) only matters in
+ * those absolute-URL cases.
  */
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+function resolveApiBaseUrl(): string {
+  const raw = (process.env.NEXT_PUBLIC_API_BASE_URL || "/api").trim();
+  return raw.replace(/\/$/, "");
+}
+
+const API_BASE_URL = resolveApiBaseUrl();
 
 export class ApiError extends Error {
   status: number;

@@ -83,6 +83,13 @@ services:
         sync: false
 
       # -- CORS / frontend --
+      # FRONTEND_URL = the Vercel origin (magic-link + post-OAuth redirect).
+      # API_CORS_ORIGINS = that same origin (escape hatch; the portal itself
+      # talks same-origin `/api` on Vercel, rewritten to this service).
+      # OAuth redirect URIs belong on the FRONTEND origin + /api/..., NOT here:
+      #   https://<frontend>/api/auth/notion/callback
+      #   https://<frontend>/api/auth/google/callback
+      # GitHub App callback URL is the same shape (no GITHUB_REDIRECT_URI env).
       - key: API_CORS_ORIGINS
         sync: false
       - key: FRONTEND_URL

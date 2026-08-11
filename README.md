@@ -103,7 +103,7 @@ uvicorn app.api.main:app --reload
 # Ingestion worker (for admin-triggered syncs)
 python scripts/run_worker.py
 
-# Frontend
+# Frontend (proxies /api/* to uvicorn via next.config.js)
 cd frontend && npm install && npm run dev
 ```
 
@@ -129,6 +129,8 @@ for the full list with inline documentation. The essentials:
 | `DATABASE_URL`      | Postgres connection string                  |
 | `AUTH_JWT_SECRET`   | Session signing key                         |
 | `AUTH_ENCRYPTION_KEYS` | OAuth token encryption key(s)             |
+| `FRONTEND_URL` / `API_CORS_ORIGINS` | Frontend origin (magic links, CORS) |
+| `NEXT_PUBLIC_API_BASE_URL` / `API_PROXY_TARGET` | Frontend `/api` rewrite → FastAPI (see `frontend/.env.example`) |
 
 `.env` is git-ignored and must never be committed.
 

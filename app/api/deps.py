@@ -24,6 +24,15 @@ from ..vectorstore import build_vector_store
 from ..vectorstore.base import VectorStore
 
 SESSION_COOKIE_NAME = "session"
+# First-party cookie. Safe because the browser talks to the frontend origin
+# (`NEXT_PUBLIC_API_BASE_URL=/api`, rewritten to this API). Keep Lax — do not
+# switch to None to paper over a split vercel.app/onrender.com deploy.
+SESSION_COOKIE_FLAGS: dict = {
+    "httponly": True,
+    "secure": True,
+    "samesite": "lax",
+    "path": "/",
+}
 
 
 @lru_cache(maxsize=1)

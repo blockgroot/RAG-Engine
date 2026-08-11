@@ -382,6 +382,28 @@ def test_magic_link_full_login_flow_issues_session_scoped_to_correct_org(
 
 
 @requires_db
+def test_session_cookie_is_first_party_lax(client, _invited_member):
+    """Path=/ + SameSite=Lax. The browser must call the API same-origin
+    (frontend /api rewrite) for this cookie to ride on later fetch()."""
+    _, email = _invited_member
+    from app.auth import create_magic_link_token
+
+    token = create_magic_link_token(email)
+    response = client.get(
+        f"/auth/magic-link/verify?token={token}", follow_redirects=False
+    )
+    assert response.status_code in (302, 307)
+    header = response.headers.get("set-cookie") or ""
+    assert header
+    lower = header.lower()
+    assert "session=" in lower
+    assert "httponly" in lower
+    assert "samesite=lax" in lower
+    assert "path=/" in lower
+    assert "samesite=none" not in lower
+
+
+@requires_db
 def test_magic_link_verify_rejects_reused_token(client, _invited_member):
     org_id, email = _invited_member
     client.post("/auth/magic-link", json={"email": email})

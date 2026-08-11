@@ -414,6 +414,17 @@ their policy documents; their employees ask questions and get answers grounded i
     connectable source; GitHub still renders "coming soon") — mirrors the
     backend factory's extension pattern. SSE streaming
     uses `fetch` + `ReadableStream` (not `EventSource`, which can't POST a body).
+    **Same-origin `/api` rewrite (split Vercel + Render):** the browser only
+    talks to the frontend origin (`NEXT_PUBLIC_API_BASE_URL=/api`);
+    `frontend/next.config.js` proxies `/api/:path*` to FastAPI
+    (`API_PROXY_TARGET`). That keeps the session cookie first-party so
+    `SameSite=Lax` still works. Do not point `NEXT_PUBLIC_API_BASE_URL` at
+    the Render host — a `vercel.app` page fetching `onrender.com` will not
+    send the Lax cookie, and login will look like it immediately logged out.
+    OAuth redirect URIs follow the same origin
+    (`https://<frontend>/api/auth/<provider>/callback`), not the API host.
+    A later custom parent domain (`app.` + `api.` on one site) is also Lax-safe
+    without the rewrite; `SameSite=None` is the option we refused.
 - **Google Drive/Docs is a second `SourceAdapter` + `OAuthProvider` (Google
   Integration Plan), coexisting with Notion under provider-partitioned sync.**
   Sync state is keyed on `(org_id, source_provider, source_external_id)` so a
@@ -631,7 +642,10 @@ their policy documents; their employees ask questions and get answers grounded i
   `app/auth/session.py` + the `max_age` on the session cookie in `app/api/auth.py`) —
   deliberate given this is a low-risk internal tool with an already-hardened cookie
   (httpOnly+Secure+SameSite=Lax) and no refresh-token flow; revisit with a proper
-  refresh mechanism if the risk profile changes.
+  refresh mechanism if the risk profile changes. Split-host deploys keep Lax by
+  making the API same-origin (Next.js `/api` rewrite), not by relaxing SameSite.
+  Cookie flags live in `SESSION_COOKIE_FLAGS` (`path=/` included so a Set-Cookie
+  on `/api/auth/.../verify` is still sent to `/api/me`).
 - **Admin succession / offboarding (sized to current need).** `get_session` re-reads
   live `users.role` on every request (JWT role is a snapshot only) so promote/demote
   take effect under the 30-day TTL. `POST /admin/members/{id}/promote` and
@@ -792,7 +806,10 @@ scripts/        # entrypoints: verify_providers.py, init_db.py, demo_rag.py, ing
                 #   (P9 retired ask.py + chat.py — cli.py replaces both.)
 frontend/       # P14: Next.js 15 App Router portal, separate app calling app/api/
                 #   over HTTP with credentials: "include" (session cookie only,
-                #   never JS-accessible storage). (auth)/login + (auth)/verify
+                #   never JS-accessible storage). Browser base is same-origin
+                #   `/api`; next.config.js rewrites `/api/:path*` to FastAPI
+                #   (`API_PROXY_TARGET`) so SameSite=Lax is first-party on a
+                #   split Vercel/Render deploy. (auth)/login + (auth)/verify
                 #   (magic-link), chat/ (streaming SSE + citations, accepts
                 #   ?workspace=<id> — same component parameterized, not a
                 #   forked chat UI), admin/members|connections|jobs, workspaces/
@@ -829,6 +846,13 @@ render.yaml                  # Render Blueprint: web service + Postgres, secrets
 
 ## 4. Known gotchas & past decisions worth remembering
 
+- **Do not point the browser at the Render host.** `SameSite=Lax` cookies set
+  on `onrender.com` are not sent on `fetch` from `vercel.app`. The fix is the
+  Next.js `/api` rewrite (`NEXT_PUBLIC_API_BASE_URL=/api`, `API_PROXY_TARGET=`
+  the API origin), not `SameSite=None`. OAuth callbacks must be
+  `https://<frontend>/api/auth/<provider>/callback` so they see the same
+  first-party cookie. Setting `NEXT_PUBLIC_API_BASE_URL` to the Render URL
+  is how this looks "deployed" but every login immediately appears logged out.
 - **The deploy image needs `transformers` even with fully remote embedding +
   reranking — but never `sentence-transformers`/torch.** Once
   `EMBEDDING_BACKEND=remote` and `RERANKER_BACKEND=remote` point at a hosted
