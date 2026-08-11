@@ -3172,6 +3172,11 @@ table .role-chip.role-admin,
   margin-bottom: 0.7rem;
   box-shadow: var(--shadow-soft);
 }
+.brand-glyph-img {
+  display: block;
+  object-fit: contain;
+  flex: none;
+}
 .landing-orbit-chip { min-height: 4.65rem; }
 .landing-orbit-mark {
   width: 2.5rem;

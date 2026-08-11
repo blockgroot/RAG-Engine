@@ -116,8 +116,8 @@ export default function RootPage() {
             </p>
           </article>
           <article className="landing-feature">
-            <span className="landing-feature-mark" aria-hidden>
-              <LockMark />
+            <span className="landing-feature-mark">
+              <BrandGlyph name="secure" size={22} />
             </span>
             <h3>Your tenant, only</h3>
             <p>
@@ -160,22 +160,5 @@ export default function RootPage() {
         </div>
       </section>
     </LandingShell>
-  );
-}
-
-function LockMark() {
-  return (
-    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden>
-      <rect width="24" height="24" rx="6" fill="#0F766E" />
-      <path
-        d="M8.2 11.2V9.4a3.8 3.8 0 0 1 7.6 0v1.8"
-        stroke="#fff"
-        strokeWidth="1.6"
-        fill="none"
-        strokeLinecap="round"
-      />
-      <rect x="7.2" y="11.2" width="9.6" height="7.2" rx="1.6" fill="#99F6E4" />
-      <circle cx="12" cy="14.6" r="1.1" fill="#0F766E" />
-    </svg>
   );
 }

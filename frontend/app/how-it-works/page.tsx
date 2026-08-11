@@ -115,11 +115,11 @@ export default function HowItWorksPage() {
         </div>
         <div className="how-isolate">
           <article>
-            <BrandGlyph name="gmail" size={26} />
-            <h3>Magic-link, invited members</h3>
+            <BrandGlyph name="secure" size={26} />
+            <h3>Tenant isolation</h3>
             <p>
-              Sign-in is email. An admin invites people by address. There is no
-              public signup into someone else&rsquo;s company.
+              Every read is filtered by org — and by workspace when you&rsquo;re
+              in one. Company A cannot retrieve Company B.
             </p>
           </article>
           <article>
@@ -131,11 +131,11 @@ export default function HowItWorksPage() {
             </p>
           </article>
           <article>
-            <BrandGlyph name="slack" size={26} />
-            <h3>Slack is next</h3>
+            <BrandGlyph name="gmail" size={26} />
+            <h3>Magic-link, invited members</h3>
             <p>
-              Same adapter shape when it lands — connect, scope, ask. It is on
-              the roadmap, not pretended as live.
+              Sign-in is email. An admin invites people by address. There is no
+              public signup into someone else&rsquo;s company.
             </p>
           </article>
         </div>

@@ -21,6 +21,12 @@ env/
 .mypy_cache/
 .ruff_cache/
 
+# Accidental npm installs at repo root (frontend lives in frontend/)
+/node_modules/
+/package.json
+/package-lock.json
+/public/
+
 # OS / editor
 .DS_Store
 .idea/
