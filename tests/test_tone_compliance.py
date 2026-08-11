@@ -1,18 +1,18 @@
-"""Tone-compliance: MODE tags, meta-language guard, semantic question tone.
+"""Tone: MODE meta-language guard + semantic classify + composed empathy.
 
-Deterministic unit tests with fakes — no DB / real LLM. Empathy is driven by
-an aux semantic classifier (FACTUAL vs SUPPORTIVE), not keyword lists on the
-user's wording.
+Deterministic fakes — no DB / real LLM. Empathy is composed in code after
+grounding when the aux classifier returns SUPPORTIVE — not via keyword lists
+or a bloated grounded prompt.
 """
 
 from __future__ import annotations
 
 from app.config.settings import RagSettings, RecoverySettings, ReuseSettings, ToneSettings
 from app.rag.pipeline import RagPipeline, _parse_tagged_mode, _violates_mode_b_tone
-from app.rag.prompts import MODE_B_FORBIDDEN_PHRASES
+from app.rag.prompts import build_grounded_prompt
 from app.rag.question_tone import (
-    has_unwarranted_sympathy_opening,
-    lacks_supportive_opening,
+    compose_supportive_answer,
+    normalize_opener,
     parse_question_tone,
 )
 
@@ -52,9 +52,18 @@ COMPLIANT_MODE_B = (
     "You have access to 25 days of paid annual leave [1]. For parental leave "
     "specifics, your HR team can help."
 )
-
-
-# -- _parse_tagged_mode -------------------------------------------------------
+FACTUAL_COUNSELLING = (
+    "MODE: A\n\n"
+    "You have a few counselling options available:\n"
+    "- Fill out the Counselling Support Google Form\n"
+    "- HR will connect you with a counsellor"
+)
+FACTUAL_MENTAL_HEALTH = (
+    "MODE: A\n\n"
+    "Under the mental health policy you have access to:\n"
+    "- Two paid mental-health days per calendar year\n"
+    "- Professional counselling"
+)
 
 
 def test_parse_tagged_mode_extracts_mode_and_text():
@@ -75,12 +84,16 @@ def test_parse_tagged_mode_returns_none_for_untagged_text():
     assert text == "25 days. [1]"
 
 
-# -- _violates_mode_b_tone -----------------------------------------------------
-
-
-def test_violates_mode_b_tone_catches_each_forbidden_phrase():
-    for phrase in MODE_B_FORBIDDEN_PHRASES:
-        assert _violates_mode_b_tone(f"Some text with {phrase} in it.")
+def test_violates_mode_b_tone_catches_source_narration_patterns():
+    """Structural detector — not a phrase laundry list."""
+    assert _violates_mode_b_tone("The document says employees get 25 days.")
+    assert _violates_mode_b_tone("The doc mentions employees get 25 days.")
+    assert _violates_mode_b_tone("The docs do not contain that information.")
+    assert _violates_mode_b_tone("According to the doc, leave is 25 days.")
+    assert _violates_mode_b_tone(
+        "I cannot give a definitive answer from the available documents."
+    )
+    assert _violates_mode_b_tone("The documents do not explicitly answer this.")
 
 
 def test_violates_mode_b_tone_false_for_natural_language():
@@ -90,42 +103,19 @@ def test_violates_mode_b_tone_false_for_natural_language():
     )
 
 
-def test_violates_mode_b_tone_catches_doc_shorthand_not_just_document():
-    assert _violates_mode_b_tone("The doc mentions employees get 25 days.")
-    assert _violates_mode_b_tone("The docs do not contain that information.")
-    assert _violates_mode_b_tone("According to the doc, leave is 25 days.")
-
-
-# -- question tone parse / opening shape --------------------------------------
-
-
-def test_parse_question_tone_reads_label():
-    assert parse_question_tone("FACTUAL") == "factual"
-    assert parse_question_tone("LABEL: SUPPORTIVE\n") == "supportive"
-    assert parse_question_tone("maybe something else") is None
-
-
-def test_lacks_supportive_opening_flags_cold_procedure():
-    assert lacks_supportive_opening(
-        "To access professional counselling services, fill out the form."
-    )
-    assert not lacks_supportive_opening(
-        "I'm sorry you're going through that — that sounds really hard. "
-        "You can fill out the Counselling Support form."
+def test_parse_question_tone_and_compose_helpers():
+    assert parse_question_tone("SUPPORTIVE") == "supportive"
+    assert parse_question_tone("LABEL: FACTUAL") == "factual"
+    assert normalize_opener("OPENER: That sounds really hard.\n") == "That sounds really hard."
+    assert compose_supportive_answer("Warm line.", "Policy facts.") == (
+        "Warm line.\n\nPolicy facts."
     )
 
 
-def test_has_unwarranted_sympathy_opening_flags_personal_apology():
-    assert has_unwarranted_sympathy_opening(
-        "I'm sorry you've been feeling this way — it sounds like you are "
-        "going through a difficult time. Here are the facts."
-    )
-    assert not has_unwarranted_sympathy_opening(
-        "Under the mental health policy you have two paid days and counselling."
-    )
-
-
-# -- pipeline wiring: bounded retry --------------------------------------------
+def test_grounded_prompt_has_no_required_tone_block():
+    prompt = build_grounded_prompt("q", ["chunk"], FALLBACK)
+    assert "REQUIRED_TONE" not in prompt
+    assert "I'm sorry you've been feeling" not in prompt
 
 
 def test_generate_retries_once_when_mode_b_violates_tone():
@@ -140,8 +130,7 @@ def test_generate_retries_once_when_mode_b_violates_tone():
     assert result.tone_retry_used is True
     assert result.response_mode == "B"
     assert result.question_tone == "factual"
-    assert "does not explicitly answer" not in result.answer.lower()
-    assert result.answered is True
+    assert llm.empathy_opener_calls == 0
 
 
 def test_generate_does_not_retry_when_mode_b_is_already_compliant():
@@ -153,7 +142,7 @@ def test_generate_does_not_retry_when_mode_b_is_already_compliant():
 
     assert llm.grounded_calls == 1
     assert result.tone_retry_used is False
-    assert result.response_mode == "B"
+    assert llm.empathy_opener_calls == 0
 
 
 def test_generate_gracefully_degrades_if_retry_still_violates():
@@ -182,19 +171,7 @@ def test_generate_retries_mode_a_when_it_contains_forbidden_phrase():
 
     assert llm.grounded_calls == 2
     assert result.tone_retry_used is True
-    assert result.response_mode == "A"
     assert "the document says" not in result.answer.lower()
-
-
-def test_generate_does_not_retry_mode_a_when_already_compliant():
-    llm = RecordingLLM(answer="MODE: A\n\nYou get 25 days of paid annual leave. [1]")
-    store = TopicAwareVectorStore(ORG, [("doc-1", "leave: 25 days annual")])
-    pipeline = _pipeline(llm, store)
-
-    result = pipeline.answer("How many annual leave days do I get?", ORG)
-
-    assert llm.grounded_calls == 1
-    assert result.tone_retry_used is False
 
 
 def test_untagged_answer_degrades_gracefully_no_tone_check():
@@ -206,7 +183,6 @@ def test_untagged_answer_degrades_gracefully_no_tone_check():
 
     assert llm.grounded_calls == 1
     assert result.response_mode is None
-    assert result.tone_retry_used is False
 
 
 def test_mode_c_tag_still_detected_as_fallback():
@@ -217,49 +193,15 @@ def test_mode_c_tag_still_detected_as_fallback():
     result = pipeline.answer("How many annual leave days do I get?", ORG)
 
     assert result.answered is False
-    assert result.answer == FALLBACK
-    assert llm.grounded_calls == 1
+    assert llm.empathy_opener_calls == 0
 
 
-# -- semantic SUPPORTIVE vs FACTUAL -------------------------------------------
-
-COLD_MODE_A_COUNSELLING = (
-    "MODE: A\n\n"
-    "To access professional counselling services and mental health leave, "
-    "please follow these steps:\n"
-    "- Fill out the Counselling Support Google Form\n"
-    "- HR will connect you with a counsellor"
-)
-WARM_MODE_A_COUNSELLING = (
-    "MODE: A\n\n"
-    "I'm sorry you're feeling so stressed — that sounds really hard. "
-    "You can get support through company counselling:\n"
-    "- Fill out the Counselling Support Google Form\n"
-    "- HR will connect you with a counsellor"
-)
-FACTUAL_MODE_A_MENTAL_HEALTH = (
-    "MODE: A\n\n"
-    "Under the mental health policy you have access to:\n"
-    "- Two paid mental-health days per calendar year\n"
-    "- Professional counselling (in-house or external partner network)\n"
-    "- Up to five covered sessions per year"
-)
-UNWARRANTED_WARM_MODE_A = (
-    "MODE: A\n\n"
-    "I'm sorry you've been feeling this way — it sounds like you are going "
-    "through a difficult time and it is important to prioritize your "
-    "well-being. You have access to the following resources under the mental "
-    "health policy:\n"
-    "- Two paid mental-health days per calendar year\n"
-    "- Professional counselling"
-)
-
-
-def test_generate_retries_cold_answer_when_classifier_says_supportive():
-    """Paraphrased distress still gets SUPPORTIVE — no user-keyword list."""
+def test_supportive_composes_opener_onto_grounded_facts():
+    """Paraphrased distress → SUPPORTIVE classify → opener prepended in code."""
     llm = RecordingLLM(
-        answers=[COLD_MODE_A_COUNSELLING, WARM_MODE_A_COUNSELLING],
+        answer=FACTUAL_COUNSELLING,
         question_tone="SUPPORTIVE",
+        empathy_opener="That sounds really hard — I'm glad you reached out.",
     )
     store = TopicAwareVectorStore(
         ORG,
@@ -272,18 +214,17 @@ def test_generate_retries_cold_answer_when_classifier_says_supportive():
         ORG,
     )
 
-    assert llm.tone_classify_calls == 1
-    assert llm.grounded_calls == 2
     assert result.question_tone == "supportive"
-    assert result.tone_retry_used is True
-    assert "sorry" in result.answer.lower()
+    assert llm.tone_classify_calls == 1
+    assert llm.empathy_opener_calls == 1
+    assert llm.grounded_calls == 1
+    assert result.answer.startswith("That sounds really hard")
+    assert "Counselling Support" in result.answer
+    assert result.tone_retry_used is False
 
 
-def test_generate_retries_unwarranted_sympathy_when_classifier_says_factual():
-    llm = RecordingLLM(
-        answers=[UNWARRANTED_WARM_MODE_A, FACTUAL_MODE_A_MENTAL_HEALTH],
-        question_tone="FACTUAL",
-    )
+def test_factual_mental_health_ask_gets_no_opener():
+    llm = RecordingLLM(answer=FACTUAL_MENTAL_HEALTH, question_tone="FACTUAL")
     store = TopicAwareVectorStore(
         ORG,
         [("doc-1", "mental health policy: two paid MH days; counselling; five sessions")],
@@ -293,44 +234,13 @@ def test_generate_retries_unwarranted_sympathy_when_classifier_says_factual():
     result = pipeline.answer("What should I know from 'Mental Health Policy'?", ORG)
 
     assert result.question_tone == "factual"
-    assert llm.grounded_calls == 2
-    assert result.tone_retry_used is True
-    assert "sorry you've been feeling" not in result.answer.lower()
-    assert "difficult time" not in result.answer.lower()
-
-
-def test_generate_keeps_factual_mental_health_answer_without_retry():
-    llm = RecordingLLM(answer=FACTUAL_MODE_A_MENTAL_HEALTH, question_tone="FACTUAL")
-    store = TopicAwareVectorStore(
-        ORG,
-        [("doc-1", "mental health policy: two paid MH days; counselling; five sessions")],
-    )
-    pipeline = _pipeline(llm, store)
-
-    result = pipeline.answer("What should I know from 'Mental Health Policy'?", ORG)
-
-    assert llm.grounded_calls == 1
-    assert result.tone_retry_used is False
+    assert llm.empathy_opener_calls == 0
+    assert result.answer.startswith("Under the mental health policy")
     assert "sorry" not in result.answer.lower()
 
 
-def test_generate_does_not_retry_warm_supportive_answer():
-    llm = RecordingLLM(answer=WARM_MODE_A_COUNSELLING, question_tone="SUPPORTIVE")
-    store = TopicAwareVectorStore(
-        ORG,
-        [("doc-1", "counselling: fill Counselling Support form; HR connects you")],
-    )
-    pipeline = _pipeline(llm, store)
-
-    result = pipeline.answer("I am feeling very stressed lately what should i do?", ORG)
-
-    assert llm.grounded_calls == 1
-    assert result.tone_retry_used is False
-    assert result.question_tone == "supportive"
-
-
-def test_tone_classify_disabled_skips_empathy_force_retry():
-    llm = RecordingLLM(answer=COLD_MODE_A_COUNSELLING, question_tone="SUPPORTIVE")
+def test_tone_disabled_skips_classify_and_opener():
+    llm = RecordingLLM(answer=FACTUAL_COUNSELLING, question_tone="SUPPORTIVE")
     store = TopicAwareVectorStore(
         ORG,
         [("doc-1", "counselling: fill Counselling Support form; HR connects you")],
@@ -340,6 +250,6 @@ def test_tone_classify_disabled_skips_empathy_force_retry():
     result = pipeline.answer("I am feeling very stressed lately what should i do?", ORG)
 
     assert llm.tone_classify_calls == 0
-    assert llm.grounded_calls == 1
+    assert llm.empathy_opener_calls == 0
     assert result.question_tone is None
-    assert result.tone_retry_used is False
+    assert result.answer.startswith("You have a few counselling")

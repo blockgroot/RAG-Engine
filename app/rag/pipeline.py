@@ -90,21 +90,21 @@ from .query_cache import QueryAnswerCache
 from .request_budget import RequestBudget
 from .summary_fold import schedule_summary_fold, wait_for_conversation_fold
 from .query_normalize import CorpusSpellNormalizer
+from .source_meta import uses_source_meta_language
 from .question_tone import (
     QuestionTone,
+    build_empathy_opener_prompt,
     build_question_tone_prompt,
-    has_unwarranted_sympathy_opening,
-    lacks_supportive_opening,
+    compose_supportive_answer,
+    normalize_opener,
     parse_question_tone,
 )
 from .prompts import (
-    MODE_B_FORBIDDEN_PHRASES,
     POLICY_PROMPT_PROFILE,
     WEB_SEARCH_TOOL,
     PromptProfile,
     build_decompose_prompt,
     build_grounded_prompt,
-    # question tone prompt lives in question_tone.py
     build_recovery_queries_prompt,
     build_rewrite_prompt,
     build_summary_prompt,
@@ -126,41 +126,17 @@ _MAX_RECOVERY_QUERY_LEN = 200
 _MODE_TAG_RE = re.compile(r"^\s*MODE:\s*([ABC])\s*\n+(.*)", re.IGNORECASE | re.DOTALL)
 
 
-def _tone_retry_addendum(
-    mode: str,
-    *,
-    meta_language: bool = False,
-    missing_empathy: bool = False,
-    unwarranted_empathy: bool = False,
-) -> str:
-    """Appended to the grounded prompt on the one bounded tone-compliance retry."""
-    parts: list[str] = [
+def _tone_retry_addendum(mode: str) -> str:
+    """Appended on the one bounded meta-language tone-compliance retry."""
+    return (
         f"\n\nIMPORTANT CORRECTION: your previous answer declared Mode {mode} "
-        "but did not fully follow that mode's tone rules. Rewrite it, following "
-        f"ALL of the rules for Mode {mode} above exactly. Still begin with "
-        f"'MODE: {mode}'."
-    ]
-    if meta_language:
-        parts.append(
-            " Do not use forbidden meta-language about sources (e.g. naming "
-            "'the document(s)/doc(s)'/'handbook' directly, saying 'according "
-            "to the document', or saying you cannot give a definitive answer). "
-            "State facts directly in a natural, conversational voice."
-        )
-    if missing_empathy:
-        parts.append(
-            " REQUIRED_TONE is SUPPORTIVE — open with one brief, warm sentence "
-            "acknowledging how the user feels BEFORE any procedures, bullet "
-            "list, or company facts. Do not jump straight into 'To access…' / "
-            "form steps."
-        )
-    if unwarranted_empathy:
-        parts.append(
-            " REQUIRED_TONE is FACTUAL — the user asked for policy information, "
-            "not personal support. Do NOT open with sympathy such as 'I'm sorry "
-            "you've been feeling this way'. State the policy facts directly."
-        )
-    return "".join(parts)
+        "but used forbidden meta-language about sources (e.g. naming 'the "
+        "document(s)/doc(s)'/'handbook' directly, saying 'according to the "
+        "document', or saying you cannot give a definitive answer). Rewrite it: "
+        "state facts directly in a natural, conversational voice with no "
+        "meta-language about sources, following ALL of the rules for Mode "
+        f"{mode} above exactly. Still begin with 'MODE: {mode}'."
+    )
 
 
 def _parse_tagged_mode(raw: str) -> tuple[str | None, str]:
@@ -178,15 +154,12 @@ def _parse_tagged_mode(raw: str) -> tuple[str | None, str]:
 
 
 def _violates_mode_b_tone(text: str) -> bool:
-    """True if ``text`` uses any forbidden document-meta-language phrase.
+    """True if ``text`` narrates sources instead of stating facts.
 
-    Despite the name (kept for historical/import continuity), this now checks
-    the same phrase list used for BOTH Mode A and Mode B — a fully-supported
-    answer that narrates "the document says X" is just as robotic as Mode B
-    doing it. See ``MODE_B_FORBIDDEN_PHRASES`` in prompts.py.
+    Name kept for import continuity; applies to Modes A and B. Detection is
+    structural (``uses_source_meta_language``), not a phrase laundry list.
     """
-    low = text.lower()
-    return any(phrase in low for phrase in MODE_B_FORBIDDEN_PHRASES)
+    return uses_source_meta_language(text)
 
 
 @dataclass(frozen=True)
@@ -771,6 +744,7 @@ class RagPipeline:
         return hits, top_score
 
 
+
     def _classify_question_tone(
         self,
         question: str,
@@ -779,12 +753,7 @@ class RagPipeline:
         conversation_id: str | None = None,
         budget: RequestBudget | None = None,
     ) -> QuestionTone | None:
-        """Aux-LLM intent label: factual policy ask vs personal supportive ask.
-
-        Semantic (not keyword) so paraphrases still classify correctly. On
-        disable / timeout / parse failure returns ``None`` and the grounded
-        prompt falls back to judgement-only rules without forced empathy retry.
-        """
+        """Aux-LLM intent: factual policy ask vs personal supportive ask."""
         if not self._tone_settings.enabled:
             return None
         min_stage = self._budget_settings.min_stage_seconds
@@ -799,10 +768,32 @@ class RagPipeline:
                 max_tokens=16,
             )
         except Exception:
-            # Any classify failure (provider, transport, parse upstream) must
-            # degrade — never fail the user-facing answer path.
             return None
         return parse_question_tone(raw)
+
+    def _empathy_opener(
+        self,
+        question: str,
+        *,
+        org_id: str | None = None,
+        conversation_id: str | None = None,
+        budget: RequestBudget | None = None,
+    ) -> str | None:
+        """One-sentence acknowledgment for SUPPORTIVE asks (aux LLM)."""
+        min_stage = self._budget_settings.min_stage_seconds
+        if budget is not None and not budget.can_spend(min_stage):
+            return None
+        try:
+            raw = self._generate_text(
+                "empathy-opener",
+                build_empathy_opener_prompt(question),
+                org_id=org_id,
+                conversation_id=conversation_id,
+                max_tokens=60,
+            )
+        except Exception:
+            return None
+        return normalize_opener(raw)
 
     def _generate(
         self,
@@ -825,12 +816,12 @@ class RagPipeline:
             conversation_id=conversation_id,
             budget=budget,
         )
+        # Grounding prompt is tone-agnostic — empathy is composed below.
         prompt = build_grounded_prompt(
             question=question,
             contexts=contexts,
             fallback_response=self._settings.fallback_response,
             profile=self._prompt_profile,
-            question_tone=question_tone,
         )
         answer_cap = self._settings.max_answer_tokens
         raw = self._generate_text(
@@ -845,30 +836,14 @@ class RagPipeline:
         tone_retry_used = False
         min_stage = self._budget_settings.min_stage_seconds
         meta_bad = mode in ("A", "B") and _violates_mode_b_tone(text)
-        empathy_bad = (
-            mode in ("A", "B")
-            and question_tone == "supportive"
-            and lacks_supportive_opening(text)
-        )
-        unwarranted_empathy = (
-            mode in ("A", "B")
-            and question_tone == "factual"
-            and has_unwarranted_sympathy_opening(text)
-        )
         if (
-            (meta_bad or empathy_bad or unwarranted_empathy)
+            meta_bad
             and budget is not None
             and budget.can_spend(min_stage)
         ):
             retry_raw = self._generate_text(
                 "tone-retry",
-                prompt
-                + _tone_retry_addendum(
-                    mode or "A",
-                    meta_language=meta_bad,
-                    missing_empathy=empathy_bad,
-                    unwarranted_empathy=unwarranted_empathy,
-                ),
+                prompt + _tone_retry_addendum(mode or "A"),
                 org_id=org_id,
                 conversation_id=conversation_id,
                 max_tokens=answer_cap,
@@ -879,6 +854,16 @@ class RagPipeline:
 
         answered = not self._is_refusal(text, self._settings.fallback_response)
         answer = text if answered else self._settings.fallback_response
+        if answered and question_tone == "supportive":
+            opener = self._empathy_opener(
+                question,
+                org_id=org_id,
+                conversation_id=conversation_id,
+                budget=budget,
+            )
+            if opener:
+                answer = compose_supportive_answer(opener, answer)
+
         return RagResult(
             answer=answer,
             answered=answered,
