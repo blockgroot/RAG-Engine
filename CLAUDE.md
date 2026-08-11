@@ -1857,17 +1857,28 @@ queue (`INGEST_WORKER_IN_API=true` is already the default, Phase 12/13 —
 merging worker and API was a config flip, not new code). The entrypoint runs
 `scripts/init_db.py` (idempotent `schema.sql`) before `exec uvicorn`, so a
 fresh Postgres just works on first deploy, on any platform. `render.yaml`
-provisions a Render Postgres (pgvector-capable) and wires its
-`DATABASE_URL` in automatically; every other credential (LLM/embedding/
-reranker keys, `AUTH_ENCRYPTION_KEYS`, SMTP, OAuth client secrets) is marked
-`sync: false` so Render prompts for it in the dashboard rather than it living
-in the repo — `AUTH_JWT_SECRET` is the one exception, generated fresh per
-deploy via `generateValue: true`. Verified end-to-end locally: built the
-image, booted it against the existing `docker-compose.yml` Postgres
-(`host.docker.internal`), confirmed `GET /health` → `200`, schema applied,
-and no local embedding/reranker model ever loaded (see the `transformers`
-gotcha in §4, found by actually running this, not by inspection). The
-frontend is unaffected — this covers the backend only, per the ask.
+runs one free-tier web service and takes `DATABASE_URL` as an external
+secret (`sync: false`) rather than provisioning a Render-managed database —
+**changed from the original design** after hitting Render's "Payment
+Information Required" prompt live: a Render database, even on the `free`
+plan, still asked for a card on the Blueprint apply screen. Pointing
+`DATABASE_URL` at an external free Postgres (Supabase, Neon, etc.) avoids
+that entirely; `render.yaml`'s header comment carries the Supabase-specific
+gotcha (use the *Session pooler* connection string, port 5432, not the
+direct connection — the direct host is IPv6-only on Supabase's free tier,
+and Transaction-mode pooling on port 6543 can hand `app/db/connection.py`'s
+pool a different backend session per transaction, breaking the
+once-per-connection `register_vector` call in `_configure`). Every other
+credential (LLM/embedding/reranker keys, `AUTH_ENCRYPTION_KEYS`, SMTP, OAuth
+client secrets) is marked `sync: false` so Render prompts for it in the
+dashboard rather than it living in the repo — `AUTH_JWT_SECRET` is the one
+exception, generated fresh per deploy via `generateValue: true`. Verified
+end-to-end locally: built the image, booted it against the existing
+`docker-compose.yml` Postgres (`host.docker.internal`), confirmed
+`GET /health` → `200`, schema applied, and no local embedding/reranker model
+ever loaded (see the `transformers` gotcha in §4, found by actually running
+this, not by inspection). The frontend is unaffected — this covers the
+backend only, per the ask.
 
 **Pending (not started)**
 - **Live end-to-end verification of Phases 10-14** against a real sandbox Notion

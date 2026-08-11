@@ -1,9 +1,29 @@
 # Render Blueprint — one-click backend deploy.
 #
 # Usage: push this repo to GitHub/GitLab, then in the Render dashboard choose
-# "New +" -> "Blueprint" and point it at the repo. Render reads this file,
-# provisions the Postgres database and the web service, and wires the
-# DATABASE_URL between them automatically (`fromDatabase` below).
+# "New +" -> "Blueprint" and point it at the repo.
+#
+# DATABASE_URL points at an EXTERNAL Postgres (Supabase free tier, or Neon,
+# etc.) rather than a Render-managed database — deliberate, not a placeholder:
+# Render's free web service needs no card, but provisioning a Render database
+# (even the `free` plan) still prompted for payment info in practice, and a
+# free external Postgres avoids that entirely. app/db/schema.sql runs
+# `CREATE EXTENSION IF NOT EXISTS vector` itself via the entrypoint
+# (scripts/docker-entrypoint.sh -> scripts/init_db.py) — Supabase's default
+# `postgres` role has the privilege to create it, so no manual DB setup is
+# needed beyond pasting the connection string below.
+#
+# IMPORTANT (Supabase specifically): use the "Session pooler" connection
+# string (Settings -> Database -> Connection pooling -> Session pooler,
+# port 5432 on an *.pooler.supabase.com host), NOT the direct connection
+# string. Two reasons: (1) Supabase's direct host is IPv6-only on the free
+# tier, which most external hosts (Render included) cannot reach — the
+# pooler host is IPv4-reachable. (2) Session mode (not Transaction mode,
+# port 6543) gives each of our app's own psycopg-pool connections a stable
+# backend session for its lifetime, matching what app/db/connection.py
+# assumes (e.g. running register_vector's type lookup once per connection) —
+# Transaction mode can silently break that by handing out a different
+# backend connection per transaction.
 #
 # Every other secret (LLM/embedding/reranker API keys, auth keys, SMTP creds,
 # OAuth client secrets) is intentionally left out of this file — `sync: false`
@@ -11,22 +31,9 @@
 # in the repo. Fill those in once, on first deploy, from your local `.env`
 # (never commit `.env` itself — see .gitignore).
 #
-# Render's managed Postgres supports the `vector` extension; app/db/schema.sql
-# runs `CREATE EXTENSION IF NOT EXISTS vector` itself via the entrypoint
-# (scripts/docker-entrypoint.sh -> scripts/init_db.py), so no manual DB setup
-# is needed beyond letting this blueprint provision the database.
-#
-# Plans are set to `free` so this deploys with no paid instances. Render's
-# free Postgres expires 30 days after creation (recreate it when that
-# happens) and the free web service spins down after ~15 min of inactivity,
-# then cold-starts on the next request — fine for testing, not for a
-# always-on production deployment. Bump these to `starter` once you're ready
-# to pay for an always-on instance + a non-expiring database.
-
-databases:
-  - name: rag-postgres
-    plan: free
-    postgresMajorVersion: "17"
+# The web service plan is `free`: it spins down after ~15 min of inactivity
+# and cold-starts on the next request — fine for testing, not for an
+# always-on production deployment. Bump to `starter` when you need always-on.
 
 services:
   - type: web
@@ -37,9 +44,7 @@ services:
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
-        fromDatabase:
-          name: rag-postgres
-          property: connectionString
+        sync: false
 
       # -- LLM --
       - key: LLM_MODEL
