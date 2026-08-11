@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { BrandMark } from "@/components/BrandMark";
 import { api, Me } from "@/lib/api";
 import { canAccessAdminPortal, isSetupComplete } from "@/lib/routing";
 
@@ -109,7 +110,7 @@ export function AppShell({
           <span className="rail-glow rail-glow-b" />
         </div>
         <Link href={homeHref} className="brand">
-          <span className="brand-mark" aria-hidden />
+          <BrandMark />
           <span className="brand-text">
             <span className="brand-name">Handbook</span>
             <span className="brand-tag">Work answers, grounded</span>

@@ -3,34 +3,33 @@
 import { BrandGlyph, type BrandName } from "@/components/BrandGlyph";
 import { LandingPromptCycle } from "@/components/LandingPromptCycle";
 
-const ORBIT: Array<{ name: BrandName; size: number }> = [
+/** Equal-spaced stations around Handbook (pentagon) — shared radius, no orbit spin. */
+const SOURCES: Array<{ name: BrandName; size: number }> = [
+  { name: "slack", size: 24 },
   { name: "notion", size: 24 },
   { name: "drive", size: 24 },
   { name: "github", size: 24 },
   { name: "gmail", size: 30 },
-  { name: "slack", size: 24 },
 ];
 
 /**
- * Live product mock: chat window with brand marks on a circular orbit.
+ * Live product mock: chat window with brand marks docked around it as one system.
  */
 export function LandingProductArt() {
   return (
     <div className="lp-stage" aria-hidden>
-      <div className="lp-orbit">
-        <div className="lp-orbit-ring">
-          {ORBIT.map((item, i) => (
-            <span
-              key={item.name}
-              className={`lp-sat${item.name === "gmail" ? " lp-sat-gmail" : ""}`}
-              style={{ ["--sat-i" as string]: String(i) }}
-            >
-              <span className="lp-sat-face">
-                <BrandGlyph name={item.name} size={item.size} />
-              </span>
+      <div className="lp-constellation">
+        {SOURCES.map((item, i) => (
+          <span
+            key={item.name}
+            className={`lp-sat${item.name === "gmail" ? " lp-sat-gmail" : ""}`}
+            style={{ ["--sat-i" as string]: String(i) }}
+          >
+            <span className="lp-sat-face">
+              <BrandGlyph name={item.name} size={item.size} />
             </span>
-          ))}
-        </div>
+          </span>
+        ))}
       </div>
 
       <div className="lp-window">

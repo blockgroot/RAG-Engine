@@ -141,22 +141,162 @@ export default function HowItWorksPage() {
         </div>
       </section>
 
-      <section className="landing-close landing-wrap" aria-labelledby="how-close">
-        <div className="landing-close-copy">
-          <p className="landing-eyebrow">Ready when you are</p>
-          <h2 id="how-close">Clear answers. Honest when it can&rsquo;t.</h2>
+      <section className="landing-section landing-wrap how-why" aria-labelledby="why-title">
+        <div className="how-why-hero">
+          <p className="landing-eyebrow">Why Handbook</p>
+          <h2 id="why-title">Why teams connect — and what you get.</h2>
           <p>
-            Connect your sources, invite the team, and ask workplace questions
-            with citations you can verify.
+            Workplace questions should land on your own policies and repos,
+            not a model&rsquo;s guess. Handbook keeps every answer grounded,
+            scoped, and honest when the docs don&rsquo;t cover it.
           </p>
         </div>
-        <div className="landing-close-actions">
-          <Link href="/signup" className="button landing-cta-primary landing-close-primary">
-            Request access
-          </Link>
-          <Link href="/" className="landing-close-link">
-            Back to product overview
-          </Link>
+
+        <ol className="how-promise" aria-label="Why connect with Handbook">
+          <li className="how-promise-item" style={{ ["--i" as string]: "0" }}>
+            <span className="how-promise-index" aria-hidden>01</span>
+            <div className="how-promise-body">
+              <strong>Stop hunting across tools</strong>
+              <p>
+                One place for leave, benefits, expenses, READMEs, and recent
+                commits — instead of Slack archaeology and tab-hopping.
+              </p>
+            </div>
+            <span className="how-promise-tag">Ask once</span>
+          </li>
+          <li className="how-promise-item" style={{ ["--i" as string]: "1" }}>
+            <span className="how-promise-index" aria-hidden>02</span>
+            <div className="how-promise-body">
+              <strong>Trust what you can verify</strong>
+              <p>
+                Policy answers cite the source page. Weak evidence means a
+                clear refusal — never a confident invention.
+              </p>
+            </div>
+            <span className="how-promise-tag">Cited</span>
+          </li>
+          <li className="how-promise-item" style={{ ["--i" as string]: "2" }}>
+            <span className="how-promise-index" aria-hidden>03</span>
+            <div className="how-promise-body">
+              <strong>Keep knowledge inside the company</strong>
+              <p>
+                Every search is org-scoped. Admins invite by email; other
+                tenants never see your content.
+              </p>
+            </div>
+            <span className="how-promise-tag">Isolated</span>
+          </li>
+        </ol>
+
+        <div className="how-included" aria-labelledby="offer-title">
+          <div className="how-included-copy">
+            <p className="landing-eyebrow">What you get</p>
+            <h3 id="offer-title">Connect once. Ask with proof.</h3>
+            <p className="how-included-lead">
+              Sync Notion or Drive, look up GitHub live, invite the team with a
+              magic link, and get cited answers — or a clear fallback when the
+              documents don&rsquo;t cover it.
+            </p>
+            <p className="how-included-for">
+              Built for <em>People &amp; ops</em>, <em>Engineering</em>, and{" "}
+              <em>Admins</em>.
+            </p>
+          </div>
+
+          <div className="how-constellation" aria-hidden>
+            <svg className="how-constellation-links" viewBox="0 0 280 260" fill="none">
+              <path
+                className="how-constellation-path"
+                d="M140 130 L70 48 M140 130 L140 42 M140 130 L210 48 M140 130 L58 175 M140 130 L222 175 M140 130 L140 222"
+              />
+            </svg>
+            <div className="how-constellation-core">
+              <span>Ask</span>
+            </div>
+            <span className="how-constellation-node how-node-a" style={{ ["--d" as string]: "0s" }}>
+              <BrandGlyph name="notion" size={20} />
+              <em>Notion</em>
+            </span>
+            <span className="how-constellation-node how-node-b" style={{ ["--d" as string]: "0.15s" }}>
+              <BrandGlyph name="drive" size={20} />
+              <em>Drive</em>
+            </span>
+            <span className="how-constellation-node how-node-c" style={{ ["--d" as string]: "0.3s" }}>
+              <BrandGlyph name="github" size={20} />
+              <em>GitHub</em>
+            </span>
+            <span className="how-constellation-node how-node-d" style={{ ["--d" as string]: "0.45s" }}>
+              <BrandGlyph name="gmail" size={22} />
+              <em>Magic link</em>
+            </span>
+            <span className="how-constellation-node how-node-e" style={{ ["--d" as string]: "0.6s" }}>
+              <BrandGlyph name="workspace" size={20} />
+              <em>Spaces</em>
+            </span>
+            <span className="how-constellation-node how-node-f" style={{ ["--d" as string]: "0.75s" }}>
+              <BrandGlyph name="secure" size={20} />
+              <em>Cited</em>
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <section className="landing-close landing-wrap" aria-labelledby="how-close">
+        <div className="landing-close-panel">
+          <div className="landing-close-orbit-wrap">
+            <div className="landing-close-orbit-ring" aria-hidden>
+              <span className="landing-close-orbit-glow" />
+            </div>
+            <div className="landing-close-orbit-core" aria-hidden>
+              <span>3</span>
+            </div>
+            <ol className="landing-close-orbit" aria-label="Getting started path">
+              <li className="landing-close-step" style={{ ["--step" as string]: "0" }}>
+                <span className="landing-close-step-mark" aria-hidden>
+                  <BrandGlyph name="notion" size={18} />
+                </span>
+                <span className="landing-close-step-body">
+                  <strong>Connect</strong>
+                  <span>Notion, Drive, or GitHub</span>
+                </span>
+              </li>
+              <li className="landing-close-step" style={{ ["--step" as string]: "1" }}>
+                <span className="landing-close-step-mark" aria-hidden>
+                  <BrandGlyph name="gmail" size={20} />
+                </span>
+                <span className="landing-close-step-body">
+                  <strong>Invite</strong>
+                  <span>Teammates by email</span>
+                </span>
+              </li>
+              <li className="landing-close-step" style={{ ["--step" as string]: "2" }}>
+                <span className="landing-close-step-mark" aria-hidden>
+                  <BrandGlyph name="secure" size={18} />
+                </span>
+                <span className="landing-close-step-body">
+                  <strong>Ask</strong>
+                  <span>Cited answers, org-scoped</span>
+                </span>
+              </li>
+            </ol>
+          </div>
+
+          <div className="landing-close-copy">
+            <p className="landing-eyebrow">Ready when you are</p>
+            <h2 id="how-close">Clear answers. Honest when it can&rsquo;t.</h2>
+            <p className="landing-close-lead">
+              Connect your sources, invite the team, and ask workplace questions
+              with citations you can verify.
+            </p>
+            <div className="landing-close-actions">
+              <Link href="/signup" className="button landing-cta-primary landing-close-primary">
+                Request access
+              </Link>
+              <Link href="/" className="landing-close-link">
+                Back to product overview
+              </Link>
+            </div>
+          </div>
         </div>
       </section>
     </LandingShell>

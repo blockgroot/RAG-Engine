@@ -142,21 +142,61 @@ export default function RootPage() {
       </section>
 
       <section className="landing-close landing-wrap" aria-labelledby="close-title">
-        <div className="landing-close-copy">
-          <p className="landing-eyebrow">Get started</p>
-          <h2 id="close-title">Your company knowledge, ready to ask.</h2>
-          <p>
-            Connect a source, invite your team, and get cited answers from the
-            documents you already trust.
-          </p>
-        </div>
-        <div className="landing-close-actions">
-          <Link href="/signup" className="button landing-cta-primary landing-close-primary">
-            Request access
-          </Link>
-          <Link href="/how-it-works" className="landing-close-link">
-            See how a question is answered
-          </Link>
+        <div className="landing-close-panel">
+          <div className="landing-close-orbit-wrap">
+            <div className="landing-close-orbit-ring" aria-hidden>
+              <span className="landing-close-orbit-glow" />
+            </div>
+            <div className="landing-close-orbit-core" aria-hidden>
+              <span>3</span>
+            </div>
+            <ol className="landing-close-orbit" aria-label="Getting started path">
+              <li className="landing-close-step" style={{ ["--step" as string]: "0" }}>
+                <span className="landing-close-step-mark" aria-hidden>
+                  <BrandGlyph name="notion" size={18} />
+                </span>
+                <span className="landing-close-step-body">
+                  <strong>Connect</strong>
+                  <span>Notion, Drive, or GitHub</span>
+                </span>
+              </li>
+              <li className="landing-close-step" style={{ ["--step" as string]: "1" }}>
+                <span className="landing-close-step-mark" aria-hidden>
+                  <BrandGlyph name="gmail" size={20} />
+                </span>
+                <span className="landing-close-step-body">
+                  <strong>Invite</strong>
+                  <span>Teammates by email</span>
+                </span>
+              </li>
+              <li className="landing-close-step" style={{ ["--step" as string]: "2" }}>
+                <span className="landing-close-step-mark" aria-hidden>
+                  <BrandGlyph name="secure" size={18} />
+                </span>
+                <span className="landing-close-step-body">
+                  <strong>Ask</strong>
+                  <span>Cited answers, org-scoped</span>
+                </span>
+              </li>
+            </ol>
+          </div>
+
+          <div className="landing-close-copy">
+            <p className="landing-eyebrow">Start here</p>
+            <h2 id="close-title">Three steps from sources to answers.</h2>
+            <p className="landing-close-lead">
+              Handbook is ready once your docs are connected and your team is
+              invited — then every question lands with a citation.
+            </p>
+            <div className="landing-close-actions">
+              <Link href="/signup" className="button landing-cta-primary landing-close-primary">
+                Request access
+              </Link>
+              <Link href="/how-it-works" className="landing-close-link">
+                See how a question is answered
+              </Link>
+            </div>
+          </div>
         </div>
       </section>
     </LandingShell>

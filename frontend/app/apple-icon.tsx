@@ -20,16 +20,35 @@ export default function AppleIcon() {
       >
         <div
           style={{
-            width: 72,
-            height: 72,
-            borderTop: "10px solid rgba(255,252,247,0.88)",
-            borderRight: "10px solid rgba(255,252,247,0.88)",
-            borderBottom: "10px solid transparent",
-            borderLeft: "10px solid transparent",
-            borderRadius: 8,
-            transform: "rotate(45deg) translateY(4px)",
+            display: "flex",
+            alignItems: "stretch",
+            gap: 8,
+            width: 96,
+            height: 76,
           }}
-        />
+        >
+          <div
+            style={{
+              flex: 1,
+              borderRadius: "10px 4px 4px 10px",
+              background: "rgba(255,252,247,0.95)",
+            }}
+          />
+          <div
+            style={{
+              width: 10,
+              borderRadius: 4,
+              background: "rgba(255,252,247,0.45)",
+            }}
+          />
+          <div
+            style={{
+              flex: 1,
+              borderRadius: "4px 10px 10px 4px",
+              background: "rgba(255,252,247,0.88)",
+            }}
+          />
+        </div>
       </div>
     ),
     { ...size }

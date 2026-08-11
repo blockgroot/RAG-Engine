@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { AuthSceneArt } from "@/components/AuthSceneArt";
+import { BrandMark } from "@/components/BrandMark";
 
 /**
  * Split auth layout: illustrated brand story + form card.
@@ -28,7 +29,7 @@ export function AuthShell({
 
       <header className="landing-topnav">
         <Link href="/" className="landing-brand">
-          <span className="brand-mark" aria-hidden />
+          <BrandMark />
           <span>Handbook</span>
         </Link>
         <nav className="landing-topnav-actions" aria-label="Account">

@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
+import { BrandMark } from "@/components/BrandMark";
 
 /** Shared public chrome so home and How it works stay on the same grid. */
 export function LandingShell({
@@ -22,7 +23,7 @@ export function LandingShell({
       <header className="landing-topnav">
         <div className="landing-wrap landing-topnav-inner">
           <Link href="/" className="landing-brand">
-            <span className="brand-mark" aria-hidden />
+            <BrandMark />
             <span>Handbook</span>
           </Link>
           <nav className="landing-topnav-actions" aria-label="Page">

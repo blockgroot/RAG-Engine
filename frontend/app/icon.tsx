@@ -3,7 +3,7 @@ import { ImageResponse } from "next/og";
 export const size = { width: 32, height: 32 };
 export const contentType = "image/png";
 
-/** Browser-tab mark — same teal tile as the in-app `.brand-mark`. */
+/** Browser-tab mark — open handbook on the teal tile. */
 export default function Icon() {
   return new ImageResponse(
     (
@@ -20,16 +20,35 @@ export default function Icon() {
       >
         <div
           style={{
-            width: 14,
+            display: "flex",
+            alignItems: "stretch",
+            gap: 1.5,
+            width: 18,
             height: 14,
-            borderTop: "2.2px solid rgba(255,252,247,0.85)",
-            borderRight: "2.2px solid rgba(255,252,247,0.85)",
-            borderBottom: "2.2px solid transparent",
-            borderLeft: "2.2px solid transparent",
-            borderRadius: 2,
-            transform: "rotate(45deg) translateY(1px)",
           }}
-        />
+        >
+          <div
+            style={{
+              flex: 1,
+              borderRadius: "2px 1px 1px 2px",
+              background: "rgba(255,252,247,0.95)",
+            }}
+          />
+          <div
+            style={{
+              width: 2,
+              borderRadius: 1,
+              background: "rgba(255,252,247,0.45)",
+            }}
+          />
+          <div
+            style={{
+              flex: 1,
+              borderRadius: "1px 2px 2px 1px",
+              background: "rgba(255,252,247,0.88)",
+            }}
+          />
+        </div>
       </div>
     ),
     { ...size }
