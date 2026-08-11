@@ -1,6 +1,6 @@
 import { BrandGlyph, type BrandName } from "@/components/BrandGlyph";
 
-/** Creative integrations board — hub + linked sources, not a flat chip grid. */
+/** Simple integrations strip — logos + labels, no busy card layout. */
 
 const SOURCES: Array<{
   id: string;
@@ -9,90 +9,33 @@ const SOURCES: Array<{
   hint: string;
   size?: number;
   soon?: boolean;
-  spot: string;
 }> = [
-  {
-    id: "notion",
-    mark: "notion",
-    label: "Notion",
-    hint: "Policies & wikis",
-    spot: "a",
-  },
-  {
-    id: "drive",
-    mark: "drive",
-    label: "Google Drive",
-    hint: "Team documents",
-    spot: "b",
-  },
-  {
-    id: "github",
-    mark: "github",
-    label: "GitHub",
-    hint: "READMEs & commits",
-    spot: "c",
-  },
-  {
-    id: "mail",
-    mark: "gmail",
-    label: "Email",
-    hint: "Magic-link sign-in",
-    size: 30,
-    spot: "d",
-  },
-  {
-    id: "spaces",
-    mark: "workspace",
-    label: "Workspaces",
-    hint: "Team & project spaces",
-    spot: "e",
-  },
-  {
-    id: "slack",
-    mark: "slack",
-    label: "Slack",
-    hint: "Coming soon",
-    soon: true,
-    spot: "f",
-  },
+  { id: "notion", mark: "notion", label: "Notion", hint: "Policies & wikis" },
+  { id: "drive", mark: "drive", label: "Google Drive", hint: "Team documents" },
+  { id: "github", mark: "github", label: "GitHub", hint: "READMEs & commits" },
+  { id: "mail", mark: "gmail", label: "Email", hint: "Magic-link sign-in", size: 30 },
+  { id: "spaces", mark: "workspace", label: "Workspaces", hint: "Team & project spaces" },
+  { id: "slack", mark: "slack", label: "Slack", hint: "Coming soon", soon: true },
 ];
 
 export function LandingSourcesOrbit() {
   return (
-    <div className="landing-connect" aria-label="Sources Handbook can use">
-      <div className="landing-connect-stage">
-        <svg className="landing-connect-lines" viewBox="0 0 640 320" aria-hidden>
-          <path d="M320 160 L120 72" />
-          <path d="M320 160 L520 72" />
-          <path d="M320 160 L560 168" />
-          <path d="M320 160 L500 260" />
-          <path d="M320 160 L140 250" />
-          <path d="M320 160 L80 160" />
-        </svg>
-
-        <div className="landing-connect-hub">
-          <strong>Handbook</strong>
-          <span>Your company knowledge</span>
-        </div>
-
-        {SOURCES.map((source) => (
-          <article
-            key={source.id}
-            className={`landing-connect-node landing-connect-node-${source.spot}${source.soon ? " is-soon" : ""}`}
-          >
-            <span className="landing-connect-mark">
-              <BrandGlyph name={source.mark} size={source.size ?? 24} />
-            </span>
-            <span className="landing-connect-copy">
-              <strong>
-                {source.label}
-                {source.soon ? <em> soon</em> : null}
-              </strong>
-              <span>{source.hint}</span>
-            </span>
-          </article>
-        ))}
-      </div>
-    </div>
+    <ul className="landing-integrations" aria-label="Sources Handbook can use">
+      {SOURCES.map((source) => (
+        <li
+          key={source.id}
+          className={`landing-integration${source.soon ? " is-soon" : ""}`}
+        >
+          <span className="landing-integration-mark">
+            <BrandGlyph name={source.mark} size={source.size ?? 26} />
+          </span>
+          <strong>
+            {source.label}
+            {source.soon ? <em> soon</em> : null}
+          </strong>
+          <span>{source.hint}</span>
+        </li>
+      ))}
+    </ul>
   );
 }

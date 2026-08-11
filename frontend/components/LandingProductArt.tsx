@@ -4,11 +4,11 @@ import { BrandGlyph, type BrandName } from "@/components/BrandGlyph";
 import { LandingPromptCycle } from "@/components/LandingPromptCycle";
 
 const ORBIT: Array<{ name: BrandName; size: number }> = [
-  { name: "notion", size: 22 },
-  { name: "drive", size: 22 },
-  { name: "github", size: 22 },
-  { name: "gmail", size: 28 },
-  { name: "slack", size: 22 },
+  { name: "notion", size: 24 },
+  { name: "drive", size: 24 },
+  { name: "github", size: 24 },
+  { name: "gmail", size: 30 },
+  { name: "slack", size: 24 },
 ];
 
 /**
