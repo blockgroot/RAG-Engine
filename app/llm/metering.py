@@ -6,22 +6,14 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
+from .stages import AUX_LLM_STAGES
+
 if TYPE_CHECKING:
     from .base import LLMProvider
 
 logger = logging.getLogger("rag.llm_usage")
 
-# Stages that use the auxiliary (cheaper) model when configured.
-AUX_LLM_STAGES = frozenset(
-    {
-        "rewrite",
-        "decompose",
-        "recovery-expand",
-        "summary-fold",
-        "ingest-context",
-        "tone-classify",
-    }
-)
+__all__ = ["AUX_LLM_STAGES", "log_llm_call"]
 
 
 def log_llm_call(

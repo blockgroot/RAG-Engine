@@ -23,6 +23,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
+from ..core.answer_sources import SOURCE_POLICY
+
 
 @dataclass(frozen=True)
 class Citation:
@@ -78,7 +80,7 @@ class AgentResponse:
 
     answer: str
     grounded: bool
-    source: str = "policy"
+    source: str = SOURCE_POLICY
     citations: list[Citation] = field(default_factory=list)
     resolved_question: str | None = None
     top_score: float | None = None

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..core.answer_sources import SOURCE_POLICY, SOURCE_WORKSPACE
 from ..security.untrusted import scrub_untrusted_text
 
 
@@ -44,7 +45,7 @@ POLICY_PROMPT_PROFILE = PromptProfile(
     scope_adjective="company-specific",
     scope_noun="company",
     escalation_hint="your HR team can help with this",
-    source_label="policy",
+    source_label=SOURCE_POLICY,
 )
 
 WORKSPACE_PROMPT_PROFILE = PromptProfile(
@@ -56,7 +57,7 @@ WORKSPACE_PROMPT_PROFILE = PromptProfile(
     scope_adjective="workspace-specific",
     scope_noun="workspace",
     escalation_hint="whoever owns this workspace can help with this",
-    source_label="workspace",
+    source_label=SOURCE_WORKSPACE,
 )
 
 # Mirrors the "never use meta-language about sources" rule below. Shared with

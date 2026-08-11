@@ -253,3 +253,37 @@ def test_tone_disabled_skips_classify_and_opener():
     assert llm.empathy_opener_calls == 0
     assert result.question_tone is None
     assert result.answer.startswith("You have a few counselling")
+
+
+def test_followup_uses_original_user_question_for_empathy():
+    """Conversation rewrite is retrieval-oriented; tone must use the raw turn.
+
+    After a Mental Health Policy ask, rewrite may become a factual-looking
+    standalone question — classify/opener must still see the user's distress.
+    """
+    llm = RecordingLLM(
+        answer=FACTUAL_COUNSELLING,
+        question_tone="SUPPORTIVE",
+        empathy_opener="I'm sorry you're feeling so stressed — that sounds really hard.",
+    )
+    store = TopicAwareVectorStore(
+        ORG,
+        [("doc-1", "counselling: fill Counselling Support form; HR connects you")],
+    )
+    pipeline = _pipeline(llm, store)
+
+    # Simulate _generate after rewrite: retrieval question looks factual,
+    # user_question is the real follow-up.
+    hits = store.query(ORG, KeywordEmbedder().embed(["counselling"])[0], top_k=3)
+    result = pipeline._generate(
+        "What mental health counselling and leave options does the company offer?",
+        hits,
+        hits[0].score if hits else 0.9,
+        retrieval_reused=False,
+        user_question="I am feeling very stressed lately what should i do?",
+    )
+
+    assert result.question_tone == "supportive"
+    assert llm.empathy_opener_calls == 1
+    assert result.answer.startswith("I'm sorry you're feeling so stressed")
+    assert "Counselling Support" in result.answer
