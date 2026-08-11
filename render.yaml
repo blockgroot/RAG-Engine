@@ -15,10 +15,17 @@
 # runs `CREATE EXTENSION IF NOT EXISTS vector` itself via the entrypoint
 # (scripts/docker-entrypoint.sh -> scripts/init_db.py), so no manual DB setup
 # is needed beyond letting this blueprint provision the database.
+#
+# Plans are set to `free` so this deploys with no paid instances. Render's
+# free Postgres expires 30 days after creation (recreate it when that
+# happens) and the free web service spins down after ~15 min of inactivity,
+# then cold-starts on the next request — fine for testing, not for a
+# always-on production deployment. Bump these to `starter` once you're ready
+# to pay for an always-on instance + a non-expiring database.
 
 databases:
   - name: rag-postgres
-    plan: starter
+    plan: free
     postgresMajorVersion: "17"
 
 services:
@@ -26,7 +33,7 @@ services:
     name: rag-backend
     runtime: docker
     dockerfilePath: ./Dockerfile
-    plan: starter
+    plan: free
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
