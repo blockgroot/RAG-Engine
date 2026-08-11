@@ -45,23 +45,23 @@ export default function RootPage() {
     <LandingShell active="home">
       <section className="landing-hero landing-hero-split landing-wrap" aria-labelledby="landing-title">
         <div className="landing-hero-copy">
-          <p className="landing-eyebrow">Work AI that stays on your documents</p>
+          <p className="landing-eyebrow">AI for your company knowledge</p>
           <h1 id="landing-title" className="landing-title">
-            Ask your company.
+            Ask your workplace.
             <br />
-            Get the real answer.
+            Answer from your sources.
           </h1>
           <p className="landing-subtitle">
-            Employees ask about leave, expenses, and the codebase. Handbook
-            answers only from the Notion, Drive, or GitHub you connected — with
-            citations. If it isn&rsquo;t written down, we say so.
+            Connect Notion, Google Drive, and GitHub. Handbook answers employee
+            questions with citations — and says when the documents don&rsquo;t
+            cover it.
           </p>
           <div className="landing-cta-row">
             <Link href="/signup" className="button landing-cta-primary">
-              Set up your company
+              Get started
             </Link>
             <Link href="/how-it-works" className="button button-secondary landing-cta-ghost">
-              See how it works
+              How it works
             </Link>
           </div>
         </div>
@@ -71,15 +71,14 @@ export default function RootPage() {
       <section id="what" className="landing-section landing-wrap" aria-labelledby="what-title">
         <div className="landing-section-head">
           <div>
-            <p className="landing-eyebrow">What it actually does</p>
+            <p className="landing-eyebrow">Built for work</p>
             <h2 id="what-title" className="landing-section-title">
-              One desk for policies and code.
+              Policies, code, and team spaces — grounded.
             </h2>
           </div>
           <p className="landing-section-lead">
-            Connect the sources you already use. People ask in plain language.
-            Handbook retrieves from <em>that</em> tenant only, then answers with
-            citations — or refuses when the documents don&rsquo;t cover it.
+            One place to ask. Answers come from the content your company
+            connected, scoped to the right tenant every time.
           </p>
         </div>
         <div className="landing-feature-grid">
@@ -87,42 +86,40 @@ export default function RootPage() {
             <span className="landing-feature-mark">
               <BrandGlyph name="notion" size={22} />
             </span>
-            <h3>Policies, grounded</h3>
+            <h3>Grounded policy answers</h3>
             <p>
-              Leave, benefits, expenses — retrieved from the pages you ingested.
-              Every answer shows the source. Guessing is a product bug here, not
-              a feature.
+              Leave, benefits, expenses, and handbooks — retrieved from your
+              synced docs, with the source shown on every reply.
             </p>
           </article>
           <article className="landing-feature">
             <span className="landing-feature-mark">
               <BrandGlyph name="github" size={22} />
             </span>
-            <h3>Code, live</h3>
+            <h3>Live code context</h3>
             <p>
-              The Code tab talks to GitHub at question time — READMEs and
-              commits, no stale index. Unauthorized repos never leave the
-              allowlist.
+              Ask about READMEs and recent commits through GitHub at question
+              time — always against the repositories you authorized.
             </p>
           </article>
           <article className="landing-feature">
             <span className="landing-feature-mark">
               <BrandGlyph name="workspace" size={22} />
             </span>
-            <h3>Spaces inside the company</h3>
+            <h3>Team workspaces</h3>
             <p>
-              A workspace is a private desk for meeting notes or a project wiki.
-              Questions asked there never blend in org-wide HR docs.
+              Create a focused space for a project or team, invite colleagues,
+              and keep questions on that space&rsquo;s own connected content.
             </p>
           </article>
           <article className="landing-feature">
             <span className="landing-feature-mark">
               <BrandGlyph name="secure" size={22} />
             </span>
-            <h3>Your tenant, only</h3>
+            <h3>Tenant isolation</h3>
             <p>
-              Isolation is a query filter, not a hope. Company A cannot retrieve
-              Company B. Magic-link login; admins invite the rest of the team.
+              Every search is scoped to your organization. Admins invite
+              members by email, and other companies never see your data.
             </p>
           </article>
         </div>
@@ -131,31 +128,34 @@ export default function RootPage() {
       <section id="sources" className="landing-section landing-section-orbit landing-wrap" aria-labelledby="sources-title">
         <div className="landing-section-head">
           <div>
-            <p className="landing-eyebrow">Connects to what you already have</p>
+            <p className="landing-eyebrow">Integrations</p>
             <h2 id="sources-title" className="landing-section-title">
-              Plug in the tools. Ask once.
+              Connect once. Ask anywhere.
             </h2>
           </div>
           <p className="landing-section-lead">
-            An admin connects Notion or Drive and syncs. GitHub is live —
-            nothing to embed. Sign-in is email, not another password.
+            Sync Notion or Drive for policies. Use GitHub live for code.
+            Sign in with a magic link — no extra password to manage.
           </p>
         </div>
         <LandingSourcesOrbit />
       </section>
 
       <section className="landing-close landing-wrap" aria-labelledby="close-title">
-        <h2 id="close-title">Ready when your documents are.</h2>
-        <p>
-          Request access, get approved, connect a source, and ask the question
-          your wiki already answered — without hunting for the page.
-        </p>
-        <div className="landing-cta-row">
-          <Link href="/signup" className="button landing-cta-primary">
+        <div className="landing-close-copy">
+          <p className="landing-eyebrow">Get started</p>
+          <h2 id="close-title">Your company knowledge, ready to ask.</h2>
+          <p>
+            Connect a source, invite your team, and get cited answers from the
+            documents you already trust.
+          </p>
+        </div>
+        <div className="landing-close-actions">
+          <Link href="/signup" className="button landing-cta-primary landing-close-primary">
             Request access
           </Link>
-          <Link href="/how-it-works" className="button button-secondary landing-cta-ghost">
-            How a question is answered
+          <Link href="/how-it-works" className="landing-close-link">
+            See how a question is answered
           </Link>
         </div>
       </section>

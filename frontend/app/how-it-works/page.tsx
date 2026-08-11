@@ -6,21 +6,21 @@ import { LandingShell } from "@/components/LandingShell";
 export const metadata: Metadata = {
   title: "How it works",
   description:
-    "How Handbook turns a question into a cited answer — retrieve, gate, generate — and when it refuses.",
+    "How Handbook turns a workplace question into a cited answer from your connected sources.",
 };
 
 export default function HowItWorksPage() {
   return (
     <LandingShell active="how">
       <section className="how-hero landing-wrap" aria-labelledby="how-title">
-        <p className="landing-eyebrow">The path of a question</p>
+        <p className="landing-eyebrow">Product walkthrough</p>
         <h1 id="how-title" className="how-title">
-          How Handbook answers — and when it refuses.
+          From question to cited answer.
         </h1>
         <p className="how-lead">
-          There is no mystery box. A question is retrieved against your tenant,
-          scored, then answered only from those chunks. If the documents
-          don&rsquo;t cover it, we say we don&rsquo;t know.
+          Handbook retrieves from your company&rsquo;s connected content,
+          checks confidence, then answers only from that evidence — or clearly
+          says when it can&rsquo;t.
         </p>
       </section>
 
@@ -28,39 +28,39 @@ export default function HowItWorksPage() {
         <article className="how-flow-step">
           <span className="how-flow-num">1</span>
           <strong>Ask</strong>
-          <p>A follow-up is rewritten into a standalone question first.</p>
+          <p>Type a question. Follow-ups are rewritten into a clear standalone ask.</p>
         </article>
         <span className="how-flow-arrow" aria-hidden />
         <article className="how-flow-step">
           <span className="how-flow-num">2</span>
           <strong>Retrieve</strong>
-          <p>Hybrid search over your org&rsquo;s chunks — never another company&rsquo;s.</p>
+          <p>Search your org&rsquo;s documents — never another company&rsquo;s.</p>
         </article>
         <span className="how-flow-arrow" aria-hidden />
         <article className="how-flow-step">
           <span className="how-flow-num">3</span>
-          <strong>Gate</strong>
-          <p>If the top match is too weak, we skip the model and refuse.</p>
+          <strong>Verify</strong>
+          <p>If the best match is too weak, we refuse instead of guessing.</p>
         </article>
         <span className="how-flow-arrow" aria-hidden />
         <article className="how-flow-step">
           <span className="how-flow-num">4</span>
-          <strong>Cite</strong>
-          <p>The model may only use the retrieved text. Sources stay visible.</p>
+          <strong>Answer</strong>
+          <p>The reply stays on retrieved text, with sources you can open.</p>
         </article>
       </div>
 
       <section className="landing-section landing-wrap" aria-labelledby="paths-title">
         <div className="landing-section-head">
           <div>
-            <p className="landing-eyebrow">Two agents, one desk</p>
+            <p className="landing-eyebrow">Two modes</p>
             <h2 id="paths-title" className="landing-section-title">
-              Policies are indexed. Code is live.
+              Policies from your docs. Code from GitHub.
             </h2>
           </div>
           <p className="landing-section-lead">
-            You pick Policies or Code in the chat header. Nothing is auto-routed
-            by a classifier — the tab is the decision.
+            Choose Policies or Code in chat. You decide the path — Handbook
+            doesn&rsquo;t guess which agent to run.
           </p>
         </div>
 
@@ -75,10 +75,10 @@ export default function HowItWorksPage() {
               </div>
             </header>
             <ol>
-              <li>An admin connects a source and syncs.</li>
-              <li>Pages are chunked, embedded, and stored with your org id.</li>
-              <li>A question retrieves those chunks, then must clear the gate.</li>
-              <li>The answer is generated from that context only, with citations.</li>
+              <li>Admin connects a source and runs a sync.</li>
+              <li>Content is stored under your organization.</li>
+              <li>Questions retrieve that content, then pass a confidence check.</li>
+              <li>Answers include citations back to the source pages.</li>
             </ol>
           </article>
 
@@ -87,14 +87,14 @@ export default function HowItWorksPage() {
               <BrandGlyph name="github" size={28} />
               <div>
                 <strong>Code</strong>
-                <span>GitHub, at question time</span>
+                <span>GitHub · live lookup</span>
               </div>
             </header>
             <ol>
-              <li>Nothing is embedded — no README index, no stale dump.</li>
-              <li>The model may call one bounded GitHub tool (README, commits).</li>
-              <li>The repo name is checked against the install you authorized.</li>
-              <li>No tool call, or a miss, returns the same honest fallback.</li>
+              <li>Nothing is pre-indexed — reads happen when you ask.</li>
+              <li>Handbook may fetch a README or recent commits once.</li>
+              <li>Only repositories in your GitHub install are allowed.</li>
+              <li>If nothing usable returns, you get a clear fallback.</li>
             </ol>
           </article>
         </div>
@@ -103,56 +103,59 @@ export default function HowItWorksPage() {
       <section className="landing-section landing-wrap" aria-labelledby="isolate-title">
         <div className="landing-section-head">
           <div>
-            <p className="landing-eyebrow">Who can see what</p>
+            <p className="landing-eyebrow">Access & safety</p>
             <h2 id="isolate-title" className="landing-section-title">
-              Company first. Space second.
+              Your company&rsquo;s boundary, end to end.
             </h2>
           </div>
           <p className="landing-section-lead">
-            Isolation is a filter on every read, not a later check. A workspace
-            never silently inherits the company wiki.
+            Isolation is built into every read. Workspaces add a second,
+            tighter scope for team content inside the same company.
           </p>
         </div>
         <div className="how-isolate">
           <article>
             <BrandGlyph name="secure" size={26} />
-            <h3>Tenant isolation</h3>
+            <h3>Organization isolation</h3>
             <p>
-              Every read is filtered by org — and by workspace when you&rsquo;re
-              in one. Company A cannot retrieve Company B.
+              Searches always include your org. Another company&rsquo;s
+              documents are never in the result set.
             </p>
           </article>
           <article>
             <BrandGlyph name="workspace" size={26} />
-            <h3>Workspaces stay private</h3>
+            <h3>Team workspaces</h3>
             <p>
-              A space for meeting notes answers only from its own connected
-              source. Org-wide HR chunks never leak into it.
+              Invite colleagues into a space with its own connected sources —
+              ideal for projects and shared team knowledge.
             </p>
           </article>
           <article>
-            <BrandGlyph name="gmail" size={26} />
-            <h3>Magic-link, invited members</h3>
+            <BrandGlyph name="gmail" size={28} />
+            <h3>Invite-only access</h3>
             <p>
-              Sign-in is email. An admin invites people by address. There is no
-              public signup into someone else&rsquo;s company.
+              Members sign in with a magic link. Admins invite people by email,
+              and there is no open join into someone else&rsquo;s company.
             </p>
           </article>
         </div>
       </section>
 
       <section className="landing-close landing-wrap" aria-labelledby="how-close">
-        <h2 id="how-close">That&rsquo;s the whole product.</h2>
-        <p>
-          Connect a source, invite the team, ask a real question. If the page
-          exists, you get the line. If it doesn&rsquo;t, you get an honest no.
-        </p>
-        <div className="landing-cta-row">
-          <Link href="/signup" className="button landing-cta-primary">
+        <div className="landing-close-copy">
+          <p className="landing-eyebrow">Ready when you are</p>
+          <h2 id="how-close">Clear answers. Honest when it can&rsquo;t.</h2>
+          <p>
+            Connect your sources, invite the team, and ask workplace questions
+            with citations you can verify.
+          </p>
+        </div>
+        <div className="landing-close-actions">
+          <Link href="/signup" className="button landing-cta-primary landing-close-primary">
             Request access
           </Link>
-          <Link href="/" className="button button-secondary landing-cta-ghost">
-            Back to product
+          <Link href="/" className="landing-close-link">
+            Back to product overview
           </Link>
         </div>
       </section>

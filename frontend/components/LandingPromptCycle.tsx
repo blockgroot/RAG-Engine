@@ -6,8 +6,8 @@ import { useEffect, useState } from "react";
 export const LANDING_PROMPTS = [
   "How many sick days do full-time employees get?",
   "What's our parental leave policy?",
-  "What did the last commit on checkout-api change?",
-  "Summarize notes from yesterday's design review",
+  "What changed in the latest checkout-api commit?",
+  "Summarize yesterday's design review notes",
   "Can I expense a standing desk?",
 ];
 
