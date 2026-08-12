@@ -64,5 +64,20 @@ def content_setup_status(org_id: str, workspace_id: str | None = None) -> dict:
         "sync_in_progress": syncing,
         "latest_job_status": latest_job[0] if latest_job else None,
         "latest_doc_count": latest_job[1] if latest_job else None,
-        "ready_to_ask": succeeded and docs and not syncing,
+        # Deliberately NOT `and not syncing`. A *first* sync is still correctly
+        # gated, because until it finishes there is no succeeded job and no
+        # documents — `succeeded and docs` is False on its own. What the extra
+        # `not syncing` term did was lock the user out again every time a
+        # LATER sync was queued, even though a full sync had already succeeded
+        # and the content was sitting there answerable. Observed in production:
+        # onboarding completed 11 pages / 68 chunks, then one redundant queued
+        # job pinned the page on "Bringing your policies in…" indefinitely with
+        # no way forward. Re-syncing is the normal steady state for an existing
+        # org (the Sources page's "Update policies" does it while people are
+        # asking questions), and incremental sync only upserts changed pages —
+        # it never empties the corpus — so an in-flight sync is no reason to
+        # withdraw Ask. Callers that genuinely want "is something running right
+        # now" have `sync_in_progress` for exactly that, and should surface it
+        # as a passive indicator rather than a gate.
+        "ready_to_ask": succeeded and docs,
     }

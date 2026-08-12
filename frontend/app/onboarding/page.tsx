@@ -132,7 +132,16 @@ function OnboardingInner() {
       .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
   }, [jobs, primary, effectiveMe?.ready_to_ask]);
 
-  const syncInProgress = busy || activeJob != null || Boolean(effectiveMe?.sync_in_progress);
+  // Once a sync has succeeded and there are documents, a LATER background sync
+  // must not put this screen back into its blocking "waiting" state — the user
+  // would be stuck watching a spinner with their policies already ingested and
+  // no way to continue (seen in production after one redundant queued job).
+  // `activeJob` is already suppressed once ready_to_ask, so only the raw
+  // `sync_in_progress` flag needs the same guard.
+  const syncInProgress =
+    busy ||
+    activeJob != null ||
+    Boolean(effectiveMe?.sync_in_progress && !effectiveMe?.ready_to_ask);
 
   useEffect(() => {
     if (me) setLocalMe(me);

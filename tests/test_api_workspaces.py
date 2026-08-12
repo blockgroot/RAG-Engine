@@ -402,6 +402,85 @@ def test_org_me_ready_to_ask_ignores_workspace_only_sync(client, owner_org):
 
 
 @requires_db
+def test_a_later_sync_does_not_revoke_ready_to_ask(client, owner_org):
+    """A re-sync must not lock an already-ingested workspace out of Ask.
+
+    Regression from production: onboarding finished (11 pages / 68 chunks
+    stored), then one extra queued job flipped ``ready_to_ask`` back to False
+    and pinned the page on "Bringing your policies in…" with no way forward,
+    even though every document was present and answerable. Re-syncing is the
+    normal steady state for an existing org, and incremental sync only upserts
+    changed pages — it never empties the corpus — so an in-flight sync is no
+    reason to withdraw Ask. ``sync_in_progress`` stays True so the UI can show
+    a passive indicator; it just must not gate.
+    """
+    org_id, owner, cookies = owner_org
+    workspace_id = client.post(
+        "/workspaces", json={"name": "Handbook"}, cookies=cookies
+    ).json()["id"]
+    connection_id = save_connection(
+        org_id,
+        "notion",
+        OAuthTokens(
+            access_token="ntn_resync",
+            refresh_token=None,
+            expires_at=None,
+            external_workspace_id="ws-resync",
+        ),
+        workspace_id=workspace_id,
+    )
+
+    # First sync completes -> answerable.
+    first = enqueue(org_id, connection_id, workspace_id=workspace_id)
+    mark_succeeded(first, doc_count=11)
+    _insert_workspace_document(org_id, workspace_id)
+    ready = client.get(f"/workspaces/{workspace_id}", cookies=cookies).json()
+    assert ready["ready_to_ask"] is True
+
+    # A SECOND sync is queued (re-sync, or a redundant extra click).
+    enqueue(org_id, connection_id, workspace_id=workspace_id)
+    during = client.get(f"/workspaces/{workspace_id}", cookies=cookies).json()
+
+    assert during["sync_in_progress"] is True, "the running sync is still reported"
+    assert during["has_documents"] is True
+    assert during["ready_to_ask"] is True, (
+        "a later sync must NOT revoke Ask — the documents are still there; "
+        "this is the production lockout regression"
+    )
+
+
+@requires_db
+def test_first_sync_is_still_gated_until_it_succeeds(client, owner_org):
+    """The guard the removed `not syncing` term was there for must still hold.
+
+    Before any sync has ever succeeded there are no documents, so
+    ``succeeded and docs`` is False on its own — no need to also test
+    ``not syncing``.
+    """
+    org_id, owner, cookies = owner_org
+    workspace_id = client.post(
+        "/workspaces", json={"name": "Fresh"}, cookies=cookies
+    ).json()["id"]
+    connection_id = save_connection(
+        org_id,
+        "notion",
+        OAuthTokens(
+            access_token="ntn_fresh",
+            refresh_token=None,
+            expires_at=None,
+            external_workspace_id="ws-fresh",
+        ),
+        workspace_id=workspace_id,
+    )
+    enqueue(org_id, connection_id, workspace_id=workspace_id)
+
+    body = client.get(f"/workspaces/{workspace_id}", cookies=cookies).json()
+    assert body["sync_in_progress"] is True
+    assert body["has_documents"] is False
+    assert body["ready_to_ask"] is False, "must not unlock before the first sync lands"
+
+
+@requires_db
 def test_owner_can_delete_workspace_and_cascades_scoped_docs(client, owner_org):
     org_id, owner, cookies = owner_org
     created = client.post("/workspaces", json={"name": "Temp Space"}, cookies=cookies).json()
