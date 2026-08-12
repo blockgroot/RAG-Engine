@@ -20,6 +20,11 @@ DEFAULT_EMBEDDING_DIM = 1024
 # Chunking defaults (tokens, BGE-M3 tokenizer). See app/ingestion/chunking.py.
 DEFAULT_CHUNK_SIZE = 256
 DEFAULT_CHUNK_OVERLAP = 40
+# "heuristic" (default) estimates token counts with zero dependencies and ~0MB.
+# "hf" loads the exact BGE-M3 tokenizer, which measures at ~378MB RSS and so
+# CANNOT fit alongside the API in a 512MB box — opt in only where memory allows
+# (see app/ingestion/chunk_tokens.py for the measurements).
+DEFAULT_CHUNK_TOKEN_BACKEND = "heuristic"
 
 DEFAULT_VECTOR_STORE_BACKEND = "pgvector"
 
@@ -297,12 +302,16 @@ class ChunkingSettings:
 
     chunk_size: int = DEFAULT_CHUNK_SIZE
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
+    token_backend: str = DEFAULT_CHUNK_TOKEN_BACKEND
 
     @classmethod
     def from_env(cls) -> "ChunkingSettings":
         return cls(
             chunk_size=int(os.getenv("CHUNK_SIZE") or DEFAULT_CHUNK_SIZE),
             chunk_overlap=int(os.getenv("CHUNK_OVERLAP") or DEFAULT_CHUNK_OVERLAP),
+            token_backend=(
+                os.getenv("CHUNK_TOKEN_BACKEND") or DEFAULT_CHUNK_TOKEN_BACKEND
+            ).strip().lower(),
         )
 
 

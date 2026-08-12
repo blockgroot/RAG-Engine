@@ -185,3 +185,23 @@ services:
       # above).
       - key: QUERY_NORM_CACHE_MAX_ORGS
         value: "50"
+      # THE fix for the repeated "Ran out of memory (used over 512MB)" during
+      # Notion sync. Loading BGE-M3's tokenizer for token-aware chunking
+      # measured at ~611MB RSS on this image (~378MB even via the `tokenizers`
+      # Rust lib) against Render's 512MB HARD limit, so every ingestion run was
+      # OOM-killed the instant chunking began — 100% reproducible, independent
+      # of document size. "heuristic" counts tokens with a calibrated
+      # zero-dependency estimator (~0MB, no model download): measured chunks of
+      # mean 211 / max 236 real BGE-M3 tokens against a 256 budget, i.e. it errs
+      # SMALL (the safe direction) and never exceeds it. Do NOT set this to "hf"
+      # on the free plan.
+      - key: CHUNK_TOKEN_BACKEND
+        value: heuristic
+      # Crash-loop breaker: `requeue_interrupted_running()` used to return a
+      # `running` job to `queued` on EVERY boot with no limit, so a job that
+      # OOM-killed its own process was retried forever — unattended, with no
+      # traffic, burning the instance. Two live incidents were this loop rather
+      # than the underlying bug. Past this many claims the job fails loudly and
+      # the API stays up.
+      - key: INGEST_MAX_JOB_ATTEMPTS
+        value: "3"

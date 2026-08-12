@@ -1035,6 +1035,96 @@ render.yaml                  # Render Blueprint: web service + Postgres, secrets
   boot. Measured: `import app.api.main` **7.3s → 0.6s**, and `transformers` is
   no longer in `sys.modules` after import. No behavior change — chunking still
   works identically, just on first use instead of at boot.
+  **This fix was correct but did NOT stop the OOM — see the next entry, which
+  is the actual root cause. Deferring the import moved the 611MB allocation
+  from boot into the ingest run; it never removed it.**
+- **★ THE ACTUAL ROOT CAUSE of every "Ran out of memory (used over 512MB)"
+  during ingestion: the BGE-M3 tokenizer does not fit on the instance, at all.
+  Found by measurement after three wrong fixes.** Everything above (embed
+  batching, Notion fetch bound, memory guard, lazy import) was real but
+  peripheral. The decisive step was measuring **actual RSS** at each boot stage
+  with production-equivalent env, instead of reasoning about which call site
+  looked risky:
+
+  | stage | RSS |
+  | --- | --- |
+  | `import app.api.main` (uvicorn boot point) | 84 MB |
+  | + build remote embedder + remote reranker | 90 MB |
+  | + **load BGE-M3 tokenizer** (`transformers`, torch absent = deploy image) | **611 MB** |
+  | same, via the `tokenizers` Rust lib directly | 378 MB |
+  | same, with torch present (local dev) | 1005 MB |
+
+  Render free's limit is **512 MB**. So *any* ingestion reaching `chunk_text()`
+  was killed the instant the tokenizer allocated — **100% reproducible,
+  independent of document size, org, or corpus**. That is why it still crashed
+  on a freshly truncated DB with a brand-new org, and why `phase` never left
+  `preparing` (`chunk_text` runs before the first embed). The symptom presented
+  as *both* "out of memory" and "health check timed out" because the same
+  allocation either tripped the limit or starved the event loop, depending on
+  timing — which is why it looked like two unrelated bugs.
+  **Fix: chunking no longer uses a neural tokenizer by default.**
+  `CHUNK_TOKEN_BACKEND` (default `heuristic`) selects a calibrated,
+  zero-dependency token *estimator*; `hf` restores exact BGE-M3 counting via
+  `tokenizers` (never `transformers`) for hosts with ≥1GB. `transformers` is
+  dropped from `requirements-deploy.txt` and the Dockerfile no longer pre-bakes
+  a tokenizer. Measured after: **85 MB** total including chunking a 160KB
+  document into 180 chunks, with `transformers`/`torch` never imported.
+  **Why an estimator is defensible here, not a shortcut:** the counts only
+  decide *where to split text*, and the split is then snapped to a word
+  boundary anyway (`_overlap_tail`); the embedding provider re-tokenizes
+  server-side, so byte-exact local agreement with BGE-M3 buys nothing we rely
+  on. Validated by chunking the golden corpus both ways: real BGE-M3 lengths of
+  the estimator's chunks were **mean 211 / max 236** against a 256 budget vs
+  **mean 237 / max 251** exact — it errs *small*, the safe direction, and **0%
+  of chunks exceeded budget** either way (17 chunks vs 15). Regression:
+  `tests/test_chunk_token_backend.py`, which asserts `transformers`/`tokenizers`
+  /`torch` stay out of `sys.modules` across a real chunking run.
+- **★ Why one bad job took the WHOLE deployment down repeatedly — and the
+  structural fix that makes this class of incident impossible regardless of
+  cause.** `requeue_interrupted_running()` returned every orphaned `running`
+  job to `queued` on worker start, with **no attempt limit**. That is correct
+  for a normal restart, but if the job is *what kills the process*, it is
+  requeued on the next boot, claimed, and kills it again — an unattended
+  infinite loop needing no traffic, which is what actually burned the instance
+  and produced "Instance failed" every few minutes. `reap_stuck()` could not
+  save it: the process died well inside its 60s reap interval, and the next
+  boot's requeue would have undone the reap anyway. **Both live incidents were
+  this loop, not the underlying bug** — the OOM merely supplied the crash.
+  Fix: `ingestion_jobs.attempts`, incremented **at claim time** in
+  `claim_next()` (a job that OOM-kills its process never reaches a later write,
+  so counting on completion would leave exactly the jobs needing a bound at
+  zero forever). `requeue_interrupted_running(max_attempts=…)` marks a job
+  `failed` with an explicit error once it has been claimed
+  `INGEST_MAX_JOB_ATTEMPTS` (default 3) times instead of requeuing it, so the
+  poison job stops and the API/login/chat stay up. Verified against real
+  Postgres — attempts 1→2→3 across simulated boots, then `failed` with **0
+  claimable** on the next poll. Regression:
+  `test_requeue_abandons_a_job_that_keeps_killing_the_worker` +
+  `test_claim_next_counts_attempts`. **Keep this cap.** Any future ingestion
+  bug now costs one failed job, not an outage.
+- **The memory admission gate added above was itself broken — `ru_maxrss` is a
+  high-water mark, not current usage.** `_current_rss_mb()` used
+  `resource.getrusage(RUSAGE_SELF).ru_maxrss`, which is the process's **peak**
+  RSS and never decreases (verified: allocate 300MB, free it, still reports
+  312MB). So once the process had *ever* peaked past `INGEST_MAX_RSS_MB`, the
+  gate latched closed permanently and `run_once()` refused to claim work for
+  the rest of the process's life — it did not throttle ingestion, it silently
+  **disabled** it. Now reads real current RSS from `/proc/self/statm` (Linux /
+  Render) with a `ps` fallback for macOS dev, and **fails open** (returns 0.0)
+  if measurement fails, because a broken gauge must never be able to block all
+  ingestion. Regressions:
+  `test_current_rss_reflects_freed_memory_not_a_high_water_mark` and
+  `test_a_broken_rss_reading_fails_open_rather_than_blocking_all_work`.
+- **Diagnostic lesson worth keeping (four fixes, one real cause).** Three
+  successive "fixes" shipped and redeployed against plausible hypotheses
+  (unbatched remote embed, unbounded Notion fetch, module-level import) before
+  anyone measured the process's actual RSS. Each was a genuine latent bug, none
+  was the cause. What found it in one step: run the real boot path with
+  production-equivalent env and print current RSS at each stage. **For any
+  future "instance ran out of memory": measure the memory profile first and
+  compare against the hard limit — do not reason about which call site looks
+  unbounded.** A ~500MB dependency will never show up in code review as
+  suspicious-looking code.
 
 - **Not every schema.sql addition has the ALTER-ordering hazard.**
   `org_signup_requests` (signup-approval queue, §2/§5) is a plain

@@ -369,6 +369,18 @@ ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS phase TEXT;
 ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS total_documents INT;
 ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS processed_documents INT NOT NULL DEFAULT 0;
 
+-- Crash-loop breaker. `requeue_interrupted_running()` returns orphaned
+-- `running` jobs to `queued` on worker start, so a sync survives a normal
+-- restart. But with no attempt counter that behaviour is unbounded: a job that
+-- kills its own process (OOM) is requeued on the next boot, claimed, and kills
+-- it again — an infinite, unattended crash loop that burns the whole instance
+-- and is independent of WHY the job died. Two live production incidents were
+-- this loop, not the underlying bug. Counting attempts lets the requeue refuse
+-- a job that has already taken the process down `INGEST_MAX_JOB_ATTEMPTS`
+-- times, so a poison job fails loudly instead of looping forever. Same
+-- ALTER-after-CREATE ordering rule as the columns above.
+ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0;
+
 -- At most one queued/running job per connection. Without this, two parallel
 -- POST /ingest calls can both pass has_active_job() and enqueue twice — the
 -- second run often re-embeds the same pages and makes Update look "stuck".

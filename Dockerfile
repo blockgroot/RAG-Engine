@@ -12,10 +12,13 @@ WORKDIR /app
 COPY requirements-deploy.txt .
 RUN pip install --no-cache-dir -r requirements-deploy.txt
 
-# Pre-bake the BGE-M3 tokenizer (used for token-aware chunking at ingest,
-# app/ingestion/chunk_tokens.py — independent of the embedding backend) into
-# the image, so ingestion never depends on reaching huggingface.co at runtime.
-RUN python -c "from transformers import AutoTokenizer; AutoTokenizer.from_pretrained('BAAI/bge-m3')"
+# No tokenizer is pre-baked any more. Chunking defaults to
+# CHUNK_TOKEN_BACKEND=heuristic (app/ingestion/chunk_tokens.py), which needs no
+# model, no vocab download, and no `transformers`/`tokenizers` package — because
+# loading BGE-M3's tokenizer measured at ~611MB RSS against this deployment's
+# 512MB hard limit and OOM-killed every ingestion run. The estimator is
+# calibrated against that same tokenizer and errs slightly small (safe
+# direction) — see the module docstring for the numbers.
 
 COPY app/ ./app/
 COPY scripts/init_db.py ./scripts/init_db.py

@@ -17,6 +17,8 @@ see ``app/api/admin.py``).
 
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -25,7 +27,15 @@ from psycopg.errors import UniqueViolation
 from ..core.exceptions import ConfigurationError
 from ..db.connection import DatabaseError, get_connection
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_REAP_TIMEOUT_MINUTES = 30
+
+# How many times a job may be claimed before `requeue_interrupted_running`
+# gives up on it instead of returning it to the queue. 3 leaves room for
+# genuinely transient interruptions (a deploy, a `--reload` recycle) while
+# still bounding a job that kills the process every time it runs.
+DEFAULT_MAX_JOB_ATTEMPTS = int(os.getenv("INGEST_MAX_JOB_ATTEMPTS") or 3)
 
 
 @dataclass(frozen=True)
@@ -49,6 +59,10 @@ class IngestionJob:
     phase: str | None = None
     total_documents: int | None = None
     processed_documents: int = 0
+    # How many times this job has been claimed (incremented in `claim_next`).
+    # Bounds `requeue_interrupted_running` so a job that kills the worker
+    # process cannot be retried forever.
+    attempts: int = 0
 
 
 def _row_to_job(row) -> IngestionJob:
@@ -66,13 +80,14 @@ def _row_to_job(row) -> IngestionJob:
         phase=row[10],
         total_documents=row[11],
         processed_documents=row[12] or 0,
+        attempts=row[13] or 0,
     )
 
 
 _SELECT_COLUMNS = (
     "id::text, org_id::text, connection_id::text, status, doc_count, error, "
     "started_at, finished_at, created_at, workspace_id::text, "
-    "phase, total_documents, processed_documents"
+    "phase, total_documents, processed_documents, attempts"
 )
 
 
@@ -130,12 +145,18 @@ def claim_next() -> IngestionJob | None:
     id = (SELECT ... FOR UPDATE SKIP LOCKED)``) so two concurrent workers can
     never claim the same job — the row lock is held only for the instant of the
     update, not the whole ingestion run.
+
+    ``attempts`` is incremented here, at claim time, rather than on completion:
+    a job that OOM-kills its own process never reaches *any* later write, so
+    counting on success/failure would leave the very jobs we need to bound at
+    zero forever. Committing the increment as part of the claim is what makes
+    ``requeue_interrupted_running``'s cap enforceable against a poison job.
     """
     with get_connection() as conn:
         row = conn.execute(
             f"""
             UPDATE ingestion_jobs
-            SET status = 'running', started_at = now()
+            SET status = 'running', started_at = now(), attempts = attempts + 1
             WHERE id = (
                 SELECT id FROM ingestion_jobs
                 WHERE status = 'queued'
@@ -208,7 +229,9 @@ def mark_failed(job_id: str, error: str) -> None:
 
 
 
-def requeue_interrupted_running() -> int:
+def requeue_interrupted_running(
+    max_attempts: int = DEFAULT_MAX_JOB_ATTEMPTS,
+) -> int:
     """Return orphaned ``running`` jobs to ``queued`` after a worker crash/reload.
 
     The in-API worker dies whenever ``uvicorn --reload`` recycles the process,
@@ -216,8 +239,32 @@ def requeue_interrupted_running() -> int:
     safe because ``ingest_source(incremental=True)`` skips pages already stored
     (matched ``last_modified``) and continues with what is left -- the user must
     not have to click Update again, and we must not re-embed the whole folder.
+
+    **Bounded by ``max_attempts``.** Unbounded requeuing is how a single bad job
+    takes down a deployment indefinitely: if the job itself is what kills the
+    process (an OOM during ingestion), it is requeued on the next boot, claimed
+    again, and kills the process again — forever, with no traffic required and
+    nobody watching. Two live incidents on this project were exactly that loop
+    rather than the underlying bug. A job that has already been claimed
+    ``max_attempts`` times is therefore marked ``failed`` with an explicit error
+    instead of requeued, so the poison job stops and the *rest* of the system
+    (API, login, chat) stays up. Returns the number actually requeued.
     """
     with get_connection() as conn:
+        exhausted = conn.execute(
+            """
+            UPDATE ingestion_jobs
+            SET status = 'failed',
+                finished_at = now(),
+                error = 'Abandoned after ' || attempts || ' interrupted attempts'
+                        || ' — the worker process did not survive this job'
+                        || ' (see INGEST_MAX_JOB_ATTEMPTS).'
+            WHERE status = 'running' AND attempts >= %s
+            RETURNING id
+            """,
+            (max_attempts,),
+        ).fetchall()
+
         rows = conn.execute(
             """
             UPDATE ingestion_jobs
@@ -228,6 +275,14 @@ def requeue_interrupted_running() -> int:
             RETURNING id
             """
         ).fetchall()
+
+    if exhausted:
+        logger.error(
+            "Abandoned %s ingestion job(s) that repeatedly failed to complete "
+            "(>= %s attempts) — refusing to requeue them again",
+            len(exhausted),
+            max_attempts,
+        )
     return len(rows)
 
 
