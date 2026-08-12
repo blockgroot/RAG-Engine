@@ -10,7 +10,8 @@ export interface ChatDonePayload {
   answer: string;
   grounded: boolean;
   source: "policy" | "workspace" | "web" | "github" | "none";
-  citations: { content: string; reference: string; score: number | null }[];
+  /** Optional — kept for API compatibility; not shown in the UI. */
+  citations?: { content: string; reference: string; score: number | null }[];
   resolved_question: string | null;
   latency_ms: number | null;
 }

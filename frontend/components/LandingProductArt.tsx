@@ -52,10 +52,6 @@ export function LandingProductArt() {
               Full-time employees receive <b>10 sick days</b> each calendar year.
               Unused days do not carry over.
             </p>
-            <div className="lp-cite">
-              <BrandGlyph name="secure" size={16} />
-              <span>Company policy</span>
-            </div>
           </div>
         </div>
         <div className="lp-dock">

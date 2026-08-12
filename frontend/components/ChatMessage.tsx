@@ -10,9 +10,8 @@ export interface Message {
 }
 
 /**
- * Chat bubble for Ask. Citations stay on the API payload for grounding /
- * debugging, but are not rendered — employees only need the answer (and a
- * small provenance pill so policy vs web vs GitHub is still clear).
+ * Chat bubble for Ask. Shows the answer plus a small provenance pill
+ * (policy vs web vs GitHub) when the stream finishes.
  */
 export function ChatMessageView({ message }: { message: Message }) {
   if (message.role === "user") {

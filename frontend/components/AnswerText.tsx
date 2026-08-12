@@ -1,11 +1,9 @@
 /**
  * Renders the model's answer as basic formatted text instead of a raw
  * pre-wrapped string. The grounded-generation prompt (app/rag/prompts.py)
- * produces simple markdown — **bold**, "- "/"* "/"1. " lists, and inline
- * [n] citation markers — none of which a plain <p> renders usefully. Citation
- * markers are stripped here: with the sources panel removed from the UI (per
- * user feedback, they're retrieval-debugging detail, not something an
- * employee needs), a bare "[1][2]" floating in the text is just noise.
+ * produces simple markdown — **bold**, "- "/"* "/"1. " lists — which a plain
+ * <p> does not render usefully. Any leftover ``[n]`` markers from older
+ * prompt versions are stripped so they do not show up as noise.
  *
  * Parsing is line-oriented: a mixed block of prose + bullets must NOT collapse
  * into one HTML paragraph (browsers collapse `\n` inside `<p>` to spaces),

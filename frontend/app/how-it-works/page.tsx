@@ -6,7 +6,7 @@ import { LandingShell } from "@/components/LandingShell";
 export const metadata: Metadata = {
   title: "How it works",
   description:
-    "How Handbook turns a workplace question into a cited answer from your connected sources.",
+    "How Handbook turns a workplace question into a grounded answer from your connected sources.",
 };
 
 export default function HowItWorksPage() {
@@ -15,7 +15,7 @@ export default function HowItWorksPage() {
       <section className="how-hero landing-wrap" aria-labelledby="how-title">
         <p className="landing-eyebrow">Product walkthrough</p>
         <h1 id="how-title" className="how-title">
-          From question to cited answer.
+          From question to grounded answer.
         </h1>
         <p className="how-lead">
           Handbook retrieves from your company&rsquo;s connected content,
@@ -46,7 +46,7 @@ export default function HowItWorksPage() {
         <article className="how-flow-step">
           <span className="how-flow-num">4</span>
           <strong>Answer</strong>
-          <p>The reply stays on retrieved text, with sources you can open.</p>
+          <p>The reply stays on retrieved text — or a clear fallback if it can&rsquo;t.</p>
         </article>
       </div>
 
@@ -78,7 +78,7 @@ export default function HowItWorksPage() {
               <li>Admin connects a source and runs a sync.</li>
               <li>Content is stored under your organization.</li>
               <li>Questions retrieve that content, then pass a confidence check.</li>
-              <li>Answers include citations back to the source pages.</li>
+              <li>Answers stay grounded in that content, or refuse when they can&rsquo;t.</li>
             </ol>
           </article>
 
@@ -167,13 +167,13 @@ export default function HowItWorksPage() {
           <li className="how-promise-item" style={{ ["--i" as string]: "1" }}>
             <span className="how-promise-index" aria-hidden>02</span>
             <div className="how-promise-body">
-              <strong>Trust what you can verify</strong>
+              <strong>Trust answers you can rely on</strong>
               <p>
-                Policy answers cite the source page. Weak evidence means a
-                clear refusal — never a confident invention.
+                Answers come only from your connected content. Weak evidence
+                means a clear refusal — never a confident invention.
               </p>
             </div>
-            <span className="how-promise-tag">Cited</span>
+            <span className="how-promise-tag">Grounded</span>
           </li>
           <li className="how-promise-item" style={{ ["--i" as string]: "2" }}>
             <span className="how-promise-index" aria-hidden>03</span>
@@ -191,10 +191,10 @@ export default function HowItWorksPage() {
         <div className="how-included" aria-labelledby="offer-title">
           <div className="how-included-copy">
             <p className="landing-eyebrow">What you get</p>
-            <h3 id="offer-title">Connect once. Ask with proof.</h3>
+            <h3 id="offer-title">Connect once. Ask with confidence.</h3>
             <p className="how-included-lead">
               Sync Notion or Drive, look up GitHub live, invite the team with a
-              magic link, and get cited answers — or a clear fallback when the
+              magic link, and get grounded answers — or a clear fallback when the
               documents don&rsquo;t cover it.
             </p>
             <p className="how-included-for">
@@ -235,58 +235,93 @@ export default function HowItWorksPage() {
             </span>
             <span className="how-constellation-node how-node-f" style={{ ["--d" as string]: "0.75s" }}>
               <BrandGlyph name="secure" size={20} />
-              <em>Cited</em>
+              <em>Grounded</em>
             </span>
           </div>
         </div>
       </section>
 
-      <section className="landing-close landing-wrap" aria-labelledby="how-close">
-        <div className="landing-close-panel">
-          <div className="landing-close-orbit-wrap">
-            <div className="landing-close-orbit-ring" aria-hidden>
-              <span className="landing-close-orbit-glow" />
-            </div>
-            <div className="landing-close-orbit-core" aria-hidden>
-              <span>3</span>
-            </div>
-            <ol className="landing-close-orbit" aria-label="Getting started path">
-              <li className="landing-close-step" style={{ ["--step" as string]: "0" }}>
-                <span className="landing-close-step-mark" aria-hidden>
-                  <BrandGlyph name="notion" size={18} />
-                </span>
-                <span className="landing-close-step-body">
-                  <strong>Connect</strong>
-                  <span>Notion, Drive, or GitHub</span>
-                </span>
-              </li>
-              <li className="landing-close-step" style={{ ["--step" as string]: "1" }}>
-                <span className="landing-close-step-mark" aria-hidden>
-                  <BrandGlyph name="gmail" size={20} />
-                </span>
-                <span className="landing-close-step-body">
-                  <strong>Invite</strong>
-                  <span>Teammates by email</span>
-                </span>
-              </li>
-              <li className="landing-close-step" style={{ ["--step" as string]: "2" }}>
-                <span className="landing-close-step-mark" aria-hidden>
-                  <BrandGlyph name="secure" size={18} />
-                </span>
-                <span className="landing-close-step-body">
-                  <strong>Ask</strong>
-                  <span>Cited answers, org-scoped</span>
-                </span>
-              </li>
-            </ol>
-          </div>
+      <section className="landing-section landing-wrap how-craft" aria-labelledby="craft-title">
+        <div className="how-craft-head">
+          <p className="landing-eyebrow">How it answers</p>
+          <h2 id="craft-title" className="landing-section-title">
+            Built for how people actually ask.
+          </h2>
+          <p className="landing-section-lead">
+            Beyond connect and sync — the reply path is designed to understand
+            intent, stay clear, and stay honest.
+          </p>
+        </div>
 
+        <ol className="how-craft-zigzag" aria-label="Answer experience">
+          <li className="how-craft-step" style={{ ["--i" as string]: "0" }}>
+            <span className="how-craft-num" aria-hidden>01</span>
+            <div className="how-craft-card">
+              <span className="how-craft-kicker">Intent</span>
+              <strong>Understands intent</strong>
+              <p>
+                Follow-ups and shorthand become a clear standalone question before
+                retrieval — so “what about part-timers?” still finds the right policy.
+              </p>
+            </div>
+          </li>
+          <li className="how-craft-step" style={{ ["--i" as string]: "1" }}>
+            <span className="how-craft-num" aria-hidden>02</span>
+            <div className="how-craft-card">
+              <span className="how-craft-kicker">Tone</span>
+              <strong>Answers with care</strong>
+              <p>
+                Clear, empathetic, workplace-ready language — what your documents
+                support, without fluff or invented certainty.
+              </p>
+            </div>
+          </li>
+          <li className="how-craft-step" style={{ ["--i" as string]: "2" }}>
+            <span className="how-craft-num" aria-hidden>03</span>
+            <div className="how-craft-card">
+              <span className="how-craft-kicker">Recovery</span>
+              <strong>Recovers when wording misses</strong>
+              <p>
+                Typos and alternate phrasings get a bounded second look — so a near
+                miss doesn&rsquo;t become a dead end.
+              </p>
+            </div>
+          </li>
+          <li className="how-craft-step" style={{ ["--i" as string]: "3" }}>
+            <span className="how-craft-num" aria-hidden>04</span>
+            <div className="how-craft-card">
+              <span className="how-craft-kicker">Memory</span>
+              <strong>Remembers the conversation</strong>
+              <p>
+                Recent turns stay in context; older ones fold into a running summary
+                so long chats stay coherent without starting over.
+              </p>
+            </div>
+          </li>
+          <li className="how-craft-step" style={{ ["--i" as string]: "4" }}>
+            <span className="how-craft-num" aria-hidden>05</span>
+            <div className="how-craft-card">
+              <span className="how-craft-kicker">Honesty</span>
+              <strong>Stays honest when it can&rsquo;t</strong>
+              <p>
+                Weak evidence means a clear fallback — never a confident guess.
+                External web answers are labelled when they apply.
+              </p>
+            </div>
+          </li>
+        </ol>
+      </section>
+
+      <section
+        className="landing-close landing-close-simple landing-wrap"
+        aria-labelledby="how-close"
+      >
+        <div className="landing-close-panel">
           <div className="landing-close-copy">
             <p className="landing-eyebrow">Ready when you are</p>
             <h2 id="how-close">Clear answers. Honest when it can&rsquo;t.</h2>
             <p className="landing-close-lead">
-              Connect your sources, invite the team, and ask workplace questions
-              with citations you can verify.
+              Request access to try Handbook with your own company sources.
             </p>
             <div className="landing-close-actions">
               <Link href="/signup" className="button landing-cta-primary landing-close-primary">

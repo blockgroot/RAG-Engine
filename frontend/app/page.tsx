@@ -53,8 +53,8 @@ export default function RootPage() {
           </h1>
           <p className="landing-subtitle">
             Connect Notion, Google Drive, and GitHub. Handbook answers employee
-            questions with citations — and says when the documents don&rsquo;t
-            cover it.
+            questions from your connected content — and says when the documents
+            don&rsquo;t cover it.
           </p>
           <div className="landing-cta-row">
             <Link href="/signup" className="button landing-cta-primary">
@@ -89,7 +89,7 @@ export default function RootPage() {
             <h3>Grounded policy answers</h3>
             <p>
               Leave, benefits, expenses, and handbooks — retrieved from your
-              synced docs, with the source shown on every reply.
+              synced docs, grounded in what your company connected.
             </p>
           </article>
           <article className="landing-feature">
@@ -175,7 +175,7 @@ export default function RootPage() {
                 </span>
                 <span className="landing-close-step-body">
                   <strong>Ask</strong>
-                  <span>Cited answers, org-scoped</span>
+                  <span>Grounded answers, org-scoped</span>
                 </span>
               </li>
             </ol>
@@ -186,7 +186,7 @@ export default function RootPage() {
             <h2 id="close-title">Three steps from sources to answers.</h2>
             <p className="landing-close-lead">
               Handbook is ready once your docs are connected and your team is
-              invited — then every question lands with a citation.
+              invited — then every question is answered from that content.
             </p>
             <div className="landing-close-actions">
               <Link href="/signup" className="button landing-cta-primary landing-close-primary">

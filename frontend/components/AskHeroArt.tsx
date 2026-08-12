@@ -28,7 +28,7 @@ export function AskHeroArt({ variant = "policy" }: { variant?: "policy" | "code"
         <ellipse className="ask-blob ask-blob-a" cx="90" cy="70" rx="70" ry="52" fill="url(#askMesh)" />
         <ellipse className="ask-blob ask-blob-b" cx="340" cy="200" rx="85" ry="60" fill="url(#askMesh)" />
 
-        {/* floating source cards */}
+        {/* floating panels */}
         <g className="ask-float ask-float-1" filter="url(#askSoft)">
           <rect x="36" y="48" width="118" height="72" rx="16" fill="url(#askPanel)" stroke="#e4e7ec" />
           <rect x="52" y="66" width="36" height="36" rx="10" fill="#ccfbf1" />
