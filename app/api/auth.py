@@ -596,17 +596,9 @@ body {
 }
 .panel { width: min(100%, 440px); animation: rise-in 0.45s var(--ease) both; }
 @keyframes rise-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-.brand-lockup { display: flex; align-items: center; gap: 0.7rem; margin-bottom: 1.5rem; }
+.brand-lockup { display: flex; align-items: center; gap: 0.55rem; margin-bottom: 1.5rem; }
 .brand-mark {
-  width: 1.55rem; height: 1.55rem; border-radius: 8px; flex: none; position: relative;
-  background: linear-gradient(145deg, #2bbfb4 0%, var(--accent) 48%, #084742 100%);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 6px 14px -8px rgba(43, 191, 180, 0.8);
-}
-.brand-mark::after {
-  content: ""; position: absolute; inset: 4px; border-radius: 3px;
-  border: 1.5px solid rgba(255, 252, 247, 0.55);
-  border-bottom-color: transparent; border-left-color: transparent;
-  transform: rotate(45deg) translateY(1px);
+  width: 1.9rem; height: 1.9rem; flex: none; display: block; object-fit: contain;
 }
 .brand-name { font-weight: 650; font-size: 1.2rem; letter-spacing: -0.02em; }
 .eyebrow {
@@ -658,7 +650,26 @@ h1 { font-size: 1.6rem; font-weight: 650; letter-spacing: -0.03em; margin: 0 0 0
 """
 
 
+def _brand_logo_url() -> str:
+    """The real Handbook mark (``frontend/public/brand/handbook-mark.png``),
+    served by the FRONTEND, not this API — this page can't `import` that
+    static asset (see the module-level design note above `_PAGE_STYLE`), so
+    it's referenced by absolute URL instead. Uses the small 192px export
+    since this is an icon-sized placement, not a hero image. Falls back to
+    no image (rather than a broken-image icon) if ``FRONTEND_URL`` is unset,
+    e.g. a bare local API run with no frontend configured."""
+    base = (ApiSettings.from_env().frontend_url or "").rstrip("/")
+    return f"{base}/brand/handbook-mark-192.png" if base else ""
+
+
 def _page(title: str, body: str) -> str:
+    logo_url = _brand_logo_url()
+    logo_html = (
+        f'<img class="brand-mark" src="{logo_url}" alt="" aria-hidden="true" '
+        f'onerror="this.style.display=\'none\'">'
+        if logo_url
+        else ""
+    )
     return f"""
 <!doctype html>
 <html>
@@ -671,7 +682,7 @@ def _page(title: str, body: str) -> str:
 <body>
   <div class="panel">
     <div class="brand-lockup">
-      <span class="brand-mark" aria-hidden="true"></span>
+      {logo_html}
       <span class="brand-name">Handbook</span>
     </div>
     {body}

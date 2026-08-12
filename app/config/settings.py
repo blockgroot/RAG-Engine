@@ -1061,11 +1061,24 @@ class ApiSettings:
 class EmailSettings:
     """Outbound email configuration for magic-link delivery (Phase 10).
 
-    - ``sender``  ``"console"`` (default; prints the link), ``"smtp"``, or
-      ``"resend"`` (HTTPS — required on Render free, which blocks SMTP ports).
+    - ``sender``  ``"console"`` (default; prints the link), ``"smtp"``,
+      ``"resend"``, or ``"sendgrid"`` (all HTTPS — required on Render free,
+      which blocks SMTP ports).
     - ``smtp_*``  only read/required when ``sender == "smtp"``. ``smtp_from``
-      is also the From address for Resend.
-    - ``resend_api_key``  required when ``sender == "resend"``.
+      is also the From address for Resend and SendGrid.
+    - ``resend_api_key``  required when ``sender == "resend"``. Resend's
+      sandbox sender (``onboarding@resend.dev``, used before a custom domain
+      is verified) can only deliver to the Resend account's own email — every
+      other recipient gets a 403. See ``sendgrid_api_key`` for the no-domain
+      workaround.
+    - ``sendgrid_api_key``  required when ``sender == "sendgrid"``. Unlike
+      Resend's sandbox mode, SendGrid's **Single Sender Verification** (verify
+      one address by clicking a confirmation link — no DNS/domain needed) can
+      deliver to ANY recipient once that one address is verified, so this is
+      the free, no-domain path to real delivery. Deliverability is weaker than
+      a fully domain-authenticated sender (no SPF/DKIM alignment), which is
+      fine at this volume but worth upgrading to domain auth later if it
+      becomes an issue.
     - ``owner_notification_email``  where the "new org-signup request" email
       (with one-click approve/reject links) is sent. This is the ONLY review
       surface for the signup-approval queue — there is no admin UI or CLI, so
@@ -1080,6 +1093,7 @@ class EmailSettings:
     smtp_password: str | None = None
     smtp_from: str | None = None
     resend_api_key: str | None = None
+    sendgrid_api_key: str | None = None
     owner_notification_email: str | None = None
 
     @classmethod
@@ -1093,5 +1107,6 @@ class EmailSettings:
             smtp_password=os.getenv("EMAIL_SMTP_PASSWORD"),
             smtp_from=os.getenv("EMAIL_SMTP_FROM"),
             resend_api_key=os.getenv("EMAIL_RESEND_API_KEY"),
+            sendgrid_api_key=os.getenv("EMAIL_SENDGRID_API_KEY"),
             owner_notification_email=os.getenv("OWNER_NOTIFICATION_EMAIL"),
         )

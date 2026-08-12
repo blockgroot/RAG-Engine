@@ -10,7 +10,15 @@ dispatch rather than a full ABC. Backends:
   instance. Render's **free** web services block outbound ports 25/465/587
   (Errno 101 Network is unreachable) — Gmail SMTP will never connect there.
 - ``resend``  HTTPS POST to Resend (port 443, already used for OAuth/LLM).
-  This is the Render-free path. ``httpx`` is already a dependency; no SDK.
+  A Render-free-compatible path, but its sandbox sender
+  (``onboarding@resend.dev``, used before a custom domain is verified) can
+  only deliver to the Resend account's own email — every other recipient is
+  rejected with a 403. Fine for the owner-notification email; not for a
+  magic link addressed to an actual admin/employee.
+- ``sendgrid``  HTTPS POST to SendGrid (port 443, same reasoning as Resend).
+  Unlike Resend, SendGrid's **Single Sender Verification** lets one address be
+  verified with no DNS/domain at all, and once verified it can send to ANY
+  recipient — this is the free, no-domain-owned path to real delivery.
 
 Callers schedule sends via FastAPI ``BackgroundTasks`` rather than blocking
 the HTTP response on a remote round-trip.
@@ -35,6 +43,8 @@ logger = logging.getLogger(__name__)
 _SMTP_TIMEOUT_SECONDS = 20
 _RESEND_URL = "https://api.resend.com/emails"
 _RESEND_TIMEOUT_SECONDS = 20
+_SENDGRID_URL = "https://api.sendgrid.com/v3/mail/send"
+_SENDGRID_TIMEOUT_SECONDS = 20
 
 
 def _dispatch(
@@ -68,9 +78,13 @@ def _dispatch(
         _send_resend(to, subject, body, settings, html_body=html_body)
         return
 
+    if settings.sender == "sendgrid":
+        _send_sendgrid(to, subject, body, settings, html_body=html_body)
+        return
+
     raise ConfigurationError(
         f"Unknown EMAIL_SENDER: {settings.sender!r} "
-        "(expected 'console', 'smtp', or 'resend')"
+        "(expected 'console', 'smtp', 'resend', or 'sendgrid')"
     )
 
 
@@ -156,6 +170,54 @@ def _send_resend(
     if response.status_code >= 400:
         raise ProviderError(
             f"Resend rejected the send ({response.status_code}) "
+            f"from={settings.smtp_from!r}: {response.text}"
+        )
+
+
+def _send_sendgrid(
+    to: str,
+    subject: str,
+    body: str,
+    settings: EmailSettings,
+    *,
+    html_body: str | None,
+) -> None:
+    """SendGrid's v3 Mail Send API. Unlike Resend's sandbox sender, a
+    SendGrid **Single Sender** (verified by clicking a confirmation link —
+    no DNS/domain required) can deliver to any recipient, which is why this
+    backend exists: it is the free, no-domain-owned path to real delivery
+    for magic links addressed to actual admins/employees, not just the
+    account owner's own inbox."""
+    if not settings.sendgrid_api_key:
+        raise ConfigurationError(
+            "EMAIL_SENDER=sendgrid requires EMAIL_SENDGRID_API_KEY"
+        )
+    if not settings.smtp_from:
+        raise ConfigurationError(
+            "EMAIL_SENDER=sendgrid requires EMAIL_SMTP_FROM "
+            "(the verified Single Sender address SendGrid will send as)"
+        )
+    content = [{"type": "text/plain", "value": body}]
+    if html_body is not None:
+        content.append({"type": "text/html", "value": html_body})
+    payload = {
+        "personalizations": [{"to": [{"email": to}]}],
+        "from": {"email": settings.smtp_from},
+        "subject": subject,
+        "content": content,
+    }
+    try:
+        with httpx.Client(timeout=_SENDGRID_TIMEOUT_SECONDS) as client:
+            response = client.post(
+                _SENDGRID_URL,
+                headers={"Authorization": f"Bearer {settings.sendgrid_api_key}"},
+                json=payload,
+            )
+    except httpx.HTTPError as exc:
+        raise ProviderError(f"Failed to send email via SendGrid: {exc}", cause=exc) from exc
+    if response.status_code >= 400:
+        raise ProviderError(
+            f"SendGrid rejected the send ({response.status_code}) "
             f"from={settings.smtp_from!r}: {response.text}"
         )
 

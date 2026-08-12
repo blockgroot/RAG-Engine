@@ -851,7 +851,27 @@ render.yaml                  # Render Blueprint: web service + Postgres, secrets
   leaves the box (ports 25/465/587 are firewalled as of 2025-09). Use
   `EMAIL_SENDER=resend` + `EMAIL_RESEND_API_KEY` (HTTPS, already-allowed port
   443) or upgrade the instance. Do not debug Gmail app passwords for this
-  error; credentials are never reached.
+  error; credentials are never reached. **This includes SendGrid** — its SMTP
+  relay would hit the identical block; only its HTTPS `v3/mail/send` API
+  (`EMAIL_SENDER=sendgrid`, below) is Render-free-compatible.
+- **Resend's sandbox sender can only email the Resend account's own inbox —
+  not a real fix for magic links.** Before a custom domain is verified,
+  `onboarding@resend.dev` delivers to the address that signed up for the
+  Resend account and 403s every other recipient. That's invisible for the
+  owner-notification email (it's already addressed to the owner) but silently
+  breaks the *next* three sends in the same flow — the post-approval
+  "organization is ready" link to the requesting admin, admin-invited member
+  links, and ordinary sign-in links to anyone else — because
+  `send_*_email_safe()` swallows the resulting `ProviderError` and only logs
+  it, so the API/UI reports success while no mail ever arrives. Fix:
+  `EMAIL_SENDER=sendgrid` + `EMAIL_SENDGRID_API_KEY` (`app/auth/email.py`
+  `_send_sendgrid`). SendGrid's free **Single Sender Verification** (Settings
+  → Sender Authentication → Verify a Single Sender — click a confirmation
+  link, no DNS/domain needed) authorizes one `EMAIL_SMTP_FROM` address to
+  deliver to ANY recipient, unlike Resend's sandbox restriction. Accepted
+  tradeoff: weaker deliverability than a domain-authenticated sender (no
+  SPF/DKIM alignment) — fine at this volume; revisit if a real domain becomes
+  available to verify with either provider.
 - **Do not point the browser at the Render host.** `SameSite=Lax` cookies set
   on `onrender.com` are not sent on `fetch` from `vercel.app`. The fix is the
   Next.js `/api` rewrite (`NEXT_PUBLIC_API_BASE_URL=/api`, `API_PROXY_TARGET=`
@@ -1935,8 +1955,12 @@ backend only, per the ask.
   org's repository access. `GitHubSettings.from_env` accepts a `\n`-escaped
   single-line value so it survives secret stores that can't hold newlines.
 - Email delivery is `console` (prints the link) by default. On Render **free**,
-  SMTP is blocked — use `EMAIL_SENDER=resend` + `EMAIL_RESEND_API_KEY` (HTTPS).
-  `EMAIL_SENDER=smtp` is for local / a VPS / a paid Render instance.
+  SMTP is blocked — use `EMAIL_SENDER=resend` + `EMAIL_RESEND_API_KEY`, or
+  (recommended, see §4) `EMAIL_SENDER=sendgrid` + `EMAIL_SENDGRID_API_KEY` —
+  both HTTPS. `EMAIL_SENDER=smtp` is for local / a VPS / a paid Render
+  instance. Resend's sandbox sender can only reach the Resend account's own
+  inbox until a domain is verified; SendGrid's free Single Sender
+  Verification needs no domain and can reach any recipient (§4).
 - Validate the Phase 8 reuse threshold (0.72) and the 0.35 gate using **production
   `rag.query_signals` logs** (Phase 22) plus a reuse hit/miss audit — no longer
   only hand-measured examples. A richer reuse signal (e.g. comparing the rewritten

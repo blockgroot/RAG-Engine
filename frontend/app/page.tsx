@@ -162,7 +162,7 @@ export default function RootPage() {
               </li>
               <li className="landing-close-step" style={{ ["--step" as string]: "1" }}>
                 <span className="landing-close-step-mark" aria-hidden>
-                  <BrandGlyph name="gmail" size={20} />
+                  <BrandGlyph name="sendgrid" size={20} />
                 </span>
                 <span className="landing-close-step-body">
                   <strong>Invite</strong>
