@@ -1038,30 +1038,44 @@ render.yaml                  # Render Blueprint: web service + Postgres, secrets
   **This fix was correct but did NOT stop the OOM — see the next entry, which
   is the actual root cause. Deferring the import moved the 611MB allocation
   from boot into the ingest run; it never removed it.**
-- **★ THE ACTUAL ROOT CAUSE of every "Ran out of memory (used over 512MB)"
-  during ingestion: the BGE-M3 tokenizer does not fit on the instance, at all.
-  Found by measurement after three wrong fixes.** Everything above (embed
-  batching, Notion fetch bound, memory guard, lazy import) was real but
-  peripheral. The decisive step was measuring **actual RSS** at each boot stage
-  with production-equivalent env, instead of reasoning about which call site
-  looked risky:
+- **★ The DOMINANT memory cost on the ingest path was the BGE-M3 tokenizer:
+  ~325MB, or 64% of the whole 512MB budget, spent only on deciding where to
+  split text.** Removing it is the highest-leverage fix, but read the honesty
+  note below — it is *not* a single smoking gun, and an earlier version of this
+  entry overstated it.
+  Measured in a **512MB-constrained Linux container running the real deploy
+  requirements plus the real app** (`docker run --memory=512m`), which is the
+  number that counts:
 
-  | stage | RSS |
-  | --- | --- |
-  | `import app.api.main` (uvicorn boot point) | 84 MB |
-  | + build remote embedder + remote reranker | 90 MB |
-  | + **load BGE-M3 tokenizer** (`transformers`, torch absent = deploy image) | **611 MB** |
-  | same, via the `tokenizers` Rust lib directly | 378 MB |
-  | same, with torch present (local dev) | 1005 MB |
+  | stage | `heuristic` (new default) | `hf` (old behaviour) |
+  | --- | --- | --- |
+  | `import app.api.main` | 101 MB | 101 MB |
+  | after `chunk_text()` on an 835KB doc | **103 MB** | **429 MB** |
+  | headroom under the 512MB limit | **~409 MB** | **~83 MB** |
 
-  Render free's limit is **512 MB**. So *any* ingestion reaching `chunk_text()`
-  was killed the instant the tokenizer allocated — **100% reproducible,
-  independent of document size, org, or corpus**. That is why it still crashed
-  on a freshly truncated DB with a brand-new org, and why `phase` never left
-  `preparing` (`chunk_text` runs before the first embed). The symptom presented
-  as *both* "out of memory" and "health check timed out" because the same
-  allocation either tripped the limit or starved the event loop, depending on
-  timing — which is why it looked like two unrelated bugs.
+  **Honest correction — the tokenizer alone does NOT OOM the process.** The
+  first draft of this entry claimed it was "100% reproducible, independent of
+  document size", based on a **macOS** measurement of 611MB that does not
+  reproduce on Linux (macOS inflated it; local dev with torch present reads
+  ~1005MB, which is irrelevant to the deploy image). In the real 512MB
+  container the old path **survived** at 429MB. So the causal story is
+  layered, not singular:
+  - **Structural cause:** the tokenizer parked ~325MB in the process, leaving
+    only ~83MB for the fetched page, the preprocessed copy, chunk lists, embed
+    payloads, psycopg buffers, *and* concurrently serving HTTP.
+  - **Proximate trigger (varies per run):** whatever consumed that last ~83MB —
+    an unbounded Notion page fetch, an unbatched remote-embed payload, the
+    contextualize fan-out, or ordinary API traffic. **This is why each earlier
+    fix looked plausible and why none alone was sufficient: on a 429MB floor,
+    almost anything tips it over.** Those fixes were real and are kept.
+  - **Amplifier:** the unbounded requeue below turned any single OOM into an
+    unattended infinite crash loop — which is what made this present as a
+    permanent outage rather than one failed sync.
+  Also note `phase` staying at `preparing` does **not** by itself isolate the
+  tokenizer: `report("preparing")` → `fetch_document()` → `preprocess()` →
+  `chunk_text()` all sit inside that one window, so it is consistent with the
+  Notion-fetch bug *and* the tokenizer. Do not treat it as discriminating
+  evidence (an earlier entry above did).
   **Fix: chunking no longer uses a neural tokenizer by default.**
   `CHUNK_TOKEN_BACKEND` (default `heuristic`) selects a calibrated,
   zero-dependency token *estimator*; `hf` restores exact BGE-M3 counting via
@@ -1115,16 +1129,25 @@ render.yaml                  # Render Blueprint: web service + Postgres, secrets
   ingestion. Regressions:
   `test_current_rss_reflects_freed_memory_not_a_high_water_mark` and
   `test_a_broken_rss_reading_fails_open_rather_than_blocking_all_work`.
-- **Diagnostic lesson worth keeping (four fixes, one real cause).** Three
-  successive "fixes" shipped and redeployed against plausible hypotheses
+- **Diagnostic lessons worth keeping (four fixes, one thin memory budget).**
+  (1) Three fixes shipped and redeployed against plausible hypotheses
   (unbatched remote embed, unbounded Notion fetch, module-level import) before
-  anyone measured the process's actual RSS. Each was a genuine latent bug, none
-  was the cause. What found it in one step: run the real boot path with
-  production-equivalent env and print current RSS at each stage. **For any
-  future "instance ran out of memory": measure the memory profile first and
-  compare against the hard limit — do not reason about which call site looks
-  unbounded.** A ~500MB dependency will never show up in code review as
-  suspicious-looking code.
+  anyone measured the process's actual RSS. Each was a genuine latent bug and
+  each was a real contributor, but the thing that made them *fatal* — a 325MB
+  tokenizer eating 64% of the budget — was invisible to code review, because a
+  heavyweight dependency never looks like suspicious code. **For any future
+  "instance ran out of memory": measure the memory profile against the hard
+  limit first, then look at call sites.**
+  (2) **Measure on the target platform.** The same probe read 611MB on macOS
+  and 429MB in a 512MB Linux container with the real deps — and the difference
+  changed the conclusion from "cannot possibly work" to "works with ~83MB
+  headroom, so anything else tips it over". `docker run --memory=512m` against
+  `requirements-deploy.txt` is cheap and is the only number worth quoting.
+  (3) **Prefer a claim that survives being wrong.** The requeue attempt cap is
+  valuable *precisely because* it does not depend on having correctly identified
+  the trigger: whatever kills an ingest job in future, it now costs one failed
+  job instead of an outage. When root-causing under pressure, ship the blast-
+  radius fix alongside the causal one.
 
 - **Not every schema.sql addition has the ALTER-ordering hazard.**
   `org_signup_requests` (signup-approval queue, §2/§5) is a plain
