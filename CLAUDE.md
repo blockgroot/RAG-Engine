@@ -1011,6 +1011,143 @@ render.yaml                  # Render Blueprint: web service + Postgres, secrets
   (gate skips/proceeds/kill-switch, all via monkeypatched RSS — no real memory
   pressure induced) + `tests/test_query_normalize.py` (LRU eviction order,
   recency-refresh-on-hit).
+- **A different failure mode with the same symptom: "Instance failed: HTTP
+  health check failed (timed out after 5 seconds)" — a slow COLD START, not
+  memory (branch `fix/lazy-tokenizer-import-coldstart`).** Hit right after the
+  three fixes above, with no org and no ingestion job even existing at the
+  time — proof it wasn't the ingestion path. `app/ingestion/chunk_tokens.py`
+  did `from transformers import AutoTokenizer` at **module import time** (the
+  tokenizer object itself was already lazy via `lru_cache`, but the *package
+  import* wasn't). This module is imported transitively by `app/api/main.py`'s
+  routers (`admin` → `jobs.worker` → `ingestion.pipeline` →
+  `chunk_tokens`) on every process boot, so importing `transformers` (its own
+  import graph: tokenizers, huggingface_hub, safetensors, numpy, …) ran
+  synchronously *before uvicorn could bind the port* — measured live at **~7.3s**
+  on a warm-ish machine, worse on Render's throttled 0.1 vCPU free instance —
+  so `/health` couldn't be reached at all during that window, tripping
+  Render's 5s liveness timeout on every cold start/restart regardless of
+  whether an ingest job was running. Same class of bug as the local
+  embedding/reranker lazy-import discipline (§4's `transformers` gotcha talks
+  about image *size*, not *import latency* — this is the latency half of that
+  same story). Fixed by moving the `from transformers import AutoTokenizer`
+  import inside `_tokenizer()` itself, so the cost is paid on the first actual
+  `count_tokens`/`truncate_to_tokens` call (i.e. during a real ingest), not at
+  boot. Measured: `import app.api.main` **7.3s → 0.6s**, and `transformers` is
+  no longer in `sys.modules` after import. No behavior change — chunking still
+  works identically, just on first use instead of at boot.
+  **This fix was correct but did NOT stop the OOM — see the next entry, which
+  is the actual root cause. Deferring the import moved the 611MB allocation
+  from boot into the ingest run; it never removed it.**
+- **★ The DOMINANT memory cost on the ingest path was the BGE-M3 tokenizer:
+  ~325MB, or 64% of the whole 512MB budget, spent only on deciding where to
+  split text.** Removing it is the highest-leverage fix, but read the honesty
+  note below — it is *not* a single smoking gun, and an earlier version of this
+  entry overstated it.
+  Measured in a **512MB-constrained Linux container running the real deploy
+  requirements plus the real app** (`docker run --memory=512m`), which is the
+  number that counts:
+
+  | stage | `heuristic` (new default) | `hf` (old behaviour) |
+  | --- | --- | --- |
+  | `import app.api.main` | 101 MB | 101 MB |
+  | after `chunk_text()` on an 835KB doc | **103 MB** | **429 MB** |
+  | headroom under the 512MB limit | **~409 MB** | **~83 MB** |
+
+  **Honest correction — the tokenizer alone does NOT OOM the process.** The
+  first draft of this entry claimed it was "100% reproducible, independent of
+  document size", based on a **macOS** measurement of 611MB that does not
+  reproduce on Linux (macOS inflated it; local dev with torch present reads
+  ~1005MB, which is irrelevant to the deploy image). In the real 512MB
+  container the old path **survived** at 429MB. So the causal story is
+  layered, not singular:
+  - **Structural cause:** the tokenizer parked ~325MB in the process, leaving
+    only ~83MB for the fetched page, the preprocessed copy, chunk lists, embed
+    payloads, psycopg buffers, *and* concurrently serving HTTP.
+  - **Proximate trigger (varies per run):** whatever consumed that last ~83MB —
+    an unbounded Notion page fetch, an unbatched remote-embed payload, the
+    contextualize fan-out, or ordinary API traffic. **This is why each earlier
+    fix looked plausible and why none alone was sufficient: on a 429MB floor,
+    almost anything tips it over.** Those fixes were real and are kept.
+  - **Amplifier:** the unbounded requeue below turned any single OOM into an
+    unattended infinite crash loop — which is what made this present as a
+    permanent outage rather than one failed sync.
+  Also note `phase` staying at `preparing` does **not** by itself isolate the
+  tokenizer: `report("preparing")` → `fetch_document()` → `preprocess()` →
+  `chunk_text()` all sit inside that one window, so it is consistent with the
+  Notion-fetch bug *and* the tokenizer. Do not treat it as discriminating
+  evidence (an earlier entry above did).
+  **Fix: chunking no longer uses a neural tokenizer by default.**
+  `CHUNK_TOKEN_BACKEND` (default `heuristic`) selects a calibrated,
+  zero-dependency token *estimator*; `hf` restores exact BGE-M3 counting via
+  `tokenizers` (never `transformers`) for hosts with ≥1GB. `transformers` is
+  dropped from `requirements-deploy.txt` and the Dockerfile no longer pre-bakes
+  a tokenizer. Measured after: **85 MB** total including chunking a 160KB
+  document into 180 chunks, with `transformers`/`torch` never imported.
+  **Why an estimator is defensible here, not a shortcut:** the counts only
+  decide *where to split text*, and the split is then snapped to a word
+  boundary anyway (`_overlap_tail`); the embedding provider re-tokenizes
+  server-side, so byte-exact local agreement with BGE-M3 buys nothing we rely
+  on. Validated by chunking the golden corpus both ways: real BGE-M3 lengths of
+  the estimator's chunks were **mean 211 / max 236** against a 256 budget vs
+  **mean 237 / max 251** exact — it errs *small*, the safe direction, and **0%
+  of chunks exceeded budget** either way (17 chunks vs 15). Regression:
+  `tests/test_chunk_token_backend.py`, which asserts `transformers`/`tokenizers`
+  /`torch` stay out of `sys.modules` across a real chunking run.
+- **★ Why one bad job took the WHOLE deployment down repeatedly — and the
+  structural fix that makes this class of incident impossible regardless of
+  cause.** `requeue_interrupted_running()` returned every orphaned `running`
+  job to `queued` on worker start, with **no attempt limit**. That is correct
+  for a normal restart, but if the job is *what kills the process*, it is
+  requeued on the next boot, claimed, and kills it again — an unattended
+  infinite loop needing no traffic, which is what actually burned the instance
+  and produced "Instance failed" every few minutes. `reap_stuck()` could not
+  save it: the process died well inside its 60s reap interval, and the next
+  boot's requeue would have undone the reap anyway. **Both live incidents were
+  this loop, not the underlying bug** — the OOM merely supplied the crash.
+  Fix: `ingestion_jobs.attempts`, incremented **at claim time** in
+  `claim_next()` (a job that OOM-kills its process never reaches a later write,
+  so counting on completion would leave exactly the jobs needing a bound at
+  zero forever). `requeue_interrupted_running(max_attempts=…)` marks a job
+  `failed` with an explicit error once it has been claimed
+  `INGEST_MAX_JOB_ATTEMPTS` (default 3) times instead of requeuing it, so the
+  poison job stops and the API/login/chat stay up. Verified against real
+  Postgres — attempts 1→2→3 across simulated boots, then `failed` with **0
+  claimable** on the next poll. Regression:
+  `test_requeue_abandons_a_job_that_keeps_killing_the_worker` +
+  `test_claim_next_counts_attempts`. **Keep this cap.** Any future ingestion
+  bug now costs one failed job, not an outage.
+- **The memory admission gate added above was itself broken — `ru_maxrss` is a
+  high-water mark, not current usage.** `_current_rss_mb()` used
+  `resource.getrusage(RUSAGE_SELF).ru_maxrss`, which is the process's **peak**
+  RSS and never decreases (verified: allocate 300MB, free it, still reports
+  312MB). So once the process had *ever* peaked past `INGEST_MAX_RSS_MB`, the
+  gate latched closed permanently and `run_once()` refused to claim work for
+  the rest of the process's life — it did not throttle ingestion, it silently
+  **disabled** it. Now reads real current RSS from `/proc/self/statm` (Linux /
+  Render) with a `ps` fallback for macOS dev, and **fails open** (returns 0.0)
+  if measurement fails, because a broken gauge must never be able to block all
+  ingestion. Regressions:
+  `test_current_rss_reflects_freed_memory_not_a_high_water_mark` and
+  `test_a_broken_rss_reading_fails_open_rather_than_blocking_all_work`.
+- **Diagnostic lessons worth keeping (four fixes, one thin memory budget).**
+  (1) Three fixes shipped and redeployed against plausible hypotheses
+  (unbatched remote embed, unbounded Notion fetch, module-level import) before
+  anyone measured the process's actual RSS. Each was a genuine latent bug and
+  each was a real contributor, but the thing that made them *fatal* — a 325MB
+  tokenizer eating 64% of the budget — was invisible to code review, because a
+  heavyweight dependency never looks like suspicious code. **For any future
+  "instance ran out of memory": measure the memory profile against the hard
+  limit first, then look at call sites.**
+  (2) **Measure on the target platform.** The same probe read 611MB on macOS
+  and 429MB in a 512MB Linux container with the real deps — and the difference
+  changed the conclusion from "cannot possibly work" to "works with ~83MB
+  headroom, so anything else tips it over". `docker run --memory=512m` against
+  `requirements-deploy.txt` is cheap and is the only number worth quoting.
+  (3) **Prefer a claim that survives being wrong.** The requeue attempt cap is
+  valuable *precisely because* it does not depend on having correctly identified
+  the trigger: whatever kills an ingest job in future, it now costs one failed
+  job instead of an outage. When root-causing under pressure, ship the blast-
+  radius fix alongside the causal one.
 
 - **Not every schema.sql addition has the ALTER-ordering hazard.**
   `org_signup_requests` (signup-approval queue, §2/§5) is a plain

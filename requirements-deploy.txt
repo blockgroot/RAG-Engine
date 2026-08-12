@@ -8,12 +8,21 @@
 # from the deploy image keeps the build small and fast without touching any
 # runtime code path.
 #
-# `transformers` is kept (unlike sentence-transformers) because
-# app/ingestion/chunk_tokens.py imports `AutoTokenizer` unconditionally at
-# module load — token-aware chunking runs regardless of embedding backend.
-# It needs no torch/tensorflow/flax backend: AutoTokenizer only loads
-# tokenizer config/vocab files, verified by actually building and booting this
-# image (`docker build . && docker run ...`) rather than assumed.
+# `transformers` is DROPPED as of the chunk-token-backend fix. It used to be
+# kept for app/ingestion/chunk_tokens.py's `AutoTokenizer`, but that was
+# measured to be unusable on a 512MB instance: loading BGE-M3's tokenizer took
+# the process to ~611MB via transformers (~378MB even via `tokenizers`
+# directly) against a 512MB hard limit, so every ingestion that reached
+# chunk_text() was OOM-killed — the actual root cause of the production
+# crash loop. Chunking now defaults to a zero-dependency token *estimator*
+# (CHUNK_TOKEN_BACKEND=heuristic), which needs neither package.
+#
+# Merely importing transformers also cost ~78MB and ~7s of CPU at module load,
+# which by itself tripped Render's 5s health check on cold starts.
+#
+# Set CHUNK_TOKEN_BACKEND=hf ONLY on an instance with >=1GB RAM, and add
+# `tokenizers>=0.15` back here if you do (transformers is still not needed —
+# chunk_tokens.py talks to the Rust `tokenizers` library directly).
 #
 # If you ever deploy with EMBEDDING_BACKEND=local or RETRIEVAL_RERANK_ENABLED
 # pointed at the local CrossEncoder, install `sentence-transformers>=3.0.0`
@@ -36,7 +45,6 @@ httpx>=0.27.0
 pyjwt>=2.8.0
 rank-bm25>=0.2.2
 symspellpy>=6.7,<7
-transformers>=4.40.0
 
 # --- HTTP API layer (app/api/) ---
 fastapi>=0.110.0

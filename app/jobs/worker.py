@@ -13,8 +13,8 @@ phase so Phase 6 quality still lands without blocking UX.
 from __future__ import annotations
 
 import logging
-import resource
-import sys
+import os
+import subprocess
 
 from ..auth import get_connection_config, get_live_connection_token
 from ..auth.credentials import (
@@ -32,15 +32,40 @@ logger = logging.getLogger(__name__)
 
 
 def _current_rss_mb() -> float:
-    """Best-effort current process RSS in MB, for the memory admission gate.
+    """CURRENT process RSS in MB, for the memory admission gate.
 
-    ``ru_maxrss`` is a long-standing POSIX wart: kilobytes on Linux (Render's
-    runtime), bytes on macOS/BSD (a dev machine). This is a coarse admission
-    check, not a precise accounting figure, so the platform-dependent "peak
-    so far rather than right now" semantics are fine.
+    Deliberately NOT ``resource.getrusage(...).ru_maxrss``: that is a
+    monotonic **high-water mark** which never decreases even after memory is
+    freed (verified: a process that allocates 300MB and frees it still reports
+    312MB). Using it here was an outright bug — once the process had *ever*
+    peaked above the ceiling, the gate below would refuse to claim work for the
+    rest of the process's life, silently disabling ingestion entirely rather
+    than throttling it.
+
+    ``/proc/self/statm`` field 2 is resident pages, the real current figure on
+    Linux (Render's runtime). ``ps`` is the portable fallback for local dev on
+    macOS, where there is no ``/proc``; it costs a subprocess, which is
+    acceptable at one call per poll tick. If neither works we return 0.0 —
+    failing *open* on purpose, because a broken measurement must not be able to
+    block all ingestion.
     """
-    raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    return raw / (1024 * 1024) if sys.platform == "darwin" else raw / 1024
+    try:
+        with open("/proc/self/statm", encoding="ascii") as fh:
+            resident_pages = int(fh.read().split()[1])
+        return resident_pages * os.sysconf("SC_PAGE_SIZE") / (1024 * 1024)
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        out = subprocess.run(
+            ["ps", "-o", "rss=", "-p", str(os.getpid())],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return int(out.stdout.strip()) / 1024  # ps reports KB
+    except Exception:  # noqa: BLE001 - measurement must never break the worker
+        logger.debug("Could not read current RSS; memory gate will allow work")
+        return 0.0
 
 
 def _memory_guard_ok(settings: IngestWorkerSettings) -> bool:

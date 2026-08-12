@@ -186,6 +186,59 @@ def test_requeue_interrupted_running_returns_orphans_to_queued(_connected_org):
 
 
 @requires_db
+def test_claim_next_counts_attempts(_connected_org):
+    """``attempts`` must be incremented AT CLAIM TIME.
+
+    A job that OOM-kills its own process never reaches a later write, so
+    counting on completion would leave exactly the jobs we need to bound
+    sitting at zero forever.
+    """
+    org_id, connection_id = _connected_org
+    job_id = queue.enqueue(org_id, connection_id)
+
+    first = queue.claim_next()
+    assert first.attempts == 1
+
+    queue.requeue_interrupted_running()
+    second = queue.claim_next()
+    assert second.id == job_id
+    assert second.attempts == 2, "each claim must count"
+
+
+@requires_db
+def test_requeue_abandons_a_job_that_keeps_killing_the_worker(_connected_org):
+    """THE crash-loop breaker.
+
+    Unbounded requeuing is how one bad job takes a deployment down forever: the
+    job kills the process, boot requeues it, it is claimed and kills the process
+    again -- with no traffic and nobody watching. Two live production incidents
+    on this project were this loop rather than the underlying bug. Past the
+    attempt cap the job must fail loudly and STAY failed, so the API survives.
+    """
+    org_id, connection_id = _connected_org
+    job_id = queue.enqueue(org_id, connection_id)
+
+    # Simulate three successive boots where the job kills the process mid-run.
+    for _ in range(3):
+        queue.requeue_interrupted_running(max_attempts=3)
+        claimed = queue.claim_next()
+        assert claimed is not None, "should still be claimable below the cap"
+
+    # Fourth boot: the cap is reached, so it must be abandoned, not requeued.
+    requeued = queue.requeue_interrupted_running(max_attempts=3)
+
+    job = queue.get_job(org_id, job_id)
+    assert job.status == "failed", (
+        f"a job that has failed {job.attempts} times must not be requeued again"
+    )
+    assert requeued == 0
+    assert "attempts" in (job.error or "").lower()
+
+    # And it must not come back on the next poll.
+    assert queue.claim_next() is None
+
+
+@requires_db
 def test_reap_stuck_flips_old_running_jobs_to_failed(_connected_org):
     org_id, connection_id = _connected_org
     job_id = queue.enqueue(org_id, connection_id)
