@@ -155,7 +155,8 @@ def _send_resend(
         raise ProviderError(f"Failed to send email via Resend: {exc}", cause=exc) from exc
     if response.status_code >= 400:
         raise ProviderError(
-            f"Resend rejected the send ({response.status_code}): {response.text}"
+            f"Resend rejected the send ({response.status_code}) "
+            f"from={settings.smtp_from!r}: {response.text}"
         )
 
 
