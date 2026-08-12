@@ -9,6 +9,7 @@ instead of appending duplicates.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
@@ -31,6 +32,8 @@ from ..vectorstore.base import VectorStore
 # caller (the job worker) can persist live progress; the pipeline itself stays
 # storage-agnostic and never imports app/jobs.
 ProgressCallback = Callable[[str, int, int], None]
+
+logger = logging.getLogger(__name__)
 
 
 def _aware(dt: datetime | None) -> datetime | None:
@@ -259,10 +262,19 @@ def ingest_source(
             continue
 
         if apply_contextual_inline and llm is not None:
-            report("contextualizing", done - 1, total_work)
-            chunks = contextualize_chunks(
-                llm, clean, chunks, org_id=org_id, concurrency=contextual.concurrency
-            )
+            if len(chunks) > contextual.max_chunks:
+                logger.warning(
+                    "Skipping contextual enrichment for %s (%s chunks > max_chunks=%s); "
+                    "storing plain chunks instead",
+                    ref.external_id,
+                    len(chunks),
+                    contextual.max_chunks,
+                )
+            else:
+                report("contextualizing", done - 1, total_work)
+                chunks = contextualize_chunks(
+                    llm, clean, chunks, org_id=org_id, concurrency=contextual.concurrency
+                )
 
         report("embedding", done - 1, total_work)
         embeddings = embedder.embed(chunks)
@@ -345,6 +357,16 @@ def enrich_source_contextual(
             clean = preprocess(sanitize_ingest_text(doc.content))
             chunks = chunk_text(clean, chunking)
             if not chunks:
+                report("enriching", i, total)
+                continue
+            if len(chunks) > contextual.max_chunks:
+                logger.warning(
+                    "Skipping contextual enrichment for %s (%s chunks > max_chunks=%s); "
+                    "leaving its plain chunks as-is",
+                    external_id,
+                    len(chunks),
+                    contextual.max_chunks,
+                )
                 report("enriching", i, total)
                 continue
             chunks = contextualize_chunks(

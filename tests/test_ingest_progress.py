@@ -419,3 +419,60 @@ def test_enrich_source_contextual_rewrites_chunks_with_llm_prefix():
     # FakeStore keeps last upserted chunks on .last_chunks
     assert store.last_chunks
     assert store.last_chunks[0].startswith("Section: leave policy.")
+
+
+# -- max_chunks guard: a pathologically large document must not tie up the
+# worker with one uncapped sequential/low-concurrency LLM call per chunk. -----
+
+
+class _BoomLLM:
+    def generate(self, prompt: str) -> str:
+        raise AssertionError("LLM must not run once max_chunks is exceeded")
+
+
+def test_inline_contextualize_skips_a_document_over_max_chunks():
+    """Inline (non-deferred) contextualize must not call the LLM for an
+    oversized document — it falls back to the plain chunks, which is the
+    same safe state every chunk already starts in."""
+    result = ingest_source(
+        _FakeAdapter(pages=1),
+        "org-1",
+        provider="notion",
+        embedder=_FakeEmbedder(),
+        store=_FakeStore(),
+        llm=_BoomLLM(),
+        contextual=ContextualSettings(enabled=True, defer=False, concurrency=1, max_chunks=0),
+    )
+    assert result.documents_added == 1
+
+
+def test_enrich_source_contextual_skips_a_document_over_max_chunks():
+    """Deferred enrich must skip an oversized document rather than issuing
+    one call per chunk with no upper bound, and must not re-embed it (it
+    keeps the raw chunks the fast sync already stored)."""
+    from app.ingestion.pipeline import enrich_source_contextual
+
+    store = _FakeStore()
+    ingest_source(
+        _FakeAdapter(pages=1),
+        "org-1",
+        provider="notion",
+        embedder=_FakeEmbedder(),
+        store=store,
+        contextual=ContextualSettings(enabled=True, defer=True),
+    )
+    raw_chunks = list(store.last_chunks)
+
+    n = enrich_source_contextual(
+        _FakeAdapter(pages=1),
+        "org-1",
+        provider="notion",
+        external_ids=["p0"],
+        embedder=_FakeEmbedder(),
+        store=store,
+        llm=_BoomLLM(),
+        contextual=ContextualSettings(enabled=True, defer=True, concurrency=1, max_chunks=0),
+    )
+
+    assert n == 0
+    assert store.last_chunks == raw_chunks

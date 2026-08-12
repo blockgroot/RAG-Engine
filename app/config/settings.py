@@ -74,6 +74,7 @@ DEFAULT_MEMORY_RECENT_TURNS = 3
 DEFAULT_CONTEXTUAL_ENABLED = True          # keep the Phase 6 quality path
 DEFAULT_CONTEXTUAL_DEFER = True            # run it AFTER sync succeeds (no onboarding stall)
 DEFAULT_CONTEXTUAL_CONCURRENCY = 2         # background enrich; keep low vs 15 RPM free endpoints
+DEFAULT_CONTEXTUAL_MAX_CHUNKS = 200        # skip enrich (raw chunks stay) above this many chunks/doc
 DEFAULT_EMBED_BATCH_SIZE = 16              # encode in batches (avoids OOM on large docs)
 DEFAULT_RETRIEVAL_HYBRID_ENABLED = True    # fuse vector + keyword (BM25-style) search
 DEFAULT_RETRIEVAL_RERANK_ENABLED = True    # cross-encoder rerank of the candidate pool
@@ -211,8 +212,10 @@ class EmbeddingSettings:
     - ``model``    embedding model id
     - ``device``   optional device for the local backend (cpu/cuda/mps)
     - ``api_key`` / ``base_url``  used only by the remote backend
-    - ``batch_size``  encode at most this many texts per ``encode`` call so a
-      long document (dozens of chunks) cannot OOM the local model in one shot
+    - ``batch_size``  send/encode at most this many texts per call, on EITHER
+      backend, so a document with an unusually large number of chunks cannot
+      build one unbounded request (local: OOM the in-process model; remote:
+      one huge HTTP request/response payload) in a single shot.
     """
 
     backend: str
@@ -889,11 +892,21 @@ class ContextualSettings:
 
     ``concurrency`` is how many per-chunk calls run at once within one document
     during inline or deferred enrich. Keep low (1–2) on free/metered endpoints.
+
+    ``max_chunks``: a document that chunks into more than this many pieces
+    skips contextual enrichment entirely (it keeps its plain, already-embedded
+    chunks — the same safe state every chunk starts in under ``defer``) rather
+    than issuing one sequential/low-concurrency LLM call per chunk with no
+    upper bound. A pathologically large single document (an entire book pasted
+    into one page) would otherwise tie up the worker for a very long time; this
+    makes that a bounded, cheap no-op instead, without touching normal-sized
+    documents (a typical page is well under this).
     """
 
     enabled: bool = DEFAULT_CONTEXTUAL_ENABLED
     defer: bool = DEFAULT_CONTEXTUAL_DEFER
     concurrency: int = DEFAULT_CONTEXTUAL_CONCURRENCY
+    max_chunks: int = DEFAULT_CONTEXTUAL_MAX_CHUNKS
 
     @classmethod
     def from_env(cls) -> "ContextualSettings":
@@ -902,6 +915,9 @@ class ContextualSettings:
             defer=env_bool("INGEST_CONTEXTUAL_DEFER", DEFAULT_CONTEXTUAL_DEFER),
             concurrency=_env_positive_int(
                 "INGEST_CONTEXTUAL_CONCURRENCY", DEFAULT_CONTEXTUAL_CONCURRENCY
+            ),
+            max_chunks=_env_positive_int(
+                "INGEST_CONTEXTUAL_MAX_CHUNKS", DEFAULT_CONTEXTUAL_MAX_CHUNKS
             ),
         )
 
