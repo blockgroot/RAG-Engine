@@ -67,6 +67,13 @@ services:
         sync: false
       - key: EMBEDDING_DIM
         value: "1024"
+      # Batches embed() calls on EITHER backend so a document with an unusually
+      # large number of chunks can't build one unbounded request/response
+      # payload in a single shot — see CLAUDE.md's ingest-memory-hardening
+      # entry (this is what OOM-crashed a 512MB instance before it was wired
+      # into the remote backend).
+      - key: EMBED_BATCH_SIZE
+        value: "16"
 
       # -- Reranker (remote) --
       - key: RERANKER_BACKEND
@@ -156,3 +163,9 @@ services:
         value: "true"
       - key: INGEST_WORKER_IN_API
         value: "true"
+      # A document that chunks into more pieces than this skips contextual
+      # enrichment entirely (keeps its plain, already-embedded chunks) instead
+      # of issuing one uncapped LLM call per chunk — protects against a single
+      # pathologically large document tying up the in-API worker indefinitely.
+      - key: INGEST_CONTEXTUAL_MAX_CHUNKS
+        value: "200"

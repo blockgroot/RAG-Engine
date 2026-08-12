@@ -909,6 +909,48 @@ render.yaml                  # Render Blueprint: web service + Postgres, secrets
   when you do not need retrieval — it never loads those models. Kill-switch:
   ``RETRIEVAL_RERANK_ENABLED=false``.
 
+- **A stuck `ingestion_jobs` row can OOM-crash-loop the whole deploy forever —
+  `RemoteEmbeddingProvider` had no batching (fix on `fix/ingest-memory-hardening`).**
+  Live incident on Render free (512MB): the instance failed every ~2-3 minutes
+  in a tight loop (`Instance failed: <id>` every few minutes in Render's event
+  timeline), and `ingestion_jobs` showed one job stuck `running`/`preparing`
+  with `processed_documents=0` forever — `_start_in_api_worker`'s
+  `queue.requeue_interrupted_running()` (`app/api/main.py`) picks up any job
+  that was `running` when its instance got OOM-killed and re-runs it on the
+  *next* boot, so a job that OOMs before finishing its first document creates
+  an infinite crash loop independent of traffic. `EMBEDDING_BACKEND`/
+  `RERANKER_BACKEND=remote` (ruling out local multi-GB model loads) and
+  `INGEST_CONTEXTUAL_DEFER=true` (ruling out contextualization, which only
+  runs *after* documents are stored) were both confirmed via the live
+  Postgres — yet it still crashed with **zero** documents ever stored for that
+  org, which narrowed it to the plain fetch→chunk→embed path.
+  Root cause: `LocalEmbeddingProvider.embed()` batches at `EMBED_BATCH_SIZE`
+  specifically "so a 25+ chunk policy page cannot OOM ... in one shot" — but
+  `RemoteEmbeddingProvider.embed()` had no such batching and sent the entire
+  chunk list in a single `embeddings.create()` call, and `factory.py` didn't
+  even pass `batch_size` to it. A document that chunks into an unusually large
+  number of pieces (one big Notion page) built one unbounded request/response
+  payload on the remote backend — the exact failure mode the local backend was
+  already protected against. Fixed by batching `RemoteEmbeddingProvider.embed()`
+  identically (same `EMBED_BATCH_SIZE`, wired through `factory.py`) — see
+  `tests/test_remote_embedding_batching.py`. **Immediate recovery for a stuck
+  job**: `UPDATE ingestion_jobs SET status='failed', finished_at=now() WHERE
+  id=...` — `requeue_interrupted_running()` only requeues `running` rows, so
+  this alone breaks the loop regardless of root cause.
+- **A pathologically large single document could tie up the ingest worker with
+  an uncapped number of sequential/low-concurrency contextualize calls.**
+  Found while investigating the incident above (not itself the cause, since
+  `INGEST_CONTEXTUAL_DEFER=true` means contextualize only runs *after* a
+  document is already stored — but a genuinely huge document would still hit
+  this once past the embed-batching fix). `INGEST_CONTEXTUAL_MAX_CHUNKS`
+  (default 200, `ContextualSettings.max_chunks`) skips contextual enrichment
+  entirely for a document whose chunk count exceeds it — it keeps its plain,
+  already-embedded chunks (the same safe state every chunk starts in under
+  `defer`) rather than issuing one call per chunk with no upper bound. Normal
+  documents are unaffected (a typical page is well under 200 chunks). Guarded
+  at both call sites: the inline (non-deferred) path and the deferred
+  `enrich_source_contextual` worker path.
+
 - **Not every schema.sql addition has the ALTER-ordering hazard.**
   `org_signup_requests` (signup-approval queue, §2/§5) is a plain
   `CREATE TABLE IF NOT EXISTS` with no `ALTER TABLE ... ADD COLUMN` on an
