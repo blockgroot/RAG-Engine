@@ -120,11 +120,28 @@ DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
 DEFAULT_INGEST_MAX_DOCUMENT_CHARS = 2_000_000
 DEFAULT_INGEST_MAX_CONTROL_CHAR_RATIO = 0.05
 
+# Ingestion worker memory admission gate (defense-in-depth alongside the
+# per-input bounds above): before claiming a new job, the worker checks its
+# own current RSS and skips claiming — leaving the job queued for the next
+# tick — if already close to this ceiling. This catches memory pressure from
+# ANY cause, not just the specific unbounded inputs found and fixed by hand
+# (Notion fetch size, remote-embed batching, contextual chunk-count cap).
+# Default leaves ~112MB headroom under Render free's hard 512MB ceiling.
+DEFAULT_INGEST_MEMORY_GUARD_ENABLED = True
+DEFAULT_INGEST_MAX_RSS_MB = 400.0
+
 # Lightweight query spelling/normalization (Phase 17). Corpus-vocab
 # SymSpell — no LLM on the happy path. Kill-switch: QUERY_NORM_ENABLED=false.
 DEFAULT_QUERY_NORM_ENABLED = True
 DEFAULT_QUERY_NORM_MAX_EDIT_DISTANCE = 1
 DEFAULT_QUERY_NORM_MIN_WORD_LENGTH = 4
+# The per-org SymSpell dictionary is cached for the life of the process with
+# nothing evicting it (CLAUDE.md's query-latency section flagged this as a
+# known, never-fixed slow-leak risk once more than a handful of orgs are
+# onboarded). Bounding it to the N most-recently-used orgs turns unbounded
+# growth into a fixed ceiling with no behavior change for a single-org or
+# small-org deployment.
+DEFAULT_QUERY_NORM_CACHE_MAX_ORGS = 50
 
 # Web search tool (Phase 5). Keyless DuckDuckGo by default (no paid dependency);
 # set WEB_SEARCH_PROVIDER=tavily + WEB_SEARCH_API_KEY for production quality.
@@ -818,6 +835,27 @@ class IngestSanitizeSettings:
 
 
 @dataclass(frozen=True)
+class IngestWorkerSettings:
+    """Ingestion worker memory admission gate (see ``DEFAULT_INGEST_MAX_RSS_MB``
+    above for the full reasoning). Checked once per ``run_once()`` call, before
+    ``queue.claim_next()`` — a coarse, cheap proactive circuit breaker, not a
+    replacement for the per-input bounds elsewhere in the ingestion pipeline.
+    """
+
+    memory_guard_enabled: bool = DEFAULT_INGEST_MEMORY_GUARD_ENABLED
+    max_rss_mb: float = DEFAULT_INGEST_MAX_RSS_MB
+
+    @classmethod
+    def from_env(cls) -> "IngestWorkerSettings":
+        return cls(
+            memory_guard_enabled=env_bool(
+                "INGEST_MEMORY_GUARD_ENABLED", DEFAULT_INGEST_MEMORY_GUARD_ENABLED
+            ),
+            max_rss_mb=float(os.getenv("INGEST_MAX_RSS_MB") or DEFAULT_INGEST_MAX_RSS_MB),
+        )
+
+
+@dataclass(frozen=True)
 class QueryNormSettings:
     """Corpus-vocab spelling correction before retrieval (Phase 17).
 
@@ -832,6 +870,7 @@ class QueryNormSettings:
     enabled: bool = DEFAULT_QUERY_NORM_ENABLED
     max_edit_distance: int = DEFAULT_QUERY_NORM_MAX_EDIT_DISTANCE
     min_word_length: int = DEFAULT_QUERY_NORM_MIN_WORD_LENGTH
+    cache_max_orgs: int = DEFAULT_QUERY_NORM_CACHE_MAX_ORGS
 
     @classmethod
     def from_env(cls) -> "QueryNormSettings":
@@ -844,6 +883,9 @@ class QueryNormSettings:
             min_word_length=int(
                 os.getenv("QUERY_NORM_MIN_WORD_LENGTH")
                 or DEFAULT_QUERY_NORM_MIN_WORD_LENGTH
+            ),
+            cache_max_orgs=_env_positive_int(
+                "QUERY_NORM_CACHE_MAX_ORGS", DEFAULT_QUERY_NORM_CACHE_MAX_ORGS
             ),
         )
 

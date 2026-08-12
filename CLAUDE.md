@@ -984,6 +984,33 @@ render.yaml                  # Render Blueprint: web service + Postgres, secrets
   at `preparing` vs advancing to `embedding` was the one piece of evidence
   that would have caught this immediately instead of after a second live
   crash.
+- **Defense-in-depth added on top of the incident above: a proactive memory
+  admission gate + a bounded SymSpell cache (branch
+  `fix/ingest-defense-in-depth`), since per-input bounds only close holes
+  found by hand.** (1) `IngestWorkerSettings`/`app/jobs/worker.py`: before
+  `run_once()` calls `queue.claim_next()`, it checks the process's own current
+  RSS (`_current_rss_mb()`, stdlib `resource.getrusage` — platform-dependent
+  units handled: KB on Linux/Render, bytes on macOS/BSD) and skips claiming —
+  leaving any queued job for the next tick — once at/above
+  `INGEST_MAX_RSS_MB` (default 400, ~112MB headroom under Render free's
+  512MB). This is a coarse circuit breaker, not a replacement for the
+  per-input fixes: it catches memory pressure from *any* cause, including one
+  not yet found and bounded by hand. Kill-switch:
+  `INGEST_MEMORY_GUARD_ENABLED=false`. (2) `CorpusSpellNormalizer._by_org`
+  (`app/rag/query_normalize.py`) was flagged as a known-unfixed slow-leak in
+  the query-latency section below — a per-org SymSpell dictionary cached for
+  the life of the process with nothing ever evicting it. Now an `OrderedDict`
+  LRU bounded at `QUERY_NORM_CACHE_MAX_ORGS` (default 50): a cache hit moves
+  the org to most-recently-used, an insert past the cap evicts the least-
+  recently-used org (not FIFO — an actively-queried org is never evicted just
+  because other orgs were added). An evicted org simply rebuilds its
+  dictionary on its next query — the same one-time cost every org already
+  pays on its first query, not an error. Zero behavior change for a
+  single-org or small-org deployment; only changes anything once more orgs
+  have queried than the cap allows. Tests: `tests/test_ingest_memory_guard.py`
+  (gate skips/proceeds/kill-switch, all via monkeypatched RSS — no real memory
+  pressure induced) + `tests/test_query_normalize.py` (LRU eviction order,
+  recency-refresh-on-hit).
 
 - **Not every schema.sql addition has the ALTER-ordering hazard.**
   `org_signup_requests` (signup-approval queue, §2/§5) is a plain

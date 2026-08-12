@@ -13,6 +13,8 @@ phase so Phase 6 quality still lands without blocking UX.
 from __future__ import annotations
 
 import logging
+import resource
+import sys
 
 from ..auth import get_connection_config, get_live_connection_token
 from ..auth.credentials import (
@@ -20,7 +22,7 @@ from ..auth.credentials import (
     looks_like_auth_failure,
     mark_needs_reauth,
 )
-from ..config.settings import ContextualSettings
+from ..config.settings import ContextualSettings, IngestWorkerSettings
 from ..core.exceptions import OAuthReauthRequiredError
 from ..ingestion.pipeline import enrich_source_contextual, ingest_source
 from ..sources import build_source_adapter
@@ -29,14 +31,45 @@ from . import queue
 logger = logging.getLogger(__name__)
 
 
+def _current_rss_mb() -> float:
+    """Best-effort current process RSS in MB, for the memory admission gate.
+
+    ``ru_maxrss`` is a long-standing POSIX wart: kilobytes on Linux (Render's
+    runtime), bytes on macOS/BSD (a dev machine). This is a coarse admission
+    check, not a precise accounting figure, so the platform-dependent "peak
+    so far rather than right now" semantics are fine.
+    """
+    raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return raw / (1024 * 1024) if sys.platform == "darwin" else raw / 1024
+
+
+def _memory_guard_ok(settings: IngestWorkerSettings) -> bool:
+    if not settings.memory_guard_enabled:
+        return True
+    return _current_rss_mb() < settings.max_rss_mb
+
+
 def run_once() -> queue.IngestionJob | None:
     """Claim and process a single queued job, if any.
 
-    Returns the job's final record (``succeeded`` or ``failed``), or ``None``
-    if the queue was empty. Any exception during ingestion is caught and
-    recorded on the job as ``failed`` rather than propagating — a worker loop
-    must survive one bad job and keep polling.
+    Returns the job's final record (``succeeded`` or ``failed``), ``None`` if
+    the queue was empty, or ``None`` if the memory admission gate declined to
+    claim anything this tick (see ``_memory_guard_ok`` — the job, if any,
+    stays queued for the next tick or another worker instance). Any exception
+    during ingestion is caught and recorded on the job as ``failed`` rather
+    than propagating — a worker loop must survive one bad job and keep
+    polling.
     """
+    memory_settings = IngestWorkerSettings.from_env()
+    if not _memory_guard_ok(memory_settings):
+        logger.warning(
+            "Skipping ingestion job claim: process RSS (%.0fMB) is at/above "
+            "the configured ceiling (%.0fMB) -- deferring to the next poll",
+            _current_rss_mb(),
+            memory_settings.max_rss_mb,
+        )
+        return None
+
     job = queue.claim_next()
     if job is None:
         return None
