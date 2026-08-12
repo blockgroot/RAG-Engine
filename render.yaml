@@ -169,3 +169,19 @@ services:
       # pathologically large document tying up the in-API worker indefinitely.
       - key: INGEST_CONTEXTUAL_MAX_CHUNKS
         value: "200"
+      # Proactive admission gate: skip claiming a new ingestion job (leave it
+      # queued for the next tick) if the process's own RSS is already at/above
+      # this ceiling. Defense-in-depth alongside the per-input bounds above —
+      # catches memory pressure from any cause. 400MB leaves ~112MB headroom
+      # under Render free's hard 512MB limit; raise this if/when upgrading off
+      # the free plan.
+      - key: INGEST_MEMORY_GUARD_ENABLED
+        value: "true"
+      - key: INGEST_MAX_RSS_MB
+        value: "400"
+      # Per-org SymSpell dictionaries are cached for the life of the process —
+      # bounded LRU so onboarding more orgs over time doesn't grow this
+      # unboundedly (a slow-leak risk distinct from the sudden-crash bugs
+      # above).
+      - key: QUERY_NORM_CACHE_MAX_ORGS
+        value: "50"

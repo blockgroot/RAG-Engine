@@ -36,7 +36,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
-from collections import Counter
+from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterable
 
 from symspellpy import SymSpell, Verbosity
@@ -195,12 +195,22 @@ def build_vocab_counts(texts: Iterable[str], *, min_word_length: int) -> Counter
 
 
 class CorpusSpellNormalizer:
-    """Per-org SymSpell corrector built from that org's stored chunk text."""
+    """Per-org SymSpell corrector built from that org's stored chunk text.
+
+    ``_by_org`` is an LRU cache bounded at ``settings.cache_max_orgs`` — kept
+    unbounded for a long time (CLAUDE.md's query-latency section flagged this
+    as a known, never-fixed slow-leak: each org's dictionary is cached for the
+    life of the process and nothing ever evicted it). A single-org or
+    small-org deployment never touches the eviction path at all; this only
+    changes behavior once more orgs have queried than the cap allows, and even
+    then the only cost is rebuilding a dictionary on that org's next query
+    (the same one-time cost every org already pays on its first query).
+    """
 
     def __init__(self, settings: QueryNormSettings | None = None) -> None:
         self._settings = settings or QueryNormSettings.from_env()
         self._lock = threading.Lock()
-        self._by_org: dict[str, SymSpell] = {}
+        self._by_org: OrderedDict[str, SymSpell] = OrderedDict()
 
     @property
     def enabled(self) -> bool:
@@ -294,6 +304,7 @@ class CorpusSpellNormalizer:
         with self._lock:
             cached = self._by_org.get(org_id)
             if cached is not None:
+                self._by_org.move_to_end(org_id)
                 return cached
 
         # Only now is the corpus actually needed. Resolving the thunk here
@@ -321,4 +332,7 @@ class CorpusSpellNormalizer:
 
         with self._lock:
             self._by_org[org_id] = sym
+            self._by_org.move_to_end(org_id)
+            while len(self._by_org) > self._settings.cache_max_orgs:
+                self._by_org.popitem(last=False)
         return sym
