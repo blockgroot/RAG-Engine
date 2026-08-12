@@ -15,13 +15,28 @@ export default function WorkspacesPage() {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Fired on mount rather than gated on `me`, so the session lookup and the
+  // list load run CONCURRENTLY instead of as a two-round-trip waterfall. Both
+  // are authenticated by the same cookie, so there is nothing to wait for; if
+  // the caller turns out to be unauthenticated this 401s harmlessly and
+  // useMe's guard does the redirect.
   useEffect(() => {
-    if (!me) return;
+    let cancelled = false;
     api
       .listWorkspaces()
-      .then(setWorkspaces)
-      .finally(() => setLoadingList(false));
-  }, [me]);
+      .then((rows) => {
+        if (!cancelled) setWorkspaces(rows);
+      })
+      .catch(() => {
+        /* useMe owns the auth redirect; an empty list is the right fallback */
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingList(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();

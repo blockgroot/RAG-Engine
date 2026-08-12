@@ -5,6 +5,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { BrandMark } from "@/components/BrandMark";
 import { api, Me } from "@/lib/api";
 import { canAccessAdminPortal, isSetupComplete } from "@/lib/routing";
+import { clearMeCache } from "@/lib/useMe";
 
 type Variant = "app" | "onboarding" | "admin";
 
@@ -88,6 +89,10 @@ export function AppShell({
     } catch {
       /* still clear local route */
     }
+    // The session is cached in-module to keep navigation instant (lib/useMe),
+    // so it must be dropped here or a signed-out tab could still render the
+    // previous user from cache until a full reload.
+    clearMeCache();
     router.replace("/login");
     router.refresh();
   }

@@ -417,12 +417,18 @@ function OnboardingInner() {
                 onClick={handleIngest}
                 disabled={syncInProgress || !canSync}
               >
+                {/* "Try again" is ONLY for a failure. The previous version fell
+                    through to it for *any* existing job, so a perfectly
+                    successful sync (11/11 pages stored) still offered
+                    "Try again" — telling the user something had gone wrong when
+                    nothing had. A completed sync offers "Sync again", which is
+                    what the button actually does at that point. */}
                 {syncInProgress
                   ? "Syncing…"
                   : displayJob?.status === "failed"
                     ? "Try again"
                     : displayJob
-                      ? "Try again"
+                      ? "Sync again"
                       : "Bring them in"}
               </button>
             )}
