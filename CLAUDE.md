@@ -1011,6 +1011,30 @@ render.yaml                  # Render Blueprint: web service + Postgres, secrets
   (gate skips/proceeds/kill-switch, all via monkeypatched RSS — no real memory
   pressure induced) + `tests/test_query_normalize.py` (LRU eviction order,
   recency-refresh-on-hit).
+- **A different failure mode with the same symptom: "Instance failed: HTTP
+  health check failed (timed out after 5 seconds)" — a slow COLD START, not
+  memory (branch `fix/lazy-tokenizer-import-coldstart`).** Hit right after the
+  three fixes above, with no org and no ingestion job even existing at the
+  time — proof it wasn't the ingestion path. `app/ingestion/chunk_tokens.py`
+  did `from transformers import AutoTokenizer` at **module import time** (the
+  tokenizer object itself was already lazy via `lru_cache`, but the *package
+  import* wasn't). This module is imported transitively by `app/api/main.py`'s
+  routers (`admin` → `jobs.worker` → `ingestion.pipeline` →
+  `chunk_tokens`) on every process boot, so importing `transformers` (its own
+  import graph: tokenizers, huggingface_hub, safetensors, numpy, …) ran
+  synchronously *before uvicorn could bind the port* — measured live at **~7.3s**
+  on a warm-ish machine, worse on Render's throttled 0.1 vCPU free instance —
+  so `/health` couldn't be reached at all during that window, tripping
+  Render's 5s liveness timeout on every cold start/restart regardless of
+  whether an ingest job was running. Same class of bug as the local
+  embedding/reranker lazy-import discipline (§4's `transformers` gotcha talks
+  about image *size*, not *import latency* — this is the latency half of that
+  same story). Fixed by moving the `from transformers import AutoTokenizer`
+  import inside `_tokenizer()` itself, so the cost is paid on the first actual
+  `count_tokens`/`truncate_to_tokens` call (i.e. during a real ingest), not at
+  boot. Measured: `import app.api.main` **7.3s → 0.6s**, and `transformers` is
+  no longer in `sys.modules` after import. No behavior change — chunking still
+  works identically, just on first use instead of at boot.
 
 - **Not every schema.sql addition has the ALTER-ordering hazard.**
   `org_signup_requests` (signup-approval queue, §2/§5) is a plain

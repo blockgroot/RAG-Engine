@@ -8,12 +8,24 @@ as ``BAAI/bge-m3`` (lazy-loaded once per process).
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import TYPE_CHECKING
 
-from transformers import AutoTokenizer
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerBase
 
 
 @lru_cache(maxsize=1)
-def _tokenizer() -> AutoTokenizer:
+def _tokenizer() -> "PreTrainedTokenizerBase":
+    # Imported lazily, not at module scope: `transformers`' own import graph
+    # (tokenizers, huggingface_hub, safetensors, numpy, ...) costs several
+    # seconds even with the tokenizer pre-baked into the image (see CLAUDE.md).
+    # This module is imported transitively by app/api/main.py's routers on
+    # every process boot, so a module-level import paid that cost before
+    # uvicorn could bind the port -- blocking /health on Render's throttled
+    # free-tier CPU during every cold start/restart, independent of whether
+    # an ingest job is even running.
+    from transformers import AutoTokenizer
+
     return AutoTokenizer.from_pretrained("BAAI/bge-m3")
 
 
