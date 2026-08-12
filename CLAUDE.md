@@ -950,6 +950,40 @@ render.yaml                  # Render Blueprint: web service + Postgres, secrets
   documents are unaffected (a typical page is well under 200 chunks). Guarded
   at both call sites: the inline (non-deferred) path and the deferred
   `enrich_source_contextual` worker path.
+- **The embed-batching fix above was necessary but NOT sufficient — the same
+  instance OOM-crashed again on the very next Notion sync, on a freshly
+  truncated DB with a brand-new org, proving it wasn't stale state (branch:
+  `fix/notion-fetch-size-bound`).** Live-monitored this one: the job's `phase`
+  stayed at `preparing` and never advanced to `embedding` before the crash —
+  meaning it died inside `adapter.fetch_document()`/`preprocess()`/
+  `chunk_text()`, upstream of the embed call the previous fix protects.
+  Root cause: `NotionAdapter._render_block`/`_render_children_lines`
+  (`app/sources/notion.py`) recursed into every block's children with **no
+  depth limit and no size cap**, and every block with children fired its own
+  paginated Notion API call. A page with deep/wide block nesting (long
+  hierarchical lists, nested toggles) could build an unbounded string — and an
+  unbounded number of API calls — entirely inside `fetch_document()`, before
+  `sanitize_ingest_text`'s `max_document_chars` check ever ran (that check is
+  **post-fetch**: it can reject an already-oversized string, but the fetch
+  that built it, and the memory spike that came with it, already happened).
+  Same reasoning as the GitHub commit-diff cap in `app/githublive/rest.py`:
+  bound the walk itself, with a truncation marker on overflow, not just the
+  final size. Fixed by threading a shared mutable character budget (reusing
+  `IngestSanitizeSettings.max_document_chars` — one size knob, not a second
+  magic number) through `_render_children_text`/`_render_block`/
+  `_render_children_lines`; once exhausted, no further pagination calls are
+  made and a `"[... content truncated: page exceeds ingest size limit ...]"`
+  marker is appended. A block's own text (not just its children) is charged
+  against the budget too, so a single huge block with no children is also
+  caught. Tests: `tests/test_notion_fetch_size_bound.py` (wide-page
+  truncation, deep-chain API-call bound — proves the fan-out itself stops,
+  not just the string length — normal-page no-op, and a huge-single-block
+  case). **Lesson for next time**: when a fix targets one call site (`embed()`
+  here) on a hypothesis derived from `RagPipeline`-adjacent reasoning, verify
+  the crash's *exact* phase/step before declaring it fixed — `phase` staying
+  at `preparing` vs advancing to `embedding` was the one piece of evidence
+  that would have caught this immediately instead of after a second live
+  crash.
 
 - **Not every schema.sql addition has the ALTER-ordering hazard.**
   `org_signup_requests` (signup-approval queue, §2/§5) is a plain
