@@ -24,12 +24,26 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from ..config.settings import NotionSettings
+from ..config.settings import IngestSanitizeSettings, NotionSettings
 from ..core.exceptions import ConfigurationError, SourceError
 from .base import SourceAdapter, SourceDocument, SourceRef
 
 # Block types whose children should be indented one level (nested lists/toggles).
 _INDENTING = {"bulleted_list_item", "numbered_list_item", "to_do", "toggle"}
+
+# A page's block tree is rendered recursively with NO depth limit, and every
+# block with children fires its own paginated API call — a deeply/widely
+# nested page (nested toggles, a long hierarchical checklist, etc.) can build
+# an unbounded string entirely inside fetch_document(), before
+# sanitize_ingest_text's max_document_chars check ever runs (that check is
+# post-fetch, so it only rejects an already-built oversized string — too late
+# to stop the memory spike that built it). This is what OOM-crashed a 512MB
+# Render instance: the crash happened before a single document was stored,
+# with the job's phase stuck at "preparing" and never reaching "embedding" —
+# i.e. inside this fetch, not in the embedding call. Bounding the walk itself,
+# with a truncation marker on overflow, is the same reasoning already applied
+# to GitHub commit diffs in app/githublive/rest.py.
+_TRUNCATION_MARKER = "\n\n[... content truncated: page exceeds ingest size limit ...]"
 
 
 def _rich_text_to_text(rich_text: list[dict]) -> str:
@@ -174,19 +188,35 @@ class NotionAdapter(SourceAdapter):
         Each top-level block (with its nested children) becomes one paragraph
         unit separated by a blank line, so the chunker's paragraph-aware split
         has natural boundaries to work with.
+
+        ``budget`` is a one-element mutable list (a shared counter threaded
+        through the recursion) rather than a return value, because both
+        ``_render_block`` and ``_render_children_lines`` recurse into each
+        other and each needs to both read and decrement the SAME remaining
+        budget — a plain int argument would only ever see the caller's copy.
+        Once it hits zero, no further pagination calls are made and no more
+        text is appended, regardless of how much more the page actually has.
         """
         from notion_client.helpers import iterate_paginated_api
 
+        budget = [IngestSanitizeSettings.from_env().max_document_chars]
         parts: list[str] = []
         for block in iterate_paginated_api(
             self._client.blocks.children.list, block_id=block_id
         ):
-            lines = self._render_block(block, depth=0)
+            if budget[0] <= 0:
+                break
+            lines = self._render_block(block, depth=0, budget=budget)
             if lines:
                 parts.append("\n".join(lines))
-        return "\n\n".join(parts)
+        text = "\n\n".join(parts)
+        if budget[0] <= 0:
+            text += _TRUNCATION_MARKER
+        return text
 
-    def _render_block(self, block: dict, depth: int) -> list[str]:
+    def _render_block(self, block: dict, depth: int, budget: list[int]) -> list[str]:
+        if budget[0] <= 0:
+            return []
         btype = block.get("type", "")
         data = block.get(btype, {}) or {}
         indent = "  " * depth
@@ -222,19 +252,29 @@ class NotionAdapter(SourceAdapter):
             if text:
                 lines.append(indent + text)
 
-        # Recurse into nested content (table rows, sub-bullets, toggle bodies).
-        if block.get("has_children") and btype != "child_page":
+        # Charge this block's own text against the budget before deciding
+        # whether to recurse — a block with a huge amount of its own text but
+        # no children must still stop things, not just the recursion depth.
+        budget[0] -= sum(len(line) for line in lines)
+
+        # Recurse into nested content (table rows, sub-bullets, toggle bodies)
+        # only while budget remains — this is what actually stops an
+        # unbounded fan-out of paginated API calls on a deeply/widely nested
+        # page, not just capping the final string length.
+        if block.get("has_children") and btype != "child_page" and budget[0] > 0:
             child_depth = depth + 1 if btype in _INDENTING else depth
-            lines.extend(self._render_children_lines(block["id"], child_depth))
+            lines.extend(self._render_children_lines(block["id"], child_depth, budget))
 
         return lines
 
-    def _render_children_lines(self, block_id: str, depth: int) -> list[str]:
+    def _render_children_lines(self, block_id: str, depth: int, budget: list[int]) -> list[str]:
         from notion_client.helpers import iterate_paginated_api
 
         lines: list[str] = []
         for block in iterate_paginated_api(
             self._client.blocks.children.list, block_id=block_id
         ):
-            lines.extend(self._render_block(block, depth))
+            if budget[0] <= 0:
+                break
+            lines.extend(self._render_block(block, depth, budget))
         return lines
