@@ -98,8 +98,12 @@ services:
       # -- Email (magic-link login) --
       # Dashboard-owned, not pinned in this file. A `value: console` here would
       # reset production back to log-only mail on every Blueprint sync.
-      # Free Render blocks outbound SMTP (25/465/587). Use EMAIL_SENDER=resend
-      # + EMAIL_RESEND_API_KEY, not smtp/gmail. console only prints to logs.
+      # Free Render blocks outbound SMTP (25/465/587) — smtp/gmail won't work.
+      # Resend's sandbox sender only delivers to the Resend account's own
+      # inbox until a domain is verified (every other recipient gets a 403).
+      # Prefer EMAIL_SENDER=sendgrid + EMAIL_SENDGRID_API_KEY instead: SendGrid's
+      # free Single Sender Verification (no DNS/domain needed) can deliver to
+      # any recipient, so magic links actually reach real admins/employees.
       - key: EMAIL_SENDER
         sync: false
       - key: EMAIL_SMTP_HOST
@@ -113,6 +117,8 @@ services:
       - key: EMAIL_SMTP_FROM
         sync: false
       - key: EMAIL_RESEND_API_KEY
+        sync: false
+      - key: EMAIL_SENDGRID_API_KEY
         sync: false
       - key: OWNER_NOTIFICATION_EMAIL
         sync: false

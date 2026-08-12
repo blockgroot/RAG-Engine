@@ -3609,7 +3609,7 @@ table .role-chip.role-admin,
   box-shadow: var(--shadow-soft);
   animation: lp-sat-glow var(--system-duration) var(--system-ease) infinite;
 }
-.lp-sat-gmail {
+.lp-sat-sendgrid {
   width: 3.15rem;
   height: 3.15rem;
   margin: -1.575rem;

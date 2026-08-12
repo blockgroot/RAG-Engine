@@ -9,7 +9,7 @@ const SOURCES: Array<{ name: BrandName; size: number }> = [
   { name: "notion", size: 24 },
   { name: "drive", size: 24 },
   { name: "github", size: 24 },
-  { name: "gmail", size: 30 },
+  { name: "sendgrid", size: 30 },
 ];
 
 /**
@@ -22,7 +22,7 @@ export function LandingProductArt() {
         {SOURCES.map((item, i) => (
           <span
             key={item.name}
-            className={`lp-sat${item.name === "gmail" ? " lp-sat-gmail" : ""}`}
+            className={`lp-sat${item.name === "sendgrid" ? " lp-sat-sendgrid" : ""}`}
             style={{ ["--sat-i" as string]: String(i) }}
           >
             <span className="lp-sat-face">

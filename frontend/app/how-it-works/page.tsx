@@ -131,7 +131,7 @@ export default function HowItWorksPage() {
             </p>
           </article>
           <article>
-            <BrandGlyph name="gmail" size={28} />
+            <BrandGlyph name="sendgrid" size={28} />
             <h3>Invite-only access</h3>
             <p>
               Members sign in with a magic link. Admins invite people by email,
@@ -226,7 +226,7 @@ export default function HowItWorksPage() {
               <em>GitHub</em>
             </span>
             <span className="how-constellation-node how-node-d" style={{ ["--d" as string]: "0.45s" }}>
-              <BrandGlyph name="gmail" size={22} />
+              <BrandGlyph name="sendgrid" size={22} />
               <em>Magic link</em>
             </span>
             <span className="how-constellation-node how-node-e" style={{ ["--d" as string]: "0.6s" }}>
