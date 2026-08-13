@@ -112,3 +112,33 @@ class QueryAnswerCache:
                 """,
                 (org_id, qhash, normalized, json.dumps(payload), expires),
             )
+
+
+def prune_expired(limit: int = 10_000) -> int:
+    """Delete already-expired cache rows. Returns how many went.
+
+    ``get`` filters on ``expires_at > now()``, so an expired row is invisible —
+    but nothing ever *removed* it, and the table only grew: one row per distinct
+    question per org, forever, on a deployment whose Postgres has a 500MB
+    ceiling. (There was even an index on ``expires_at`` with no reader.) Same
+    slow-leak shape as the per-org SymSpell dictionaries, which were bounded for
+    exactly this reason.
+
+    ``limit`` caps one sweep so a long-neglected table cannot turn a routine
+    maintenance tick into a multi-second DELETE holding locks; the next tick
+    picks up where this one stopped.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            DELETE FROM query_answer_cache
+            WHERE ctid IN (
+                SELECT ctid FROM query_answer_cache
+                WHERE expires_at <= now()
+                LIMIT %s
+            )
+            RETURNING 1
+            """,
+            (limit,),
+        ).fetchall()
+    return len(rows)

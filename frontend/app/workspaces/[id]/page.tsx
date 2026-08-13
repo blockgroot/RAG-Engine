@@ -259,6 +259,27 @@ function WorkspaceDetailPageInner() {
       return;
     }
 
+    // GitHub finished on GitHub's side but its redirect could not complete the
+    // link (an install/setup redirect carries no authorization code, and `state`
+    // is not guaranteed to survive it). Not a conflict and not an error the user
+    // caused — the App is installed now, so one more Connect click finishes it
+    // against the existing installation.
+    if (connectError === "github_finish_connect") {
+      setError(null);
+      setConnectNotice({
+        title: "Almost there — finish connecting GitHub",
+        why:
+          "GitHub sent you back without the details needed to link the account. " +
+          "The app is installed on your GitHub, so connecting once more completes it.",
+        options: [
+          "Click “Connect personal GitHub” below one more time.",
+          "You should not have to install anything again — GitHub will remember.",
+        ],
+      });
+      router.replace(`/workspaces/${workspaceId}`, { scroll: false });
+      return;
+    }
+
     const connected = searchParams.get("connected");
     if (!connected) return;
     const label =

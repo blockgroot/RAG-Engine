@@ -89,6 +89,13 @@ function ConnectionsPageInner() {
       setError(
         "That GitHub account is already linked to a space. Company Sources and each space must use different GitHub accounts — pick another on the chooser, or disconnect it from the space first."
       );
+    } else if (connectError === "github_finish_connect") {
+      // GitHub's install/setup redirect carries no authorization code (and no
+      // guaranteed state), so it cannot complete the link on its own. The app is
+      // installed by this point, so one more Connect click finishes it.
+      setError(
+        "Almost there — GitHub sent you back without the details needed to link the account. The app is installed on your GitHub, so click Connect company GitHub once more to finish. You should not need to install anything again."
+      );
     } else {
       setError("Could not finish connecting GitHub. Try again.");
     }

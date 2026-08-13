@@ -1,14 +1,47 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { useMe } from "@/lib/useMe";
 import { api, WorkspaceRecord } from "@/lib/api";
 
 export default function WorkspacesPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="page">
+          <p className="muted">Loading…</p>
+        </main>
+      }
+    >
+      <WorkspacesPageInner />
+    </Suspense>
+  );
+}
+
+function WorkspacesPageInner() {
   const { me, loading } = useMe({ enforceSetupFlow: false });
+  const searchParams = useSearchParams();
+  /*
+   * A GitHub connect whose redirect could not be completed lands HERE when the
+   * OAuth `state` was lost, because at that point the backend cannot tell which
+   * space (or the org) started it — and /admin/connections would bounce a
+   * non-admin space owner. Without this banner the user would arrive at a normal
+   * Spaces list with no idea why, which is the dead end being fixed.
+   */
+  const [notice, setNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (searchParams.get("connect_error") === "github_finish_connect") {
+      setNotice(
+        "Almost there — GitHub sent you back without the details needed to link the account. " +
+          "Open the space (or Company → Sources) and click Connect once more; the app is already " +
+          "installed on your GitHub, so you should not need to install anything again."
+      );
+    }
+  }, [searchParams]);
   const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>([]);
   const [loadingList, setLoadingList] = useState(true);
   const [name, setName] = useState("");
@@ -81,6 +114,8 @@ export default function WorkspacesPage() {
             </>
           }
         />
+
+        {notice && <div className="banner banner-warn">{notice}</div>}
 
         <div className="spaces-layout">
           <section className="studio-panel create-space-panel" aria-labelledby="new-space-title">

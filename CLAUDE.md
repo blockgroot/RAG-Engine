@@ -1193,6 +1193,122 @@ render.yaml                  # Render Blueprint: web service + Postgres, secrets
   job instead of an outage. When root-causing under pressure, ship the blast-
   radius fix alongside the causal one.
 
+- **★ Audit pass: five defects found by hunting for the CLASSES above rather
+  than reading code linearly.** Each was verified before being fixed, and the
+  fixes are deliberately small. Recording them together because the *method* is
+  the reusable part — look for a wrong gauge, an unbounded input, a value
+  rendered before it is known, hidden I/O in a local-looking call.
+  1. **The per-IP rate limit was ONE GLOBAL BUCKET** (`app/security/client_ip.py`,
+     new). `app/api/auth.py` keyed the magic-link limiter on
+     `request.client.host` — the socket peer, which behind the Vercel→Render
+     chain is a proxy, *identical for every user*. uvicorn does not rescue this:
+     `proxy_headers` defaults on but `forwarded_allow_ips` resolves to
+     `127.0.0.1` (verified against the installed 0.51.0), so `X-Forwarded-For` is
+     ignored unless the peer is localhost — behind Render it never is, and no
+     middleware in the app reads it either. Consequences: the enumeration bound
+     documented in §2 **did not exist**, and worse, one script burning 60
+     req/min returned **429 to everybody's login**. `resolve_client_ip` prefers
+     a pinned `CLIENT_IP_HEADER`, then `x-vercel-forwarded-for` / `x-real-ip`
+     (edge-written, so not caller-controllable), then the leftmost
+     `X-Forwarded-For` entry — **last, because it is caller-supplied and taking
+     it first would let a client mint a fresh bucket per request and bypass the
+     limiter outright** — then the peer. An unidentifiable caller shares one
+     throttled bucket (fail *closed*, the opposite of the memory gate, which
+     must fail open). `CLIENT_IP_HEADER=x-vercel-forwarded-for` is set in
+     `render.yaml`. Tests: `tests/test_client_ip.py`.
+  2. **Two tables only ever grew.** `api_rate_counters` (one row per scope per
+     closed window; a single user chatting a year ≈ 525k rows) and
+     `query_answer_cache` (expired rows are invisible to `get` but were never
+     deleted — there was even an index on `expires_at` with no reader). Now
+     `rate_limit.prune_old_windows` + `query_cache.prune_expired`, both bounded
+     per sweep (a neglected table must not turn a maintenance tick into a
+     long lock-holding DELETE) and run from the worker's existing periodic tick
+     via `worker.run_maintenance` — no cron, so the single self-hosted image
+     still needs no scheduler. The prune keeps one extra window so a sweep on a
+     boundary cannot delete the window a live request is incrementing. Same
+     slow-leak class as the SymSpell LRU, which *was* bounded — this was an
+     inconsistency, not an unknown. (Measured incidentally: the first live
+     sweep deleted 81 stale counter rows.)
+  3. **The Drive folder walk was depth-bounded but breadth-unbounded.**
+     `_MAX_WALK_DEPTH` capped depth and a visited-set caught cycles, but nothing
+     capped how many folders were visited — and every folder costs its own
+     `files.list` call, so a wide tree issued an unbounded number of sequential
+     Google requests inside one HTTP request. This same walk runs on the Sources
+     change-check, so it is a real part of "Checking… hangs". Now
+     `GOOGLE_MAX_WALK_FOLDERS` (500) / `GOOGLE_MAX_DOCUMENTS` (2000) on
+     `GoogleSettings`, with truncation **logged as a WARNING** — the marker
+     matters more than the cut, exactly as with the GitHub diff cap, because a
+     sync that quietly indexed half a folder looks like a complete one. Identical
+     lesson to the Notion fetch bound; Drive simply never got it.
+  4. **`reap_stuck` measured age, not silence — the wrong gauge again.** It
+     failed any `running` job whose `started_at` was older than 30 minutes, so a
+     healthy-but-slow ingest (big folder, or contextualization against the 15-rpm
+     endpoint) was marked `failed` *while it kept working*. The liveness evidence
+     already existed — `update_progress` writes phase and counters per document —
+     it just had no timestamp the reaper could read. Added
+     `ingestion_jobs.progress_at`, stamped on **every** progress write (including
+     a counter-only one, or a job in one long phase looks silent), and the reap
+     predicate is now `coalesce(progress_at, started_at)` — the `coalesce` keeps a
+     job that died before its first report reapable exactly as before. Verified
+     against real Postgres: a 2-hour-old job that reported 1 minute ago stays
+     `running`; silent-for-90-minutes and never-reported both fail. Same mistake
+     shape as `ru_maxrss`: the number was real, it just wasn't the number that
+     answers the question.
+  5. **No length bound on user-supplied strings** (`app/api/validation.py`, new).
+     `company_name`, workspace `name`, `folder_url`, and emails are all `TEXT`
+     with no check, so a signup could store a multi-megabyte company name that
+     then renders into the owner's notification email and the approve/reject
+     page. `MAX_QUESTION_CHARS` set this precedent for the one field where
+     oversize caused a hard failure; these are the fields that were simply never
+     checked. `bounded()` **rejects rather than truncates** — a silently
+     shortened name makes the response disagree with the request, and a truncated
+     URL is just a broken URL. **Not an injection fix:** both render paths already
+     `html.escape`, and Python's `EmailMessage` was verified to *refuse* a newline
+     in a header, so SMTP header injection via company name was never possible.
+  Also checked and found correct, worth not re-investigating: HTML escaping on
+  the signup pages/emails; `delete_connection` and `delete_all_source_documents`
+  both scoped with `IS NOT DISTINCT FROM` (a workspace disconnect cannot wipe
+  org-wide docs); the rate-limit upsert's atomicity; no `get_connection` inside
+  any loop; `useMe`'s `refresh()` correctly forcing past the session cache; and
+  `policiesReady = readyToAsk !== false`, which already handles unknown
+  correctly.
+- **★ The GitHub connect callback 422'd on GitHub's OWN install redirect, which
+  is why a connect could strand the user on github.com.** Reported live: create a
+  space → Connect GitHub → GitHub's login page (signed in with Google) → ended up
+  inside GitHub and never came back; reopening Handbook manually later showed the
+  connection had in fact been created. Part of the cause is GitHub-side (a login
+  interstitial can drop `return_to`), but the code made it *unrecoverable*:
+  `callback(provider, code: str, state: str, ...)` declared both **required**, and
+  GitHub reaches that route in two shapes — the OAuth redirect (`code` + `state`)
+  and the App **install/setup** redirect, which carries `installation_id` +
+  `setup_action` and per GitHub's docs promises neither of the others. Proven:
+  `/auth/github/callback?installation_id=1&setup_action=install` returned a raw
+  **422** validation blob. This is risk **T3** finally biting. Both are now
+  optional and handled explicitly:
+  * **no `code`** → nothing to exchange, but the App *is* installed by then, and
+    the flow starts with user OAuth precisely so a second Connect click completes
+    against an existing installation. Redirect to
+    `?connect_error=github_finish_connect` with copy that says exactly that.
+  * **`code` but no `state`** → refuse. The code may be real, but with no state
+    there is no trustworthy way to know *which* org/workspace asked, and binding
+    an installation to a guessed tenant is a cross-tenant mistake, not a UX
+    shortcut. Recover the user; a retry mints a fresh state.
+  * **non-GitHub providers** get a clean 400, never the GitHub banner — Notion and
+    Google have no second redirect shape, so an incomplete callback there is
+    genuinely malformed and papering over it would hide a real bug.
+  `peek_state_workspace` (`app/auth/oauth_state.py`) picks the page to land on
+  without consuming or validating the state; it is deliberately **navigation
+  only** — never consumes, reads expired/consumed rows on purpose, and returns
+  *only* a `workspace_id`, never an `org_id`, so no caller can accidentally scope
+  a write with it. A state-less recovery lands on `/workspaces`, **not**
+  `/admin/connections`, because the latter is admin-only and would bounce a
+  non-admin space owner into a second dead end. Tests:
+  `tests/test_api_github_connect.py`. **Still required and NOT fixable in code:**
+  the GitHub App must have *Request user authorization (OAuth) during
+  installation* enabled (or a Setup URL registered), or GitHub has nowhere to send
+  the user after Install — that remains App configuration, and the T3 note above
+  still needs confirming against a real App.
+
 - **Not every schema.sql addition has the ALTER-ordering hazard.**
   `org_signup_requests` (signup-approval queue, §2/§5) is a plain
   `CREATE TABLE IF NOT EXISTS` with no `ALTER TABLE ... ADD COLUMN` on an
@@ -1733,7 +1849,7 @@ Defined in `app/db/schema.sql`. Current tables:
 | `conversation_last_retrieval` | (Phase 8) The chunks retrieved on a conversation's most recent turn, for the pre-retrieval reuse check. One upserted row per conversation: `conversation_id` (PK), `org_id`, `chunks` (TEXT holding a JSON array of `{content, document_id, chunk_index, org_id}` — no embeddings), `updated_at`. |
 | `users` | (Phase 10) An application user. `id`, `email` (UNIQUE), `org_id` (nullable — but never issued a session while null), `role` (`admin`\|`member`), `created_at`. Phase 21: `sessions_revoked_at` — sessions with JWT `iat` ≤ this timestamp are rejected. |
 | `oauth_connections` | (Phase 10) One org's OAuth credential for one provider. `id`, `org_id`, `provider`, `external_workspace_id`, `external_workspace_name`, `access_token_encrypted`, `refresh_token_encrypted`, `expires_at`, `connected_by_user_id`, `created_at`. `UNIQUE (org_id, provider)` — one row per org per provider, so a lookup can never be cross-tenant-ambiguous. Tokens are encrypted via `app/security/crypto.py`; this table never stores plaintext. Google Integration: optional **`source_config` JSONB** (e.g. `{folder_id, folder_name}`) — preserved on reconnect (upsert does not clobber it). |
-| `ingestion_jobs` | (Phase 10/12) A durable, pollable record of an admin-triggered fetch→chunk→embed→store run. `id`, `org_id`, `connection_id`, `status` (`queued`\|`running`\|`succeeded`\|`failed`), `doc_count`, `error`, `started_at`, `finished_at`, `created_at`. Consumed by a Postgres-backed worker (`SELECT ... FOR UPDATE SKIP LOCKED`), not an in-process background task. Live progress: `phase` (`listing`\|`indexing`), `total_documents`, `processed_documents` — written *during* the run, unlike `doc_count` which is the terminal figure; they are what let a poller distinguish a working sync from a hung one (see §4). Added via `ALTER TABLE ... ADD COLUMN` placed **after** this table's own `CREATE TABLE`, same ordering rule as `workspace_id`. |
+| `ingestion_jobs` | (Phase 10/12) A durable, pollable record of an admin-triggered fetch→chunk→embed→store run. `id`, `org_id`, `connection_id`, `status` (`queued`\|`running`\|`succeeded`\|`failed`), `doc_count`, `error`, `started_at`, `finished_at`, `created_at`. Consumed by a Postgres-backed worker (`SELECT ... FOR UPDATE SKIP LOCKED`), not an in-process background task. Live progress: `phase` (`listing`\|`indexing`), `total_documents`, `processed_documents` — written *during* the run, unlike `doc_count` which is the terminal figure; they are what let a poller distinguish a working sync from a hung one (see §4). `progress_at` is the liveness **heartbeat**, stamped on every progress write: `reap_stuck` keys off `coalesce(progress_at, started_at)` so it fails a job that has gone *silent* rather than one that is merely long-running (see §4). Added via `ALTER TABLE ... ADD COLUMN` placed **after** this table's own `CREATE TABLE`, same ordering rule as `workspace_id`. |
 | `magic_link_tokens` | (Phase 13) Single-use employee login tokens. `token_hash` (PK — only a SHA-256 hash is ever stored, never the token), `email`, `expires_at`, `consumed_at`, `created_at`. |
 | `oauth_states` | (Phase 13) Single-use, server-side OAuth `state` values for CSRF/replay protection on the admin connect flow. `state` (PK), `org_id`, `provider`, `expires_at`, `consumed_at`, `created_at`. |
 | `query_answer_cache` | (Phase 19) Short-TTL cache of standalone Q→A results keyed by `(org_id, normalized_question_hash)`. Workspace-within-a-Workspace: the hash input folds in `workspace_id` (no new column) so an org-wide and a workspace's cache entry for the same question text never collide. |

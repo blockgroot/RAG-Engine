@@ -43,12 +43,16 @@ adapter to a live, refreshed connection token is Phase 6's job
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 import httpx
 
+from ..config.settings import GoogleSettings
 from ..core.exceptions import ConfigurationError, SourceError
 from .base import SourceAdapter, SourceDocument, SourceRef
+
+logger = logging.getLogger(__name__)
 
 _API_BASE = "https://www.googleapis.com/drive/v3"
 _FOLDER_MIME = "application/vnd.google-apps.folder"
@@ -79,7 +83,14 @@ def _doc_uri(file_id: str) -> str:
 class GoogleDriveAdapter(SourceAdapter):
     """Fetches native Google Docs living under one Drive folder (recursively)."""
 
-    def __init__(self, token: str, folder_id: str, *, timeout: float = 15.0) -> None:
+    def __init__(
+        self,
+        token: str,
+        folder_id: str,
+        *,
+        timeout: float = 15.0,
+        settings: GoogleSettings | None = None,
+    ) -> None:
         """Build an adapter authenticated with an already-resolved access token.
 
         ``token`` and ``folder_id`` are both plain strings the caller already
@@ -99,6 +110,9 @@ class GoogleDriveAdapter(SourceAdapter):
         self._token = token
         self._folder_id = folder_id
         self._timeout = timeout
+        limits = settings or GoogleSettings.from_env()
+        self._max_walk_folders = max(1, limits.max_walk_folders)
+        self._max_documents = max(1, limits.max_documents)
 
     # -- interface ---------------------------------------------------------
 
@@ -186,12 +200,29 @@ class GoogleDriveAdapter(SourceAdapter):
         needed), recurse into subfolders, and keep native Docs. A visited-set
         guards against a cycle (a subfolder pointing back at an ancestor), and
         ``_MAX_WALK_DEPTH`` bounds pathological/very-deep trees.
+
+        Depth was NOT enough on its own. Every folder costs its own
+        ``files.list`` call (plus pagination), so a *wide* tree issued an
+        unbounded number of sequential Google requests inside one HTTP request —
+        and this same walk runs on the Sources page's change-check, which is a
+        large part of why "Checking…" could sit there for a very long time.
+        ``max_walk_folders`` / ``max_documents`` bound breadth and output the way
+        the Notion fetch budget bounds that adapter's recursion. Hitting either
+        is **logged as a warning**, never silent: a sync that quietly indexed
+        part of a folder looks exactly like one that indexed all of it.
         """
         docs: list[dict] = []
         visited: set[str] = set()
         queue: list[tuple[str, int]] = [(root_folder_id, 0)]
+        truncated: str | None = None
 
         while queue:
+            if len(visited) >= self._max_walk_folders:
+                truncated = (
+                    f"folder limit reached ({self._max_walk_folders}); "
+                    f"{len(queue)} subfolder(s) not visited"
+                )
+                break
             folder_id, depth = queue.pop(0)
             if folder_id in visited:
                 continue
@@ -211,11 +242,25 @@ class GoogleDriveAdapter(SourceAdapter):
                         docs.append(file)
                     # else: PDFs/Sheets/Slides/shortcuts/other files — out of
                     # scope this phase, silently skipped.
+                if len(docs) >= self._max_documents:
+                    truncated = f"document limit reached ({self._max_documents})"
+                    break
                 page_token = data.get("nextPageToken")
                 if not page_token:
                     break
+            if truncated:
+                break
 
-        return docs
+        if truncated:
+            logger.warning(
+                "Google Drive walk of folder %s was truncated: %s. Raise "
+                "GOOGLE_MAX_WALK_FOLDERS / GOOGLE_MAX_DOCUMENTS, or point the "
+                "connection at a narrower folder.",
+                root_folder_id,
+                truncated,
+            )
+
+        return docs[: self._max_documents]
 
     def _export_markdown(self, file_id: str) -> str:
         try:

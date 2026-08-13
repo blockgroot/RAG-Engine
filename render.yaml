@@ -242,3 +242,11 @@ services:
       # the API stays up.
       - key: INGEST_MAX_JOB_ATTEMPTS
         value: "3"
+      # Which header carries the real client IP. The magic-link limiter is keyed
+      # per client, and the socket peer here is Render's own router (fronted by
+      # the Vercel /api rewrite) — the SAME address for every user, which
+      # collapsed the per-IP budget into one global bucket: one script consuming
+      # it 429'd everybody's login. Vercel writes x-vercel-forwarded-for itself,
+      # so unlike X-Forwarded-For a caller cannot dictate it.
+      - key: CLIENT_IP_HEADER
+        value: x-vercel-forwarded-for

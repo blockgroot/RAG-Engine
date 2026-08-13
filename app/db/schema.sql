@@ -381,6 +381,19 @@ ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS processed_documents INT NOT 
 -- ALTER-after-CREATE ordering rule as the columns above.
 ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAULT 0;
 
+-- Liveness heartbeat, written on every progress report.
+--
+-- `reap_stuck()` used to decide a job was dead from `started_at` alone, i.e.
+-- from how long it had been running rather than from whether it was still doing
+-- anything. So a healthy-but-slow ingest (a large folder, or contextualization
+-- against a 15-rpm endpoint) was marked `failed` at the timeout while it carried
+-- on working, and the UI reported a failure for a run that was fine. The
+-- evidence of liveness already existed -- `update_progress` writes phase and
+-- counters as each document lands -- it just had no timestamp for the reaper to
+-- read. Same wrong-gauge mistake as measuring memory with `ru_maxrss`: the
+-- number was real, it just wasn't the number that answers the question.
+ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS progress_at TIMESTAMPTZ;
+
 -- At most one queued/running job per connection. Without this, two parallel
 -- POST /ingest calls can both pass has_active_job() and enqueue twice — the
 -- second run often re-embeds the same pages and makes Update look "stuck".

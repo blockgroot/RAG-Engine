@@ -58,3 +58,35 @@ def consume_state(state: str, *, provider: str) -> tuple[str, str | None]:
     if not row:
         raise OAuthError("Invalid, expired, or already-used OAuth state")
     return row[0], row[1]
+
+
+def peek_state_workspace(state: str, *, provider: str) -> str | None:
+    """Workspace id recorded on ``state``, WITHOUT consuming or validating it.
+
+    Navigation only — it exists so a failed/incomplete connect can land the user
+    back on the page they started from instead of a generic one. Deliberately
+    NOT an authorization primitive:
+
+    * it never consumes the state, so it cannot be used in place of
+      ``consume_state`` to complete a flow;
+    * it reads expired and already-consumed rows on purpose, because by
+      definition it runs after something went wrong;
+    * it returns only a ``workspace_id`` — never an ``org_id`` — so no caller can
+      accidentally use its result to scope a write. Anything that binds a
+      credential must go through ``consume_state``.
+
+    Returns ``None`` for an unknown state or an org-wide flow (which are the same
+    thing as far as picking a redirect goes).
+    """
+    if not state:
+        return None
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT workspace_id::text FROM oauth_states "
+                "WHERE state = %s AND provider = %s",
+                (state, provider),
+            ).fetchone()
+    except Exception:  # noqa: BLE001 - a nicer redirect must never raise
+        return None
+    return row[0] if row else None

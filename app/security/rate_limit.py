@@ -60,3 +60,35 @@ def check_rate_limit(
             status_code=429,
             detail="Too many requests — please wait a moment and try again.",
         )
+
+
+def prune_old_windows(
+    *, settings: RateLimitSettings | None = None, limit: int = 10_000
+) -> int:
+    """Delete counters for windows that have already closed. Returns the count.
+
+    Only the CURRENT window is ever read, so every past row is dead weight — but
+    nothing deleted them, and the table grew one row per scope per window
+    forever (a single user chatting for a year is ~525k rows). Bounded per sweep
+    for the same reason as ``query_cache.prune_expired``: a neglected table must
+    not turn a maintenance tick into a long lock-holding DELETE.
+
+    Keeps one extra window of history so a sweep landing exactly on a boundary
+    cannot delete the window a concurrent request is still incrementing.
+    """
+    settings = settings or RateLimitSettings.from_env()
+    cutoff = _window_start(datetime.now(timezone.utc), settings.window_seconds)
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            DELETE FROM api_rate_counters
+            WHERE ctid IN (
+                SELECT ctid FROM api_rate_counters
+                WHERE window_start < %s - (%s || ' seconds')::interval
+                LIMIT %s
+            )
+            RETURNING 1
+            """,
+            (cutoff, settings.window_seconds, limit),
+        ).fetchall()
+    return len(rows)

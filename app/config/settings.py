@@ -501,6 +501,13 @@ DEFAULT_GOOGLE_OAUTH_SCOPES = (
     "https://www.googleapis.com/auth/drive.readonly "
     "https://www.googleapis.com/auth/documents.readonly"
 )
+# Ceilings on the Drive folder crawl (see GoogleSettings). 500 folders is far
+# more than a policy folder needs while still bounding the number of sequential
+# Google API calls a single request can issue; 2000 native Docs likewise. Both
+# are truncation points that get LOGGED, never silent — a sync that quietly
+# indexed half a folder is worse than one that says it stopped.
+DEFAULT_GOOGLE_MAX_WALK_FOLDERS = 500
+DEFAULT_GOOGLE_MAX_DOCUMENTS = 2000
 
 
 @dataclass(frozen=True)
@@ -519,6 +526,15 @@ class GoogleSettings:
     client_secret: str | None
     redirect_uri: str | None
     scopes: str = DEFAULT_GOOGLE_OAUTH_SCOPES
+    # Bounds on the recursive folder walk. Drive's `parents` field is
+    # direct-parent-only, so there is no server-side "all descendants" query and
+    # the adapter must crawl: one files.list call PER folder. Depth was already
+    # capped, but breadth was not — a wide tree meant an unbounded number of
+    # sequential Google calls inside one request, and this same walk runs on the
+    # Sources page's change-check. Same lesson as the Notion fetch bound: cap the
+    # walk itself, don't just cap what it produces.
+    max_walk_folders: int = DEFAULT_GOOGLE_MAX_WALK_FOLDERS
+    max_documents: int = DEFAULT_GOOGLE_MAX_DOCUMENTS
 
     @classmethod
     def from_env(cls) -> "GoogleSettings":
@@ -527,6 +543,12 @@ class GoogleSettings:
             client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
             redirect_uri=os.getenv("GOOGLE_REDIRECT_URI"),
             scopes=os.getenv("GOOGLE_OAUTH_SCOPES", DEFAULT_GOOGLE_OAUTH_SCOPES),
+            max_walk_folders=int(
+                os.getenv("GOOGLE_MAX_WALK_FOLDERS") or DEFAULT_GOOGLE_MAX_WALK_FOLDERS
+            ),
+            max_documents=int(
+                os.getenv("GOOGLE_MAX_DOCUMENTS") or DEFAULT_GOOGLE_MAX_DOCUMENTS
+            ),
         )
 
 

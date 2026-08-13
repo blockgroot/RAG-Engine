@@ -8,6 +8,7 @@ fast and deterministic; the queue mechanics themselves are exercised for real.
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -256,7 +257,7 @@ def test_reap_stuck_flips_old_running_jobs_to_failed(_connected_org):
 
     job = queue.get_job(org_id, job_id)
     assert job.status == "failed"
-    assert job.error == "worker timeout"
+    assert job.error.startswith("worker timeout")
 
 
 @requires_db
@@ -512,3 +513,86 @@ def test_worker_run_once_scopes_ingestion_to_job_workspace(store, org_cleanup, m
     assert result.id == job_id
     assert result.status == "succeeded"
     assert captured["workspace_id"] == workspace_id
+
+
+@requires_db
+def test_reap_measures_silence_not_age(store, org_cleanup):
+    """A healthy long ingest must not be failed just for taking a long time.
+
+    `reap_stuck` used to key off `started_at`, so a slow-but-progressing job (a
+    large folder, or contextualization against a 15-rpm endpoint) got marked
+    `failed` while it carried on working and the admin was told it had failed.
+    The liveness evidence already existed — `update_progress` writes phase and
+    counters per document — it just had no timestamp the reaper could read. Same
+    wrong-gauge mistake as measuring memory with `ru_maxrss`.
+    """
+    org_id = store.create_organization(f"Reap Gauge {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+
+    def running_job(provider: str, *, progress_minutes_ago: int | None):
+        # One connection each: a partial unique index allows only one active job
+        # per connection.
+        with get_connection() as conn:
+            connection_id = conn.execute(
+                "INSERT INTO oauth_connections (org_id, provider, "
+                "external_workspace_id, access_token_encrypted) "
+                "VALUES (%s::uuid, %s, %s, 'x') RETURNING id::text",
+                (org_id, provider, f"ws-{provider}"),
+            ).fetchone()[0]
+            job_id = conn.execute(
+                "INSERT INTO ingestion_jobs (org_id, connection_id, status, started_at) "
+                "VALUES (%s::uuid, %s::uuid, 'running', now() - interval '2 hours') "
+                "RETURNING id::text",
+                (org_id, connection_id),
+            ).fetchone()[0]
+            if progress_minutes_ago is not None:
+                conn.execute(
+                    "UPDATE ingestion_jobs SET progress_at = "
+                    "now() - (%s || ' minutes')::interval WHERE id = %s::uuid",
+                    (progress_minutes_ago, job_id),
+                )
+        return job_id
+
+    healthy = running_job("notion", progress_minutes_ago=1)
+    silent = running_job("google", progress_minutes_ago=90)
+    never_reported = running_job("github", progress_minutes_ago=None)
+
+    queue.reap_stuck(timeout_minutes=30)
+
+    with get_connection() as conn:
+        statuses = dict(
+            conn.execute(
+                "SELECT id::text, status FROM ingestion_jobs WHERE org_id = %s::uuid",
+                (org_id,),
+            ).fetchall()
+        )
+
+    assert statuses[healthy] == "running", "a job reporting progress is alive"
+    assert statuses[silent] == "failed"
+    # coalesce(progress_at, started_at) keeps a job that died before its first
+    # report reapable exactly as before.
+    assert statuses[never_reported] == "failed"
+
+
+@requires_db
+def test_update_progress_stamps_the_heartbeat(store, org_cleanup):
+    org_id = store.create_organization(f"Heartbeat {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+    with get_connection() as conn:
+        connection_id = conn.execute(
+            "INSERT INTO oauth_connections (org_id, provider, external_workspace_id, "
+            "access_token_encrypted) VALUES (%s::uuid, 'notion', 'ws', 'x') "
+            "RETURNING id::text",
+            (org_id,),
+        ).fetchone()[0]
+    job_id = queue.enqueue(org_id, connection_id)
+    queue.claim_next()
+
+    # Advancing only the counter must still stamp progress_at — otherwise a job
+    # in a long single phase looks silent to the reaper.
+    queue.update_progress(job_id, processed=3)
+    with get_connection() as conn:
+        progress_at = conn.execute(
+            "SELECT progress_at FROM ingestion_jobs WHERE id = %s::uuid", (job_id,)
+        ).fetchone()[0]
+    assert progress_at is not None

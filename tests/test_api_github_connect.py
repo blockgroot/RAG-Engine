@@ -248,3 +248,86 @@ class _RepoRef:
         self.full_name = full_name
         self.description = description
         self.topics = tuple(topics)
+
+
+# --- incomplete redirects must never dead-end -------------------------------
+#
+# Reported in production: a workspace GitHub connect sent the user to GitHub, they
+# signed in, and then stayed on github.com forever — the connect was abandoned
+# with no way back except manually reopening Handbook. Part of that is GitHub-side
+# (a login interstitial can drop the return_to), but the code made it
+# unrecoverable: `code` and `state` were REQUIRED query params, so GitHub's App
+# install/setup redirect — which carries installation_id + setup_action and, per
+# GitHub's docs, promises neither of the others — got a raw 422 validation error.
+
+
+@requires_db
+def test_an_install_redirect_without_a_code_lands_back_in_the_product(client, monkeypatch):
+    """GitHub's setup redirect has no code to exchange — recover, don't 422."""
+    monkeypatch.setenv("FRONTEND_URL", "https://app.example.com")
+    response = client.get(
+        "/auth/github/callback?installation_id=42&setup_action=install",
+        follow_redirects=False,
+    )
+    assert response.status_code in (302, 307)
+    location = response.headers["location"]
+    assert location.startswith("https://app.example.com/")
+    assert "connect_error=github_finish_connect" in location
+
+
+@requires_db
+def test_a_code_with_no_state_is_refused_rather_than_bound_to_a_guessed_tenant(
+    client, monkeypatch
+):
+    """Risk T3: state lost in the install redirect.
+
+    The code may be perfectly real, but with no state there is no trustworthy way
+    to know WHICH org or workspace asked for it. Binding a GitHub installation to
+    a guessed tenant is a cross-tenant mistake, not a convenience — so this must
+    recover the user, never persist anything.
+    """
+    monkeypatch.setenv("FRONTEND_URL", "https://app.example.com")
+    response = client.get(
+        "/auth/github/callback?code=real-looking-code&installation_id=42",
+        follow_redirects=False,
+    )
+    assert response.status_code in (302, 307)
+    assert "connect_error=github_finish_connect" in response.headers["location"]
+
+
+@requires_db
+def test_the_recovery_redirect_returns_to_the_originating_workspace(
+    client, monkeypatch, store, org_cleanup
+):
+    """With a state we know the space, so land there rather than somewhere generic."""
+    monkeypatch.setenv("FRONTEND_URL", "https://app.example.com")
+    org_id = store.create_organization(f"GH Finish {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+    admin = create_admin(f"gh-finish-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    from app.workspaces import create_workspace
+
+    workspace_id = create_workspace(org_id, "Notes", admin.id)
+    state = create_state(org_id, "github", workspace_id=workspace_id)
+
+    response = client.get(
+        f"/auth/github/callback?installation_id=42&setup_action=install&state={state}",
+        follow_redirects=False,
+    )
+    assert f"/workspaces/{workspace_id}?connect_error=github_finish_connect" in (
+        response.headers["location"]
+    )
+
+
+@requires_db
+def test_a_non_github_provider_still_rejects_an_incomplete_callback(client):
+    """The recovery path is GitHub-specific — Notion/Google have no such redirect.
+
+    Giving them the GitHub banner would paper over a genuinely malformed callback.
+    """
+    for url in (
+        "/auth/notion/callback?state=abc",  # no code
+        "/auth/notion/callback?code=abc",  # no state
+    ):
+        response = client.get(url, follow_redirects=False)
+        assert response.status_code == 400
+        assert "incomplete" in response.json()["detail"]

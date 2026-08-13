@@ -52,7 +52,7 @@ from .signup_requests import (
     get_request_by_approve_token,
     get_request_by_reject_token,
 )
-from .oauth_state import create_state, consume_state
+from .oauth_state import create_state, consume_state, peek_state_workspace
 from .session import SessionClaims, create_session_token, decode_session_token
 from .email import (
     send_magic_link_email,
@@ -110,6 +110,7 @@ __all__ = [
     "get_request_by_reject_token",
     "create_state",
     "consume_state",
+    "peek_state_workspace",
     "SessionClaims",
     "create_session_token",
     "decode_session_token",
