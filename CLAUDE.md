@@ -2338,6 +2338,20 @@ story doesn't cover). That walkthrough is also what settles risk **T3** (§4): t
 `state` round-trip through the install redirect is unverified. Everything above
 was proven offline with faked HTTP.
 
+**Cross-region latency fix applied 2026-08-13.** `render.yaml`'s
+`region: singapore` (previously written but commented out — see the
+"REGION" header comment) is now live, matching the live deployment's
+confirmed Supabase region (`ap-south-1`, Mumbai). This does **not** apply to
+an already-running Render service — region is fixed at creation — so this
+only takes effect once someone deploys a **new** Blueprint service from
+this file (point it at the same `DATABASE_URL`, update Vercel's
+`API_PROXY_TARGET` to the new URL, then delete the old Oregon service).
+Until that redeploy happens, the old service is still paying the ~250ms/query
+cross-Pacific tax this was meant to remove. Cold starts on the `free` plan
+are unaffected by this — user confirmed staying on `free` for now, so the
+~30-90s cold-start-on-click after 15 min idle remains a known, accepted
+limitation (only `starter` removes it).
+
 **Backend deployment (Docker + Render Blueprint).** Adds a `Dockerfile` +
 `requirements-deploy.txt` + `scripts/docker-entrypoint.sh` + `render.yaml` —
 no app code changed. One process serves the API and drains the ingestion
