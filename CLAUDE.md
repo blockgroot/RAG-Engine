@@ -1792,6 +1792,27 @@ render.yaml                  # Render Blueprint: web service + Postgres, secrets
   anything. Tests: existing `test_incremental_sync.py` full-wipe cases (1
   stored doc → 0) needed the absolute floor to keep passing — a fraction-only
   guard would have wrongly blocked those.
+- **A fresh connection's very first sync can show "0 policy documents" even
+  though the pages are correctly shared — fixed with a scoped retry.**
+  Reported live: onboarding through Connect → Bring in policies quickly (a
+  few seconds between the OAuth grant completing and the first sync
+  running) ingested only an index/parent page ("Syvora Policies," 0 usable
+  text) while its 11 real child pages — genuinely already shared with the
+  integration — never appeared in that `list_documents()` call at all.
+  Re-running the identical listing moments later found all 11: the sharing
+  was never wrong, Notion's search index just hadn't caught up yet with a
+  permission grant that was seconds old. `_list_documents_with_first_sync_retry`
+  (`app/ingestion/pipeline.py`) retries the listing once, after a 5s delay,
+  but ONLY when `not stored` (a genuine first sync, nothing ingested yet)
+  AND the first attempt returned `<= _FIRST_SYNC_SUSPICIOUS_PAGE_COUNT` (1)
+  pages — a real first sync of substantial content essentially never looks
+  like that, so the retry never fires on normal syncs and never slows down
+  a re-sync (which already has a stored baseline to fall back on if one
+  listing is off). Shared by both `detect_source_changes` (Check) and
+  `ingest_source` (the real ingest) so Check's preview and the actual sync
+  behave consistently. Keeps whichever of the two attempts returned more
+  pages, never fewer — a second listing coming back even smaller would be
+  its own transient blip, not evidence the first one was wrong.
 - **Known, deliberately unfixed: `list_chunk_texts` ignores `workspace_id`.** A
   workspace question builds its spelling dictionary from the whole *org's* chunk
   text. This is not a content leak — only vocabulary is derived and no chunk is
