@@ -17,43 +17,62 @@ def content_setup_status(org_id: str, workspace_id: str | None = None) -> dict:
     a concrete id is that sub-workspace only — never blended with org-wide or
     sibling workspaces.
     """
+    # ONE round trip, not five.
+    #
+    # These were five separate `conn.execute` calls. That is five sequential
+    # network round trips to Postgres for a signal every single page load needs
+    # — and it is paid on top of however far the database actually is. On the
+    # live deployment the API runs in US-West while Supabase is in ap-south-1
+    # (Mumbai), so each round trip costs ~250ms across the Pacific: ~1.2s of
+    # pure latency per /me, before any real work. Folding them into scalar
+    # subqueries on one statement makes it one round trip. The predicates are
+    # byte-for-byte the same (including `IS NOT DISTINCT FROM`, which is what
+    # makes NULL match the org-wide row set), so the result is identical — this
+    # is purely fewer trips, not different logic.
     with get_connection() as conn:
-        has_connection = conn.execute(
-            "SELECT EXISTS ("
-            "  SELECT 1 FROM oauth_connections "
-            "  WHERE org_id = %s AND workspace_id IS NOT DISTINCT FROM %s"
-            ")",
-            (org_id, workspace_id),
-        ).fetchone()[0]
-        has_documents = conn.execute(
-            "SELECT EXISTS ("
-            "  SELECT 1 FROM documents "
-            "  WHERE org_id = %s AND workspace_id IS NOT DISTINCT FROM %s"
-            ")",
-            (org_id, workspace_id),
-        ).fetchone()[0]
-        sync_in_progress = conn.execute(
-            "SELECT EXISTS ("
-            "  SELECT 1 FROM ingestion_jobs "
-            "  WHERE org_id = %s AND workspace_id IS NOT DISTINCT FROM %s "
-            "    AND status IN ('queued', 'running')"
-            ")",
-            (org_id, workspace_id),
-        ).fetchone()[0]
-        has_succeeded_sync = conn.execute(
-            "SELECT EXISTS ("
-            "  SELECT 1 FROM ingestion_jobs "
-            "  WHERE org_id = %s AND workspace_id IS NOT DISTINCT FROM %s "
-            "    AND status = 'succeeded'"
-            ")",
-            (org_id, workspace_id),
-        ).fetchone()[0]
-        latest_job = conn.execute(
-            "SELECT status, doc_count FROM ingestion_jobs "
-            "WHERE org_id = %s AND workspace_id IS NOT DISTINCT FROM %s "
-            "ORDER BY created_at DESC LIMIT 1",
-            (org_id, workspace_id),
+        row = conn.execute(
+            """
+            SELECT
+              EXISTS (
+                SELECT 1 FROM oauth_connections
+                WHERE org_id = %(org)s
+                  AND workspace_id IS NOT DISTINCT FROM %(ws)s
+              ) AS has_connection,
+              EXISTS (
+                SELECT 1 FROM documents
+                WHERE org_id = %(org)s
+                  AND workspace_id IS NOT DISTINCT FROM %(ws)s
+              ) AS has_documents,
+              EXISTS (
+                SELECT 1 FROM ingestion_jobs
+                WHERE org_id = %(org)s
+                  AND workspace_id IS NOT DISTINCT FROM %(ws)s
+                  AND status IN ('queued', 'running')
+              ) AS sync_in_progress,
+              EXISTS (
+                SELECT 1 FROM ingestion_jobs
+                WHERE org_id = %(org)s
+                  AND workspace_id IS NOT DISTINCT FROM %(ws)s
+                  AND status = 'succeeded'
+              ) AS has_succeeded_sync,
+              (
+                SELECT status FROM ingestion_jobs
+                WHERE org_id = %(org)s
+                  AND workspace_id IS NOT DISTINCT FROM %(ws)s
+                ORDER BY created_at DESC LIMIT 1
+              ) AS latest_status,
+              (
+                SELECT doc_count FROM ingestion_jobs
+                WHERE org_id = %(org)s
+                  AND workspace_id IS NOT DISTINCT FROM %(ws)s
+                ORDER BY created_at DESC LIMIT 1
+              ) AS latest_doc_count
+            """,
+            {"org": org_id, "ws": workspace_id},
         ).fetchone()
+
+    has_connection, has_documents, sync_in_progress, has_succeeded_sync = row[:4]
+    latest_job = (row[4], row[5]) if row[4] is not None else None
 
     docs = bool(has_documents)
     syncing = bool(sync_in_progress)
@@ -64,5 +83,20 @@ def content_setup_status(org_id: str, workspace_id: str | None = None) -> dict:
         "sync_in_progress": syncing,
         "latest_job_status": latest_job[0] if latest_job else None,
         "latest_doc_count": latest_job[1] if latest_job else None,
-        "ready_to_ask": succeeded and docs and not syncing,
+        # Deliberately NOT `and not syncing`. A *first* sync is still correctly
+        # gated, because until it finishes there is no succeeded job and no
+        # documents — `succeeded and docs` is False on its own. What the extra
+        # `not syncing` term did was lock the user out again every time a
+        # LATER sync was queued, even though a full sync had already succeeded
+        # and the content was sitting there answerable. Observed in production:
+        # onboarding completed 11 pages / 68 chunks, then one redundant queued
+        # job pinned the page on "Bringing your policies in…" indefinitely with
+        # no way forward. Re-syncing is the normal steady state for an existing
+        # org (the Sources page's "Update policies" does it while people are
+        # asking questions), and incremental sync only upserts changed pages —
+        # it never empties the corpus — so an in-flight sync is no reason to
+        # withdraw Ask. Callers that genuinely want "is something running right
+        # now" have `sync_in_progress` for exactly that, and should surface it
+        # as a passive indicator rather than a gate.
+        "ready_to_ask": succeeded and docs,
     }
