@@ -40,15 +40,45 @@ _pool: ConnectionPool | None = None
 _pool_url: str | None = None
 
 
-def _configure(conn: "psycopg.Connection") -> None:
-    """Run once per pooled connection: register pgvector type adapters.
+# Marker set on a physical connection once its pgvector adapters are registered.
+# Registration is per-connection state, so this is the honest way to ask "has
+# THIS connection been set up" without re-deriving it from the server.
+_REGISTERED = "_handbook_pgvector_registered"
 
-    Registering needs the ``vector`` extension to exist. Swallowing a miss used
-    to leave connections in the pool that cannot bind numpy/``Vector`` values —
-    after ``docker compose down -v`` + re-init that surfaces as
-    ``cannot adapt type 'ndarray'`` on ingest. Fail closed here; callers that
-    hit a brand-new DB should run ``scripts/init_db.py`` first.
+
+def _register_vector_once(conn: "psycopg.Connection") -> None:
+    """Register pgvector type adapters on ``conn``, at most once per connection.
+
+    Why the guard exists (a measured, site-wide latency bug)
+    -------------------------------------------------------
+    ``register_vector`` is not a local call: it does a ``TypeInfo.fetch`` against
+    ``pg_type`` for each of vector/bit/halfvec/sparsevec, i.e. a **server round
+    trip per type**. This used to run on EVERY ``get_connection()`` checkout in
+    addition to the pool's ``configure`` hook, so every query in the app carried
+    a burst of catalogue lookups in front of it. Measured against a real
+    Postgres: 10 trivial ``SELECT 1`` calls through ``get_connection()`` issued
+    **58** server round trips — a 5.8x amplification on every endpoint. That is
+    invisible locally (sub-millisecond hops) and brutal on a cross-region
+    deployment: at the ~250ms round trip measured between the API and its
+    database, ~12 extra lookups is ~3s of latency *per connection checkout*,
+    which is what made every page in the portal feel like it hung.
+
+    The type OIDs cannot change under a live connection, so re-fetching them per
+    checkout could never learn anything new. What the per-checkout call was
+    actually defending against was a *stale* connection: one created before the
+    ``vector`` extension existed, or surviving a ``docker compose down -v`` +
+    re-init, which otherwise keeps dumping embeddings as bare ndarrays and
+    fails with ``cannot adapt type 'ndarray'`` on ingest. That property is kept
+    — a connection without the marker is still registered on checkout — it just
+    no longer costs anything once the connection is set up. After deliberately
+    recreating the extension under a running process, call ``close_pool()``
+    (tests and scripts already do) so fresh connections re-register.
+
+    Fails closed rather than swallowing a miss: a silently unregistered
+    connection sitting in the pool is far worse than a loud error here.
     """
+    if getattr(conn, _REGISTERED, False):
+        return
     try:
         register_vector(conn)
     except psycopg.ProgrammingError as exc:
@@ -58,6 +88,12 @@ def _configure(conn: "psycopg.Connection") -> None:
             "(scripts/init_db.py)?",
             cause=exc,
         ) from exc
+    setattr(conn, _REGISTERED, True)
+
+
+def _configure(conn: "psycopg.Connection") -> None:
+    """Pool hook: run once when a new physical connection is opened."""
+    _register_vector_once(conn)
 
 
 def get_pool(settings: DatabaseSettings | None = None) -> ConnectionPool:
@@ -108,18 +144,12 @@ def get_connection(settings: DatabaseSettings | None = None) -> Iterator["psycop
     pool = get_pool(settings)
     try:
         with pool.connection() as conn:
-            # Re-register on checkout: a connection created before the extension
-            # existed, or recycled after a DB wipe, otherwise keeps dumping
-            # embeddings as bare ndarrays and Postgres rejects them.
-            try:
-                register_vector(conn)
-            except psycopg.ProgrammingError as exc:
-                conn.rollback()
-                raise DatabaseError(
-                    "pgvector adapters could not be registered — is the schema "
-                    "applied (scripts/init_db.py)?",
-                    cause=exc,
-                ) from exc
+            # Safety net for a connection that somehow reached a caller without
+            # the pool's configure hook having registered it (e.g. opened before
+            # the extension existed). A no-op once registered — see
+            # _register_vector_once for why paying it per checkout was ~3s of
+            # latency per query on a cross-region deploy.
+            _register_vector_once(conn)
             yield conn
     except psycopg.Error as exc:
         raise DatabaseError(f"Database operation failed: {exc}", cause=exc) from exc

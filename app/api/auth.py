@@ -62,6 +62,7 @@ from ..auth import (
     create_session_token,
     create_state,
     create_signup_request,
+    peek_state_workspace,
     get_pending_request_for_email,
     get_request_by_approve_token,
     get_request_by_reject_token,
@@ -76,10 +77,12 @@ from ..auth import (
 from ..config.settings import ApiSettings, AuthSettings, EmailSettings, RateLimitSettings
 from ..core.exceptions import AuthError, ConfigurationError, OAuthError, SourceError
 from ..githublive import refresh_installation_scope
+from ..security.client_ip import resolve_client_ip
 from ..security.rate_limit import check_rate_limit
 from ..vectorstore import build_vector_store
 from ..workspaces import assert_member
 from .deps import SESSION_COOKIE_FLAGS, SESSION_COOKIE_NAME, get_session
+from .validation import MAX_EMAIL_CHARS, MAX_NAME_CHARS, bounded
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -112,12 +115,21 @@ def signup(body: dict, background_tasks: BackgroundTasks, http_request: Request)
     admin user get created and a sign-in link get emailed. An email that's
     already a user anywhere, or already has a pending request, is rejected.
     """
-    email = (body.get("email") or "").strip().lower()
-    company_name = (body.get("company_name") or "").strip()
-    if not email or "@" not in email:
+    email = bounded(
+        (body.get("email") or "").strip().lower(),
+        field="Email",
+        limit=MAX_EMAIL_CHARS,
+    )
+    if "@" not in email:
         raise HTTPException(status_code=400, detail="A valid email is required")
-    if not company_name:
-        raise HTTPException(status_code=400, detail="A company name is required")
+    # Bounded because it is stored AND rendered into the owner's notification
+    # email and the approve/reject confirmation page — unbounded, one signup
+    # could make that page unusable.
+    company_name = bounded(
+        (body.get("company_name") or "").strip(),
+        field="Company name",
+        limit=MAX_NAME_CHARS,
+    )
     if get_user_by_email(email) is not None:
         raise HTTPException(status_code=400, detail="An account already exists for this email")
     if get_pending_request_for_email(email) is not None:
@@ -168,7 +180,12 @@ def request_magic_link(
     # client so the answer cannot be harvested in bulk: knowing one address is
     # unregistered is a support answer, sweeping a whole domain is recon.
     # Keyed on the caller's IP because there is no session here by definition.
-    client_ip = (request.client.host if request.client else "unknown")
+    #
+    # Resolved via resolve_client_ip, NOT request.client.host: behind the
+    # Vercel -> Render proxy chain that host is the proxy's, identical for every
+    # user, so the "per-IP" budget was really one global bucket — and one script
+    # consuming it 429'd everybody's login. See app/security/client_ip.py.
+    client_ip = resolve_client_ip(request)
     check_rate_limit(
         f"magic-link:{client_ip}",
         limit=RateLimitSettings.from_env().auth_requests_per_window,
@@ -338,6 +355,33 @@ def _github_connect_success_path(workspace_id: str | None) -> str:
     return "/onboarding?connected=github"
 
 
+# Banner code for "GitHub finished on GitHub's side, but we could not complete
+# the link from that redirect — click Connect once more". Distinct from the
+# github_same_install / github_install_in_use refusals, which are real conflicts.
+GITHUB_FINISH_CONNECT = "github_finish_connect"
+
+
+def _github_finish_path(workspace_id: str | None) -> str:
+    """Where to land someone whose GitHub redirect could not be completed.
+
+    Prefers the page they started from. With no workspace known it uses
+    ``/workspaces`` rather than ``/admin/connections``, because the latter is
+    admin-only: a space owner who is an ordinary member would be bounced
+    straight back to a redirect loop by the admin guard, turning a recoverable
+    hiccup into a second dead end.
+    """
+    if workspace_id is not None:
+        return f"/workspaces/{workspace_id}?connect_error={GITHUB_FINISH_CONNECT}"
+    return f"/workspaces?connect_error={GITHUB_FINISH_CONNECT}"
+
+
+def _workspace_from_optional_state(state: str | None, provider: str) -> str | None:
+    """Best-effort workspace id for choosing a redirect. Never authorizes."""
+    if not state:
+        return None
+    return peek_state_workspace(state, provider=provider)
+
+
 def _persist_github_connection(
     org_id: str,
     workspace_id: str | None,
@@ -490,13 +534,24 @@ def github_install_pending_choose(
 @router.get("/{provider}/callback")
 def callback(
     provider: str,
-    code: str,
-    state: str,
+    code: str | None = None,
+    state: str | None = None,
     installation_id: str | None = None,
     setup_action: str | None = None,
     settings: ApiSettings = Depends(ApiSettings.from_env),
 ):
     """Finish a connect flow.
+
+    ``code`` and ``state`` are OPTIONAL, which looks wrong for an OAuth callback
+    and is not. GitHub reaches this route in two different shapes: the OAuth
+    redirect (``code`` + ``state``) and the *App install / setup* redirect, which
+    carries ``installation_id`` + ``setup_action`` and — per GitHub's own docs —
+    makes no promise about either of the other two. When they were declared
+    required, that second shape returned a raw **422 validation error**: a wall of
+    JSON on a page the user reached by clicking "Install", with the connect flow
+    silently abandoned and no way forward except guessing to go back to Handbook
+    and start again. Reported in production. Both missing-parameter cases are now
+    handled explicitly below and always land the user back in the product.
 
     ``installation_id``/``setup_action`` are GitHub-only extras (a GitHub App
     install redirect carries them; Notion and Google do not). Both are treated
@@ -514,11 +569,53 @@ def callback(
     """
     from ..auth.github_pending import create_github_install_pending
 
+    # Built up front, before the missing-parameter guards, because how an
+    # incomplete callback should be handled depends on the provider: only GitHub
+    # has a second redirect shape that legitimately arrives without code/state.
+    try:
+        oauth_provider = build_oauth_provider(provider)
+    except (OAuthError, ConfigurationError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    is_github = isinstance(oauth_provider, GitHubAppProvider)
+
+    if not code:
+        # GitHub's install/setup redirect carries no authorization code, so
+        # nothing can be exchanged and no connection can be created here — but
+        # the App IS now installed, and this flow starts with *user* OAuth
+        # precisely so a second Connect click completes against an existing
+        # installation. Send them back saying that, rather than stranding them.
+        if not is_github:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "This connect link is incomplete (no authorization code). "
+                    "Start the connection again from Sources."
+                ),
+            )
+        return _frontend_redirect(
+            settings,
+            _github_finish_path(_workspace_from_optional_state(state, provider)),
+        )
+
+    if not state:
+        # Risk T3 realised: `state` did not survive the round trip. The code may
+        # be real, but with no state there is no trustworthy way to say WHICH
+        # org/workspace asked for this — and guessing is a cross-tenant mistake,
+        # not a UX shortcut. Refuse to bind it; a retry mints a fresh state.
+        if not is_github:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "This connect link is incomplete (no state). Start the "
+                    "connection again from Sources."
+                ),
+            )
+        return _frontend_redirect(settings, _github_finish_path(None))
+
     try:
         org_id, workspace_id = consume_state(state, provider=provider)
-        oauth_provider = build_oauth_provider(provider)
 
-        if isinstance(oauth_provider, GitHubAppProvider):
+        if is_github:
             if installation_id:
                 # Came from GitHub's install screen — account was chosen there.
                 tokens, verified_installation_id = (

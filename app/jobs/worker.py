@@ -167,7 +167,43 @@ def run_once() -> queue.IngestionJob | None:
     return queue.get_job(job.org_id, job.id)
 
 
-def run_forever(*, poll_interval: float = 5.0, reap_interval: int = 60) -> None:
+def run_maintenance() -> None:
+    """Delete rows nothing will ever read again. Never raises.
+
+    Two tables only ever grew: ``api_rate_counters`` (one row per scope per
+    closed window) and ``query_answer_cache`` (expired rows are invisible to
+    ``get`` but were never removed). Neither is load-bearing, so this is
+    swallowed on failure exactly like progress reporting — housekeeping must
+    never be able to stop ingestion.
+
+    Lives on the worker's existing periodic tick rather than an external cron so
+    the single self-hosted image keeps needing no scheduler (§1).
+    """
+    try:
+        from ..rag.query_cache import prune_expired
+
+        removed = prune_expired()
+        if removed:
+            logger.info("Pruned %s expired query-cache row(s)", removed)
+    except Exception:  # noqa: BLE001 - housekeeping must never break the worker
+        logger.debug("Query-cache prune failed", exc_info=True)
+
+    try:
+        from ..security.rate_limit import prune_old_windows
+
+        removed = prune_old_windows()
+        if removed:
+            logger.info("Pruned %s closed rate-limit window(s)", removed)
+    except Exception:  # noqa: BLE001
+        logger.debug("Rate-counter prune failed", exc_info=True)
+
+
+def run_forever(
+    *,
+    poll_interval: float = 5.0,
+    reap_interval: int = 60,
+    maintenance_interval: int = 3600,
+) -> None:
     """Poll for queued jobs forever, reaping stuck ``running`` jobs periodically."""
     import time
 
@@ -181,11 +217,18 @@ def run_forever(*, poll_interval: float = 5.0, reap_interval: int = 60) -> None:
         logger.exception("Failed to re-queue interrupted ingestion jobs")
 
     last_reap = 0.0
+    # Start "already due" like last_reap so one sweep runs shortly after boot —
+    # on a free instance that restarts often, waiting a full hour every time
+    # would mean the prune effectively never happens.
+    last_maintenance = 0.0
     while True:
         now = time.monotonic()
         if now - last_reap >= reap_interval:
             queue.reap_stuck()
             last_reap = now
+        if now - last_maintenance >= maintenance_interval:
+            run_maintenance()
+            last_maintenance = now
 
         job = run_once()
         if job is None:

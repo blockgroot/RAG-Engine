@@ -44,6 +44,7 @@ from .connection_ops import (
     raise_token_http,
 )
 from .deps import SessionClaims, require_admin
+from .validation import MAX_EMAIL_CHARS, MAX_URL_CHARS, bounded
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -101,8 +102,12 @@ def invite(
     same single-use sign-in link used by signup / login. With
     ``EMAIL_SENDER=console`` the link is also echoed as ``dev_link``.
     """
-    email = (body.get("email") or "").strip().lower()
-    if not email or "@" not in email:
+    email = bounded(
+        (body.get("email") or "").strip().lower(),
+        field="Email",
+        limit=MAX_EMAIL_CHARS,
+    )
+    if "@" not in email:
         raise HTTPException(status_code=400, detail="A valid email is required")
     if get_user_by_email(email) is not None:
         raise HTTPException(status_code=400, detail="An account already exists for this email")
@@ -261,12 +266,11 @@ def put_connection_config(
             ),
         )
 
-    folder_url = (body.get("folder_url") or "").strip()
-    if not folder_url:
-        raise HTTPException(
-            status_code=400,
-            detail="folder_url is required (a Drive folder URL or folder id).",
-        )
+    folder_url = bounded(
+        (body.get("folder_url") or "").strip(),
+        field="folder_url",
+        limit=MAX_URL_CHARS,
+    )
 
     try:
         folder_id = extract_drive_folder_id(folder_url)

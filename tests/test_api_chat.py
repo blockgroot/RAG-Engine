@@ -369,6 +369,36 @@ def test_org_wide_chat_uses_policy_agent(client_and_session):
 
 
 @requires_db
+def test_an_absurdly_long_question_is_rejected_before_it_reaches_the_embedder(
+    client_and_session,
+):
+    """The embedding model 400s past its context window; reject it up front.
+
+    Same failure class as the chunk character ceiling: production hit
+    INPUT_TOKEN_LIMIT_EXCEEDED from the embedding endpoint, which would surface
+    here as an opaque 500 mid-stream rather than something the user can act on.
+    """
+    from app.api.chat import MAX_QUESTION_CHARS
+
+    client, cookies, _org_id, _ = client_and_session
+    response = client.post(
+        "/chat/stream",
+        json={"question": "leave policy " * (MAX_QUESTION_CHARS // 4)},
+        cookies=cookies,
+    )
+    assert response.status_code == 400
+    assert "too long" in response.json()["detail"]
+
+    # A normal question of any realistic length is untouched.
+    ok = client.post(
+        "/chat/stream",
+        json={"question": "How many annual leave days do I get?"},
+        cookies=cookies,
+    )
+    assert ok.status_code == 200
+
+
+@requires_db
 def test_workspace_chat_uses_workspace_agent(client_and_session, store, org_cleanup):
     """A workspace_id request is answered by WorkspaceAgent, source == 'workspace'."""
     from app.auth import create_session_token

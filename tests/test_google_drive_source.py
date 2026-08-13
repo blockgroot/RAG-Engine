@@ -300,3 +300,102 @@ def test_source_ref_and_document_field_shapes(monkeypatch):
     assert doc.content == "content"
     assert doc.source_uri == "https://docs.google.com/document/d/doc-1/edit"
     assert doc.last_modified is not None
+
+
+# --- walk bounds (breadth, not just depth) ----------------------------------
+#
+# `_MAX_WALK_DEPTH` capped how DEEP the crawl went but nothing capped how WIDE.
+# Every folder costs its own files.list call, so a broad tree issued an unbounded
+# number of sequential Google requests inside one HTTP request — and the same
+# walk runs on the Sources change-check. Same lesson as the Notion fetch bound:
+# cap the walk itself.
+
+
+def test_a_very_wide_folder_tree_bounds_the_number_of_api_calls(monkeypatch):
+    """1000 subfolders must not mean 1000 sequential Drive calls."""
+    from app.config.settings import GoogleSettings
+
+    calls = {"n": 0}
+
+    def fake_get(url, **kwargs):
+        calls["n"] += 1
+        folder = kwargs["params"]["q"].split("'")[1]
+        if folder == "root":
+            return FakeResponse(
+                {"files": [_file(f"sub-{i}", f"Sub {i}", FOLDER_MIME) for i in range(1000)]}
+            )
+        return FakeResponse({"files": [_file(f"doc-{folder}", "Doc", DOC_MIME)]})
+
+    monkeypatch.setattr("app.sources.google_drive.httpx.get", fake_get)
+    adapter = GoogleDriveAdapter(
+        token="tok",
+        folder_id="root",
+        settings=GoogleSettings(
+            client_id=None,
+            client_secret=None,
+            redirect_uri=None,
+            max_walk_folders=25,
+        ),
+    )
+    refs = adapter.list_documents()
+    assert calls["n"] <= 25, f"{calls['n']} Drive calls — the walk is unbounded"
+    assert len(refs) <= 25
+
+
+def test_the_document_count_is_bounded_too(monkeypatch):
+    from app.config.settings import GoogleSettings
+
+    def fake_get(url, **kwargs):
+        return FakeResponse(
+            {"files": [_file(f"doc-{i}", f"Doc {i}", DOC_MIME) for i in range(500)]}
+        )
+
+    monkeypatch.setattr("app.sources.google_drive.httpx.get", fake_get)
+    adapter = GoogleDriveAdapter(
+        token="tok",
+        folder_id="root",
+        settings=GoogleSettings(
+            client_id=None, client_secret=None, redirect_uri=None, max_documents=40
+        ),
+    )
+    assert len(adapter.list_documents()) == 40
+
+
+def test_truncation_is_logged_never_silent(monkeypatch, caplog):
+    """A partially-walked folder must be distinguishable from a complete one."""
+    from app.config.settings import GoogleSettings
+
+    def fake_get(url, **kwargs):
+        folder = kwargs["params"]["q"].split("'")[1]
+        if folder == "root":
+            return FakeResponse(
+                {"files": [_file(f"sub-{i}", f"Sub {i}", FOLDER_MIME) for i in range(50)]}
+            )
+        return FakeResponse({"files": []})
+
+    monkeypatch.setattr("app.sources.google_drive.httpx.get", fake_get)
+    adapter = GoogleDriveAdapter(
+        token="tok",
+        folder_id="root",
+        settings=GoogleSettings(
+            client_id=None, client_secret=None, redirect_uri=None, max_walk_folders=5
+        ),
+    )
+    with caplog.at_level("WARNING"):
+        adapter.list_documents()
+    assert any("truncated" in r.getMessage().lower() for r in caplog.records)
+
+
+def test_a_normal_folder_is_completely_unaffected_by_the_bounds(monkeypatch):
+    """The bounds are a backstop; a real policy folder must walk in full."""
+    def fake_get(url, **kwargs):
+        folder = kwargs["params"]["q"].split("'")[1]
+        if folder == "root":
+            return FakeResponse(
+                {"files": [_file("sub-1", "Sub", FOLDER_MIME), _file("d1", "A", DOC_MIME)]}
+            )
+        return FakeResponse({"files": [_file("d2", "B", DOC_MIME)]})
+
+    monkeypatch.setattr("app.sources.google_drive.httpx.get", fake_get)
+    refs = GoogleDriveAdapter(token="tok", folder_id="root").list_documents()
+    assert {r.external_id for r in refs} == {"d1", "d2"}

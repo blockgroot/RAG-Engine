@@ -221,6 +221,19 @@ services:
       # on the free plan.
       - key: CHUNK_TOKEN_BACKEND
         value: heuristic
+      # Absolute per-chunk CHARACTER ceiling, and the last-resort splitter's
+      # bound. Paragraph/sentence/word splitting all need a linguistic boundary,
+      # so a whitespace-free run (base64 data URI or long signed link inside an
+      # exported Google Doc) had none and was emitted as ONE chunk — the
+      # embedding endpoint then 400'd it (INPUT_TOKEN_LIMIT_EXCEEDED, "exceeds
+      # the model's maximum of 8194 tokens") and failed the whole document's
+      # sync. The token budget above could not have caught it: base64 bills 1
+      # real BGE-M3 token per CHARACTER, so the estimator was 16x low. 1
+      # token/char is the worst case anything can reach, so bounding characters
+      # bounds tokens outright. Never fires on prose (a 256-token chunk is
+      # ~1000-1300 chars).
+      - key: CHUNK_MAX_CHARS
+        value: "4000"
       # Crash-loop breaker: `requeue_interrupted_running()` used to return a
       # `running` job to `queued` on EVERY boot with no limit, so a job that
       # OOM-killed its own process was retried forever — unattended, with no
@@ -229,3 +242,11 @@ services:
       # the API stays up.
       - key: INGEST_MAX_JOB_ATTEMPTS
         value: "3"
+      # Which header carries the real client IP. The magic-link limiter is keyed
+      # per client, and the socket peer here is Render's own router (fronted by
+      # the Vercel /api rewrite) — the SAME address for every user, which
+      # collapsed the per-IP budget into one global bucket: one script consuming
+      # it 429'd everybody's login. Vercel writes x-vercel-forwarded-for itself,
+      # so unlike X-Forwarded-For a caller cannot dictate it.
+      - key: CLIENT_IP_HEADER
+        value: x-vercel-forwarded-for

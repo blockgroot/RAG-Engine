@@ -199,6 +199,10 @@ def update_progress(
     if not sets:
         return
 
+    # Always stamp the heartbeat, even when only a counter moved: this is what
+    # tells reap_stuck the job is alive rather than merely long-running.
+    sets.append("progress_at = now()")
+
     params.append(job_id)
     try:
         with get_connection() as conn:
@@ -287,18 +291,30 @@ def requeue_interrupted_running(
 
 
 def reap_stuck(timeout_minutes: int = DEFAULT_REAP_TIMEOUT_MINUTES) -> int:
-    """Flip any ``running`` job stuck past ``timeout_minutes`` to ``failed``.
+    """Flip any *silent* ``running`` job to ``failed``. Returns how many.
 
     Closes the "crashed worker leaves the job running forever" gap — call this
     periodically from the worker loop (see ``app/jobs/worker.py``).
+
+    Measures silence, NOT age. The condition is
+    ``coalesce(progress_at, started_at)``, so the clock resets every time the
+    job reports progress; only a job that has said nothing for
+    ``timeout_minutes`` is declared dead. Judging by ``started_at`` alone
+    (the original behaviour) failed a *healthy* long ingest — a big folder, or
+    contextualization against a 15-rpm endpoint — while it was still working,
+    and told the admin it had failed when it had not. ``coalesce`` keeps a job
+    that died before its first report reapable exactly as before.
     """
     with get_connection() as conn:
         rows = conn.execute(
             """
             UPDATE ingestion_jobs
-            SET status = 'failed', error = 'worker timeout', finished_at = now()
+            SET status = 'failed',
+                error = 'worker timeout (no progress reported)',
+                finished_at = now()
             WHERE status = 'running'
-              AND started_at < now() - (%s || ' minutes')::interval
+              AND coalesce(progress_at, started_at)
+                  < now() - (%s || ' minutes')::interval
             RETURNING id
             """,
             (timeout_minutes,),

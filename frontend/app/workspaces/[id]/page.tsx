@@ -28,6 +28,10 @@ import { syncPagesDetail, syncPhaseHeadline } from "@/lib/syncProgress";
 // tests/test_github_workspace_scope.py.
 const PROVIDERS: ("notion" | "google" | "github")[] = ["notion", "google", "github"];
 const ACTIVE_STATUSES = ACTIVE_JOB_STATUSES;
+// Minimum gap between window-focus-triggered change-checks. A Drive check walks
+// the folder tree live (one Google API call per subfolder), so an unthrottled
+// focus listener re-ran seconds of work every time the user alt-tabbed.
+const CHANGE_CHECK_MIN_INTERVAL_MS = 60_000;
 
 function latestJobByConnection(jobs: JobRecord[]): Record<string, JobRecord> {
   const latest: Record<string, JobRecord> = {};
@@ -69,6 +73,13 @@ function WorkspaceDetailPageInner() {
   const [workspace, setWorkspace] = useState<WorkspaceDetail | null>(null);
   const [members, setMembers] = useState<WorkspaceMemberRecord[]>([]);
   const [connections, setConnections] = useState<ConnectionRecord[]>([]);
+  /*
+   * See the identical field in app/admin/connections/page.tsx: an empty
+   * `connections` is indistinguishable from "nothing is connected", so the
+   * cards would offer Connect for a source this space already has — inviting a
+   * pointless fresh OAuth grant off a screen showing the wrong state.
+   */
+  const [loadingConnections, setLoadingConnections] = useState(true);
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [changesById, setChangesById] = useState<Record<string, SyncChanges>>({});
   const [checking, setChecking] = useState(false);
@@ -109,11 +120,18 @@ function WorkspaceDetailPageInner() {
   }, [workspaceId]);
 
   const changesGen = useRef(0);
+  // When the last change-check actually ran, so the window-focus listener below
+  // can skip one that just happened. A Drive change-check is NOT cheap: it walks
+  // the folder tree live, one Google API call per subfolder (plus pagination),
+  // so re-running it every time the user tabs back to the browser meant several
+  // seconds of "Checking…" on every focus.
+  const lastChangeCheckAt = useRef(0);
 
   const refreshChanges = useCallback(
     async (list: ConnectionRecord[]) => {
       if (list.length === 0) return;
       const gen = ++changesGen.current;
+      lastChangeCheckAt.current = Date.now();
       setChecking(true);
       const next: Record<string, SyncChanges> = {};
       const failedIds: string[] = [];
@@ -204,7 +222,8 @@ function WorkspaceDetailPageInner() {
         );
         refreshChanges(list);
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setLoadingConnections(false));
     api.listWorkspaceJobs(workspaceId).then((list) => {
       setJobs(list);
       const active = list.filter((j) => ACTIVE_STATUSES.has(j.status));
@@ -234,6 +253,27 @@ function WorkspaceDetailPageInner() {
           "Choose a different GitHub account on the picker (Organization for company, personal for this space).",
           "Or disconnect GitHub from the other Folio surface first, then connect it here.",
           "Or skip GitHub here and ask from the main Ask → Code tab instead.",
+        ],
+      });
+      router.replace(`/workspaces/${workspaceId}`, { scroll: false });
+      return;
+    }
+
+    // GitHub finished on GitHub's side but its redirect could not complete the
+    // link (an install/setup redirect carries no authorization code, and `state`
+    // is not guaranteed to survive it). Not a conflict and not an error the user
+    // caused — the App is installed now, so one more Connect click finishes it
+    // against the existing installation.
+    if (connectError === "github_finish_connect") {
+      setError(null);
+      setConnectNotice({
+        title: "Almost there — finish connecting GitHub",
+        why:
+          "GitHub sent you back without the details needed to link the account. " +
+          "The app is installed on your GitHub, so connecting once more completes it.",
+        options: [
+          "Click “Connect personal GitHub” below one more time.",
+          "You should not have to install anything again — GitHub will remember.",
         ],
       });
       router.replace(`/workspaces/${workspaceId}`, { scroll: false });
@@ -272,8 +312,19 @@ function WorkspaceDetailPageInner() {
   useEffect(() => {
     if (!me) return;
     function onFocus() {
-      refreshChanges(connectionsRef.current);
+      // Refreshing the workspace itself is one cheap query — always do it, so
+      // returning to the tab reflects a sync that finished elsewhere.
       void refreshWorkspace();
+      // The change-check is not cheap (see lastChangeCheckAt): it walks the
+      // Drive folder tree live, one API call per subfolder. Re-running it on
+      // every focus put the card back into "Checking…" for seconds each time
+      // the user alt-tabbed. Once a minute is plenty for "has the source
+      // changed?", and the explicit "Check again" button still forces one
+      // immediately, which is the path that should be instant-on-demand.
+      if (Date.now() - lastChangeCheckAt.current < CHANGE_CHECK_MIN_INTERVAL_MS) {
+        return;
+      }
+      refreshChanges(connectionsRef.current);
     }
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
@@ -423,7 +474,21 @@ function WorkspaceDetailPageInner() {
     }
   }
 
-  if (loading || !me) {
+  // `workspace` must be loaded before rendering, not just `me`.
+  //
+  // Everything below derives from it — `isOwner`, `docsReady`, the title — and
+  // every one of those falls back to a *confident wrong answer* while it is
+  // still null: `workspace?.role === "owner"` is false, so the OWNER of a space
+  // was shown the member view ("Only the owner can connect or change documents
+  // for this space", "Waiting on the owner to connect a source") plus a "…"
+  // title and an empty member list, until the request landed. On a slow request
+  // that lasted 10-15s and looked like a real answer rather than a pending one.
+  //
+  // `isOwner === false` cannot distinguish "you are not the owner" from "we do
+  // not know yet", so the fix is to not render the branch at all until we know.
+  // `notFound` is checked first, so a genuinely inaccessible workspace still
+  // gets its own message rather than spinning forever.
+  if (loading || !me || (!workspace && !notFound)) {
     return (
       <main className="page">
         <p className="muted">Loading…</p>
@@ -578,7 +643,14 @@ function WorkspaceDetailPageInner() {
                 </p>
               </div>
             </div>
-            {PROVIDERS.map((provider) => {
+            {loadingConnections &&
+              // Placeholders, not Connect cards — this space's real sources are
+              // still unknown at this point.
+              PROVIDERS.map((provider) => (
+                <div key={provider} className="studio-skeleton source-skeleton" aria-hidden />
+              ))}
+            {!loadingConnections &&
+              PROVIDERS.map((provider) => {
               const connection = connections.find((c) => c.provider === provider);
               return (
                 <ConnectionCard
@@ -618,7 +690,7 @@ function WorkspaceDetailPageInner() {
                   workspaceId={workspaceId}
                 />
               );
-            })}
+              })}
           </section>
         ) : (
           <p className="muted">Only the owner can connect or change documents for this space.</p>

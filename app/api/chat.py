@@ -127,6 +127,13 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 AGENT_GITHUB = "github"
 AGENT_POLICY = "policy"
 
+# Upper bound on a single question, in characters. Generous — a real question is
+# a sentence or two — but bounded, because the question is embedded verbatim and
+# the embedding model 400s on anything past its context window. Characters, not
+# tokens, for the same reason chunking uses characters as its final ceiling: no
+# token estimate is trustworthy on arbitrary pasted input.
+MAX_QUESTION_CHARS = 4000
+
 
 def _select_agent(
     workspace_id: str | None,
@@ -370,6 +377,21 @@ def chat_stream(
     question = (body.get("question") or "").strip()
     if not question:
         raise HTTPException(status_code=400, detail="A question is required")
+    if len(question) > MAX_QUESTION_CHARS:
+        # The question is embedded verbatim to retrieve against, and the
+        # embedding model rejects anything past its context window outright
+        # (HTTP 400 INPUT_TOKEN_LIMIT_EXCEEDED) — which would surface here as an
+        # opaque 500 mid-stream. Reject it up front with something actionable.
+        # Same failure class as the chunk character ceiling in
+        # app/ingestion/chunking.py: bound the input, don't trust a token
+        # estimate of it.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"That question is too long ({len(question)} characters, "
+                f"limit {MAX_QUESTION_CHARS}). Ask it in a shorter form."
+            ),
+        )
 
     requested_agent = body.get("agent")
     workspace_id = body.get("workspace_id")

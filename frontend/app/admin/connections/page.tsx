@@ -13,6 +13,10 @@ import { syncPagesDetail, syncPhaseHeadline } from "@/lib/syncProgress";
 
 const PROVIDERS: ("notion" | "google" | "github")[] = ["notion", "google", "github"];
 const ACTIVE_STATUSES = ACTIVE_JOB_STATUSES;
+// Minimum gap between window-focus-triggered change-checks. A Drive check walks
+// the folder tree live (one Google API call per subfolder), so an unthrottled
+// focus listener re-ran seconds of work every time the user alt-tabbed.
+const CHANGE_CHECK_MIN_INTERVAL_MS = 60_000;
 
 function latestJobByConnection(jobs: JobRecord[]): Record<string, JobRecord> {
   const latest: Record<string, JobRecord> = {};
@@ -51,6 +55,19 @@ function ConnectionsPageInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [connections, setConnections] = useState<ConnectionRecord[]>([]);
+  /*
+   * Whether the connections list has been fetched yet.
+   *
+   * `connections` starting as `[]` is indistinguishable from "this org has
+   * connected nothing", so the cards used to render "Not linked yet" + a
+   * Connect button for an already-connected provider until the fetch landed.
+   * That is not just a cosmetic flash: clicking Connect on an already-connected
+   * source starts a fresh OAuth grant, which is a destructive-ish action the
+   * user was invited to take by a screen showing the wrong state. Same class of
+   * bug as the workspace owner briefly seeing the member-only view — an unknown
+   * value must not be rendered as `false`.
+   */
+  const [loadingConnections, setLoadingConnections] = useState(true);
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [changesById, setChangesById] = useState<Record<string, SyncChanges>>({});
   const [checking, setChecking] = useState(false);
@@ -72,6 +89,13 @@ function ConnectionsPageInner() {
       setError(
         "That GitHub account is already linked to a space. Company Sources and each space must use different GitHub accounts — pick another on the chooser, or disconnect it from the space first."
       );
+    } else if (connectError === "github_finish_connect") {
+      // GitHub's install/setup redirect carries no authorization code (and no
+      // guaranteed state), so it cannot complete the link on its own. The app is
+      // installed by this point, so one more Connect click finishes it.
+      setError(
+        "Almost there — GitHub sent you back without the details needed to link the account. The app is installed on your GitHub, so click Connect company GitHub once more to finish. You should not need to install anything again."
+      );
     } else {
       setError("Could not finish connecting GitHub. Try again.");
     }
@@ -80,10 +104,14 @@ function ConnectionsPageInner() {
 
 
   const changesGen = useRef(0);
+  // When the last change-check actually ran, so the focus listener can skip one
+  // that just happened (see CHANGE_CHECK_MIN_INTERVAL_MS).
+  const lastChangeCheckAt = useRef(0);
 
   const refreshChanges = useCallback(async (list: ConnectionRecord[]) => {
     if (list.length === 0) return;
     const gen = ++changesGen.current;
+    lastChangeCheckAt.current = Date.now();
     setChecking(true);
     const next: Record<string, SyncChanges> = {};
     const failedIds: string[] = [];
@@ -154,29 +182,49 @@ function ConnectionsPageInner() {
     connectionsRef.current = connections;
   }, [connections]);
 
+  // Fired on mount rather than gated on `me`, so the session lookup and these
+  // loads run CONCURRENTLY instead of as a waterfall — the wait before the cards
+  // know their real state was two sequential round trips, not one. Both are
+  // authenticated by the same cookie, so there is nothing to wait for; an
+  // unauthenticated/non-admin caller just gets a 401/403 here and useMe's guard
+  // does the redirect.
   useEffect(() => {
-    if (!me || loaded.current) return;
+    if (loaded.current) return;
     loaded.current = true;
-    api.listConnections().then((list) => {
-      setConnections(list);
-      setReauthById(
-        Object.fromEntries(list.filter((c) => c.needs_reauth).map((c) => [c.id, true]))
-      );
-      refreshChanges(list);
-    });
+    api
+      .listConnections()
+      .then((list) => {
+        setConnections(list);
+        setReauthById(
+          Object.fromEntries(list.filter((c) => c.needs_reauth).map((c) => [c.id, true]))
+        );
+        refreshChanges(list);
+      })
+      .catch(() => {
+        /* useMe owns the auth redirect; leave the cards in their unknown state */
+      })
+      .finally(() => setLoadingConnections(false));
     api.listJobs().then((list) => {
       setJobs(list);
       const active = list.filter((j) => ACTIVE_STATUSES.has(j.status));
       if (active.length === 1) setWatchedJobId(active[0].id);
       else if (active.length > 1) setWatchedJobId(null);
       if (active.length > 0) setPollToken((n) => n + 1);
-    });
-  }, [me, refreshChanges]);
+    }).catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Re-check when the tab is focused again (e.g. after editing Notion in another tab).
+  // Re-check when the tab is focused again (e.g. after editing Notion in another
+  // tab) — but throttled. A Drive change-check walks the folder tree live, one
+  // Google API call per subfolder, so an unthrottled listener put every card
+  // back into "Checking…" for seconds on every alt-tab. The explicit
+  // "Check again" button still forces one immediately.
   useEffect(() => {
     if (!me) return;
     function onFocus() {
+      if (Date.now() - lastChangeCheckAt.current < CHANGE_CHECK_MIN_INTERVAL_MS) {
+        return;
+      }
       refreshChanges(connectionsRef.current);
     }
     window.addEventListener("focus", onFocus);
@@ -291,15 +339,25 @@ function ConnectionsPageInner() {
           description="Connect Notion, Google Drive, and company GitHub. Spaces need their own GitHub account — never the same install as here."
           scene="sources"
           meta={
-            <>
-              <span className="studio-chip studio-chip-ok">{linkedCount} linked</span>
-              <span className="studio-chip">{PROVIDERS.length} providers</span>
-              {needsAttention > 0 ? (
-                <span className="studio-chip studio-chip-warn">{needsAttention} need attention</span>
-              ) : (
-                <span className="studio-chip studio-chip-ok">All set</span>
-              )}
-            </>
+            loadingConnections ? (
+              // Both counts are derived from `connections`, so before it loads
+              // they would confidently read "0 linked" and "3 need attention" —
+              // exactly the claim that must not be made while unknown.
+              <>
+                <span className="studio-chip">{PROVIDERS.length} providers</span>
+                <span className="studio-chip">Loading…</span>
+              </>
+            ) : (
+              <>
+                <span className="studio-chip studio-chip-ok">{linkedCount} linked</span>
+                <span className="studio-chip">{PROVIDERS.length} providers</span>
+                {needsAttention > 0 ? (
+                  <span className="studio-chip studio-chip-warn">{needsAttention} need attention</span>
+                ) : (
+                  <span className="studio-chip studio-chip-ok">All set</span>
+                )}
+              </>
+            )
           }
         />
         {message && (
@@ -321,7 +379,15 @@ function ConnectionsPageInner() {
             <p className="muted">Each source keeps its own sync boundary — never mixed across providers.</p>
           </div>
           <div className="source-bento">
-            {PROVIDERS.map((provider) => {
+            {loadingConnections
+              ? PROVIDERS.map((provider) => (
+                  // Placeholder, NOT a "Connect" card: until the list arrives we
+                  // do not know whether this provider is linked, and offering
+                  // Connect for an already-connected source invites a pointless
+                  // (and confusing) fresh OAuth grant.
+                  <div key={provider} className="studio-skeleton source-skeleton" aria-hidden />
+                ))
+              : PROVIDERS.map((provider) => {
               const connection = connections.find((c) => c.provider === provider);
               return (
                 <ConnectionCard
@@ -362,7 +428,7 @@ function ConnectionsPageInner() {
                   }}
                 />
               );
-            })}
+                })}
           </div>
         </section>
       </main>

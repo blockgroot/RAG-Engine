@@ -58,15 +58,16 @@ from .connection_ops import (
 from .deps import SessionClaims, get_session, get_workspace_role, require_workspace_owner
 from .serialize import job_payload
 from .setup_status import content_setup_status
+from .validation import MAX_EMAIL_CHARS, MAX_NAME_CHARS, MAX_URL_CHARS, bounded
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
 
 @router.post("")
 def create(body: dict, session: SessionClaims = Depends(get_session)):
-    name = (body.get("name") or "").strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="A workspace name is required")
+    name = bounded(
+        (body.get("name") or "").strip(), field="Workspace name", limit=MAX_NAME_CHARS
+    )
     workspace_id = create_workspace(session.org_id, name, session.user_id)
     return {"id": workspace_id, "name": name, "role": "owner"}
 
@@ -176,8 +177,12 @@ def invite(
     session: SessionClaims = Depends(get_session),
     _role: str = Depends(require_workspace_owner),
 ):
-    email = (body.get("email") or "").strip().lower()
-    if not email or "@" not in email:
+    email = bounded(
+        (body.get("email") or "").strip().lower(),
+        field="Email",
+        limit=MAX_EMAIL_CHARS,
+    )
+    if "@" not in email:
         raise HTTPException(status_code=400, detail="A valid email is required")
     try:
         invite_member(workspace_id, session.org_id, session.user_id, email)
@@ -286,11 +291,11 @@ def put_connection_config(
                 f"(this connection is {conn.provider!r})."
             ),
         )
-    folder_url = (body.get("folder_url") or "").strip()
-    if not folder_url:
-        raise HTTPException(
-            status_code=400, detail="folder_url is required (a Drive folder URL or folder id)."
-        )
+    folder_url = bounded(
+        (body.get("folder_url") or "").strip(),
+        field="folder_url",
+        limit=MAX_URL_CHARS,
+    )
     try:
         folder_id = extract_drive_folder_id(folder_url)
         token = get_live_connection_token(session.org_id, conn.provider, workspace_id=workspace_id)

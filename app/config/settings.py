@@ -25,6 +25,16 @@ DEFAULT_CHUNK_OVERLAP = 40
 # CANNOT fit alongside the API in a 512MB box — opt in only where memory allows
 # (see app/ingestion/chunk_tokens.py for the measurements).
 DEFAULT_CHUNK_TOKEN_BACKEND = "heuristic"
+# Absolute per-chunk character ceiling — a backstop on the TOKEN budget above,
+# not a second way to express it. Token counts (exact or estimated) can be
+# arbitrarily wrong on text no tokenizer segments the way prose is segmented:
+# measured against the real BGE-M3 tokenizer, a run of base64 bills 1 token per
+# CHARACTER, so the heuristic under-counts it 16x. Since 1 token/char is the
+# worst case any input can reach, bounding characters bounds tokens outright —
+# 4000 chars can never exceed the embedding model's 8192-token limit, whatever
+# the content. A legitimate 256-token prose chunk is ~1000-1300 chars, so this
+# never fires on real documents (the golden corpus tops out at 505).
+DEFAULT_MAX_CHUNK_CHARS = 4000
 
 DEFAULT_VECTOR_STORE_BACKEND = "pgvector"
 
@@ -303,12 +313,16 @@ class ChunkingSettings:
     chunk_size: int = DEFAULT_CHUNK_SIZE
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
     token_backend: str = DEFAULT_CHUNK_TOKEN_BACKEND
+    max_chunk_chars: int = DEFAULT_MAX_CHUNK_CHARS
 
     @classmethod
     def from_env(cls) -> "ChunkingSettings":
         return cls(
             chunk_size=int(os.getenv("CHUNK_SIZE") or DEFAULT_CHUNK_SIZE),
             chunk_overlap=int(os.getenv("CHUNK_OVERLAP") or DEFAULT_CHUNK_OVERLAP),
+            max_chunk_chars=int(
+                os.getenv("CHUNK_MAX_CHARS") or DEFAULT_MAX_CHUNK_CHARS
+            ),
             token_backend=(
                 os.getenv("CHUNK_TOKEN_BACKEND") or DEFAULT_CHUNK_TOKEN_BACKEND
             ).strip().lower(),
@@ -487,6 +501,13 @@ DEFAULT_GOOGLE_OAUTH_SCOPES = (
     "https://www.googleapis.com/auth/drive.readonly "
     "https://www.googleapis.com/auth/documents.readonly"
 )
+# Ceilings on the Drive folder crawl (see GoogleSettings). 500 folders is far
+# more than a policy folder needs while still bounding the number of sequential
+# Google API calls a single request can issue; 2000 native Docs likewise. Both
+# are truncation points that get LOGGED, never silent — a sync that quietly
+# indexed half a folder is worse than one that says it stopped.
+DEFAULT_GOOGLE_MAX_WALK_FOLDERS = 500
+DEFAULT_GOOGLE_MAX_DOCUMENTS = 2000
 
 
 @dataclass(frozen=True)
@@ -505,6 +526,15 @@ class GoogleSettings:
     client_secret: str | None
     redirect_uri: str | None
     scopes: str = DEFAULT_GOOGLE_OAUTH_SCOPES
+    # Bounds on the recursive folder walk. Drive's `parents` field is
+    # direct-parent-only, so there is no server-side "all descendants" query and
+    # the adapter must crawl: one files.list call PER folder. Depth was already
+    # capped, but breadth was not — a wide tree meant an unbounded number of
+    # sequential Google calls inside one request, and this same walk runs on the
+    # Sources page's change-check. Same lesson as the Notion fetch bound: cap the
+    # walk itself, don't just cap what it produces.
+    max_walk_folders: int = DEFAULT_GOOGLE_MAX_WALK_FOLDERS
+    max_documents: int = DEFAULT_GOOGLE_MAX_DOCUMENTS
 
     @classmethod
     def from_env(cls) -> "GoogleSettings":
@@ -513,6 +543,12 @@ class GoogleSettings:
             client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
             redirect_uri=os.getenv("GOOGLE_REDIRECT_URI"),
             scopes=os.getenv("GOOGLE_OAUTH_SCOPES", DEFAULT_GOOGLE_OAUTH_SCOPES),
+            max_walk_folders=int(
+                os.getenv("GOOGLE_MAX_WALK_FOLDERS") or DEFAULT_GOOGLE_MAX_WALK_FOLDERS
+            ),
+            max_documents=int(
+                os.getenv("GOOGLE_MAX_DOCUMENTS") or DEFAULT_GOOGLE_MAX_DOCUMENTS
+            ),
         )
 
 
