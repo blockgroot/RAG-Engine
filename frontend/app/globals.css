@@ -377,8 +377,9 @@ button { font-family: inherit; }
   margin: 0;
   font-size: 1.08rem;
   letter-spacing: -0.02em;
-  white-space: normal;
-  overflow-wrap: break-word;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   line-height: 1.3;
 }
 .workspace-tile-top .badge {
@@ -3071,11 +3072,11 @@ table .role-chip.role-admin,
   align-items: start;
 }
 
-/* auto-fit (not auto-fill): with few spaces, empty tracks collapse instead
-   of reserving room for cards that don't exist, so a single space stretches
-   to use the row instead of being squeezed into one narrow track with its
-   name ellipsized while the rest of the row sits empty. */
-.spaces-bento { gap: 0.9rem; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+/* Single column: each space is a full-width horizontal row, stacked
+   vertically, not a multi-column card grid -- a card grid was squeezing
+   names into narrow columns and forcing them to wrap/truncate even with
+   plenty of horizontal room available. */
+.spaces-bento { display: flex; flex-direction: column; gap: 0.75rem; }
 .workspace-tile {
   display: grid;
   grid-template-columns: auto 1fr;
