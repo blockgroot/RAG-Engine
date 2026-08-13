@@ -34,6 +34,30 @@
 # The web service plan is `free`: it spins down after ~15 min of inactivity
 # and cold-starts on the next request — fine for testing, not for an
 # always-on production deployment. Bump to `starter` when you need always-on.
+#
+# ---------------------------------------------------------------------------
+# REGION: put this service in the SAME region as DATABASE_URL.
+# ---------------------------------------------------------------------------
+# With no `region:` Render defaults to `oregon` (US-West). Measured on the live
+# deployment: the service resolved to a US-West address while Supabase was in
+# `ap-south-1` (Mumbai) — so EVERY query crossed the Pacific at ~250ms round
+# trip. The API path is chatty by nature (GET /me alone was seven sequential
+# queries before they were collapsed to two), so cross-region placement is
+# multiplied by the query count, not paid once. This is latency an always-on
+# plan cannot fix: `starter` removes cold starts, not distance.
+#
+# Match the region to the database:
+#   ap-south-1 (Mumbai)  -> region: singapore   (Render's closest)
+#   us-east-1            -> region: virginia
+#   us-west-*            -> region: oregon
+#   eu-*                 -> region: frankfurt
+#
+# NOTE: Render cannot change an existing service's region in place — you must
+# create a new service. Only `API_PROXY_TARGET` on Vercel needs updating
+# afterwards; OAuth redirect URIs point at the FRONTEND origin (see the header
+# comment above), so they are unaffected.
+#
+# region: singapore
 
 services:
   - type: web
