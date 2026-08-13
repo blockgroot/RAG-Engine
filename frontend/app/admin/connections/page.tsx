@@ -13,6 +13,10 @@ import { syncPagesDetail, syncPhaseHeadline } from "@/lib/syncProgress";
 
 const PROVIDERS: ("notion" | "google" | "github")[] = ["notion", "google", "github"];
 const ACTIVE_STATUSES = ACTIVE_JOB_STATUSES;
+// Minimum gap between window-focus-triggered change-checks. A Drive check walks
+// the folder tree live (one Google API call per subfolder), so an unthrottled
+// focus listener re-ran seconds of work every time the user alt-tabbed.
+const CHANGE_CHECK_MIN_INTERVAL_MS = 60_000;
 
 function latestJobByConnection(jobs: JobRecord[]): Record<string, JobRecord> {
   const latest: Record<string, JobRecord> = {};
@@ -80,10 +84,14 @@ function ConnectionsPageInner() {
 
 
   const changesGen = useRef(0);
+  // When the last change-check actually ran, so the focus listener can skip one
+  // that just happened (see CHANGE_CHECK_MIN_INTERVAL_MS).
+  const lastChangeCheckAt = useRef(0);
 
   const refreshChanges = useCallback(async (list: ConnectionRecord[]) => {
     if (list.length === 0) return;
     const gen = ++changesGen.current;
+    lastChangeCheckAt.current = Date.now();
     setChecking(true);
     const next: Record<string, SyncChanges> = {};
     const failedIds: string[] = [];
@@ -173,10 +181,17 @@ function ConnectionsPageInner() {
     });
   }, [me, refreshChanges]);
 
-  // Re-check when the tab is focused again (e.g. after editing Notion in another tab).
+  // Re-check when the tab is focused again (e.g. after editing Notion in another
+  // tab) — but throttled. A Drive change-check walks the folder tree live, one
+  // Google API call per subfolder, so an unthrottled listener put every card
+  // back into "Checking…" for seconds on every alt-tab. The explicit
+  // "Check again" button still forces one immediately.
   useEffect(() => {
     if (!me) return;
     function onFocus() {
+      if (Date.now() - lastChangeCheckAt.current < CHANGE_CHECK_MIN_INTERVAL_MS) {
+        return;
+      }
       refreshChanges(connectionsRef.current);
     }
     window.addEventListener("focus", onFocus);

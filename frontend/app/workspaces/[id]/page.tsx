@@ -28,6 +28,10 @@ import { syncPagesDetail, syncPhaseHeadline } from "@/lib/syncProgress";
 // tests/test_github_workspace_scope.py.
 const PROVIDERS: ("notion" | "google" | "github")[] = ["notion", "google", "github"];
 const ACTIVE_STATUSES = ACTIVE_JOB_STATUSES;
+// Minimum gap between window-focus-triggered change-checks. A Drive check walks
+// the folder tree live (one Google API call per subfolder), so an unthrottled
+// focus listener re-ran seconds of work every time the user alt-tabbed.
+const CHANGE_CHECK_MIN_INTERVAL_MS = 60_000;
 
 function latestJobByConnection(jobs: JobRecord[]): Record<string, JobRecord> {
   const latest: Record<string, JobRecord> = {};
@@ -109,11 +113,18 @@ function WorkspaceDetailPageInner() {
   }, [workspaceId]);
 
   const changesGen = useRef(0);
+  // When the last change-check actually ran, so the window-focus listener below
+  // can skip one that just happened. A Drive change-check is NOT cheap: it walks
+  // the folder tree live, one Google API call per subfolder (plus pagination),
+  // so re-running it every time the user tabs back to the browser meant several
+  // seconds of "Checking…" on every focus.
+  const lastChangeCheckAt = useRef(0);
 
   const refreshChanges = useCallback(
     async (list: ConnectionRecord[]) => {
       if (list.length === 0) return;
       const gen = ++changesGen.current;
+      lastChangeCheckAt.current = Date.now();
       setChecking(true);
       const next: Record<string, SyncChanges> = {};
       const failedIds: string[] = [];
@@ -272,8 +283,19 @@ function WorkspaceDetailPageInner() {
   useEffect(() => {
     if (!me) return;
     function onFocus() {
-      refreshChanges(connectionsRef.current);
+      // Refreshing the workspace itself is one cheap query — always do it, so
+      // returning to the tab reflects a sync that finished elsewhere.
       void refreshWorkspace();
+      // The change-check is not cheap (see lastChangeCheckAt): it walks the
+      // Drive folder tree live, one API call per subfolder. Re-running it on
+      // every focus put the card back into "Checking…" for seconds each time
+      // the user alt-tabbed. Once a minute is plenty for "has the source
+      // changed?", and the explicit "Check again" button still forces one
+      // immediately, which is the path that should be instant-on-demand.
+      if (Date.now() - lastChangeCheckAt.current < CHANGE_CHECK_MIN_INTERVAL_MS) {
+        return;
+      }
+      refreshChanges(connectionsRef.current);
     }
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
