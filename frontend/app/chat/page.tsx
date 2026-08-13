@@ -27,6 +27,21 @@ function ChipIcon({ kind }: { kind: "policy" | "code" }) {
 
 type AgentTab = "policy" | "github";
 
+/*
+ * Suggestion chips are refetched every time `askingCode`/`workspaceId` change
+ * (tab switch, or the readiness fetch flipping which agent is active on
+ * first load) — with no cache, that showed "Loading suggestions…" again on
+ * a value that had just been fetched seconds earlier. Same
+ * stale-while-revalidate shape as `useMe` (lib/useMe.ts): serve the cached
+ * chips instantly, then revalidate in the background, keyed per
+ * (agent, workspace) since org and workspace chips are genuinely different.
+ */
+const suggestionsCache = new Map<string, string[]>();
+
+function suggestionsCacheKey(agent: "policy" | "github", workspaceId: string | null): string {
+  return `${agent}:${workspaceId ?? "org"}`;
+}
+
 export default function ChatPage() {
   return (
     <Suspense
@@ -106,14 +121,25 @@ function ChatPageInner() {
     if (!me) return;
     let cancelled = false;
     const agent = askingCode ? "github" : "policy";
-    setSuggestionsLoading(true);
+    const cacheKey = suggestionsCacheKey(agent, workspaceId);
+    const cached = suggestionsCache.get(cacheKey);
+    if (cached) {
+      // Seed from cache so switching back to an already-fetched tab/workspace
+      // renders instantly instead of flashing "Loading suggestions…" again.
+      setSuggestedQuestions(cached);
+      setSuggestionsLoading(false);
+    } else {
+      setSuggestionsLoading(true);
+    }
     api
       .chatSuggestions(agent, workspaceId)
       .then((res) => {
-        if (!cancelled) setSuggestedQuestions(res.questions || []);
+        const questions = res.questions || [];
+        suggestionsCache.set(cacheKey, questions);
+        if (!cancelled) setSuggestedQuestions(questions);
       })
       .catch(() => {
-        if (!cancelled) setSuggestedQuestions([]);
+        if (!cancelled && !cached) setSuggestedQuestions([]);
       })
       .finally(() => {
         if (!cancelled) setSuggestionsLoading(false);
