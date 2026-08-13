@@ -3107,6 +3107,11 @@ table .role-chip.role-admin,
   grid-template-columns: 1fr 1fr;
   gap: 0.85rem;
 }
+/* Source-card-shaped placeholder, so the Sources grid doesn't reflow when the
+   real cards replace it (they are taller than the default skeleton). */
+.source-skeleton {
+  height: 11rem;
+}
 .studio-skeleton {
   height: 5.5rem;
   border-radius: 16px;

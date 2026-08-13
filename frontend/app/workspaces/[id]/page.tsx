@@ -73,6 +73,13 @@ function WorkspaceDetailPageInner() {
   const [workspace, setWorkspace] = useState<WorkspaceDetail | null>(null);
   const [members, setMembers] = useState<WorkspaceMemberRecord[]>([]);
   const [connections, setConnections] = useState<ConnectionRecord[]>([]);
+  /*
+   * See the identical field in app/admin/connections/page.tsx: an empty
+   * `connections` is indistinguishable from "nothing is connected", so the
+   * cards would offer Connect for a source this space already has — inviting a
+   * pointless fresh OAuth grant off a screen showing the wrong state.
+   */
+  const [loadingConnections, setLoadingConnections] = useState(true);
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [changesById, setChangesById] = useState<Record<string, SyncChanges>>({});
   const [checking, setChecking] = useState(false);
@@ -215,7 +222,8 @@ function WorkspaceDetailPageInner() {
         );
         refreshChanges(list);
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setLoadingConnections(false));
     api.listWorkspaceJobs(workspaceId).then((list) => {
       setJobs(list);
       const active = list.filter((j) => ACTIVE_STATUSES.has(j.status));
@@ -614,7 +622,14 @@ function WorkspaceDetailPageInner() {
                 </p>
               </div>
             </div>
-            {PROVIDERS.map((provider) => {
+            {loadingConnections &&
+              // Placeholders, not Connect cards — this space's real sources are
+              // still unknown at this point.
+              PROVIDERS.map((provider) => (
+                <div key={provider} className="studio-skeleton source-skeleton" aria-hidden />
+              ))}
+            {!loadingConnections &&
+              PROVIDERS.map((provider) => {
               const connection = connections.find((c) => c.provider === provider);
               return (
                 <ConnectionCard
@@ -654,7 +669,7 @@ function WorkspaceDetailPageInner() {
                   workspaceId={workspaceId}
                 />
               );
-            })}
+              })}
           </section>
         ) : (
           <p className="muted">Only the owner can connect or change documents for this space.</p>

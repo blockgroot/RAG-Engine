@@ -55,6 +55,19 @@ function ConnectionsPageInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [connections, setConnections] = useState<ConnectionRecord[]>([]);
+  /*
+   * Whether the connections list has been fetched yet.
+   *
+   * `connections` starting as `[]` is indistinguishable from "this org has
+   * connected nothing", so the cards used to render "Not linked yet" + a
+   * Connect button for an already-connected provider until the fetch landed.
+   * That is not just a cosmetic flash: clicking Connect on an already-connected
+   * source starts a fresh OAuth grant, which is a destructive-ish action the
+   * user was invited to take by a screen showing the wrong state. Same class of
+   * bug as the workspace owner briefly seeing the member-only view — an unknown
+   * value must not be rendered as `false`.
+   */
+  const [loadingConnections, setLoadingConnections] = useState(true);
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [changesById, setChangesById] = useState<Record<string, SyncChanges>>({});
   const [checking, setChecking] = useState(false);
@@ -162,24 +175,37 @@ function ConnectionsPageInner() {
     connectionsRef.current = connections;
   }, [connections]);
 
+  // Fired on mount rather than gated on `me`, so the session lookup and these
+  // loads run CONCURRENTLY instead of as a waterfall — the wait before the cards
+  // know their real state was two sequential round trips, not one. Both are
+  // authenticated by the same cookie, so there is nothing to wait for; an
+  // unauthenticated/non-admin caller just gets a 401/403 here and useMe's guard
+  // does the redirect.
   useEffect(() => {
-    if (!me || loaded.current) return;
+    if (loaded.current) return;
     loaded.current = true;
-    api.listConnections().then((list) => {
-      setConnections(list);
-      setReauthById(
-        Object.fromEntries(list.filter((c) => c.needs_reauth).map((c) => [c.id, true]))
-      );
-      refreshChanges(list);
-    });
+    api
+      .listConnections()
+      .then((list) => {
+        setConnections(list);
+        setReauthById(
+          Object.fromEntries(list.filter((c) => c.needs_reauth).map((c) => [c.id, true]))
+        );
+        refreshChanges(list);
+      })
+      .catch(() => {
+        /* useMe owns the auth redirect; leave the cards in their unknown state */
+      })
+      .finally(() => setLoadingConnections(false));
     api.listJobs().then((list) => {
       setJobs(list);
       const active = list.filter((j) => ACTIVE_STATUSES.has(j.status));
       if (active.length === 1) setWatchedJobId(active[0].id);
       else if (active.length > 1) setWatchedJobId(null);
       if (active.length > 0) setPollToken((n) => n + 1);
-    });
-  }, [me, refreshChanges]);
+    }).catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Re-check when the tab is focused again (e.g. after editing Notion in another
   // tab) — but throttled. A Drive change-check walks the folder tree live, one
@@ -306,15 +332,25 @@ function ConnectionsPageInner() {
           description="Connect Notion, Google Drive, and company GitHub. Spaces need their own GitHub account — never the same install as here."
           scene="sources"
           meta={
-            <>
-              <span className="studio-chip studio-chip-ok">{linkedCount} linked</span>
-              <span className="studio-chip">{PROVIDERS.length} providers</span>
-              {needsAttention > 0 ? (
-                <span className="studio-chip studio-chip-warn">{needsAttention} need attention</span>
-              ) : (
-                <span className="studio-chip studio-chip-ok">All set</span>
-              )}
-            </>
+            loadingConnections ? (
+              // Both counts are derived from `connections`, so before it loads
+              // they would confidently read "0 linked" and "3 need attention" —
+              // exactly the claim that must not be made while unknown.
+              <>
+                <span className="studio-chip">{PROVIDERS.length} providers</span>
+                <span className="studio-chip">Loading…</span>
+              </>
+            ) : (
+              <>
+                <span className="studio-chip studio-chip-ok">{linkedCount} linked</span>
+                <span className="studio-chip">{PROVIDERS.length} providers</span>
+                {needsAttention > 0 ? (
+                  <span className="studio-chip studio-chip-warn">{needsAttention} need attention</span>
+                ) : (
+                  <span className="studio-chip studio-chip-ok">All set</span>
+                )}
+              </>
+            )
           }
         />
         {message && (
@@ -336,7 +372,15 @@ function ConnectionsPageInner() {
             <p className="muted">Each source keeps its own sync boundary — never mixed across providers.</p>
           </div>
           <div className="source-bento">
-            {PROVIDERS.map((provider) => {
+            {loadingConnections
+              ? PROVIDERS.map((provider) => (
+                  // Placeholder, NOT a "Connect" card: until the list arrives we
+                  // do not know whether this provider is linked, and offering
+                  // Connect for an already-connected source invites a pointless
+                  // (and confusing) fresh OAuth grant.
+                  <div key={provider} className="studio-skeleton source-skeleton" aria-hidden />
+                ))
+              : PROVIDERS.map((provider) => {
               const connection = connections.find((c) => c.provider === provider);
               return (
                 <ConnectionCard
@@ -377,7 +421,7 @@ function ConnectionsPageInner() {
                   }}
                 />
               );
-            })}
+                })}
           </div>
         </section>
       </main>
