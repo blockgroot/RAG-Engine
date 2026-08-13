@@ -1535,6 +1535,44 @@ render.yaml                  # Render Blueprint: web service + Postgres, secrets
   collapsed into `app/api/serialize.py::job_payload` — they had already drifted
   once, and adding three fields to four places is how a field silently never
   reaches the UI.
+- **★ THE site-wide latency bug: `get_connection()` cost 5.8 server round trips
+  per query, because `register_vector` ran on every pool CHECKOUT.**
+  `app/db/connection.py` called `register_vector(conn)` inside `get_connection`
+  *in addition to* the pool's `configure` hook, on the reasoning that a
+  connection created before the `vector` extension existed (or surviving a
+  `docker compose down -v`) would otherwise dump embeddings as bare ndarrays.
+  But `register_vector` is **not a local call**: it does a `TypeInfo.fetch`
+  against `pg_type` for each of vector/bit/halfvec/sparsevec — a server round
+  trip per type. Measured against a real Postgres, **10 trivial `SELECT 1`
+  calls through `get_connection()` issued 58 round trips.** Per endpoint:
+
+  | endpoint | DB round trips before | after |
+  | --- | --- | --- |
+  | `GET /me` | **15** | **3** |
+  | `GET /workspaces` | **10** | **2** |
+
+  At the ~250ms API→DB hop this deployment actually has (US-West API,
+  `ap-south-1` database), that is ~3.8s of pure catalogue lookups on `/me`
+  alone — and it was paid by **every** query in the app, including retrieval.
+  This is the real explanation for "every page takes ~10 seconds", and it
+  dwarfed the region: the earlier `/me` 7→2 *logical* query fix helped far less
+  than expected precisely because each remaining query still carried ~12 hidden
+  ones. Fixed by `_register_vector_once` — a marker attribute on the physical
+  connection, so registration happens on connection setup (the `configure`
+  hook) and the checkout call becomes a no-op. The stale-connection property is
+  **kept**, not traded away: an unmarked connection still registers on
+  checkout; it just costs nothing once set up. Type OIDs cannot change under a
+  live connection, so re-fetching per checkout could never learn anything new;
+  after deliberately recreating the extension under a running process, call
+  `close_pool()` (tests/scripts already do). Steady state is now exactly
+  **1.00 round trip per query**. Regression:
+  `tests/test_connection_round_trips.py` — it counts round trips rather than
+  timing anything, because the cost is sub-millisecond locally (no local test
+  or profile would ever have flagged it) and only becomes visible across a
+  region boundary. **Count round trips, don't time them.** Note the counter
+  must wrap `psycopg.Cursor.execute`, not `Connection.execute`: `TypeInfo.fetch`
+  uses its own cursor, so a connection-level counter reported a reassuring
+  "1 per query" while 12 lookups went by unseen.
 - **Query-path latency: three costs removed, all behaviour-preserving, each
   measured before being changed.** The rule for this pass was "same answers,
   less work" — no gate, prompt, ranking, or scoping logic was touched.
