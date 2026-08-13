@@ -10,6 +10,7 @@ instead of appending duplicates.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
@@ -111,6 +112,39 @@ def _sanitize_removals(removed_ids: list[str], stored_count: int) -> tuple[list[
     return removed_ids, False
 
 
+# Reported live: a brand-new connection's very first sync, run within
+# seconds of the OAuth grant completing (e.g. clicking through onboarding
+# quickly), got back only an index/parent page (its real content living in
+# child pages that Notion's search index hadn't caught up on yet) --
+# "0 policy documents loaded" despite the pages being correctly shared.
+# Re-running the identical listing a few seconds later found all of them,
+# confirming this is Notion's search index lagging a fresh permission
+# grant, not a sharing problem. A single retry, scoped tightly to a FIRST
+# sync (nothing stored yet) that comes back suspiciously small, targets
+# exactly that window without slowing down any normal re-sync, which
+# already has a real baseline to fall back on if one listing is off.
+_FIRST_SYNC_RETRY_DELAY_SECONDS = 5
+_FIRST_SYNC_SUSPICIOUS_PAGE_COUNT = 1
+
+
+def _list_documents_with_first_sync_retry(
+    adapter: SourceAdapter, *, is_first_sync: bool
+) -> list[SourceRef]:
+    refs = adapter.list_documents()
+    if not is_first_sync or len(refs) > _FIRST_SYNC_SUSPICIOUS_PAGE_COUNT:
+        return refs
+    logger.info(
+        "First sync returned only %d page(s) — retrying once after %ds in "
+        "case the source's search index is still catching up on a "
+        "just-granted connection.",
+        len(refs),
+        _FIRST_SYNC_RETRY_DELAY_SECONDS,
+    )
+    time.sleep(_FIRST_SYNC_RETRY_DELAY_SECONDS)
+    retried = adapter.list_documents()
+    return retried if len(retried) > len(refs) else refs
+
+
 def detect_source_changes(
     adapter: SourceAdapter,
     org_id: str,
@@ -131,11 +165,11 @@ def detect_source_changes(
     unchanged; a sub-workspace's documents are diffed independently.
     """
     store = store or build_vector_store()
-    refs = adapter.list_documents()
     stored = {
         d.external_id: d
         for d in store.list_source_documents(org_id, provider, workspace_id=workspace_id)
     }
+    refs = _list_documents_with_first_sync_retry(adapter, is_first_sync=not stored)
 
     new_n = updated_n = unchanged_n = 0
     live_ids: set[str] = set()
@@ -250,11 +284,11 @@ def ingest_source(
             pass
 
     report("listing", 0, 0)
-    refs = adapter.list_documents()
     stored = {
         d.external_id: d
         for d in store.list_source_documents(org_id, provider, workspace_id=workspace_id)
     }
+    refs = _list_documents_with_first_sync_retry(adapter, is_first_sync=not stored)
 
     if incremental:
         to_add, to_update, removed_ids, unchanged = _plan_refs(refs, stored)
