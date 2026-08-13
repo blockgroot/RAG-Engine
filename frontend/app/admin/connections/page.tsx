@@ -10,6 +10,7 @@ import { api, ApiError, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/a
 import { ACTIVE_JOB_STATUSES, useJobPolling } from "@/lib/jobPoll";
 import { clearedSyncChanges } from "@/lib/syncChanges";
 import { syncPagesDetail, syncPhaseHeadline } from "@/lib/syncProgress";
+import { invalidateSuggestionsCache } from "@/lib/suggestionsCache";
 
 const PROVIDERS: ("notion" | "google" | "github")[] = ["notion", "google", "github"];
 const ACTIVE_STATUSES = ACTIVE_JOB_STATUSES;
@@ -270,6 +271,10 @@ function ConnectionsPageInner() {
             [connectionId]: clearedSyncChanges(connectionId),
           }));
           refreshChanges(connections);
+          // This sync just changed what's ingested org-wide — cached
+          // suggestion chips (document titles) would otherwise keep
+          // showing the pre-sync title set until a hard refresh.
+          invalidateSuggestionsCache(null);
           requestAnimationFrame(() => {
             bannerRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
           });
@@ -406,6 +411,10 @@ function ConnectionsPageInner() {
                       prev.map((c) => (c.id === updated.id ? updated : c))
                     );
                     refreshChanges([updated]);
+                    // Covers GitHub's "Refresh list" (repo set changed) and a
+                    // Drive folder change — both change what the suggestion
+                    // chips should be built from.
+                    invalidateSuggestionsCache(null);
                   }}
                   onDisconnected={(connectionId) => {
                     setConnections((prev) => prev.filter((c) => c.id !== connectionId));
@@ -419,6 +428,7 @@ function ConnectionsPageInner() {
                       delete next[connectionId];
                       return next;
                     });
+                    invalidateSuggestionsCache(null);
                     setMessage("Disconnected. Indexed docs for that source were removed.");
                   }}
                   needsReauth={Boolean(connection && (connection.needs_reauth || reauthById[connection.id]))}

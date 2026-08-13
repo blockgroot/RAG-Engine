@@ -1761,6 +1761,37 @@ render.yaml                  # Render Blueprint: web service + Postgres, secrets
   single self-hosted image, while fixing none of them. If caching genuinely
   becomes the bottleneck later, an in-process LRU is the next step; a network
   hop is the one after that, and only with signals showing it's needed.
+- **★ A single unstable `list_documents()` listing could silently delete real
+  content — reported live, guarded now.** User report: clicked Check after
+  editing ONE Notion page and got "1 new · 11 removed" on a connection that
+  had 11-12 previously-synced pages. That is not a cosmetic wording bug —
+  `detect_source_changes` and `ingest_source` (`app/ingestion/pipeline.py`)
+  both compute `removed = stored - live_ids` from a SINGLE
+  `adapter.list_documents()` call with no confirmation step, and
+  `ingest_source` **actually deletes** those rows (`store.delete_source_documents`)
+  — a transient Notion search-index lag right after an edit, a truncated
+  response, or a pagination race against a sort key that's changing mid-walk
+  can make pages that are still genuinely shared come back missing, and the
+  real Update run would delete them for real. Worse: `IngestResult.documents_removed`
+  is computed but never reaches `mark_succeeded`/the job record/the API
+  response — a real mass-deletion during Update would be **completely invisible**
+  in the UI, which only ever showed the added/updated `doc_count`. Fixed with
+  `_sanitize_removals` (shared by both functions): refuses to delete more than
+  `_MAX_REMOVAL_FRACTION` (50%) of previously-known documents in one run,
+  but ONLY once `stored_count >= _MIN_STORED_FOR_REMOVAL_GUARD` (5) — a tiny
+  connection legitimately going from 1 doc to 0 in one sync (a brand-new
+  workspace's first source, or a source that only ever had two or three pages
+  shared) is completely ordinary and must not be blocked; the guard exists for
+  the OTHER shape, a connection with real scale suddenly reporting most of it
+  gone. On trip, the run proceeds normally for adds/updates and just skips the
+  suspicious deletion, logging a warning — never a hard failure. Same "bound
+  the blast radius, never act on one unverified read" discipline as the Notion
+  fetch-size bound and the ingest memory guard below. **Still not fixed:**
+  `documents_removed` visibility into the job record/API/UI — a genuine (small,
+  under-threshold) removal is still silent today, only a *suspicious* one logs
+  anything. Tests: existing `test_incremental_sync.py` full-wipe cases (1
+  stored doc → 0) needed the absolute floor to keep passing — a fraction-only
+  guard would have wrongly blocked those.
 - **Known, deliberately unfixed: `list_chunk_texts` ignores `workspace_id`.** A
   workspace question builds its spelling dictionary from the whole *org's* chunk
   text. This is not a content leak — only vocabulary is derived and no chunk is

@@ -19,6 +19,7 @@ import {
 import { ACTIVE_JOB_STATUSES, useJobPolling } from "@/lib/jobPoll";
 import { clearedSyncChanges } from "@/lib/syncChanges";
 import { syncPagesDetail, syncPhaseHeadline } from "@/lib/syncProgress";
+import { invalidateSuggestionsCache } from "@/lib/suggestionsCache";
 
 // GitHub is now offered per workspace (it used to be org-level only). A
 // workspace owner connects their own installation, so the workspace's Code
@@ -370,6 +371,10 @@ function WorkspaceDetailPageInner() {
           }));
           refreshChanges(connections);
           void refreshWorkspace();
+          // This sync just changed what's ingested for this workspace —
+          // cached suggestion chips (document titles) would otherwise keep
+          // showing the pre-sync title set until a hard refresh.
+          invalidateSuggestionsCache(workspaceId);
           requestAnimationFrame(() => {
             bannerRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
           });
@@ -692,6 +697,10 @@ function WorkspaceDetailPageInner() {
                   onConfigSaved={(updated) => {
                     setConnections((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
                     refreshChanges([updated]);
+                    // Covers GitHub's "Refresh list" (repo set changed) and a
+                    // Drive folder change — both change what the suggestion
+                    // chips should be built from.
+                    invalidateSuggestionsCache(workspaceId);
                     void refreshWorkspace();
                   }}
                   onDisconnected={(connectionId) => {
@@ -707,6 +716,7 @@ function WorkspaceDetailPageInner() {
                       return next;
                     });
                     setMessage("Disconnected. Indexed docs for that source were removed.");
+                    invalidateSuggestionsCache(workspaceId);
                     void refreshWorkspace();
                   }}
                   needsReauth={Boolean(connection && (connection.needs_reauth || reauthById[connection.id]))}

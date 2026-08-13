@@ -9,6 +9,11 @@ import { useMe } from "@/lib/useMe";
 import { streamChat } from "@/lib/sse";
 import { api } from "@/lib/api";
 import { JOB_POLL_MS } from "@/lib/jobPoll";
+import {
+  getCachedSuggestions,
+  setCachedSuggestions,
+  suggestionsCacheKey,
+} from "@/lib/suggestionsCache";
 
 function ChipIcon({ kind }: { kind: "policy" | "code" }) {
   if (kind === "code") {
@@ -26,21 +31,6 @@ function ChipIcon({ kind }: { kind: "policy" | "code" }) {
 }
 
 type AgentTab = "policy" | "github";
-
-/*
- * Suggestion chips are refetched every time `askingCode`/`workspaceId` change
- * (tab switch, or the readiness fetch flipping which agent is active on
- * first load) — with no cache, that showed "Loading suggestions…" again on
- * a value that had just been fetched seconds earlier. Same
- * stale-while-revalidate shape as `useMe` (lib/useMe.ts): serve the cached
- * chips instantly, then revalidate in the background, keyed per
- * (agent, workspace) since org and workspace chips are genuinely different.
- */
-const suggestionsCache = new Map<string, string[]>();
-
-function suggestionsCacheKey(agent: "policy" | "github", workspaceId: string | null): string {
-  return `${agent}:${workspaceId ?? "org"}`;
-}
 
 export default function ChatPage() {
   return (
@@ -122,7 +112,7 @@ function ChatPageInner() {
     let cancelled = false;
     const agent = askingCode ? "github" : "policy";
     const cacheKey = suggestionsCacheKey(agent, workspaceId);
-    const cached = suggestionsCache.get(cacheKey);
+    const cached = getCachedSuggestions(cacheKey);
     if (cached) {
       // Seed from cache so switching back to an already-fetched tab/workspace
       // renders instantly instead of flashing "Loading suggestions…" again.
@@ -135,7 +125,7 @@ function ChatPageInner() {
       .chatSuggestions(agent, workspaceId)
       .then((res) => {
         const questions = res.questions || [];
-        suggestionsCache.set(cacheKey, questions);
+        setCachedSuggestions(cacheKey, questions);
         if (!cancelled) setSuggestedQuestions(questions);
       })
       .catch(() => {

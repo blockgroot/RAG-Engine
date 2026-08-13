@@ -28,7 +28,14 @@ function friendlyWhen(iso: string | null | undefined): string {
     d.getFullYear() === now.getFullYear() &&
     d.getMonth() === now.getMonth() &&
     d.getDate() === now.getDate();
-  const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  // hour12 forced explicitly — without it, toLocaleTimeString falls back to
+  // the browser's locale default, which is 24-hour in plenty of locales
+  // (e.g. en-GB) even when the rest of the product's copy assumes 12-hour.
+  const time = d.toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
   if (sameDay) return `today at ${time}`;
   const yesterday = new Date(now);
   yesterday.setDate(now.getDate() - 1);
