@@ -423,7 +423,21 @@ function WorkspaceDetailPageInner() {
     }
   }
 
-  if (loading || !me) {
+  // `workspace` must be loaded before rendering, not just `me`.
+  //
+  // Everything below derives from it — `isOwner`, `docsReady`, the title — and
+  // every one of those falls back to a *confident wrong answer* while it is
+  // still null: `workspace?.role === "owner"` is false, so the OWNER of a space
+  // was shown the member view ("Only the owner can connect or change documents
+  // for this space", "Waiting on the owner to connect a source") plus a "…"
+  // title and an empty member list, until the request landed. On a slow request
+  // that lasted 10-15s and looked like a real answer rather than a pending one.
+  //
+  // `isOwner === false` cannot distinguish "you are not the owner" from "we do
+  // not know yet", so the fix is to not render the branch at all until we know.
+  // `notFound` is checked first, so a genuinely inaccessible workspace still
+  // gets its own message rather than spinning forever.
+  if (loading || !me || (!workspace && !notFound)) {
     return (
       <main className="page">
         <p className="muted">Loading…</p>
