@@ -13,11 +13,15 @@ import) so URL parsing stays usable without pulling in the full adapter.
 
 from __future__ import annotations
 
+import logging
 import re
+import time
 
 import httpx
 
 from ..core.exceptions import ConfigurationError, SourceError
+
+logger = logging.getLogger(__name__)
 
 _FOLDER_MIME = "application/vnd.google-apps.folder"
 _DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files"
@@ -143,7 +147,7 @@ def _escape_drive_query_value(value: str) -> str:
 
 
 def search_drive_folders(
-    token: str, query: str = "", *, page_size: int = 20, timeout: float = 15.0
+    token: str, query: str = "", *, page_size: int = 20, timeout: float = 8.0
 ) -> list[dict]:
     """List Drive folders the connected account can see, optionally name-filtered.
 
@@ -159,12 +163,22 @@ def search_drive_folders(
 
     Raises:
         SourceError: unexpected Drive/HTTP failure (network, non-2xx).
+
+    Note on ``timeout``: this powers a type-ahead dropdown, so it is bounded far
+    below the usual API timeout deliberately. It used to be 15s, which meant a
+    slow Drive response left the picker showing "Searching…" for fifteen seconds
+    before surfacing anything — indistinguishable, to the person waiting, from a
+    permanently hung UI (reported in production). Nobody waits 8s for a dropdown
+    either, but at least the failure becomes an actionable error instead of an
+    endless spinner. The user can always paste a folder URL instead, which needs
+    no search at all.
     """
     q_parts = [f"mimeType='{_FOLDER_MIME}'", "trashed=false"]
     clean_query = (query or "").strip()
     if clean_query:
         q_parts.append(f"name contains '{_escape_drive_query_value(clean_query)}'")
 
+    started = time.monotonic()
     try:
         response = httpx.get(
             _DRIVE_FILES_URL,
@@ -181,6 +195,16 @@ def search_drive_folders(
         )
     except httpx.HTTPError as exc:
         raise SourceError(f"Google Drive files.list failed: {exc}", cause=exc) from exc
+    finally:
+        # Logged because this call is the one part of the folder picker we cannot
+        # measure from outside: a slow picker could be our own DB round trips,
+        # the token refresh, or Drive itself, and guessing between them is how
+        # the ingest OOM took four attempts to diagnose. `elapsed` attributes it.
+        logger.info(
+            "drive.folder_search elapsed=%.2fs filtered=%s",
+            time.monotonic() - started,
+            bool(clean_query),
+        )
 
     if response.status_code >= 400:
         raise SourceError(
