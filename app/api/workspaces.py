@@ -15,14 +15,18 @@ closed instead of ever resolving (see app/workspaces/store.py::assert_member).
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from ..auth import (
+    create_magic_link_token,
     get_connection_config,
     get_live_connection_token,
+    get_user,
     list_connections,
+    send_workspace_invite_email_safe,
     set_connection_config,
 )
+from ..config.settings import ApiSettings
 from ..core.exceptions import (
     AuthError,
     ConfigurationError,
@@ -170,12 +174,52 @@ def get_members(workspace_id: str, _role: str = Depends(get_workspace_role)):
     return list_workspace_members(workspace_id)
 
 
+def _workspace_name(org_id: str, workspace_id: str) -> str | None:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT name FROM workspaces WHERE id = %s AND org_id = %s",
+            (workspace_id, org_id),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def _notify_workspace_invite(
+    workspace_id: str,
+    session: SessionClaims,
+    email: str,
+    background_tasks: BackgroundTasks,
+    settings: ApiSettings,
+) -> None:
+    """Email a sign-in shortcut for a workspace membership that ALREADY exists.
+
+    Membership is granted by the caller (an insert into ``workspace_members``)
+    before this ever runs — this only sends a courtesy notification, never a
+    gate. If the token inside ``link`` expires unused, the person is not
+    locked out: they sign in the ordinary way from the login page, and the
+    workspace is already sitting in their list, independent of this email.
+    """
+    workspace_name = _workspace_name(session.org_id, workspace_id) or "your workspace"
+    inviter = get_user(session.user_id)
+    token = create_magic_link_token(email)
+    base = (settings.frontend_url or "").rstrip("/")
+    link = f"{base}/verify?token={token}"
+    background_tasks.add_task(
+        send_workspace_invite_email_safe,
+        email,
+        link,
+        workspace_name=workspace_name,
+        inviter_email=inviter.email if inviter else None,
+    )
+
+
 @router.post("/{workspace_id}/members")
 def invite(
     workspace_id: str,
     body: dict,
+    background_tasks: BackgroundTasks,
     session: SessionClaims = Depends(get_session),
     _role: str = Depends(require_workspace_owner),
+    settings: ApiSettings = Depends(ApiSettings.from_env),
 ):
     email = bounded(
         (body.get("email") or "").strip().lower(),
@@ -188,7 +232,33 @@ def invite(
         invite_member(workspace_id, session.org_id, session.user_id, email)
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _notify_workspace_invite(workspace_id, session, email, background_tasks, settings)
     return {"status": "invited", "email": email}
+
+
+@router.post("/{workspace_id}/members/{user_id}/resend-invite")
+def resend_invite(
+    workspace_id: str,
+    user_id: str,
+    background_tasks: BackgroundTasks,
+    session: SessionClaims = Depends(get_session),
+    _role: str = Depends(require_workspace_owner),
+    settings: ApiSettings = Depends(ApiSettings.from_env),
+):
+    """Re-send the workspace-invite notification email.
+
+    Never re-creates or re-validates membership — that already happened when
+    they were first added. Purely re-sends the same courtesy email with a
+    fresh sign-in link, for a colleague who missed the first one or let its
+    (short-lived) token age out before opening it.
+    """
+    match = next(
+        (m for m in list_workspace_members(workspace_id) if m["user_id"] == user_id), None
+    )
+    if match is None:
+        raise HTTPException(status_code=404, detail="Not a member of this workspace")
+    _notify_workspace_invite(workspace_id, session, match["email"], background_tasks, settings)
+    return {"status": "invited", "email": match["email"]}
 
 
 @router.post("/{workspace_id}/members/{user_id}/make-owner")

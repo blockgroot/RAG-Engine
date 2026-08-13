@@ -99,6 +99,7 @@ function WorkspaceDetailPageInner() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviting, setInviting] = useState(false);
   const [makeOwnerBusy, setMakeOwnerBusy] = useState<string | null>(null);
+  const [resendBusy, setResendBusy] = useState<string | null>(null);
   const [deletingSpace, setDeletingSpace] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteMessage, setInviteMessage] = useState<string | null>(null);
@@ -400,6 +401,21 @@ function WorkspaceDetailPageInner() {
     }
   }
 
+  async function handleResendInvite(userId: string, email: string) {
+    if (resendBusy) return;
+    setResendBusy(userId);
+    setInviteError(null);
+    setInviteMessage(null);
+    try {
+      await api.resendWorkspaceInvite(workspaceId, userId);
+      setInviteMessage(`Invite email resent to ${email}.`);
+    } catch (err) {
+      setInviteError(err instanceof Error ? err.message : "Could not resend that invite.");
+    } finally {
+      setResendBusy(null);
+    }
+  }
+
   async function handleInvite(e: React.FormEvent) {
 
     e.preventDefault();
@@ -591,6 +607,17 @@ function WorkspaceDetailPageInner() {
                 <span>{m.email}</span>
                 <span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
                   <span className="badge">{m.role === "owner" ? "Owner" : "Member"}</span>
+                  {isOwner && m.role === "member" && (
+                    <button
+                      type="button"
+                      className="button button-secondary"
+                      disabled={resendBusy === m.user_id}
+                      onClick={() => handleResendInvite(m.user_id, m.email)}
+                      title="They already have access — this just re-sends the sign-in email in case the first one was missed or its link expired."
+                    >
+                      {resendBusy === m.user_id ? "…" : "Resend invite"}
+                    </button>
+                  )}
                   {isOwner && m.role === "member" && (
                     <button
                       type="button"

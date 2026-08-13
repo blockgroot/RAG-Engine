@@ -385,6 +385,11 @@ export const api = {
       `/workspaces/${workspaceId}/members/${userId}/make-owner`,
       { method: "POST" }
     ),
+  resendWorkspaceInvite: (workspaceId: string, userId: string) =>
+    request<{ status: string; email: string }>(
+      `/workspaces/${workspaceId}/members/${userId}/resend-invite`,
+      { method: "POST" }
+    ),
   listWorkspaceConnections: (workspaceId: string) =>
     request<ConnectionRecord[]>(`/workspaces/${workspaceId}/connections`),
   searchWorkspaceConnectionDriveFolders: (workspaceId: string, connectionId: string, q: string) =>

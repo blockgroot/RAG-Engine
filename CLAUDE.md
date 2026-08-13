@@ -661,6 +661,25 @@ their policy documents; their employees ask questions and get answers grounded i
   unauthorized, worker ingest); cleared on reconnect or a successful live call;
   returned on Sources list so Reconnect survives reload. Auth-shaped
   ``SourceError`` maps to ``oauth_reauth_required`` (not only Google refresh).
+- **Workspace invites now email a courtesy sign-in notification — this closed
+  a real UX gap, not a bug fix.** Before this, `POST /workspaces/{id}/members`
+  (`app/workspaces/store.py::invite_member`) inserted the `workspace_members`
+  row and returned — no email, no notification of any kind. The invitee found
+  out purely by logging in later and noticing the new workspace in their list.
+  `app/api/workspaces.py::_notify_workspace_invite` (shared by `invite()` and
+  the new `POST /workspaces/{id}/members/{user_id}/resend-invite`, owner-only)
+  now emails a magic-link sign-in shortcut via `send_workspace_invite_email_safe`
+  (`app/auth/email.py`) after membership is already granted. Deliberately NOT
+  a bespoke invite-token system: since the invitee must already be an org
+  member (`invite_member` requires an existing `users` row, never creates
+  one), they can always sign in via the ordinary `request_magic_link` flow
+  regardless of this email — so the emailed token expiring (10 min default,
+  `AUTH_MAGIC_LINK_TTL_MINUTES`) never locks anyone out, it only costs the
+  one-click convenience. Resend re-sends the same notification; it never
+  re-validates or re-creates membership. Does NOT deep-link straight into the
+  workspace after verify — `verify_magic_link` always lands on `/` today: no
+  `next` param support was added, to avoid an open-redirect surface for a
+  first pass. Revisit if that landing-page hop becomes a real complaint.
 - **Workspace-within-a-Workspace: a `workspace_id` isolation axis nests INSIDE
   `org_id`, everywhere `org_id` already scopes a row — it never replaces it.**
   An employee can create a personal sub-workspace inside their own org, invite
