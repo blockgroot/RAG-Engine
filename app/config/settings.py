@@ -25,6 +25,16 @@ DEFAULT_CHUNK_OVERLAP = 40
 # CANNOT fit alongside the API in a 512MB box — opt in only where memory allows
 # (see app/ingestion/chunk_tokens.py for the measurements).
 DEFAULT_CHUNK_TOKEN_BACKEND = "heuristic"
+# Absolute per-chunk character ceiling — a backstop on the TOKEN budget above,
+# not a second way to express it. Token counts (exact or estimated) can be
+# arbitrarily wrong on text no tokenizer segments the way prose is segmented:
+# measured against the real BGE-M3 tokenizer, a run of base64 bills 1 token per
+# CHARACTER, so the heuristic under-counts it 16x. Since 1 token/char is the
+# worst case any input can reach, bounding characters bounds tokens outright —
+# 4000 chars can never exceed the embedding model's 8192-token limit, whatever
+# the content. A legitimate 256-token prose chunk is ~1000-1300 chars, so this
+# never fires on real documents (the golden corpus tops out at 505).
+DEFAULT_MAX_CHUNK_CHARS = 4000
 
 DEFAULT_VECTOR_STORE_BACKEND = "pgvector"
 
@@ -303,12 +313,16 @@ class ChunkingSettings:
     chunk_size: int = DEFAULT_CHUNK_SIZE
     chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
     token_backend: str = DEFAULT_CHUNK_TOKEN_BACKEND
+    max_chunk_chars: int = DEFAULT_MAX_CHUNK_CHARS
 
     @classmethod
     def from_env(cls) -> "ChunkingSettings":
         return cls(
             chunk_size=int(os.getenv("CHUNK_SIZE") or DEFAULT_CHUNK_SIZE),
             chunk_overlap=int(os.getenv("CHUNK_OVERLAP") or DEFAULT_CHUNK_OVERLAP),
+            max_chunk_chars=int(
+                os.getenv("CHUNK_MAX_CHARS") or DEFAULT_MAX_CHUNK_CHARS
+            ),
             token_backend=(
                 os.getenv("CHUNK_TOKEN_BACKEND") or DEFAULT_CHUNK_TOKEN_BACKEND
             ).strip().lower(),

@@ -1093,6 +1093,50 @@ render.yaml                  # Render Blueprint: web service + Postgres, secrets
   of chunks exceeded budget** either way (17 chunks vs 15). Regression:
   `tests/test_chunk_token_backend.py`, which asserts `transformers`/`tokenizers`
   /`torch` stay out of `sys.modules` across a real chunking run.
+- **Every splitter in `chunking.py` needs a LINGUISTIC boundary, so text with
+  none defeated all of them — the last-resort split is now on CHARACTERS
+  (`CHUNK_MAX_CHARS`, default 4000).** Live failure on a Drive sync:
+  `Embedding API error: Error code: 400 ... Input text exceeds the model's
+  maximum of 8194 tokens ... INPUT_TOKEN_LIMIT_EXCEEDED`. `chunk_text` splits on
+  paragraphs, then `_hard_split` on sentences, then on `" "` — a whitespace-free
+  run has no paragraph, no sentence and no word break, so `_hard_split`
+  returned it *whole*: measured, a 48KB base64 blob produced exactly **one
+  chunk of 48,022 chars**, which the embedding endpoint rejected, failing that
+  document's ingest (and every document after it in the run). Real sources of
+  such a run: a base64 data URI or a long signed `googleusercontent` link in a
+  Google Doc exported to Markdown, a minified blob pasted into a page, or an
+  unsegmented CJK paragraph.
+  **The token budget was not merely wrong here, it was structurally incapable
+  of catching it** — measured against the real BGE-M3 tokenizer:
+
+  | content | chars | real tokens | heuristic est | est/real |
+  | --- | --- | --- | --- | --- |
+  | prose | 1060 | 221 | 261 | **1.18** (safe) |
+  | base64 | 4000 | 4000 | 251 | **0.06** |
+  | long URL | 2436 | 2113 | 165 | **0.08** |
+  | CJK | 1800 | 901 | 113 | **0.13** |
+
+  Base64 bills **1 real token per character**. A candidate re-calibration was
+  tried and rejected: billing long tokens per-char fixed base64 to 0.50 but
+  doubled prose to 2.01, i.e. it would have halved real chunk sizes to defend
+  against input this corpus doesn't contain. Chasing arbitrary input with an
+  estimator is a losing game, so the fix is a bound that **cannot be fooled**:
+  since 1 token/char is the worst case *anything* can reach, capping characters
+  caps tokens outright. 4000 chars → ≤4000 real tokens, half the 8192 window,
+  for every case above. Same shape as the Notion fetch and GitHub diff caps —
+  bound the thing itself, don't estimate it.
+  **Verified behaviour-preserving**: chunk-for-chunk byte-identical output
+  across the golden corpus + long prose + a Markdown table (12 documents, 0
+  differences), because a legitimate 256-token prose chunk is ~1000–1300 chars
+  and the golden corpus tops out at 505. Tests in `tests/test_chunking.py` pin
+  the blob/CJK/no-space cases *and* that the ceiling never fires on prose.
+  `app/api/chat.py`'s `MAX_QUESTION_CHARS` (4000) closes the same hole on the
+  query side — the question is embedded verbatim, so a pasted wall of text
+  would have produced the identical 400 as an opaque 500 mid-stream.
+  **Known, accepted:** a chunk of genuinely unsegmented text (CJK, base64) can
+  still be far over the *token* budget (up to ~4000) — it embeds fine but is a
+  poor retrieval unit. Correct for an English policy corpus, and strictly
+  better than failing the sync; revisit if a CJK tenant appears.
 - **★ Why one bad job took the WHOLE deployment down repeatedly — and the
   structural fix that makes this class of incident impossible regardless of
   cause.** `requeue_interrupted_running()` returned every orphaned `running`
