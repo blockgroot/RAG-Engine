@@ -19,6 +19,7 @@ import {
 import { ACTIVE_JOB_STATUSES, useJobPolling } from "@/lib/jobPoll";
 import { clearedSyncChanges } from "@/lib/syncChanges";
 import { syncPagesDetail, syncPhaseHeadline } from "@/lib/syncProgress";
+import { invalidateSuggestionsCache } from "@/lib/suggestionsCache";
 
 // GitHub is now offered per workspace (it used to be org-level only). A
 // workspace owner connects their own installation, so the workspace's Code
@@ -99,6 +100,7 @@ function WorkspaceDetailPageInner() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviting, setInviting] = useState(false);
   const [makeOwnerBusy, setMakeOwnerBusy] = useState<string | null>(null);
+  const [resendBusy, setResendBusy] = useState<string | null>(null);
   const [deletingSpace, setDeletingSpace] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteMessage, setInviteMessage] = useState<string | null>(null);
@@ -369,6 +371,10 @@ function WorkspaceDetailPageInner() {
           }));
           refreshChanges(connections);
           void refreshWorkspace();
+          // This sync just changed what's ingested for this workspace —
+          // cached suggestion chips (document titles) would otherwise keep
+          // showing the pre-sync title set until a hard refresh.
+          invalidateSuggestionsCache(workspaceId);
           requestAnimationFrame(() => {
             bannerRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
           });
@@ -397,6 +403,21 @@ function WorkspaceDetailPageInner() {
       setInviteError(err instanceof Error ? err.message : "Could not make that person an owner.");
     } finally {
       setMakeOwnerBusy(null);
+    }
+  }
+
+  async function handleResendInvite(userId: string, email: string) {
+    if (resendBusy) return;
+    setResendBusy(userId);
+    setInviteError(null);
+    setInviteMessage(null);
+    try {
+      await api.resendWorkspaceInvite(workspaceId, userId);
+      setInviteMessage(`Invite email resent to ${email}.`);
+    } catch (err) {
+      setInviteError(err instanceof Error ? err.message : "Could not resend that invite.");
+    } finally {
+      setResendBusy(null);
     }
   }
 
@@ -595,6 +616,17 @@ function WorkspaceDetailPageInner() {
                     <button
                       type="button"
                       className="button button-secondary"
+                      disabled={resendBusy === m.user_id}
+                      onClick={() => handleResendInvite(m.user_id, m.email)}
+                      title="They already have access — this just re-sends the sign-in email in case the first one was missed or its link expired."
+                    >
+                      {resendBusy === m.user_id ? "…" : "Resend invite"}
+                    </button>
+                  )}
+                  {isOwner && m.role === "member" && (
+                    <button
+                      type="button"
+                      className="button button-secondary"
                       disabled={makeOwnerBusy === m.user_id}
                       onClick={() => handleMakeOwner(m.user_id, m.email)}
                     >
@@ -665,6 +697,10 @@ function WorkspaceDetailPageInner() {
                   onConfigSaved={(updated) => {
                     setConnections((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
                     refreshChanges([updated]);
+                    // Covers GitHub's "Refresh list" (repo set changed) and a
+                    // Drive folder change — both change what the suggestion
+                    // chips should be built from.
+                    invalidateSuggestionsCache(workspaceId);
                     void refreshWorkspace();
                   }}
                   onDisconnected={(connectionId) => {
@@ -680,6 +716,7 @@ function WorkspaceDetailPageInner() {
                       return next;
                     });
                     setMessage("Disconnected. Indexed docs for that source were removed.");
+                    invalidateSuggestionsCache(workspaceId);
                     void refreshWorkspace();
                   }}
                   needsReauth={Boolean(connection && (connection.needs_reauth || reauthById[connection.id]))}

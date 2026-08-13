@@ -661,6 +661,25 @@ their policy documents; their employees ask questions and get answers grounded i
   unauthorized, worker ingest); cleared on reconnect or a successful live call;
   returned on Sources list so Reconnect survives reload. Auth-shaped
   ``SourceError`` maps to ``oauth_reauth_required`` (not only Google refresh).
+- **Workspace invites now email a courtesy sign-in notification — this closed
+  a real UX gap, not a bug fix.** Before this, `POST /workspaces/{id}/members`
+  (`app/workspaces/store.py::invite_member`) inserted the `workspace_members`
+  row and returned — no email, no notification of any kind. The invitee found
+  out purely by logging in later and noticing the new workspace in their list.
+  `app/api/workspaces.py::_notify_workspace_invite` (shared by `invite()` and
+  the new `POST /workspaces/{id}/members/{user_id}/resend-invite`, owner-only)
+  now emails a magic-link sign-in shortcut via `send_workspace_invite_email_safe`
+  (`app/auth/email.py`) after membership is already granted. Deliberately NOT
+  a bespoke invite-token system: since the invitee must already be an org
+  member (`invite_member` requires an existing `users` row, never creates
+  one), they can always sign in via the ordinary `request_magic_link` flow
+  regardless of this email — so the emailed token expiring (10 min default,
+  `AUTH_MAGIC_LINK_TTL_MINUTES`) never locks anyone out, it only costs the
+  one-click convenience. Resend re-sends the same notification; it never
+  re-validates or re-creates membership. Does NOT deep-link straight into the
+  workspace after verify — `verify_magic_link` always lands on `/` today: no
+  `next` param support was added, to avoid an open-redirect surface for a
+  first pass. Revisit if that landing-page hop becomes a real complaint.
 - **Workspace-within-a-Workspace: a `workspace_id` isolation axis nests INSIDE
   `org_id`, everywhere `org_id` already scopes a row — it never replaces it.**
   An employee can create a personal sub-workspace inside their own org, invite
@@ -1742,6 +1761,37 @@ render.yaml                  # Render Blueprint: web service + Postgres, secrets
   single self-hosted image, while fixing none of them. If caching genuinely
   becomes the bottleneck later, an in-process LRU is the next step; a network
   hop is the one after that, and only with signals showing it's needed.
+- **★ A single unstable `list_documents()` listing could silently delete real
+  content — reported live, guarded now.** User report: clicked Check after
+  editing ONE Notion page and got "1 new · 11 removed" on a connection that
+  had 11-12 previously-synced pages. That is not a cosmetic wording bug —
+  `detect_source_changes` and `ingest_source` (`app/ingestion/pipeline.py`)
+  both compute `removed = stored - live_ids` from a SINGLE
+  `adapter.list_documents()` call with no confirmation step, and
+  `ingest_source` **actually deletes** those rows (`store.delete_source_documents`)
+  — a transient Notion search-index lag right after an edit, a truncated
+  response, or a pagination race against a sort key that's changing mid-walk
+  can make pages that are still genuinely shared come back missing, and the
+  real Update run would delete them for real. Worse: `IngestResult.documents_removed`
+  is computed but never reaches `mark_succeeded`/the job record/the API
+  response — a real mass-deletion during Update would be **completely invisible**
+  in the UI, which only ever showed the added/updated `doc_count`. Fixed with
+  `_sanitize_removals` (shared by both functions): refuses to delete more than
+  `_MAX_REMOVAL_FRACTION` (50%) of previously-known documents in one run,
+  but ONLY once `stored_count >= _MIN_STORED_FOR_REMOVAL_GUARD` (5) — a tiny
+  connection legitimately going from 1 doc to 0 in one sync (a brand-new
+  workspace's first source, or a source that only ever had two or three pages
+  shared) is completely ordinary and must not be blocked; the guard exists for
+  the OTHER shape, a connection with real scale suddenly reporting most of it
+  gone. On trip, the run proceeds normally for adds/updates and just skips the
+  suspicious deletion, logging a warning — never a hard failure. Same "bound
+  the blast radius, never act on one unverified read" discipline as the Notion
+  fetch-size bound and the ingest memory guard below. **Still not fixed:**
+  `documents_removed` visibility into the job record/API/UI — a genuine (small,
+  under-threshold) removal is still silent today, only a *suspicious* one logs
+  anything. Tests: existing `test_incremental_sync.py` full-wipe cases (1
+  stored doc → 0) needed the absolute floor to keep passing — a fraction-only
+  guard would have wrongly blocked those.
 - **Known, deliberately unfixed: `list_chunk_texts` ignores `workspace_id`.** A
   workspace question builds its spelling dictionary from the whole *org's* chunk
   text. This is not a content leak — only vocabulary is derived and no chunk is
@@ -2337,6 +2387,20 @@ does it decline when handed no evidence?) lives in
 story doesn't cover). That walkthrough is also what settles risk **T3** (§4): the
 `state` round-trip through the install redirect is unverified. Everything above
 was proven offline with faked HTTP.
+
+**Cross-region latency fix applied 2026-08-13.** `render.yaml`'s
+`region: singapore` (previously written but commented out — see the
+"REGION" header comment) is now live, matching the live deployment's
+confirmed Supabase region (`ap-south-1`, Mumbai). This does **not** apply to
+an already-running Render service — region is fixed at creation — so this
+only takes effect once someone deploys a **new** Blueprint service from
+this file (point it at the same `DATABASE_URL`, update Vercel's
+`API_PROXY_TARGET` to the new URL, then delete the old Oregon service).
+Until that redeploy happens, the old service is still paying the ~250ms/query
+cross-Pacific tax this was meant to remove. Cold starts on the `free` plan
+are unaffected by this — user confirmed staying on `free` for now, so the
+~30-90s cold-start-on-click after 15 min idle remains a known, accepted
+limitation (only `starter` removes it).
 
 **Backend deployment (Docker + Render Blueprint).** Adds a `Dockerfile` +
 `requirements-deploy.txt` + `scripts/docker-entrypoint.sh` + `render.yaml` —

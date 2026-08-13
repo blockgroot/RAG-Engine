@@ -57,6 +57,8 @@ from .session import SessionClaims, create_session_token, decode_session_token
 from .email import (
     send_magic_link_email,
     send_magic_link_email_safe,
+    send_workspace_invite_email,
+    send_workspace_invite_email_safe,
     send_signup_approved_email,
     send_signup_approved_email_safe,
     send_signup_rejected_email,
@@ -116,6 +118,8 @@ __all__ = [
     "decode_session_token",
     "send_magic_link_email",
     "send_magic_link_email_safe",
+    "send_workspace_invite_email",
+    "send_workspace_invite_email_safe",
     "send_signup_approved_email",
     "send_signup_approved_email_safe",
     "send_signup_rejected_email",

@@ -75,6 +75,42 @@ class IngestResult:
     ingested_external_ids: list[str] = field(default_factory=list)
 
 
+# A single unstable `list_documents()` call — a Notion search-index lag right
+# after an edit, a rate-limited/truncated response, a pagination race against
+# a page whose sort key (last_edited_time) is changing mid-walk — can make
+# pages that are still genuinely shared come back missing. Removal is
+# DESTRUCTIVE in ingest_source (real chunks/embeddings deleted) and there is
+# no confirmation step before it runs, so a transient listing glitch would
+# silently wipe real content. Same "bound the blast radius, never act on one
+# unverified read" discipline as the Notion fetch-size bound and the ingest
+# memory guard elsewhere in this module — never let one bad snapshot delete
+# most of what we already know about.
+_MAX_REMOVAL_FRACTION = 0.5
+# Below this many previously-known documents, a full wipe is ordinary —
+# emptying a brand-new workspace's one-doc connection, or a source that only
+# ever had two or three pages shared, removes 100% of them in a single
+# legitimate sync. The guard exists for the OTHER shape: a sync with real
+# scale (dozens of documents) suddenly reporting most of them gone, which is
+# far more likely to be a bad read than a real mass-unshare.
+_MIN_STORED_FOR_REMOVAL_GUARD = 5
+
+
+def _sanitize_removals(removed_ids: list[str], stored_count: int) -> tuple[list[str], bool]:
+    """Refuse a removal set that would wipe out most of what's on record.
+
+    A handful of genuinely unshared/deleted pages always passes through
+    untouched — this only trips once there's real scale on record AND a
+    single listing call claims most of it vanished at once, which real-world
+    unsharing essentially never does at that scale but a flaky API response
+    can.
+    """
+    if not removed_ids or stored_count < _MIN_STORED_FOR_REMOVAL_GUARD:
+        return removed_ids, False
+    if len(removed_ids) / stored_count > _MAX_REMOVAL_FRACTION:
+        return [], True
+    return removed_ids, False
+
+
 def detect_source_changes(
     adapter: SourceAdapter,
     org_id: str,
@@ -118,11 +154,20 @@ def detect_source_changes(
         else:
             unchanged_n += 1
 
-    removed_n = sum(1 for eid in stored if eid not in live_ids)
+    removed_ids = [eid for eid in stored if eid not in live_ids]
+    safe_removed, suspicious = _sanitize_removals(removed_ids, len(stored))
+    if suspicious:
+        logger.warning(
+            "detect_source_changes: %d of %d previously known documents look "
+            "removed for org=%s provider=%s workspace=%s in a single listing "
+            "call — treating as an unreliable/transient read, not a real mass "
+            "removal. Reporting 0 removed.",
+            len(removed_ids), len(stored), org_id, provider, workspace_id,
+        )
     return ChangeReport(
         new_count=new_n,
         updated_count=updated_n,
-        removed_count=removed_n,
+        removed_count=len(safe_removed),
         unchanged_count=unchanged_n,
         remote_total=len(refs),
     )
@@ -219,6 +264,19 @@ def ingest_source(
         live_ids = {r.external_id for r in refs}
         removed_ids = [eid for eid in stored if eid not in live_ids]
         unchanged = 0
+
+    removed_ids, suspicious_removal = _sanitize_removals(removed_ids, len(stored))
+    if suspicious_removal:
+        logger.warning(
+            "ingest_source: refusing to delete a suspiciously large share of "
+            "previously known documents for org=%s provider=%s workspace=%s in "
+            "one run — this looks like an unreliable/transient source listing "
+            "(pagination race, indexing lag, rate limit) rather than a real "
+            "mass unshare/delete. Skipping removal this run; re-run once the "
+            "source's listing is confirmed stable if pages were genuinely "
+            "removed.",
+            org_id, provider, workspace_id,
+        )
 
     removed_n = (
         store.delete_source_documents(org_id, provider, removed_ids, workspace_id=workspace_id)

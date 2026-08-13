@@ -98,6 +98,11 @@ python scripts/init_db.py # create the schema
 python scripts/cli.py
 
 # HTTP API
+# --reload is fine with EMBEDDING_BACKEND=remote / RERANKER_BACKEND=remote
+# (the default in .env.example). If you switch either to `local`, drop
+# --reload for anything perf-sensitive: every file-save respawn re-triggers
+# startup model warmup and reloads the multi-GB BGE-M3/reranker weights,
+# which can push a 16GB machine into swap (see CLAUDE.md §4).
 uvicorn app.api.main:app --reload
 
 # Ingestion worker (for admin-triggered syncs)

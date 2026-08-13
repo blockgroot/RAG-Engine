@@ -9,6 +9,11 @@ import { useMe } from "@/lib/useMe";
 import { streamChat } from "@/lib/sse";
 import { api } from "@/lib/api";
 import { JOB_POLL_MS } from "@/lib/jobPoll";
+import {
+  getCachedSuggestions,
+  setCachedSuggestions,
+  suggestionsCacheKey,
+} from "@/lib/suggestionsCache";
 
 function ChipIcon({ kind }: { kind: "policy" | "code" }) {
   if (kind === "code") {
@@ -106,14 +111,25 @@ function ChatPageInner() {
     if (!me) return;
     let cancelled = false;
     const agent = askingCode ? "github" : "policy";
-    setSuggestionsLoading(true);
+    const cacheKey = suggestionsCacheKey(agent, workspaceId);
+    const cached = getCachedSuggestions(cacheKey);
+    if (cached) {
+      // Seed from cache so switching back to an already-fetched tab/workspace
+      // renders instantly instead of flashing "Loading suggestions…" again.
+      setSuggestedQuestions(cached);
+      setSuggestionsLoading(false);
+    } else {
+      setSuggestionsLoading(true);
+    }
     api
       .chatSuggestions(agent, workspaceId)
       .then((res) => {
-        if (!cancelled) setSuggestedQuestions(res.questions || []);
+        const questions = res.questions || [];
+        setCachedSuggestions(cacheKey, questions);
+        if (!cancelled) setSuggestedQuestions(questions);
       })
       .catch(() => {
-        if (!cancelled) setSuggestedQuestions([]);
+        if (!cancelled && !cached) setSuggestedQuestions([]);
       })
       .finally(() => {
         if (!cancelled) setSuggestionsLoading(false);

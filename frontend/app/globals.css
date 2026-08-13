@@ -2957,6 +2957,19 @@ table .role-chip.role-admin,
   align-items: flex-start;
   gap: 0.75rem;
 }
+/* Same fix as .workspace-tile-top .badge above: without flex-shrink: 0 the
+   pill is a flex item with no explicit basis, so its default min-width:auto
+   lets it shrink to its longest WORD once the row gets tight (GitHub's
+   longer title pushes it there) and "Not linked yet" wraps mid-phrase. A
+   shared min-width also keeps Linked / Not linked yet / Coming soon reading
+   as the same pill shape instead of three different widths. */
+.source-studio-top .badge {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  white-space: nowrap;
+  min-width: 6.75rem;
+  text-align: center;
+}
 .source-studio-title {
   display: flex;
   align-items: flex-start;

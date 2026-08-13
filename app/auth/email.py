@@ -235,6 +235,43 @@ def send_magic_link_email_safe(to: str, link: str) -> None:
         logger.warning("Magic-link email to %s failed: %s", to, exc)
 
 
+def send_workspace_invite_email(
+    to: str,
+    link: str,
+    *,
+    workspace_name: str,
+    inviter_email: str | None = None,
+    settings: EmailSettings | None = None,
+) -> None:
+    """Sent when an existing org member is added to someone's personal
+    sub-workspace (Workspace-within-a-Workspace). Membership is already
+    granted in the DB by the time this fires, so this is a courtesy
+    notification with a sign-in shortcut, never a gate: if the link's token
+    expires unused, the person still has access and can sign in the
+    ordinary way from the login page, where the workspace is already
+    waiting in their list."""
+    who = f"{inviter_email} added you" if inviter_email else "You've been added"
+    body = (
+        f'{who} to the "{workspace_name}" workspace.\n\n'
+        f"Click to sign in (expires shortly, single use):\n\n{link}\n\n"
+        "If this link has expired, just sign in normally from the login "
+        "page — the workspace will already be there.\n"
+    )
+    _dispatch(to, f'You’ve been added to "{workspace_name}"', body, settings)
+
+
+def send_workspace_invite_email_safe(
+    to: str, link: str, *, workspace_name: str, inviter_email: str | None = None
+) -> None:
+    """Background-task wrapper: never raise into the request lifecycle."""
+    try:
+        send_workspace_invite_email(
+            to, link, workspace_name=workspace_name, inviter_email=inviter_email
+        )
+    except (ConfigurationError, ProviderError) as exc:
+        logger.warning("Workspace-invite email to %s failed: %s", to, exc)
+
+
 def send_signup_approved_email(
     to: str, link: str, *, settings: EmailSettings | None = None
 ) -> None:

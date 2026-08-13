@@ -57,7 +57,16 @@
 # afterwards; OAuth redirect URIs point at the FRONTEND origin (see the header
 # comment above), so they are unaffected.
 #
-# region: singapore
+# CONFIRMED 2026-08-13: this deployment's DATABASE_URL is Supabase ap-south-1
+# (Mumbai) — region below is now set to close that gap. Applying this to an
+# EXISTING Render service does nothing (region is fixed at creation); you
+# must create a new Blueprint-deployed service from this file, point it at
+# the same DATABASE_URL, update Vercel's API_PROXY_TARGET to the new
+# service's URL, then delete the old (Oregon) service. This does not remove
+# free-plan cold starts (only a paid plan does) — it removes the ~250ms
+# per-query cross-Pacific tax that was multiplying every request's round
+# trips (GET /me, /chat/suggestions, disconnect, etc.) by its own query count.
+region: singapore
 
 services:
   - type: web
