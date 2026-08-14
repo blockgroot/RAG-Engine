@@ -3075,8 +3075,18 @@ table .role-chip.role-admin,
 /* Single column: each space is a full-width horizontal row, stacked
    vertically, not a multi-column card grid -- a card grid was squeezing
    names into narrow columns and forcing them to wrap/truncate even with
-   plenty of horizontal room available. */
-.spaces-bento { display: flex; flex-direction: column; gap: 0.75rem; }
+   plenty of horizontal room available. Capped + scrollable (same pattern
+   as .chat-log) so a growing space list scrolls in place instead of pushing
+   the page taller than the "Create a space" panel beside it forever. */
+.spaces-bento {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-height: 26rem;
+  overflow-y: auto;
+  padding-right: 0.35rem;
+  scroll-behavior: smooth;
+}
 .workspace-tile {
   display: grid;
   grid-template-columns: auto 1fr;
