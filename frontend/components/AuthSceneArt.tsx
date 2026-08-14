@@ -210,10 +210,10 @@ export function AuthSceneArt({ variant = "login" }: { variant?: "login" | "signu
 
   // "Handbook" is a common noun, so "bring your company into Handbook" reads as
   // a typo. Possessive phrasing makes the name work as a product name instead.
-  const title = isSignup ? "Set up your company's Handbook" : "Welcome back — no password needed";
+  const title = isSignup ? "Set up your company's Handbook" : "Sign in to Handbook";
   const blurb = isSignup
     ? "Tell us who you are. We review each request, then you connect sources and invite your team."
-    : "Enter your work email and we’ll send a one-time sign-in link. Secure, fast, forgettable.";
+    : "Enter your work email and we’ll send a secure, one-time sign-in link — no password required.";
 
   const points = isSignup
     ? ["Request reviewed by a human", "Connect Notion, Drive, or GitHub", "Invite teammates when you’re ready"]

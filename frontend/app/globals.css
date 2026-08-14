@@ -1358,13 +1358,22 @@ table .role-chip.role-admin,
   box-shadow: 0 10px 18px -12px rgba(15, 118, 110, 0.75);
 }
 .rail-user-copy { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
-.org-chip {
+.user-name-chip {
   color: var(--ink);
+  font-size: 0.86rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.org-chip {
+  color: var(--ink-muted);
   background: transparent;
   padding: 0;
   border: none;
-  font-size: 0.84rem;
-  font-weight: 700;
+  font-size: 0.78rem;
+  font-weight: 600;
   letter-spacing: -0.01em;
   overflow: hidden;
   text-overflow: ellipsis;

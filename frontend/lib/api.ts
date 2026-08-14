@@ -65,6 +65,7 @@ export interface Me {
   user_id: string;
   org_id: string;
   org_name: string | null;
+  email: string | null;
   role: "admin" | "member";
   has_connection: boolean;
   /** True once any document row exists (may still be mid-ingest). */

@@ -17,6 +17,7 @@ function sameMe(a: Me | null, b: Me): boolean {
     a.org_id === b.org_id &&
     a.role === b.role &&
     a.org_name === b.org_name &&
+    a.email === b.email &&
     a.has_connection === b.has_connection &&
     a.has_documents === b.has_documents &&
     a.sync_in_progress === b.sync_in_progress &&

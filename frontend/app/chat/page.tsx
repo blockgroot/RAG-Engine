@@ -325,12 +325,12 @@ function ChatPageInner() {
               </p>
             ) : me.role === "admin" ? (
               <p className="muted">
-                Finish connecting your policies in setup. We’ll bring you here automatically when
+                Finish connecting your documents in setup. We’ll bring you here automatically when
                 they’re ready.
               </p>
             ) : (
               <p className="muted">
-                An admin still needs to connect your company policies. This page updates on its own.
+                An admin still needs to connect your company’s documents. This page updates on its own.
               </p>
             )}
             <div className="pulse-dot" aria-hidden />
@@ -359,7 +359,7 @@ function ChatPageInner() {
     ? "Repository and commit answers are read live from GitHub — always current, never stale."
     : workspaceId
       ? "Answers come only from the notes and docs connected to this space."
-      : "Leave, benefits, remote work, and more — grounded in your connected policies.";
+      : "Leave, benefits, remote work, and more — grounded in your connected documents.";
   const composerPlaceholder = askingCode
     ? "Ask about a repository or a commit…"
     : workspaceId
@@ -373,7 +373,7 @@ function ChatPageInner() {
           <div className="banner banner-ok" style={{ margin: "0 0 1rem" }}>
             {workspaceId
               ? "You’re all set — this space is ready for questions."
-              : "You’re all set — company policies are ready for questions."}
+              : "You’re all set — your documents are ready for questions."}
           </div>
         )}
 
@@ -394,10 +394,10 @@ function ChatPageInner() {
                 onClick={() => switchAgentTab("policy")}
                 disabled={busy || !policiesReady}
                 title={
-                  policiesReady ? undefined : "Company policies are still being prepared."
+                  policiesReady ? undefined : "Your documents are still being prepared."
                 }
               >
-                Policies
+                Docs
               </button>
               <button
                 type="button"

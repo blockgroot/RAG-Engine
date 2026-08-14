@@ -101,7 +101,13 @@ export function AppShell({
   const showAdmin = me ? canAccessAdminPortal(me) : false;
   const homeHref = setupDone || me?.role === "member" ? "/chat" : "/onboarding";
   const showMainNav = Boolean(me && variant !== "onboarding");
-  const initial = (me?.org_name || "F").trim().charAt(0).toUpperCase();
+  // First name from the email local-part (e.g. "sana.asiwal@syvora.com" -> "Sana").
+  const firstName = (() => {
+    const local = me?.email?.split("@")[0] || "";
+    const name = local.split(/[.\-_]/)[0];
+    return name ? name.charAt(0).toUpperCase() + name.slice(1) : null;
+  })();
+  const initial = (firstName || me?.org_name || "F").trim().charAt(0).toUpperCase();
 
   return (
     <div className={`app-shell ${showMainNav ? "app-shell-nav" : "app-shell-simple"}`}>
@@ -205,6 +211,7 @@ export function AppShell({
                 {initial}
               </span>
               <div className="rail-user-copy">
+                {firstName && <span className="user-name-chip">{firstName}</span>}
                 {me.org_name && <span className="org-chip">{me.org_name}</span>}
                 <span className={`role-chip role-${me.role}`}>
                   {me.role === "admin" ? "Admin" : "Member"}

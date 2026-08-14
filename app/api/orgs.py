@@ -32,6 +32,7 @@ def me(session: SessionClaims = Depends(get_session)):
             """
             SELECT
               (SELECT name FROM organizations WHERE id = %(org)s) AS org_name,
+              (SELECT email FROM users WHERE id = %(user)s) AS email,
               EXISTS (
                 SELECT 1 FROM oauth_connections
                 WHERE org_id = %(org)s
@@ -39,17 +40,19 @@ def me(session: SessionClaims = Depends(get_session)):
                   AND workspace_id IS NULL
               ) AS github_connected
             """,
-            {"org": session.org_id},
+            {"org": session.org_id, "user": session.user_id},
         ).fetchone()
 
     status = content_setup_status(session.org_id, workspace_id=None)
     org_name = row[0] if row else None
-    github_connected = bool(row[1]) if row else False
+    email = row[1] if row else None
+    github_connected = bool(row[2]) if row else False
 
     return {
         "user_id": session.user_id,
         "org_id": session.org_id,
         "org_name": org_name,
+        "email": email,
         "role": session.role,
         # Whether the chat UI should offer its "Code" tab. Reported here rather
         # than read from /admin/connections because that route is admin-only,
