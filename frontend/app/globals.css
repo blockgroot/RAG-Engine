@@ -1358,6 +1358,7 @@ table .role-chip.role-admin,
   box-shadow: 0 10px 18px -12px rgba(15, 118, 110, 0.75);
 }
 .rail-user-copy { display: flex; flex-direction: column; gap: 0.25rem; min-width: 0; }
+.user-name-row { display: flex; align-items: center; gap: 0.4rem; min-width: 0; }
 .user-name-chip {
   color: var(--ink);
   font-size: 0.86rem;

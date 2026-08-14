@@ -211,11 +211,13 @@ export function AppShell({
                 {initial}
               </span>
               <div className="rail-user-copy">
-                {firstName && <span className="user-name-chip">{firstName}</span>}
-                {me.org_name && <span className="org-chip">{me.org_name}</span>}
-                <span className={`role-chip role-${me.role}`}>
-                  {me.role === "admin" ? "Admin" : "Member"}
+                <span className="user-name-row">
+                  {firstName && <span className="user-name-chip">{firstName}</span>}
+                  <span className={`role-chip role-${me.role}`}>
+                    {me.role === "admin" ? "Admin" : "Member"}
+                  </span>
                 </span>
+                {me.org_name && <span className="org-chip">{me.org_name}</span>}
                 <button type="button" className="rail-sign-out" onClick={handleSignOut}>
                   Sign out
                 </button>
