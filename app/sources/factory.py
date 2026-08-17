@@ -12,6 +12,7 @@ from ..core.exceptions import ConfigurationError
 from .base import SourceAdapter
 from .google_drive import GoogleDriveAdapter
 from .notion import NotionAdapter
+from .slack import SlackAdapter
 
 
 def build_source_adapter(
@@ -64,6 +65,20 @@ def build_source_adapter(
             )
         return GoogleDriveAdapter(token=token, folder_id=folder_id)
 
+    if source_type == "slack":
+        if not token:
+            raise ConfigurationError(
+                "build_source_adapter('slack', ...) requires an OAuth bot "
+                "token (pass token= from get_live_connection_token)."
+            )
+        channel_ids = (config or {}).get("channel_ids")
+        if not channel_ids:
+            raise ConfigurationError(
+                "Slack connection has no channels configured. Pick at least "
+                "one channel on the Sources page before syncing."
+            )
+        return SlackAdapter(token=token, channel_ids=channel_ids)
+
     raise ConfigurationError(
-        f"Unknown source type: {source_type!r} (expected 'notion' or 'google')"
+        f"Unknown source type: {source_type!r} (expected 'notion', 'google', or 'slack')"
     )

@@ -562,21 +562,50 @@ DEFAULT_SLACK_BOT_SCOPES = (
     "users:read"
 )
 
+# Phase 2 bounds (plan §6/D11 — "bound the walk itself" discipline, same as
+# GOOGLE_MAX_WALK_FOLDERS/GOOGLE_MAX_DOCUMENTS above and the Notion fetch-size
+# bound in CLAUDE.md §4). A busy channel's full history is not safe to embed
+# unbounded, so every knob here caps something rather than trusting input size.
+DEFAULT_SLACK_BACKFILL_DAYS = 90
+DEFAULT_SLACK_MIN_THREAD_CHARS = 40
+DEFAULT_SLACK_MAX_THREAD_MESSAGES = 50
+DEFAULT_SLACK_MAX_DOCUMENTS_PER_SYNC = 20000
+
 
 @dataclass(frozen=True)
 class SlackSettings:
-    """Configuration for the Slack OAuth "Connect" flow (bot-token install).
+    """Configuration for Slack: OAuth "Connect" flow + adapter ingest bounds.
 
     Same shape as ``GoogleSettings`` — OAuth-only, no legacy static-token
-    path. ``scopes`` is comma-delimited (Slack's own convention for the
-    ``scope`` request parameter on ``oauth/v2/authorize``), read as one env
-    var so parsing stays in the provider, at request-build time.
+    path, with adapter walk-bounds living in the same dataclass rather than a
+    second one (mirrors ``max_walk_folders``/``max_documents`` living on
+    ``GoogleSettings`` itself). ``scopes`` is comma-delimited (Slack's own
+    convention for the ``scope`` request parameter on ``oauth/v2/authorize``).
     """
 
     client_id: str | None
     client_secret: str | None
     redirect_uri: str | None
     scopes: str = DEFAULT_SLACK_BOT_SCOPES
+    # First-sync backfill window. Slack's `conversations.history` sits in one
+    # of Slack's more restricted rate tiers and has been tightened further for
+    # non-Marketplace apps pulling non-recent history, so a channel's full
+    # history is never pulled in one run — only the last N days.
+    backfill_days: int = DEFAULT_SLACK_BACKFILL_DAYS
+    # A standalone (no-reply) message shorter than this is skipped before it
+    # ever becomes a document — most single-line Slack chatter ("thanks",
+    # ":+1:") is noise that would only compete with a real answer in
+    # retrieval. Threads WITH replies are never filtered this way (a real
+    # conversation happened), only lone short messages.
+    min_thread_chars: int = DEFAULT_SLACK_MIN_THREAD_CHARS
+    # A thread with more replies than this is rendered from only the most
+    # recent N, with a truncation marker — same per-unit size bound as
+    # CHUNK_MAX_CHARS, applied at the thread level instead of the chunk level.
+    max_thread_messages: int = DEFAULT_SLACK_MAX_THREAD_MESSAGES
+    # Aggregate cap across one list_documents() call (summed over every
+    # configured channel) — bounds the SUM, which backfill_days/min_thread_chars/
+    # max_thread_messages each bound only per-channel/per-thread, not in total.
+    max_documents_per_sync: int = DEFAULT_SLACK_MAX_DOCUMENTS_PER_SYNC
 
     @classmethod
     def from_env(cls) -> "SlackSettings":
@@ -585,6 +614,18 @@ class SlackSettings:
             client_secret=os.getenv("SLACK_CLIENT_SECRET"),
             redirect_uri=os.getenv("SLACK_REDIRECT_URI"),
             scopes=os.getenv("SLACK_BOT_SCOPES", DEFAULT_SLACK_BOT_SCOPES),
+            backfill_days=int(
+                os.getenv("SLACK_BACKFILL_DAYS") or DEFAULT_SLACK_BACKFILL_DAYS
+            ),
+            min_thread_chars=int(
+                os.getenv("SLACK_MIN_THREAD_CHARS") or DEFAULT_SLACK_MIN_THREAD_CHARS
+            ),
+            max_thread_messages=int(
+                os.getenv("SLACK_MAX_THREAD_MESSAGES") or DEFAULT_SLACK_MAX_THREAD_MESSAGES
+            ),
+            max_documents_per_sync=int(
+                os.getenv("SLACK_MAX_DOCUMENTS_PER_SYNC") or DEFAULT_SLACK_MAX_DOCUMENTS_PER_SYNC
+            ),
         )
 
 
