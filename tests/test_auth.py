@@ -59,12 +59,12 @@ def test_build_oauth_provider_factory_returns_notion(_notion_oauth_settings):
 
 
 def test_build_oauth_provider_rejects_unknown_provider():
-    # This test has now been re-pointed twice, each time a provider graduated
-    # from "unimplemented" to real: first "google" (Google Integration Plan
-    # Phase 3), now "github" (GitHub Integration Plan Phase 2). "slack" is the
-    # current genuinely-unknown name; move this again if Slack ever lands.
+    # Re-pointed three times now, each time a provider graduated from
+    # "unimplemented" to real: "google" (Google Integration Plan Phase 3),
+    # "github" (GitHub Integration Plan Phase 2), now "slack" (Slack
+    # Integration Plan Phase 1). Move this again if a real "discord" etc. lands.
     with pytest.raises(ConfigurationError):
-        build_oauth_provider("slack")
+        build_oauth_provider("discord")
 
 
 def test_exchange_code_success(_notion_oauth_settings, monkeypatch):

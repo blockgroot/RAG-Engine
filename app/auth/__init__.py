@@ -11,6 +11,7 @@ from .base import OAuthProvider, OAuthTokens
 from .notion_oauth import NotionOAuthProvider
 from .google_oauth import GoogleOAuthProvider
 from .github_oauth import GitHubAppProvider
+from .slack_oauth import SlackOAuthProvider
 from .github_app import InstallationToken, mint_installation_token
 from .factory import build_oauth_provider
 from .credentials import (
@@ -73,6 +74,7 @@ __all__ = [
     "NotionOAuthProvider",
     "GoogleOAuthProvider",
     "GitHubAppProvider",
+    "SlackOAuthProvider",
     "InstallationToken",
     "mint_installation_token",
     "build_oauth_provider",

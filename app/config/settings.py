@@ -552,6 +552,42 @@ class GoogleSettings:
         )
 
 
+# Phase 1 of Slack Integration Plan (docs/plans/2026-08-17-slack-integration.md):
+# bot scopes only — enough to list/join/read channels and resolve display
+# names. No `chat:write` (read-only connector, D-note in the plan's non-goals).
+DEFAULT_SLACK_BOT_SCOPES = (
+    "channels:history,channels:read,channels:join,"
+    "groups:history,groups:read,"
+    "im:history,im:read,mpim:history,mpim:read,"
+    "users:read"
+)
+
+
+@dataclass(frozen=True)
+class SlackSettings:
+    """Configuration for the Slack OAuth "Connect" flow (bot-token install).
+
+    Same shape as ``GoogleSettings`` — OAuth-only, no legacy static-token
+    path. ``scopes`` is comma-delimited (Slack's own convention for the
+    ``scope`` request parameter on ``oauth/v2/authorize``), read as one env
+    var so parsing stays in the provider, at request-build time.
+    """
+
+    client_id: str | None
+    client_secret: str | None
+    redirect_uri: str | None
+    scopes: str = DEFAULT_SLACK_BOT_SCOPES
+
+    @classmethod
+    def from_env(cls) -> "SlackSettings":
+        return cls(
+            client_id=os.getenv("SLACK_CLIENT_ID"),
+            client_secret=os.getenv("SLACK_CLIENT_SECRET"),
+            redirect_uri=os.getenv("SLACK_REDIRECT_URI"),
+            scopes=os.getenv("SLACK_BOT_SCOPES", DEFAULT_SLACK_BOT_SCOPES),
+        )
+
+
 @dataclass(frozen=True)
 class GitHubSettings:
     """Configuration for the GitHub App "Connect" flow (GitHub Integration D1).
