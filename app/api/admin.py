@@ -33,8 +33,11 @@ from .serialize import job_payload
 from ..sources import (
     build_source_adapter,
     extract_drive_folder_id,
+    join_public_channels,
+    list_slack_channels,
     search_drive_folders,
     validate_drive_folder,
+    validate_slack_channels,
 )
 from .connection_ops import (
     disconnect_connection,
@@ -42,6 +45,7 @@ from .connection_ops import (
     note_live_success,
     purge_provider_documents,
     raise_token_http,
+    slack_channels_changed,
 )
 from .deps import SessionClaims, require_admin
 from .validation import MAX_EMAIL_CHARS, MAX_URL_CHARS, bounded
@@ -244,58 +248,115 @@ def search_connection_drive_folders(
     return {"folders": folders}
 
 
+@router.get("/connections/{connection_id}/slack-channels")
+def list_connection_slack_channels(
+    connection_id: str, session: SessionClaims = Depends(require_admin)
+):
+    """List channels this Slack bot token can already see (the channel picker).
+
+    Slack's own OAuth grant screen doesn't let the installer pick channels
+    (unlike GitHub's install screen), so this powers the required second step:
+    show what the bot can see, flag which ones it's actually a member of
+    (``is_member``) so the UI can render "Ready" vs. "Invite the bot in
+    Slack first" per decision D7 — never silently skip an inaccessible one.
+    """
+    conn = _owned_connection(session.org_id, connection_id)
+    if conn.provider != "slack":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Channel listing is only supported for Slack (this connection is {conn.provider!r}).",
+        )
+    try:
+        token = get_live_connection_token(session.org_id, conn.provider)
+        channels = list_slack_channels(token)
+        note_live_success(session.org_id, conn.provider)
+    except (SourceError, ConfigurationError, OAuthReauthRequiredError) as exc:
+        raise_token_http(exc, org_id=session.org_id, provider=conn.provider)
+    return {"channels": channels}
+
+
 @router.put("/connections/{connection_id}/config")
 def put_connection_config(
     connection_id: str,
     body: dict,
     session: SessionClaims = Depends(require_admin),
 ):
-    """Set Google Drive folder scope for a connection.
+    """Set the ingestion scope for a connection.
 
-    Body: ``{"folder_url": "<Drive folder URL or bare id>"}``. Parses the id,
-    validates via Drive ``files.get`` (accessible + actually a folder), then
-    stores ``{folder_id, folder_name}`` on the connection.
+    Google Drive: ``{"folder_url": "<Drive folder URL or bare id>"}`` — parses
+    the id, validates via ``files.get``, stores ``{folder_id, folder_name}``.
+
+    Slack: ``{"channel_ids": ["C0123ABC", ...]}`` (decision D2 — the admin
+    always names specific channels, never "all channels"). Validates every id
+    against what the bot can currently see, auto-joins any newly-picked
+    PUBLIC channel (decision D7 — private channels have no auto-join API and
+    still need a human `/invite`), then stores ``{channel_ids, channel_names}``.
     """
     conn = _owned_connection(session.org_id, connection_id)
-    if conn.provider != "google":
+    if conn.provider not in ("google", "slack"):
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Folder configuration is only supported for Google Drive "
-                f"(this connection is {conn.provider!r})."
+                "Ingestion scope configuration is only supported for Google "
+                f"Drive and Slack (this connection is {conn.provider!r})."
             ),
         )
 
-    folder_url = bounded(
-        (body.get("folder_url") or "").strip(),
-        field="folder_url",
-        limit=MAX_URL_CHARS,
-    )
+    if conn.provider == "google":
+        folder_url = bounded(
+            (body.get("folder_url") or "").strip(),
+            field="folder_url",
+            limit=MAX_URL_CHARS,
+        )
+        try:
+            folder_id = extract_drive_folder_id(folder_url)
+            token = get_live_connection_token(session.org_id, conn.provider)
+            config = validate_drive_folder(token, folder_id)
+            swapped = folder_id_changed(session.org_id, conn.provider, config["folder_id"])
+            set_connection_config(session.org_id, conn.provider, config)
+            note_live_success(session.org_id, conn.provider)
+        except (ConfigurationError, SourceError, OAuthReauthRequiredError) as exc:
+            raise_token_http(exc, org_id=session.org_id, provider=conn.provider)
+
+        purged = 0
+        if swapped:
+            # Drop the old folder's corpus immediately so Ask cannot keep citing it.
+            purged = purge_provider_documents(session.org_id, conn.provider)
+
+        return {
+            "connection_id": connection_id,
+            "provider": conn.provider,
+            "config": config,
+            "folder_changed": swapped,
+            "documents_purged": purged,
+        }
+
+    # provider == "slack"
+    channel_ids = body.get("channel_ids") or []
+    if not isinstance(channel_ids, list) or not all(isinstance(c, str) for c in channel_ids):
+        raise HTTPException(status_code=400, detail="channel_ids must be a list of channel id strings")
 
     try:
-        folder_id = extract_drive_folder_id(folder_url)
         token = get_live_connection_token(session.org_id, conn.provider)
-        config = validate_drive_folder(token, folder_id)
-        swapped = folder_id_changed(session.org_id, conn.provider, config["folder_id"])
+        config = validate_slack_channels(token, channel_ids)
+        swapped = slack_channels_changed(session.org_id, conn.provider, config["channel_ids"])
+        join_public_channels(token, config["channel_ids"])
         set_connection_config(session.org_id, conn.provider, config)
         note_live_success(session.org_id, conn.provider)
     except (ConfigurationError, SourceError, OAuthReauthRequiredError) as exc:
-        raise_token_http(
-            exc,
-            org_id=session.org_id,
-            provider=conn.provider,
-        )
+        raise_token_http(exc, org_id=session.org_id, provider=conn.provider)
 
     purged = 0
     if swapped:
-        # Drop the old folder's corpus immediately so Ask cannot keep citing it.
+        # A dropped channel's corpus must not keep being cited (mirrors the
+        # Drive folder-swap purge); a pure addition needs no purge.
         purged = purge_provider_documents(session.org_id, conn.provider)
 
     return {
         "connection_id": connection_id,
         "provider": conn.provider,
         "config": config,
-        "folder_changed": swapped,
+        "channels_changed": swapped,
         "documents_purged": purged,
     }
 

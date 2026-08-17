@@ -19,7 +19,7 @@ from ..vectorstore import build_vector_store
 
 # Providers that store documents/chunks. GitHub is live-only — disconnect
 # only drops the oauth_connections row.
-_INDEXED_PROVIDERS = frozenset({"notion", "google"})
+_INDEXED_PROVIDERS = frozenset({"notion", "google", "slack"})
 
 
 def purge_provider_documents(
@@ -61,6 +61,26 @@ def folder_id_changed(
     existing = get_connection_config(org_id, provider, workspace_id=workspace_id) or {}
     old = existing.get("folder_id")
     return bool(old) and old != new_folder_id
+
+
+def slack_channels_changed(
+    org_id: str,
+    provider: str,
+    new_channel_ids: list[str],
+    *,
+    workspace_id: str | None = None,
+) -> bool:
+    """True when a Slack channel-picker PUT drops a previously-saved channel.
+
+    Same purpose as ``folder_id_changed``: a dropped channel's already-ingested
+    threads must not keep being cited once the admin de-selects it. Adding a
+    NEW channel to an existing selection is not a "change" in this sense — the
+    old channels' content is still valid, so no purge is needed for a
+    pure-addition PUT.
+    """
+    existing = get_connection_config(org_id, provider, workspace_id=workspace_id) or {}
+    old_ids = set(existing.get("channel_ids") or [])
+    return bool(old_ids) and not old_ids.issubset(set(new_channel_ids))
 
 
 def raise_token_http(
