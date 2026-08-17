@@ -2,6 +2,36 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
+## Implementation status (2026-08-17)
+
+Built, phase by phase, each committed separately on `feature/slack-integration-research`:
+
+- **Phase 1** (`SlackSettings`, `SlackOAuthProvider`, factory wiring) — done.
+  Generic `/{provider}/authorize|callback` routes needed zero changes.
+- **Phase 2** (`SlackAdapter` — thread-as-document, all four volume bounds
+  from §6) — done.
+- **Phase 3** (channel-picker admin endpoints, D10's naming groundwork,
+  D11's contextual-retrieval-off-by-default gate) — done.
+- **Phase 4/5** (workspace-scoped connect + picker, D10 cross-connection
+  conflict guard, frontend `ConnectionCard`/`SlackChannelPicker` UI) — done.
+- **Not implemented — D9's identity-grant step.** The plan's §9 called for a
+  "Sign in with Slack" OIDC grant so a workspace's channel picker only shows
+  channels the CONNECTING PERSON belongs to, not every channel the shared org
+  bot can see. That was deferred: it's a materially different OAuth flow (a
+  second, narrower scope grant with no existing pattern in this codebase to
+  mirror) rather than an incremental extension of what shipped. What DID ship
+  in its place is D10 (cross-connection dedupe — a channel can't be claimed
+  by two connections at once), which is a different, narrower guarantee: it
+  stops the same channel being double-claimed, but does not stop a workspace
+  owner from picking a channel they personally aren't in, as long as the
+  shared bot is already a member. Documented in-code on
+  `GET .../slack-channels` (workspace route) and here for visibility.
+- Test coverage: `tests/test_slack_oauth.py`, `test_slack_source.py`,
+  `test_slack_utils.py`, `test_slack_contextual_gate.py`,
+  `test_api_slack_admin.py`, `test_api_slack_workspace.py` — all passing
+  against a real Postgres; existing `test_api_admin.py`/`test_api_workspaces.py`/
+  `test_isolation.py` re-run clean (no regressions). Frontend `tsc --noEmit` clean.
+
 **Goal:** Let an org admin connect specific Slack channels once, **and** let an
 individual employee connect their own channels into a personal
 Workspace-within-a-Workspace (private spaces + colleagues invited, exactly
