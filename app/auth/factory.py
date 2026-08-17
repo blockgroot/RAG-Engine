@@ -13,6 +13,7 @@ from .base import OAuthProvider
 from .github_oauth import GitHubAppProvider
 from .google_oauth import GoogleOAuthProvider
 from .notion_oauth import NotionOAuthProvider
+from .slack_oauth import SlackOAuthProvider
 
 DEFAULT_OAUTH_PROVIDER = "notion"
 
@@ -27,7 +28,10 @@ def build_oauth_provider(provider: str = DEFAULT_OAUTH_PROVIDER) -> OAuthProvide
         return GoogleOAuthProvider()
     elif provider == "github":
         return GitHubAppProvider()
+    elif provider == "slack":
+        return SlackOAuthProvider()
 
     raise ConfigurationError(
-        f"Unknown OAuth provider: {provider!r} (expected 'notion', 'google', or 'github')"
+        f"Unknown OAuth provider: {provider!r} "
+        "(expected 'notion', 'google', 'github', or 'slack')"
     )

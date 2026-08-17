@@ -22,13 +22,38 @@ from ..auth.credentials import (
     looks_like_auth_failure,
     mark_needs_reauth,
 )
-from ..config.settings import ContextualSettings, IngestWorkerSettings
+from ..config.settings import ContextualSettings, IngestWorkerSettings, env_bool
 from ..core.exceptions import OAuthReauthRequiredError
 from ..ingestion.pipeline import enrich_source_contextual, ingest_source
 from ..sources import build_source_adapter
 from . import queue
 
 logger = logging.getLogger(__name__)
+
+
+def _contextual_settings_for(provider: str | None) -> ContextualSettings:
+    """Per-provider override of the global contextual-retrieval settings.
+
+    Slack Integration Plan decision D11: contextual retrieval defaults OFF
+    for Slack, unlike Notion/Drive. Two reasons stack: (1) it costs one LLM
+    call per chunk, and a Slack sync can produce orders of magnitude more
+    documents than a Notion/Drive sync (thread count scales with conversation
+    volume, not page count) — against the same 15rpm free-endpoint ceiling
+    documented in CLAUDE.md, this is the single biggest per-chunk cost the
+    other volume bounds (backfill window, thread size cap) don't touch at
+    all. (2) a thread's own channel name + timestamp already carries most of
+    the "situating context" the LLM call would add, so the value-per-call is
+    lower here too. ``SLACK_CONTEXTUAL_ENABLED=true`` opts back in explicitly.
+    """
+    settings = ContextualSettings.from_env()
+    if provider == "slack" and not env_bool("SLACK_CONTEXTUAL_ENABLED", False):
+        return ContextualSettings(
+            enabled=False,
+            defer=settings.defer,
+            concurrency=settings.concurrency,
+            max_chunks=settings.max_chunks,
+        )
+    return settings
 
 
 def _current_rss_mb() -> float:
@@ -116,6 +141,7 @@ def run_once() -> queue.IngestionJob | None:
                 job.id, phase=phase, processed=processed, total=total
             )
 
+        contextual = _contextual_settings_for(provider)
         result = ingest_source(
             adapter,
             job.org_id,
@@ -123,12 +149,12 @@ def run_once() -> queue.IngestionJob | None:
             incremental=True,
             workspace_id=job.workspace_id,
             on_progress=report,
+            contextual=contextual,
         )
         # Unlock the product as soon as raw chunks are stored.
         queue.mark_succeeded(job.id, result.documents_ingested)
         clear_needs_reauth(job.org_id, provider, job.workspace_id)
 
-        contextual = ContextualSettings.from_env()
         if (
             contextual.enabled
             and contextual.defer

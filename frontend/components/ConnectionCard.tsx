@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, ApiError, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
 import { syncPagesDetail, syncPercent, syncPhaseHeadline } from "@/lib/syncProgress";
 import { DriveFolderPicker } from "./DriveFolderPicker";
+import { SlackChannelPicker } from "./SlackChannelPicker";
 import { JobStatusBadge } from "./JobStatusBadge";
 import { ProviderMark } from "./ProviderMark";
 
@@ -9,12 +10,14 @@ const PROVIDER_LABELS: Record<string, string> = {
   notion: "Notion",
   google: "Google Drive",
   github: "GitHub",
+  slack: "Slack",
 };
 
 const SOURCE_NOUN: Record<string, string> = {
   notion: "Notion",
   google: "Drive",
   github: "GitHub",
+  slack: "Slack",
 };
 
 const ACTIVE = new Set(["queued", "running"]);
@@ -61,8 +64,10 @@ function googleFolderUrl(folderId: string): string {
 /** Notion has no single "pick pages" URL — sharing is per-page in the app. */
 const NOTION_MANAGE_URL = "https://www.notion.so";
 
+type Provider = "notion" | "google" | "github" | "slack";
+
 function manageExternalHref(
-  provider: "notion" | "google" | "github",
+  provider: Provider,
   connection: ConnectionRecord
 ): string | null {
   if (provider === "github") {
@@ -78,16 +83,18 @@ function manageExternalHref(
   if (provider === "notion") {
     return NOTION_MANAGE_URL;
   }
+  // Slack has no single "manage channels" URL -- membership/invites happen
+  // per-channel inside Slack itself, same reason Notion has none either.
   return null;
 }
 
-function manageExternalLabel(provider: "notion" | "google" | "github"): string {
+function manageExternalLabel(provider: Provider): string {
   if (provider === "github") return "Manage on GitHub";
   if (provider === "google") return "Manage on Drive";
   return "Manage in Notion";
 }
 
-function manageExternalTitle(provider: "notion" | "google" | "github"): string {
+function manageExternalTitle(provider: Provider): string {
   if (provider === "github") {
     return "Open GitHub to add or remove repositories for this install";
   }
@@ -121,7 +128,7 @@ export function ConnectionCard({
   onNeedsReauth,
   workspaceId,
 }: {
-  provider: "notion" | "google" | "github";
+  provider: Provider;
   connection: ConnectionRecord | undefined;
   lastJob?: JobRecord;
   changes?: SyncChanges | null;
@@ -139,7 +146,8 @@ export function ConnectionCard({
    * calls are routed to the workspace-scoped endpoints. */
   workspaceId?: string;
 }) {
-  const available = provider === "notion" || provider === "google" || provider === "github";
+  const available =
+    provider === "notion" || provider === "google" || provider === "github" || provider === "slack";
   // GitHub is a "live" source: nothing is ever fetched, chunked, embedded, or
   // stored, so this card must hide every ingestion-shaped control (sync status,
   // change counts, Update/Check). Showing them would promise a sync that does
@@ -149,7 +157,11 @@ export function ConnectionCard({
   const needsUpdate = !isLive && Boolean(changes?.has_changes);
   const folderConfigured = Boolean(connection?.source_config?.folder_id);
   const needsFolder = provider === "google" && connection && !folderConfigured;
+  const channelIds = connection?.source_config?.channel_ids ?? [];
+  const channelsConfigured = channelIds.length > 0;
+  const needsChannels = provider === "slack" && connection && !channelsConfigured;
   const [changingFolder, setChangingFolder] = useState(false);
+  const [changingChannels, setChangingChannels] = useState(false);
   const [folderHint, setFolderHint] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
   const [disconnectError, setDisconnectError] = useState<string | null>(null);
@@ -206,6 +218,7 @@ export function ConnectionCard({
     !isLive &&
     Boolean(connection) &&
     !needsFolder &&
+    !needsChannels &&
     !syncInProgress &&
     !checkingChanges &&
     !needsUpdate &&
@@ -281,6 +294,9 @@ export function ConnectionCard({
           {connection.external_workspace_name || "Connected"}
           {provider === "google" && folderConfigured
             ? ` · ${connection.source_config?.folder_name || "Drive folder"}`
+            : ""}
+          {provider === "slack" && channelsConfigured
+            ? ` · ${channelIds.length} channel${channelIds.length === 1 ? "" : "s"}`
             : ""}
         </p>
       )}
@@ -360,7 +376,53 @@ export function ConnectionCard({
         </div>
       )}
 
-      {folderHint && !changingFolder && (
+      {needsChannels && connection && (
+        <div className="stack" style={{ marginTop: "0.9rem" }}>
+          <SlackChannelPicker
+            connectionId={connection.id}
+            workspaceId={workspaceId}
+            onSaved={(config) => {
+              setConfigError(null);
+              setFolderHint(null);
+              onConfigSaved?.({ ...connection, source_config: config });
+            }}
+            onError={(message) => setConfigError(message || null)}
+          />
+          {configError && <div className="banner banner-warn">{configError}</div>}
+        </div>
+      )}
+
+      {provider === "slack" && connection && channelsConfigured && changingChannels && (
+        <div className="stack" style={{ marginTop: "0.9rem" }}>
+          <SlackChannelPicker
+            connectionId={connection.id}
+            workspaceId={workspaceId}
+            currentChannelIds={channelIds}
+            onSaved={(config, meta) => {
+              setConfigError(null);
+              setChangingChannels(false);
+              onNeedsReauth?.(false);
+              const purged = meta?.documents_purged ?? 0;
+              setFolderHint(
+                meta?.channels_changed
+                  ? purged > 0
+                    ? `Channels updated · ${purged} old thread${purged === 1 ? "" : "s"} removed. Run Update to index the new selection.`
+                    : "Channels updated. Run Update to index the new selection."
+                  : "Channels saved."
+              );
+              onConfigSaved?.({ ...connection, source_config: config });
+            }}
+            onError={(message) => setConfigError(message || null)}
+            onCancel={() => {
+              setChangingChannels(false);
+              setConfigError(null);
+            }}
+          />
+          {configError && <div className="banner banner-warn">{configError}</div>}
+        </div>
+      )}
+
+      {folderHint && !changingFolder && !changingChannels && (
         <p className="muted" style={{ marginTop: "0.65rem" }}>
           {folderHint}
         </p>
@@ -433,7 +495,7 @@ export function ConnectionCard({
         </p>
       )}
 
-      {connection && !needsFolder && needsUpdate && !syncInProgress && (
+      {connection && !needsFolder && !needsChannels && needsUpdate && !syncInProgress && (
         <p className="muted" style={{ marginTop: "0.65rem" }}>
           {[
             changes!.new_count > 0 ? `${changes!.new_count} new` : null,
@@ -445,7 +507,7 @@ export function ConnectionCard({
         </p>
       )}
 
-      {connection && checkingChanges && !isLive && (
+      {connection && checkingChanges && !isLive && !needsFolder && !needsChannels && (
         <p className="muted" style={{ marginTop: "0.65rem" }}>
           Checking…
         </p>
@@ -509,6 +571,24 @@ export function ConnectionCard({
               Change folder
             </button>
           )}
+        {provider === "slack" &&
+          connection &&
+          channelsConfigured &&
+          !changingChannels &&
+          !syncInProgress && (
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={() => {
+                setChangingChannels(true);
+                setFolderHint(null);
+                setConfigError(null);
+              }}
+              title="Add or remove connected Slack channels"
+            >
+              Change channels
+            </button>
+          )}
         {connection && isLive && (
           <button
             className="button button-secondary"
@@ -520,7 +600,7 @@ export function ConnectionCard({
             {refreshingScope ? "Refreshing…" : "Refresh list"}
           </button>
         )}
-        {connection && !isLive && !needsFolder && needsUpdate && (
+        {connection && !isLive && !needsFolder && !needsChannels && needsUpdate && (
           <button
             className="button"
             type="button"
@@ -530,7 +610,7 @@ export function ConnectionCard({
             {syncInProgress ? "Updating…" : "Update"}
           </button>
         )}
-        {connection && !isLive && !needsFolder && !syncInProgress && onCheckAgain && (
+        {connection && !isLive && !needsFolder && !needsChannels && !syncInProgress && onCheckAgain && (
           <button
             className="button button-secondary"
             type="button"

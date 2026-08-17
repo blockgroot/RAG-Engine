@@ -40,8 +40,11 @@ from ..jobs import JobAlreadyActiveError, enqueue, get_job, has_active_job, list
 from ..sources import (
     build_source_adapter,
     extract_drive_folder_id,
+    join_public_channels,
+    list_slack_channels,
     search_drive_folders,
     validate_drive_folder,
+    validate_slack_channels,
 )
 from ..db.connection import get_connection
 from ..workspaces import (
@@ -54,10 +57,12 @@ from ..workspaces import (
 )
 from .connection_ops import (
     disconnect_connection,
+    find_slack_channel_conflict,
     folder_id_changed,
     note_live_success,
     purge_provider_documents,
     raise_token_http,
+    slack_channels_changed,
 )
 from .deps import SessionClaims, get_session, get_workspace_role, require_workspace_owner
 from .serialize import job_payload
@@ -338,6 +343,44 @@ def search_connection_drive_folders(
     return {"folders": folders}
 
 
+@router.get("/{workspace_id}/connections/{connection_id}/slack-channels")
+def list_workspace_connection_slack_channels(
+    workspace_id: str,
+    connection_id: str,
+    session: SessionClaims = Depends(get_session),
+    _role: str = Depends(require_workspace_owner),
+):
+    """List channels this workspace's Slack bot token can already see.
+
+    Same shape as the admin ``GET /admin/connections/{id}/slack-channels``
+    route, resolved against this workspace's own connection.
+
+    Known gap (decision D9, not yet implemented): this returns every channel
+    the shared org bot token can see, not just channels the CONNECTING PERSON
+    personally belongs to — the plan's identity-grant step ("Sign in with
+    Slack" to filter the picker to the owner's own channels) is deferred.
+    Until that lands, a workspace owner can technically pick a channel they
+    aren't personally a member of, as long as the shared bot is already in
+    it. Isolation from OTHER workspaces/org-wide still holds (D10, enforced
+    below) — what's missing is the narrower "did *this person* belong to it"
+    check.
+    """
+    conn = _owned_workspace_connection(session.org_id, workspace_id, connection_id)
+    if conn.provider != "slack":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Channel listing is only supported for Slack (this connection is {conn.provider!r}).",
+        )
+    try:
+        token = get_live_connection_token(session.org_id, conn.provider, workspace_id=workspace_id)
+        channels = list_slack_channels(token)
+    except (SourceError, ConfigurationError, OAuthReauthRequiredError) as exc:
+        raise_token_http(
+            exc, org_id=session.org_id, provider=conn.provider, workspace_id=workspace_id
+        )
+    return {"channels": channels}
+
+
 @router.put("/{workspace_id}/connections/{connection_id}/config")
 def put_connection_config(
     workspace_id: str,
@@ -346,41 +389,84 @@ def put_connection_config(
     session: SessionClaims = Depends(get_session),
     _role: str = Depends(require_workspace_owner),
 ):
-    """Set Google Drive folder scope for a workspace's personal connection.
+    """Set the ingestion scope for a workspace's personal connection.
 
     Same shape as the admin ``PUT /admin/connections/{id}/config`` route
-    (Google Drive requires an in-scope folder up front) but resolved against
-    this workspace's connections, never the org-wide ones.
+    (Google Drive folder_url, Slack channel_ids) but resolved against this
+    workspace's connections, never the org-wide ones. Decision D10: a channel
+    already claimed by another connection (org-wide or a sibling workspace)
+    for this org is rejected here, since ``validate_slack_channels`` only
+    checks Slack-side visibility — the cross-connection dedupe is ours to
+    enforce.
     """
     conn = _owned_workspace_connection(session.org_id, workspace_id, connection_id)
-    if conn.provider != "google":
+    if conn.provider not in ("google", "slack"):
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Folder configuration is only supported for Google Drive "
-                f"(this connection is {conn.provider!r})."
+                "Ingestion scope configuration is only supported for Google "
+                f"Drive and Slack (this connection is {conn.provider!r})."
             ),
         )
-    folder_url = bounded(
-        (body.get("folder_url") or "").strip(),
-        field="folder_url",
-        limit=MAX_URL_CHARS,
-    )
-    try:
-        folder_id = extract_drive_folder_id(folder_url)
-        token = get_live_connection_token(session.org_id, conn.provider, workspace_id=workspace_id)
-        config = validate_drive_folder(token, folder_id)
-        swapped = folder_id_changed(
-            session.org_id, conn.provider, config["folder_id"], workspace_id=workspace_id
+
+    if conn.provider == "google":
+        folder_url = bounded(
+            (body.get("folder_url") or "").strip(),
+            field="folder_url",
+            limit=MAX_URL_CHARS,
         )
+        try:
+            folder_id = extract_drive_folder_id(folder_url)
+            token = get_live_connection_token(session.org_id, conn.provider, workspace_id=workspace_id)
+            config = validate_drive_folder(token, folder_id)
+            swapped = folder_id_changed(
+                session.org_id, conn.provider, config["folder_id"], workspace_id=workspace_id
+            )
+            set_connection_config(session.org_id, conn.provider, config, workspace_id=workspace_id)
+        except (ConfigurationError, SourceError, OAuthReauthRequiredError) as exc:
+            raise_token_http(
+                exc, org_id=session.org_id, provider=conn.provider, workspace_id=workspace_id
+            )
+        purged = 0
+        if swapped:
+            purged = purge_provider_documents(
+                session.org_id, conn.provider, workspace_id=workspace_id
+            )
+        return {
+            "connection_id": connection_id,
+            "provider": conn.provider,
+            "config": config,
+            "folder_changed": swapped,
+            "documents_purged": purged,
+        }
+
+    # provider == "slack"
+    channel_ids = body.get("channel_ids") or []
+    if not isinstance(channel_ids, list) or not all(isinstance(c, str) for c in channel_ids):
+        raise HTTPException(status_code=400, detail="channel_ids must be a list of channel id strings")
+
+    try:
+        token = get_live_connection_token(session.org_id, conn.provider, workspace_id=workspace_id)
+        config = validate_slack_channels(token, channel_ids)
+        conflict = find_slack_channel_conflict(
+            session.org_id, config["channel_ids"], exclude_workspace_id=workspace_id
+        )
+        if conflict is not None:
+            raise ConfigurationError(
+                "One or more of these channels is already connected elsewhere "
+                "in your organization (Company Sources or another space). "
+                "Each channel can only be connected in one place."
+            )
+        swapped = slack_channels_changed(
+            session.org_id, conn.provider, config["channel_ids"], workspace_id=workspace_id
+        )
+        join_public_channels(token, config["channel_ids"])
         set_connection_config(session.org_id, conn.provider, config, workspace_id=workspace_id)
     except (ConfigurationError, SourceError, OAuthReauthRequiredError) as exc:
         raise_token_http(
-            exc,
-            org_id=session.org_id,
-            provider=conn.provider,
-            workspace_id=workspace_id,
+            exc, org_id=session.org_id, provider=conn.provider, workspace_id=workspace_id
         )
+
     purged = 0
     if swapped:
         purged = purge_provider_documents(
@@ -390,7 +476,7 @@ def put_connection_config(
         "connection_id": connection_id,
         "provider": conn.provider,
         "config": config,
-        "folder_changed": swapped,
+        "channels_changed": swapped,
         "documents_purged": purged,
     }
 

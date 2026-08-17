@@ -10,12 +10,14 @@ Public API:
 from .base import SourceAdapter, SourceRef, SourceDocument
 from .notion import NotionAdapter
 from .google_drive import GoogleDriveAdapter
+from .slack import SlackAdapter
 from .factory import build_source_adapter
 from .google_drive_utils import (
     extract_drive_folder_id,
     search_drive_folders,
     validate_drive_folder,
 )
+from .slack_utils import join_public_channels, list_slack_channels, validate_slack_channels
 
 __all__ = [
     "SourceAdapter",
@@ -23,8 +25,12 @@ __all__ = [
     "SourceDocument",
     "NotionAdapter",
     "GoogleDriveAdapter",
+    "SlackAdapter",
     "build_source_adapter",
     "extract_drive_folder_id",
     "search_drive_folders",
     "validate_drive_folder",
+    "list_slack_channels",
+    "join_public_channels",
+    "validate_slack_channels",
 ]

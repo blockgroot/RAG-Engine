@@ -1,72 +1,34 @@
-# Render Blueprint — one-click backend deploy.
+# Render Blueprint — one-click backend deploy. Push repo, then in Render:
+# "New +" -> "Blueprint" -> point at this repo.
 #
-# Usage: push this repo to GitHub/GitLab, then in the Render dashboard choose
-# "New +" -> "Blueprint" and point it at the repo.
+# DATABASE_URL: external Postgres (Supabase/Neon), not Render-managed — avoids
+# Render's card prompt on DB provisioning. Use Supabase's Session pooler
+# string (port 5432, *.pooler.supabase.com), not the direct/Transaction one —
+# direct is IPv6-only on free tier; Transaction mode breaks per-connection
+# register_vector setup in app/db/connection.py.
 #
-# DATABASE_URL points at an EXTERNAL Postgres (Supabase free tier, or Neon,
-# etc.) rather than a Render-managed database — deliberate, not a placeholder:
-# Render's free web service needs no card, but provisioning a Render database
-# (even the `free` plan) still prompted for payment info in practice, and a
-# free external Postgres avoids that entirely. app/db/schema.sql runs
-# `CREATE EXTENSION IF NOT EXISTS vector` itself via the entrypoint
-# (scripts/docker-entrypoint.sh -> scripts/init_db.py) — Supabase's default
-# `postgres` role has the privilege to create it, so no manual DB setup is
-# needed beyond pasting the connection string below.
+# Every other secret is `sync: false` (Render prompts in dashboard, never
+# stored in repo). Fill in once from local `.env` (never commit `.env`).
 #
-# IMPORTANT (Supabase specifically): use the "Session pooler" connection
-# string (Settings -> Database -> Connection pooling -> Session pooler,
-# port 5432 on an *.pooler.supabase.com host), NOT the direct connection
-# string. Two reasons: (1) Supabase's direct host is IPv6-only on the free
-# tier, which most external hosts (Render included) cannot reach — the
-# pooler host is IPv4-reachable. (2) Session mode (not Transaction mode,
-# port 6543) gives each of our app's own psycopg-pool connections a stable
-# backend session for its lifetime, matching what app/db/connection.py
-# assumes (e.g. running register_vector's type lookup once per connection) —
-# Transaction mode can silently break that by handing out a different
-# backend connection per transaction.
+# Plan `free`: cold-starts after ~15 min idle. Bump to `starter` for always-on.
 #
-# Every other secret (LLM/embedding/reranker API keys, auth keys, SMTP creds,
-# OAuth client secrets) is intentionally left out of this file — `sync: false`
-# tells Render to prompt for the value in its dashboard instead of storing it
-# in the repo. Fill those in once, on first deploy, from your local `.env`
-# (never commit `.env` itself — see .gitignore).
-#
-# The web service plan is `free`: it spins down after ~15 min of inactivity
-# and cold-starts on the next request — fine for testing, not for an
-# always-on production deployment. Bump to `starter` when you need always-on.
-#
-# ---------------------------------------------------------------------------
-# REGION: put this service in the SAME region as DATABASE_URL.
-# ---------------------------------------------------------------------------
-# With no `region:` Render defaults to `oregon` (US-West). Measured on the live
-# deployment: the service resolved to a US-West address while Supabase was in
-# `ap-south-1` (Mumbai) — so EVERY query crossed the Pacific at ~250ms round
-# trip. The API path is chatty by nature (GET /me alone was seven sequential
-# queries before they were collapsed to two), so cross-region placement is
-# multiplied by the query count, not paid once. This is latency an always-on
-# plan cannot fix: `starter` removes cold starts, not distance.
-#
-# Match the region to the database:
-#   ap-south-1 (Mumbai)  -> region: singapore   (Render's closest)
-#   us-east-1            -> region: virginia
-#   us-west-*            -> region: oregon
-#   eu-*                 -> region: frankfurt
-#
-# NOTE: Render cannot change an existing service's region in place — you must
-# create a new service. Only `API_PROXY_TARGET` on Vercel needs updating
-# afterwards; OAuth redirect URIs point at the FRONTEND origin (see the header
-# comment above), so they are unaffected.
-#
-# CONFIRMED 2026-08-13: this deployment's DATABASE_URL is Supabase ap-south-1
-# (Mumbai) — region below is now set to close that gap. Applying this to an
-# EXISTING Render service does nothing (region is fixed at creation); you
-# must create a new Blueprint-deployed service from this file, point it at
-# the same DATABASE_URL, update Vercel's API_PROXY_TARGET to the new
-# service's URL, then delete the old (Oregon) service. This does not remove
-# free-plan cold starts (only a paid plan does) — it removes the ~250ms
-# per-query cross-Pacific tax that was multiplying every request's round
-# trips (GET /me, /chat/suggestions, disconnect, etc.) by its own query count.
+# Region must match DATABASE_URL's region (ap-south-1 Mumbai -> singapore,
+# us-east-1 -> virginia, us-west-* -> oregon, eu-* -> frankfurt) — cross-region
+# adds ~250ms/query, multiplied by the chatty API's query count. Render can't
+# change an existing service's region in place; redeploy a new service and
+# repoint Vercel's API_PROXY_TARGET.
 region: singapore
+
+# PR previews: one throwaway instance per open PR, auto torn down on
+# merge/close, URL commented on the PR by Render itself (no Action needed).
+# ponytail: also needs a one-time manual toggle in Render dashboard (Blueprint
+# -> Settings -> Enable Preview Environments) before this takes effect.
+# ponytail: every preview shares the SAME external DATABASE_URL as prod (no
+# per-preview DB since it's not Render-managed) — reads/writes real org data.
+# Fine for now; override DATABASE_URL per-preview with a second free
+# Supabase/Neon project if that becomes a real problem.
+previews:
+  generation: automatic
 
 services:
   - type: web
@@ -100,11 +62,7 @@ services:
         sync: false
       - key: EMBEDDING_DIM
         value: "1024"
-      # Batches embed() calls on EITHER backend so a document with an unusually
-      # large number of chunks can't build one unbounded request/response
-      # payload in a single shot — see CLAUDE.md's ingest-memory-hardening
-      # entry (this is what OOM-crashed a 512MB instance before it was wired
-      # into the remote backend).
+      # Batches embed() so one huge document can't build an unbounded request.
       - key: EMBED_BATCH_SIZE
         value: "16"
 
@@ -116,34 +74,20 @@ services:
       - key: RETRIEVAL_RERANK_ENABLED
         value: "true"
 
-      # -- Auth / security (generate fresh values for production, don't reuse dev) --
+      # -- Auth / security (generate fresh values for prod, don't reuse dev) --
       - key: AUTH_JWT_SECRET
         generateValue: true
       - key: AUTH_ENCRYPTION_KEYS
         sync: false
 
-      # -- CORS / frontend --
-      # FRONTEND_URL = the Vercel origin (magic-link + post-OAuth redirect).
-      # API_CORS_ORIGINS = that same origin (escape hatch; the portal itself
-      # talks same-origin `/api` on Vercel, rewritten to this service).
-      # OAuth redirect URIs belong on the FRONTEND origin + /api/..., NOT here:
-      #   https://<frontend>/api/auth/notion/callback
-      #   https://<frontend>/api/auth/google/callback
-      # GitHub App callback URL is the same shape (no GITHUB_REDIRECT_URI env).
+      # -- CORS / frontend (OAuth callbacks live on the FRONTEND origin, not here) --
       - key: API_CORS_ORIGINS
         sync: false
       - key: FRONTEND_URL
         sync: false
 
-      # -- Email (magic-link login) --
-      # Dashboard-owned, not pinned in this file. A `value: console` here would
-      # reset production back to log-only mail on every Blueprint sync.
-      # Free Render blocks outbound SMTP (25/465/587) — smtp/gmail won't work.
-      # Resend's sandbox sender only delivers to the Resend account's own
-      # inbox until a domain is verified (every other recipient gets a 403).
-      # Prefer EMAIL_SENDER=sendgrid + EMAIL_SENDGRID_API_KEY instead: SendGrid's
-      # free Single Sender Verification (no DNS/domain needed) can deliver to
-      # any recipient, so magic links actually reach real admins/employees.
+      # -- Email (magic-link login) — free Render blocks outbound SMTP; use
+      # EMAIL_SENDER=sendgrid (Single Sender Verification, no domain needed) --
       - key: EMAIL_SENDER
         sync: false
       - key: EMAIL_SMTP_HOST
@@ -191,71 +135,42 @@ services:
       - key: GITHUB_APP_PRIVATE_KEY
         sync: false
 
+      # -- Slack (optional, Phase 1: OAuth connect only) --
+      - key: SLACK_CLIENT_ID
+        sync: false
+      - key: SLACK_CLIENT_SECRET
+        sync: false
+      - key: SLACK_REDIRECT_URI
+        sync: false
+
       # -- Runtime tuning --
       - key: MODEL_WARMUP_ON_STARTUP
         value: "true"
       - key: INGEST_WORKER_IN_API
         value: "true"
-      # A document that chunks into more pieces than this skips contextual
-      # enrichment entirely (keeps its plain, already-embedded chunks) instead
-      # of issuing one uncapped LLM call per chunk — protects against a single
-      # pathologically large document tying up the in-API worker indefinitely.
+      # Skip contextual enrichment past this many chunks/doc (no uncapped per-chunk LLM calls).
       - key: INGEST_CONTEXTUAL_MAX_CHUNKS
         value: "200"
-      # Proactive admission gate: skip claiming a new ingestion job (leave it
-      # queued for the next tick) if the process's own RSS is already at/above
-      # this ceiling. Defense-in-depth alongside the per-input bounds above —
-      # catches memory pressure from any cause. 400MB leaves ~112MB headroom
-      # under Render free's hard 512MB limit; raise this if/when upgrading off
-      # the free plan.
+      # Skip claiming new ingest jobs above this RSS ceiling — memory admission gate.
       - key: INGEST_MEMORY_GUARD_ENABLED
         value: "true"
       - key: INGEST_MAX_RSS_MB
         value: "400"
-      # Per-org SymSpell dictionaries are cached for the life of the process —
-      # bounded LRU so onboarding more orgs over time doesn't grow this
-      # unboundedly (a slow-leak risk distinct from the sudden-crash bugs
-      # above).
+      # Bounded LRU for per-org SymSpell dictionaries (unbounded growth otherwise).
       - key: QUERY_NORM_CACHE_MAX_ORGS
         value: "50"
-      # THE fix for the repeated "Ran out of memory (used over 512MB)" during
-      # Notion sync. Loading BGE-M3's tokenizer for token-aware chunking
-      # measured at ~611MB RSS on this image (~378MB even via the `tokenizers`
-      # Rust lib) against Render's 512MB HARD limit, so every ingestion run was
-      # OOM-killed the instant chunking began — 100% reproducible, independent
-      # of document size. "heuristic" counts tokens with a calibrated
-      # zero-dependency estimator (~0MB, no model download): measured chunks of
-      # mean 211 / max 236 real BGE-M3 tokens against a 256 budget, i.e. it errs
-      # SMALL (the safe direction) and never exceeds it. Do NOT set this to "hf"
-      # on the free plan.
+      # Zero-dependency token estimator — the real BGE-M3 tokenizer OOM'd this instance
+      # at ~611MB RSS. Do NOT set to "hf" on the free plan.
       - key: CHUNK_TOKEN_BACKEND
         value: heuristic
-      # Absolute per-chunk CHARACTER ceiling, and the last-resort splitter's
-      # bound. Paragraph/sentence/word splitting all need a linguistic boundary,
-      # so a whitespace-free run (base64 data URI or long signed link inside an
-      # exported Google Doc) had none and was emitted as ONE chunk — the
-      # embedding endpoint then 400'd it (INPUT_TOKEN_LIMIT_EXCEEDED, "exceeds
-      # the model's maximum of 8194 tokens") and failed the whole document's
-      # sync. The token budget above could not have caught it: base64 bills 1
-      # real BGE-M3 token per CHARACTER, so the estimator was 16x low. 1
-      # token/char is the worst case anything can reach, so bounding characters
-      # bounds tokens outright. Never fires on prose (a 256-token chunk is
-      # ~1000-1300 chars).
+      # Absolute per-chunk character ceiling — catches whitespace-free input
+      # (base64, long URLs) that word/sentence splitting can't bound.
       - key: CHUNK_MAX_CHARS
         value: "4000"
-      # Crash-loop breaker: `requeue_interrupted_running()` used to return a
-      # `running` job to `queued` on EVERY boot with no limit, so a job that
-      # OOM-killed its own process was retried forever — unattended, with no
-      # traffic, burning the instance. Two live incidents were this loop rather
-      # than the underlying bug. Past this many claims the job fails loudly and
-      # the API stays up.
+      # Cap on retrying a job that OOM-kills its own worker (breaks the crash-loop).
       - key: INGEST_MAX_JOB_ATTEMPTS
         value: "3"
-      # Which header carries the real client IP. The magic-link limiter is keyed
-      # per client, and the socket peer here is Render's own router (fronted by
-      # the Vercel /api rewrite) — the SAME address for every user, which
-      # collapsed the per-IP budget into one global bucket: one script consuming
-      # it 429'd everybody's login. Vercel writes x-vercel-forwarded-for itself,
-      # so unlike X-Forwarded-For a caller cannot dictate it.
+      # Real client IP header for the magic-link rate limiter (socket peer is
+      # Render's own router — same for every user otherwise).
       - key: CLIENT_IP_HEADER
         value: x-vercel-forwarded-for

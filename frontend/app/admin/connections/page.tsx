@@ -12,7 +12,12 @@ import { clearedSyncChanges } from "@/lib/syncChanges";
 import { syncPagesDetail, syncPhaseHeadline } from "@/lib/syncProgress";
 import { invalidateSuggestionsCache } from "@/lib/suggestionsCache";
 
-const PROVIDERS: ("notion" | "google" | "github")[] = ["notion", "google", "github"];
+const PROVIDERS: ("notion" | "google" | "github" | "slack")[] = [
+  "notion",
+  "google",
+  "github",
+  "slack",
+];
 const ACTIVE_STATUSES = ACTIVE_JOB_STATUSES;
 // Minimum gap between window-focus-triggered change-checks. A Drive check walks
 // the folder tree live (one Google API call per subfolder), so an unthrottled
@@ -143,8 +148,9 @@ function ConnectionsPageInner() {
           }
           return;
         }
-        // Google needs a folder before change-check works.
+        // Google needs a folder, Slack needs channels, before change-check works.
         if (c.provider === "google" && !c.source_config?.folder_id) return;
+        if (c.provider === "slack" && !c.source_config?.channel_ids?.length) return;
         try {
           next[c.id] = await api.checkConnectionChanges(c.id);
           setReauthById((prev) => ({ ...prev, [c.id]: false }));
@@ -332,6 +338,7 @@ function ConnectionsPageInner() {
     const c = connections.find((x) => x.provider === p);
     if (!c) return true;
     if (p === "google" && !c.source_config?.folder_id) return true;
+    if (p === "slack" && !c.source_config?.channel_ids?.length) return true;
     return Boolean(changesById[c.id]?.has_changes);
   }).length;
 
@@ -341,7 +348,7 @@ function ConnectionsPageInner() {
         <PageHeader
           eyebrow="Company"
           title="Sources"
-          description="Connect Notion, Google Drive, and company GitHub. Spaces need their own GitHub account — never the same install as here."
+          description="Connect Notion, Google Drive, Slack, and company GitHub. Spaces need their own GitHub account — never the same install as here."
           scene="sources"
           meta={
             loadingConnections ? (

@@ -27,7 +27,12 @@ import { invalidateSuggestionsCache } from "@/lib/suggestionsCache";
 // workspace with no GitHub connection gets the fallback rather than the org's
 // repos. That no-fallback scoping is what makes this safe; see
 // tests/test_github_workspace_scope.py.
-const PROVIDERS: ("notion" | "google" | "github")[] = ["notion", "google", "github"];
+const PROVIDERS: ("notion" | "google" | "github" | "slack")[] = [
+  "notion",
+  "google",
+  "github",
+  "slack",
+];
 const ACTIVE_STATUSES = ACTIVE_JOB_STATUSES;
 // Minimum gap between window-focus-triggered change-checks. A Drive check walks
 // the folder tree live (one Google API call per subfolder), so an unthrottled
@@ -165,6 +170,7 @@ function WorkspaceDetailPageInner() {
             return;
           }
           if (c.provider === "google" && !c.source_config?.folder_id) return;
+          if (c.provider === "slack" && !c.source_config?.channel_ids?.length) return;
           try {
             next[c.id] = await api.checkWorkspaceConnectionChanges(workspaceId, c.id);
             setReauthById((prev) => ({ ...prev, [c.id]: false }));
@@ -291,7 +297,9 @@ function WorkspaceDetailPageInner() {
           ? "Google Drive"
           : connected === "notion"
             ? "Notion"
-            : connected;
+            : connected === "slack"
+              ? "Slack"
+              : connected;
     setMessage(
       connected === "github"
         ? `${label} connected to this space. You and invited colleagues can ask in the Code tab — only these repos, not the company GitHub.`
