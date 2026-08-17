@@ -3,6 +3,7 @@ import { api, ApiError, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/a
 import { syncPagesDetail, syncPercent, syncPhaseHeadline } from "@/lib/syncProgress";
 import { DriveFolderPicker } from "./DriveFolderPicker";
 import { SlackChannelPicker } from "./SlackChannelPicker";
+import { SlackMemberInvitePicker } from "./SlackMemberInvitePicker";
 import { JobStatusBadge } from "./JobStatusBadge";
 import { ProviderMark } from "./ProviderMark";
 
@@ -162,6 +163,7 @@ export function ConnectionCard({
   const needsChannels = provider === "slack" && connection && !channelsConfigured;
   const [changingFolder, setChangingFolder] = useState(false);
   const [changingChannels, setChangingChannels] = useState(false);
+  const [invitingMembers, setInvitingMembers] = useState(false);
   const [folderHint, setFolderHint] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
   const [disconnectError, setDisconnectError] = useState<string | null>(null);
@@ -422,6 +424,23 @@ export function ConnectionCard({
         </div>
       )}
 
+      {provider === "slack" &&
+        workspaceId &&
+        connection &&
+        channelsConfigured &&
+        !changingChannels &&
+        invitingMembers && (
+          <div className="stack" style={{ marginTop: "0.9rem" }}>
+            <SlackMemberInvitePicker
+              workspaceId={workspaceId}
+              connectionId={connection.id}
+              channelIds={channelIds}
+              channelNames={connection.source_config?.channel_names}
+              onDone={() => setInvitingMembers(false)}
+            />
+          </div>
+        )}
+
       {folderHint && !changingFolder && !changingChannels && (
         <p className="muted" style={{ marginTop: "0.65rem" }}>
           {folderHint}
@@ -587,6 +606,24 @@ export function ConnectionCard({
               title="Add or remove connected Slack channels"
             >
               Change channels
+            </button>
+          )}
+        {provider === "slack" &&
+          workspaceId &&
+          connection &&
+          channelsConfigured &&
+          !changingChannels &&
+          !syncInProgress && (
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={() => {
+                setInvitingMembers((v) => !v);
+                setConfigError(null);
+              }}
+              title="Invite members of your connected Slack channel(s) to this space"
+            >
+              {invitingMembers ? "Hide invite" : "Invite members"}
             </button>
           )}
         {connection && isLive && (

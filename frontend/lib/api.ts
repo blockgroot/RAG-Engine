@@ -140,6 +140,15 @@ export interface SlackChannel {
   is_member: boolean;
 }
 
+/** One Slack channel member, flagged for the workspace invite picker. */
+export interface SlackChannelMember {
+  id: string;
+  name: string;
+  email: string;
+  already_org_member: boolean;
+  already_workspace_member: boolean;
+}
+
 export interface GitHubScopeResponse {
   connection_id: string;
   provider: "github";
@@ -438,6 +447,20 @@ export const api = {
     request<ConnectionConfigResponse>(
       `/workspaces/${workspaceId}/connections/${connectionId}/config`,
       { method: "PUT", body: JSON.stringify({ channel_ids: channelIds }) }
+    ),
+  listWorkspaceSlackChannelMembers: (workspaceId: string, connectionId: string, channelId: string) =>
+    request<{ members: SlackChannelMember[] }>(
+      `/workspaces/${workspaceId}/connections/${connectionId}/slack-channels/${channelId}/members`
+    ),
+  inviteWorkspaceSlackChannelMembers: (
+    workspaceId: string,
+    connectionId: string,
+    channelId: string,
+    emails: string[]
+  ) =>
+    request<{ invited: string[]; skipped_not_org_member: string[] }>(
+      `/workspaces/${workspaceId}/connections/${connectionId}/slack-channels/${channelId}/invite-members`,
+      { method: "POST", body: JSON.stringify({ emails }) }
     ),
   /** Workspace equivalent of refreshConnectionScope (owner-only server-side). */
   checkWorkspaceConnectionHealth: (workspaceId: string, connectionId: string) =>
