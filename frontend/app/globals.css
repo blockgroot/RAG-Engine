@@ -2959,18 +2959,24 @@ table .role-chip.role-admin,
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
-  /* Grid row-stretch alone only equalizes cards that SHARE a row — Slack
-     sits alone in the last row (4 cards, 3 columns), so with only
-     min-height: 100% it shrank to its own content instead of matching the
-     row above. A fixed floor keeps every card the same height regardless of
-     how many cards land in its row; .source-card-actions' margin-top: auto
-     still pins the button row to the bottom of that floor. */
-  min-height: max(100%, 21rem);
+  min-height: 100%;
   padding: 1.2rem 1.25rem 1.15rem !important;
   border-radius: 20px !important;
   animation: rise-in 0.45s var(--ease) both;
   position: relative;
   overflow: hidden;
+}
+/* Equal-height floor scoped to the admin bento GRID only (repeat(3, ...) —
+   multiple cards per row). Without scoping, this also hit the workspace
+   page's single-column .stack list, where a fixed floor just makes every
+   card look empty with no row to justify the extra height. Grid row-stretch
+   (min-height: 100% above) already equalizes cards that share a row; this
+   floor only matters when a row ends up with fewer cards than columns (e.g.
+   4 cards in a 3-column grid leaves the last one alone with nothing to
+   stretch against). .source-card-actions' margin-top: auto still pins the
+   button row to the bottom of whichever height wins. */
+.source-bento .source-studio-card {
+  min-height: max(100%, 21rem);
 }
 .source-studio-card::before {
   content: "";
