@@ -194,3 +194,114 @@ def test_decision_d10_rejects_channel_already_claimed_by_sibling_workspace(
         cookies=cookies,
     )
     assert conflict.status_code == 400
+
+
+def _fake_user_info(user_id, *, email=None, name="Person"):
+    return {
+        "ok": True,
+        "user": {
+            "id": user_id,
+            "name": name,
+            "real_name": name,
+            "is_bot": False,
+            "deleted": False,
+            "profile": {"email": email} if email else {},
+        },
+    }
+
+
+@requires_db
+def test_workspace_slack_channel_members_flags_org_membership(client, owner_org, monkeypatch):
+    org_id, cookies = owner_org
+    workspace_id = client.post(
+        "/workspaces", json={"name": "Meeting Notes"}, cookies=cookies
+    ).json()["id"]
+    connection_id = save_connection(
+        org_id,
+        "slack",
+        OAuthTokens(
+            access_token="xoxb-ws", refresh_token=None, expires_at=None, external_workspace_id="T1"
+        ),
+        workspace_id=workspace_id,
+    )
+    from app.auth.users import invite_member as invite_org_member
+
+    invite_org_member("already-here@example.com", org_id)
+
+    monkeypatch.setattr(
+        "app.sources.slack_utils.httpx.get",
+        lambda *a, **k: _fake_slack_response(_channels_payload(("C1", "team-planning"))),
+    )
+    monkeypatch.setattr(
+        "app.sources.slack_utils.httpx.post", lambda *a, **k: _fake_slack_response({"ok": True})
+    )
+    client.put(
+        f"/workspaces/{workspace_id}/connections/{connection_id}/config",
+        json={"channel_ids": ["C1"]},
+        cookies=cookies,
+    )
+
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        if "conversations.members" in url:
+            return _fake_slack_response({"ok": True, "members": ["U1", "U2"]})
+        payloads = {
+            "U1": _fake_user_info("U1", email="already-here@example.com"),
+            "U2": _fake_user_info("U2", email="stranger@example.com"),
+        }
+        return _fake_slack_response(payloads[params["user"]])
+
+    monkeypatch.setattr("app.sources.slack_utils.httpx.get", fake_get)
+
+    response = client.get(
+        f"/workspaces/{workspace_id}/connections/{connection_id}/slack-channels/C1/members",
+        cookies=cookies,
+    )
+    assert response.status_code == 200
+    by_email = {m["email"]: m for m in response.json()["members"]}
+    assert by_email["already-here@example.com"]["already_org_member"] is True
+    assert by_email["stranger@example.com"]["already_org_member"] is False
+
+
+@requires_db
+def test_workspace_slack_invite_members_skips_non_org_emails(client, owner_org, monkeypatch):
+    org_id, cookies = owner_org
+    workspace_id = client.post(
+        "/workspaces", json={"name": "Meeting Notes"}, cookies=cookies
+    ).json()["id"]
+    connection_id = save_connection(
+        org_id,
+        "slack",
+        OAuthTokens(
+            access_token="xoxb-ws", refresh_token=None, expires_at=None, external_workspace_id="T1"
+        ),
+        workspace_id=workspace_id,
+    )
+    from app.auth.users import invite_member as invite_org_member
+
+    invite_org_member("already-here@example.com", org_id)
+
+    monkeypatch.setattr(
+        "app.sources.slack_utils.httpx.get",
+        lambda *a, **k: _fake_slack_response(_channels_payload(("C1", "team-planning"))),
+    )
+    monkeypatch.setattr(
+        "app.sources.slack_utils.httpx.post", lambda *a, **k: _fake_slack_response({"ok": True})
+    )
+    client.put(
+        f"/workspaces/{workspace_id}/connections/{connection_id}/config",
+        json={"channel_ids": ["C1"]},
+        cookies=cookies,
+    )
+
+    response = client.post(
+        f"/workspaces/{workspace_id}/connections/{connection_id}/slack-channels/C1/invite-members",
+        json={"emails": ["already-here@example.com", "stranger@example.com"]},
+        cookies=cookies,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["invited"] == ["already-here@example.com"]
+    assert body["skipped_not_org_member"] == ["stranger@example.com"]
+
+    members = client.get(f"/workspaces/{workspace_id}/members", cookies=cookies).json()
+    assert "already-here@example.com" in {m["email"] for m in members}

@@ -29,6 +29,9 @@ _TIMEOUT = 10.0
 # produces" discipline as Google's folder crawl and the Notion fetch-size fix.
 # 10 pages * 200/page = 2000 channels, comfortably above any real workspace.
 _MAX_LIST_PAGES = 10
+# Bound the member walk the same way — a channel with more members than this
+# is truncated rather than issuing an unbounded number of users.info calls.
+_MAX_CHANNEL_MEMBERS = 500
 
 
 def _get(token: str, method: str, params: dict, *, timeout: float = _TIMEOUT) -> dict:
@@ -127,6 +130,62 @@ def join_public_channels(token: str, channel_ids: list[str]) -> None:
             _post(token, "conversations.join", {"channel": channel_id})
         except SourceError as exc:
             logger.warning("slack.join_channel failed for %s: %s", channel_id, exc)
+
+
+def list_channel_members(token: str, channel_id: str) -> list[dict]:
+    """List real (non-bot) members of one channel, with email for matching.
+
+    Returns ``[{"id", "name", "email"}, ...]``. A member is skipped (not an
+    error) if they're a bot, deleted, or Slack simply has no email on file for
+    them (``profile.email`` absent) — this connector never fails wholesale
+    because of one un-matchable Slack account. Requires the ``users:read.email``
+    scope; without it every member is skipped rather than raising, so an
+    org running on the old scope just sees an empty list until it reconnects.
+
+    Raises:
+        SourceError: unexpected Slack/HTTP failure on the channel-membership
+            call itself (not on a per-user lookup, which is best-effort).
+    """
+    member_ids: list[str] = []
+    cursor = None
+    for _ in range(_MAX_LIST_PAGES):
+        if len(member_ids) >= _MAX_CHANNEL_MEMBERS:
+            logger.warning(
+                "slack.list_channel_members truncated at %s members for %s",
+                _MAX_CHANNEL_MEMBERS,
+                channel_id,
+            )
+            break
+        params = {"channel": channel_id, "limit": 200}
+        if cursor:
+            params["cursor"] = cursor
+        data = _get(token, "conversations.members", params)
+        member_ids.extend(data.get("members", []))
+        cursor = (data.get("response_metadata") or {}).get("next_cursor")
+        if not cursor:
+            break
+
+    members: list[dict] = []
+    for user_id in member_ids[:_MAX_CHANNEL_MEMBERS]:
+        try:
+            info = _get(token, "users.info", {"user": user_id})
+        except SourceError as exc:
+            logger.warning("slack.users_info failed for %s: %s", user_id, exc)
+            continue
+        user = info.get("user") or {}
+        if user.get("is_bot") or user.get("deleted"):
+            continue
+        email = (user.get("profile") or {}).get("email")
+        if not email:
+            continue
+        members.append(
+            {
+                "id": user_id,
+                "name": user.get("real_name") or user.get("name") or user_id,
+                "email": email.lower(),
+            }
+        )
+    return members
 
 
 def validate_slack_channels(token: str, channel_ids: list[str]) -> dict:
