@@ -125,6 +125,19 @@ export interface ConnectionSourceConfig {
   account_login?: string;
   repository_selection?: "all" | "selected";
   repos?: GitHubRepoRef[];
+  // Slack: the channels the admin picked on the channel-picker screen (never
+  // "every channel the bot can see" -- see docs/plans/2026-08-17-slack-integration.md D2).
+  channel_ids?: string[];
+  channel_names?: Record<string, string>;
+}
+
+/** One Slack channel the connected bot can already see (channel-picker list). */
+export interface SlackChannel {
+  id: string;
+  name: string;
+  is_private: boolean;
+  /** False for a private channel means "invite the bot in Slack first" (D7). */
+  is_member: boolean;
 }
 
 export interface GitHubScopeResponse {
@@ -138,10 +151,10 @@ export interface GitHubScopeResponse {
 
 export interface ConnectionRecord {
   id: string;
-  provider: "notion" | "google" | "github";
+  provider: "notion" | "google" | "github" | "slack";
   external_workspace_name: string | null;
   created_at: string;
-  /** Non-secret ingestion scope (e.g. Google Drive folder). */
+  /** Non-secret ingestion scope (e.g. Google Drive folder, Slack channels). */
   source_config?: ConnectionSourceConfig | null;
   /** Sticky reconnect signal from the server (survives page reload). */
   needs_reauth?: boolean;
@@ -154,6 +167,8 @@ export interface ConnectionConfigResponse {
   config: ConnectionSourceConfig;
   /** True when PUT replaced a different Drive folder_id (old corpus purged). */
   folder_changed?: boolean;
+  /** True when PUT dropped a previously-saved Slack channel (old corpus purged). */
+  channels_changed?: boolean;
   documents_purged?: number;
 }
 
@@ -314,6 +329,15 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ folder_url: folderUrl }),
     }),
+  listConnectionSlackChannels: (connectionId: string) =>
+    request<{ channels: SlackChannel[] }>(
+      `/admin/connections/${connectionId}/slack-channels`
+    ),
+  setConnectionSlackChannels: (connectionId: string, channelIds: string[]) =>
+    request<ConnectionConfigResponse>(`/admin/connections/${connectionId}/config`, {
+      method: "PUT",
+      body: JSON.stringify({ channel_ids: channelIds }),
+    }),
   /**
    * Re-read which repositories a GitHub installation may see.
    *
@@ -401,6 +425,19 @@ export const api = {
     request<ConnectionConfigResponse>(
       `/workspaces/${workspaceId}/connections/${connectionId}/config`,
       { method: "PUT", body: JSON.stringify({ folder_url: folderUrl }) }
+    ),
+  listWorkspaceConnectionSlackChannels: (workspaceId: string, connectionId: string) =>
+    request<{ channels: SlackChannel[] }>(
+      `/workspaces/${workspaceId}/connections/${connectionId}/slack-channels`
+    ),
+  setWorkspaceConnectionSlackChannels: (
+    workspaceId: string,
+    connectionId: string,
+    channelIds: string[]
+  ) =>
+    request<ConnectionConfigResponse>(
+      `/workspaces/${workspaceId}/connections/${connectionId}/config`,
+      { method: "PUT", body: JSON.stringify({ channel_ids: channelIds }) }
     ),
   /** Workspace equivalent of refreshConnectionScope (owner-only server-side). */
   checkWorkspaceConnectionHealth: (workspaceId: string, connectionId: string) =>

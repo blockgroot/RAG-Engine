@@ -41,6 +41,7 @@ from ..sources import (
 )
 from .connection_ops import (
     disconnect_connection,
+    find_slack_channel_conflict,
     folder_id_changed,
     note_live_success,
     purge_provider_documents,
@@ -339,6 +340,14 @@ def put_connection_config(
     try:
         token = get_live_connection_token(session.org_id, conn.provider)
         config = validate_slack_channels(token, channel_ids)
+        conflict = find_slack_channel_conflict(
+            session.org_id, config["channel_ids"], exclude_workspace_id=None
+        )
+        if conflict is not None:
+            raise ConfigurationError(
+                "One or more of these channels is already connected in a "
+                "space. Each channel can only be connected in one place."
+            )
         swapped = slack_channels_changed(session.org_id, conn.provider, config["channel_ids"])
         join_public_channels(token, config["channel_ids"])
         set_connection_config(session.org_id, conn.provider, config)
