@@ -17,7 +17,12 @@ from .google_drive_utils import (
     search_drive_folders,
     validate_drive_folder,
 )
-from .slack_utils import join_public_channels, list_slack_channels, validate_slack_channels
+from .slack_utils import (
+    join_public_channels,
+    list_channel_members,
+    list_slack_channels,
+    validate_slack_channels,
+)
 
 __all__ = [
     "SourceAdapter",
@@ -32,5 +37,6 @@ __all__ = [
     "validate_drive_folder",
     "list_slack_channels",
     "join_public_channels",
+    "list_channel_members",
     "validate_slack_channels",
 ]

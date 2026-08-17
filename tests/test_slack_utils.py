@@ -11,6 +11,7 @@ import pytest
 from app.core.exceptions import ConfigurationError, SourceError
 from app.sources.slack_utils import (
     join_public_channels,
+    list_channel_members,
     list_slack_channels,
     validate_slack_channels,
 )
@@ -155,3 +156,49 @@ def test_join_public_channels_swallows_per_channel_failures(monkeypatch):
     )
     # Must not raise — best-effort, per the picker's re-check being the source of truth.
     join_public_channels("xoxb-abc", ["C1"])
+
+
+def _user(id, *, email=None, name="Person", is_bot=False, deleted=False):
+    return {
+        "ok": True,
+        "user": {
+            "id": id,
+            "name": name,
+            "real_name": name,
+            "is_bot": is_bot,
+            "deleted": deleted,
+            "profile": {"email": email} if email else {},
+        },
+    }
+
+
+def test_list_channel_members_returns_email_matched_members(monkeypatch):
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        if "conversations.members" in url:
+            return FakeResponse({"ok": True, "members": ["U1", "U2"]})
+        user_id = params["user"]
+        return FakeResponse(_user(user_id, email=f"{user_id.lower()}@example.com"))
+
+    monkeypatch.setattr("app.sources.slack_utils.httpx.get", fake_get)
+    members = list_channel_members("xoxb-abc", "C1")
+    assert members == [
+        {"id": "U1", "name": "Person", "email": "u1@example.com"},
+        {"id": "U2", "name": "Person", "email": "u2@example.com"},
+    ]
+
+
+def test_list_channel_members_skips_bots_deleted_and_emailless(monkeypatch):
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        if "conversations.members" in url:
+            return FakeResponse({"ok": True, "members": ["U1", "U2", "U3", "U4"]})
+        payloads = {
+            "U1": _user("U1", email="real@example.com"),
+            "U2": _user("U2", is_bot=True, email="bot@example.com"),
+            "U3": _user("U3", deleted=True, email="gone@example.com"),
+            "U4": _user("U4"),  # no email on file
+        }
+        return FakeResponse(payloads[params["user"]])
+
+    monkeypatch.setattr("app.sources.slack_utils.httpx.get", fake_get)
+    members = list_channel_members("xoxb-abc", "C1")
+    assert [m["id"] for m in members] == ["U1"]

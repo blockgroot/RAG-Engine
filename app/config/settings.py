@@ -555,11 +555,17 @@ class GoogleSettings:
 # Phase 1 of Slack Integration Plan (docs/plans/2026-08-17-slack-integration.md):
 # bot scopes only — enough to list/join/read channels and resolve display
 # names. No `chat:write` (read-only connector, D-note in the plan's non-goals).
+# `users:read.email` (workspace-invite member picker) is the one exception to
+# "read-only" in spirit, not in effect — it only ever resolves a Slack
+# member's email so it can be matched against an EXISTING org account; it
+# never lets Handbook message or modify anything in Slack. Existing
+# connections must reconnect once to pick up a newly added scope (Slack
+# re-consents on scope change, it doesn't apply retroactively).
 DEFAULT_SLACK_BOT_SCOPES = (
     "channels:history,channels:read,channels:join,"
     "groups:history,groups:read,"
     "im:history,im:read,mpim:history,mpim:read,"
-    "users:read"
+    "users:read,users:read.email"
 )
 
 # Phase 2 bounds (plan §6/D11 — "bound the walk itself" discipline, same as

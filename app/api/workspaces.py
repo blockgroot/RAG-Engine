@@ -23,6 +23,7 @@ from ..auth import (
     get_live_connection_token,
     get_user,
     list_connections,
+    list_members,
     send_workspace_invite_email_safe,
     set_connection_config,
 )
@@ -41,6 +42,7 @@ from ..sources import (
     build_source_adapter,
     extract_drive_folder_id,
     join_public_channels,
+    list_channel_members,
     list_slack_channels,
     search_drive_folders,
     validate_drive_folder,
@@ -379,6 +381,100 @@ def list_workspace_connection_slack_channels(
             exc, org_id=session.org_id, provider=conn.provider, workspace_id=workspace_id
         )
     return {"channels": channels}
+
+
+def _connected_slack_channel(conn, channel_id: str):
+    """404 unless ``channel_id`` is one this connection actually picked."""
+    channel_ids = (conn.source_config or {}).get("channel_ids") or []
+    if channel_id not in channel_ids:
+        raise HTTPException(status_code=404, detail="Channel is not connected to this workspace")
+
+
+@router.get("/{workspace_id}/connections/{connection_id}/slack-channels/{channel_id}/members")
+def list_workspace_slack_channel_members(
+    workspace_id: str,
+    connection_id: str,
+    channel_id: str,
+    session: SessionClaims = Depends(get_session),
+    _role: str = Depends(require_workspace_owner),
+):
+    """List a connected channel's Slack members, each flagged for invite eligibility.
+
+    Only members who already have a Handbook account in THIS org can be
+    invited into the workspace (``workspaces.invite_member`` enforces this
+    too — it's checked here again purely so the picker can show, not
+    silently omit, "not on Handbook yet" for everyone else). Matching is by
+    email, which requires the ``users:read.email`` Slack scope; a member
+    Slack won't give an email for is left out entirely (see
+    ``list_channel_members``).
+    """
+    conn = _owned_workspace_connection(session.org_id, workspace_id, connection_id)
+    if conn.provider != "slack":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Channel members are only supported for Slack (this connection is {conn.provider!r}).",
+        )
+    _connected_slack_channel(conn, channel_id)
+    try:
+        token = get_live_connection_token(session.org_id, conn.provider, workspace_id=workspace_id)
+        members = list_channel_members(token, channel_id)
+    except (SourceError, ConfigurationError, OAuthReauthRequiredError) as exc:
+        raise_token_http(
+            exc, org_id=session.org_id, provider=conn.provider, workspace_id=workspace_id
+        )
+
+    org_emails = {u.email for u in list_members(session.org_id)}
+    workspace_emails = {m["email"] for m in list_workspace_members(workspace_id)}
+    return {
+        "members": [
+            {
+                **member,
+                "already_org_member": member["email"] in org_emails,
+                "already_workspace_member": member["email"] in workspace_emails,
+            }
+            for member in members
+        ]
+    }
+
+
+@router.post("/{workspace_id}/connections/{connection_id}/slack-channels/{channel_id}/invite-members")
+def invite_workspace_slack_channel_members(
+    workspace_id: str,
+    connection_id: str,
+    channel_id: str,
+    body: dict,
+    background_tasks: BackgroundTasks,
+    session: SessionClaims = Depends(get_session),
+    _role: str = Depends(require_workspace_owner),
+    settings: ApiSettings = Depends(ApiSettings.from_env),
+):
+    """Bulk-invite a subset of a connected channel's members into this workspace.
+
+    Reuses the exact same ``invite_member`` an owner would trigger one email
+    at a time from the members panel — this is only a bulk front-end for it,
+    not a new privilege. An email with no matching org account is reported
+    back as skipped rather than silently dropped or auto-created (see the
+    Slack Integration Plan's member-invite decision: never create new org
+    accounts from this flow).
+    """
+    conn = _owned_workspace_connection(session.org_id, workspace_id, connection_id)
+    if conn.provider != "slack":
+        raise HTTPException(status_code=400, detail="Member invite is only supported for Slack")
+    _connected_slack_channel(conn, channel_id)
+
+    emails = [
+        (e or "").strip().lower() for e in (body.get("emails") or []) if isinstance(e, str)
+    ]
+    invited, skipped = [], []
+    for email in emails:
+        try:
+            invite_member(workspace_id, session.org_id, session.user_id, email)
+        except NotFoundError:
+            skipped.append(email)
+            continue
+        invited.append(email)
+        _notify_workspace_invite(workspace_id, session, email, background_tasks, settings)
+    return {"invited": invited, "skipped_not_org_member": skipped}
 
 
 @router.put("/{workspace_id}/connections/{connection_id}/config")
