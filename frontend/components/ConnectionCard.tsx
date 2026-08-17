@@ -436,7 +436,6 @@ export function ConnectionCard({
               connectionId={connection.id}
               channelIds={channelIds}
               channelNames={connection.source_config?.channel_names}
-              onDone={() => setInvitingMembers(false)}
             />
           </div>
         )}

@@ -21,13 +21,11 @@ export function SlackMemberInvitePicker({
   connectionId,
   channelIds,
   channelNames,
-  onDone,
 }: {
   workspaceId: string;
   connectionId: string;
   channelIds: string[];
   channelNames?: Record<string, string>;
-  onDone?: () => void;
 }) {
   type Row = SlackChannelMember & { channelId: string };
 
@@ -111,6 +109,14 @@ export function SlackMemberInvitePicker({
       }
       setResult({ invited, skipped });
       setSelected(new Set());
+      if (invited.length > 0) {
+        const invitedSet = new Set(invited);
+        setRows((prev) =>
+          (prev || []).map((row) =>
+            invitedSet.has(row.email) ? { ...row, already_workspace_member: true } : row
+          )
+        );
+      }
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : "Could not send invites.");
     } finally {
@@ -176,11 +182,6 @@ export function SlackMemberInvitePicker({
         >
           {sending ? "Sending…" : `Invite ${selected.size || ""}`.trim()}
         </button>
-        {onDone && (
-          <button className="button button-secondary" type="button" onClick={onDone}>
-            Close
-          </button>
-        )}
       </div>
       {result && (
         <p className="muted" style={{ margin: 0 }}>
