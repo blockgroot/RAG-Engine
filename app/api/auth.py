@@ -233,8 +233,11 @@ def request_magic_link(
 def verify_magic_link(token: str, settings: ApiSettings = Depends(ApiSettings.from_env)):
     try:
         email = consume_magic_link_token(token)
-    except AuthError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except AuthError:
+        # Reached by a real browser navigation (the emailed link), so a raw
+        # JSON 401 here is a dead end for the user, not just an API error —
+        # give them the themed page + a way back in, not a JSON blob.
+        return HTMLResponse(_expired_link_page(settings), status_code=401)
 
     user = get_user_by_email(email)
     if user is None or user.org_id is None:
@@ -826,6 +829,25 @@ def _confirm_page(action: str, email: str, company_name: str, token: str) -> str
     </div>
     """
     return _page(f"{verb} organization request", body)
+
+
+def _expired_link_page(settings: ApiSettings) -> str:
+    """Shown when a magic-link token is invalid/expired/already used. Points
+    the user straight back to the login form rather than leaving them on a
+    dead JSON error page — that's the only way back in for a link that no
+    longer works."""
+    base = (settings.frontend_url or "").rstrip("/")
+    login_url = f"{base}/login" if base else "/login"
+    body = f"""
+    <p class="eyebrow">Sign-in link</p>
+    <h1>This link has expired</h1>
+    <p class="muted">
+      Magic links are single-use and expire a short time after they're sent.
+      Request a new one to sign back in.
+    </p>
+    <a class="button" href="{html.escape(login_url)}" style="margin-top: 1.25rem">Sign in again</a>
+    """
+    return _page("Sign-in link expired", body)
 
 
 def _result_page(message: str, *, ok: bool = True) -> str:

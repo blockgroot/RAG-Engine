@@ -29,13 +29,13 @@ export function LandingShell({
           <nav className="landing-topnav-actions" aria-label="Page">
             <Link
               href="/#what"
-              className={`landing-nav-link${active === "home" ? " is-active" : ""}`}
+              className={`landing-nav-link landing-nav-link-hide-sm${active === "home" ? " is-active" : ""}`}
             >
               Product
             </Link>
             <Link
               href="/how-it-works"
-              className={`landing-nav-link${active === "how" ? " is-active" : ""}`}
+              className={`landing-nav-link landing-nav-link-hide-sm${active === "how" ? " is-active" : ""}`}
             >
               How it works
             </Link>

@@ -3419,6 +3419,15 @@ table .role-chip.role-admin,
   padding: 0.78rem 1.2rem !important;
   font-size: 0.94rem !important;
 }
+@media (max-width: 900px) {
+  /* This selector is more specific than the plain `.landing-hero-split`
+     mobile rule above, so without repeating the override here it always
+     wins and forces two columns (with a 280px floor) even on a phone —
+     squeezing the copy column to ~0 width and clipping the hero text. */
+  .landing-story .landing-hero.landing-hero-split {
+    grid-template-columns: 1fr;
+  }
+}
 
 .landing-section-head {
   display: grid;
