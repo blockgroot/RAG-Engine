@@ -58,6 +58,16 @@ DEFAULT_WORKSPACE_FALLBACK_RESPONSE = (
     "I don't have anything about that in this workspace's connected content."
 )
 
+# The Slack agent's refusal. Distinct from the policy/workspace copy because
+# the *next step* differs: a Slack miss usually means the conversation happened
+# in a channel that isn't connected, or outside the backfill window — both of
+# which the user can act on, unlike "it isn't in the handbook".
+DEFAULT_SLACK_FALLBACK_RESPONSE = (
+    "I couldn't find that in the connected Slack channels. It may have been "
+    "discussed in a channel that isn't connected, or before the synced history "
+    "window."
+)
+
 # The GitHub agent's refusal. Distinct copy because the *reason* differs: there
 # is no retrieval here, so a refusal means "no tool could supply evidence for
 # this", not "nothing matched in the corpus" — and the actionable next step for
@@ -418,6 +428,25 @@ class WorkspaceAgentSettings:
         return cls(
             fallback_response=os.getenv("WORKSPACE_FALLBACK_RESPONSE")
             or DEFAULT_WORKSPACE_FALLBACK_RESPONSE,
+        )
+
+
+@dataclass(frozen=True)
+class SlackAgentSettings:
+    """Configuration specific to ``SlackAgent`` — same shape as
+    ``WorkspaceAgentSettings``: a second, independent ``RagPipeline`` instance
+    differing only in prompt framing and its own fixed fallback string (which
+    must be exact-string-matched consistently *within* that one pipeline by the
+    gate, the prompt, and refusal detection).
+    """
+
+    fallback_response: str = DEFAULT_SLACK_FALLBACK_RESPONSE
+
+    @classmethod
+    def from_env(cls) -> "SlackAgentSettings":
+        return cls(
+            fallback_response=os.getenv("SLACK_FALLBACK_RESPONSE")
+            or DEFAULT_SLACK_FALLBACK_RESPONSE,
         )
 
 

@@ -231,6 +231,7 @@ class RecordingVectorStore(VectorStore):
         query_embedding: list[float],
         top_k: int = 5,
         workspace_id: str | None = None,
+        source_provider: str | None = None,
     ) -> list[RetrievedChunk]:
         self.query_calls += 1
         return [
@@ -284,6 +285,7 @@ class TopicAwareVectorStore(VectorStore):
         query_embedding: list[float],
         top_k: int = 5,
         workspace_id: str | None = None,
+        source_provider: str | None = None,
     ) -> list[RetrievedChunk]:
         self.query_calls += 1
         self.query_texts_via_embedding.append(list(query_embedding))

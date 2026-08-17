@@ -16,12 +16,18 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from ..config.settings import GitHubAgentSettings, RagSettings, WorkspaceAgentSettings
+from ..config.settings import (
+    GitHubAgentSettings,
+    RagSettings,
+    SlackAgentSettings,
+    WorkspaceAgentSettings,
+)
 from ..llm import build_llm_provider
 from ..rag import RagPipeline, build_rag_pipeline
-from ..rag.prompts import WORKSPACE_PROMPT_PROFILE
+from ..rag.prompts import SLACK_PROMPT_PROFILE, WORKSPACE_PROMPT_PROFILE
 from .github_agent import GitHubAgent
 from .policy_agent import PolicyAgent
+from .slack_agent import SlackAgent
 from .workspace_agent import WorkspaceAgent
 
 
@@ -55,6 +61,34 @@ def build_workspace_agent(
         pipeline_kwargs.setdefault("web_search", None)
         pipeline = build_rag_pipeline(**pipeline_kwargs)
     return WorkspaceAgent(pipeline)
+
+
+def build_slack_agent(
+    pipeline: RagPipeline | None = None, **pipeline_kwargs
+) -> SlackAgent:
+    """Build a ``SlackAgent``, defaulting its pipeline from configuration.
+
+    Same shape as ``build_workspace_agent``, with one addition that is the
+    whole point of this agent: the pipeline is pinned to
+    ``source_provider="slack"``, so retrieval reaches only chunks ingested from
+    Slack (see ``slack_agent.py``). Web search defaults off for the same reason
+    it does for a workspace — "what did we decide in #eng?" has no public-web
+    answer, and offering one would invite a confidently wrong external result
+    in place of an honest miss.
+    """
+    if pipeline is None:
+        pipeline_kwargs.setdefault(
+            "settings",
+            replace(
+                RagSettings.from_env(),
+                fallback_response=SlackAgentSettings.from_env().fallback_response,
+            ),
+        )
+        pipeline_kwargs.setdefault("prompt_profile", SLACK_PROMPT_PROFILE)
+        pipeline_kwargs.setdefault("web_search", None)
+        pipeline_kwargs.setdefault("source_provider", "slack")
+        pipeline = build_rag_pipeline(**pipeline_kwargs)
+    return SlackAgent(pipeline)
 
 
 def build_github_agent(

@@ -25,6 +25,12 @@ what the confidence gate's design philosophy avoids.
   retrieval at all — see app/agent/github_agent.py). The ``workspace_id``, when
   present, is threaded through to the agent, so a workspace's Code answers come
   from **that workspace's own** installation.
+- ``agent == "slack"``          -> ``SlackAgent`` (retrieval, but its pipeline is
+  pinned to ``source_provider="slack"`` so it answers only from ingested Slack
+  threads — see app/agent/slack_agent.py). Like GitHub it outranks
+  ``workspace_id``; safety comes from the ``workspace_id`` still being threaded
+  into ``answer()``, so a workspace's Slack tab retrieves only that workspace's
+  own Slack chunks and never the org-wide ones.
 - ``workspace_id`` set          -> ``WorkspaceAgent`` (a sub-workspace's own
   connected documents, its own pipeline — see app/agent/workspace_agent.py)
 - otherwise                     -> ``PolicyAgent``, exactly as before
@@ -115,10 +121,15 @@ from .deps import (
     get_github_agent,
     get_policy_agent,
     get_session,
+    get_slack_agent,
     get_workspace_agent,
 )
 
-from .suggestions import build_github_suggestions, build_policy_suggestions
+from .suggestions import (
+    build_github_suggestions,
+    build_policy_suggestions,
+    build_slack_suggestions,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +137,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 AGENT_GITHUB = "github"
 AGENT_POLICY = "policy"
+AGENT_SLACK = "slack"
 
 # Upper bound on a single question, in characters. Generous — a real question is
 # a sentence or two — but bounded, because the question is embedded verbatim and
@@ -158,6 +170,8 @@ def _select_agent(
     """
     if requested_agent == AGENT_GITHUB:
         return get_github_agent()
+    if requested_agent == AGENT_SLACK:
+        return get_slack_agent()
     if workspace_id is not None:
         return get_workspace_agent()
     return get_policy_agent()
@@ -230,6 +244,13 @@ def list_suggestions(
         repos = _github_repos_for_scope(session.org_id, workspace_id)
         return {"agent": AGENT_GITHUB, "questions": build_github_suggestions(repos)}
 
+    if requested == AGENT_SLACK:
+        # Same scoping rule: chips name only channels connected to *this* scope,
+        # so a workspace's Slack tab never advertises an org-wide channel it
+        # cannot retrieve from.
+        channels = _slack_channel_names_for_scope(session.org_id, workspace_id)
+        return {"agent": AGENT_SLACK, "questions": build_slack_suggestions(channels)}
+
     titles = _document_titles_for_scope(session.org_id, workspace_id)
     return {
         "agent": AGENT_POLICY,
@@ -269,6 +290,44 @@ def _github_repos_for_scope(org_id: str, workspace_id: str | None = None) -> lis
     return [r for r in repos if isinstance(r, dict)]
 
 
+def _slack_channel_names_for_scope(
+    org_id: str, workspace_id: str | None = None
+) -> list[str]:
+    """Connected Slack channel names from this scope's ``source_config``.
+
+    Same shape and same ``IS NOT DISTINCT FROM`` scoping as
+    ``_github_repos_for_scope``. Returns display names (not ids); an
+    unconfigured connection (connected but no channels picked yet) yields
+    ``[]``, which the chip builder turns into no chips.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT source_config FROM oauth_connections "
+            "WHERE org_id = %s AND provider = 'slack' "
+            "AND workspace_id IS NOT DISTINCT FROM %s",
+            (org_id, workspace_id),
+        ).fetchone()
+    if not row or row[0] is None:
+        return []
+    config = row[0]
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(config, dict):
+        return []
+    names = config.get("channel_names") or {}
+    channel_ids = config.get("channel_ids") or []
+    if isinstance(names, dict):
+        # Preserve the admin's picked order, and fall back to the id when a
+        # name is missing so a chip is never rendered as an empty "#".
+        return [str(names.get(cid) or cid) for cid in channel_ids] or [
+            str(v) for v in names.values()
+        ]
+    return [str(cid) for cid in channel_ids]
+
+
 def _document_titles_for_scope(org_id: str, workspace_id: str | None) -> list[str]:
     """Ingested document titles for this org (or one workspace), newest first."""
     with get_connection() as conn:
@@ -305,7 +364,7 @@ def create_conversation(
             detail="GitHub questions are answered standalone and do not use conversations.",
         )
 
-    agent = _select_agent(workspace_id)
+    agent = _select_agent(workspace_id, (body or {}).get("agent"))
     if agent.pipeline.memory is None:
         raise HTTPException(status_code=503, detail="Conversation memory is not enabled")
 

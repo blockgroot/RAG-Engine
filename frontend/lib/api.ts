@@ -87,6 +87,14 @@ export interface Me {
    * and need no ingest, so the Code tab works even before any policy sync.
    */
   github_connected: boolean;
+  /**
+   * Whether the chat UI should offer its "Slack" tab.
+   *
+   * Unlike `github_connected` this is keyed on ingested Slack *threads*, not on
+   * the connection existing: Slack is a retrieval source, so a connection whose
+   * first sync produced nothing would give a tab that can only ever refuse.
+   */
+  slack_ready: boolean;
 }
 
 export interface MemberRecord {
@@ -246,6 +254,8 @@ export interface WorkspaceDetail extends WorkspaceRecord {
    * to read.
    */
   github_connected: boolean;
+  /** Whether THIS workspace has its own ingested Slack threads (same rule as `Me.slack_ready`). */
+  slack_ready: boolean;
 }
 
 export interface WorkspaceMemberRecord {
@@ -385,7 +395,7 @@ export const api = {
     }),
 
   /** Starter chips from connected sources (docs / GitHub repos) — not hardcoded. */
-  chatSuggestions: (agent: "policy" | "github", workspaceId?: string | null) => {
+  chatSuggestions: (agent: "policy" | "github" | "slack", workspaceId?: string | null) => {
     const params = new URLSearchParams({ agent });
     if (workspaceId) params.set("workspace_id", workspaceId);
     return request<{ agent: string; questions: string[] }>(
@@ -418,6 +428,11 @@ export const api = {
     request<{ status: string; user_id: string }>(
       `/workspaces/${workspaceId}/members/${userId}/make-owner`,
       { method: "POST" }
+    ),
+  removeWorkspaceMember: (workspaceId: string, userId: string) =>
+    request<{ status: string; user_id: string }>(
+      `/workspaces/${workspaceId}/members/${userId}`,
+      { method: "DELETE" }
     ),
   resendWorkspaceInvite: (workspaceId: string, userId: string) =>
     request<{ status: string; email: string }>(

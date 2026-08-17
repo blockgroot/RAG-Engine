@@ -113,11 +113,17 @@ class PgVectorStore(VectorStore):
         query_embedding: list[float],
         top_k: int = 5,
         workspace_id: str | None = None,
+        source_provider: str | None = None,
     ) -> list[RetrievedChunk]:
         if not query_embedding:
             raise EmbeddingProviderError("query_embedding is empty")
 
         vector = _to_db_vector(query_embedding)
+        # ``documents`` is already LEFT JOINed for the title, so the provider
+        # filter is a WHERE term rather than a second join. With NULL the term
+        # is a no-op and the plan is unchanged from before this parameter
+        # existed; with a value the LEFT JOIN behaves as an inner one, which is
+        # correct — a chunk with no document row has no provider to match.
         with get_connection(self._settings) as conn:
             rows = conn.execute(
                 """
@@ -131,10 +137,19 @@ class PgVectorStore(VectorStore):
                 LEFT JOIN documents d ON d.id = c.document_id
                 WHERE c.org_id = %s::uuid
                   AND c.workspace_id IS NOT DISTINCT FROM %s::uuid
+                  AND (%s::text IS NULL OR d.source_provider = %s::text)
                 ORDER BY c.embedding <=> %s
                 LIMIT %s
                 """,
-                (vector, org_id, workspace_id, vector, top_k),
+                (
+                    vector,
+                    org_id,
+                    workspace_id,
+                    source_provider,
+                    source_provider,
+                    vector,
+                    top_k,
+                ),
             ).fetchall()
 
         return [
@@ -165,6 +180,7 @@ class PgVectorStore(VectorStore):
         query_embedding: list[float],
         top_k: int = 30,
         workspace_id: str | None = None,
+        source_provider: str | None = None,
     ) -> list[RetrievedChunk]:
         """Full-text keyword search within ``org_id`` (Phase 6 hybrid retrieval).
 
@@ -194,9 +210,23 @@ class PgVectorStore(VectorStore):
             return []
 
         vector = _to_db_vector(query_embedding)
+        # The candidate CTE deliberately touches only ``chunks`` — that is what
+        # keeps the ts_rank cut cheap before the per-row cosine/title work. A
+        # provider filter needs ``documents``, so the join is added ONLY when
+        # filtering; the unfiltered query stays byte-identical to before, rather
+        # than carrying a join the planner may or may not optimise away on the
+        # hot path every question takes.
+        provider_join = (
+            "JOIN documents fd ON fd.id = c.document_id AND fd.source_provider = %s::text"
+            if source_provider is not None
+            else ""
+        )
+        params: list = [org_id, workspace_id]
+        if source_provider is not None:
+            params.insert(0, source_provider)
         with get_connection(self._settings) as conn:
             rows = conn.execute(
-                """
+                f"""
                 WITH matched AS (
                     SELECT c.content,
                            c.document_id,
@@ -204,6 +234,7 @@ class PgVectorStore(VectorStore):
                            c.org_id,
                            c.embedding
                     FROM chunks c
+                    {provider_join}
                     WHERE c.org_id = %s::uuid
                       AND c.workspace_id IS NOT DISTINCT FROM %s::uuid
                       AND c.content_tsv @@ websearch_to_tsquery('english', %s)
@@ -222,8 +253,7 @@ class PgVectorStore(VectorStore):
                 LEFT JOIN documents d ON d.id = m.document_id
                 """,
                 (
-                    org_id,
-                    workspace_id,
+                    *params,
                     query_text,
                     query_text,
                     self._settings.keyword_candidate_limit,

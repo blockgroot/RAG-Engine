@@ -13,9 +13,15 @@ from functools import lru_cache
 
 from fastapi import Depends, HTTPException, Request
 
-from ..agent import build_github_agent, build_policy_agent, build_workspace_agent
+from ..agent import (
+    build_github_agent,
+    build_policy_agent,
+    build_slack_agent,
+    build_workspace_agent,
+)
 from ..agent.github_agent import GitHubAgent
 from ..agent.policy_agent import PolicyAgent
+from ..agent.slack_agent import SlackAgent
 from ..agent.workspace_agent import WorkspaceAgent
 from ..auth.session import SessionClaims, decode_session_token
 from ..core.exceptions import AuthError
@@ -61,6 +67,19 @@ def get_workspace_agent() -> WorkspaceAgent:
     policy agent, for the same reason (embedding/reranker model load cost).
     """
     return build_workspace_agent()
+
+
+@lru_cache(maxsize=1)
+def get_slack_agent() -> SlackAgent:
+    """Process-wide singleton ``SlackAgent`` (Slack-only retrieval).
+
+    A third independent pipeline alongside policy/workspace — its own prompt
+    framing, fallback string, and (the point of it) a pipeline pinned to
+    ``source_provider="slack"``. Shares the same process-wide embedder/reranker
+    singletons as the others, so this does not load a second copy of the
+    models; see ``get_policy_agent``.
+    """
+    return build_slack_agent()
 
 
 @lru_cache(maxsize=1)

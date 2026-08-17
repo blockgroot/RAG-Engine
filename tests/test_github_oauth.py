@@ -205,8 +205,10 @@ def test_factory_builds_the_github_provider(github_env):
 
 
 def test_factory_still_rejects_unknown_providers():
+    # NOT "slack" — that is a real provider now (Slack integration). Use a
+    # provider we genuinely do not implement, or this stops testing anything.
     with pytest.raises(ConfigurationError):
-        build_oauth_provider("slack")
+        build_oauth_provider("discord")
 
 
 def test_resolve_installation_prefers_user_account_for_workspace_connect(monkeypatch):

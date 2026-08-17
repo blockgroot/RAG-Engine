@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..core.answer_sources import SOURCE_POLICY, SOURCE_WORKSPACE
+from ..core.answer_sources import SOURCE_POLICY, SOURCE_SLACK, SOURCE_WORKSPACE
 from ..security.untrusted import scrub_untrusted_text
 
 
@@ -46,6 +46,22 @@ POLICY_PROMPT_PROFILE = PromptProfile(
     scope_noun="company",
     escalation_hint="your HR team can help with this",
     source_label=SOURCE_POLICY,
+)
+
+SLACK_PROMPT_PROFILE = PromptProfile(
+    # Deliberately framed as *conversations*, not documents. Slack chunks are
+    # threads — people thinking out loud, disagreeing, changing their minds —
+    # so an answer must not present a passing remark as settled policy the way
+    # the same sentence in a handbook would be. The other profiles say "the
+    # company says"; this one has to preserve "someone said, in a thread".
+    persona=(
+        "an assistant answering from this team's Slack conversations — chat "
+        "threads between colleagues, not official documents"
+    ),
+    scope_adjective="team-discussion",
+    scope_noun="team's Slack history",
+    escalation_hint="the people in that channel can confirm this",
+    source_label=SOURCE_SLACK,
 )
 
 WORKSPACE_PROMPT_PROFILE = PromptProfile(

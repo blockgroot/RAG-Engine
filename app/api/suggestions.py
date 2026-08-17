@@ -23,6 +23,19 @@ _GITHUB_TEMPLATES = (
     "Summarize the README for {name}.",
 )
 
+# Slack tab — conversation phrasing, NOT document phrasing. A Slack corpus is
+# threads, so the useful starters are "catch me up" shapes ("what was discussed
+# in #x") rather than the "what does <title> cover" shape that suits a handbook
+# page. Channel names come from the connection's stored ``channel_names``, so
+# these stay generated per tenant like the repo/title chips — never hardcoded
+# channel names.
+_SLACK_TEMPLATES = (
+    "What was discussed in #{channel}?",
+    "Summarize the recent conversations in #{channel}.",
+    "What decisions were made in #{channel}?",
+    "What are the open questions in #{channel}?",
+)
+
 # Org-wide Policies tab — company handbook phrasing.
 _ORG_POLICY_TEMPLATES = (
     'What does "{title}" cover?',
@@ -98,6 +111,43 @@ def build_github_suggestions(repos: list[dict[str, Any]]) -> list[str]:
             break
         name = names[i % len(names)]
         questions.append(template.format(name=name))
+    return questions
+
+
+def build_slack_suggestions(channel_names: list[str]) -> list[str]:
+    """Turn connected Slack channel names into Slack-tab starter questions.
+
+    ``channel_names`` are the human names from the connection's
+    ``source_config.channel_names`` (not ids). Empty input → empty output, so
+    a Slack connection with no channels picked yet shows no chips rather than
+    inviting a question about a channel nobody connected.
+
+    Same rotation shape as the GitHub/policy builders: with one channel every
+    template uses it; with several, templates rotate so the four chips cover
+    different channels instead of repeating one.
+    """
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in channel_names:
+        # Tolerate a stored name that already carries the "#" a Slack user
+        # would type — the templates add their own.
+        name = " ".join((raw or "").split()).lstrip("#").strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(name)
+
+    if not cleaned:
+        return []
+
+    questions: list[str] = []
+    for i, template in enumerate(_SLACK_TEMPLATES):
+        if len(questions) >= _MAX:
+            break
+        questions.append(template.format(channel=_display_title(cleaned[i % len(cleaned)])))
     return questions
 
 

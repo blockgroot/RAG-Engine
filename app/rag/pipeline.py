@@ -283,6 +283,7 @@ class RagPipeline:
         query_norm_settings: QueryNormSettings | None = None,
         prompt_profile: PromptProfile | None = None,
         tone_settings: ToneSettings | None = None,
+        source_provider: str | None = None,
     ) -> None:
         self._llm = llm
         self._llm_aux = llm_aux or llm
@@ -310,6 +311,13 @@ class RagPipeline:
         # vector search (the Phase 3 behaviour), keeping this pipeline usable
         # without the retrieval upgrades.
         self._retriever = retriever
+        # Restrict retrieval to one ingested source (e.g. "slack"), or None for
+        # every provider — pinned per pipeline, since it describes the agent
+        # this pipeline backs rather than any individual question. Also folded
+        # into the query-answer cache key below: the same question asked of the
+        # Slack agent and the docs agent are different questions with different
+        # correct answers, and must never share a cache entry.
+        self._source_provider = source_provider
         # Domain framing for the grounded prompt (Workspace Agent split) — see
         # prompts.PromptProfile. Defaults to the original company-policy
         # wording, so every existing caller is byte-for-byte unchanged.
@@ -386,7 +394,12 @@ class RagPipeline:
                 )
 
         if conversation_id is None:
-            cached = self._query_cache.get(org_id, resolved, workspace_id=workspace_id)
+            cached = self._query_cache.get(
+                org_id,
+                resolved,
+                workspace_id=workspace_id,
+                source_provider=self._source_provider,
+            )
             if cached is not None:
                 out = replace(
                     cached,
@@ -408,7 +421,13 @@ class RagPipeline:
         )
 
         if conversation_id is None and not result.cache_hit:
-            self._query_cache.put(org_id, resolved, result, workspace_id=workspace_id)
+            self._query_cache.put(
+                org_id,
+                resolved,
+                result,
+                workspace_id=workspace_id,
+                source_provider=self._source_provider,
+            )
 
         if conversation_id is not None and self._memory is not None:
             result = replace(result, resolved_question=resolved)
@@ -675,7 +694,11 @@ class RagPipeline:
             )
             return retrieval.hits, retrieval.gate_score
         hits = self._store.query(
-            org_id, query_vec, top_k=self._settings.top_k, workspace_id=workspace_id
+            org_id,
+            query_vec,
+            top_k=self._settings.top_k,
+            workspace_id=workspace_id,
+            source_provider=self._source_provider,
         )
         top_score = hits[0].score if hits else None
         return hits, top_score
@@ -758,7 +781,11 @@ class RagPipeline:
         merged: dict[tuple[str, int], RetrievedChunk] = {}
         for q_text, q_vec in zip(sub_questions, vectors):
             for hit in self._store.query(
-                org_id, q_vec, top_k=self._settings.top_k, workspace_id=workspace_id
+                org_id,
+                q_vec,
+                top_k=self._settings.top_k,
+                workspace_id=workspace_id,
+                source_provider=self._source_provider,
             ):
                 key = (hit.document_id, hit.chunk_index)
                 prev = merged.get(key)

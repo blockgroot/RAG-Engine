@@ -121,7 +121,7 @@ def make_workspace_owner(
     """Promote an existing workspace member to ``owner``.
 
     Required so an org admin can remove a departing sole space-owner after
-    transferring ownership — without this, ``remove_member`` correctly blocks
+    transferring ownership — without this, ``remove_workspace_member`` correctly blocks
     and there is no in-product way to unblock. Allows multiple owners (additive
     promote, not a transfer) so the departing owner can still be removed next.
     """
@@ -150,6 +150,43 @@ def make_workspace_owner(
         conn.execute(
             "UPDATE workspace_members SET role = 'owner' "
             "WHERE workspace_id = %s::uuid AND user_id = %s::uuid",
+            (workspace_id, target_user_id),
+        )
+
+
+def remove_workspace_member(workspace_id: str, org_id: str, acting_user_id: str, target_user_id: str) -> None:
+    """Remove a member from a workspace (owner-only). Never touches the org account.
+
+    Refuses to remove the space's sole owner — the same "no in-product way to
+    unblock" gap ``make_workspace_owner``'s docstring already documents.
+    Promote another member to owner first (or delete the whole space, if that
+    was the actual intent).
+    """
+    acting_role = assert_member(workspace_id, org_id, acting_user_id)
+    if acting_role != "owner":
+        raise AuthError("Only a space owner can remove a member")
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT role FROM workspace_members "
+            "WHERE workspace_id = %s::uuid AND user_id = %s::uuid",
+            (workspace_id, target_user_id),
+        ).fetchone()
+        if row is None:
+            raise NotFoundError("That person is not a member of this space")
+        if row[0] == "owner":
+            other_owners = conn.execute(
+                "SELECT 1 FROM workspace_members "
+                "WHERE workspace_id = %s::uuid AND role = 'owner' AND user_id != %s::uuid",
+                (workspace_id, target_user_id),
+            ).fetchone()
+            if other_owners is None:
+                raise AuthError(
+                    "Can't remove the only owner — make someone else an owner first, "
+                    "or delete the space instead"
+                )
+        conn.execute(
+            "DELETE FROM workspace_members WHERE workspace_id = %s::uuid AND user_id = %s::uuid",
             (workspace_id, target_user_id),
         )
 

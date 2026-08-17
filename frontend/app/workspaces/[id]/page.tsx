@@ -105,7 +105,7 @@ function WorkspaceDetailPageInner() {
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviting, setInviting] = useState(false);
   const [makeOwnerBusy, setMakeOwnerBusy] = useState<string | null>(null);
-  const [resendBusy, setResendBusy] = useState<string | null>(null);
+  const [removeMemberBusy, setRemoveMemberBusy] = useState<string | null>(null);
   const [deletingSpace, setDeletingSpace] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [inviteMessage, setInviteMessage] = useState<string | null>(null);
@@ -414,18 +414,20 @@ function WorkspaceDetailPageInner() {
     }
   }
 
-  async function handleResendInvite(userId: string, email: string) {
-    if (resendBusy) return;
-    setResendBusy(userId);
+  async function handleRemoveMember(userId: string, email: string) {
+    if (removeMemberBusy) return;
+    if (!window.confirm(`Remove ${email} from this space? Their Handbook account is untouched.`)) return;
+    setRemoveMemberBusy(userId);
     setInviteError(null);
     setInviteMessage(null);
     try {
-      await api.resendWorkspaceInvite(workspaceId, userId);
-      setInviteMessage(`Invite email resent to ${email}.`);
+      await api.removeWorkspaceMember(workspaceId, userId);
+      setInviteMessage(`Removed ${email} from this space.`);
+      setMembers((prev) => prev.filter((m) => m.user_id !== userId));
     } catch (err) {
-      setInviteError(err instanceof Error ? err.message : "Could not resend that invite.");
+      setInviteError(err instanceof Error ? err.message : "Could not remove that member.");
     } finally {
-      setResendBusy(null);
+      setRemoveMemberBusy(null);
     }
   }
 
@@ -624,11 +626,11 @@ function WorkspaceDetailPageInner() {
                     <button
                       type="button"
                       className="button button-secondary"
-                      disabled={resendBusy === m.user_id}
-                      onClick={() => handleResendInvite(m.user_id, m.email)}
-                      title="They already have access — this just re-sends the sign-in email in case the first one was missed or its link expired."
+                      disabled={removeMemberBusy === m.user_id}
+                      onClick={() => handleRemoveMember(m.user_id, m.email)}
+                      title="Removes them from this space only — their Handbook account is untouched."
                     >
-                      {resendBusy === m.user_id ? "…" : "Resend invite"}
+                      {removeMemberBusy === m.user_id ? "…" : "Remove"}
                     </button>
                   )}
                   {isOwner && m.role === "member" && (
@@ -733,6 +735,10 @@ function WorkspaceDetailPageInner() {
                     setReauthById((prev) => ({ ...prev, [connection.id]: needed }));
                   }}
                   workspaceId={workspaceId}
+                  onMembersInvited={async () => {
+                    const updated = await api.listWorkspaceMembers(workspaceId);
+                    setMembers(updated);
+                  }}
                 />
               );
               })}

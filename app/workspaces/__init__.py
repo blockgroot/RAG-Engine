@@ -16,6 +16,7 @@ from .store import (
     list_my_workspaces,
     list_workspace_members,
     make_workspace_owner,
+    remove_workspace_member,
     delete_workspace,
 )
 
@@ -27,5 +28,6 @@ __all__ = [
     "list_my_workspaces",
     "list_workspace_members",
     "make_workspace_owner",
+    "remove_workspace_member",
     "delete_workspace",
 ]

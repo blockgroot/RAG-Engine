@@ -36,7 +36,7 @@ export async function streamChat(
    * disambiguate. The server decides deterministically from this value -- no
    * LLM classifies the question.
    */
-  agent?: "policy" | "github"
+  agent?: "policy" | "github" | "slack"
 ): Promise<void> {
   let response: Response;
   try {

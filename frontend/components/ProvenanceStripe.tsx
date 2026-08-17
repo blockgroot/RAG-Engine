@@ -3,6 +3,7 @@ const LABELS: Record<string, string> = {
   workspace: "Workspace content",
   web: "Web search",
   github: "GitHub",
+  slack: "Slack conversation",
   none: "No answer found",
 };
 
@@ -13,11 +14,12 @@ const COLORS: Record<string, string> = {
   workspace: "var(--provenance-workspace, var(--provenance-policy))",
   web: "var(--provenance-web)",
   github: "var(--provenance-github)",
+  slack: "var(--provenance-slack, var(--provenance-policy))",
   none: "var(--provenance-none)",
 };
 
 /** Small color-coded pill so a reader can tell at a glance whether an answer
- * came from company policy, GitHub, a web search, or wasn't found at all. */
+ * came from company policy, Slack, GitHub, a web search, or wasn't found at all. */
 export function ProvenanceStripe({ source }: { source: string }) {
   const color = COLORS[source] || COLORS.none;
   return (

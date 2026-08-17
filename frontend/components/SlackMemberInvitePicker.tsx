@@ -21,11 +21,14 @@ export function SlackMemberInvitePicker({
   connectionId,
   channelIds,
   channelNames,
+  onInvited,
 }: {
   workspaceId: string;
   connectionId: string;
   channelIds: string[];
   channelNames?: Record<string, string>;
+  /** Fires after at least one invite actually succeeded — refresh "People in this space" here. */
+  onInvited?: () => void;
 }) {
   type Row = SlackChannelMember & { channelId: string };
 
@@ -116,6 +119,7 @@ export function SlackMemberInvitePicker({
             invitedSet.has(row.email) ? { ...row, already_workspace_member: true } : row
           )
         );
+        onInvited?.();
       }
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : "Could not send invites.");

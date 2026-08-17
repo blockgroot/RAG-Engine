@@ -21,13 +21,24 @@ def normalize_question(text: str) -> str:
     return " ".join(text.strip().lower().split())
 
 
-def _question_hash(normalized: str, workspace_id: str | None = None) -> str:
+def _question_hash(
+    normalized: str,
+    workspace_id: str | None = None,
+    source_provider: str | None = None,
+) -> str:
     # Workspace-within-a-Workspace: folding workspace_id into the hash input
     # (rather than adding a column to query_answer_cache) keeps an org-wide
     # cache entry and a sub-workspace's cache entry for the identical question
     # text from ever colliding — a workspace's answer must never be served
     # from (or overwrite) the org-wide cache slot, or vice versa.
+    #
+    # ``source_provider`` is folded in for exactly the same reason: "what did
+    # we decide about pricing?" asked of the Slack agent and of the docs agent
+    # are different questions over different corpora, so they must not share a
+    # slot. Appended only when set, so every pre-existing key is unchanged.
     key = normalized if workspace_id is None else f"{normalized}|ws:{workspace_id}"
+    if source_provider is not None:
+        key = f"{key}|src:{source_provider}"
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
@@ -68,12 +79,18 @@ class QueryAnswerCache:
     def __init__(self, settings: QueryCacheSettings | None = None) -> None:
         self._settings = settings or QueryCacheSettings.from_env()
 
-    def get(self, org_id: str, question: str, workspace_id: str | None = None):
+    def get(
+        self,
+        org_id: str,
+        question: str,
+        workspace_id: str | None = None,
+        source_provider: str | None = None,
+    ):
         if not self._settings.enabled or not _valid_org_id(org_id):
             return None
 
         normalized = normalize_question(question)
-        qhash = _question_hash(normalized, workspace_id)
+        qhash = _question_hash(normalized, workspace_id, source_provider)
         with get_connection() as conn:
             row = conn.execute(
                 """
@@ -90,11 +107,18 @@ class QueryAnswerCache:
         result = _deserialize(row[0])
         return replace(result, cache_hit=True)
 
-    def put(self, org_id: str, question: str, result, workspace_id: str | None = None) -> None:
+    def put(
+        self,
+        org_id: str,
+        question: str,
+        result,
+        workspace_id: str | None = None,
+        source_provider: str | None = None,
+    ) -> None:
         if not self._settings.enabled or not _valid_org_id(org_id):
             return
         normalized = normalize_question(question)
-        qhash = _question_hash(normalized, workspace_id)
+        qhash = _question_hash(normalized, workspace_id, source_provider)
         expires = datetime.now(timezone.utc) + timedelta(seconds=self._settings.ttl_seconds)
         payload = _serialize(result)
         with get_connection() as conn:

@@ -13,9 +13,11 @@ Public API::
         print(response.answer)        # the fixed "I don't have information" fallback
 
 The ``Agent`` interface is generic on purpose, and that finally pays off with
-``GitHubAgent``: three implementations now exist, and they do NOT share a shape.
-``PolicyAgent`` and ``WorkspaceAgent`` are thin adapters over a ``RagPipeline``
-(retrieve → gate → grounded generate) via ``RagPipelineAgent``. ``GitHubAgent``
+``GitHubAgent``: four implementations now exist, and they do NOT share a shape.
+``PolicyAgent``, ``WorkspaceAgent`` and ``SlackAgent`` are thin adapters over a
+``RagPipeline`` (retrieve → gate → grounded generate) via ``RagPipelineAgent`` —
+``SlackAgent`` differing only in that its pipeline is pinned to one ingested
+source provider. ``GitHubAgent``
 embeds nothing and answers purely from live, bounded GitHub API tool-calls — so
 it implements ``Agent`` directly, with no pipeline behind it. The interface being
 source-agnostic is what lets ``app/api/chat.py`` pick between them without
@@ -26,8 +28,14 @@ from .base import Agent, AgentResponse, Citation
 from .github_agent import GitHubAgent
 from .policy_agent import PolicyAgent
 from .rag_pipeline_agent import RagPipelineAgent
+from .slack_agent import SlackAgent
 from .workspace_agent import WorkspaceAgent
-from .factory import build_github_agent, build_policy_agent, build_workspace_agent
+from .factory import (
+    build_github_agent,
+    build_policy_agent,
+    build_slack_agent,
+    build_workspace_agent,
+)
 
 __all__ = [
     "Agent",
@@ -36,8 +44,10 @@ __all__ = [
     "GitHubAgent",
     "PolicyAgent",
     "RagPipelineAgent",
+    "SlackAgent",
     "WorkspaceAgent",
     "build_github_agent",
     "build_policy_agent",
+    "build_slack_agent",
     "build_workspace_agent",
 ]

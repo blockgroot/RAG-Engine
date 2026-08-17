@@ -179,6 +179,46 @@ def test_make_workspace_owner_api(client, admin_org):
 
 
 @requires_db
+def test_remove_workspace_member_api(client, admin_org):
+    """Removing a plain member drops workspace_members only — the org account
+    (and their session ability to sign in) is untouched."""
+    org_id, admin, cookies = admin_org
+    workspace_id = (
+        client.post("/workspaces", json={"name": "Handoff"}, cookies=cookies).json()["id"]
+    )
+    colleague = invite_member(f"colleague-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    client.post(
+        f"/workspaces/{workspace_id}/members", json={"email": colleague.email}, cookies=cookies
+    )
+
+    removed = client.delete(
+        f"/workspaces/{workspace_id}/members/{colleague.id}", cookies=cookies
+    )
+    assert removed.status_code == 200
+
+    members = client.get(f"/workspaces/{workspace_id}/members", cookies=cookies).json()
+    assert colleague.email not in {m["email"] for m in members}
+    with get_connection() as conn:
+        still_org_user = conn.execute(
+            "SELECT 1 FROM users WHERE id = %s::uuid", (colleague.id,)
+        ).fetchone()
+    assert still_org_user is not None
+
+
+@requires_db
+def test_remove_workspace_member_blocks_the_only_owner(client, admin_org):
+    org_id, admin, cookies = admin_org
+    # Admin creates the space via the API, making admin its (sole) owner.
+    workspace_id = (
+        client.post("/workspaces", json={"name": "Solo Owned"}, cookies=cookies).json()["id"]
+    )
+
+    blocked = client.delete(f"/workspaces/{workspace_id}/members/{admin.id}", cookies=cookies)
+    assert blocked.status_code == 400
+    assert "only owner" in blocked.json()["detail"].lower()
+
+
+@requires_db
 def test_demote_helper_blocks_last_admin(store, org_cleanup):
     org_id = store.create_organization(f"Last Admin Demote {uuid.uuid4().hex[:8]}")
     org_cleanup.append(org_id)

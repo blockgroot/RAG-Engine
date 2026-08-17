@@ -38,7 +38,13 @@ def me(session: SessionClaims = Depends(get_session)):
                 WHERE org_id = %(org)s
                   AND provider = 'github'
                   AND workspace_id IS NULL
-              ) AS github_connected
+              ) AS github_connected,
+              EXISTS (
+                SELECT 1 FROM documents
+                WHERE org_id = %(org)s
+                  AND source_provider = 'slack'
+                  AND workspace_id IS NULL
+              ) AS slack_ready
             """,
             {"org": session.org_id, "user": session.user_id},
         ).fetchone()
@@ -47,6 +53,7 @@ def me(session: SessionClaims = Depends(get_session)):
     org_name = row[0] if row else None
     email = row[1] if row else None
     github_connected = bool(row[2]) if row else False
+    slack_ready = bool(row[3]) if row else False
 
     return {
         "user_id": session.user_id,
@@ -64,5 +71,11 @@ def me(session: SessionClaims = Depends(get_session)):
         # explicit there: a personal sub-workspace connection must not light up
         # the org-wide chat's Code tab.
         "github_connected": github_connected,
+        # Whether the chat UI should offer its "Slack" tab. Deliberately keyed on
+        # ingested Slack *documents*, not on the connection existing: unlike
+        # GitHub (live reads, answerable the moment it is linked) Slack is a
+        # retrieval source, so a connection whose first sync hasn't produced
+        # any threads yet would give an empty tab that can only ever refuse.
+        "slack_ready": slack_ready,
         **status,
     }

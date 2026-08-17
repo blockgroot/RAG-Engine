@@ -13,9 +13,9 @@ const SOURCES: Array<{
   { id: "notion", mark: "notion", label: "Notion", hint: "Policies & wikis" },
   { id: "drive", mark: "drive", label: "Google Drive", hint: "Team documents" },
   { id: "github", mark: "github", label: "GitHub", hint: "READMEs & commits" },
+  { id: "slack", mark: "slack", label: "Slack", hint: "Channel conversations" },
   { id: "mail", mark: "sendgrid", label: "Email", hint: "Magic-link sign-in", size: 30 },
   { id: "spaces", mark: "workspace", label: "Workspaces", hint: "Team & project spaces" },
-  { id: "slack", mark: "slack", label: "Slack", hint: "Coming soon", soon: true },
 ];
 
 export function LandingSourcesOrbit() {

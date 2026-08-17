@@ -56,6 +56,7 @@ from ..workspaces import (
     list_my_workspaces,
     list_workspace_members,
     make_workspace_owner,
+    remove_workspace_member as store_remove_workspace_member,
 )
 from .connection_ops import (
     disconnect_connection,
@@ -121,6 +122,9 @@ def get_workspace(
         # org-wide GitHub connection must NOT light this up, or a member would be
         # offered a Code tab that then answers from a scope they aren't in.
         "github_connected": _workspace_github_connected(session.org_id, workspace_id),
+        # Same rule as /me: keyed on ingested Slack documents for THIS
+        # workspace, so a Slack tab only appears once it can actually answer.
+        "slack_ready": _workspace_slack_ready(session.org_id, workspace_id),
         **status,
     }
 
@@ -153,6 +157,24 @@ def _workspace_github_connected(org_id: str, workspace_id: str) -> bool:
         row = conn.execute(
             "SELECT 1 FROM oauth_connections "
             "WHERE org_id = %s AND provider = 'github' AND workspace_id = %s",
+            (org_id, workspace_id),
+        ).fetchone()
+    return row is not None
+
+
+def _workspace_slack_ready(org_id: str, workspace_id: str) -> bool:
+    """True when this workspace has its OWN ingested Slack threads.
+
+    Scoped to the workspace (never ``IS NULL``/org-wide) for the same reason
+    ``_workspace_github_connected`` is: an org-wide Slack corpus must not light
+    up a workspace's Slack tab, which retrieves only this workspace's chunks
+    and would therefore answer nothing.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM documents "
+            "WHERE org_id = %s AND source_provider = 'slack' AND workspace_id = %s "
+            "LIMIT 1",
             (org_id, workspace_id),
         ).fetchone()
     return row is not None
@@ -283,6 +305,23 @@ def make_owner(
     except AuthError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "owner", "user_id": user_id}
+
+
+@router.delete("/{workspace_id}/members/{user_id}")
+def remove_workspace_member(
+    workspace_id: str,
+    user_id: str,
+    session: SessionClaims = Depends(get_session),
+    _role: str = Depends(require_workspace_owner),
+):
+    """Owner-only: remove a member from this space (their org account is untouched)."""
+    try:
+        store_remove_workspace_member(workspace_id, session.org_id, session.user_id, user_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except AuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "removed", "user_id": user_id}
 
 
 def _owned_workspace_connection(org_id: str, workspace_id: str, connection_id: str):

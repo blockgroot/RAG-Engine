@@ -128,6 +128,7 @@ export function ConnectionCard({
   needsReauth = false,
   onNeedsReauth,
   workspaceId,
+  onMembersInvited,
 }: {
   provider: Provider;
   connection: ConnectionRecord | undefined;
@@ -146,6 +147,8 @@ export function ConnectionCard({
    * of the org-wide one (Workspace-within-a-Workspace) -- connect/config
    * calls are routed to the workspace-scoped endpoints. */
   workspaceId?: string;
+  /** After a Slack member-invite picker successfully adds someone. */
+  onMembersInvited?: () => void;
 }) {
   const available =
     provider === "notion" || provider === "google" || provider === "github" || provider === "slack";
@@ -436,6 +439,7 @@ export function ConnectionCard({
               connectionId={connection.id}
               channelIds={channelIds}
               channelNames={connection.source_config?.channel_names}
+              onInvited={onMembersInvited}
             />
           </div>
         )}

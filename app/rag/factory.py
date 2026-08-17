@@ -58,6 +58,7 @@ def build_rag_pipeline(
     tone_settings: ToneSettings | None = None,
     query_norm_settings: QueryNormSettings | None = None,
     prompt_profile: PromptProfile | None = None,
+    source_provider: str | None = None,
 ) -> RagPipeline:
     """Build the RAG pipeline, defaulting each dependency from configuration."""
     web_settings = WebSearchSettings.from_env()
@@ -92,6 +93,7 @@ def build_rag_pipeline(
             reranker=reranker,
             settings=retrieval_settings,
             rag_settings=rag_settings,
+            source_provider=source_provider,
         )
 
     return RagPipeline(
@@ -111,4 +113,5 @@ def build_rag_pipeline(
         decompose_settings=DecomposeSettings.from_env(),
         query_norm_settings=query_norm_settings or QueryNormSettings.from_env(),
         prompt_profile=prompt_profile,
+        source_provider=source_provider,
     )

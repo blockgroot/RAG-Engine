@@ -30,7 +30,7 @@ function ChipIcon({ kind }: { kind: "policy" | "code" }) {
   );
 }
 
-type AgentTab = "policy" | "github";
+type AgentTab = "policy" | "github" | "slack";
 
 export default function ChatPage() {
   return (
@@ -82,14 +82,31 @@ function ChatPageInner() {
   // installation, so offering the tab would promise code it cannot read.
   const [agentTab, setAgentTab] = useState<AgentTab>("policy");
   const [workspaceGithub, setWorkspaceGithub] = useState(false);
-  const showAgentTabs = workspaceId
-    ? workspaceGithub
-    : Boolean(me?.github_connected);
+  const [workspaceSlack, setWorkspaceSlack] = useState(false);
+  const codeAvailable = workspaceId ? workspaceGithub : Boolean(me?.github_connected);
+  // Slack is keyed on *ingested threads*, not merely on the connection existing
+  // (see /me.slack_ready): unlike GitHub's live reads, a Slack connection whose
+  // first sync produced nothing can only ever refuse, so the tab waits.
+  const slackAvailable = workspaceId ? workspaceSlack : Boolean(me?.slack_ready);
+  const showAgentTabs = codeAvailable || slackAvailable;
   // Policies need a successful ingest before they can answer; GitHub does not,
   // because it is read live. So an org with only GitHub connected must not be
   // held behind the policy readiness gate.
   const policiesReady = readyToAsk !== false;
-  const askingCode = showAgentTabs && (agentTab === "github" || !policiesReady);
+  // The effective agent, after availability and readiness are applied — the tab
+  // state alone can be stale (a tab may disappear, or Docs may not be ready).
+  const activeAgent: AgentTab =
+    agentTab === "github" && codeAvailable
+      ? "github"
+      : agentTab === "slack" && slackAvailable
+        ? "slack"
+        : !policiesReady && codeAvailable
+          ? "github"
+          : !policiesReady && slackAvailable
+            ? "slack"
+            : "policy";
+  const askingCode = activeAgent === "github";
+  const askingSlack = activeAgent === "slack";
 
   // Policies and Code are separate surfaces (different agents, different
   // starters). Switching tabs must open that tab's empty template — not leave
@@ -103,14 +120,16 @@ function ChatPageInner() {
   }
 
   useEffect(() => {
-    if (showAgentTabs && !policiesReady) setAgentTab("github");
-  }, [showAgentTabs, policiesReady]);
+    if (policiesReady) return;
+    if (codeAvailable) setAgentTab("github");
+    else if (slackAvailable) setAgentTab("slack");
+  }, [codeAvailable, slackAvailable, policiesReady]);
 
   // Starter chips from connected sources (document titles / GitHub repos).
   useEffect(() => {
     if (!me) return;
     let cancelled = false;
-    const agent = askingCode ? "github" : "policy";
+    const agent = activeAgent;
     const cacheKey = suggestionsCacheKey(agent, workspaceId);
     const cached = getCachedSuggestions(cacheKey);
     if (cached) {
@@ -137,7 +156,7 @@ function ChatPageInner() {
     return () => {
       cancelled = true;
     };
-  }, [me, askingCode, workspaceId]);
+  }, [me, activeAgent, workspaceId]);
 
   // Keep the latest turn in view on send, while tokens stream, and when done.
   // scrollIntoView walks scrollable ancestors (chat-log and/or app-body); the
@@ -167,6 +186,7 @@ function ChatPageInner() {
         setWorkspaceSyncing(ws.sync_in_progress);
         setReadyToAsk(ws.ready_to_ask);
         setWorkspaceGithub(Boolean(ws.github_connected));
+        setWorkspaceSlack(Boolean(ws.slack_ready));
       })
       .catch(() => {
         if (!cancelled) setReadyToAsk(false);
@@ -286,7 +306,7 @@ function ChatPageInner() {
         },
       },
       workspaceId,
-      askingCode ? "github" : "policy"
+      activeAgent
     );
 
   }
@@ -352,19 +372,27 @@ function ChatPageInner() {
     ? workspaceId
       ? "Ask this space’s code"
       : "Ask your code"
-    : workspaceId
-      ? "Ask this space"
-      : "Ask your company";
+    : askingSlack
+      ? workspaceId
+        ? "Ask this space’s Slack"
+        : "Ask your Slack"
+      : workspaceId
+        ? "Ask this space"
+        : "Ask your company";
   const emptyCopy = askingCode
     ? "Repository and commit answers are read live from GitHub — always current, never stale."
-    : workspaceId
-      ? "Answers come only from the notes and docs connected to this space."
-      : "Leave, benefits, remote work, and more — grounded in your connected documents.";
+    : askingSlack
+      ? "Answers come from the conversations in your connected channels — what people actually said, not policy."
+      : workspaceId
+        ? "Answers come only from the notes and docs connected to this space."
+        : "Leave, benefits, remote work, and more — grounded in your connected documents.";
   const composerPlaceholder = askingCode
     ? "Ask about a repository or a commit…"
-    : workspaceId
-      ? "Ask something about this space…"
-      : "Ask about leave, benefits, remote work…";
+    : askingSlack
+      ? "Ask what was discussed in a channel…"
+      : workspaceId
+        ? "Ask something about this space…"
+        : "Ask about leave, benefits, remote work…";
 
   return (
     <AppShell me={me} variant="app">
@@ -380,7 +408,15 @@ function ChatPageInner() {
         <div className="chat-topbar">
           <div className="chat-topbar-copy">
             <p className="chat-kicker">{workspaceId ? "Space" : "Workspace"}</p>
-            <h1>{askingCode ? "Code" : workspaceId ? "Space Ask" : "Ask"}</h1>
+            <h1>
+              {askingCode
+                ? "Code"
+                : askingSlack
+                  ? "Slack"
+                  : workspaceId
+                    ? "Space Ask"
+                    : "Ask"}
+            </h1>
           </div>
           {showAgentTabs && (
             <div className="agent-tabs" role="tablist" aria-label="What to ask about">
@@ -389,8 +425,8 @@ function ChatPageInner() {
                 role="tab"
                 id="tab-policies"
                 aria-controls="ask-panel"
-                aria-selected={!askingCode}
-                className={`agent-tab${!askingCode ? " is-active" : ""}`}
+                aria-selected={activeAgent === "policy"}
+                className={`agent-tab${activeAgent === "policy" ? " is-active" : ""}`}
                 onClick={() => switchAgentTab("policy")}
                 disabled={busy || !policiesReady}
                 title={
@@ -399,18 +435,34 @@ function ChatPageInner() {
               >
                 Docs
               </button>
-              <button
-                type="button"
-                role="tab"
-                id="tab-code"
-                aria-controls="ask-panel"
-                aria-selected={askingCode}
-                className={`agent-tab${askingCode ? " is-active" : ""}`}
-                onClick={() => switchAgentTab("github")}
-                disabled={busy}
-              >
-                Code
-              </button>
+              {codeAvailable && (
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-code"
+                  aria-controls="ask-panel"
+                  aria-selected={askingCode}
+                  className={`agent-tab${askingCode ? " is-active" : ""}`}
+                  onClick={() => switchAgentTab("github")}
+                  disabled={busy}
+                >
+                  Code
+                </button>
+              )}
+              {slackAvailable && (
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-slack"
+                  aria-controls="ask-panel"
+                  aria-selected={askingSlack}
+                  className={`agent-tab${askingSlack ? " is-active" : ""}`}
+                  onClick={() => switchAgentTab("slack")}
+                  disabled={busy}
+                >
+                  Slack
+                </button>
+              )}
             </div>
           )}
         </div>

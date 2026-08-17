@@ -57,11 +57,18 @@ class HybridRetriever:
         reranker: Reranker | None = None,
         settings: RetrievalSettings | None = None,
         rag_settings: RagSettings | None = None,
+        source_provider: str | None = None,
     ) -> None:
         self._store = store
         self._reranker = reranker
         self._settings = settings or RetrievalSettings.from_env()
         self._rag_settings = rag_settings or RagSettings.from_env()
+        # Pinned per-retriever rather than per-call: which providers an agent
+        # may draw on is a property of the agent (a Slack agent is always a
+        # Slack agent), not of one question. Keeping it off the call signature
+        # also means it can never be forgotten at one of the retrieve() call
+        # sites the way a per-request argument could be.
+        self._source_provider = source_provider
 
     def retrieve(
         self,
@@ -143,12 +150,21 @@ class HybridRetriever:
             i, kind, q_text, q_vec = task
             if kind == "vector":
                 hits = self._store.query(
-                    org_id, q_vec, top_k=pool, workspace_id=workspace_id
+                    org_id,
+                    q_vec,
+                    top_k=pool,
+                    workspace_id=workspace_id,
+                    source_provider=self._source_provider,
                 )
             else:
                 try:
                     hits = self._store.keyword_search(
-                        org_id, q_text, q_vec, top_k=pool, workspace_id=workspace_id
+                        org_id,
+                        q_text,
+                        q_vec,
+                        top_k=pool,
+                        workspace_id=workspace_id,
+                        source_provider=self._source_provider,
                     )
                 except NotImplementedError:
                     hits = []

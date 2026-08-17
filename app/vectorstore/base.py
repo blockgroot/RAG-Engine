@@ -102,6 +102,7 @@ class VectorStore(ABC):
         query_embedding: list[float],
         top_k: int = 5,
         workspace_id: str | None = None,
+        source_provider: str | None = None,
     ) -> list[RetrievedChunk]:
         """Return the ``top_k`` most similar chunks *within ``org_id`` only*.
 
@@ -113,6 +114,16 @@ class VectorStore(ABC):
         org's policy content (see CLAUDE.md's Workspace-within-a-Workspace
         plan §0.3 for the reasoning). Always paired with ``org_id`` — never
         resolved from ``workspace_id`` alone.
+
+        ``source_provider`` (Slack Agent): ``None`` (default) queries every
+        provider's chunks exactly as before. A value (e.g. ``"slack"``)
+        restricts the search to chunks whose ``documents.source_provider``
+        matches — this is what lets a Slack-only agent answer *only* from
+        chat threads rather than silently citing a Notion page. Unlike
+        ``workspace_id`` this is NOT an access boundary (every provider in
+        scope is already inside the caller's ``org_id``/``workspace_id``);
+        it is a relevance/pertinence filter, so it is pinned per-agent at
+        construction rather than accepted per request.
         """
         raise NotImplementedError
 
@@ -131,9 +142,14 @@ class VectorStore(ABC):
         query_embedding: list[float],
         top_k: int = 30,
         workspace_id: str | None = None,
+        source_provider: str | None = None,
     ) -> list[RetrievedChunk]:
         """Full-text (BM25-style) search within ``org_id``, ordered by keyword
         relevance (Phase 6 hybrid retrieval).
+
+        ``source_provider`` behaves exactly as on ``query`` — the keyword half
+        of hybrid search must apply the same filter, or a Slack-scoped answer
+        could still surface a Notion chunk through the BM25 leg.
 
         Optional capability: the default raises ``NotImplementedError``; stores
         that support it (``PgVectorStore``) override it. Each returned chunk still
