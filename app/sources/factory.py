@@ -77,7 +77,8 @@ def build_source_adapter(
                 "Slack connection has no channels configured. Pick at least "
                 "one channel on the Sources page before syncing."
             )
-        return SlackAdapter(token=token, channel_ids=channel_ids)
+        channel_names = (config or {}).get("channel_names") or {}
+        return SlackAdapter(token=token, channel_ids=channel_ids, channel_names=channel_names)
 
     raise ConfigurationError(
         f"Unknown source type: {source_type!r} (expected 'notion', 'google', or 'slack')"

@@ -57,6 +57,14 @@ logger = logging.getLogger(__name__)
 _RECAP_CHUNK_LIMIT = 40
 
 
+def _channel_of(document_title: str | None) -> str | None:
+    """Pull the channel name back out of a Slack document's ``"#chan: text"`` title."""
+    title = (document_title or "").strip()
+    if not title.startswith("#"):
+        return None
+    return title[1:].split(":", 1)[0].strip() or None
+
+
 class SlackAgent(RagPipelineAgent):
     """Answers questions from ingested Slack threads only."""
 
@@ -127,7 +135,8 @@ class SlackAgent(RagPipelineAgent):
             return None
 
         fallback = pipeline.fallback_response
-        prompt = build_slack_recap_prompt(question, [c.content for c in chunks], fallback)
+        pairs = [(c.content, _channel_of(c.document_title)) for c in chunks]
+        prompt = build_slack_recap_prompt(question, pairs, fallback)
         try:
             text = (pipeline.generate_raw(prompt) or "").strip()
         except Exception:  # noqa: BLE001

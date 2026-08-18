@@ -71,6 +71,7 @@ class SlackAdapter(SourceAdapter):
         token: str,
         channel_ids: list[str],
         *,
+        channel_names: dict[str, str] | None = None,
         timeout: float = _TIMEOUT,
         settings: SlackSettings | None = None,
     ) -> None:
@@ -82,9 +83,19 @@ class SlackAdapter(SourceAdapter):
             )
         self._token = token
         self._channel_ids = list(channel_ids)
+        # Human channel name (config["channel_names"], the same map the Sources
+        # UI already stores) prefixed onto each thread's title. Without it a
+        # thread's "title" is just the first 80 chars of a message, which is
+        # both a bad citation label and — the reason this was added — leaves
+        # the Slack recap prompt no way to confirm a thread came from the
+        # channel a question names, so it declines rather than guess.
+        self._channel_names = dict(channel_names or {})
         self._timeout = timeout
         self._settings = settings or SlackSettings.from_env()
         self._user_names: dict[str, str] = {}
+
+    def _channel_label(self, channel_id: str) -> str:
+        return self._channel_names.get(channel_id) or channel_id
 
     def _get(self, method: str, params: dict) -> dict:
         try:
@@ -148,7 +159,9 @@ class SlackAdapter(SourceAdapter):
                     refs.append(
                         SourceRef(
                             external_id=f"{channel_id}:{ts}",
-                            title=text[:80] or f"Thread in {channel_id}",
+                            title=f"#{self._channel_label(channel_id)}: {text[:70]}"
+                            if text
+                            else f"Thread in #{self._channel_label(channel_id)}",
                             last_modified=_ts_to_dt(last_ts),
                             source_uri=_thread_uri(channel_id, ts),
                         )

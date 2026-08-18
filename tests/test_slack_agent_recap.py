@@ -57,7 +57,7 @@ def test_recap_fires_only_after_the_ordinary_path_refuses():
             document_id="d1",
             chunk_index=0,
             org_id=_ORG,
-            document_title="#eng-standup thread",
+            document_title="#eng-standup: Standup notes",
         )
     ]
     store = _EmptyQueryStore(recap_chunks=chunks)
@@ -71,7 +71,10 @@ def test_recap_fires_only_after_the_ordinary_path_refuses():
     assert "export feature" in response.answer
     assert len(response.citations) == 1
     # One recap prompt must have gone to the LLM in addition to the ordinary one.
-    assert any("RECENT THREADS" in p for p in llm.prompts)
+    assert any("RECENT THREADS" in p and "#eng-standup" in p for p in llm.prompts), (
+        "the channel label must reach the prompt, or a channel-named question "
+        "has no way to be confirmed and gets refused"
+    )
 
 
 def test_recap_never_overrides_a_grounded_ordinary_answer():
@@ -156,3 +159,24 @@ def test_a_store_without_recency_support_leaves_recap_a_no_op():
 
     assert response.grounded is False
     assert not any("RECENT THREADS" in p for p in llm.prompts)
+
+
+def test_channel_is_parsed_back_out_of_the_stored_document_title():
+    from app.agent.slack_agent import _channel_of
+
+    assert _channel_of("#hand-book-testing: EOD update...") == "hand-book-testing"
+    assert _channel_of(None) is None
+    assert _channel_of("some prose with no channel prefix") is None
+
+
+def test_recap_prompt_labels_each_thread_with_its_channel():
+    from app.rag.prompts import build_slack_recap_prompt
+
+    prompt = build_slack_recap_prompt(
+        "what happened",
+        [("shipped the thing", "eng-standup"), ("no channel here", None)],
+        "fallback text",
+    )
+    assert "(#eng-standup)" in prompt
+    assert "shipped the thing" in prompt
+    assert "no channel here" in prompt
