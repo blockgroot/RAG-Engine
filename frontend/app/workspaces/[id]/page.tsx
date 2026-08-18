@@ -370,7 +370,6 @@ function WorkspaceDetailPageInner() {
             ...prev,
             [connectionId]: clearedSyncChanges(connectionId),
           }));
-          refreshChanges(connections);
           void refreshWorkspace();
           // This sync just changed what's ingested for this workspace —
           // cached suggestion chips (document titles) would otherwise keep
@@ -386,7 +385,7 @@ function WorkspaceDetailPageInner() {
       }
       prevStatuses.current[connectionId] = curr;
     }
-  }, [jobs, connections, refreshChanges, refreshWorkspace]);
+  }, [jobs, connections, refreshWorkspace]);
 
 
   async function handleMakeOwner(userId: string, email: string) {
@@ -454,6 +453,7 @@ function WorkspaceDetailPageInner() {
     updateInFlight.current.add(connectionId);
     setError(null);
     setMessage("Updating…");
+    changesGen.current += 1;
     setChangesById((prev) => ({
       ...prev,
       [connectionId]: clearedSyncChanges(connectionId),

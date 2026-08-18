@@ -241,11 +241,19 @@ def detect_source_changes(
             unchanged_n += 1
 
     removed_ids = [eid for eid in stored if eid not in live_ids]
-    safe_removed, suspicious = _sanitize_removals(removed_ids, len(stored))
-    if safe_removed and not _empty_listing_is_confirmed(
-        adapter, stored_count=len(stored), live_count=len(refs)
-    ):
+    # Check is a preview. An empty live listing is how Slack presents a
+    # rate-limit right after Update — four stored threads come back as
+    # "4 removed" for a moment, then a later Check shows "4 pages". Never
+    # surface a total wipe from an empty walk; ingest still confirms before
+    # it deletes anything.
+    if stored and not refs:
         safe_removed, suspicious = [], True
+    else:
+        safe_removed, suspicious = _sanitize_removals(removed_ids, len(stored))
+        if safe_removed and not _empty_listing_is_confirmed(
+            adapter, stored_count=len(stored), live_count=len(refs)
+        ):
+            safe_removed, suspicious = [], True
     if suspicious:
         logger.warning(
             "detect_source_changes: %d of %d previously known documents look "

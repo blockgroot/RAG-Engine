@@ -224,7 +224,7 @@ export default function HowItWorksPage() {
             <svg className="how-constellation-links" viewBox="0 0 280 260" fill="none">
               <path
                 className="how-constellation-path"
-                d="M140 130 L70 48 M140 130 L140 42 M140 130 L210 48 M140 130 L58 175 M140 130 L222 175 M140 130 L140 222 M140 130 L70 222"
+                d="M140 130 L70 48 M140 130 L140 42 M140 130 L210 48 M140 130 L58 175 M140 130 L222 175 M140 130 L140 222"
               />
             </svg>
             <div className="how-constellation-core">
@@ -242,17 +242,13 @@ export default function HowItWorksPage() {
               <BrandGlyph name="github" size={20} />
               <em>GitHub</em>
             </span>
-            <span className="how-constellation-node how-node-g" style={{ ["--d" as string]: "0.35s" }}>
-              <BrandGlyph name="slack" size={20} />
-              <em>Slack</em>
-            </span>
             <span className="how-constellation-node how-node-d" style={{ ["--d" as string]: "0.45s" }}>
               <BrandGlyph name="sendgrid" size={22} />
               <em>Magic link</em>
             </span>
             <span className="how-constellation-node how-node-e" style={{ ["--d" as string]: "0.6s" }}>
-              <BrandGlyph name="workspace" size={20} />
-              <em>Spaces</em>
+              <BrandGlyph name="slack" size={20} />
+              <em>Slack</em>
             </span>
             <span className="how-constellation-node how-node-f" style={{ ["--d" as string]: "0.75s" }}>
               <BrandGlyph name="secure" size={20} />

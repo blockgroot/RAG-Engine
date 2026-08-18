@@ -269,7 +269,11 @@ function ConnectionsPageInner() {
             ...prev,
             [connectionId]: clearedSyncChanges(connectionId),
           }));
-          refreshChanges(connections);
+          // Do not Check the source again here. Slack's history quota is
+          // exhausted by the ingest that just finished, so this re-list
+          // comes back empty and the card flashes "N removed" even though
+          // the job stored those pages. The job row already has the count;
+          // Check stays on the button for when the admin wants a fresh diff.
           // This sync just changed what's ingested org-wide — cached
           // suggestion chips (document titles) would otherwise keep
           // showing the pre-sync title set until a hard refresh.
@@ -284,7 +288,7 @@ function ConnectionsPageInner() {
       }
       prevStatuses.current[connectionId] = curr;
     }
-  }, [jobs, connections, refreshChanges]);
+  }, [jobs, connections]);
 
   const updateInFlight = useRef<Set<string>>(new Set());
 
@@ -295,6 +299,8 @@ function ConnectionsPageInner() {
     updateInFlight.current.add(connectionId);
     setError(null);
     setMessage("Updating…");
+    // Drop any in-flight Check so it cannot land as "N removed" mid-sync.
+    changesGen.current += 1;
     // Optimistic: don't keep offering Update while the job is starting.
     setChangesById((prev) => ({
       ...prev,

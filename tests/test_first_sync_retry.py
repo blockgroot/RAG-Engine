@@ -155,3 +155,30 @@ def test_slack_threads_without_channel_prefix_are_queued_for_reindex():
     )
     assert to_update == []
     assert unchanged == 1
+
+
+def test_an_empty_check_does_not_report_stored_threads_as_removed(monkeypatch):
+    """The live Slack glitch: Check after Update lists nothing, card says '4 removed'."""
+    from app.ingestion.pipeline import detect_source_changes
+    from app.vectorstore.base import StoredSourceDocument
+
+    class _Empty:
+        def list_documents(self):
+            return []
+
+    class _Store:
+        def list_source_documents(self, org_id, provider, workspace_id=None):
+            return [
+                StoredSourceDocument(
+                    str(i), "slack", f"C1:{i}", f"t{i}", None, None
+                )
+                for i in range(4)
+            ]
+
+    _no_sleep(monkeypatch)
+    report = detect_source_changes(
+        _Empty(), "org", provider="slack", store=_Store()
+    )
+    assert report.removed_count == 0
+    assert report.has_changes is False
+    assert report.remote_total == 0
