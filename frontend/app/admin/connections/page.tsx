@@ -9,7 +9,7 @@ import { useMe } from "@/lib/useMe";
 import { api, ApiError, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
 import { ACTIVE_JOB_STATUSES, useJobPolling } from "@/lib/jobPoll";
 import { clearedSyncChanges } from "@/lib/syncChanges";
-import { syncPagesDetail, syncPhaseHeadline } from "@/lib/syncProgress";
+import { syncPagesDetail, syncPhaseHeadline, updateCompleteMessage } from "@/lib/syncProgress";
 import { invalidateSuggestionsCache } from "@/lib/suggestionsCache";
 
 const PROVIDERS: ("notion" | "google" | "github" | "slack")[] = [
@@ -33,13 +33,6 @@ function latestJobByConnection(jobs: JobRecord[]): Record<string, JobRecord> {
     }
   }
   return latest;
-}
-
-function updateCompleteMessage(docCount: number | null | undefined): string {
-  if (docCount != null && docCount > 0) {
-    return `Updated · ${docCount} page${docCount === 1 ? "" : "s"}`;
-  }
-  return "Already up to date";
 }
 
 export default function ConnectionsPage() {
@@ -268,7 +261,7 @@ function ConnectionsPageInner() {
         setError(null);
       } else if (prev && ACTIVE_STATUSES.has(prev) && !ACTIVE_STATUSES.has(curr)) {
         if (curr === "succeeded") {
-          setMessage(updateCompleteMessage(job.doc_count));
+          setMessage(updateCompleteMessage(job));
           setError(null);
           // Hide Update immediately — Drive change-check is slow; without this
           // a stale has_changes from before the sync keeps the button up.

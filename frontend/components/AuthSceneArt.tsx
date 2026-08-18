@@ -216,7 +216,7 @@ export function AuthSceneArt({ variant = "login" }: { variant?: "login" | "signu
     : "Enter your work email and we’ll send a secure, one-time sign-in link — no password required.";
 
   const points = isSignup
-    ? ["Request reviewed by a human", "Connect Notion, Drive, or GitHub", "Invite teammates when you’re ready"]
+    ? ["Request reviewed by a human", "Connect Notion, Drive, Slack, or GitHub", "Invite teammates when you’re ready"]
     : ["One-time magic link to your inbox", "Pick up Ask, Spaces, and Sources", "Same grounded answers as last time"];
 
   return (

@@ -123,26 +123,39 @@ def _sanitize_removals(removed_ids: list[str], stored_count: int) -> tuple[list[
 # sync (nothing stored yet) that comes back suspiciously small, targets
 # exactly that window without slowing down any normal re-sync, which
 # already has a real baseline to fall back on if one listing is off.
-_FIRST_SYNC_RETRY_DELAY_SECONDS = 5
 _FIRST_SYNC_SUSPICIOUS_PAGE_COUNT = 1
+# One 5s retry was enough for Notion but not for Slack: a real first sync
+# ~60s after the OAuth grant listed zero threads twice (5s apart) and was
+# marked succeeded with nothing stored, leaving the admin to click "Update"
+# again by hand. The waits escalate so the common case still costs 5s, and a
+# slower grant no longer needs a human to retry it. Only ever paid on a FIRST
+# sync that looks empty — a re-sync has a real baseline and never waits.
+_FIRST_SYNC_RETRY_DELAYS = (5,)  # interactive change-check: stay snappy
+_FIRST_SYNC_INGEST_RETRY_DELAYS = (5, 15, 30)  # background job: patience is free
 
 
 def _list_documents_with_first_sync_retry(
-    adapter: SourceAdapter, *, is_first_sync: bool
+    adapter: SourceAdapter,
+    *,
+    is_first_sync: bool,
+    retry_delays: tuple[int, ...] = _FIRST_SYNC_RETRY_DELAYS,
 ) -> list[SourceRef]:
     refs = adapter.list_documents()
-    if not is_first_sync or len(refs) > _FIRST_SYNC_SUSPICIOUS_PAGE_COUNT:
-        return refs
-    logger.info(
-        "First sync returned only %d page(s) — retrying once after %ds in "
-        "case the source's search index is still catching up on a "
-        "just-granted connection.",
-        len(refs),
-        _FIRST_SYNC_RETRY_DELAY_SECONDS,
-    )
-    time.sleep(_FIRST_SYNC_RETRY_DELAY_SECONDS)
-    retried = adapter.list_documents()
-    return retried if len(retried) > len(refs) else refs
+    for delay in retry_delays:
+        if not is_first_sync or len(refs) > _FIRST_SYNC_SUSPICIOUS_PAGE_COUNT:
+            break
+        logger.info(
+            "First sync returned only %d page(s) — retrying after %ds in "
+            "case the source's search index is still catching up on a "
+            "just-granted connection.",
+            len(refs),
+            delay,
+        )
+        time.sleep(delay)
+        retried = adapter.list_documents()
+        if len(retried) > len(refs):
+            refs = retried
+    return refs
 
 
 def detect_source_changes(
@@ -288,7 +301,11 @@ def ingest_source(
         d.external_id: d
         for d in store.list_source_documents(org_id, provider, workspace_id=workspace_id)
     }
-    refs = _list_documents_with_first_sync_retry(adapter, is_first_sync=not stored)
+    refs = _list_documents_with_first_sync_retry(
+        adapter,
+        is_first_sync=not stored,
+        retry_delays=_FIRST_SYNC_INGEST_RETRY_DELAYS,
+    )
 
     if incremental:
         to_add, to_update, removed_ids, unchanged = _plan_refs(refs, stored)

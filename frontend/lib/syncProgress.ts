@@ -31,6 +31,27 @@ export function syncPagesDetail(job: JobRecord | undefined): string {
   return "This can take a few minutes for large folders.";
 }
 
+/**
+ * What to say once a sync finishes successfully.
+ *
+ * "Already up to date" is only true when the source listed something and none
+ * of it had changed. A sync that listed *nothing at all* is a different
+ * outcome entirely — it happens when a permission grant hasn't propagated yet,
+ * or the connected channel/folder is empty — and calling that "up to date"
+ * left the admin with no hint that Ask was still locked because nothing was
+ * ever indexed.
+ */
+export function updateCompleteMessage(job: JobRecord | undefined): string {
+  const docCount = job?.doc_count;
+  if (docCount != null && docCount > 0) {
+    return `Updated · ${docCount} page${docCount === 1 ? "" : "s"}`;
+  }
+  if (job?.total_documents === 0) {
+    return "Nothing found to bring in — check the source has content, then try again.";
+  }
+  return "Already up to date";
+}
+
 export function syncPercent(job: JobRecord | undefined): number | null {
   const total = job?.total_documents ?? null;
   if (total == null || total <= 0) return null;

@@ -18,7 +18,7 @@ import {
 } from "@/lib/api";
 import { ACTIVE_JOB_STATUSES, useJobPolling } from "@/lib/jobPoll";
 import { clearedSyncChanges } from "@/lib/syncChanges";
-import { syncPagesDetail, syncPhaseHeadline } from "@/lib/syncProgress";
+import { syncPagesDetail, syncPhaseHeadline, updateCompleteMessage } from "@/lib/syncProgress";
 import { invalidateSuggestionsCache } from "@/lib/suggestionsCache";
 
 // GitHub is now offered per workspace (it used to be org-level only). A
@@ -46,13 +46,6 @@ function latestJobByConnection(jobs: JobRecord[]): Record<string, JobRecord> {
     if (!current || job.created_at > current.created_at) latest[job.connection_id] = job;
   }
   return latest;
-}
-
-function updateCompleteMessage(docCount: number | null | undefined): string {
-  if (docCount != null && docCount > 0) {
-    return `Updated · ${docCount} page${docCount === 1 ? "" : "s"}`;
-  }
-  return "Already up to date";
 }
 
 export default function WorkspaceDetailPage() {
@@ -371,7 +364,7 @@ function WorkspaceDetailPageInner() {
         setError(null);
       } else if (prev && ACTIVE_STATUSES.has(prev) && !ACTIVE_STATUSES.has(curr)) {
         if (curr === "succeeded") {
-          setMessage(updateCompleteMessage(job.doc_count));
+          setMessage(updateCompleteMessage(job));
           setError(null);
           setChangesById((prev) => ({
             ...prev,
@@ -606,7 +599,7 @@ function WorkspaceDetailPageInner() {
               {workspace?.sync_in_progress
                 ? "Still importing documents…"
                 : isOwner
-                  ? "Connect Notion, Drive, or GitHub below. For docs, sync once; for GitHub, Ask unlocks as soon as it’s linked."
+                  ? "Connect Notion, Drive, Slack, or GitHub below. Docs and Slack need one sync to finish; GitHub unlocks Ask as soon as it’s linked."
                   : "Waiting on the owner to connect a source."}
             </p>
           </div>
