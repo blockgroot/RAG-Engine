@@ -165,8 +165,36 @@ def test_channel_is_parsed_back_out_of_the_stored_document_title():
     from app.agent.slack_agent import _channel_of
 
     assert _channel_of("#hand-book-testing: EOD update...") == "hand-book-testing"
+    assert _channel_of("Thread in #handbook") == "handbook"
     assert _channel_of(None) is None
     assert _channel_of("some prose with no channel prefix") is None
+
+
+def test_recap_labels_channel_from_external_id_when_title_has_no_prefix(monkeypatch):
+    """Threads ingested before titles carried ``#channel:`` still recap."""
+    chunks = [
+        RetrievedChunk(
+            content="Standup: shipped the export feature today.",
+            score=0.0,
+            document_id="d1",
+            chunk_index=0,
+            org_id=_ORG,
+            document_title="What is the leave policy?",
+            source_external_id="C99:100.0",
+        )
+    ]
+    monkeypatch.setattr(
+        "app.agent.slack_agent._channel_names_for",
+        lambda org_id, workspace_id: {"C99": "handbook"},
+    )
+    store = _EmptyQueryStore(recap_chunks=chunks)
+    llm = RecordingLLM(answer="Recent activity: the export feature shipped.")
+    agent = SlackAgent(_pipeline(store, llm))
+
+    response = agent.answer("What was discussed in #handbook recently?", _ORG)
+
+    assert response.grounded is True
+    assert any("(#handbook)" in p for p in llm.prompts)
 
 
 def test_recap_prompt_labels_each_thread_with_its_channel():

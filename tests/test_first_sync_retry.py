@@ -119,3 +119,39 @@ def test_the_scale_guard_is_unchanged():
     )
     assert removed == []
     assert suspicious is True
+
+
+def test_slack_threads_without_channel_prefix_are_queued_for_reindex():
+    from app.sources.base import SourceRef
+    from app.vectorstore.base import StoredSourceDocument
+
+    ref = SourceRef(external_id="C1:1", title="#chan: hi")
+    stored = {
+        "C1:1": StoredSourceDocument(
+            document_id="d1",
+            provider="slack",
+            external_id="C1:1",
+            title="hi",  # old ingest: raw message, no #channel prefix
+            source_uri=None,
+            last_modified=None,
+        )
+    }
+    to_update, unchanged = pipeline._reindex_slack_docs_missing_channel_prefix(
+        [ref], stored, to_update=[], unchanged=1
+    )
+    assert [r.external_id for r in to_update] == ["C1:1"]
+    assert unchanged == 0
+
+    already_prefixed = StoredSourceDocument(
+        document_id="d1",
+        provider="slack",
+        external_id="C1:1",
+        title="#chan: hi",
+        source_uri=None,
+        last_modified=None,
+    )
+    to_update, unchanged = pipeline._reindex_slack_docs_missing_channel_prefix(
+        [ref], {"C1:1": already_prefixed}, to_update=[], unchanged=1
+    )
+    assert to_update == []
+    assert unchanged == 1

@@ -33,8 +33,9 @@ required to name specific channels (``source_config["channel_ids"]``) — never
 
 from __future__ import annotations
 
+import hashlib
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import httpx
 
@@ -45,6 +46,18 @@ from .base import SourceAdapter, SourceDocument, SourceRef
 _API_BASE = "https://slack.com/api"
 _TIMEOUT = 15.0
 _TRUNCATION_MARKER = "\n[... earlier replies truncated: thread exceeds ingest size limit ...]"
+_MAX_HTTP_ATTEMPTS = 5
+_RETRYABLE_SLACK_ERRORS = frozenset({"ratelimited", "internal_error", "fatal_error"})
+# Check and Update are separate HTTP walks of the same channels. Slack's
+# conversations.history budget is tight enough that the Update walk, seconds
+# after a successful Check, often comes back empty — the admin then sees
+# "nothing found" even though Check just listed threads, and a second
+# Check+Update works. Keep the last non-empty listing for a couple of minutes
+# so Update can reuse Check's snapshot instead of taking a blip as truth.
+# ponytail: process-local only; a separate worker process still lists itself.
+# Upgrade: persist refs on the ingestion job row.
+_LISTING_CACHE_TTL_SECONDS = 180
+_LISTING_CACHE: dict[tuple, tuple[float, list[SourceRef]]] = {}
 
 
 def _ts_to_dt(ts: str | None) -> datetime | None:
@@ -61,6 +74,21 @@ def _thread_uri(channel_id: str, thread_ts: str) -> str:
     # Slack's deep-link format drops the "." and zero-pads to 6 decimal places.
     padded = f"{thread_ts:0<17}".replace(".", "")
     return f"https://slack.com/archives/{channel_id}/p{padded}"
+
+
+def _retry_after_seconds(response: httpx.Response, attempt: int) -> float:
+    raw = response.headers.get("Retry-After") or response.headers.get("retry-after")
+    if raw:
+        try:
+            return max(1.0, float(raw))
+        except ValueError:
+            pass
+    return min(2 ** attempt, 30)
+
+
+def clear_listing_cache() -> None:
+    """Drop cached Slack listings. Tests only — production never needs this."""
+    _LISTING_CACHE.clear()
 
 
 class SlackAdapter(SourceAdapter):
@@ -97,23 +125,83 @@ class SlackAdapter(SourceAdapter):
     def _channel_label(self, channel_id: str) -> str:
         return self._channel_names.get(channel_id) or channel_id
 
-    def _get(self, method: str, params: dict) -> dict:
-        try:
-            response = httpx.get(
-                f"{_API_BASE}/{method}",
-                params=params,
-                headers={"Authorization": f"Bearer {self._token}"},
-                timeout=self._timeout,
-            )
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise SourceError(f"Slack API call to {method} failed: {exc}", cause=exc) from exc
+    def _thread_title(self, channel_id: str, text: str) -> str:
+        channel = self._channel_label(channel_id)
+        snippet = (text or "").strip()[:70]
+        return f"#{channel}: {snippet}" if snippet else f"Thread in #{channel}"
 
-        data = response.json()
-        if not data.get("ok"):
+    def _listing_cache_key(self) -> tuple:
+        digest = hashlib.sha256(self._token.encode()).hexdigest()[:16]
+        return (
+            digest,
+            tuple(self._channel_ids),
+            self._settings.backfill_days,
+            self._settings.min_thread_chars,
+            self._settings.max_documents_per_sync,
+        )
+
+    def _cached_listing(self) -> list[SourceRef] | None:
+        hit = _LISTING_CACHE.get(self._listing_cache_key())
+        if hit is None:
+            return None
+        saved_at, refs = hit
+        if time.time() - saved_at > _LISTING_CACHE_TTL_SECONDS:
+            _LISTING_CACHE.pop(self._listing_cache_key(), None)
+            return None
+        return list(refs)
+
+    def _store_listing(self, refs: list[SourceRef]) -> None:
+        if refs:
+            _LISTING_CACHE[self._listing_cache_key()] = (time.time(), list(refs))
+
+    def _get(self, method: str, params: dict) -> dict:
+        last_error = "unknown error"
+        for attempt in range(1, _MAX_HTTP_ATTEMPTS + 1):
+            try:
+                response = httpx.get(
+                    f"{_API_BASE}/{method}",
+                    params=params,
+                    headers={"Authorization": f"Bearer {self._token}"},
+                    timeout=self._timeout,
+                )
+            except httpx.HTTPError as exc:
+                last_error = str(exc)
+                if attempt >= _MAX_HTTP_ATTEMPTS:
+                    raise SourceError(
+                        f"Slack API call to {method} failed: {exc}", cause=exc
+                    ) from exc
+                time.sleep(min(2 ** attempt, 30))
+                continue
+
+            if response.status_code == 429:
+                last_error = "ratelimited"
+                if attempt >= _MAX_HTTP_ATTEMPTS:
+                    raise SourceError(f"Slack API call to {method} failed: ratelimited")
+                time.sleep(min(_retry_after_seconds(response, attempt), 8))
+                continue
+
+            try:
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                last_error = str(exc)
+                if attempt >= _MAX_HTTP_ATTEMPTS:
+                    raise SourceError(
+                        f"Slack API call to {method} failed: {exc}", cause=exc
+                    ) from exc
+                time.sleep(min(2 ** attempt, 30))
+                continue
+
+            data = response.json()
+            if data.get("ok"):
+                return data
             # Slack's failure shape: HTTP 200 with {"ok": false, "error": "..."}.
-            raise SourceError(f"Slack API call to {method} failed: {data.get('error')}")
-        return data
+            err = str(data.get("error") or "unknown")
+            last_error = err
+            if err in _RETRYABLE_SLACK_ERRORS and attempt < _MAX_HTTP_ATTEMPTS:
+                time.sleep(min(_retry_after_seconds(response, attempt), 8))
+                continue
+            raise SourceError(f"Slack API call to {method} failed: {err}")
+        raise SourceError(f"Slack API call to {method} failed: {last_error}")
 
     def _display_name(self, user_id: str | None) -> str:
         if not user_id:
@@ -136,6 +224,23 @@ class SlackAdapter(SourceAdapter):
         return name
 
     def list_documents(self) -> list[SourceRef]:
+        try:
+            refs = self._list_documents_from_slack()
+        except SourceError:
+            cached = self._cached_listing()
+            if cached:
+                return cached
+            raise
+        if refs:
+            self._store_listing(refs)
+            return refs
+        # Live walk came back empty. Prefer Check's recent snapshot over
+        # treating that as "the channel has nothing" — the Update-after-Check
+        # failure. A first-sync retry still reaches Slack because we never
+        # cache an empty listing.
+        return self._cached_listing() or refs
+
+    def _list_documents_from_slack(self) -> list[SourceRef]:
         oldest = time.time() - (self._settings.backfill_days * 86400)
         refs: list[SourceRef] = []
         for channel_id in self._channel_ids:
@@ -159,9 +264,7 @@ class SlackAdapter(SourceAdapter):
                     refs.append(
                         SourceRef(
                             external_id=f"{channel_id}:{ts}",
-                            title=f"#{self._channel_label(channel_id)}: {text[:70]}"
-                            if text
-                            else f"Thread in #{self._channel_label(channel_id)}",
+                            title=self._thread_title(channel_id, text),
                             last_modified=_ts_to_dt(last_ts),
                             source_uri=_thread_uri(channel_id, ts),
                         )
@@ -205,7 +308,13 @@ class SlackAdapter(SourceAdapter):
         if not messages:
             raise SourceError(f"Slack thread {external_id} has no messages")
 
-        lines = []
+        root_text = (messages[0].get("text") or "").strip()
+        channel = self._channel_label(channel_id)
+        # Channel name goes on the stored title AND the chunk text. Ask chips
+        # are "what was discussed in #x" — without this, neither the keyword
+        # index nor the recap prompt can tell a thread came from #x, so the
+        # grounded/recap path correctly refuses even after a successful sync.
+        lines = [f"Channel: #{channel}"]
         if truncated:
             lines.append(_TRUNCATION_MARKER.strip())
         for message in messages:
@@ -218,7 +327,7 @@ class SlackAdapter(SourceAdapter):
 
         content = "\n".join(lines)
         last_modified = _ts_to_dt(messages[-1].get("ts"))
-        title = (messages[0].get("text") or "").strip()[:80] or f"Thread in {channel_id}"
+        title = self._thread_title(channel_id, root_text)
 
         return SourceDocument(
             external_id=external_id,

@@ -60,9 +60,37 @@ _RECAP_CHUNK_LIMIT = 40
 def _channel_of(document_title: str | None) -> str | None:
     """Pull the channel name back out of a Slack document's ``"#chan: text"`` title."""
     title = (document_title or "").strip()
+    if title.startswith("Thread in #"):
+        return title[len("Thread in #") :].strip() or None
     if not title.startswith("#"):
         return None
     return title[1:].split(":", 1)[0].strip() or None
+
+
+def _channel_id_of(external_id: str | None) -> str | None:
+    eid = (external_id or "").strip()
+    if not eid or ":" not in eid:
+        return None
+    return eid.partition(":")[0] or None
+
+
+def _channel_names_for(org_id: str, workspace_id: str | None) -> dict[str, str]:
+    """Best-effort map of Slack channel id → name from the connection picker.
+
+    Used when already-ingested titles lack the ``#channel:`` prefix (fetch used
+    to store the raw message text). A lookup failure must not break recap —
+    tests and stores without a connection row simply get an empty map.
+    """
+    try:
+        from ..auth.credentials import get_connection_config
+
+        config = get_connection_config(org_id, "slack", workspace_id=workspace_id) or {}
+    except Exception:  # noqa: BLE001 - recap must still run from titles alone
+        return {}
+    names = config.get("channel_names") or {}
+    if not isinstance(names, dict):
+        return {}
+    return {str(k): str(v) for k, v in names.items() if v}
 
 
 class SlackAgent(RagPipelineAgent):
@@ -135,7 +163,14 @@ class SlackAgent(RagPipelineAgent):
             return None
 
         fallback = pipeline.fallback_response
-        pairs = [(c.content, _channel_of(c.document_title)) for c in chunks]
+        names = _channel_names_for(org_id, workspace_id)
+        pairs = []
+        for c in chunks:
+            channel = _channel_of(c.document_title)
+            if not channel:
+                cid = _channel_id_of(c.source_external_id)
+                channel = (names.get(cid) if cid else None) or cid
+            pairs.append((c.content, channel))
         prompt = build_slack_recap_prompt(question, pairs, fallback)
         try:
             text = (pipeline.generate_raw(prompt) or "").strip()

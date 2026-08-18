@@ -28,6 +28,9 @@ class RetrievedChunk:
     # Human title from ``documents.title`` when the store JOINed it (preferred
     # for citation UI). Optional so fakes / reuse paths stay lightweight.
     document_title: str | None = None
+    # Slack recap: map ``"{channel_id}:{thread_ts}"`` back to a channel name
+    # when the stored title was ingested before titles carried a ``#channel:`` prefix.
+    source_external_id: str | None = None
 
 
 @dataclass(frozen=True)

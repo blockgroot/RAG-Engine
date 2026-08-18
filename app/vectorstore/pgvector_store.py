@@ -308,7 +308,7 @@ class PgVectorStore(VectorStore):
             rows = conn.execute(
                 """
                 SELECT c.content, c.document_id::text, c.chunk_index,
-                       c.org_id::text, d.title
+                       c.org_id::text, d.title, d.source_external_id
                 FROM chunks c
                 JOIN documents d ON d.id = c.document_id
                 WHERE c.org_id = %s::uuid
@@ -329,6 +329,7 @@ class PgVectorStore(VectorStore):
                 chunk_index=r[2],
                 org_id=r[3],
                 document_title=(str(r[4]).strip() if r[4] else None),
+                source_external_id=(str(r[5]).strip() if r[5] else None),
             )
             for r in rows
         ]

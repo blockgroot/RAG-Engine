@@ -15,12 +15,21 @@ from app.config.settings import SlackSettings
 from app.core.exceptions import ConfigurationError, SourceError
 from app.sources import SlackAdapter, build_source_adapter
 from app.sources.base import SourceDocument, SourceRef
+from app.sources.slack import clear_listing_cache
+
+
+@pytest.fixture(autouse=True)
+def _isolate_listing_cache():
+    clear_listing_cache()
+    yield
+    clear_listing_cache()
 
 
 class FakeResponse:
-    def __init__(self, payload, status_code=200):
+    def __init__(self, payload, status_code=200, headers=None):
         self._payload = payload
         self.status_code = status_code
+        self.headers = headers or {}
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -185,6 +194,8 @@ def test_fetch_document_renders_thread_with_display_names(monkeypatch):
     assert "15 days per year" in doc.content
     assert doc.source_uri.startswith("https://slack.com/archives/C1/p")
     assert doc.last_modified == datetime.fromtimestamp(101.0, tz=timezone.utc)
+    assert doc.title.startswith("#C1:")
+    assert "Channel: #C1" in doc.content
 
 
 def test_fetch_document_truncates_oversized_thread(monkeypatch):
@@ -268,3 +279,78 @@ def test_build_source_adapter_slack_requires_token():
 def test_build_source_adapter_slack_requires_channel_ids():
     with pytest.raises(ConfigurationError):
         build_source_adapter("slack", token="xoxb-abc", config={})
+
+
+def test_list_documents_retries_ratelimited_then_succeeds(monkeypatch):
+    monkeypatch.setattr("app.sources.slack.time.sleep", lambda _s: None)
+    state = {"n": 0}
+
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        state["n"] += 1
+        if state["n"] == 1:
+            return FakeResponse(
+                {"ok": False, "error": "ratelimited"},
+                headers={"Retry-After": "1"},
+            )
+        return FakeResponse(
+            {
+                "ok": True,
+                "messages": [_msg("1.0", "a real thread about policies", reply_count=1)],
+            }
+        )
+
+    monkeypatch.setattr("app.sources.slack.httpx.get", fake_get)
+    adapter = SlackAdapter(token="xoxb-retry", channel_ids=["C1"])
+    refs = adapter.list_documents()
+    assert len(refs) == 1
+    assert refs[0].external_id == "C1:1.0"
+
+
+def test_an_empty_update_listing_reuses_the_check_snapshot(monkeypatch):
+    """The live bug: Check finds threads, Update's re-list comes back empty."""
+    state = {"n": 0}
+
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        state["n"] += 1
+        if state["n"] == 1:
+            return FakeResponse(
+                {
+                    "ok": True,
+                    "messages": [
+                        _msg("1.0", "a real thread about policies", reply_count=1)
+                    ],
+                }
+            )
+        return FakeResponse({"ok": True, "messages": []})
+
+    monkeypatch.setattr("app.sources.slack.httpx.get", fake_get)
+    check = SlackAdapter(token="xoxb-cache", channel_ids=["C1"])
+    update = SlackAdapter(token="xoxb-cache", channel_ids=["C1"])
+    found = check.list_documents()
+    reused = update.list_documents()
+    assert len(found) == 1
+    assert [r.external_id for r in reused] == [r.external_id for r in found]
+
+
+def test_fetch_document_uses_human_channel_name_in_title(monkeypatch):
+    monkeypatch.setattr(
+        "app.sources.slack.httpx.get",
+        lambda url, **kwargs: (
+            FakeResponse(
+                {
+                    "ok": True,
+                    "messages": [_msg("100.0", "What is the leave policy?", user="U1")],
+                }
+            )
+            if str(url).endswith("conversations.replies")
+            else FakeResponse({"ok": True, "user": {"real_name": "Alice"}})
+        ),
+    )
+    adapter = SlackAdapter(
+        token="xoxb-abc",
+        channel_ids=["C1"],
+        channel_names={"C1": "handbook"},
+    )
+    doc = adapter.fetch_document("C1:100.0")
+    assert doc.title.startswith("#handbook:")
+    assert "Channel: #handbook" in doc.content

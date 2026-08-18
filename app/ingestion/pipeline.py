@@ -289,6 +289,35 @@ def _plan_refs(
     return to_add, to_update, removed, unchanged
 
 
+def _reindex_slack_docs_missing_channel_prefix(
+    refs: list[SourceRef],
+    stored: dict,
+    to_update: list[SourceRef],
+    unchanged: int,
+) -> tuple[list[SourceRef], int]:
+    """Re-fetch Slack threads whose stored title has no ``#channel:`` prefix.
+
+    ``fetch_document`` used to save the raw message as the title. Ask chips
+    name a channel, and recap/keyword search cannot confirm a match without
+    that prefix (or the ``Channel: #x`` line now written into chunk text).
+    One Update after this ships backfills them; Notion/Drive are untouched.
+    """
+    already = {r.external_id for r in to_update}
+    extra: list[SourceRef] = []
+    for ref in refs:
+        if ref.external_id in already:
+            continue
+        existing = stored.get(ref.external_id)
+        if existing is None:
+            continue
+        if (existing.title or "").lstrip().startswith("#"):
+            continue
+        extra.append(ref)
+    if not extra:
+        return to_update, unchanged
+    return to_update + extra, max(0, unchanged - len(extra))
+
+
 def ingest_source(
     adapter: SourceAdapter,
     org_id: str,
@@ -358,6 +387,11 @@ def ingest_source(
         live_ids = {r.external_id for r in refs}
         removed_ids = [eid for eid in stored if eid not in live_ids]
         unchanged = 0
+
+    if provider == "slack":
+        to_update, unchanged = _reindex_slack_docs_missing_channel_prefix(
+            refs, stored, to_update, unchanged
+        )
 
     removed_ids, suspicious_removal = _sanitize_removals(removed_ids, len(stored))
     if removed_ids and not _empty_listing_is_confirmed(
