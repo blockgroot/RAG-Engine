@@ -30,10 +30,10 @@ _GITHUB_TEMPLATES = (
 # these stay generated per tenant like the repo/title chips — never hardcoded
 # channel names.
 _SLACK_TEMPLATES = (
-    "What was discussed in #{channel}?",
-    "Summarize the recent conversations in #{channel}.",
-    "What decisions were made in #{channel}?",
-    "What are the open questions in #{channel}?",
+    "What was discussed in #{channel} recently?",
+    "Catch me up on the last few days in #{channel}.",
+    "What was decided in #{channel}?",
+    "Any open questions or blockers in #{channel}?",
 )
 
 # Org-wide Policies tab — company handbook phrasing.

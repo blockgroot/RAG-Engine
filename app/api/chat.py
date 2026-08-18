@@ -329,11 +329,21 @@ def _slack_channel_names_for_scope(
 
 
 def _document_titles_for_scope(org_id: str, workspace_id: str | None) -> list[str]:
-    """Ingested document titles for this org (or one workspace), newest first."""
+    """Ingested document titles for this org (or one workspace), newest first.
+
+    Slack rows are excluded on purpose. A Slack document is one *thread*, and
+    its title is the first 80 characters of the opening message — real prose,
+    not a document name. Poured into the document templates that produces
+    chips like ``What does "No - it's intentionally limited, so it doesn't..."
+    cover?``, which reads as broken even though every piece worked. Slack has
+    its own tab and its own channel-shaped builder
+    (``build_slack_suggestions``); this one is for things that have titles.
+    """
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT title FROM documents "
             "WHERE org_id = %s AND workspace_id IS NOT DISTINCT FROM %s "
+            "AND source_provider IS DISTINCT FROM 'slack' "
             "ORDER BY created_at DESC NULLS LAST "
             "LIMIT 12",
             (org_id, workspace_id),

@@ -134,3 +134,32 @@ def test_slack_chips_rotate_across_channels_and_dedupe():
 
 def test_no_connected_channels_means_no_chips():
     assert build_slack_suggestions([]) == []
+
+
+@requires_db
+def test_document_chips_never_quote_a_slack_thread(store, embedder, org_cleanup):
+    """A Slack "title" is message prose, not a document name.
+
+    Poured into the document templates it produced chips like
+    ``What does "No - it's intentionally limited, so it doesn't..." cover?``.
+    Slack gets its own channel-shaped chips instead.
+    """
+    from app.api.chat import _document_titles_for_scope
+
+    org_id = store.create_organization(f"Chip Scope {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+
+    _seed(store, embedder, org_id, "notion", "Leave Policy", "Annual leave is 20 days.")
+    _seed(
+        store,
+        embedder,
+        org_id,
+        "slack",
+        "No - it's intentionally limited, so it doesn't pull the entire",
+        "No - it's intentionally limited, so it doesn't pull the entire history.",
+    )
+
+    titles = _document_titles_for_scope(org_id, None)
+
+    assert "Leave Policy" in titles
+    assert not any(t.startswith("No - it's") for t in titles)
