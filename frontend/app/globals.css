@@ -3803,7 +3803,7 @@ table .role-chip.role-admin,
 }
 .how-paths {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 0.9rem;
   align-items: stretch;
 }
@@ -4203,6 +4203,7 @@ table .role-chip.role-admin,
 .how-node-d { top: 58%; left: 0; }
 .how-node-e { top: 58%; right: 0; }
 .how-node-f { bottom: 0; left: calc(50% - 1.8rem); }
+.how-node-g { bottom: 0; left: 8%; }
 
 @keyframes how-constellation-dash {
   to { stroke-dashoffset: -24; }
@@ -4632,6 +4633,9 @@ table .role-chip.role-admin,
     grid-template-columns: 1fr 1fr;
   }
   .how-flow-arrow { display: none; }
+  .how-paths {
+    grid-template-columns: 1fr;
+  }
 }
 @media (max-width: 900px) {
   .landing-section-head,

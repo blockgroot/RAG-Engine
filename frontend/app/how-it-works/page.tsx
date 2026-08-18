@@ -34,7 +34,7 @@ export default function HowItWorksPage() {
         <article className="how-flow-step">
           <span className="how-flow-num">2</span>
           <strong>Retrieve</strong>
-          <p>Search your org&rsquo;s documents — never another company&rsquo;s.</p>
+          <p>Search your org&rsquo;s connected content — never another company&rsquo;s.</p>
         </article>
         <span className="how-flow-arrow" aria-hidden />
         <article className="how-flow-step">
@@ -53,14 +53,14 @@ export default function HowItWorksPage() {
       <section className="landing-section landing-wrap" aria-labelledby="paths-title">
         <div className="landing-section-head">
           <div>
-            <p className="landing-eyebrow">Two modes</p>
+            <p className="landing-eyebrow">Three paths</p>
             <h2 id="paths-title" className="landing-section-title">
-              Policies from your docs. Code from GitHub.
+              Policies from your docs. Chat from Slack. Code from GitHub.
             </h2>
           </div>
           <p className="landing-section-lead">
-            Choose Policies or Code in chat. You decide the path — Handbook
-            doesn&rsquo;t guess which agent to run.
+            Choose Policies, Slack, or Code in chat. You decide the path —
+            Handbook doesn&rsquo;t guess which agent to run.
           </p>
         </div>
 
@@ -79,6 +79,22 @@ export default function HowItWorksPage() {
               <li>Content is stored under your organization.</li>
               <li>Questions retrieve that content, then pass a confidence check.</li>
               <li>Answers stay grounded in that content, or refuse when they can&rsquo;t.</li>
+            </ol>
+          </article>
+
+          <article className="how-path">
+            <header className="how-path-head">
+              <BrandGlyph name="slack" size={28} />
+              <div>
+                <strong>Slack</strong>
+                <span>Connected channels · synced threads</span>
+              </div>
+            </header>
+            <ol>
+              <li>Admin picks specific channels and runs a sync.</li>
+              <li>Threads are stored under your organization — not live-searched.</li>
+              <li>Questions retrieve those channels, then pass a confidence check.</li>
+              <li>Answers stay grounded in that chat history, or refuse when they can&rsquo;t.</li>
             </ol>
           </article>
 
@@ -146,9 +162,10 @@ export default function HowItWorksPage() {
           <p className="landing-eyebrow">Why Handbook</p>
           <h2 id="why-title">Why teams connect — and what you get.</h2>
           <p>
-            Workplace questions should land on your own policies and repos,
-            not a model&rsquo;s guess. Handbook keeps every answer grounded,
-            scoped, and honest when the docs don&rsquo;t cover it.
+            Workplace questions should land on your own policies, Slack
+            threads, and repos — not a model&rsquo;s guess. Handbook keeps
+            every answer grounded, scoped, and honest when the content
+            doesn&rsquo;t cover it.
           </p>
         </div>
 
@@ -158,8 +175,8 @@ export default function HowItWorksPage() {
             <div className="how-promise-body">
               <strong>Stop hunting across tools</strong>
               <p>
-                One place for leave, benefits, expenses, READMEs, and recent
-                commits — instead of Slack archaeology and tab-hopping.
+                One place for leave, benefits, expenses, channel decisions,
+                READMEs, and recent commits — instead of tab-hopping.
               </p>
             </div>
             <span className="how-promise-tag">Ask once</span>
@@ -193,9 +210,9 @@ export default function HowItWorksPage() {
             <p className="landing-eyebrow">What you get</p>
             <h3 id="offer-title">Connect once. Ask with confidence.</h3>
             <p className="how-included-lead">
-              Sync Notion or Drive, look up GitHub live, invite the team with a
-              magic link, and get grounded answers — or a clear fallback when the
-              documents don&rsquo;t cover it.
+              Sync Notion, Drive, or Slack, look up GitHub live, invite the
+              team with a magic link, and get grounded answers — or a clear
+              fallback when the connected content doesn&rsquo;t cover it.
             </p>
             <p className="how-included-for">
               Built for <em>People &amp; ops</em>, <em>Engineering</em>, and{" "}
@@ -207,7 +224,7 @@ export default function HowItWorksPage() {
             <svg className="how-constellation-links" viewBox="0 0 280 260" fill="none">
               <path
                 className="how-constellation-path"
-                d="M140 130 L70 48 M140 130 L140 42 M140 130 L210 48 M140 130 L58 175 M140 130 L222 175 M140 130 L140 222"
+                d="M140 130 L70 48 M140 130 L140 42 M140 130 L210 48 M140 130 L58 175 M140 130 L222 175 M140 130 L140 222 M140 130 L70 222"
               />
             </svg>
             <div className="how-constellation-core">
@@ -224,6 +241,10 @@ export default function HowItWorksPage() {
             <span className="how-constellation-node how-node-c" style={{ ["--d" as string]: "0.3s" }}>
               <BrandGlyph name="github" size={20} />
               <em>GitHub</em>
+            </span>
+            <span className="how-constellation-node how-node-g" style={{ ["--d" as string]: "0.35s" }}>
+              <BrandGlyph name="slack" size={20} />
+              <em>Slack</em>
             </span>
             <span className="how-constellation-node how-node-d" style={{ ["--d" as string]: "0.45s" }}>
               <BrandGlyph name="sendgrid" size={22} />
