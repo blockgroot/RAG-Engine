@@ -71,3 +71,51 @@ def test_a_re_sync_never_waits(monkeypatch):
     assert refs == []
     assert slept == []
     assert adapter.calls == 1
+
+
+def test_an_empty_listing_is_confirmed_before_it_deletes_anything(monkeypatch):
+    """The live blip: 4 stored, one listing returns nothing, they're all still there."""
+    slept = _no_sleep(monkeypatch)
+    adapter = _LaggyAdapter(ready_on_call=1)  # re-list finds the 4 threads
+
+    assert not pipeline._empty_listing_is_confirmed(
+        adapter, stored_count=4, live_count=0
+    )
+    assert slept == [pipeline._EMPTY_LISTING_CONFIRM_DELAY_SECONDS]
+
+
+def test_a_source_that_really_is_empty_still_gets_cleaned_up(monkeypatch):
+    """Refusing every empty wipe would leave deleted content answering forever."""
+    _no_sleep(monkeypatch)
+    adapter = _LaggyAdapter(ready_on_call=99)  # empty on the second read too
+
+    assert pipeline._empty_listing_is_confirmed(adapter, stored_count=4, live_count=0)
+
+
+def test_a_failed_re_list_never_authorizes_a_wipe(monkeypatch):
+    _no_sleep(monkeypatch)
+
+    class _Broken:
+        def list_documents(self):
+            raise RuntimeError("rate limited")
+
+    assert not pipeline._empty_listing_is_confirmed(
+        _Broken(), stored_count=4, live_count=0
+    )
+
+
+def test_a_partial_removal_costs_no_second_opinion(monkeypatch):
+    slept = _no_sleep(monkeypatch)
+    adapter = _LaggyAdapter(ready_on_call=1)
+
+    assert pipeline._empty_listing_is_confirmed(adapter, stored_count=4, live_count=3)
+    assert slept == [], "only a total wipe is worth a re-list"
+    assert adapter.calls == 0
+
+
+def test_the_scale_guard_is_unchanged():
+    removed, suspicious = pipeline._sanitize_removals(
+        [str(i) for i in range(9)], stored_count=10
+    )
+    assert removed == []
+    assert suspicious is True

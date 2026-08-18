@@ -112,6 +112,45 @@ def _sanitize_removals(removed_ids: list[str], stored_count: int) -> tuple[list[
     return removed_ids, False
 
 
+# The scale floor above deliberately lets a small connection be wiped in one
+# run — emptying a two-page source is ordinary. But that leaves the shape seen
+# live on Slack completely unguarded: a Check reported "4 removed" on a
+# connection whose four threads were all still present minutes later
+# (re-listing found removed_count=0, unchanged_count=4). Slack's
+# `conversations.history` is rate-limited hard enough that an empty snapshot is
+# routine, and under the floor one Update on that blip would have deleted the
+# entire corpus.
+#
+# Refusing every empty-listing wipe would be wrong in the other direction — a
+# source that genuinely went empty must eventually be cleaned up, or it keeps
+# answering from content that no longer exists. So an empty listing is not
+# refused, it is CONFIRMED: ask the source a second time, a few seconds later,
+# and only delete if both reads agree. A blip disagrees; a real deletion does
+# not. Same "never act on one unverified read" rule as the removal fraction,
+# but paying for a second opinion instead of guessing from the first.
+_EMPTY_LISTING_CONFIRM_DELAY_SECONDS = 5
+
+
+def _empty_listing_is_confirmed(
+    adapter: SourceAdapter, *, stored_count: int, live_count: int
+) -> bool:
+    """Second opinion before acting on "the source has nothing at all".
+
+    Returns ``True`` when the wipe should proceed — including when this was
+    never a total wipe in the first place, so callers can use it as a plain
+    gate. A failing re-list counts as *not* confirmed: an error is not
+    evidence of emptiness.
+    """
+    if live_count > 0 or stored_count == 0:
+        return True
+    time.sleep(_EMPTY_LISTING_CONFIRM_DELAY_SECONDS)
+    try:
+        return not adapter.list_documents()
+    except Exception:  # noqa: BLE001 - a failed re-list must never authorize a wipe
+        logger.warning("Re-listing to confirm an empty source failed", exc_info=True)
+        return False
+
+
 # Reported live: a brand-new connection's very first sync, run within
 # seconds of the OAuth grant completing (e.g. clicking through onboarding
 # quickly), got back only an index/parent page (its real content living in
@@ -203,6 +242,10 @@ def detect_source_changes(
 
     removed_ids = [eid for eid in stored if eid not in live_ids]
     safe_removed, suspicious = _sanitize_removals(removed_ids, len(stored))
+    if safe_removed and not _empty_listing_is_confirmed(
+        adapter, stored_count=len(stored), live_count=len(refs)
+    ):
+        safe_removed, suspicious = [], True
     if suspicious:
         logger.warning(
             "detect_source_changes: %d of %d previously known documents look "
@@ -317,6 +360,10 @@ def ingest_source(
         unchanged = 0
 
     removed_ids, suspicious_removal = _sanitize_removals(removed_ids, len(stored))
+    if removed_ids and not _empty_listing_is_confirmed(
+        adapter, stored_count=len(stored), live_count=len(refs)
+    ):
+        removed_ids, suspicious_removal = [], True
     if suspicious_removal:
         logger.warning(
             "ingest_source: refusing to delete a suspiciously large share of "

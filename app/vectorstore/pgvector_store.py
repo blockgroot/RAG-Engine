@@ -284,6 +284,55 @@ class PgVectorStore(VectorStore):
             )
         return out
 
+    def recent_chunks(
+        self,
+        org_id: str,
+        provider: str,
+        *,
+        workspace_id: str | None = None,
+        limit: int = 40,
+    ) -> list[RetrievedChunk]:
+        """Newest chunks first, by the document's own source timestamp.
+
+        Orders on ``source_last_modified`` (when the thread last had a reply)
+        rather than ``documents.created_at`` (when we happened to ingest it) —
+        a backfill ingests months of history in one run, so ingest order says
+        nothing about what is recent to the reader. ``created_at`` breaks ties
+        for rows a source gave no timestamp for.
+
+        ``chunk_index`` ascending within a document keeps a multi-chunk thread
+        in reading order, so the summarizer sees a conversation rather than
+        shuffled fragments.
+        """
+        with get_connection(self._settings) as conn:
+            rows = conn.execute(
+                """
+                SELECT c.content, c.document_id::text, c.chunk_index,
+                       c.org_id::text, d.title
+                FROM chunks c
+                JOIN documents d ON d.id = c.document_id
+                WHERE c.org_id = %s::uuid
+                  AND c.workspace_id IS NOT DISTINCT FROM %s::uuid
+                  AND d.source_provider = %s
+                ORDER BY d.source_last_modified DESC NULLS LAST,
+                         d.created_at DESC,
+                         c.chunk_index ASC
+                LIMIT %s
+                """,
+                (org_id, workspace_id, provider, limit),
+            ).fetchall()
+        return [
+            RetrievedChunk(
+                content=r[0],
+                score=0.0,
+                document_id=r[1],
+                chunk_index=r[2],
+                org_id=r[3],
+                document_title=(str(r[4]).strip() if r[4] else None),
+            )
+            for r in rows
+        ]
+
     def list_source_documents(
         self, org_id: str, provider: str, workspace_id: str | None = None
     ) -> list[StoredSourceDocument]:

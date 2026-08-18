@@ -351,6 +351,40 @@ class RagPipeline:
         """
         return self._memory
 
+    @property
+    def fallback_response(self) -> str:
+        """The one fixed refusal string (see CLAUDE.md §4 — never a second copy)."""
+        return self._settings.fallback_response
+
+    def recent_chunks_for_recap(
+        self, org_id: str, *, workspace_id: str | None = None, limit: int = 40
+    ) -> list[RetrievedChunk]:
+        """Recency-selected chunks from this pipeline's own pinned corpus.
+
+        Exposed for the Slack agent's recap retry. It goes through the pipeline
+        rather than reaching for the store directly so ``source_provider`` stays
+        pinned where every other read pins it — an agent that passed its own
+        provider string could drift from the corpus its answers claim to come
+        from. ``workspace_id`` is still the caller's, exactly as on ``answer``.
+        """
+        return self._store.recent_chunks(
+            org_id,
+            self._source_provider,
+            workspace_id=workspace_id,
+            limit=limit,
+        )
+
+    def generate_raw(self, prompt: str) -> str:
+        """One un-gated LLM call on this pipeline's provider.
+
+        Deliberately narrow: it exists so a caller with its own fully-built,
+        already-fenced prompt (the Slack recap) reuses the configured provider
+        instead of constructing a second one. It performs NO retrieval, gating,
+        or grounding — the caller owns those, and must not use this to answer
+        from an un-fenced or un-scoped prompt.
+        """
+        return self._llm.generate(prompt)
+
     # -- public API --------------------------------------------------------
 
     def answer(

@@ -158,6 +158,32 @@ class VectorStore(ABC):
         """
         raise NotImplementedError("this vector store does not support keyword search")
 
+    def recent_chunks(
+        self,
+        org_id: str,
+        provider: str,
+        *,
+        workspace_id: str | None = None,
+        limit: int = 40,
+    ) -> list[RetrievedChunk]:
+        """Most RECENTLY updated chunks for one provider — ordered by time, not similarity.
+
+        Every other read here ranks by relevance to a question. That is the
+        wrong selection for a "catch me up on the last few days" request: no
+        individual thread resembles that sentence, so similarity search returns
+        arbitrary chunks and the grounded prompt correctly refuses. Recency is
+        the selection such a question actually implies.
+
+        Scoped exactly like ``query`` — ``org_id`` plus ``workspace_id`` are
+        still the isolation guarantees, and ``provider`` the relevance filter.
+        Chunks come back with ``score = 0.0``: there is no query vector, and
+        inventing a similarity here would feed a meaningless number to a
+        confidence gate calibrated for cosine.
+
+        Optional capability: the default raises ``NotImplementedError``.
+        """
+        raise NotImplementedError("this vector store does not support recency retrieval")
+
     def list_source_documents(
         self, org_id: str, provider: str, workspace_id: str | None = None
     ) -> list["StoredSourceDocument"]:
