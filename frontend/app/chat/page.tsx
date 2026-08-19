@@ -382,7 +382,7 @@ function ChatPageInner() {
   const emptyCopy = askingCode
     ? "Repository and commit answers are read live from GitHub — always current, never stale."
     : askingSlack
-      ? "Answers come from the conversations in your connected channels — what people actually said, not policy."
+      ? "Answers come from the conversations in your connected channels — what people actually said, not documents."
       : workspaceId
         ? "Answers come only from the notes and docs connected to this space."
         : "Leave, benefits, remote work, and more — grounded in your connected documents.";

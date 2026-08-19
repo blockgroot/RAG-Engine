@@ -55,11 +55,11 @@ export default function HowItWorksPage() {
           <div>
             <p className="landing-eyebrow">Three paths</p>
             <h2 id="paths-title" className="landing-section-title">
-              Policies from your docs. Chat from Slack. Code from GitHub.
+              Documents from your docs. Chat from Slack. Code from GitHub.
             </h2>
           </div>
           <p className="landing-section-lead">
-            Choose Policies, Slack, or Code in chat. You decide the path —
+            Choose Documents, Slack, or Code in chat. You decide the path —
             Handbook doesn&rsquo;t guess which agent to run.
           </p>
         </div>
@@ -70,7 +70,7 @@ export default function HowItWorksPage() {
               <BrandGlyph name="notion" size={28} />
               <BrandGlyph name="drive" size={28} />
               <div>
-                <strong>Policies</strong>
+                <strong>Documents</strong>
                 <span>Notion · Google Drive</span>
               </div>
             </header>
@@ -154,6 +154,15 @@ export default function HowItWorksPage() {
               and there is no open join into someone else&rsquo;s company.
             </p>
           </article>
+          <article>
+            <BrandGlyph name="secure" size={26} />
+            <h3>Your content, kept private</h3>
+            <p>
+              Connected documents are indexed only to answer your team&rsquo;s
+              questions — never used to train any AI model, and never
+              accessible to another company.
+            </p>
+          </article>
         </div>
       </section>
 
@@ -162,7 +171,7 @@ export default function HowItWorksPage() {
           <p className="landing-eyebrow">Why Handbook</p>
           <h2 id="why-title">Why teams connect — and what you get.</h2>
           <p>
-            Workplace questions should land on your own policies, Slack
+            Workplace questions should land on your own documents, Slack
             threads, and repos — not a model&rsquo;s guess. Handbook keeps
             every answer grounded, scoped, and honest when the content
             doesn&rsquo;t cover it.
@@ -278,7 +287,7 @@ export default function HowItWorksPage() {
               <strong>Understands intent</strong>
               <p>
                 Follow-ups and shorthand become a clear standalone question before
-                retrieval — so “what about part-timers?” still finds the right policy.
+                retrieval — so “what about part-timers?” still finds the right document.
               </p>
             </div>
           </li>

@@ -105,7 +105,7 @@ function WorkspacesPageInner() {
         <PageHeader
           eyebrow="Spaces"
           title="Your team spaces"
-          description="Private rooms for project notes — separate from company policies."
+          description="Private rooms for project notes — separate from company-wide documents."
           scene="spaces"
           meta={
             <>

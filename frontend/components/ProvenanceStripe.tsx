@@ -1,5 +1,5 @@
 const LABELS: Record<string, string> = {
-  policy: "Company policy",
+  policy: "Company documents",
   workspace: "Workspace content",
   web: "Web search",
   github: "GitHub",

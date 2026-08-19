@@ -15,7 +15,7 @@ export const metadata: Metadata = {
     template: "%s · Handbook",
   },
   description:
-    "Ask your company’s policies and code. Handbook answers only from the Notion, Drive, and GitHub you connected — or says so honestly when it can’t.",
+    "Ask your company’s documents and code. Handbook answers only from the Notion, Drive, and GitHub you connected — or says so honestly when it can’t.",
   applicationName: "Handbook",
 };
 

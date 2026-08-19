@@ -483,7 +483,7 @@ function WorkspaceDetailPageInner() {
     const name = workspace.name;
     if (
       !window.confirm(
-        `Delete “${name}” permanently? Everyone loses access, and this space’s documents, connections, and chats are removed. Company-wide policies are not affected. This cannot be undone.`
+        `Delete “${name}” permanently? Everyone loses access, and this space’s documents, connections, and chats are removed. Company-wide documents are not affected. This cannot be undone.`
       )
     ) {
       return;
@@ -748,7 +748,7 @@ function WorkspaceDetailPageInner() {
                 <h2>Delete this space</h2>
                 <p className="muted" style={{ marginTop: "0.35rem" }}>
                   Permanently removes this space, its members’ access here, connected sources,
-                  and indexed documents for this space only — not company-wide policies.
+                  and indexed documents for this space only — not company-wide documents.
                 </p>
               </div>
             </div>

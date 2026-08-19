@@ -233,7 +233,7 @@ export function AppShell({
             <Step n={1} label="Connect" done={me.has_connection} active={!me.has_connection} />
             <Step
               n={2}
-              label="Bring in policies"
+              label="Bring in documents"
               done={me.ready_to_ask}
               active={me.has_connection && !me.ready_to_ask}
             />

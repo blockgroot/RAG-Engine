@@ -73,7 +73,7 @@ export default function RootPage() {
           <div>
             <p className="landing-eyebrow">Built for work</p>
             <h2 id="what-title" className="landing-section-title">
-              Policies, code, and team spaces — grounded.
+              Documents, code, and team spaces — grounded.
             </h2>
           </div>
           <p className="landing-section-lead">
@@ -86,10 +86,10 @@ export default function RootPage() {
             <span className="landing-feature-mark">
               <BrandGlyph name="notion" size={22} />
             </span>
-            <h3>Grounded policy answers</h3>
+            <h3>Grounded document answers</h3>
             <p>
-              Leave, benefits, expenses, and handbooks — retrieved from your
-              synced docs, grounded in what your company connected.
+              Leave, benefits, expenses, handbooks, or any other doc — retrieved
+              from your synced content, grounded in what your company connected.
             </p>
           </article>
           <article className="landing-feature">
@@ -119,7 +119,9 @@ export default function RootPage() {
             <h3>Tenant isolation</h3>
             <p>
               Every search is scoped to your organization. Admins invite
-              members by email, and other companies never see your data.
+              members by email, and other companies never see your data. Your
+              content is indexed privately for retrieval only — never used to
+              train any AI model, and never shared across companies.
             </p>
           </article>
         </div>
@@ -134,7 +136,7 @@ export default function RootPage() {
             </h2>
           </div>
           <p className="landing-section-lead">
-            Sync Notion or Drive for policies. Use GitHub live for code.
+            Sync Notion or Drive for your documents. Use GitHub live for code.
             Sign in with a magic link — no extra password to manage.
           </p>
         </div>
