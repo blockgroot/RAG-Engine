@@ -3871,6 +3871,100 @@ table .role-chip.role-admin,
   font-size: 0.92rem;
   line-height: 1.45;
 }
+
+/* Access & safety — one unified frame, not stacked cards or a spine list.
+   Distinct from both how-path (boxed cards above) and how-promise (vertical
+   timeline below): a single bordered strip divided by hairlines, so the four
+   guarantees read as facets of one boundary rather than four competing
+   panels. The top edge gradient literalizes "boundary" from the heading. */
+.how-boundary {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: #fff;
+  box-shadow: var(--shadow-soft);
+  overflow: hidden;
+}
+.how-boundary::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--accent), #14b8a6, var(--accent-strong));
+}
+.how-boundary-item {
+  position: relative;
+  padding: 1.85rem 1.5rem 1.6rem;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  gap: 0.55rem;
+  transition: background 0.28s var(--ease);
+}
+.how-boundary-item + .how-boundary-item {
+  border-left: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+.how-boundary-item:hover {
+  background: color-mix(in srgb, var(--accent) 5%, white);
+}
+.how-boundary-mark {
+  width: 2.4rem;
+  height: 2.4rem;
+  transition: transform 0.28s var(--ease);
+}
+.how-boundary-item:hover .how-boundary-mark {
+  transform: scale(1.08);
+}
+.how-boundary-item strong {
+  font-size: 1rem;
+  letter-spacing: -0.025em;
+  color: var(--ink);
+}
+.how-boundary-item p {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--ink-muted);
+}
+.how-boundary-tag {
+  justify-self: start;
+  align-self: end;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-strong);
+}
+@media (max-width: 900px) {
+  .how-boundary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .how-boundary-item:nth-child(2n+1) {
+    border-left: 0;
+  }
+  .how-boundary-item:nth-child(n+3) {
+    border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  }
+}
+@media (max-width: 640px) {
+  .how-boundary {
+    grid-template-columns: 1fr;
+  }
+  .how-boundary-item {
+    border-left: 0 !important;
+  }
+  .how-boundary-item:nth-child(n+2) {
+    border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .how-boundary-item,
+  .how-boundary-mark {
+    transition: none !important;
+  }
+}
+
 /* Why / offer — editorial spine + capability stream (no card grid). */
 .how-why {
   display: grid;

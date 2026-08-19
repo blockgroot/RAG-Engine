@@ -129,62 +129,54 @@ export default function HowItWorksPage() {
             tighter scope for team content inside the same company.
           </p>
         </div>
-        <ul className="how-promise" aria-label="Access and safety guarantees">
-          <li className="how-promise-item" style={{ ["--i" as string]: "0" }}>
-            <span className="how-promise-index" aria-hidden>
-              <BrandGlyph name="secure" size={22} />
+        <div className="how-boundary" role="list" aria-label="Access and safety guarantees">
+          <div className="how-boundary-item" role="listitem">
+            <span className="how-boundary-mark" aria-hidden>
+              <BrandGlyph name="secure" size={24} />
             </span>
-            <div className="how-promise-body">
-              <strong>Organization isolation</strong>
-              <p>
-                Searches always include your org. Another company&rsquo;s
-                documents are never in the result set.
-              </p>
-            </div>
-            <span className="how-promise-tag">Scoped</span>
-          </li>
-          <li className="how-promise-item" style={{ ["--i" as string]: "1" }}>
-            <span className="how-promise-index" aria-hidden>
-              <BrandGlyph name="workspace" size={22} />
+            <strong>Organization isolation</strong>
+            <p>
+              Searches always include your org. Another company&rsquo;s
+              documents are never in the result set.
+            </p>
+            <span className="how-boundary-tag">Scoped</span>
+          </div>
+          <div className="how-boundary-item" role="listitem">
+            <span className="how-boundary-mark" aria-hidden>
+              <BrandGlyph name="workspace" size={24} />
             </span>
-            <div className="how-promise-body">
-              <strong>Team workspaces</strong>
-              <p>
-                Invite colleagues into a space with its own connected
-                sources — ideal for projects and shared team knowledge.
-              </p>
-            </div>
-            <span className="how-promise-tag">Flexible</span>
-          </li>
-          <li className="how-promise-item" style={{ ["--i" as string]: "2" }}>
-            <span className="how-promise-index" aria-hidden>
-              <BrandGlyph name="sendgrid" size={22} />
+            <strong>Team workspaces</strong>
+            <p>
+              Invite colleagues into a space with its own connected
+              sources — ideal for projects and shared team knowledge.
+            </p>
+            <span className="how-boundary-tag">Flexible</span>
+          </div>
+          <div className="how-boundary-item" role="listitem">
+            <span className="how-boundary-mark" aria-hidden>
+              <BrandGlyph name="sendgrid" size={24} />
             </span>
-            <div className="how-promise-body">
-              <strong>Invite-only access</strong>
-              <p>
-                Members sign in with a magic link. Admins invite people by
-                email, and there is no open join into someone else&rsquo;s
-                company.
-              </p>
-            </div>
-            <span className="how-promise-tag">Invite-only</span>
-          </li>
-          <li className="how-promise-item" style={{ ["--i" as string]: "3" }}>
-            <span className="how-promise-index" aria-hidden>
-              <BrandGlyph name="private" size={22} />
+            <strong>Invite-only access</strong>
+            <p>
+              Members sign in with a magic link. Admins invite people by
+              email, and there is no open join into someone else&rsquo;s
+              company.
+            </p>
+            <span className="how-boundary-tag">Invite-only</span>
+          </div>
+          <div className="how-boundary-item" role="listitem">
+            <span className="how-boundary-mark" aria-hidden>
+              <BrandGlyph name="private" size={24} />
             </span>
-            <div className="how-promise-body">
-              <strong>Your content, kept private</strong>
-              <p>
-                Connected documents are indexed only to answer your
-                team&rsquo;s questions — never used to train any AI model,
-                and never accessible to another company.
-              </p>
-            </div>
-            <span className="how-promise-tag">Private</span>
-          </li>
-        </ul>
+            <strong>Your content, kept private</strong>
+            <p>
+              Connected documents are indexed only to answer your
+              team&rsquo;s questions — never used to train any AI model,
+              and never accessible to another company.
+            </p>
+            <span className="how-boundary-tag">Private</span>
+          </div>
+        </div>
       </section>
 
       <section className="landing-section landing-wrap how-why" aria-labelledby="why-title">
