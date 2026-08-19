@@ -138,8 +138,9 @@ export default function RootPage() {
             </h2>
           </div>
           <p className="landing-section-lead">
-            Sync Notion or Drive for your documents. Use GitHub live for code.
-            Sign in with a magic link — no extra password to manage.
+            Sync Notion or Drive for your documents, and Slack for team
+            conversations. Use GitHub live for code. Sign in with a magic
+            link — no extra password to manage.
           </p>
         </div>
         <LandingSourcesOrbit />
@@ -161,7 +162,7 @@ export default function RootPage() {
                 </span>
                 <span className="landing-close-step-body">
                   <strong>Connect</strong>
-                  <span>Notion, Drive, or GitHub</span>
+                  <span>Notion, Drive, Slack, or GitHub</span>
                 </span>
               </li>
               <li className="landing-close-step" style={{ ["--step" as string]: "1" }}>
