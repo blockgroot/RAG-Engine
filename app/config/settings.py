@@ -76,6 +76,19 @@ DEFAULT_LINEAR_FALLBACK_RESPONSE = (
     "ingested yet, or no issue matches this question."
 )
 
+# The Notion/Drive agents' refusals. Distinct per source (not shared with the
+# old combined "policy" copy) so a miss on the Notion tab doesn't imply "check
+# your Drive docs" and vice versa — each tab can only ever point at its own
+# connected source.
+DEFAULT_NOTION_FALLBACK_RESPONSE = (
+    "I couldn't find that in the connected Notion pages. It may not have been "
+    "shared with the integration, or hasn't been ingested yet."
+)
+DEFAULT_DRIVE_FALLBACK_RESPONSE = (
+    "I couldn't find that in the connected Google Drive documents. It may not "
+    "be in the synced folder, or hasn't been ingested yet."
+)
+
 # The GitHub agent's refusal. Distinct copy because the *reason* differs: there
 # is no retrieval here, so a refusal means "no tool could supply evidence for
 # this", not "nothing matched in the corpus" — and the actionable next step for
@@ -472,6 +485,38 @@ class LinearAgentSettings:
         return cls(
             fallback_response=os.getenv("LINEAR_FALLBACK_RESPONSE")
             or DEFAULT_LINEAR_FALLBACK_RESPONSE,
+        )
+
+
+@dataclass(frozen=True)
+class NotionAgentSettings:
+    """Configuration specific to ``NotionAgent`` — same shape as
+    ``SlackAgentSettings``/``LinearAgentSettings``: a second, independent
+    ``RagPipeline`` instance differing only in prompt framing and its own
+    fixed fallback string.
+    """
+
+    fallback_response: str = DEFAULT_NOTION_FALLBACK_RESPONSE
+
+    @classmethod
+    def from_env(cls) -> "NotionAgentSettings":
+        return cls(
+            fallback_response=os.getenv("NOTION_AGENT_FALLBACK_RESPONSE")
+            or DEFAULT_NOTION_FALLBACK_RESPONSE,
+        )
+
+
+@dataclass(frozen=True)
+class DriveAgentSettings:
+    """Configuration specific to ``DriveAgent`` — same shape as ``NotionAgentSettings``."""
+
+    fallback_response: str = DEFAULT_DRIVE_FALLBACK_RESPONSE
+
+    @classmethod
+    def from_env(cls) -> "DriveAgentSettings":
+        return cls(
+            fallback_response=os.getenv("DRIVE_AGENT_FALLBACK_RESPONSE")
+            or DEFAULT_DRIVE_FALLBACK_RESPONSE,
         )
 
 

@@ -12,6 +12,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   google: "Google Drive",
   github: "GitHub",
   slack: "Slack",
+  linear: "Linear",
 };
 
 /** Same real brand marks used on the landing/how-it-works pages — "google"
@@ -21,6 +22,7 @@ const BRAND_GLYPH: Record<string, BrandName> = {
   google: "drive",
   github: "github",
   slack: "slack",
+  linear: "linear",
 };
 
 const SOURCE_NOUN: Record<string, string> = {
@@ -28,6 +30,7 @@ const SOURCE_NOUN: Record<string, string> = {
   google: "Drive",
   github: "GitHub",
   slack: "Slack",
+  linear: "Linear",
 };
 
 const ACTIVE = new Set(["queued", "running"]);
@@ -74,7 +77,11 @@ function googleFolderUrl(folderId: string): string {
 /** Notion has no single "pick pages" URL — sharing is per-page in the app. */
 const NOTION_MANAGE_URL = "https://www.notion.so";
 
-type Provider = "notion" | "google" | "github" | "slack";
+/** Linear's own integrations settings — where an admin can review/revoke
+ * what this OAuth app can see, same role NOTION_MANAGE_URL plays for Notion. */
+const LINEAR_MANAGE_URL = "https://linear.app/settings/integrations";
+
+type Provider = "notion" | "google" | "github" | "slack" | "linear";
 
 function manageExternalHref(
   provider: Provider,
@@ -93,6 +100,9 @@ function manageExternalHref(
   if (provider === "notion") {
     return NOTION_MANAGE_URL;
   }
+  if (provider === "linear") {
+    return LINEAR_MANAGE_URL;
+  }
   // Slack has no single "manage channels" URL -- membership/invites happen
   // per-channel inside Slack itself, same reason Notion has none either.
   return null;
@@ -110,6 +120,9 @@ function manageExternalTitle(provider: Provider): string {
   }
   if (provider === "google") {
     return "Open the linked Drive folder to add or remove files inside it";
+  }
+  if (provider === "linear") {
+    return "Open Linear to review or revoke this integration's access";
   }
   return "Open Notion to share or unshare pages with this integration";
 }
@@ -160,7 +173,11 @@ export function ConnectionCard({
   onMembersInvited?: () => void;
 }) {
   const available =
-    provider === "notion" || provider === "google" || provider === "github" || provider === "slack";
+    provider === "notion" ||
+    provider === "google" ||
+    provider === "github" ||
+    provider === "slack" ||
+    provider === "linear";
   // GitHub is a "live" source: nothing is ever fetched, chunked, embedded, or
   // stored, so this card must hide every ingestion-shaped control (sync status,
   // change counts, Update/Check). Showing them would promise a sync that does

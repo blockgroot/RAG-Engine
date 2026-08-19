@@ -131,6 +131,12 @@ def get_workspace(
         # false in practice until that lands; reported now for parity so the
         # frontend doesn't need a second wiring pass later.
         "linear_ready": _workspace_linear_ready(session.org_id, workspace_id),
+        # Same rule, for THIS workspace's own Notion/Drive documents — a
+        # workspace CAN connect its own Notion or Drive source (see the
+        # provider checks in this file), so this is real and used, unlike
+        # Linear above.
+        "notion_ready": _workspace_notion_ready(session.org_id, workspace_id),
+        "drive_ready": _workspace_drive_ready(session.org_id, workspace_id),
         **status,
     }
 
@@ -180,6 +186,30 @@ def _workspace_slack_ready(org_id: str, workspace_id: str) -> bool:
         row = conn.execute(
             "SELECT 1 FROM documents "
             "WHERE org_id = %s AND source_provider = 'slack' AND workspace_id = %s "
+            "LIMIT 1",
+            (org_id, workspace_id),
+        ).fetchone()
+    return row is not None
+
+
+def _workspace_notion_ready(org_id: str, workspace_id: str) -> bool:
+    """True when this workspace has its OWN ingested Notion pages."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM documents "
+            "WHERE org_id = %s AND source_provider = 'notion' AND workspace_id = %s "
+            "LIMIT 1",
+            (org_id, workspace_id),
+        ).fetchone()
+    return row is not None
+
+
+def _workspace_drive_ready(org_id: str, workspace_id: str) -> bool:
+    """True when this workspace has its OWN ingested Google Drive documents."""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM documents "
+            "WHERE org_id = %s AND source_provider = 'google' AND workspace_id = %s "
             "LIMIT 1",
             (org_id, workspace_id),
         ).fetchone()

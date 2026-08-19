@@ -14,6 +14,8 @@ SOURCE_WORKSPACE = "workspace"
 SOURCE_GITHUB = "github"
 SOURCE_SLACK = "slack"
 SOURCE_LINEAR = "linear"
+SOURCE_NOTION = "notion"
+SOURCE_GOOGLE = "google"
 SOURCE_WEB = "web"
 SOURCE_NONE = "none"
 
@@ -25,6 +27,8 @@ ANSWER_SOURCES = frozenset(
         SOURCE_GITHUB,
         SOURCE_SLACK,
         SOURCE_LINEAR,
+        SOURCE_NOTION,
+        SOURCE_GOOGLE,
         SOURCE_WEB,
         SOURCE_NONE,
     }

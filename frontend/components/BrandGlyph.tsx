@@ -7,6 +7,7 @@ export type BrandName =
   | "drive"
   | "github"
   | "slack"
+  | "linear"
   | "sendgrid"
   | "workspace"
   | "secure"
@@ -20,6 +21,7 @@ const BRAND_SRC: Record<BrandName, string | null> = {
   workspace: "/brands/workspace.png",
   secure: "/brands/secure.png",
   github: null,
+  linear: null,
   private: null,
 };
 
@@ -71,6 +73,24 @@ function PrivateMark({ size }: { size: number }) {
   );
 }
 
+/** Stylized mark for Linear — the connector's brand purple with a circle and
+ * receding diagonal strokes evoking Linear's own swoosh-into-a-circle mark.
+ * Not a pixel copy of Linear's logo (no licensed asset here), same approach
+ * as SendgridMark: reads as "Linear" at a glance in the app's UI. */
+function LinearMark({ size }: { size: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
+      <rect width="24" height="24" rx="6" fill="#5E6AD2" />
+      <circle cx="14.5" cy="9.5" r="6" fill="#fff" />
+      <g stroke="#fff" strokeWidth="2.2" strokeLinecap="round">
+        <line x1="10.8" y1="16.2" x2="7.2" y2="19.8" />
+        <line x1="8.3" y1="13.4" x2="4.6" y2="17.1" />
+        <line x1="6.4" y1="10.2" x2="3.2" y2="13.4" />
+      </g>
+    </svg>
+  );
+}
+
 export function BrandGlyph({
   name,
   size = 28,
@@ -100,6 +120,10 @@ export function BrandGlyph({
 
   if (name === "private") {
     return <PrivateMark size={size} />;
+  }
+
+  if (name === "linear") {
+    return <LinearMark size={size} />;
   }
 
   return <GithubMark size={size} />;

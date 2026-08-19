@@ -25,15 +25,19 @@ knowing any of that.
 """
 
 from .base import Agent, AgentResponse, Citation
+from .drive_agent import DriveAgent
 from .github_agent import GitHubAgent
 from .linear_agent import LinearAgent
+from .notion_agent import NotionAgent
 from .policy_agent import PolicyAgent
 from .rag_pipeline_agent import RagPipelineAgent
 from .slack_agent import SlackAgent
 from .workspace_agent import WorkspaceAgent
 from .factory import (
+    build_drive_agent,
     build_github_agent,
     build_linear_agent,
+    build_notion_agent,
     build_policy_agent,
     build_slack_agent,
     build_workspace_agent,
@@ -43,14 +47,18 @@ __all__ = [
     "Agent",
     "AgentResponse",
     "Citation",
+    "DriveAgent",
     "GitHubAgent",
     "LinearAgent",
+    "NotionAgent",
     "PolicyAgent",
     "RagPipelineAgent",
     "SlackAgent",
     "WorkspaceAgent",
+    "build_drive_agent",
     "build_github_agent",
     "build_linear_agent",
+    "build_notion_agent",
     "build_policy_agent",
     "build_slack_agent",
     "build_workspace_agent",

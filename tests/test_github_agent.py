@@ -358,13 +358,17 @@ class _Sentinel:
         self.name = name
 
 
-def _patch_agents(monkeypatch, *, policy, workspace, github, linear=None):
+def _patch_agents(monkeypatch, *, policy, workspace, github, linear=None, notion=None, drive=None):
     """``_select_agent`` loads agents lazily via get_* — stub those, not args."""
     monkeypatch.setattr("app.api.chat.get_policy_agent", lambda: policy)
     monkeypatch.setattr("app.api.chat.get_workspace_agent", lambda: workspace)
     monkeypatch.setattr("app.api.chat.get_github_agent", lambda: github)
     if linear is not None:
         monkeypatch.setattr("app.api.chat.get_linear_agent", lambda: linear)
+    if notion is not None:
+        monkeypatch.setattr("app.api.chat.get_notion_agent", lambda: notion)
+    if drive is not None:
+        monkeypatch.setattr("app.api.chat.get_drive_agent", lambda: drive)
 
 
 def test_routing_sends_a_github_request_to_the_github_agent(monkeypatch):
@@ -425,6 +429,28 @@ def test_routing_sends_a_linear_request_to_the_linear_agent(monkeypatch):
 
     assert _select_agent(None, "linear") is linear
     assert _select_agent("ws-1", "linear") is linear  # wins over workspace, like slack/github
+
+
+def test_routing_sends_notion_and_google_requests_to_their_own_agents(monkeypatch):
+    """Notion and Drive must each get their own agent — never PolicyAgent's
+    combined corpus, and never each other's (see app/agent/notion_agent.py)."""
+    from app.api.chat import _select_agent
+
+    policy, workspace, github, notion, drive = (
+        _Sentinel("p"),
+        _Sentinel("w"),
+        _Sentinel("g"),
+        _Sentinel("n"),
+        _Sentinel("d"),
+    )
+    _patch_agents(
+        monkeypatch, policy=policy, workspace=workspace, github=github, notion=notion, drive=drive
+    )
+
+    assert _select_agent(None, "notion") is notion
+    assert _select_agent(None, "google") is drive
+    assert _select_agent("ws-1", "notion") is notion  # wins over workspace
+    assert _select_agent("ws-1", "google") is drive
 
 
 def test_routing_github_request_uses_github_agent_not_policy(monkeypatch):

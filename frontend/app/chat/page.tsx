@@ -30,7 +30,7 @@ function ChipIcon({ kind }: { kind: "policy" | "code" }) {
   );
 }
 
-type AgentTab = "policy" | "github" | "slack" | "linear";
+type AgentTab = "policy" | "github" | "slack" | "linear" | "notion" | "google";
 
 export default function ChatPage() {
   return (
@@ -84,20 +84,47 @@ function ChatPageInner() {
   const [workspaceGithub, setWorkspaceGithub] = useState(false);
   const [workspaceSlack, setWorkspaceSlack] = useState(false);
   const [workspaceLinear, setWorkspaceLinear] = useState(false);
+  const [workspaceNotion, setWorkspaceNotion] = useState(false);
+  const [workspaceDrive, setWorkspaceDrive] = useState(false);
   const codeAvailable = workspaceId ? workspaceGithub : Boolean(me?.github_connected);
   // Slack is keyed on *ingested threads*, not merely on the connection existing
   // (see /me.slack_ready): unlike GitHub's live reads, a Slack connection whose
   // first sync produced nothing can only ever refuse, so the tab waits.
   const slackAvailable = workspaceId ? workspaceSlack : Boolean(me?.slack_ready);
-  // Same rule as Slack (see /me.linear_ready).
+  // Same rule as Slack (see /me.linear_ready / /me.notion_ready / /me.drive_ready).
   const linearAvailable = workspaceId ? workspaceLinear : Boolean(me?.linear_ready);
-  const showAgentTabs = codeAvailable || slackAvailable || linearAvailable;
+  const notionAvailable = workspaceId ? workspaceNotion : Boolean(me?.notion_ready);
+  const driveAvailable = workspaceId ? workspaceDrive : Boolean(me?.drive_ready);
   // Policies need a successful ingest before they can answer; GitHub does not,
   // because it is read live. So an org with only GitHub connected must not be
   // held behind the policy readiness gate.
   const policiesReady = readyToAsk !== false;
+  // The legacy combined "Docs" tab (mixed Notion+Drive+anything-else corpus)
+  // is offered ONLY when neither Notion nor Drive has its own tab — once a
+  // company has either connected, this tab must never reappear, or it would
+  // silently reintroduce the cross-source blending the split tabs exist to
+  // prevent. It stays around for older/legacy orgs whose docs predate the
+  // per-source split, or any future doc source that hasn't earned its own tab
+  // yet.
+  const policyFallbackAvailable = !notionAvailable && !driveAvailable && policiesReady;
+  const availableTabCount = [
+    policyFallbackAvailable,
+    codeAvailable,
+    slackAvailable,
+    linearAvailable,
+    notionAvailable,
+    driveAvailable,
+  ].filter(Boolean).length;
+  // Whether there is anything at all to ask about — used for the "not ready
+  // yet" blocking screen below, distinct from `showAgentTabs` (whether to
+  // render the tab STRIP, which only makes sense with more than one choice).
+  const anySourceAvailable = availableTabCount > 0;
+  const showAgentTabs = availableTabCount > 1;
   // The effective agent, after availability and readiness are applied — the tab
-  // state alone can be stale (a tab may disappear, or Docs may not be ready).
+  // state alone can be stale (a tab may disappear, or the current one may not
+  // be ready). Preference order when the current tab doesn't apply: Notion and
+  // Drive first (they're never just a fallback), then the live/ingested
+  // sources, then the legacy combined corpus last.
   const activeAgent: AgentTab =
     agentTab === "github" && codeAvailable
       ? "github"
@@ -105,16 +132,28 @@ function ChatPageInner() {
         ? "slack"
         : agentTab === "linear" && linearAvailable
           ? "linear"
-          : !policiesReady && codeAvailable
-            ? "github"
-            : !policiesReady && slackAvailable
-              ? "slack"
-              : !policiesReady && linearAvailable
-                ? "linear"
-                : "policy";
+          : agentTab === "notion" && notionAvailable
+            ? "notion"
+            : agentTab === "google" && driveAvailable
+              ? "google"
+              : agentTab === "policy" && policyFallbackAvailable
+                ? "policy"
+                : notionAvailable
+                  ? "notion"
+                  : driveAvailable
+                    ? "google"
+                    : codeAvailable
+                      ? "github"
+                      : slackAvailable
+                        ? "slack"
+                        : linearAvailable
+                          ? "linear"
+                          : "policy";
   const askingCode = activeAgent === "github";
   const askingSlack = activeAgent === "slack";
   const askingLinear = activeAgent === "linear";
+  const askingNotion = activeAgent === "notion";
+  const askingDrive = activeAgent === "google";
 
   // Policies and Code are separate surfaces (different agents, different
   // starters). Switching tabs must open that tab's empty template — not leave
@@ -128,11 +167,22 @@ function ChatPageInner() {
   }
 
   useEffect(() => {
-    if (policiesReady) return;
-    if (codeAvailable) setAgentTab("github");
-    else if (slackAvailable) setAgentTab("slack");
-    else if (linearAvailable) setAgentTab("linear");
-  }, [codeAvailable, slackAvailable, linearAvailable, policiesReady]);
+    if (agentTab === "policy" && policyFallbackAvailable) return;
+    if (notionAvailable) setAgentTab("notion");
+    else if (driveAvailable) setAgentTab("google");
+    else if (!policiesReady && codeAvailable) setAgentTab("github");
+    else if (!policiesReady && slackAvailable) setAgentTab("slack");
+    else if (!policiesReady && linearAvailable) setAgentTab("linear");
+  }, [
+    agentTab,
+    notionAvailable,
+    driveAvailable,
+    codeAvailable,
+    slackAvailable,
+    linearAvailable,
+    policyFallbackAvailable,
+    policiesReady,
+  ]);
 
   // Starter chips from connected sources (document titles / GitHub repos).
   useEffect(() => {
@@ -197,6 +247,8 @@ function ChatPageInner() {
         setWorkspaceGithub(Boolean(ws.github_connected));
         setWorkspaceSlack(Boolean(ws.slack_ready));
         setWorkspaceLinear(Boolean(ws.linear_ready));
+        setWorkspaceNotion(Boolean(ws.notion_ready));
+        setWorkspaceDrive(Boolean(ws.drive_ready));
       })
       .catch(() => {
         if (!cancelled) setReadyToAsk(false);
@@ -336,7 +388,7 @@ function ChatPageInner() {
 
   // GitHub answers need no ingest, so only block when there is genuinely
   // nothing this user could ask about yet.
-  if (readyToAsk === false && !showAgentTabs) {
+  if (readyToAsk === false && !anySourceAvailable) {
     const syncing = workspaceId ? workspaceSyncing : me.sync_in_progress;
     return (
       <AppShell me={me} variant="app">
@@ -390,27 +442,43 @@ function ChatPageInner() {
         ? workspaceId
           ? "Ask this space’s Linear"
           : "Ask your Linear"
-        : workspaceId
-          ? "Ask this space"
-          : "Ask your company";
+        : askingNotion
+          ? workspaceId
+            ? "Ask this space’s Notion"
+            : "Ask your Notion"
+          : askingDrive
+            ? workspaceId
+              ? "Ask this space’s Drive"
+              : "Ask your Drive"
+            : workspaceId
+              ? "Ask this space"
+              : "Ask your company";
   const emptyCopy = askingCode
     ? "Repository and commit answers are read live from GitHub — always current, never stale."
     : askingSlack
       ? "Answers come from the conversations in your connected channels — what people actually said, not documents."
       : askingLinear
         ? "Answers come from your tracked issues and their comments — ticket status, not documents."
-        : workspaceId
-          ? "Answers come only from the notes and docs connected to this space."
-          : "Leave, benefits, remote work, and more — grounded in your connected documents.";
+        : askingNotion
+          ? "Answers come only from your connected Notion pages — never blended with any other source."
+          : askingDrive
+            ? "Answers come only from your connected Google Drive documents — never blended with any other source."
+            : workspaceId
+              ? "Answers come only from the notes and docs connected to this space."
+              : "Leave, benefits, remote work, and more — grounded in your connected documents.";
   const composerPlaceholder = askingCode
     ? "Ask about a repository or a commit…"
     : askingSlack
       ? "Ask what was discussed in a channel…"
       : askingLinear
         ? "Ask about the status of an issue…"
-        : workspaceId
-          ? "Ask something about this space…"
-          : "Ask about leave, benefits, remote work…";
+        : askingNotion
+          ? "Ask about something in your Notion pages…"
+          : askingDrive
+            ? "Ask about something in your Drive documents…"
+            : workspaceId
+              ? "Ask something about this space…"
+              : "Ask about leave, benefits, remote work…";
 
   return (
     <AppShell me={me} variant="app">
@@ -427,26 +495,63 @@ function ChatPageInner() {
           <div className="chat-topbar-copy">
             <p className="chat-kicker">{workspaceId ? "Space" : "Company-wide"}</p>
             <h1>
-              {askingCode ? "Code" : askingSlack ? "Slack" : askingLinear ? "Linear" : "Ask"}
+              {askingCode
+                ? "Code"
+                : askingSlack
+                  ? "Slack"
+                  : askingLinear
+                    ? "Linear"
+                    : askingNotion
+                      ? "Notion"
+                      : askingDrive
+                        ? "Drive"
+                        : "Ask"}
             </h1>
           </div>
           {showAgentTabs && (
             <div className="agent-tabs" role="tablist" aria-label="What to ask about">
-              <button
-                type="button"
-                role="tab"
-                id="tab-policies"
-                aria-controls="ask-panel"
-                aria-selected={activeAgent === "policy"}
-                className={`agent-tab${activeAgent === "policy" ? " is-active" : ""}`}
-                onClick={() => switchAgentTab("policy")}
-                disabled={busy || !policiesReady}
-                title={
-                  policiesReady ? undefined : "Your documents are still being prepared."
-                }
-              >
-                Docs
-              </button>
+              {policyFallbackAvailable && (
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-policies"
+                  aria-controls="ask-panel"
+                  aria-selected={activeAgent === "policy"}
+                  className={`agent-tab${activeAgent === "policy" ? " is-active" : ""}`}
+                  onClick={() => switchAgentTab("policy")}
+                  disabled={busy}
+                >
+                  Docs
+                </button>
+              )}
+              {notionAvailable && (
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-notion"
+                  aria-controls="ask-panel"
+                  aria-selected={askingNotion}
+                  className={`agent-tab${askingNotion ? " is-active" : ""}`}
+                  onClick={() => switchAgentTab("notion")}
+                  disabled={busy}
+                >
+                  Notion
+                </button>
+              )}
+              {driveAvailable && (
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-drive"
+                  aria-controls="ask-panel"
+                  aria-selected={askingDrive}
+                  className={`agent-tab${askingDrive ? " is-active" : ""}`}
+                  onClick={() => switchAgentTab("google")}
+                  disabled={busy}
+                >
+                  Drive
+                </button>
+              )}
               {codeAvailable && (
                 <button
                   type="button"

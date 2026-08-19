@@ -50,7 +50,19 @@ def me(session: SessionClaims = Depends(get_session)):
                 WHERE org_id = %(org)s
                   AND source_provider = 'linear'
                   AND workspace_id IS NULL
-              ) AS linear_ready
+              ) AS linear_ready,
+              EXISTS (
+                SELECT 1 FROM documents
+                WHERE org_id = %(org)s
+                  AND source_provider = 'notion'
+                  AND workspace_id IS NULL
+              ) AS notion_ready,
+              EXISTS (
+                SELECT 1 FROM documents
+                WHERE org_id = %(org)s
+                  AND source_provider = 'google'
+                  AND workspace_id IS NULL
+              ) AS drive_ready
             """,
             {"org": session.org_id, "user": session.user_id},
         ).fetchone()
@@ -61,6 +73,8 @@ def me(session: SessionClaims = Depends(get_session)):
     github_connected = bool(row[2]) if row else False
     slack_ready = bool(row[3]) if row else False
     linear_ready = bool(row[4]) if row else False
+    notion_ready = bool(row[5]) if row else False
+    drive_ready = bool(row[6]) if row else False
 
     return {
         "user_id": session.user_id,
@@ -88,5 +102,11 @@ def me(session: SessionClaims = Depends(get_session)):
         # slack_ready: keyed on ingested Linear issues, not on a token/connection
         # existing, so the tab only appears once it can actually answer.
         "linear_ready": linear_ready,
+        # Notion and Drive each get their own tab now, never a combined
+        # "Docs" corpus — a company may use the two for unrelated content, so
+        # an answer must be traceable to exactly one (see app/agent/notion_agent.py
+        # / drive_agent.py). Same readiness rule as slack_ready/linear_ready.
+        "notion_ready": notion_ready,
+        "drive_ready": drive_ready,
         **status,
     }

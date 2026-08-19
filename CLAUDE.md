@@ -460,6 +460,51 @@ their policy documents; their employees ask questions and get answers grounded i
   retrieval would otherwise do, at zero storage cost. Revisit indexing only when
   a genuine fuzzy-semantic need appears ("find the commit that fixed the login
   bug"), not preemptively.
+- **Every ingested source gets its OWN pinned agent — `SlackAgent`, `LinearAgent`,
+  `NotionAgent`, `DriveAgent` — never one combined corpus, and routing between
+  them is now a LangGraph graph, not a hand-rolled if/elif.** The platform
+  stopped being "a policy Q&A tool that happens to read Notion" and became a
+  general connector platform: a company may use Notion and Google Drive for
+  *unrelated* content (not just company policy), so `PolicyAgent`'s original
+  behavior — retrieve from every source_provider at once — would silently
+  blend answers across sources with no way for the user to know which one
+  actually grounded the reply. Each new agent is a trivial `RagPipelineAgent`
+  subclass (`app/agent/notion_agent.py` / `drive_agent.py` / mirroring the
+  existing `slack_agent.py` / `linear_agent.py`) built via `build_notion_agent`/
+  `build_drive_agent` (`app/agent/factory.py`), whose only job is pinning
+  `source_provider` on the pipeline (`"notion"` / `"google"`) plus a distinct
+  `PromptProfile` (`NOTION_PROMPT_PROFILE`/`DRIVE_PROMPT_PROFILE` in
+  `app/rag/prompts.py`) and fallback string. Slack/Linear split for *framing*
+  (chat threads/tickets aren't settled documents); Notion/Drive split for
+  *source identity* only — both keep the same "official document" tone, they
+  just must never be answered from the other's chunks. `PolicyAgent`/
+  `AGENT_POLICY` is kept as a legacy fallback (`_agent_getters`/`route_agent_key`
+  in `app/agent/orchestration.py` and `app/api/chat.py`) for content whose
+  provider predates this split or has no dedicated tab yet — the frontend never
+  defaults there once Notion or Drive is individually ready (`policyFallbackAvailable`
+  in `frontend/app/chat/page.tsx` — `!notionAvailable && !driveAvailable`).
+  **Dispatch is a `langgraph.graph.StateGraph`** (`app/agent/orchestration.py`):
+  one node per agent (each wrapping `.answer()`/`.answer_stream()`), a single
+  conditional-edge router (`route_agent_key`) picking the node — still a plain
+  deterministic Python function, no LLM classifies anything, preserving the
+  same design philosophy that kept GitHub routing non-LLM. The graph is the
+  single place that scales as more connectors arrive: one new getter + one new
+  node, not a growing if/elif across `factory.py`/`deps.py`/`chat.py`. Built
+  fresh per request in `chat.py` (`_agent_graph()`), not cached, specifically
+  so tests can keep monkeypatching the bare `get_*_agent` names already used
+  by `_select_agent` — a cached graph would bake in stale getters. `_select_agent`
+  itself still exists only because `/chat/conversations` needs a concrete agent
+  *object* (to read `.pipeline.memory`), not just a finished answer.
+  **langgraph is pinned to `0.2.74`, not the current `1.x` line** — `1.x`
+  requires `langchain-core>=1.0`, which directly conflicts with the
+  `langchain>=0.3,<0.4` pin the `[eval]` RAGAS extra already carries (see the
+  RAGAS gotcha in §4); `0.2.74` accepts `langchain-core>=0.2.43,<0.4.0`, which
+  coexists with the installed 0.3.x line with no resolver conflict (verified:
+  `pip install langgraph` (latest) fails to even import in this repo's venv —
+  `ModuleNotFoundError` inside `langgraph_sdk`'s own langchain_core import).
+  Only plain `langgraph.graph.StateGraph` is used — `langgraph.prebuilt` (its
+  LLM-driven ReAct/tool-calling helpers, which need `langchain-core>=1.0`) is
+  deliberately never imported.
 - **`GitHubAgent` is the first non-RAG agent, and it's why `app/agent/base.py`
   has a `base.py` at all.** Phase 7 predicted "a future GitHub agent will
   implement the *same* contract"; it does — but *not* by extending
@@ -865,6 +910,21 @@ render.yaml                  # Render Blueprint: web service + Postgres, secrets
 
 ## 4. Known gotchas & past decisions worth remembering
 
+- **Three `test_jobs.py` worker tests are pre-existing-broken, independent of
+  any agent-split/orchestration work.** `test_worker_run_once_marks_job_succeeded`,
+  `test_worker_google_job_passes_folder_config`, and
+  `test_worker_run_once_scopes_ingestion_to_job_workspace` all fail with the
+  job ending `status="failed"`. Root cause: each test's `FakeIngestResult`
+  stub only defines `documents_ingested`, but `app/jobs/worker.py`'s real
+  success path now reads `.ingested_external_ids` off the real `IngestResult`
+  too (added for the removal-sanitization/dedup work documented above) —
+  the stub throws `AttributeError` inside `run_once()`, which the worker
+  correctly catches and records as a failed job. Confirmed via `git stash`
+  that this reproduces identically on the commit before this section's
+  changes — a stale test fixture, not a regression from the Notion/Drive/
+  LangGraph work. Fix (not yet done): add `ingested_external_ids = []` (or
+  whatever the real field defaults to) to each `FakeIngestResult` in
+  `tests/test_jobs.py`.
 - **Render free blocks outbound SMTP.** `EMAIL_SENDER=smtp` to `smtp.gmail.com:587`
   fails with `Errno 101 Network is unreachable` — the TCP connection never
   leaves the box (ports 25/465/587 are firewalled as of 2025-09). Use

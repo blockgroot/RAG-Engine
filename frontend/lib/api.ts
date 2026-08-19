@@ -97,6 +97,14 @@ export interface Me {
   slack_ready: boolean;
   /** Same rule as `slack_ready`, for the chat UI's "Linear" tab. */
   linear_ready: boolean;
+  /**
+   * Whether the chat UI should offer its "Notion" tab. Notion and Drive each
+   * get their own tab (never a combined corpus) so a company using both for
+   * unrelated content never gets an answer silently blended from the two.
+   */
+  notion_ready: boolean;
+  /** Same rule as `notion_ready`, for the chat UI's "Drive" tab. */
+  drive_ready: boolean;
 }
 
 export interface MemberRecord {
@@ -170,7 +178,7 @@ export interface GitHubScopeResponse {
 
 export interface ConnectionRecord {
   id: string;
-  provider: "notion" | "google" | "github" | "slack";
+  provider: "notion" | "google" | "github" | "slack" | "linear";
   external_workspace_name: string | null;
   created_at: string;
   /** Non-secret ingestion scope (e.g. Google Drive folder, Slack channels). */
@@ -260,6 +268,10 @@ export interface WorkspaceDetail extends WorkspaceRecord {
   slack_ready: boolean;
   /** Whether THIS workspace has its own ingested Linear issues (same rule as `Me.linear_ready`). */
   linear_ready: boolean;
+  /** Whether THIS workspace has its own ingested Notion pages (same rule as `Me.notion_ready`). */
+  notion_ready: boolean;
+  /** Whether THIS workspace has its own ingested Drive documents (same rule as `Me.drive_ready`). */
+  drive_ready: boolean;
 }
 
 export interface WorkspaceMemberRecord {
@@ -400,7 +412,7 @@ export const api = {
 
   /** Starter chips from connected sources (docs / GitHub repos) — not hardcoded. */
   chatSuggestions: (
-    agent: "policy" | "github" | "slack" | "linear",
+    agent: "policy" | "github" | "slack" | "linear" | "notion" | "google",
     workspaceId?: string | null
   ) => {
     const params = new URLSearchParams({ agent });
