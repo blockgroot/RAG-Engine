@@ -2366,6 +2366,13 @@ table .role-chip.role-admin,
 }
 .landing-section-lead em { font-style: normal; font-weight: 650; color: var(--ink); }
 
+.landing-privacy-note {
+  max-width: 52ch;
+  color: var(--ink-muted);
+  font-size: 0.88rem;
+  margin: -0.9rem 0 1.6rem;
+}
+
 .landing-feature-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

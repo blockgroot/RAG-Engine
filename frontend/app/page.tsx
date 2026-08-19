@@ -52,9 +52,9 @@ export default function RootPage() {
             Answer from your sources.
           </h1>
           <p className="landing-subtitle">
-            Connect Notion, Google Drive, and GitHub. Handbook answers employee
-            questions from your connected content — and says when the documents
-            don&rsquo;t cover it.
+            Connect Notion, Google Drive, Slack, and GitHub. Handbook answers
+            employee questions from your connected content — and says when the
+            documents don&rsquo;t cover it.
           </p>
           <div className="landing-cta-row">
             <Link href="/signup" className="button landing-cta-primary">
@@ -79,6 +79,10 @@ export default function RootPage() {
           <p className="landing-section-lead">
             One place to ask. Answers come from the content your company
             connected, scoped to the right tenant every time.
+          </p>
+          <p className="landing-privacy-note">
+            We index your content to answer questions — never to train AI
+            models, never shared with another company.
           </p>
         </div>
         <div className="landing-feature-grid">
@@ -119,9 +123,7 @@ export default function RootPage() {
             <h3>Tenant isolation</h3>
             <p>
               Every search is scoped to your organization. Admins invite
-              members by email, and other companies never see your data. Your
-              content is indexed privately for retrieval only — never used to
-              train any AI model, and never shared across companies.
+              members by email, and other companies never see your data.
             </p>
           </article>
         </div>
