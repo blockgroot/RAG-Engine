@@ -89,10 +89,9 @@ function manageExternalHref(
   return null;
 }
 
-function manageExternalLabel(provider: Provider): string {
-  if (provider === "github") return "Manage on GitHub";
-  if (provider === "google") return "Manage on Drive";
-  return "Manage in Notion";
+/** Card header already names the provider — the button doesn't need to repeat it. */
+function manageExternalLabel(): string {
+  return "Manage";
 }
 
 function manageExternalTitle(provider: Provider): string {
@@ -108,7 +107,7 @@ function manageExternalTitle(provider: Provider): string {
 /**
  * Provider card: connected sources no longer show a blunt "Sync now" that
  * re-dumps everything. Instead we surface a change notice when remote pages
- * differ, and "Update policies" runs an incremental upsert.
+ * differ, and "Update" runs an incremental upsert.
  *
  * Google also needs a folder URL before any sync — Drive has no Notion-style
  * "whatever was shared with the integration" boundary. Once a folder is set,
@@ -559,9 +558,9 @@ export function ConnectionCard({
           >
             {provider === "github"
               ? workspaceId
-                ? "Connect personal GitHub"
-                : "Connect company GitHub"
-              : `Connect ${PROVIDER_LABELS[provider]}`}
+                ? "Connect personal account"
+                : "Connect company account"
+              : "Connect"}
           </a>
         )}
         {connection && manageHref && (
@@ -572,7 +571,7 @@ export function ConnectionCard({
             rel="noreferrer"
             title={manageExternalTitle(provider)}
           >
-            {manageExternalLabel(provider)}
+            {manageExternalLabel()}
           </a>
         )}
         {provider === "google" &&
@@ -665,7 +664,7 @@ export function ConnectionCard({
             className="button"
             href={workspaceId ? api.connectWorkspaceUrl(workspaceId, provider) : api.connectUrl(provider)}
           >
-            Reconnect {PROVIDER_LABELS[provider]}
+            Reconnect
           </a>
         )}
         {connection && !syncInProgress && !disconnecting && (

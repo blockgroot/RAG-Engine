@@ -10,7 +10,7 @@ const SOURCES: Array<{
   size?: number;
   soon?: boolean;
 }> = [
-  { id: "notion", mark: "notion", label: "Notion", hint: "Policies & wikis" },
+  { id: "notion", mark: "notion", label: "Notion", hint: "Docs & wikis" },
   { id: "drive", mark: "drive", label: "Google Drive", hint: "Team documents" },
   { id: "github", mark: "github", label: "GitHub", hint: "READMEs & commits" },
   { id: "slack", mark: "slack", label: "Slack", hint: "Channel conversations" },

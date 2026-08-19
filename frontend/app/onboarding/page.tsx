@@ -45,7 +45,7 @@ function syncHeadline(job: JobRecord | undefined): string {
   if (phase === "preparing") return "Opening the next page…";
   if (phase === "contextualizing") return "Adding search context…";
   if (phase === "embedding") return "Indexing for search…";
-  return "Bringing your policies in…";
+  return "Bringing your documents in…";
 }
 
 function syncDetail(job: JobRecord | undefined): string {
@@ -74,9 +74,9 @@ function syncPercent(job: JobRecord | undefined): number | null {
 
 function syncCompleteMessage(docCount: number | null | undefined): string {
   if (docCount != null) {
-    return `You’re ready — ${docCount} policy document${docCount === 1 ? "" : "s"} loaded. Start asking anytime.`;
+    return `You’re ready — ${docCount} document${docCount === 1 ? "" : "s"} loaded. Start asking anytime.`;
   }
-  return "You’re ready — your policies are loaded. Start asking anytime.";
+  return "You’re ready — your documents are loaded. Start asking anytime.";
 }
 
 function OnboardingInner() {
@@ -164,7 +164,7 @@ function OnboardingInner() {
     setMessage(
       connected === "google"
         ? `${label} connected. Next: choose a Drive folder, then sync.`
-        : `${label} connected. Next: sync your policies.`
+        : `${label} connected. Next: sync your documents.`
     );
   }, [searchParams, effectiveMe]);
 
@@ -323,7 +323,11 @@ function OnboardingInner() {
           </p>
           <h1>Welcome — let’s get you set up</h1>
           <p className="muted">
-            Connect where your policies live, bring them in, then invite your team.
+            Connect where your documents live, bring them in, then invite your team.
+          </p>
+          <p className="muted" style={{ marginTop: "0.35rem" }}>
+            Your content is stored privately for your organization only — never
+            used to train any AI model, and never shared with other companies.
           </p>
         </div>
 
@@ -332,9 +336,9 @@ function OnboardingInner() {
 
         {step === 1 && (
           <section className="card stack">
-            <h2>1. Connect your policies</h2>
+            <h2>1. Connect your documents</h2>
             <p className="muted">
-              Choose Notion or Google Drive — whichever already holds your company policies.
+              Choose Notion or Google Drive — whichever already holds your company documents.
             </p>
             <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
               <a className="button" href={api.connectUrl("notion")}>
@@ -349,14 +353,14 @@ function OnboardingInner() {
 
         {step === 2 && (
           <section className="card stack">
-            <h2>2. Bring your policies in</h2>
+            <h2>2. Bring your documents in</h2>
             <p className="muted">
               {primary?.external_workspace_name
                 ? `Connected to “${primary.external_workspace_name}” (${providerLabel}). `
                 : `${providerLabel} is connected. `}
               {needsFolder
                 ? "Choose a Drive folder before continuing."
-                : "Bring in the shared policy pages, then wait here until it finishes."}
+                : "Bring in the shared pages, then wait here until it finishes."}
             </p>
 
             {needsFolder && primary && (
@@ -370,7 +374,7 @@ function OnboardingInner() {
                     )
                   );
                   setError(null);
-                  setMessage("Folder saved. You can sync your policies now.");
+                  setMessage("Folder saved. You can sync your documents now.");
                 }}
                 onError={(message) => {
                   if (message) setError(message);
@@ -437,7 +441,7 @@ function OnboardingInner() {
               <div className="stack" style={{ marginTop: "1.25rem" }}>
                 <h3 style={{ margin: 0, fontSize: "1rem" }}>Invite while you wait</h3>
                 <p className="muted" style={{ margin: 0 }}>
-                  Sync runs in the background. Add a teammate now — they can sign in once policies are ready.
+                  Sync runs in the background. Add a teammate now — they can sign in once documents are ready.
                 </p>
                 <form
                   onSubmit={handleInvite}
@@ -473,8 +477,8 @@ function OnboardingInner() {
               <strong>You’re ready</strong>
               <p style={{ margin: "0.4rem 0 0" }}>
                 {docCount != null
-                  ? `${docCount} policy document${docCount === 1 ? "" : "s"} loaded. Start asking anytime.`
-                  : "Your policies are loaded. Start asking anytime."}
+                  ? `${docCount} document${docCount === 1 ? "" : "s"} loaded. Start asking anytime.`
+                  : "Your documents are loaded. Start asking anytime."}
               </p>
             </div>
 

@@ -9,7 +9,8 @@ export type BrandName =
   | "slack"
   | "sendgrid"
   | "workspace"
-  | "secure";
+  | "secure"
+  | "private";
 
 const BRAND_SRC: Record<BrandName, string | null> = {
   sendgrid: null,
@@ -19,6 +20,7 @@ const BRAND_SRC: Record<BrandName, string | null> = {
   workspace: "/brands/workspace.png",
   secure: "/brands/secure.png",
   github: null,
+  private: null,
 };
 
 function GithubMark({ size }: { size: number }) {
@@ -49,6 +51,26 @@ function SendgridMark({ size }: { size: number }) {
   );
 }
 
+/** Mark for "kept private" access guarantees — no vendor to license, just a
+ * person-plus-lock glyph in the app's own accent color, distinct from the
+ * generic shield used for "secure". */
+function PrivateMark({ size }: { size: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
+      <rect width="24" height="24" rx="6" fill="#0d5c56" />
+      <circle cx="10.3" cy="8.6" r="3.1" fill="#fff" />
+      <path
+        fill="#fff"
+        d="M5 18.1c0-3.3 2.4-5.6 5.3-5.6 1.1 0 2.1.3 2.9.9a4.5 4.5 0 0 0-1.6 3.5c0 .4.06.9.18 1.3H5.3c-.2-.5-.3-1-.3-1.1Z"
+      />
+      <path
+        fill="#fff"
+        d="M15.8 12.5a2.5 2.5 0 0 1 2.5 2.5v.6h.2c.6 0 1.1.5 1.1 1.1v2.5c0 .6-.5 1.1-1.1 1.1h-5.4c-.6 0-1.1-.5-1.1-1.1v-2.5c0-.6.5-1.1 1.1-1.1h.2v-.6a2.5 2.5 0 0 1 2.5-2.5Zm0 1.3c-.7 0-1.2.5-1.2 1.2v.6h2.4v-.6c0-.7-.5-1.2-1.2-1.2Z"
+      />
+    </svg>
+  );
+}
+
 export function BrandGlyph({
   name,
   size = 28,
@@ -74,6 +96,10 @@ export function BrandGlyph({
 
   if (name === "sendgrid") {
     return <SendgridMark size={size} />;
+  }
+
+  if (name === "private") {
+    return <PrivateMark size={size} />;
   }
 
   return <GithubMark size={size} />;

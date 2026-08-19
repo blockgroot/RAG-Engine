@@ -4,7 +4,7 @@
  */
 export function AskHeroArt({ variant = "policy" }: { variant?: "policy" | "code" | "space" }) {
   const label =
-    variant === "code" ? "Live GitHub" : variant === "space" ? "This space" : "Your policies";
+    variant === "code" ? "Live GitHub" : variant === "space" ? "This space" : "Your documents";
 
   return (
     <div className={`ask-hero-art ask-hero-art--${variant}`} aria-hidden>
