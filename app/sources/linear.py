@@ -63,9 +63,23 @@ def _parse_dt(value: str | None) -> datetime | None:
 
 
 class LinearAdapter(SourceAdapter):
-    """Fetches issues from a Linear workspace via its GraphQL API."""
+    """Fetches issues from a Linear workspace via its GraphQL API.
 
-    def __init__(self, settings: LinearSettings | None = None, token: str | None = None) -> None:
+    Linear sends the ``Authorization`` header differently depending on the
+    credential type: a personal API key is sent RAW (no scheme prefix), while
+    an OAuth access token needs ``Bearer <token>``. ``oauth`` tells this
+    adapter which one ``token`` is — set by ``app/sources/factory.py`` based
+    on which credential path resolved it (a directly-passed ``token=`` means
+    OAuth; a ``token_name``/default lookup means the legacy personal key).
+    """
+
+    def __init__(
+        self,
+        settings: LinearSettings | None = None,
+        token: str | None = None,
+        *,
+        oauth: bool = False,
+    ) -> None:
         settings = settings or LinearSettings.from_env()
         resolved = token or settings.token
         if not resolved:
@@ -74,13 +88,15 @@ class LinearAdapter(SourceAdapter):
                 "per-org LINEAR_TOKEN_<NAME>) personal API key"
             )
         self._token = resolved
+        self._oauth = oauth
 
     def _query(self, query: str, variables: dict | None = None) -> dict:
+        auth = f"Bearer {self._token}" if self._oauth else self._token
         try:
             response = httpx.post(
                 _API_URL,
                 json={"query": query, "variables": variables or {}},
-                headers={"Authorization": self._token},
+                headers={"Authorization": auth},
                 timeout=_TIMEOUT,
             )
             response.raise_for_status()

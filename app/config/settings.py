@@ -596,19 +596,38 @@ class NotionSettings:
         )
 
 
+# "read" is Linear's minimal read-only OAuth scope — enough for the GraphQL
+# reads LinearAdapter issues (issues + comments), never write/admin.
+DEFAULT_LINEAR_OAUTH_SCOPES = "read"
+
+
 @dataclass(frozen=True)
 class LinearSettings:
     """Configuration for the Linear content source.
 
-    Same shape as ``NotionSettings``: a personal API key is the simplest viable
-    auth (no OAuth app review needed), and per-org keys are discovered
-    generically from ``LINEAR_TOKEN_<NAME>`` env vars so a key can only see the
-    Linear workspace it belongs to — the tenant boundary is enforced by Linear
-    itself, not just our code.
+    Two independent, non-fallback-linked credential paths — same coexistence
+    as ``NotionSettings`` (legacy static token vs. OAuth):
+
+    - ``token``/``tokens``: a personal API key is the simplest viable auth (no
+      OAuth app review needed), and per-org keys are discovered generically
+      from ``LINEAR_TOKEN_<NAME>`` env vars so a key can only see the Linear
+      workspace it belongs to — the tenant boundary is enforced by Linear
+      itself, not just our code. Used by ``scripts/ingest_linear.py`` /
+      ``LinearAdapter`` when built with ``token_name``/no ``token``.
+    - ``client_id``/``client_secret``/``redirect_uri``/``scopes``: the OAuth
+      "Connect Linear" flow (``app/auth/linear_oauth.py``), for the admin
+      self-serve path the product's other sources use. A token obtained this
+      way is passed to ``LinearAdapter`` as ``token=`` (already-resolved),
+      exactly like Google/Slack's OAuth-only paths — see
+      ``app/sources/factory.py``.
     """
 
     token: str | None
     tokens: dict[str, str] = field(default_factory=dict)
+    client_id: str | None = None
+    client_secret: str | None = None
+    redirect_uri: str | None = None
+    scopes: str = DEFAULT_LINEAR_OAUTH_SCOPES
 
     _TOKEN_PREFIX = "LINEAR_TOKEN_"
 
@@ -621,7 +640,14 @@ class LinearSettings:
             and len(key) > len(cls._TOKEN_PREFIX)
             and value
         }
-        return cls(token=os.getenv("LINEAR_TOKEN"), tokens=tokens)
+        return cls(
+            token=os.getenv("LINEAR_TOKEN"),
+            tokens=tokens,
+            client_id=os.getenv("LINEAR_CLIENT_ID"),
+            client_secret=os.getenv("LINEAR_CLIENT_SECRET"),
+            redirect_uri=os.getenv("LINEAR_REDIRECT_URI"),
+            scopes=os.getenv("LINEAR_OAUTH_SCOPES", DEFAULT_LINEAR_OAUTH_SCOPES),
+        )
 
     def resolve_token(self, name: str | None = None) -> str:
         """Return the API key for ``name`` (or the default token). No fallback."""

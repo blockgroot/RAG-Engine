@@ -460,6 +460,50 @@ their policy documents; their employees ask questions and get answers grounded i
   retrieval would otherwise do, at zero storage cost. Revisit indexing only when
   a genuine fuzzy-semantic need appears ("find the commit that fixed the login
   bug"), not preemptively.
+- **Linear is a fourth ingested source (`app/sources/linear.py`), end-to-end:
+  adapter, OAuth "Connect" flow, and its own agent/tab — same shape as
+  Notion/Drive/Slack, not a second-class connector.** Each Linear *issue*
+  (title + description + comments, flattened to text) is one document — the
+  same role a Notion page or a Slack thread plays. Two independent,
+  non-fallback-linked credential paths, mirroring Notion's own
+  legacy-token/OAuth coexistence:
+  - **Legacy per-org personal API key** (`LinearSettings.token`/`tokens` in
+    `app/config/settings.py`, `LINEAR_TOKEN_<NAME>` env vars, `resolve_token`
+    with no cross-org fallback) — for `scripts/ingest_linear.py`, the fast
+    manual path this connector started with.
+  - **OAuth "Connect Linear"** (`app/auth/linear_oauth.py`,
+    `LinearOAuthProvider`) — the self-serve flow the Sources page and
+    Workspace-within-a-Workspace both use, wired into the existing generic
+    `/auth/{provider}/authorize` + `/{provider}/callback` routes and
+    `build_oauth_provider("linear")` with zero special-casing in
+    `app/api/auth.py`. Structurally closest to `google_oauth.py`: Linear's
+    token response carries no workspace identity, so a follow-up GraphQL call
+    (`query { organization { id name } }`) resolves it, same reasoning as
+    Google's Drive `about` call. A standard Linear OAuth app issues a
+    non-expiring access token with no refresh token (same shape as
+    Notion/Slack), so `refresh()` stays the ABC's default `NotImplementedError`.
+  **The two paths send the `Authorization` header differently, and this is
+  the one place they can't stay symmetric with Notion:** Linear expects a
+  personal API key RAW (no scheme prefix) but an OAuth access token as
+  `Bearer <token>`. `LinearAdapter` takes an explicit `oauth: bool` telling it
+  which kind of secret it holds; `app/sources/factory.py` sets it from *how*
+  the credential was resolved — a directly-passed `token=` (the job worker's
+  `get_live_connection_token`) means OAuth, a `token_name`/default env lookup
+  means the legacy key. Getting this wrong doesn't fail loudly (both are
+  valid `Authorization` header values), it just makes every OAuth-connected
+  Linear request 401 — worth remembering if a future Linear API call looks
+  authenticated but returns unauthorized.
+  No new admin-panel scoping route was needed (unlike Drive's folder / Slack's
+  channel picker): a Linear OAuth grant has no per-team subset concept
+  exposed here, so ingestion pulls whatever the token's app installation can
+  see — same "implicit scope" shape as Notion's page-sharing model.
+  `ConnectionCard`/`BrandGlyph` (frontend) treat Linear exactly like Notion —
+  `available`, `PROVIDER_LABELS`, no `needsFolder`/`needsChannels`-style extra
+  config UI. `BrandGlyph`'s Linear mark is a stylized rounded-square glyph in
+  Linear's brand purple (`#5E6AD2`) with a circle + receding diagonal strokes
+  evoking Linear's own swoosh-into-a-circle mark — same "reads as X at a
+  glance, not a pixel copy" approach as the existing `SendgridMark` (no
+  licensed asset here either).
 - **Every ingested source gets its OWN pinned agent — `SlackAgent`, `LinearAgent`,
   `NotionAgent`, `DriveAgent` — never one combined corpus, and routing between
   them is now a LangGraph graph, not a hand-rolled if/elif.** The platform

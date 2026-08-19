@@ -83,8 +83,14 @@ def build_source_adapter(
 
     if source_type == "linear":
         settings = LinearSettings.from_env()
-        resolved = token or settings.resolve_token(token_name)
-        return LinearAdapter(settings=settings, token=resolved)
+        if token:
+            # A directly-passed token means the OAuth-connected path (the job
+            # worker's get_live_connection_token) — Linear sends the header
+            # differently for an OAuth token vs. a personal API key, so this
+            # is what tells LinearAdapter which one it holds.
+            return LinearAdapter(settings=settings, token=token, oauth=True)
+        resolved = settings.resolve_token(token_name)
+        return LinearAdapter(settings=settings, token=resolved, oauth=False)
 
     raise ConfigurationError(
         f"Unknown source type: {source_type!r} (expected 'notion', 'google', 'slack', or 'linear')"

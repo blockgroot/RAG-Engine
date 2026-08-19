@@ -98,3 +98,42 @@ def test_factory_wires_linear(monkeypatch):
     adapter = build_source_adapter("linear", token_name="acme")
     assert isinstance(adapter, LinearAdapter)
     assert adapter._token == "tok-acme"
+    assert adapter._oauth is False
+
+
+def test_factory_marks_a_directly_passed_token_as_oauth(monkeypatch):
+    """A `token=` (from get_live_connection_token) is the OAuth-connected
+    path — Linear needs a `Bearer` prefix for this token but not for a
+    personal API key, so the factory must flag it correctly."""
+    adapter = build_source_adapter("linear", token="oauth-token-abc")
+    assert isinstance(adapter, LinearAdapter)
+    assert adapter._token == "oauth-token-abc"
+    assert adapter._oauth is True
+
+
+def test_oauth_token_sends_bearer_prefix(monkeypatch):
+    payload = {
+        "data": {"issues": {"nodes": [], "pageInfo": {"hasNextPage": False, "endCursor": None}}}
+    }
+
+    def fake_post(url, json, headers, timeout):
+        assert headers["Authorization"] == "Bearer oauth-token-abc"
+        return _FakeResponse(payload)
+
+    monkeypatch.setattr("app.sources.linear.httpx.post", fake_post)
+    adapter = LinearAdapter(token="oauth-token-abc", oauth=True)
+    adapter.list_documents()
+
+
+def test_personal_key_sends_raw_no_prefix(monkeypatch):
+    payload = {
+        "data": {"issues": {"nodes": [], "pageInfo": {"hasNextPage": False, "endCursor": None}}}
+    }
+
+    def fake_post(url, json, headers, timeout):
+        assert headers["Authorization"] == "tok-acme"
+        return _FakeResponse(payload)
+
+    monkeypatch.setattr("app.sources.linear.httpx.post", fake_post)
+    adapter = LinearAdapter(token="tok-acme")
+    adapter.list_documents()
