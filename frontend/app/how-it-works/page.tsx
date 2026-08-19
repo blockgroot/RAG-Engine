@@ -55,11 +55,11 @@ export default function HowItWorksPage() {
           <div>
             <p className="landing-eyebrow">Three paths</p>
             <h2 id="paths-title" className="landing-section-title">
-              Policies from your docs. Chat from Slack. Code from GitHub.
+              Search your documents, conversations, and code.
             </h2>
           </div>
           <p className="landing-section-lead">
-            Choose Policies, Slack, or Code in chat. You decide the path —
+            Choose Documents, Slack, or Code in chat. You decide the path —
             Handbook doesn&rsquo;t guess which agent to run.
           </p>
         </div>
@@ -70,7 +70,7 @@ export default function HowItWorksPage() {
               <BrandGlyph name="notion" size={28} />
               <BrandGlyph name="drive" size={28} />
               <div>
-                <strong>Policies</strong>
+                <strong>Documents</strong>
                 <span>Notion · Google Drive</span>
               </div>
             </header>
@@ -129,31 +129,53 @@ export default function HowItWorksPage() {
             tighter scope for team content inside the same company.
           </p>
         </div>
-        <div className="how-isolate">
-          <article>
-            <BrandGlyph name="secure" size={26} />
-            <h3>Organization isolation</h3>
+        <div className="how-boundary" role="list" aria-label="Access and safety guarantees">
+          <div className="how-boundary-item" role="listitem">
+            <span className="how-boundary-mark" aria-hidden>
+              <BrandGlyph name="secure" size={24} />
+            </span>
+            <strong>Organization isolation</strong>
             <p>
               Searches always include your org. Another company&rsquo;s
               documents are never in the result set.
             </p>
-          </article>
-          <article>
-            <BrandGlyph name="workspace" size={26} />
-            <h3>Team workspaces</h3>
+            <span className="how-boundary-tag">Scoped</span>
+          </div>
+          <div className="how-boundary-item" role="listitem">
+            <span className="how-boundary-mark" aria-hidden>
+              <BrandGlyph name="workspace" size={24} />
+            </span>
+            <strong>Team workspaces</strong>
             <p>
-              Invite colleagues into a space with its own connected sources —
-              ideal for projects and shared team knowledge.
+              Invite colleagues into a space with its own connected
+              sources — ideal for projects and shared team knowledge.
             </p>
-          </article>
-          <article>
-            <BrandGlyph name="sendgrid" size={28} />
-            <h3>Invite-only access</h3>
+            <span className="how-boundary-tag">Flexible</span>
+          </div>
+          <div className="how-boundary-item" role="listitem">
+            <span className="how-boundary-mark" aria-hidden>
+              <BrandGlyph name="sendgrid" size={24} />
+            </span>
+            <strong>Invite-only access</strong>
             <p>
-              Members sign in with a magic link. Admins invite people by email,
-              and there is no open join into someone else&rsquo;s company.
+              Members sign in with a magic link. Admins invite people by
+              email, and there is no open join into someone else&rsquo;s
+              company.
             </p>
-          </article>
+            <span className="how-boundary-tag">Invite-only</span>
+          </div>
+          <div className="how-boundary-item" role="listitem">
+            <span className="how-boundary-mark" aria-hidden>
+              <BrandGlyph name="private" size={24} />
+            </span>
+            <strong>Your content, kept private</strong>
+            <p>
+              Connected documents are indexed only to answer your
+              team&rsquo;s questions — never used to train any AI model,
+              and never accessible to another company.
+            </p>
+            <span className="how-boundary-tag">Private</span>
+          </div>
         </div>
       </section>
 
@@ -162,7 +184,7 @@ export default function HowItWorksPage() {
           <p className="landing-eyebrow">Why Handbook</p>
           <h2 id="why-title">Why teams connect — and what you get.</h2>
           <p>
-            Workplace questions should land on your own policies, Slack
+            Workplace questions should land on your own documents, Slack
             threads, and repos — not a model&rsquo;s guess. Handbook keeps
             every answer grounded, scoped, and honest when the content
             doesn&rsquo;t cover it.
@@ -278,7 +300,7 @@ export default function HowItWorksPage() {
               <strong>Understands intent</strong>
               <p>
                 Follow-ups and shorthand become a clear standalone question before
-                retrieval — so “what about part-timers?” still finds the right policy.
+                retrieval — so “what about part-timers?” still finds the right document.
               </p>
             </div>
           </li>

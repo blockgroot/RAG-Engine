@@ -145,7 +145,7 @@ export function AppShell({
                 </span>
                 <span className="rail-link-copy">
                   <span className="rail-link-title">Ask</span>
-                  <span className="rail-link-hint">Ask anything</span>
+                  <span className="rail-link-hint">Company-wide</span>
                 </span>
               </Link>
             )}
@@ -160,7 +160,7 @@ export function AppShell({
               </span>
               <span className="rail-link-copy">
                 <span className="rail-link-title">Spaces</span>
-                <span className="rail-link-hint">Private rooms</span>
+                <span className="rail-link-hint">Private, invite-only</span>
               </span>
             </Link>
 
@@ -233,7 +233,7 @@ export function AppShell({
             <Step n={1} label="Connect" done={me.has_connection} active={!me.has_connection} />
             <Step
               n={2}
-              label="Bring in policies"
+              label="Bring in documents"
               done={me.ready_to_ask}
               active={me.has_connection && !me.ready_to_ask}
             />

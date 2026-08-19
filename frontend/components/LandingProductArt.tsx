@@ -40,7 +40,7 @@ export function LandingProductArt() {
           <strong>Handbook</strong>
         </div>
         <div className="lp-tabs">
-          <span className="is-on">Policies</span>
+          <span className="is-on">Docs</span>
           <span>Code</span>
         </div>
         <div className="lp-thread">

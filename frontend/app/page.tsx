@@ -52,9 +52,9 @@ export default function RootPage() {
             Answer from your sources.
           </h1>
           <p className="landing-subtitle">
-            Connect Notion, Google Drive, and GitHub. Handbook answers employee
-            questions from your connected content — and says when the documents
-            don&rsquo;t cover it.
+            Connect Notion, Google Drive, Slack, and GitHub. Handbook answers
+            employee questions from your connected content — and says when the
+            documents don&rsquo;t cover it.
           </p>
           <div className="landing-cta-row">
             <Link href="/signup" className="button landing-cta-primary">
@@ -73,12 +73,16 @@ export default function RootPage() {
           <div>
             <p className="landing-eyebrow">Built for work</p>
             <h2 id="what-title" className="landing-section-title">
-              Policies, code, and team spaces — grounded.
+              Documents, code, and team spaces — grounded.
             </h2>
           </div>
           <p className="landing-section-lead">
             One place to ask. Answers come from the content your company
             connected, scoped to the right tenant every time.
+          </p>
+          <p className="landing-privacy-note">
+            We index your content to answer questions — never to train AI
+            models, never shared with another company.
           </p>
         </div>
         <div className="landing-feature-grid">
@@ -86,10 +90,10 @@ export default function RootPage() {
             <span className="landing-feature-mark">
               <BrandGlyph name="notion" size={22} />
             </span>
-            <h3>Grounded policy answers</h3>
+            <h3>Grounded document answers</h3>
             <p>
-              Leave, benefits, expenses, and handbooks — retrieved from your
-              synced docs, grounded in what your company connected.
+              Leave, benefits, expenses, handbooks, or any other doc — retrieved
+              from your synced content, grounded in what your company connected.
             </p>
           </article>
           <article className="landing-feature">
@@ -134,8 +138,9 @@ export default function RootPage() {
             </h2>
           </div>
           <p className="landing-section-lead">
-            Sync Notion or Drive for policies. Use GitHub live for code.
-            Sign in with a magic link — no extra password to manage.
+            Sync Notion or Drive for your documents, and Slack for team
+            conversations. Use GitHub live for code. Sign in with a magic
+            link — no extra password to manage.
           </p>
         </div>
         <LandingSourcesOrbit />
@@ -157,7 +162,7 @@ export default function RootPage() {
                 </span>
                 <span className="landing-close-step-body">
                   <strong>Connect</strong>
-                  <span>Notion, Drive, or GitHub</span>
+                  <span>Notion, Drive, Slack, or GitHub</span>
                 </span>
               </li>
               <li className="landing-close-step" style={{ ["--step" as string]: "1" }}>

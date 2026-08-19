@@ -382,7 +382,7 @@ function ChatPageInner() {
   const emptyCopy = askingCode
     ? "Repository and commit answers are read live from GitHub — always current, never stale."
     : askingSlack
-      ? "Answers come from the conversations in your connected channels — what people actually said, not policy."
+      ? "Answers come from the conversations in your connected channels — what people actually said, not documents."
       : workspaceId
         ? "Answers come only from the notes and docs connected to this space."
         : "Leave, benefits, remote work, and more — grounded in your connected documents.";
@@ -407,15 +407,9 @@ function ChatPageInner() {
 
         <div className="chat-topbar">
           <div className="chat-topbar-copy">
-            <p className="chat-kicker">{workspaceId ? "Space" : "Workspace"}</p>
+            <p className="chat-kicker">{workspaceId ? "Space" : "Company-wide"}</p>
             <h1>
-              {askingCode
-                ? "Code"
-                : askingSlack
-                  ? "Slack"
-                  : workspaceId
-                    ? "Space Ask"
-                    : "Ask"}
+              {askingCode ? "Code" : askingSlack ? "Slack" : "Ask"}
             </h1>
           </div>
           {showAgentTabs && (
