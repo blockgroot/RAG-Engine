@@ -15,11 +15,13 @@ from fastapi import Depends, HTTPException, Request
 
 from ..agent import (
     build_github_agent,
+    build_linear_agent,
     build_policy_agent,
     build_slack_agent,
     build_workspace_agent,
 )
 from ..agent.github_agent import GitHubAgent
+from ..agent.linear_agent import LinearAgent
 from ..agent.policy_agent import PolicyAgent
 from ..agent.slack_agent import SlackAgent
 from ..agent.workspace_agent import WorkspaceAgent
@@ -80,6 +82,17 @@ def get_slack_agent() -> SlackAgent:
     models; see ``get_policy_agent``.
     """
     return build_slack_agent()
+
+
+@lru_cache(maxsize=1)
+def get_linear_agent() -> LinearAgent:
+    """Process-wide singleton ``LinearAgent`` (Linear-only retrieval).
+
+    Same reasoning as ``get_slack_agent`` — its own pipeline pinned to
+    ``source_provider="linear"``, sharing the process-wide embedder/reranker
+    singletons rather than loading a second copy of the models.
+    """
+    return build_linear_agent()
 
 
 @lru_cache(maxsize=1)

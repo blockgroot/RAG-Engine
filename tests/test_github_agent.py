@@ -358,11 +358,13 @@ class _Sentinel:
         self.name = name
 
 
-def _patch_agents(monkeypatch, *, policy, workspace, github):
+def _patch_agents(monkeypatch, *, policy, workspace, github, linear=None):
     """``_select_agent`` loads agents lazily via get_* — stub those, not args."""
     monkeypatch.setattr("app.api.chat.get_policy_agent", lambda: policy)
     monkeypatch.setattr("app.api.chat.get_workspace_agent", lambda: workspace)
     monkeypatch.setattr("app.api.chat.get_github_agent", lambda: github)
+    if linear is not None:
+        monkeypatch.setattr("app.api.chat.get_linear_agent", lambda: linear)
 
 
 def test_routing_sends_a_github_request_to_the_github_agent(monkeypatch):
@@ -407,6 +409,22 @@ def test_a_requested_github_agent_now_wins_over_workspace_scope(monkeypatch):
     assert _select_agent("ws-1", "github") is github
     assert _select_agent("ws-1", None) is workspace
     assert _select_agent("ws-1", "policy") is workspace
+
+
+def test_routing_sends_a_linear_request_to_the_linear_agent(monkeypatch):
+    """A Linear question must never be answered by PolicyAgent's mixed corpus."""
+    from app.api.chat import _select_agent
+
+    policy, workspace, github, linear = (
+        _Sentinel("p"),
+        _Sentinel("w"),
+        _Sentinel("g"),
+        _Sentinel("l"),
+    )
+    _patch_agents(monkeypatch, policy=policy, workspace=workspace, github=github, linear=linear)
+
+    assert _select_agent(None, "linear") is linear
+    assert _select_agent("ws-1", "linear") is linear  # wins over workspace, like slack/github
 
 
 def test_routing_github_request_uses_github_agent_not_policy(monkeypatch):

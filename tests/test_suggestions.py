@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from app.api.suggestions import build_github_suggestions, build_policy_suggestions
+from app.api.suggestions import (
+    build_github_suggestions,
+    build_linear_suggestions,
+    build_policy_suggestions,
+)
 
 
 def test_github_suggestions_use_connected_repo_names_only():
@@ -52,6 +56,19 @@ def test_policy_suggestions_fill_four_chips_with_one_document():
     assert any("key rules" in q for q in qs)
     assert any("for an employee" in q for q in qs)
     assert any("should I know" in q for q in qs)
+
+
+def test_linear_suggestions_use_issue_titles_not_policy_phrasing():
+    qs = build_linear_suggestions(["Login button broken", "Add dark mode"])
+    assert len(qs) == 4
+    assert any("Login button broken" in q for q in qs)
+    assert any("Add dark mode" in q for q in qs)
+    # Must not read like a handbook chip.
+    assert not any("key rules" in q or "for an employee" in q for q in qs)
+
+
+def test_linear_suggestions_empty_without_titles():
+    assert build_linear_suggestions([]) == []
 
 
 def test_workspace_suggestions_sound_like_notes_not_hr_policy():

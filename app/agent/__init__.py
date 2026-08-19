@@ -26,12 +26,14 @@ knowing any of that.
 
 from .base import Agent, AgentResponse, Citation
 from .github_agent import GitHubAgent
+from .linear_agent import LinearAgent
 from .policy_agent import PolicyAgent
 from .rag_pipeline_agent import RagPipelineAgent
 from .slack_agent import SlackAgent
 from .workspace_agent import WorkspaceAgent
 from .factory import (
     build_github_agent,
+    build_linear_agent,
     build_policy_agent,
     build_slack_agent,
     build_workspace_agent,
@@ -42,11 +44,13 @@ __all__ = [
     "AgentResponse",
     "Citation",
     "GitHubAgent",
+    "LinearAgent",
     "PolicyAgent",
     "RagPipelineAgent",
     "SlackAgent",
     "WorkspaceAgent",
     "build_github_agent",
+    "build_linear_agent",
     "build_policy_agent",
     "build_slack_agent",
     "build_workspace_agent",

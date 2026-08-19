@@ -18,14 +18,16 @@ from dataclasses import replace
 
 from ..config.settings import (
     GitHubAgentSettings,
+    LinearAgentSettings,
     RagSettings,
     SlackAgentSettings,
     WorkspaceAgentSettings,
 )
 from ..llm import build_llm_provider
 from ..rag import RagPipeline, build_rag_pipeline
-from ..rag.prompts import SLACK_PROMPT_PROFILE, WORKSPACE_PROMPT_PROFILE
+from ..rag.prompts import LINEAR_PROMPT_PROFILE, SLACK_PROMPT_PROFILE, WORKSPACE_PROMPT_PROFILE
 from .github_agent import GitHubAgent
+from .linear_agent import LinearAgent
 from .policy_agent import PolicyAgent
 from .slack_agent import SlackAgent
 from .workspace_agent import WorkspaceAgent
@@ -89,6 +91,33 @@ def build_slack_agent(
         pipeline_kwargs.setdefault("source_provider", "slack")
         pipeline = build_rag_pipeline(**pipeline_kwargs)
     return SlackAgent(pipeline)
+
+
+def build_linear_agent(
+    pipeline: RagPipeline | None = None, **pipeline_kwargs
+) -> LinearAgent:
+    """Build a ``LinearAgent``, defaulting its pipeline from configuration.
+
+    Same shape as ``build_slack_agent``: the pipeline is pinned to
+    ``source_provider="linear"``, so retrieval reaches only chunks ingested
+    from Linear (see ``linear_agent.py``) — a Policies-tab question never
+    silently pulls in an engineering ticket, and vice versa. Web search
+    defaults off for the same reason as Slack — "what's the status of X" has
+    no public-web answer.
+    """
+    if pipeline is None:
+        pipeline_kwargs.setdefault(
+            "settings",
+            replace(
+                RagSettings.from_env(),
+                fallback_response=LinearAgentSettings.from_env().fallback_response,
+            ),
+        )
+        pipeline_kwargs.setdefault("prompt_profile", LINEAR_PROMPT_PROFILE)
+        pipeline_kwargs.setdefault("web_search", None)
+        pipeline_kwargs.setdefault("source_provider", "linear")
+        pipeline = build_rag_pipeline(**pipeline_kwargs)
+    return LinearAgent(pipeline)
 
 
 def build_github_agent(

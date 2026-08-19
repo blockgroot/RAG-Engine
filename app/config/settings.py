@@ -68,6 +68,14 @@ DEFAULT_SLACK_FALLBACK_RESPONSE = (
     "window."
 )
 
+# The Linear agent's refusal. Distinct copy for the same reason as Slack's: the
+# actionable next step differs from "it isn't in the handbook" — the issue may
+# just not be ingested yet, or the question doesn't match any tracked issue.
+DEFAULT_LINEAR_FALLBACK_RESPONSE = (
+    "I couldn't find that in the connected Linear issues. It may not have been "
+    "ingested yet, or no issue matches this question."
+)
+
 # The GitHub agent's refusal. Distinct copy because the *reason* differs: there
 # is no retrieval here, so a refusal means "no tool could supply evidence for
 # this", not "nothing matched in the corpus" — and the actionable next step for
@@ -447,6 +455,23 @@ class SlackAgentSettings:
         return cls(
             fallback_response=os.getenv("SLACK_FALLBACK_RESPONSE")
             or DEFAULT_SLACK_FALLBACK_RESPONSE,
+        )
+
+
+@dataclass(frozen=True)
+class LinearAgentSettings:
+    """Configuration specific to ``LinearAgent`` — same shape as
+    ``SlackAgentSettings``: a second, independent ``RagPipeline`` instance
+    differing only in prompt framing and its own fixed fallback string.
+    """
+
+    fallback_response: str = DEFAULT_LINEAR_FALLBACK_RESPONSE
+
+    @classmethod
+    def from_env(cls) -> "LinearAgentSettings":
+        return cls(
+            fallback_response=os.getenv("LINEAR_FALLBACK_RESPONSE")
+            or DEFAULT_LINEAR_FALLBACK_RESPONSE,
         )
 
 

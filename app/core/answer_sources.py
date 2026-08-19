@@ -13,12 +13,21 @@ SOURCE_POLICY = "policy"
 SOURCE_WORKSPACE = "workspace"
 SOURCE_GITHUB = "github"
 SOURCE_SLACK = "slack"
+SOURCE_LINEAR = "linear"
 SOURCE_WEB = "web"
 SOURCE_NONE = "none"
 
 # Every value an agent may report as `source`/`final_answer_source`.
 ANSWER_SOURCES = frozenset(
-    {SOURCE_POLICY, SOURCE_WORKSPACE, SOURCE_GITHUB, SOURCE_SLACK, SOURCE_WEB, SOURCE_NONE}
+    {
+        SOURCE_POLICY,
+        SOURCE_WORKSPACE,
+        SOURCE_GITHUB,
+        SOURCE_SLACK,
+        SOURCE_LINEAR,
+        SOURCE_WEB,
+        SOURCE_NONE,
+    }
 )
 
 # Architectural recovery reasons (Retrieval Discovery Gap) — shared between

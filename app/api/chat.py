@@ -119,6 +119,7 @@ from ..workspaces import assert_member
 from .deps import (
     SessionClaims,
     get_github_agent,
+    get_linear_agent,
     get_policy_agent,
     get_session,
     get_slack_agent,
@@ -127,6 +128,7 @@ from .deps import (
 
 from .suggestions import (
     build_github_suggestions,
+    build_linear_suggestions,
     build_policy_suggestions,
     build_slack_suggestions,
 )
@@ -138,6 +140,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 AGENT_GITHUB = "github"
 AGENT_POLICY = "policy"
 AGENT_SLACK = "slack"
+AGENT_LINEAR = "linear"
 
 # Upper bound on a single question, in characters. Generous — a real question is
 # a sentence or two — but bounded, because the question is embedded verbatim and
@@ -172,6 +175,8 @@ def _select_agent(
         return get_github_agent()
     if requested_agent == AGENT_SLACK:
         return get_slack_agent()
+    if requested_agent == AGENT_LINEAR:
+        return get_linear_agent()
     if workspace_id is not None:
         return get_workspace_agent()
     return get_policy_agent()
@@ -250,6 +255,10 @@ def list_suggestions(
         # cannot retrieve from.
         channels = _slack_channel_names_for_scope(session.org_id, workspace_id)
         return {"agent": AGENT_SLACK, "questions": build_slack_suggestions(channels)}
+
+    if requested == AGENT_LINEAR:
+        titles = _linear_titles_for_scope(session.org_id, workspace_id)
+        return {"agent": AGENT_LINEAR, "questions": build_linear_suggestions(titles)}
 
     titles = _document_titles_for_scope(session.org_id, workspace_id)
     return {
@@ -338,12 +347,32 @@ def _document_titles_for_scope(org_id: str, workspace_id: str | None) -> list[st
     cover?``, which reads as broken even though every piece worked. Slack has
     its own tab and its own channel-shaped builder
     (``build_slack_suggestions``); this one is for things that have titles.
+
+    Linear rows are excluded for the same reason "own tab" reasoning applies,
+    even though an issue title reads fine on its own: a Policies chip phrased
+    "What are the key rules in <issue title>?" is the wrong shape of question
+    for a ticket. Linear has its own tab and builder (``build_linear_suggestions``).
     """
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT title FROM documents "
             "WHERE org_id = %s AND workspace_id IS NOT DISTINCT FROM %s "
             "AND source_provider IS DISTINCT FROM 'slack' "
+            "AND source_provider IS DISTINCT FROM 'linear' "
+            "ORDER BY created_at DESC NULLS LAST "
+            "LIMIT 12",
+            (org_id, workspace_id),
+        ).fetchall()
+    return [str(r[0]) for r in rows if r and r[0]]
+
+
+def _linear_titles_for_scope(org_id: str, workspace_id: str | None) -> list[str]:
+    """Ingested Linear issue titles for this org (or one workspace), newest first."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT title FROM documents "
+            "WHERE org_id = %s AND workspace_id IS NOT DISTINCT FROM %s "
+            "AND source_provider = 'linear' "
             "ORDER BY created_at DESC NULLS LAST "
             "LIMIT 12",
             (org_id, workspace_id),
