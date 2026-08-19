@@ -34,10 +34,6 @@ const PROVIDERS: ("notion" | "google" | "github" | "slack")[] = [
   "slack",
 ];
 const ACTIVE_STATUSES = ACTIVE_JOB_STATUSES;
-// Minimum gap between window-focus-triggered change-checks. A Drive check walks
-// the folder tree live (one Google API call per subfolder), so an unthrottled
-// focus listener re-ran seconds of work every time the user alt-tabbed.
-const CHANGE_CHECK_MIN_INTERVAL_MS = 60_000;
 
 function latestJobByConnection(jobs: JobRecord[]): Record<string, JobRecord> {
   const latest: Record<string, JobRecord> = {};
@@ -106,7 +102,6 @@ function WorkspaceDetailPageInner() {
   const prevStatuses = useRef<Record<string, string>>({});
   const loaded = useRef(false);
   const bannerRef = useRef<HTMLDivElement | null>(null);
-  const connectionsRef = useRef<ConnectionRecord[]>([]);
 
   const refreshWorkspace = useCallback(async () => {
     try {
@@ -120,18 +115,11 @@ function WorkspaceDetailPageInner() {
   }, [workspaceId]);
 
   const changesGen = useRef(0);
-  // When the last change-check actually ran, so the window-focus listener below
-  // can skip one that just happened. A Drive change-check is NOT cheap: it walks
-  // the folder tree live, one Google API call per subfolder (plus pagination),
-  // so re-running it every time the user tabs back to the browser meant several
-  // seconds of "Checking…" on every focus.
-  const lastChangeCheckAt = useRef(0);
 
   const refreshChanges = useCallback(
     async (list: ConnectionRecord[]) => {
       if (list.length === 0) return;
       const gen = ++changesGen.current;
-      lastChangeCheckAt.current = Date.now();
       setChecking(true);
       const next: Record<string, SyncChanges> = {};
       const failedIds: string[] = [];
@@ -201,10 +189,6 @@ function WorkspaceDetailPageInner() {
   );
 
   useEffect(() => {
-    connectionsRef.current = connections;
-  }, [connections]);
-
-  useEffect(() => {
     if (!me || loaded.current) return;
     loaded.current = true;
     refreshWorkspace().then((detail) => {
@@ -221,8 +205,8 @@ function WorkspaceDetailPageInner() {
         setReauthById(
           Object.fromEntries(list.filter((c) => c.needs_reauth).map((c) => [c.id, true]))
         );
-        // Don't auto-check on load — only the Check button (or a focus
-        // refresh) should trigger a change-check.
+        // Don't auto-check on load — only the Check button triggers a
+        // change-check.
       })
       .catch(() => {})
       .finally(() => setLoadingConnections(false));
@@ -317,22 +301,14 @@ function WorkspaceDetailPageInner() {
     if (!me) return;
     function onFocus() {
       // Refreshing the workspace itself is one cheap query — always do it, so
-      // returning to the tab reflects a sync that finished elsewhere.
+      // returning to the tab reflects a sync that finished elsewhere. The
+      // source change-check stays purely manual — only the Check button
+      // triggers it.
       void refreshWorkspace();
-      // The change-check is not cheap (see lastChangeCheckAt): it walks the
-      // Drive folder tree live, one API call per subfolder. Re-running it on
-      // every focus put the card back into "Checking…" for seconds each time
-      // the user alt-tabbed. Once a minute is plenty for "has the source
-      // changed?", and the explicit "Check again" button still forces one
-      // immediately, which is the path that should be instant-on-demand.
-      if (Date.now() - lastChangeCheckAt.current < CHANGE_CHECK_MIN_INTERVAL_MS) {
-        return;
-      }
-      refreshChanges(connectionsRef.current);
     }
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [me, refreshChanges, refreshWorkspace]);
+  }, [me, refreshWorkspace]);
 
   const hasActiveJob = jobs.some((j) => ACTIVE_STATUSES.has(j.status));
   useJobPolling({
