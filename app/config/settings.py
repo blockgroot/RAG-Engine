@@ -526,6 +526,54 @@ class NotionSettings:
         )
 
 
+@dataclass(frozen=True)
+class LinearSettings:
+    """Configuration for the Linear content source.
+
+    Same shape as ``NotionSettings``: a personal API key is the simplest viable
+    auth (no OAuth app review needed), and per-org keys are discovered
+    generically from ``LINEAR_TOKEN_<NAME>`` env vars so a key can only see the
+    Linear workspace it belongs to — the tenant boundary is enforced by Linear
+    itself, not just our code.
+    """
+
+    token: str | None
+    tokens: dict[str, str] = field(default_factory=dict)
+
+    _TOKEN_PREFIX = "LINEAR_TOKEN_"
+
+    @classmethod
+    def from_env(cls) -> "LinearSettings":
+        tokens = {
+            key[len(cls._TOKEN_PREFIX):].lower(): value
+            for key, value in os.environ.items()
+            if key.startswith(cls._TOKEN_PREFIX)
+            and len(key) > len(cls._TOKEN_PREFIX)
+            and value
+        }
+        return cls(token=os.getenv("LINEAR_TOKEN"), tokens=tokens)
+
+    def resolve_token(self, name: str | None = None) -> str:
+        """Return the API key for ``name`` (or the default token). No fallback."""
+        from ..core.exceptions import ConfigurationError
+
+        if name:
+            token = self.tokens.get(name.lower())
+            if not token:
+                available = ", ".join(sorted(self.tokens)) or "(none configured)"
+                raise ConfigurationError(
+                    f"No Linear token named {name!r}. Set LINEAR_TOKEN_{name.upper()} "
+                    f"in your .env. Configured org tokens: {available}."
+                )
+            return token
+        if self.token:
+            return self.token
+        raise ConfigurationError(
+            "No Linear token configured. Set LINEAR_TOKEN (default) or a per-org "
+            "LINEAR_TOKEN_<NAME> and pass its name to the ingestion run."
+        )
+
+
 DEFAULT_GOOGLE_OAUTH_SCOPES = (
     "https://www.googleapis.com/auth/drive.readonly "
     "https://www.googleapis.com/auth/documents.readonly"
