@@ -221,7 +221,8 @@ function WorkspaceDetailPageInner() {
         setReauthById(
           Object.fromEntries(list.filter((c) => c.needs_reauth).map((c) => [c.id, true]))
         );
-        refreshChanges(list);
+        // Don't auto-check on load — only the Check button (or a focus
+        // refresh) should trigger a change-check.
       })
       .catch(() => {})
       .finally(() => setLoadingConnections(false));
@@ -306,7 +307,7 @@ function WorkspaceDetailPageInner() {
         setReauthById(
           Object.fromEntries(list.filter((c) => c.needs_reauth).map((c) => [c.id, true]))
         );
-        refreshChanges(list);
+        // Same as above — no auto-check, wait for the Check button.
       })
       .catch(() => {});
     router.replace(`/workspaces/${workspaceId}`, { scroll: false });
