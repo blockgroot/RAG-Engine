@@ -198,7 +198,9 @@ function ConnectionsPageInner() {
         setReauthById(
           Object.fromEntries(list.filter((c) => c.needs_reauth).map((c) => [c.id, true]))
         );
-        refreshChanges(list);
+        // Don't auto-check on load — a Drive/Slack change-check walks the
+        // source live and can take seconds; only the Check button (or a
+        // focus refresh) should trigger it, per the other providers' UX.
       })
       .catch(() => {
         /* useMe owns the auth redirect; leave the cards in their unknown state */
