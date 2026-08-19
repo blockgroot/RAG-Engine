@@ -274,7 +274,7 @@ function WorkspaceDetailPageInner() {
           "GitHub sent you back without the details needed to link the account. " +
           "The app is installed on your GitHub, so connecting once more completes it.",
         options: [
-          "Click “Connect personal GitHub” below one more time.",
+          "Click “Connect personal account” below one more time.",
           "You should not have to install anything again — GitHub will remember.",
         ],
       });
@@ -614,8 +614,18 @@ function WorkspaceDetailPageInner() {
             {members.map((m) => (
               <div key={m.user_id || m.email} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "1rem" }}>
                 <span>{m.email}</span>
-                <span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <span className="people-card-actions" style={{ width: "auto", marginTop: 0 }}>
                   <span className="badge">{m.role === "owner" ? "Owner" : "Member"}</span>
+                  {isOwner && m.role === "member" && (
+                    <button
+                      type="button"
+                      className="button button-secondary"
+                      disabled={makeOwnerBusy === m.user_id}
+                      onClick={() => handleMakeOwner(m.user_id, m.email)}
+                    >
+                      {makeOwnerBusy === m.user_id ? "…" : "Make owner"}
+                    </button>
+                  )}
                   {isOwner && m.role === "member" && (
                     <button
                       type="button"
@@ -625,16 +635,6 @@ function WorkspaceDetailPageInner() {
                       title="Removes them from this space only — their Handbook account is untouched."
                     >
                       {removeMemberBusy === m.user_id ? "…" : "Remove"}
-                    </button>
-                  )}
-                  {isOwner && m.role === "member" && (
-                    <button
-                      type="button"
-                      className="button button-secondary"
-                      disabled={makeOwnerBusy === m.user_id}
-                      onClick={() => handleMakeOwner(m.user_id, m.email)}
-                    >
-                      {makeOwnerBusy === m.user_id ? "…" : "Make owner"}
                     </button>
                   )}
                 </span>

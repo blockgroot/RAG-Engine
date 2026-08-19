@@ -93,7 +93,7 @@ function ConnectionsPageInner() {
       // guaranteed state), so it cannot complete the link on its own. The app is
       // installed by this point, so one more Connect click finishes it.
       setError(
-        "Almost there — GitHub sent you back without the details needed to link the account. The app is installed on your GitHub, so click Connect company GitHub once more to finish. You should not need to install anything again."
+        "Almost there — GitHub sent you back without the details needed to link the account. The app is installed on your GitHub, so click Connect company account once more to finish. You should not need to install anything again."
       );
     } else {
       setError("Could not finish connecting GitHub. Try again.");

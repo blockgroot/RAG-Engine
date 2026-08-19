@@ -60,21 +60,6 @@ export default function MembersPage() {
     }
   }
 
-  async function handleRevoke(userId: string, memberEmail: string) {
-    if (busyId) return;
-    if (!window.confirm(`Sign out all sessions for ${memberEmail}?`)) return;
-    setBusyId(userId);
-    flashRoster(null);
-    try {
-      await api.revokeMemberSessions(userId);
-      flashRoster(`Signed out all sessions for ${memberEmail}.`);
-    } catch (err) {
-      flashRoster(null, err instanceof Error ? err.message : "Could not revoke sessions.");
-    } finally {
-      setBusyId(null);
-    }
-  }
-
   async function handlePromote(userId: string, memberEmail: string) {
     if (busyId) return;
     if (!window.confirm(`Make ${memberEmail} an admin? They will be able to manage people and sources.`)) {
@@ -271,29 +256,19 @@ export default function MembersPage() {
                           </button>
                         )}
                         {m.id !== me.user_id && (
-                          <>
-                            <button
-                              type="button"
-                              className="button button-secondary"
-                              disabled={busyId === m.id}
-                              onClick={() => handleRevoke(m.id, m.email)}
-                            >
-                              {busyId === m.id ? "…" : "Revoke sessions"}
-                            </button>
-                            <button
-                              type="button"
-                              className="button button-secondary"
-                              disabled={busyId === m.id || (m.role === "admin" && adminCount <= 1)}
-                              title={
-                                m.role === "admin" && adminCount <= 1
-                                  ? "Promote someone else before removing the last admin"
-                                  : undefined
-                              }
-                              onClick={() => handleRemove(m.id, m.email)}
-                            >
-                              Remove
-                            </button>
-                          </>
+                          <button
+                            type="button"
+                            className="button button-secondary"
+                            disabled={busyId === m.id || (m.role === "admin" && adminCount <= 1)}
+                            title={
+                              m.role === "admin" && adminCount <= 1
+                                ? "Promote someone else before removing the last admin"
+                                : undefined
+                            }
+                            onClick={() => handleRemove(m.id, m.email)}
+                          >
+                            Remove
+                          </button>
                         )}
                       </div>
                     </li>
