@@ -2802,11 +2802,7 @@ table .role-chip.role-admin,
   .how-path,
   .how-path:hover,
   .how-path:hover .how-path-head .brand-glyph-img,
-  .how-path::before,
-  .how-isolate article,
-  .how-isolate article:hover,
-  .how-isolate article:hover .brand-glyph-img,
-  .how-isolate article::before {
+  .how-path::before {
     transform: none !important;
   }
   .landing-feature,
@@ -2816,11 +2812,7 @@ table .role-chip.role-admin,
   .how-path,
   .how-path-head .brand-glyph-img,
   .how-path-head strong,
-  .how-path::before,
-  .how-isolate article,
-  .how-isolate article .brand-glyph-img,
-  .how-isolate h3,
-  .how-isolate article::before {
+  .how-path::before {
     transition: none !important;
   }
   .landing-close-orbit-glow,
@@ -3879,73 +3871,6 @@ table .role-chip.role-admin,
   font-size: 0.92rem;
   line-height: 1.45;
 }
-.how-isolate {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.85rem;
-}
-.how-isolate article {
-  position: relative;
-  min-height: 12rem;
-  height: 100%;
-  padding: 1.15rem 1.2rem;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.9);
-  border: 1px solid color-mix(in srgb, var(--border) 80%, white);
-  box-shadow: var(--shadow-soft);
-  display: flex;
-  flex-direction: column;
-  gap: 0.45rem;
-  box-sizing: border-box;
-  overflow: hidden;
-  cursor: default;
-  transition:
-    transform 0.28s var(--ease),
-    box-shadow 0.28s var(--ease),
-    border-color 0.28s var(--ease),
-    background 0.28s var(--ease);
-}
-.how-isolate article::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: linear-gradient(180deg, #14b8a6, var(--accent-strong));
-  opacity: 0;
-  transform: scaleY(0.55);
-  transform-origin: center;
-  transition: opacity 0.28s var(--ease), transform 0.28s var(--ease);
-}
-.how-isolate article:hover {
-  transform: translateY(-6px);
-  background: #fff;
-  border-color: color-mix(in srgb, var(--accent) 28%, white);
-  box-shadow:
-    0 4px 16px -6px rgba(16, 24, 40, 0.12),
-    0 22px 44px -22px rgba(15, 118, 110, 0.38);
-}
-.how-isolate article:hover::before {
-  opacity: 1;
-  transform: scaleY(1);
-}
-.how-isolate article .brand-glyph-img {
-  transition: transform 0.28s var(--ease);
-}
-.how-isolate article:hover .brand-glyph-img {
-  transform: scale(1.08) translateY(-1px);
-}
-.how-isolate h3 {
-  font-size: 1.02rem;
-  margin: 0.2rem 0 0;
-  transition: color 0.28s var(--ease);
-}
-.how-isolate article:hover h3 {
-  color: var(--accent-strong);
-}
-.how-isolate p { margin: 0; color: var(--ink-muted); font-size: 0.9rem; }
-
 /* Why / offer — editorial spine + capability stream (no card grid). */
 .how-why {
   display: grid;
@@ -4638,8 +4563,7 @@ table .role-chip.role-admin,
 }
 @media (max-width: 900px) {
   .landing-section-head,
-  .how-paths,
-  .how-isolate {
+  .how-paths {
     grid-template-columns: 1fr;
   }
   .landing-section-head .landing-section-title { max-width: none; }
