@@ -9,7 +9,7 @@ import { API_BASE_URL } from "./api";
 export interface ChatDonePayload {
   answer: string;
   grounded: boolean;
-  source: "policy" | "workspace" | "web" | "github" | "none";
+  source: "policy" | "workspace" | "web" | "github" | "slack" | "linear" | "none";
   /** Optional — kept for API compatibility; not shown in the UI. */
   citations?: { content: string; reference: string; score: number | null }[];
   resolved_question: string | null;
@@ -36,7 +36,7 @@ export async function streamChat(
    * disambiguate. The server decides deterministically from this value -- no
    * LLM classifies the question.
    */
-  agent?: "policy" | "github" | "slack"
+  agent?: "policy" | "github" | "slack" | "linear"
 ): Promise<void> {
   let response: Response;
   try {

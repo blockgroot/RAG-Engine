@@ -95,6 +95,8 @@ export interface Me {
    * first sync produced nothing would give a tab that can only ever refuse.
    */
   slack_ready: boolean;
+  /** Same rule as `slack_ready`, for the chat UI's "Linear" tab. */
+  linear_ready: boolean;
 }
 
 export interface MemberRecord {
@@ -256,6 +258,8 @@ export interface WorkspaceDetail extends WorkspaceRecord {
   github_connected: boolean;
   /** Whether THIS workspace has its own ingested Slack threads (same rule as `Me.slack_ready`). */
   slack_ready: boolean;
+  /** Whether THIS workspace has its own ingested Linear issues (same rule as `Me.linear_ready`). */
+  linear_ready: boolean;
 }
 
 export interface WorkspaceMemberRecord {
@@ -395,7 +399,10 @@ export const api = {
     }),
 
   /** Starter chips from connected sources (docs / GitHub repos) — not hardcoded. */
-  chatSuggestions: (agent: "policy" | "github" | "slack", workspaceId?: string | null) => {
+  chatSuggestions: (
+    agent: "policy" | "github" | "slack" | "linear",
+    workspaceId?: string | null
+  ) => {
     const params = new URLSearchParams({ agent });
     if (workspaceId) params.set("workspace_id", workspaceId);
     return request<{ agent: string; questions: string[] }>(

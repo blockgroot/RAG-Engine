@@ -30,7 +30,7 @@ function ChipIcon({ kind }: { kind: "policy" | "code" }) {
   );
 }
 
-type AgentTab = "policy" | "github" | "slack";
+type AgentTab = "policy" | "github" | "slack" | "linear";
 
 export default function ChatPage() {
   return (
@@ -83,12 +83,15 @@ function ChatPageInner() {
   const [agentTab, setAgentTab] = useState<AgentTab>("policy");
   const [workspaceGithub, setWorkspaceGithub] = useState(false);
   const [workspaceSlack, setWorkspaceSlack] = useState(false);
+  const [workspaceLinear, setWorkspaceLinear] = useState(false);
   const codeAvailable = workspaceId ? workspaceGithub : Boolean(me?.github_connected);
   // Slack is keyed on *ingested threads*, not merely on the connection existing
   // (see /me.slack_ready): unlike GitHub's live reads, a Slack connection whose
   // first sync produced nothing can only ever refuse, so the tab waits.
   const slackAvailable = workspaceId ? workspaceSlack : Boolean(me?.slack_ready);
-  const showAgentTabs = codeAvailable || slackAvailable;
+  // Same rule as Slack (see /me.linear_ready).
+  const linearAvailable = workspaceId ? workspaceLinear : Boolean(me?.linear_ready);
+  const showAgentTabs = codeAvailable || slackAvailable || linearAvailable;
   // Policies need a successful ingest before they can answer; GitHub does not,
   // because it is read live. So an org with only GitHub connected must not be
   // held behind the policy readiness gate.
@@ -100,13 +103,18 @@ function ChatPageInner() {
       ? "github"
       : agentTab === "slack" && slackAvailable
         ? "slack"
-        : !policiesReady && codeAvailable
-          ? "github"
-          : !policiesReady && slackAvailable
-            ? "slack"
-            : "policy";
+        : agentTab === "linear" && linearAvailable
+          ? "linear"
+          : !policiesReady && codeAvailable
+            ? "github"
+            : !policiesReady && slackAvailable
+              ? "slack"
+              : !policiesReady && linearAvailable
+                ? "linear"
+                : "policy";
   const askingCode = activeAgent === "github";
   const askingSlack = activeAgent === "slack";
+  const askingLinear = activeAgent === "linear";
 
   // Policies and Code are separate surfaces (different agents, different
   // starters). Switching tabs must open that tab's empty template — not leave
@@ -123,7 +131,8 @@ function ChatPageInner() {
     if (policiesReady) return;
     if (codeAvailable) setAgentTab("github");
     else if (slackAvailable) setAgentTab("slack");
-  }, [codeAvailable, slackAvailable, policiesReady]);
+    else if (linearAvailable) setAgentTab("linear");
+  }, [codeAvailable, slackAvailable, linearAvailable, policiesReady]);
 
   // Starter chips from connected sources (document titles / GitHub repos).
   useEffect(() => {
@@ -187,6 +196,7 @@ function ChatPageInner() {
         setReadyToAsk(ws.ready_to_ask);
         setWorkspaceGithub(Boolean(ws.github_connected));
         setWorkspaceSlack(Boolean(ws.slack_ready));
+        setWorkspaceLinear(Boolean(ws.linear_ready));
       })
       .catch(() => {
         if (!cancelled) setReadyToAsk(false);
@@ -376,23 +386,31 @@ function ChatPageInner() {
       ? workspaceId
         ? "Ask this space’s Slack"
         : "Ask your Slack"
-      : workspaceId
-        ? "Ask this space"
-        : "Ask your company";
+      : askingLinear
+        ? workspaceId
+          ? "Ask this space’s Linear"
+          : "Ask your Linear"
+        : workspaceId
+          ? "Ask this space"
+          : "Ask your company";
   const emptyCopy = askingCode
     ? "Repository and commit answers are read live from GitHub — always current, never stale."
     : askingSlack
       ? "Answers come from the conversations in your connected channels — what people actually said, not documents."
-      : workspaceId
-        ? "Answers come only from the notes and docs connected to this space."
-        : "Leave, benefits, remote work, and more — grounded in your connected documents.";
+      : askingLinear
+        ? "Answers come from your tracked issues and their comments — ticket status, not documents."
+        : workspaceId
+          ? "Answers come only from the notes and docs connected to this space."
+          : "Leave, benefits, remote work, and more — grounded in your connected documents.";
   const composerPlaceholder = askingCode
     ? "Ask about a repository or a commit…"
     : askingSlack
       ? "Ask what was discussed in a channel…"
-      : workspaceId
-        ? "Ask something about this space…"
-        : "Ask about leave, benefits, remote work…";
+      : askingLinear
+        ? "Ask about the status of an issue…"
+        : workspaceId
+          ? "Ask something about this space…"
+          : "Ask about leave, benefits, remote work…";
 
   return (
     <AppShell me={me} variant="app">
@@ -409,7 +427,7 @@ function ChatPageInner() {
           <div className="chat-topbar-copy">
             <p className="chat-kicker">{workspaceId ? "Space" : "Company-wide"}</p>
             <h1>
-              {askingCode ? "Code" : askingSlack ? "Slack" : "Ask"}
+              {askingCode ? "Code" : askingSlack ? "Slack" : askingLinear ? "Linear" : "Ask"}
             </h1>
           </div>
           {showAgentTabs && (
@@ -455,6 +473,20 @@ function ChatPageInner() {
                   disabled={busy}
                 >
                   Slack
+                </button>
+              )}
+              {linearAvailable && (
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-linear"
+                  aria-controls="ask-panel"
+                  aria-selected={askingLinear}
+                  className={`agent-tab${askingLinear ? " is-active" : ""}`}
+                  onClick={() => switchAgentTab("linear")}
+                  disabled={busy}
+                >
+                  Linear
                 </button>
               )}
             </div>
