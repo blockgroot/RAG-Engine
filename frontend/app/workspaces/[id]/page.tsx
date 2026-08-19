@@ -274,7 +274,7 @@ function WorkspaceDetailPageInner() {
           "GitHub sent you back without the details needed to link the account. " +
           "The app is installed on your GitHub, so connecting once more completes it.",
         options: [
-          "Click “Connect personal GitHub” below one more time.",
+          "Click “Connect personal account” below one more time.",
           "You should not have to install anything again — GitHub will remember.",
         ],
       });

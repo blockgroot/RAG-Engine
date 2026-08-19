@@ -407,15 +407,9 @@ function ChatPageInner() {
 
         <div className="chat-topbar">
           <div className="chat-topbar-copy">
-            <p className="chat-kicker">{workspaceId ? "Space" : "Workspace"}</p>
+            <p className="chat-kicker">{workspaceId ? "Space" : "Company-wide"}</p>
             <h1>
-              {askingCode
-                ? "Code"
-                : askingSlack
-                  ? "Slack"
-                  : workspaceId
-                    ? "Space Ask"
-                    : "Ask"}
+              {askingCode ? "Code" : askingSlack ? "Slack" : "Ask"}
             </h1>
           </div>
           {showAgentTabs && (
