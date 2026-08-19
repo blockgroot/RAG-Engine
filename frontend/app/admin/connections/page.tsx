@@ -19,10 +19,6 @@ const PROVIDERS: ("notion" | "google" | "github" | "slack")[] = [
   "slack",
 ];
 const ACTIVE_STATUSES = ACTIVE_JOB_STATUSES;
-// Minimum gap between window-focus-triggered change-checks. A Drive check walks
-// the folder tree live (one Google API call per subfolder), so an unthrottled
-// focus listener re-ran seconds of work every time the user alt-tabbed.
-const CHANGE_CHECK_MIN_INTERVAL_MS = 60_000;
 
 function latestJobByConnection(jobs: JobRecord[]): Record<string, JobRecord> {
   const latest: Record<string, JobRecord> = {};
@@ -79,7 +75,6 @@ function ConnectionsPageInner() {
   const prevStatuses = useRef<Record<string, string>>({});
   const loaded = useRef(false);
   const bannerRef = useRef<HTMLDivElement | null>(null);
-  const connectionsRef = useRef<ConnectionRecord[]>([]);
 
   useEffect(() => {
     const connectError = searchParams.get("connect_error");
@@ -103,14 +98,10 @@ function ConnectionsPageInner() {
 
 
   const changesGen = useRef(0);
-  // When the last change-check actually ran, so the focus listener can skip one
-  // that just happened (see CHANGE_CHECK_MIN_INTERVAL_MS).
-  const lastChangeCheckAt = useRef(0);
 
   const refreshChanges = useCallback(async (list: ConnectionRecord[]) => {
     if (list.length === 0) return;
     const gen = ++changesGen.current;
-    lastChangeCheckAt.current = Date.now();
     setChecking(true);
     const next: Record<string, SyncChanges> = {};
     const failedIds: string[] = [];
@@ -178,10 +169,6 @@ function ConnectionsPageInner() {
     setChecking(false);
   }, []);
 
-  useEffect(() => {
-    connectionsRef.current = connections;
-  }, [connections]);
-
   // Fired on mount rather than gated on `me`, so the session lookup and these
   // loads run CONCURRENTLY instead of as a waterfall — the wait before the cards
   // know their real state was two sequential round trips, not one. Both are
@@ -199,8 +186,7 @@ function ConnectionsPageInner() {
           Object.fromEntries(list.filter((c) => c.needs_reauth).map((c) => [c.id, true]))
         );
         // Don't auto-check on load — a Drive/Slack change-check walks the
-        // source live and can take seconds; only the Check button (or a
-        // focus refresh) should trigger it, per the other providers' UX.
+        // source live and can take seconds; only the Check button triggers it.
       })
       .catch(() => {
         /* useMe owns the auth redirect; leave the cards in their unknown state */
@@ -215,23 +201,6 @@ function ConnectionsPageInner() {
     }).catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // Re-check when the tab is focused again (e.g. after editing Notion in another
-  // tab) — but throttled. A Drive change-check walks the folder tree live, one
-  // Google API call per subfolder, so an unthrottled listener put every card
-  // back into "Checking…" for seconds on every alt-tab. The explicit
-  // "Check again" button still forces one immediately.
-  useEffect(() => {
-    if (!me) return;
-    function onFocus() {
-      if (Date.now() - lastChangeCheckAt.current < CHANGE_CHECK_MIN_INTERVAL_MS) {
-        return;
-      }
-      refreshChanges(connectionsRef.current);
-    }
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
-  }, [me, refreshChanges]);
 
   const hasActiveJob = jobs.some((j) => ACTIVE_STATUSES.has(j.status));
   useJobPolling({

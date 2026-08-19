@@ -5,13 +5,22 @@ import { DriveFolderPicker } from "./DriveFolderPicker";
 import { SlackChannelPicker } from "./SlackChannelPicker";
 import { SlackMemberInvitePicker } from "./SlackMemberInvitePicker";
 import { JobStatusBadge } from "./JobStatusBadge";
-import { ProviderMark } from "./ProviderMark";
+import { BrandGlyph, type BrandName } from "./BrandGlyph";
 
 const PROVIDER_LABELS: Record<string, string> = {
   notion: "Notion",
   google: "Google Drive",
   github: "GitHub",
   slack: "Slack",
+};
+
+/** Same real brand marks used on the landing/how-it-works pages — "google"
+ * here is the API's provider key, BrandGlyph's asset is named "drive". */
+const BRAND_GLYPH: Record<string, BrandName> = {
+  notion: "notion",
+  google: "drive",
+  github: "github",
+  slack: "slack",
 };
 
 const SOURCE_NOUN: Record<string, string> = {
@@ -89,7 +98,8 @@ function manageExternalHref(
   return null;
 }
 
-/** Card header already names the provider — the button doesn't need to repeat it. */
+/** The row already names the provider next to its icon — the button doesn't
+ * need to repeat it. */
 function manageExternalLabel(): string {
   return "Manage";
 }
@@ -269,41 +279,174 @@ export function ConnectionCard({
   }
 
   return (
-    <div className={`card source-studio-card source-studio-card--${provider}${connection ? " is-linked" : ""}`}>
-      <div className="source-studio-top">
-        <div className="source-studio-title">
-          <ProviderMark provider={provider} />
-          <div>
+    <div className={`card source-row source-row--${provider}${connection ? " is-linked" : ""}`}>
+      <div className="source-row-head">
+        <div className="source-row-main">
+          <span className="source-row-mark">
+            <BrandGlyph name={BRAND_GLYPH[provider]} size={24} />
+          </span>
+          <div className="source-row-copy">
             <h3>{PROVIDER_LABELS[provider]}</h3>
-            <p className="source-studio-kind">
+            <p className="source-row-kind">
               {provider === "github"
                 ? workspaceId
-                  ? "This space only — pick a different GitHub account than Company Sources"
-                  : "Company-wide Code tab — usually a GitHub Organization"
+                  ? "This space only"
+                  : "Company-wide Code tab"
                 : isLive
                   ? "Live answers"
                   : "Synced documents"}
+              {connection && (
+                <>
+                  {" · "}
+                  {connection.external_workspace_name || "Connected"}
+                  {provider === "google" && folderConfigured
+                    ? ` · ${connection.source_config?.folder_name || "Drive folder"}`
+                    : ""}
+                  {provider === "slack" && channelsConfigured
+                    ? ` · ${channelIds.length} channel${channelIds.length === 1 ? "" : "s"}`
+                    : ""}
+                </>
+              )}
             </p>
           </div>
         </div>
+
         {connection ? (
           <span className="badge badge-verified">Linked</span>
         ) : (
           <span className="badge">{available ? "Not linked yet" : "Coming soon"}</span>
         )}
-      </div>
 
-      {connection && (
-        <p className="muted" style={{ marginTop: "0.35rem" }}>
-          {connection.external_workspace_name || "Connected"}
-          {provider === "google" && folderConfigured
-            ? ` · ${connection.source_config?.folder_name || "Drive folder"}`
-            : ""}
-          {provider === "slack" && channelsConfigured
-            ? ` · ${channelIds.length} channel${channelIds.length === 1 ? "" : "s"}`
-            : ""}
-        </p>
-      )}
+        <div className="source-row-actions">
+          {available && !connection && (
+            <a
+              className="button"
+              href={workspaceId ? api.connectWorkspaceUrl(workspaceId, provider) : api.connectUrl(provider)}
+            >
+              {provider === "github"
+                ? workspaceId
+                  ? "Connect personal account"
+                  : "Connect company account"
+                : "Connect"}
+            </a>
+          )}
+          {connection && manageHref && (
+            <a
+              className="button button-secondary"
+              href={manageHref}
+              target="_blank"
+              rel="noreferrer"
+              title={manageExternalTitle(provider)}
+            >
+              {manageExternalLabel()}
+            </a>
+          )}
+          {provider === "google" &&
+            connection &&
+            folderConfigured &&
+            !changingFolder &&
+            !syncInProgress && (
+              <button
+                className="button button-secondary"
+                type="button"
+                onClick={() => {
+                  setChangingFolder(true);
+                  setFolderHint(null);
+                  setConfigError(null);
+                }}
+                title="Point this connection at a different Drive folder"
+              >
+                Change folder
+              </button>
+            )}
+          {provider === "slack" &&
+            connection &&
+            channelsConfigured &&
+            !changingChannels &&
+            !syncInProgress && (
+              <button
+                className="button button-secondary"
+                type="button"
+                onClick={() => {
+                  setChangingChannels(true);
+                  setFolderHint(null);
+                  setConfigError(null);
+                }}
+                title="Add or remove connected Slack channels"
+              >
+                Change channels
+              </button>
+            )}
+          {provider === "slack" &&
+            workspaceId &&
+            connection &&
+            channelsConfigured &&
+            !changingChannels &&
+            !syncInProgress && (
+              <button
+                className="button button-secondary"
+                type="button"
+                onClick={() => {
+                  setInvitingMembers((v) => !v);
+                  setConfigError(null);
+                }}
+                title="Invite members of your connected Slack channel(s) to this space"
+              >
+                {invitingMembers ? "Hide invite" : "Invite members"}
+              </button>
+            )}
+          {connection && isLive && (
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={refreshScope}
+              disabled={refreshingScope}
+              title="Pull the latest repo list after you change access on GitHub"
+            >
+              {refreshingScope ? "Refreshing…" : "Refresh list"}
+            </button>
+          )}
+          {connection && !isLive && !needsFolder && !needsChannels && needsUpdate && (
+            <button
+              className="button"
+              type="button"
+              onClick={() => onUpdate(connection.id)}
+              disabled={syncInProgress}
+            >
+              {syncInProgress ? "Updating…" : "Update"}
+            </button>
+          )}
+          {connection && !isLive && !needsFolder && !needsChannels && !syncInProgress && onCheckAgain && (
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={onCheckAgain}
+              disabled={checkingChanges}
+            >
+              {checkingChanges ? "Checking…" : "Check"}
+            </button>
+          )}
+          {connection && needsReauth && (
+            <a
+              className="button"
+              href={workspaceId ? api.connectWorkspaceUrl(workspaceId, provider) : api.connectUrl(provider)}
+            >
+              Reconnect
+            </a>
+          )}
+          {connection && !syncInProgress && !disconnecting && (
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={handleDisconnect}
+              disabled={disconnecting}
+              title="Remove this connection and its indexed documents"
+            >
+              {disconnecting ? "Disconnecting…" : "Disconnect"}
+            </button>
+          )}
+        </div>
+      </div>
 
       {isLive && connection && (
         <div className="stack source-live-copy" style={{ marginTop: "0.75rem", gap: "0.4rem" }}>
@@ -549,136 +692,6 @@ export function ConnectionCard({
           {disconnectError}
         </div>
       )}
-
-      <div className="source-card-actions">
-        {available && !connection && (
-          <a
-            className="button"
-            href={workspaceId ? api.connectWorkspaceUrl(workspaceId, provider) : api.connectUrl(provider)}
-          >
-            {provider === "github"
-              ? workspaceId
-                ? "Connect personal account"
-                : "Connect company account"
-              : "Connect"}
-          </a>
-        )}
-        {connection && manageHref && (
-          <a
-            className="button button-secondary"
-            href={manageHref}
-            target="_blank"
-            rel="noreferrer"
-            title={manageExternalTitle(provider)}
-          >
-            {manageExternalLabel()}
-          </a>
-        )}
-        {provider === "google" &&
-          connection &&
-          folderConfigured &&
-          !changingFolder &&
-          !syncInProgress && (
-            <button
-              className="button button-secondary"
-              type="button"
-              onClick={() => {
-                setChangingFolder(true);
-                setFolderHint(null);
-                setConfigError(null);
-              }}
-              title="Point this connection at a different Drive folder"
-            >
-              Change folder
-            </button>
-          )}
-        {provider === "slack" &&
-          connection &&
-          channelsConfigured &&
-          !changingChannels &&
-          !syncInProgress && (
-            <button
-              className="button button-secondary"
-              type="button"
-              onClick={() => {
-                setChangingChannels(true);
-                setFolderHint(null);
-                setConfigError(null);
-              }}
-              title="Add or remove connected Slack channels"
-            >
-              Change channels
-            </button>
-          )}
-        {provider === "slack" &&
-          workspaceId &&
-          connection &&
-          channelsConfigured &&
-          !changingChannels &&
-          !syncInProgress && (
-            <button
-              className="button button-secondary"
-              type="button"
-              onClick={() => {
-                setInvitingMembers((v) => !v);
-                setConfigError(null);
-              }}
-              title="Invite members of your connected Slack channel(s) to this space"
-            >
-              {invitingMembers ? "Hide invite" : "Invite members"}
-            </button>
-          )}
-        {connection && isLive && (
-          <button
-            className="button button-secondary"
-            type="button"
-            onClick={refreshScope}
-            disabled={refreshingScope}
-            title="Pull the latest repo list after you change access on GitHub"
-          >
-            {refreshingScope ? "Refreshing…" : "Refresh list"}
-          </button>
-        )}
-        {connection && !isLive && !needsFolder && !needsChannels && needsUpdate && (
-          <button
-            className="button"
-            type="button"
-            onClick={() => onUpdate(connection.id)}
-            disabled={syncInProgress}
-          >
-            {syncInProgress ? "Updating…" : "Update"}
-          </button>
-        )}
-        {connection && !isLive && !needsFolder && !needsChannels && !syncInProgress && onCheckAgain && (
-          <button
-            className="button button-secondary"
-            type="button"
-            onClick={onCheckAgain}
-            disabled={checkingChanges}
-          >
-            {checkingChanges ? "Checking…" : "Check"}
-          </button>
-        )}
-        {connection && needsReauth && (
-          <a
-            className="button"
-            href={workspaceId ? api.connectWorkspaceUrl(workspaceId, provider) : api.connectUrl(provider)}
-          >
-            Reconnect
-          </a>
-        )}
-        {connection && !syncInProgress && !disconnecting && (
-          <button
-            className="button button-secondary"
-            type="button"
-            onClick={handleDisconnect}
-            disabled={disconnecting}
-            title="Remove this connection and its indexed documents"
-          >
-            {disconnecting ? "Disconnecting…" : "Disconnect"}
-          </button>
-        )}
-      </div>
     </div>
   );
 }
