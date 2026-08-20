@@ -707,7 +707,7 @@ function WorkspaceDetailPageInner() {
           </section>
         </div>
 
-        {isOwner ? (
+        {isOwner && (
           <section className="studio-section" aria-label="Sources for this space">
             <div className="studio-section-head">
               <h2>Sources for this space</h2>
