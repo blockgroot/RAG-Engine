@@ -13,7 +13,10 @@
 #     Each metric costs several judge calls per case, so running it per-push would
 #     multiply cost for little marginal signal — a nightly regression check against
 #     the established baseline is the right cadence. It uploads the report artifact
-#     and fails if a metric mean drops below baseline.
+#     and fails if a metric mean drops below baseline. Same job also runs the
+#     multi-run prompt-injection red-team probe (scripts/probe_injection.py
+#     --fail-on-leak), same cost/cadence reasoning — a 15x-per-case LLM probe
+#     is nightly-scale cost, not per-push.
 #
 # LLM ACCESS: both tiers need an OpenAI-compatible LLM. The project's dev endpoint
 # (FreeLLMAPI) is localhost-only, so CI reads it from repo *secrets*
@@ -142,6 +145,16 @@ jobs:
       - name: Run RAGAS eval (fails if below baseline)
         if: env.LLM_MODEL != ''
         run: python -m evaluation.run_eval --ragas --skip-web
+
+      - name: Red-team probe — prompt injection (fails on any leak)
+        # Stress-testing/red-teaming gap: previously scripts/probe_injection.py
+        # was a manual-only script (see CLAUDE.md's "measure with multi-run
+        # probes" note). Same cadence as the RAGAS tier — a multi-run probe
+        # per push would be needless LLM cost for a mitigation that's already
+        # deliberately imperfect (see CLAUDE.md §4); nightly/manual catches a
+        # real regression in the scrub/fencing without gating every push.
+        if: env.LLM_MODEL != ''
+        run: python scripts/probe_injection.py --runs 15 --fail-on-leak
 
       - name: Upload eval report
         if: always()

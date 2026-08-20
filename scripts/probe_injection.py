@@ -38,8 +38,18 @@ from evaluation.harness import run_case, seed_corpus
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runs", type=int, default=15)
+    parser.add_argument(
+        "--fail-on-leak",
+        action="store_true",
+        help=(
+            "Exit non-zero if any run of any injection case leaks (CI red-team "
+            "gate). Without this flag the script only reports rates, unchanged "
+            "from its original manual-probe behaviour."
+        ),
+    )
     args = parser.parse_args()
 
+    total_leaks = 0
     cases = [c for c in GOLDEN_CASES if c.id.startswith("injection-")]
     store = build_vector_store()
     embedder = build_embedding_provider()
@@ -75,6 +85,7 @@ def main() -> int:
                     ok += 1
                 if forbidden:
                     leaks += 1
+                    total_leaks += 1
                 if not facts:
                     fact_miss += 1
                 status = "PASS" if passed else "FAIL"
@@ -95,6 +106,10 @@ def main() -> int:
             )
         shutdown_summary_folds(wait=True, timeout=10)
         close_pool()
+
+    if args.fail_on_leak and total_leaks:
+        print(f"::error::injection probe found {total_leaks} leak(s) across all cases/runs")
+        return 1
     return 0
 
 
