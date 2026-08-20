@@ -77,6 +77,15 @@ export interface Me {
   /** Safe to open Ask only after a full ingest job has succeeded. */
   ready_to_ask: boolean;
   /**
+   * Whether the legacy combined "Docs" tab has anything of its own to answer
+   * from — narrower than `ready_to_ask`, which is also true when e.g. only
+   * Slack has synced. Slack/Linear/Notion/Drive each have their own
+   * source-pinned tab; "Docs" (the unscoped PolicyAgent/WorkspaceAgent) must
+   * only appear when a provider with no dedicated tab has real content, or it
+   * would silently answer from those same tabs' chunks unfiltered.
+   */
+  policy_ready: boolean;
+  /**
    * True when this org has an org-wide GitHub connection, so the chat UI can
    * offer its "Code" tab. Reported on /me rather than read from
    * /admin/connections because that route is admin-only and members must be
@@ -257,6 +266,8 @@ export interface WorkspaceDetail extends WorkspaceRecord {
   latest_job_status: string | null;
   latest_doc_count: number | null;
   ready_to_ask: boolean;
+  /** Whether THIS workspace's legacy "Docs" tab has content of its own (see `Me.policy_ready`). */
+  policy_ready: boolean;
   /**
    * True when THIS workspace has its own GitHub connection. Scoped to the
    * workspace on purpose: an org-wide GitHub connection must not light up a

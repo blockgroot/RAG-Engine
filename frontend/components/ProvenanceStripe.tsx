@@ -4,6 +4,9 @@ const LABELS: Record<string, string> = {
   web: "Web search",
   github: "GitHub",
   slack: "Slack conversation",
+  linear: "Linear",
+  notion: "Notion",
+  google: "Google Drive",
   none: "No answer found",
 };
 
@@ -15,6 +18,9 @@ const COLORS: Record<string, string> = {
   web: "var(--provenance-web)",
   github: "var(--provenance-github)",
   slack: "var(--provenance-slack, var(--provenance-policy))",
+  linear: "var(--provenance-linear, var(--provenance-policy))",
+  notion: "var(--provenance-notion, var(--provenance-policy))",
+  google: "var(--provenance-google, var(--provenance-policy))",
   none: "var(--provenance-none)",
 };
 

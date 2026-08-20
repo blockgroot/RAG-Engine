@@ -6,7 +6,11 @@ const CLASS: Record<string, string> = {
 };
 
 const LABEL: Record<string, string> = {
-  succeeded: "Up to date",
+  // NOT "Up to date" — this only ever describes the last successful sync
+  // job's own record (see ConnectionCard's `showDocsJobBadge`), which says
+  // nothing about whether anything has changed since. "Up to date" is
+  // reserved for `docsCheckedFresh`, where a live Check just confirmed it.
+  succeeded: "Last synced",
   running: "Updating",
   queued: "Queued",
   failed: "Didn’t finish",
