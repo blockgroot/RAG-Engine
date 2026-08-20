@@ -17,6 +17,21 @@ from datetime import datetime
 
 
 @dataclass(frozen=True)
+class DateRange:
+    """Hard filter on ``documents.source_last_modified`` for retrieval.
+
+    Either bound may be ``None`` (open-ended). This is a hard filter (like
+    ``org_id``/``source_provider``), applied in the ``WHERE`` clause before
+    ranking — never a re-ranking signal. Documents with no
+    ``source_last_modified`` (e.g. a manual/plain ingest) never match a
+    bounded range, since there is no date to compare against.
+    """
+
+    after: datetime | None = None
+    before: datetime | None = None
+
+
+@dataclass(frozen=True)
 class RetrievedChunk:
     """A single search hit returned from the store."""
 
@@ -106,8 +121,16 @@ class VectorStore(ABC):
         top_k: int = 5,
         workspace_id: str | None = None,
         source_provider: str | None = None,
+        date_range: "DateRange | None" = None,
     ) -> list[RetrievedChunk]:
         """Return the ``top_k`` most similar chunks *within ``org_id`` only*.
+
+        ``date_range``: an optional hard filter on ``documents.source_last_modified``
+        (e.g. "only policies updated in the last quarter"). ``None`` (default)
+        is a no-op, identical to every existing call site. Applied in the
+        ``WHERE`` clause before ranking, same as ``source_provider`` — never a
+        re-ranking signal, and it never widens what ``org_id``/``workspace_id``
+        already restrict.
 
         ``workspace_id`` (Workspace-within-a-Workspace): ``None`` (default)
         queries only org-wide chunks (rows with ``workspace_id IS NULL``) —
@@ -146,9 +169,14 @@ class VectorStore(ABC):
         top_k: int = 30,
         workspace_id: str | None = None,
         source_provider: str | None = None,
+        date_range: "DateRange | None" = None,
     ) -> list[RetrievedChunk]:
         """Full-text (BM25-style) search within ``org_id``, ordered by keyword
         relevance (Phase 6 hybrid retrieval).
+
+        ``date_range`` behaves exactly as on ``query`` — the keyword half of
+        hybrid search must apply the same filter, or a date-scoped answer
+        could still surface an out-of-range chunk through the BM25 leg.
 
         ``source_provider`` behaves exactly as on ``query`` — the keyword half
         of hybrid search must apply the same filter, or a Slack-scoped answer

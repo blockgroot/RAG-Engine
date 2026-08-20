@@ -113,13 +113,20 @@ class _RecordingStore:
             document_title=tag,
         )
 
-    def query(self, org_id, query_embedding, top_k=5, workspace_id=None, source_provider=None):
+    def query(self, org_id, query_embedding, top_k=5, workspace_id=None, source_provider=None, date_range=None):
         tag = f"v{int(query_embedding[0])}"
         self.vector_calls.append(tag)
         return [self._hit(tag, i, 0.9 - i * 0.1) for i in range(3)]
 
     def keyword_search(
-        self, org_id, query_text, query_embedding, top_k=30, workspace_id=None, source_provider=None
+        self,
+        org_id,
+        query_text,
+        query_embedding,
+        top_k=30,
+        workspace_id=None,
+        source_provider=None,
+        date_range=None,
     ):
         self.keyword_calls.append(query_text)
         return [self._hit(f"k-{query_text}", i, 0.5 - i * 0.1) for i in range(2)]

@@ -24,7 +24,7 @@ from dataclasses import dataclass
 
 from ..config.settings import RagSettings, RetrievalSettings
 from ..reranker.base import Reranker
-from ..vectorstore.base import RetrievedChunk, VectorStore
+from ..vectorstore.base import DateRange, RetrievedChunk, VectorStore
 
 
 # Ceiling on concurrent first-stage searches for ONE question. Each in-flight
@@ -79,6 +79,7 @@ class HybridRetriever:
         extra_queries: list[tuple[str, list[float]]] | None = None,
         rerank_query: str | None = None,
         workspace_id: str | None = None,
+        date_range: DateRange | None = None,
     ) -> RetrievalResult:
         """Retrieve for ``query_text``; optionally fuse extra (sub-)queries first.
 
@@ -87,6 +88,10 @@ class HybridRetriever:
         Non-``None`` retrieves only that sub-workspace's chunks — passed
         straight through to the store, never widened to also include the
         org-wide space (see CLAUDE.md's Workspace-within-a-Workspace plan).
+
+        ``date_range``: an optional hard filter (e.g. "updated after March")
+        passed straight through to both the vector and keyword legs — a
+        no-op when ``None``, identical to every existing call site.
         """
         top_k = self._rag_settings.top_k
         pool = self._settings.candidate_pool
@@ -97,7 +102,7 @@ class HybridRetriever:
             query_pairs.extend(extra_queries)
 
         ranked_lists = self._first_stage_all(
-            org_id, query_pairs, pool, workspace_id=workspace_id
+            org_id, query_pairs, pool, workspace_id=workspace_id, date_range=date_range
         )
 
         if len(ranked_lists) == 1:
@@ -125,6 +130,7 @@ class HybridRetriever:
         pool: int,
         *,
         workspace_id: str | None = None,
+        date_range: DateRange | None = None,
     ) -> list[list[RetrievedChunk]]:
         """Run every first-stage search concurrently, one ranked list per query.
 
@@ -155,6 +161,7 @@ class HybridRetriever:
                     top_k=pool,
                     workspace_id=workspace_id,
                     source_provider=self._source_provider,
+                    date_range=date_range,
                 )
             else:
                 try:
@@ -165,6 +172,7 @@ class HybridRetriever:
                         top_k=pool,
                         workspace_id=workspace_id,
                         source_provider=self._source_provider,
+                        date_range=date_range,
                     )
                 except NotImplementedError:
                     hits = []

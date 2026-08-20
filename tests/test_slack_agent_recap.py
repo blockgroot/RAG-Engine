@@ -31,7 +31,7 @@ class _EmptyQueryStore(VectorStore):
     def add_document(self, *args, **kwargs) -> str:  # pragma: no cover - unused
         return "doc-unused"
 
-    def query(self, org_id, query_embedding, top_k=5, workspace_id=None, source_provider=None):
+    def query(self, org_id, query_embedding, top_k=5, workspace_id=None, source_provider=None, date_range=None):
         return []
 
     def recent_chunks(self, org_id, provider, *, workspace_id=None, limit=40):
@@ -81,7 +81,7 @@ def test_recap_never_overrides_a_grounded_ordinary_answer():
     """If the similarity path already answered, recap must not run at all."""
 
     class _HitStore(_EmptyQueryStore):
-        def query(self, org_id, query_embedding, top_k=5, workspace_id=None, source_provider=None):
+        def query(self, org_id, query_embedding, top_k=5, workspace_id=None, source_provider=None, date_range=None):
             return [
                 RetrievedChunk(
                     content="Parental leave is 18 weeks.",
@@ -148,7 +148,7 @@ def test_a_store_without_recency_support_leaves_recap_a_no_op():
         def add_document(self, *args, **kwargs) -> str:  # pragma: no cover
             return "doc-unused"
 
-        def query(self, org_id, query_embedding, top_k=5, workspace_id=None, source_provider=None):
+        def query(self, org_id, query_embedding, top_k=5, workspace_id=None, source_provider=None, date_range=None):
             return []
 
     store = _NoRecapStore()
