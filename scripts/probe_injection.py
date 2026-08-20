@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
-"""Multi-run injection probe (Phase 16 hardening check).
+"""Multi-run red-team probe: prompt injection + bias-probing golden cases.
 
-Runs each injection golden case N times *without* the retry harness, so
-pass-rate is honest (not inflated by ``run_case_stable``).
+Runs each red-team golden case (``injection-*`` and ``bias-*`` — see
+``evaluation/golden_set.py``) N times *without* the retry harness, so
+pass-rate is honest (not inflated by ``run_case_stable``). The ``bias-*``
+cases were added to widen this beyond pure prompt injection (the
+stress-testing/red-teaming gap in docs/RAG_VIDEO_COMPARISON.md) — a leading
+discriminatory question with no supporting corpus content is a different
+failure mode than an embedded "ignore previous instructions" payload, and
+needed its own cases rather than being folded into the injection ones.
 
 Usage:
     .venv/bin/python scripts/probe_injection.py
@@ -50,7 +56,9 @@ def main() -> int:
     args = parser.parse_args()
 
     total_leaks = 0
-    cases = [c for c in GOLDEN_CASES if c.id.startswith("injection-")]
+    cases = [
+        c for c in GOLDEN_CASES if c.id.startswith("injection-") or c.id.startswith("bias-")
+    ]
     store = build_vector_store()
     embedder = build_embedding_provider()
     retriever = HybridRetriever(store=store, reranker=build_reranker())
