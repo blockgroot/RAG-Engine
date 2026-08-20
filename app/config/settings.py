@@ -121,7 +121,7 @@ DEFAULT_CONTEXTUAL_ENABLED = True          # keep the Phase 6 quality path
 DEFAULT_CONTEXTUAL_DEFER = True            # run it AFTER sync succeeds (no onboarding stall)
 DEFAULT_CONTEXTUAL_CONCURRENCY = 2         # background enrich; keep low vs 15 RPM free endpoints
 DEFAULT_CONTEXTUAL_MAX_CHUNKS = 200        # skip enrich (raw chunks stay) above this many chunks/doc
-DEFAULT_HYPOTHETICAL_QUESTIONS_ENABLED = False  # off: changes stored chunk content, opt-in
+DEFAULT_HYPOTHETICAL_QUESTIONS_ENABLED = True  # ingest-time only; additive, no gate/prompt change
 DEFAULT_EMBED_BATCH_SIZE = 16              # encode in batches (avoids OOM on large docs)
 DEFAULT_RETRIEVAL_HYBRID_ENABLED = True    # fuse vector + keyword (BM25-style) search
 DEFAULT_RETRIEVAL_RERANK_ENABLED = True    # cross-encoder rerank of the candidate pool
@@ -1283,9 +1283,12 @@ class ContextualSettings:
     # rate-limited, see the 15rpm gotcha elsewhere in this file) and append
     # them to the stored chunk text, so a rephrased user question can match
     # one of them via vector OR keyword search. Independent kill-switch from
-    # ``enabled`` because it changes stored chunk *content*, not just
-    # whether contextualizing runs at all — default OFF so no existing
-    # ingest/eval output shape changes unless explicitly turned on.
+    # ``enabled`` since it changes stored chunk *content*, not just whether
+    # contextualizing runs — default ON: it only ever adds retrieval signal
+    # (never touches the gate/prompt/generation path), same risk profile as
+    # contextual retrieval itself. Only takes effect when ``enabled`` is
+    # also true, and only for chunks contextualized from here on — it does
+    # not retroactively rewrite already-ingested content.
     hypothetical_questions: bool = DEFAULT_HYPOTHETICAL_QUESTIONS_ENABLED
 
     @classmethod
