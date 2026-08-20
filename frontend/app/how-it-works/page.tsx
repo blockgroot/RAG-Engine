@@ -53,63 +53,53 @@ export default function HowItWorksPage() {
       <section className="landing-section landing-wrap" aria-labelledby="paths-title">
         <div className="landing-section-head">
           <div>
-            <p className="landing-eyebrow">Three paths</p>
+            <p className="landing-eyebrow">Two paths</p>
             <h2 id="paths-title" className="landing-section-title">
               Search your documents, conversations, and code.
             </h2>
           </div>
           <p className="landing-section-lead">
-            Choose Documents, Slack, or Code in chat. You decide the path —
-            Handbook doesn&rsquo;t guess which agent to run.
+            Every connected source works one of two ways — synced ahead of time,
+            or looked up live. Pick the tab in chat; Handbook doesn&rsquo;t guess.
           </p>
         </div>
 
         <div className="how-paths">
           <article className="how-path">
             <header className="how-path-head">
-              <BrandGlyph name="notion" size={28} />
-              <BrandGlyph name="drive" size={28} />
+              <div className="how-path-sources" aria-label="Synced sources">
+                <BrandGlyph name="notion" size={24} />
+                <BrandGlyph name="drive" size={24} />
+                <BrandGlyph name="slack" size={24} />
+                <BrandGlyph name="linear" size={24} />
+              </div>
               <div>
-                <strong>Documents</strong>
-                <span>Notion · Google Drive</span>
+                <strong>Synced content</strong>
+                <span>Notion &middot; Drive &middot; Slack &middot; Linear</span>
               </div>
             </header>
             <ol>
               <li>Admin connects a source and runs a sync.</li>
-              <li>Content is stored under your organization.</li>
-              <li>Questions retrieve that content, then pass a confidence check.</li>
+              <li>Content is stored under your organization, one tab per source.</li>
+              <li>Questions retrieve that source&rsquo;s content, then pass a confidence check.</li>
               <li>Answers stay grounded in that content, or refuse when they can&rsquo;t.</li>
             </ol>
           </article>
 
           <article className="how-path">
             <header className="how-path-head">
-              <BrandGlyph name="slack" size={28} />
-              <div>
-                <strong>Slack</strong>
-                <span>Connected channels · synced threads</span>
+              <div className="how-path-sources" aria-label="Live-lookup sources">
+                <BrandGlyph name="github" size={24} />
               </div>
-            </header>
-            <ol>
-              <li>Admin picks specific channels and runs a sync.</li>
-              <li>Threads are stored under your organization — not live-searched.</li>
-              <li>Questions retrieve those channels, then pass a confidence check.</li>
-              <li>Answers stay grounded in that chat history, or refuse when they can&rsquo;t.</li>
-            </ol>
-          </article>
-
-          <article className="how-path">
-            <header className="how-path-head">
-              <BrandGlyph name="github" size={28} />
               <div>
-                <strong>Code</strong>
-                <span>GitHub · live lookup</span>
+                <strong>Live lookup</strong>
+                <span>GitHub</span>
               </div>
             </header>
             <ol>
               <li>Nothing is pre-indexed — reads happen when you ask.</li>
               <li>Handbook may fetch a README or recent commits once.</li>
-              <li>Only repositories in your GitHub install are allowed.</li>
+              <li>Only repositories you authorized are allowed.</li>
               <li>If nothing usable returns, you get a clear fallback.</li>
             </ol>
           </article>
@@ -232,7 +222,7 @@ export default function HowItWorksPage() {
             <p className="landing-eyebrow">What you get</p>
             <h3 id="offer-title">Connect once. Ask with confidence.</h3>
             <p className="how-included-lead">
-              Sync Notion, Drive, or Slack, look up GitHub live, invite the
+              Sync Notion, Drive, Slack, or Linear, look up GitHub live, invite the
               team with a magic link, and get grounded answers — or a clear
               fallback when the connected content doesn&rsquo;t cover it.
             </p>
@@ -273,8 +263,8 @@ export default function HowItWorksPage() {
               <em>Slack</em>
             </span>
             <span className="how-constellation-node how-node-f" style={{ ["--d" as string]: "0.75s" }}>
-              <BrandGlyph name="secure" size={20} />
-              <em>Grounded</em>
+              <BrandGlyph name="linear" size={20} />
+              <em>Linear</em>
             </span>
           </div>
         </div>

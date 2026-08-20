@@ -446,11 +446,11 @@ form.card:hover { transform: none; }
   top: calc(100% + 0.35rem);
   left: 0;
   right: 0;
-  z-index: 20;
-  background: var(--surface-elevated);
-  border: 1px solid var(--border);
+  z-index: 30;
+  background: #ffffff;
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-lift);
+  box-shadow: 0 16px 36px -12px rgba(16, 24, 40, 0.28), var(--shadow-lift);
   max-height: 240px;
   overflow-y: auto;
 }
@@ -675,8 +675,16 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  /* As many services connect (Notion/Drive/Slack/Linear/Code/...), this strip
+     scrolls horizontally instead of wrapping or overflowing the topbar —
+     scales to any connector count with no layout change needed per source. */
+  overflow-x: auto;
+  scrollbar-width: none;
 }
+.agent-tabs::-webkit-scrollbar { display: none; }
 .agent-tab {
   font-family: inherit;
   font-size: 0.85rem;
@@ -688,6 +696,8 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
   border-radius: var(--radius-sm);
   padding: 0.4rem 1rem;
   cursor: pointer;
+  flex: none;
+  white-space: nowrap;
   transition: background 0.2s var(--ease), color 0.2s var(--ease),
     border-color 0.2s var(--ease);
 }
@@ -2442,17 +2452,37 @@ table .role-chip.role-admin,
 
 .landing-section-orbit { padding-top: 2.5rem; }
 
-.landing-integrations {
-  list-style: none;
+.landing-integration-groups {
   margin: 0.35rem 0 0;
   padding: 1.35rem 1rem 1.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid color-mix(in srgb, var(--border) 70%, white);
+}
+.landing-integration-group + .landing-integration-group {
+  padding-top: 1.1rem;
+  border-top: 1px solid color-mix(in srgb, var(--border) 70%, white);
+}
+.landing-integration-group-label {
+  margin: 0 0 0.85rem;
+  text-align: center;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+.landing-integrations {
+  list-style: none;
+  margin: 0;
+  padding: 0 1rem;
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
   gap: 1.75rem 2.25rem;
-  border-radius: 22px;
-  background: rgba(255, 255, 255, 0.55);
-  border: 1px solid color-mix(in srgb, var(--border) 70%, white);
 }
 .landing-integration {
   display: grid;
@@ -2955,13 +2985,13 @@ table .role-chip.role-admin,
   border-radius: 14px !important;
   animation: rise-in 0.45s var(--ease) both;
   position: relative;
-  overflow: hidden;
 }
 .source-row::before {
   content: "";
   position: absolute;
   inset: 0 auto 0 0;
   width: 3px;
+  border-radius: 14px 0 0 14px;
   background: linear-gradient(180deg, #2dd4bf, var(--accent-strong));
   opacity: 0.35;
 }
@@ -3670,12 +3700,6 @@ table .role-chip.role-admin,
   box-shadow: var(--shadow-soft);
   animation: lp-sat-glow var(--system-duration) var(--system-ease) infinite;
 }
-.lp-sat-sendgrid {
-  width: 3.15rem;
-  height: 3.15rem;
-  margin: -1.575rem;
-}
-
 .landing-story .landing-close.landing-wrap {
   width: min(var(--landing-max), 100%);
   max-width: none;
@@ -3784,7 +3808,7 @@ table .role-chip.role-admin,
 }
 .how-paths {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: 0.9rem;
   align-items: stretch;
 }
@@ -3836,6 +3860,13 @@ table .role-chip.role-admin,
   align-items: center;
   gap: 0.55rem;
   margin-bottom: 0.9rem;
+}
+.how-path-head .how-path-sources {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  flex: none;
 }
 .how-path-head .brand-glyph-img {
   transition: transform 0.28s var(--ease);

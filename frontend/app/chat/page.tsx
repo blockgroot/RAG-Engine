@@ -168,6 +168,11 @@ function ChatPageInner() {
 
   useEffect(() => {
     if (agentTab === "policy" && policyFallbackAvailable) return;
+    if (agentTab === "notion" && notionAvailable) return;
+    if (agentTab === "google" && driveAvailable) return;
+    if (agentTab === "github" && codeAvailable) return;
+    if (agentTab === "slack" && slackAvailable) return;
+    if (agentTab === "linear" && linearAvailable) return;
     if (notionAvailable) setAgentTab("notion");
     else if (driveAvailable) setAgentTab("google");
     else if (!policiesReady && codeAvailable) setAgentTab("github");

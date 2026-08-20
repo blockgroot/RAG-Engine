@@ -52,7 +52,7 @@ export default function RootPage() {
             Answer from your sources.
           </h1>
           <p className="landing-subtitle">
-            Connect Notion, Google Drive, Slack, and GitHub. Handbook answers
+            Connect Notion, Google Drive, Slack, Linear, and GitHub. Handbook answers
             employee questions from your connected content — and says when the
             documents don&rsquo;t cover it.
           </p>
@@ -88,7 +88,7 @@ export default function RootPage() {
         <div className="landing-feature-grid">
           <article className="landing-feature">
             <span className="landing-feature-mark">
-              <BrandGlyph name="notion" size={22} />
+              <BrandGlyph name="document" size={22} />
             </span>
             <h3>Grounded document answers</h3>
             <p>
@@ -138,9 +138,9 @@ export default function RootPage() {
             </h2>
           </div>
           <p className="landing-section-lead">
-            Sync Notion or Drive for your documents, and Slack for team
-            conversations. Use GitHub live for code. Sign in with a magic
-            link — no extra password to manage.
+            Sync Notion or Drive for your documents, Slack for team
+            conversations, and Linear for issues. Use GitHub live for code.
+            Sign in with a magic link — no extra password to manage.
           </p>
         </div>
         <LandingSourcesOrbit />
@@ -162,7 +162,7 @@ export default function RootPage() {
                 </span>
                 <span className="landing-close-step-body">
                   <strong>Connect</strong>
-                  <span>Notion, Drive, Slack, or GitHub</span>
+                  <span>Notion, Drive, Slack, Linear, or GitHub</span>
                 </span>
               </li>
               <li className="landing-close-step" style={{ ["--step" as string]: "1" }}>

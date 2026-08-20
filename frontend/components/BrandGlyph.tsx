@@ -11,7 +11,8 @@ export type BrandName =
   | "sendgrid"
   | "workspace"
   | "secure"
-  | "private";
+  | "private"
+  | "document";
 
 const BRAND_SRC: Record<BrandName, string | null> = {
   sendgrid: null,
@@ -23,6 +24,7 @@ const BRAND_SRC: Record<BrandName, string | null> = {
   github: null,
   linear: null,
   private: null,
+  document: null,
 };
 
 function GithubMark({ size }: { size: number }) {
@@ -91,6 +93,23 @@ function LinearMark({ size }: { size: number }) {
   );
 }
 
+/** Generic "grounded document answers" mark — a plain page glyph, not any
+ * one connector's brand, since that feature spans every synced source
+ * (Notion, Drive, Slack, Linear, ...), not just one of them. Same flat
+ * rounded-square treatment as the other inline marks here. */
+function DocumentMark({ size }: { size: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
+      <rect width="24" height="24" rx="6" fill="#0e7490" />
+      <path fill="#fff" d="M8 4h6.5L18 7.5V19a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z" />
+      <path fill="#0e7490" fillOpacity="0.35" d="M14.5 4v3.2c0 .17.13.3.3.3H18L14.5 4Z" />
+      <rect x="9.3" y="11" width="6" height="1.3" rx="0.65" fill="#0e7490" />
+      <rect x="9.3" y="14" width="6" height="1.3" rx="0.65" fill="#0e7490" />
+      <rect x="9.3" y="17" width="4.2" height="1.3" rx="0.65" fill="#0e7490" />
+    </svg>
+  );
+}
+
 export function BrandGlyph({
   name,
   size = 28,
@@ -124,6 +143,10 @@ export function BrandGlyph({
 
   if (name === "linear") {
     return <LinearMark size={size} />;
+  }
+
+  if (name === "document") {
+    return <DocumentMark size={size} />;
   }
 
   return <GithubMark size={size} />;
