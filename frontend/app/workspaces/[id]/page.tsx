@@ -78,7 +78,7 @@ function WorkspaceDetailPageInner() {
   const [loadingConnections, setLoadingConnections] = useState(true);
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [changesById, setChangesById] = useState<Record<string, SyncChanges>>({});
-  const [checking, setChecking] = useState(false);
+  const [checkingIds, setCheckingIds] = useState<Set<string>>(new Set());
   const [notFound, setNotFound] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -121,7 +121,8 @@ function WorkspaceDetailPageInner() {
     async (list: ConnectionRecord[]) => {
       if (list.length === 0) return;
       const gen = ++changesGen.current;
-      setChecking(true);
+      const ids = list.map((c) => c.id);
+      setCheckingIds((prev) => new Set([...prev, ...ids]));
       const next: Record<string, SyncChanges> = {};
       const failedIds: string[] = [];
       await Promise.all(
@@ -178,13 +179,17 @@ function WorkspaceDetailPageInner() {
           }
         })
       );
+      setCheckingIds((prev) => {
+        const remaining = new Set(prev);
+        for (const id of ids) remaining.delete(id);
+        return remaining;
+      });
       if (gen !== changesGen.current) return; // newer check won
       setChangesById((prev) => {
         const merged = { ...prev, ...next };
         for (const id of failedIds) delete merged[id];
         return merged;
       });
-      setChecking(false);
     },
     [workspaceId]
   );
@@ -527,7 +532,7 @@ function WorkspaceDetailPageInner() {
         <PageHeader
           eyebrow="Space"
           title={workspace?.name || "…"}
-          description="Answers come only from this space’s connected docs and repos — not the company-wide sources."
+          description="Responses are drawn exclusively from this space’s connected documents and repositories, not the organization-wide sources."
           actions={
             canAsk ? (
               <Link href={`/chat?workspace=${workspaceId}`} className="button">
@@ -652,7 +657,7 @@ function WorkspaceDetailPageInner() {
               <div>
                 <h2>Sources for this space</h2>
                 <p className="muted" style={{ marginTop: "0.35rem" }}>
-                  Docs sync; GitHub is live. Colleagues you invite can ask here — only what you connect to this space.
+                  Documents are synced on a schedule; GitHub is queried live. Invited colleagues can ask questions here, scoped to whatever sources this space connects.
                 </p>
               </div>
             </div>
@@ -672,9 +677,9 @@ function WorkspaceDetailPageInner() {
                   connection={connection}
                   lastJob={connection ? lastJobs[connection.id] : undefined}
                   changes={connection ? changesById[connection.id] : null}
-                  checkingChanges={Boolean(connection) && checking}
+                  checkingChanges={connection ? checkingIds.has(connection.id) : false}
                   onUpdate={handleUpdate}
-                  onCheckAgain={connection ? () => refreshChanges(connections) : undefined}
+                  onCheckAgain={connection ? () => refreshChanges([connection]) : undefined}
                   onConfigSaved={(updated) => {
                     setConnections((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
                     refreshChanges([updated]);

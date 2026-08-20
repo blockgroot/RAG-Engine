@@ -22,6 +22,27 @@ export default function WorkspacesPage() {
   );
 }
 
+/**
+ * Curated two-tone identities, one per space. Cycling a fixed, hand-picked
+ * palette (rather than a raw HSL hash) keeps every card confidently
+ * saturated while the app's teal stays the dominant brand color everywhere
+ * else — cards get personality, chrome doesn't get diluted.
+ */
+const SPACE_PALETTE: [string, string][] = [
+  ["#14b8a6", "#0f766e"], // teal (brand)
+  ["#6366f1", "#4338ca"], // indigo
+  ["#f97316", "#c2410c"], // amber
+  ["#ec4899", "#be185d"], // pink
+  ["#0ea5e9", "#0369a1"], // sky
+  ["#84cc16", "#4d7c0f"], // lime
+];
+
+function paletteFor(id: string): [string, string] {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0;
+  return SPACE_PALETTE[Math.abs(hash) % SPACE_PALETTE.length];
+}
+
 function WorkspacesPageInner() {
   const { me, loading } = useMe({ enforceSetupFlow: false });
   const searchParams = useSearchParams();
@@ -117,78 +138,69 @@ function WorkspacesPageInner() {
 
         {notice && <div className="banner banner-warn">{notice}</div>}
 
-        <div className="spaces-layout">
-          <section className="studio-panel create-space-panel" aria-labelledby="new-space-title">
-            <div className="studio-panel-glow" aria-hidden />
-            <div className="studio-section-head">
-              <h2 id="new-space-title">Create a space</h2>
-              <p className="muted">
-                Invite teammates later — answers stay inside this room only.
-              </p>
-            </div>
-            <form onSubmit={handleCreate} className="create-space-form">
-              <div className="field">
-                <label htmlFor="workspace-name">Name</label>
-                <input
-                  id="workspace-name"
-                  className="input"
-                  type="text"
-                  placeholder="e.g. Q3 planning notes"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  disabled={creating}
-                />
-              </div>
-              {error && <div className="banner banner-warn">{error}</div>}
-              <button
-                className="button"
-                type="submit"
-                disabled={creating || !name.trim()}
-              >
-                {creating ? "Creating…" : "Create space"}
-              </button>
-            </form>
-          </section>
+        <section className="spaces-hub" aria-labelledby="your-spaces-title">
+          <div className="studio-section-head">
+            <h2 id="your-spaces-title">Your spaces</h2>
+            <p className="muted">Open a space to connect sources, invite people, and ask.</p>
+          </div>
 
-          <section className="studio-section spaces-list-section" aria-labelledby="your-spaces-title">
-            <div className="studio-section-head">
-              <h2 id="your-spaces-title">Your spaces</h2>
-              <p className="muted">Open a room to connect sources, invite people, and ask.</p>
+          {loadingList ? (
+            <div className="studio-skeleton-grid" aria-busy="true">
+              <div className="studio-skeleton" />
+              <div className="studio-skeleton" />
+              <div className="studio-skeleton" />
             </div>
-            {loadingList ? (
-              <div className="studio-skeleton-grid" aria-busy="true">
-                <div className="studio-skeleton" />
-                <div className="studio-skeleton" />
+          ) : (
+            <div className="spaces-grid">
+              <div className="space-card space-card-new">
+                <span className="space-card-new-icon" aria-hidden>+</span>
+                <h3>New space</h3>
+                <p className="muted">Invite teammates later — answers stay inside this room only.</p>
+                <form onSubmit={handleCreate}>
+                  <label className="sr-only" htmlFor="workspace-name">Name</label>
+                  <input
+                    id="workspace-name"
+                    className="input"
+                    type="text"
+                    placeholder="e.g. Q3 planning notes"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    disabled={creating}
+                  />
+                  {error && <div className="banner banner-warn">{error}</div>}
+                  <button className="button" type="submit" disabled={creating || !name.trim()}>
+                    {creating ? "Creating…" : "Create space"}
+                  </button>
+                </form>
               </div>
-            ) : workspaces.length === 0 ? (
-              <div className="studio-empty">
-                <div className="studio-empty-mark" aria-hidden />
-                <h3>No spaces yet</h3>
-                <p className="muted">Create one on the left to start a private notes room.</p>
-              </div>
-            ) : (
-              <div className="tile-grid spaces-bento">
-                {workspaces.map((w, i) => (
+
+              {workspaces.map((w, i) => {
+                const [a, b] = paletteFor(w.id);
+                return (
                   <Link
                     key={w.id}
                     href={`/workspaces/${w.id}`}
-                    className="workspace-tile"
-                    style={{ animationDelay: `${0.08 + i * 0.06}s` }}
+                    className="space-card"
+                    style={{ "--card-a": a, "--card-b": b, animationDelay: `${0.06 + i * 0.05}s` } as React.CSSProperties}
                   >
-                    <span className="workspace-tile-mark" aria-hidden>
-                      {(w.name || "S").trim().charAt(0).toUpperCase()}
-                    </span>
-                    <div className="workspace-tile-top">
-                      <h3 title={w.name}>{w.name}</h3>
+                    <div className="space-card-top">
+                      <span className="space-card-mark" aria-hidden>
+                        {(w.name || "S").trim().charAt(0).toUpperCase()}
+                      </span>
                       <span className="badge">{w.role === "owner" ? "Owner" : "Member"}</span>
                     </div>
-                    <span className="workspace-tile-cta">Open space</span>
+                    <div className="space-card-body">
+                      <h3 title={w.name}>{w.name}</h3>
+                    </div>
+                    <div className="space-card-foot">
+                      <span className="space-card-cta">Open space</span>
+                    </div>
                   </Link>
-                ))}
-              </div>
-            )}
-          </section>
-        </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
       </main>
     </AppShell>
   );

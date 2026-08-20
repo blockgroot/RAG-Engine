@@ -105,9 +105,34 @@ def get_workspace(
     """
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT name, created_by::text FROM workspaces "
-            "WHERE id = %s AND org_id = %s",
-            (workspace_id, session.org_id),
+            """
+            SELECT
+              w.name,
+              w.created_by::text,
+              EXISTS (
+                SELECT 1 FROM oauth_connections
+                WHERE org_id = %(org)s AND provider = 'github' AND workspace_id = %(ws)s
+              ) AS github_connected,
+              EXISTS (
+                SELECT 1 FROM documents
+                WHERE org_id = %(org)s AND source_provider = 'slack' AND workspace_id = %(ws)s
+              ) AS slack_ready,
+              EXISTS (
+                SELECT 1 FROM documents
+                WHERE org_id = %(org)s AND source_provider = 'linear' AND workspace_id = %(ws)s
+              ) AS linear_ready,
+              EXISTS (
+                SELECT 1 FROM documents
+                WHERE org_id = %(org)s AND source_provider = 'notion' AND workspace_id = %(ws)s
+              ) AS notion_ready,
+              EXISTS (
+                SELECT 1 FROM documents
+                WHERE org_id = %(org)s AND source_provider = 'google' AND workspace_id = %(ws)s
+              ) AS drive_ready
+            FROM workspaces w
+            WHERE w.id = %(ws)s AND w.org_id = %(org)s
+            """,
+            {"org": session.org_id, "ws": workspace_id},
         ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
@@ -121,22 +146,22 @@ def get_workspace(
         # chat can offer a Code tab. Scoped to the workspace on purpose: an
         # org-wide GitHub connection must NOT light this up, or a member would be
         # offered a Code tab that then answers from a scope they aren't in.
-        "github_connected": _workspace_github_connected(session.org_id, workspace_id),
+        "github_connected": row[2],
         # Same rule as /me: keyed on ingested Slack documents for THIS
         # workspace, so a Slack tab only appears once it can actually answer.
-        "slack_ready": _workspace_slack_ready(session.org_id, workspace_id),
+        "slack_ready": row[3],
         # Same rule, for ingested Linear issues scoped to THIS workspace. No
         # workspace-scoped Linear connect flow exists yet (Linear is still
         # env-token ingestion only — see app/sources/linear.py), so this stays
         # false in practice until that lands; reported now for parity so the
         # frontend doesn't need a second wiring pass later.
-        "linear_ready": _workspace_linear_ready(session.org_id, workspace_id),
+        "linear_ready": row[4],
         # Same rule, for THIS workspace's own Notion/Drive documents — a
         # workspace CAN connect its own Notion or Drive source (see the
         # provider checks in this file), so this is real and used, unlike
         # Linear above.
-        "notion_ready": _workspace_notion_ready(session.org_id, workspace_id),
-        "drive_ready": _workspace_drive_ready(session.org_id, workspace_id),
+        "notion_ready": row[5],
+        "drive_ready": row[6],
         **status,
     }
 
@@ -161,76 +186,6 @@ def delete_space(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     return {"status": "deleted", "workspace_id": workspace_id}
 
-
-
-def _workspace_github_connected(org_id: str, workspace_id: str) -> bool:
-    """True only when this workspace has its OWN github connection row."""
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM oauth_connections "
-            "WHERE org_id = %s AND provider = 'github' AND workspace_id = %s",
-            (org_id, workspace_id),
-        ).fetchone()
-    return row is not None
-
-
-def _workspace_slack_ready(org_id: str, workspace_id: str) -> bool:
-    """True when this workspace has its OWN ingested Slack threads.
-
-    Scoped to the workspace (never ``IS NULL``/org-wide) for the same reason
-    ``_workspace_github_connected`` is: an org-wide Slack corpus must not light
-    up a workspace's Slack tab, which retrieves only this workspace's chunks
-    and would therefore answer nothing.
-    """
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM documents "
-            "WHERE org_id = %s AND source_provider = 'slack' AND workspace_id = %s "
-            "LIMIT 1",
-            (org_id, workspace_id),
-        ).fetchone()
-    return row is not None
-
-
-def _workspace_notion_ready(org_id: str, workspace_id: str) -> bool:
-    """True when this workspace has its OWN ingested Notion pages."""
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM documents "
-            "WHERE org_id = %s AND source_provider = 'notion' AND workspace_id = %s "
-            "LIMIT 1",
-            (org_id, workspace_id),
-        ).fetchone()
-    return row is not None
-
-
-def _workspace_drive_ready(org_id: str, workspace_id: str) -> bool:
-    """True when this workspace has its OWN ingested Google Drive documents."""
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM documents "
-            "WHERE org_id = %s AND source_provider = 'google' AND workspace_id = %s "
-            "LIMIT 1",
-            (org_id, workspace_id),
-        ).fetchone()
-    return row is not None
-
-
-def _workspace_linear_ready(org_id: str, workspace_id: str) -> bool:
-    """True when this workspace has its OWN ingested Linear issues.
-
-    Same scoping discipline as ``_workspace_slack_ready``: never ``IS NULL``/
-    org-wide, so an org-wide Linear corpus can't light up a workspace tab that
-    retrieves only this workspace's chunks.
-    """
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM documents "
-            "WHERE org_id = %s AND source_provider = 'linear' AND workspace_id = %s "
-            "LIMIT 1",
-            (org_id, workspace_id),
-        ).fetchone()
-    return row is not None
 
 
 def _reject_if_github(provider: str, what: str) -> None:
@@ -635,7 +590,8 @@ def put_connection_config(
 
     try:
         token = get_live_connection_token(session.org_id, conn.provider, workspace_id=workspace_id)
-        config = validate_slack_channels(token, channel_ids)
+        known = {c["id"]: c for c in list_slack_channels(token)}
+        config = validate_slack_channels(token, channel_ids, known=known)
         conflict = find_slack_channel_conflict(
             session.org_id, config["channel_ids"], exclude_workspace_id=workspace_id
         )
@@ -648,7 +604,7 @@ def put_connection_config(
         swapped = slack_channels_changed(
             session.org_id, conn.provider, config["channel_ids"], workspace_id=workspace_id
         )
-        join_public_channels(token, config["channel_ids"])
+        join_public_channels(token, config["channel_ids"], known=known)
         set_connection_config(session.org_id, conn.provider, config, workspace_id=workspace_id)
     except (ConfigurationError, SourceError, OAuthReauthRequiredError) as exc:
         raise_token_http(

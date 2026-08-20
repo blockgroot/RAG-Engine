@@ -471,7 +471,7 @@ function ChatPageInner() {
   const emptyCopy = askingCode
     ? "Repository and commit answers are read live from GitHub — always current, never stale."
     : askingSlack
-      ? "Answers come from the conversations in your connected channels — what people actually said, not documents."
+      ? "Responses are based on discussions in your connected channels, reflecting what was actually said rather than formal documentation."
       : askingLinear
         ? "Answers come from your tracked issues and their comments — ticket status, not documents."
         : askingNotion

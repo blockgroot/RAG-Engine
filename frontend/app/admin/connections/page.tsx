@@ -66,7 +66,7 @@ function ConnectionsPageInner() {
   const [loadingConnections, setLoadingConnections] = useState(true);
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [changesById, setChangesById] = useState<Record<string, SyncChanges>>({});
-  const [checking, setChecking] = useState(false);
+  const [checkingIds, setCheckingIds] = useState<Set<string>>(new Set());
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reauthById, setReauthById] = useState<Record<string, boolean>>({});
@@ -103,7 +103,8 @@ function ConnectionsPageInner() {
   const refreshChanges = useCallback(async (list: ConnectionRecord[]) => {
     if (list.length === 0) return;
     const gen = ++changesGen.current;
-    setChecking(true);
+    const ids = list.map((c) => c.id);
+    setCheckingIds((prev) => new Set([...prev, ...ids]));
     const next: Record<string, SyncChanges> = {};
     const failedIds: string[] = [];
     await Promise.all(
@@ -161,13 +162,17 @@ function ConnectionsPageInner() {
         }
       })
     );
+    setCheckingIds((prev) => {
+      const remaining = new Set(prev);
+      for (const id of ids) remaining.delete(id);
+      return remaining;
+    });
     if (gen !== changesGen.current) return; // newer check won
     setChangesById((prev) => {
       const merged = { ...prev, ...next };
       for (const id of failedIds) delete merged[id];
       return merged;
     });
-    setChecking(false);
   }, []);
 
   // Fired on mount rather than gated on `me`, so the session lookup and these
@@ -379,10 +384,10 @@ function ConnectionsPageInner() {
                   connection={connection}
                   lastJob={connection ? lastJobs[connection.id] : undefined}
                   changes={connection ? changesById[connection.id] : null}
-                  checkingChanges={Boolean(connection) && checking}
+                  checkingChanges={connection ? checkingIds.has(connection.id) : false}
                   onUpdate={handleUpdate}
                   onCheckAgain={
-                    connection ? () => refreshChanges(connections) : undefined
+                    connection ? () => refreshChanges([connection]) : undefined
                   }
                   onConfigSaved={(updated) => {
                     setConnections((prev) =>

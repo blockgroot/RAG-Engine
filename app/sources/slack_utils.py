@@ -110,7 +110,9 @@ def list_slack_channels(token: str) -> list[dict]:
     return channels
 
 
-def join_public_channels(token: str, channel_ids: list[str]) -> None:
+def join_public_channels(
+    token: str, channel_ids: list[str], known: dict[str, dict] | None = None
+) -> None:
     """Auto-join any of ``channel_ids`` that are public and not yet joined.
 
     Decision D7: public channels may be auto-joined (``conversations.join``
@@ -120,8 +122,14 @@ def join_public_channels(token: str, channel_ids: list[str]) -> None:
     or unreachable channel doesn't abort saving the rest of the picker
     selection — the picker's "Ready"/"Invite the bot" badges are the source
     of truth for what actually worked, re-checked on the next listing.
+
+    ``known`` lets a caller that already listed channels (e.g.
+    ``validate_slack_channels``, moments earlier in the same request) pass
+    that result through instead of paying a second full paginated
+    ``conversations.list`` scan for the same data.
     """
-    known = {c["id"]: c for c in list_slack_channels(token)}
+    if known is None:
+        known = {c["id"]: c for c in list_slack_channels(token)}
     for channel_id in channel_ids:
         info = known.get(channel_id)
         if info is None or info["is_private"] or info["is_member"]:
@@ -188,12 +196,18 @@ def list_channel_members(token: str, channel_id: str) -> list[dict]:
     return members
 
 
-def validate_slack_channels(token: str, channel_ids: list[str]) -> dict:
+def validate_slack_channels(
+    token: str, channel_ids: list[str], known: dict[str, dict] | None = None
+) -> dict:
     """Confirm every requested channel id is one the bot can currently see.
 
     Returns ``{"channel_ids": [...], "channel_names": {id: name}}`` suitable
     for ``set_connection_config`` (same shape convention as
     ``validate_drive_folder``'s ``{"folder_id", "folder_name"}``).
+
+    ``known`` lets a caller pass an already-fetched channel listing (see
+    ``join_public_channels``) instead of triggering a second full
+    ``conversations.list`` scan in the same request.
 
     Raises:
         ConfigurationError: an empty selection, or a channel id Slack doesn't
@@ -202,7 +216,8 @@ def validate_slack_channels(token: str, channel_ids: list[str]) -> dict:
     if not channel_ids:
         raise ConfigurationError("Select at least one Slack channel to connect.")
 
-    known = {c["id"]: c for c in list_slack_channels(token)}
+    if known is None:
+        known = {c["id"]: c for c in list_slack_channels(token)}
     missing = [cid for cid in channel_ids if cid not in known]
     if missing:
         raise ConfigurationError(

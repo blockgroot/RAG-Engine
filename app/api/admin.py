@@ -339,7 +339,8 @@ def put_connection_config(
 
     try:
         token = get_live_connection_token(session.org_id, conn.provider)
-        config = validate_slack_channels(token, channel_ids)
+        known = {c["id"]: c for c in list_slack_channels(token)}
+        config = validate_slack_channels(token, channel_ids, known=known)
         conflict = find_slack_channel_conflict(
             session.org_id, config["channel_ids"], exclude_workspace_id=None
         )
@@ -349,7 +350,7 @@ def put_connection_config(
                 "space. Each channel can only be connected in one place."
             )
         swapped = slack_channels_changed(session.org_id, conn.provider, config["channel_ids"])
-        join_public_channels(token, config["channel_ids"])
+        join_public_channels(token, config["channel_ids"], known=known)
         set_connection_config(session.org_id, conn.provider, config)
         note_live_success(session.org_id, conn.provider)
     except (ConfigurationError, SourceError, OAuthReauthRequiredError) as exc:
