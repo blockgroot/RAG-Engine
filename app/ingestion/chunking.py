@@ -51,6 +51,7 @@ from ..core.exceptions import ConfigurationError
 from .chunk_tokens import count_tokens, truncate_to_tokens
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+_TABLE_CELL_SEP = re.compile(r"^:?-{1,}:?$")
 
 
 def chunk_text(text: str, settings: ChunkingSettings | None = None) -> list[str]:
@@ -79,7 +80,7 @@ def chunk_text(text: str, settings: ChunkingSettings | None = None) -> list[str]
         if count_tokens(block) <= size and len(block) <= max_chars:
             pieces.append(block)
         else:
-            pieces.extend(_hard_split(block, size, max_chars))
+            pieces.extend(_hard_split_block(block, size, max_chars))
 
     chunks: list[str] = []
     current = ""
@@ -135,6 +136,81 @@ def _split_oversized(text: str, max_chars: int) -> list[str]:
     if rest:
         out.append(rest)
     return [piece for piece in out if piece]
+
+
+def _is_table_separator_row(line: str) -> bool:
+    """True for a GitHub-flavored-Markdown table separator row, e.g. ``|---|---|``.
+
+    Requires at least one ``|`` (excludes an unrelated ``---`` horizontal
+    rule or setext-heading underline) and every ``|``-delimited cell to be a
+    dash run with optional leading/trailing ``:`` (alignment markers).
+    """
+    line = line.strip()
+    if not line or "|" not in line or "-" not in line:
+        return False
+    cells = [c.strip() for c in line.strip("|").split("|")]
+    return bool(cells) and all(_TABLE_CELL_SEP.match(c) for c in cells)
+
+
+def _find_markdown_table_start(lines: list[str]) -> int | None:
+    """Index of a table's header line (the line right before its separator row)."""
+    for i in range(len(lines) - 1):
+        if "|" in lines[i] and _is_table_separator_row(lines[i + 1]):
+            return i
+    return None
+
+
+def _hard_split_block(text: str, size: int, max_chars: int) -> list[str]:
+    """Split an oversized block, splitting BY ROW when it contains a Markdown table.
+
+    Sentence/word splitting (``_hard_split``) has no notion of a table row, so
+    an oversized table used to be exploded word-by-word across chunks —
+    columns and header lost, rows straddling a chunk boundary. A table is
+    packed by whole row instead, with its header + separator row repeated at
+    the top of every resulting piece so a chunk holding only rows 20-25 still
+    carries its column meaning. Text with no table (the common case) is
+    completely unaffected — this only changes behaviour for an oversized
+    block that actually contains one.
+    """
+    lines = text.split("\n")
+    start = _find_markdown_table_start(lines)
+    if start is None:
+        return _hard_split(text, size, max_chars)
+
+    prefix = "\n".join(line for line in lines[:start] if line.strip()).strip()
+    header_block = f"{lines[start]}\n{lines[start + 1]}"
+    data_rows = [line for line in lines[start + 2 :] if line.strip()]
+    if not data_rows:
+        return _hard_split(text, size, max_chars)
+
+    def fits(rows: list[str]) -> bool:
+        candidate = header_block + "\n" + "\n".join(rows)
+        return count_tokens(candidate) <= size and len(candidate) <= max_chars
+
+    pieces: list[str] = []
+    current: list[str] = []
+    for row in data_rows:
+        if fits(current + [row]):
+            current.append(row)
+            continue
+        if current:
+            pieces.append(header_block + "\n" + "\n".join(current))
+            current = []
+        if fits([row]):
+            current = [row]
+        else:
+            # A single row doesn't fit alongside the header — a pathologically
+            # wide row. Cut it on characters, the same last-resort the rest of
+            # this module already relies on for unsplittable text.
+            room = max(max_chars - len(header_block) - 1, 80)
+            for sub in _split_oversized(row, room):
+                pieces.append(f"{header_block}\n{sub}")
+    if current:
+        pieces.append(header_block + "\n" + "\n".join(current))
+
+    if prefix:
+        pieces[0] = f"{prefix}\n\n{pieces[0]}"
+    return pieces
 
 
 def _hard_split(text: str, size: int, max_chars: int) -> list[str]:

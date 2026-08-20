@@ -228,6 +228,7 @@ export default function MembersPage() {
                           Joined {new Date(m.created_at).toLocaleDateString()}
                         </span>
                       </div>
+                      <div className="people-card-meta">
                       <span className={`role-chip role-${m.role}`}>{m.role}</span>
                       <div className="people-card-actions">
                         {m.role === "member" && (
@@ -270,6 +271,7 @@ export default function MembersPage() {
                             Remove
                           </button>
                         )}
+                      </div>
                       </div>
                     </li>
                   );

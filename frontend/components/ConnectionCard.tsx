@@ -300,7 +300,7 @@ export function ConnectionCard({
       <div className="source-row-head">
         <div className="source-row-main">
           <span className="source-row-mark">
-            <BrandGlyph name={BRAND_GLYPH[provider]} size={24} />
+            <BrandGlyph name={BRAND_GLYPH[provider]} size={28} />
           </span>
           <div className="source-row-copy">
             <h3>{PROVIDER_LABELS[provider]}</h3>

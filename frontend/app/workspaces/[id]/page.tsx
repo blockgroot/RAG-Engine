@@ -675,6 +675,7 @@ function WorkspaceDetailPageInner() {
                       <strong>{m.email}</strong>
                       <span className="muted">{m.role === "owner" ? "Owns this room" : "Member"}</span>
                     </div>
+                    <div className="people-card-meta">
                     <span className="badge">{m.role === "owner" ? "Owner" : "Member"}</span>
                     {isOwner && m.role === "member" ? (
                       <div className="people-card-actions">
@@ -696,7 +697,10 @@ function WorkspaceDetailPageInner() {
                           {removeMemberBusy === m.user_id ? "…" : "Remove"}
                         </button>
                       </div>
-                    ) : null}
+                    ) : (
+                      <div className="people-card-actions" aria-hidden />
+                    )}
+                    </div>
                   </li>
                 ))}
               </ul>
