@@ -19,6 +19,7 @@ STAGE_GENERATE = "generate"
 STAGE_TONE_RETRY = "tone-retry"
 STAGE_WEB_DECISION = "web-decision"
 STAGE_WEB_ANSWER = "web-answer"
+STAGE_AUDIT = "audit"
 
 # Stages that use the auxiliary (cheaper) model when one is configured
 # (``LLM_AUX_MODEL``, Phase 19) — cheap/mechanical steps, never the final
@@ -31,5 +32,6 @@ AUX_LLM_STAGES = frozenset(
         STAGE_SUMMARY_FOLD,
         STAGE_INGEST_CONTEXT,
         STAGE_TONE_CLASSIFY,
+        STAGE_AUDIT,
     }
 )

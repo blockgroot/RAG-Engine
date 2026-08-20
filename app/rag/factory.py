@@ -15,6 +15,7 @@ argument (build it from config).
 from __future__ import annotations
 
 from ..config.settings import (
+    AuditSettings,
     DecomposeSettings,
     MemorySettings,
     RagSettings,
@@ -58,6 +59,7 @@ def build_rag_pipeline(
     query_norm_settings: QueryNormSettings | None = None,
     prompt_profile: PromptProfile | None = None,
     source_provider: str | None = None,
+    audit_settings: AuditSettings | None = None,
 ) -> RagPipeline:
     """Build the RAG pipeline, defaulting each dependency from configuration."""
     web_settings = WebSearchSettings.from_env()
@@ -113,4 +115,5 @@ def build_rag_pipeline(
         query_norm_settings=query_norm_settings or QueryNormSettings.from_env(),
         prompt_profile=prompt_profile,
         source_provider=source_provider,
+        audit_settings=audit_settings or AuditSettings.from_env(),
     )

@@ -141,6 +141,8 @@ DEFAULT_TONE_CLASSIFY_ENABLED = True
 DEFAULT_RECOVERY_ENABLED = True
 DEFAULT_RECOVERY_MAX_QUERIES = 2
 
+DEFAULT_AUDIT_ENABLED = False
+
 # Compound-question decomposition (Phase 18). Heuristic gate first; LLM only when
 # the question likely bundles multiple distinct asks.
 DEFAULT_DECOMPOSE_ENABLED = True
@@ -1031,6 +1033,30 @@ class RecoverySettings:
             enabled=env_bool("RECOVERY_ENABLED", DEFAULT_RECOVERY_ENABLED),
             max_queries=int(os.getenv("RECOVERY_MAX_QUERIES") or DEFAULT_RECOVERY_MAX_QUERIES),
         )
+
+
+@dataclass(frozen=True)
+class AuditSettings:
+    """Post-generation groundedness audit — the validation-layer gap (CLAUDE.md
+    §6 Phase 20, previously deferred pending a latency/cost decision).
+
+    A bounded second-opinion LLM call re-checks an already-drafted Mode A/B
+    answer against the same retrieved context. It can only downgrade an
+    answer to the fixed fallback, never edit or extend one, and any audit
+    failure (LLM error, unparseable verdict) degrades to skipping the audit
+    — the original answer stands. Default OFF: this is additive cost on top
+    of every answered question, so it opts in rather than changing existing
+    behaviour/latency by default.
+
+    - ``enabled``  kill-switch; off means byte-identical behaviour to before
+      this existed.
+    """
+
+    enabled: bool = DEFAULT_AUDIT_ENABLED
+
+    @classmethod
+    def from_env(cls) -> "AuditSettings":
+        return cls(enabled=env_bool("RAG_AUDIT_ENABLED", DEFAULT_AUDIT_ENABLED))
 
 
 @dataclass(frozen=True)

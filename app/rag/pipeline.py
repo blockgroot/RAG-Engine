@@ -63,6 +63,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from ..config.settings import (
+    AuditSettings,
     DecomposeSettings,
     MemorySettings,
     QueryNormSettings,
@@ -86,6 +87,7 @@ from ..embeddings.base import EmbeddingProvider
 from ..llm.base import LLMProvider
 from ..llm.metering import AUX_LLM_STAGES, log_llm_call
 from ..llm.stages import (
+    STAGE_AUDIT,
     STAGE_DECOMPOSE,
     STAGE_EMPATHY_OPENER,
     STAGE_GENERATE,
@@ -101,6 +103,7 @@ from .query_signals import log_query_signal
 from ..memory.base import ConversationContext, ConversationStore, RetrievedChunkRecord
 from ..vectorstore.base import DateRange, RetrievedChunk, VectorStore
 from ..websearch.base import SearchResult, WebSearchProvider
+from .audit import parse_audit_verdict
 from .retrieval import HybridRetriever, RetrievalResult
 from .context_assemble import assemble_context_texts
 from .decompose import looks_compound, parse_sub_questions
@@ -121,6 +124,7 @@ from .prompts import (
     POLICY_PROMPT_PROFILE,
     WEB_SEARCH_TOOL,
     PromptProfile,
+    build_audit_prompt,
     build_decompose_prompt,
     build_grounded_prompt,
     build_recovery_queries_prompt,
@@ -217,6 +221,10 @@ class RagResult:
       (``None`` if classify disabled/failed).
     - ``question_decomposed`` / ``sub_questions`` — Phase 18 compound-question
       split before retrieval (diagnostics).
+    - ``audit_used`` / ``audit_downgraded`` / ``audit_reason`` — post-generation
+      groundedness audit (validation layer, off by default: ``AuditSettings``).
+      ``audit_downgraded`` is ``True`` only when the auditor found an
+      unsupported claim and the answer was replaced with the fixed fallback.
     """
 
     answer: str
@@ -241,6 +249,9 @@ class RagResult:
     sub_questions: list[str] = field(default_factory=list)
     cache_hit: bool = False
     budget_exhausted: bool = False
+    audit_used: bool = False
+    audit_downgraded: bool = False
+    audit_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -283,6 +294,7 @@ class RagPipeline:
         prompt_profile: PromptProfile | None = None,
         tone_settings: ToneSettings | None = None,
         source_provider: str | None = None,
+        audit_settings: AuditSettings | None = None,
     ) -> None:
         self._llm = llm
         self._llm_aux = llm_aux or llm
@@ -321,6 +333,9 @@ class RagPipeline:
         # prompts.PromptProfile. Defaults to the original company-policy
         # wording, so every existing caller is byte-for-byte unchanged.
         self._prompt_profile = prompt_profile or POLICY_PROMPT_PROFILE
+        # Post-generation groundedness audit (validation layer, Phase 20-lite).
+        # Off by default — see AuditSettings.
+        self._audit_settings = audit_settings or AuditSettings.from_env()
 
     def _provider_for_stage(self, stage: str) -> LLMProvider:
         return self._llm_aux if stage in AUX_LLM_STAGES else self._llm
@@ -594,6 +609,14 @@ class RagPipeline:
         recovery_used = False
         recovery_reason: str | None = None
         recovery_queries: list[str] = []
+        # Captured from whichever ``_generate()`` call last ran, so these
+        # diagnostics survive even when a later branch (e.g. an audit
+        # downgrade routing into recovery/``_gate_failed``) replaces
+        # ``result`` with a freshly built one that has no audit fields of
+        # its own.
+        audit_used = False
+        audit_downgraded = False
+        audit_reason: str | None = None
 
         def _finalize(result: RagResult) -> RagResult:
             after = result.top_score if result.top_score is not None else top_score
@@ -615,6 +638,9 @@ class RagPipeline:
                 question_decomposed=question_decomposed,
                 sub_questions=list(sub_questions) if question_decomposed else [],
                 budget_exhausted=budget_exhausted,
+                audit_used=audit_used,
+                audit_downgraded=audit_downgraded,
+                audit_reason=audit_reason,
             )
 
         # Gate miss → optional recovery before web/fallback.
@@ -658,6 +684,11 @@ class RagPipeline:
             budget=budget,
             user_question=tone_question,
         )
+        audit_used, audit_downgraded, audit_reason = (
+            result.audit_used,
+            result.audit_downgraded,
+            result.audit_reason,
+        )
 
         # Generation found evidence insufficient → one recovery if not yet used.
         if self._generation_found_evidence_insufficient(
@@ -699,6 +730,11 @@ class RagPipeline:
                 conversation_id=conversation_id,
                 budget=budget,
                 user_question=tone_question,
+            )
+            audit_used, audit_downgraded, audit_reason = (
+                result.audit_used,
+                result.audit_downgraded,
+                result.audit_reason,
             )
         elif not budget.can_spend(min_stage):
             budget_exhausted = True
@@ -994,6 +1030,30 @@ class RagPipeline:
 
         answered = not self._is_refusal(text, self._settings.fallback_response)
         answer = text if answered else self._settings.fallback_response
+
+        # Validation layer: a bounded second opinion on an already-drafted
+        # Mode A/B answer. Mode C is already a refusal — nothing to audit.
+        audit_used = False
+        audit_downgraded = False
+        audit_reason: str | None = None
+        if (
+            answered
+            and mode in ("A", "B")
+            and self._audit_settings.enabled
+            and budget is not None
+            and budget.can_spend(self._budget_settings.min_stage_seconds)
+        ):
+            verdict = self._audit_answer(
+                question, contexts, answer, org_id=org_id, conversation_id=conversation_id
+            )
+            if verdict is not None and verdict.grounded is not None:
+                audit_used = True
+                if not verdict.grounded:
+                    audit_downgraded = True
+                    audit_reason = verdict.reason
+                    answered = False
+                    answer = self._settings.fallback_response
+
         if answered and opener:
             answer = compose_supportive_answer(opener, answer)
 
@@ -1007,7 +1067,32 @@ class RagPipeline:
             response_mode=mode,
             tone_retry_used=tone_retry_used,
             question_tone=question_tone,
+            audit_used=audit_used,
+            audit_downgraded=audit_downgraded,
+            audit_reason=audit_reason,
         )
+
+    def _audit_answer(
+        self,
+        question: str,
+        contexts: list[str],
+        answer: str,
+        *,
+        org_id: str | None,
+        conversation_id: str | None,
+    ):
+        """One bounded groundedness check. ``None`` on any failure (skip audit)."""
+        try:
+            raw = self._generate_text(
+                STAGE_AUDIT,
+                build_audit_prompt(question, contexts, answer),
+                org_id=org_id,
+                conversation_id=conversation_id,
+                max_tokens=120,
+            )
+        except Exception:
+            return None
+        return parse_audit_verdict(raw)
 
     def _recover_once(
         self,

@@ -92,6 +92,7 @@ class RecordingLLM(LLMProvider):
         empathy_opener: str | None = (
             "I'm sorry you're going through that — that sounds really hard."
         ),
+        audit_verdict: str | None = "VERDICT: GROUNDED\nREASON: (none)",
     ) -> None:
         self.prompts: list[str] = []
         self._answer = answer
@@ -104,10 +105,12 @@ class RecordingLLM(LLMProvider):
         self._raise_on_recovery = raise_on_recovery
         self._question_tone = question_tone
         self._empathy_opener = empathy_opener
+        self._audit_verdict = audit_verdict
         self.tone_classify_calls = 0
         self.empathy_opener_calls = 0
         self.recovery_calls = 0
         self.decompose_calls = 0
+        self.audit_calls = 0
         self.stages: list[str] = []
         from app.llm.usage import TokenUsage
 
@@ -138,6 +141,9 @@ class RecordingLLM(LLMProvider):
         if prompt.rstrip().endswith("OPENER:") or "\nOPENER:" in prompt:
             self.empathy_opener_calls += 1
             return self._empathy_opener or ""
+        if "DRAFT ANSWER:" in prompt:
+            self.audit_calls += 1
+            return self._audit_verdict or ""
         self.grounded_calls += 1
         if self._answers is not None:
             if self._answer_idx < len(self._answers):
