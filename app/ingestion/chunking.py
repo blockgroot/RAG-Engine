@@ -40,6 +40,19 @@ Because 1 token/char is the worst case anything can reach, capping characters
 caps tokens outright. Applied as a last resort only, after every linguistic
 boundary has been tried, and it does not fire on real prose (see
 ``DEFAULT_MAX_CHUNK_CHARS``).
+
+Markdown tables (production-RAG comparison gap #1: layout-aware chunking)
+---------------------------------------------------------------------------
+A Markdown table has no sentence punctuation, so an oversized table used to
+fall straight into sentence/word hard-splitting — exploding it word-by-word
+across chunks with the header, column alignment, and row boundaries all
+lost. ``_hard_split_block`` detects a table (a header line followed by a
+``|---|---|``-shaped separator row) before falling back to that path, and
+packs it whole row at a time instead, repeating the header + separator on
+every resulting piece so a chunk holding only a middle slice of rows still
+carries its column meaning. A small table that fits within budget as-is is
+completely unaffected — this only changes behaviour for an oversized block
+that actually contains a table.
 """
 
 from __future__ import annotations
