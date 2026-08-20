@@ -45,6 +45,19 @@ DROP INDEX IF EXISTS idx_documents_org_external;
 -- unique indexes — see the Workspace-within-a-Workspace block further down.
 DROP INDEX IF EXISTS idx_documents_org_provider_external;
 
+-- Hard metadata filter (production-RAG comparison gap #3, department/tag
+-- half — date-range shipped first via source_last_modified above). A
+-- generic, source-agnostic tag list rather than a fixed "department" column:
+-- nothing here decides WHERE a tag comes from (an admin-set field, a Notion
+-- property, a folder mapping) — that is a product decision for whoever
+-- calls the ingest/store functions with a value, mirroring how
+-- source_provider/workspace_id are pure pass-through scoping with no
+-- built-in population logic. NULL/empty (the default) never excludes a
+-- document from an unfiltered query, matching every other optional filter
+-- in this schema.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS tags TEXT[];
+CREATE INDEX IF NOT EXISTS idx_documents_tags ON documents USING gin (tags);
+
 
 -- Chunks of a document + their embedding vector. Org-scoped (denormalized org_id
 -- so every retrieval query can filter by tenant without a join).

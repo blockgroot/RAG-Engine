@@ -122,6 +122,8 @@ DEFAULT_CONTEXTUAL_DEFER = True            # run it AFTER sync succeeds (no onbo
 DEFAULT_CONTEXTUAL_CONCURRENCY = 2         # background enrich; keep low vs 15 RPM free endpoints
 DEFAULT_CONTEXTUAL_MAX_CHUNKS = 200        # skip enrich (raw chunks stay) above this many chunks/doc
 DEFAULT_HYPOTHETICAL_QUESTIONS_ENABLED = True  # ingest-time only; additive, no gate/prompt change
+DEFAULT_KEYWORD_EXTRACTION_ENABLED = True  # non-LLM, zero added latency/cost
+DEFAULT_KEYWORD_EXTRACTION_TOP_N = 6
 DEFAULT_EMBED_BATCH_SIZE = 16              # encode in batches (avoids OOM on large docs)
 DEFAULT_RETRIEVAL_HYBRID_ENABLED = True    # fuse vector + keyword (BM25-style) search
 DEFAULT_RETRIEVAL_RERANK_ENABLED = True    # cross-encoder rerank of the candidate pool
@@ -1306,6 +1308,29 @@ class ContextualSettings:
                 "INGEST_HYPOTHETICAL_QUESTIONS_ENABLED",
                 DEFAULT_HYPOTHETICAL_QUESTIONS_ENABLED,
             ),
+        )
+
+
+@dataclass(frozen=True)
+class KeywordExtractionSettings:
+    """Non-LLM keyword extraction, appended to stored chunk text at ingest.
+
+    Deterministic term-frequency extraction (``app/ingestion/keywords.py``) —
+    no model call, so unlike ``ContextualSettings.hypothetical_questions``
+    this has no latency/cost tradeoff to weigh; default ON.
+
+    - ``enabled``  kill-switch.
+    - ``top_n``    max keywords appended per chunk.
+    """
+
+    enabled: bool = DEFAULT_KEYWORD_EXTRACTION_ENABLED
+    top_n: int = DEFAULT_KEYWORD_EXTRACTION_TOP_N
+
+    @classmethod
+    def from_env(cls) -> "KeywordExtractionSettings":
+        return cls(
+            enabled=env_bool("INGEST_KEYWORDS_ENABLED", DEFAULT_KEYWORD_EXTRACTION_ENABLED),
+            top_n=_env_positive_int("INGEST_KEYWORDS_TOP_N", DEFAULT_KEYWORD_EXTRACTION_TOP_N),
         )
 
 

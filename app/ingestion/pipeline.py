@@ -15,12 +15,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
 
-from ..config.settings import ChunkingSettings, ContextualSettings
+from ..config.settings import ChunkingSettings, ContextualSettings, KeywordExtractionSettings
 from ..embeddings import build_embedding_provider
 from ..embeddings.base import EmbeddingProvider
 from ..ingestion.chunking import chunk_text
 from ..ingestion.sanitize import sanitize_ingest_text
 from ..ingestion.contextualize import contextualize_chunks
+from ..ingestion.keywords import append_keyword_line
 from ..ingestion.preprocessing import preprocess
 from ..llm import build_aux_llm_provider
 from ..llm.base import LLMProvider
@@ -336,8 +337,10 @@ def ingest_source(
     chunking: ChunkingSettings | None = None,
     llm: LLMProvider | None = None,
     contextual: ContextualSettings | None = None,
+    keywords: KeywordExtractionSettings | None = None,
     incremental: bool = True,
     workspace_id: str | None = None,
+    tags: list[str] | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> IngestResult:
     """Ingest documents from ``adapter`` into ``org_id``.
@@ -361,6 +364,7 @@ def ingest_source(
     embedder = embedder or build_embedding_provider()
     store = store or build_vector_store()
     contextual = contextual or ContextualSettings.from_env()
+    keywords = keywords or KeywordExtractionSettings.from_env()
     # Inline contextualize only when enabled AND not deferred. Deferred mode
     # embeds raw chunks here so sync can finish; enrich runs after success.
     apply_contextual_inline = contextual.enabled and not contextual.defer
@@ -444,6 +448,7 @@ def ingest_source(
         doc = adapter.fetch_document(ref.external_id)
         clean = preprocess(sanitize_ingest_text(doc.content))
         chunks = chunk_text(clean, chunking)
+        raw_chunks = chunks
         if not chunks:
             # Remember empty/index pages so change-check does not re-flag them as new.
             store.acknowledge_source_document(
@@ -454,6 +459,7 @@ def ingest_source(
                 source_uri=doc.source_uri,
                 last_modified=doc.last_modified or ref.last_modified,
                 workspace_id=workspace_id,
+                tags=tags,
             )
             skipped += 1
             report("indexing", done, total_work)
@@ -479,6 +485,15 @@ def ingest_source(
                     hypothetical_questions=contextual.hypothetical_questions,
                 )
 
+        if keywords.enabled:
+            # Extracted from the RAW chunk (before any LLM-added context
+            # sentence dilutes the word frequencies), appended to whatever
+            # ends up stored — contextualized or plain.
+            chunks = [
+                append_keyword_line(stored, raw, keywords.top_n)
+                for stored, raw in zip(chunks, raw_chunks)
+            ]
+
         report("embedding", done - 1, total_work)
         embeddings = embedder.embed(chunks)
         document_id = store.upsert_source_document(
@@ -491,6 +506,7 @@ def ingest_source(
             source_uri=doc.source_uri,
             last_modified=doc.last_modified or ref.last_modified,
             workspace_id=workspace_id,
+            tags=tags,
         )
         doc_ids.append(document_id)
         ingested_external_ids.append(doc.external_id)
@@ -525,7 +541,9 @@ def enrich_source_contextual(
     chunking: ChunkingSettings | None = None,
     llm: LLMProvider | None = None,
     contextual: ContextualSettings | None = None,
+    keywords: KeywordExtractionSettings | None = None,
     workspace_id: str | None = None,
+    tags: list[str] | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> int:
     """Re-apply contextual retrieval to pages already stored by a fast sync.
@@ -533,12 +551,18 @@ def enrich_source_contextual(
     Best-effort: failures on one page skip that page and continue. Returns how
     many pages were successfully re-embedded with context prefixes. Does not
     change sync bookkeeping (last_modified already set by the fast pass).
+
+    ``tags``: ``upsert_source_document`` replaces the document row entirely,
+    so a caller that ingested with ``tags`` set on the fast pass MUST pass
+    the identical value here too, or this enrich pass will silently clear
+    it back to untagged.
     """
     if not external_ids:
         return 0
     contextual = contextual or ContextualSettings.from_env()
     if not contextual.enabled:
         return 0
+    keywords = keywords or KeywordExtractionSettings.from_env()
     embedder = embedder or build_embedding_provider()
     store = store or build_vector_store()
     llm = llm or build_aux_llm_provider()
@@ -572,6 +596,7 @@ def enrich_source_contextual(
                 )
                 report("enriching", i, total)
                 continue
+            raw_chunks = chunks
             chunks = contextualize_chunks(
                 llm,
                 clean,
@@ -580,6 +605,14 @@ def enrich_source_contextual(
                 concurrency=contextual.concurrency,
                 hypothetical_questions=contextual.hypothetical_questions,
             )
+            if keywords.enabled:
+                # Re-derive from the raw chunk, same reasoning as the inline
+                # path — otherwise this enrich pass would silently drop the
+                # keyword line the fast pass had already appended.
+                chunks = [
+                    append_keyword_line(stored, raw, keywords.top_n)
+                    for stored, raw in zip(chunks, raw_chunks)
+                ]
             embeddings = embedder.embed(chunks)
             store.upsert_source_document(
                 org_id,
@@ -591,6 +624,7 @@ def enrich_source_contextual(
                 source_uri=doc.source_uri,
                 last_modified=doc.last_modified,
                 workspace_id=workspace_id,
+                tags=tags,
             )
             enriched += 1
         except Exception:  # noqa: BLE001 - one bad page must not abort enrich

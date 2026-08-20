@@ -100,6 +100,7 @@ class VectorStore(ABC):
         embeddings: list[list[float]],
         source_uri: str | None = None,
         workspace_id: str | None = None,
+        tags: list[str] | None = None,
     ) -> str:
         """Store a document and its chunk embeddings; return the ``document_id``.
 
@@ -110,6 +111,11 @@ class VectorStore(ABC):
         stores an org-wide row, identical to every existing call site.
         Non-``None`` scopes the row to that sub-workspace — it is written
         alongside ``org_id``, never instead of it.
+
+        ``tags``: an arbitrary, caller-supplied label list (e.g. a
+        department) for the hard tag filter on ``query``/``keyword_search``.
+        ``None``/empty (the default) means untagged — this store has no
+        opinion on where a tag comes from.
         """
         raise NotImplementedError
 
@@ -122,6 +128,7 @@ class VectorStore(ABC):
         workspace_id: str | None = None,
         source_provider: str | None = None,
         date_range: "DateRange | None" = None,
+        tags: list[str] | None = None,
     ) -> list[RetrievedChunk]:
         """Return the ``top_k`` most similar chunks *within ``org_id`` only*.
 
@@ -131,6 +138,12 @@ class VectorStore(ABC):
         ``WHERE`` clause before ranking, same as ``source_provider`` — never a
         re-ranking signal, and it never widens what ``org_id``/``workspace_id``
         already restrict.
+
+        ``tags``: an optional hard filter on ``documents.tags`` (e.g.
+        department/category labels set at ingest). ``None``/empty (default)
+        is a no-op. When set, matches a document whose ``tags`` overlaps
+        ANY of the given values (OR semantics) — same WHERE-clause-before-
+        ranking discipline as ``date_range``, never a re-ranking signal.
 
         ``workspace_id`` (Workspace-within-a-Workspace): ``None`` (default)
         queries only org-wide chunks (rows with ``workspace_id IS NULL``) —
@@ -170,6 +183,7 @@ class VectorStore(ABC):
         workspace_id: str | None = None,
         source_provider: str | None = None,
         date_range: "DateRange | None" = None,
+        tags: list[str] | None = None,
     ) -> list[RetrievedChunk]:
         """Full-text (BM25-style) search within ``org_id``, ordered by keyword
         relevance (Phase 6 hybrid retrieval).
@@ -181,6 +195,9 @@ class VectorStore(ABC):
         ``source_provider`` behaves exactly as on ``query`` — the keyword half
         of hybrid search must apply the same filter, or a Slack-scoped answer
         could still surface a Notion chunk through the BM25 leg.
+
+        ``tags`` behaves exactly as on ``query`` — same overlap-match
+        semantics, applied to the same ``documents.tags`` column.
 
         Optional capability: the default raises ``NotImplementedError``; stores
         that support it (``PgVectorStore``) override it. Each returned chunk still
@@ -239,13 +256,14 @@ class VectorStore(ABC):
         source_uri: str | None = None,
         last_modified: "datetime | None" = None,
         workspace_id: str | None = None,
+        tags: list[str] | None = None,
     ) -> str:
         """Replace any prior copy of this source page, then store the new chunks.
 
         Deletes existing rows for the same ``(org_id, provider, external_id)``
         and any legacy duplicates that share ``source_uri`` (within the same
         provider) but lack an external id, then inserts one fresh document.
-        Optional capability.
+        Optional capability. ``tags`` behaves exactly as on ``add_document``.
         """
         raise NotImplementedError("this vector store does not support source document upsert")
 
@@ -259,6 +277,7 @@ class VectorStore(ABC):
         source_uri: str | None = None,
         last_modified: "datetime | None" = None,
         workspace_id: str | None = None,
+        tags: list[str] | None = None,
     ) -> str:
         """Record a source page with no chunks (empty / index-only after fetch).
 

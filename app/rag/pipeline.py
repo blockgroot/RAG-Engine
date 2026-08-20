@@ -409,6 +409,7 @@ class RagPipeline:
         conversation_id: str | None = None,
         workspace_id: str | None = None,
         date_range: DateRange | None = None,
+        tags: list[str] | None = None,
     ) -> RagResult:
         """Answer ``question`` using only ``org_id``'s chunks (with optional memory).
 
@@ -455,6 +456,7 @@ class RagPipeline:
                 workspace_id=workspace_id,
                 source_provider=self._source_provider,
                 date_range=date_range,
+                tags=tags,
             )
             if cached is not None:
                 out = replace(
@@ -472,6 +474,7 @@ class RagPipeline:
             budget=budget,
             workspace_id=workspace_id,
             date_range=date_range,
+            tags=tags,
             # Tone/empathy must see the raw user turn — conversation rewrite
             # is retrieval-oriented and often strips personal-distress framing.
             user_question=question,
@@ -485,6 +488,7 @@ class RagPipeline:
                 workspace_id=workspace_id,
                 source_provider=self._source_provider,
                 date_range=date_range,
+                tags=tags,
             )
 
         if conversation_id is not None and self._memory is not None:
@@ -510,6 +514,7 @@ class RagPipeline:
         chunk_chars: int = 40,
         workspace_id: str | None = None,
         date_range: DateRange | None = None,
+        tags: list[str] | None = None,
     ) -> tuple[Iterator[str], RagResult]:
         """Answer, then hand back the text as a chunk iterator instead of one string.
 
@@ -538,6 +543,7 @@ class RagPipeline:
             conversation_id=conversation_id,
             workspace_id=workspace_id,
             date_range=date_range,
+            tags=tags,
         )
 
         return chunk_answer(result.answer, chunk_chars), result
@@ -553,6 +559,7 @@ class RagPipeline:
         budget: RequestBudget | None = None,
         workspace_id: str | None = None,
         date_range: DateRange | None = None,
+        tags: list[str] | None = None,
         user_question: str | None = None,
     ) -> RagResult:
         """First retrieve as today; recover at most once if evidence is insufficient."""
@@ -571,12 +578,13 @@ class RagPipeline:
         sub_questions: list[str] = [retrieval_question]
         question_decomposed = False
 
-        # A date-filtered question must never reuse chunks retrieved under a
-        # different (or no) filter on the prior turn — the reused chunks could
-        # sit outside the requested range. Skip reuse rather than risk it.
+        # A date- or tag-filtered question must never reuse chunks retrieved
+        # under a different (or no) filter on the prior turn — the reused
+        # chunks could sit outside the requested range/tags. Skip reuse
+        # rather than risk it.
         reused = (
             None
-            if date_range is not None
+            if date_range is not None or tags is not None
             else self._try_reuse(retrieval_question, org_id, query_vec, conversation_id)
         )
         if reused is not None:
@@ -599,6 +607,7 @@ class RagPipeline:
                 sub_questions,
                 workspace_id=workspace_id,
                 date_range=date_range,
+                tags=tags,
                 # Already embedded above for the reuse check; without this the
                 # identical string is encoded a second time (~38ms) on every
                 # non-decomposed question.
@@ -655,6 +664,7 @@ class RagPipeline:
                     conversation_id=conversation_id,
                     workspace_id=workspace_id,
                     date_range=date_range,
+                    tags=tags,
                 )
                 recovery_used = True
                 recovery_reason = RECOVERY_REASON_GATE_MISS
@@ -704,6 +714,7 @@ class RagPipeline:
                     conversation_id=conversation_id,
                     workspace_id=workspace_id,
                     date_range=date_range,
+                    tags=tags,
                 )
             recovery_used = True
             recovery_reason = RECOVERY_REASON_INSUFFICIENT_EVIDENCE
@@ -783,6 +794,7 @@ class RagPipeline:
         *,
         workspace_id: str | None = None,
         date_range: DateRange | None = None,
+        tags: list[str] | None = None,
     ) -> tuple[list[RetrievedChunk], float | None]:
         if self._retriever is not None:
             retrieval = self._retriever.retrieve(
@@ -791,6 +803,7 @@ class RagPipeline:
                 query_vec,
                 workspace_id=workspace_id,
                 date_range=date_range,
+                tags=tags,
             )
             return retrieval.hits, retrieval.gate_score
         hits = self._store.query(
@@ -800,6 +813,7 @@ class RagPipeline:
             workspace_id=workspace_id,
             source_provider=self._source_provider,
             date_range=date_range,
+            tags=tags,
         )
         top_score = hits[0].score if hits else None
         return hits, top_score
@@ -838,6 +852,7 @@ class RagPipeline:
         *,
         workspace_id: str | None = None,
         date_range: DateRange | None = None,
+        tags: list[str] | None = None,
         known_vectors: dict[str, list[float]] | None = None,
     ) -> tuple[list[RetrievedChunk], float | None]:
         """Retrieve for one or more sub-questions.
@@ -859,7 +874,12 @@ class RagPipeline:
             if vec is None:
                 vec = self._embedder.embed([only])[0]
             return self._retrieve_once(
-                org_id, only, vec, workspace_id=workspace_id, date_range=date_range
+                org_id,
+                only,
+                vec,
+                workspace_id=workspace_id,
+                date_range=date_range,
+                tags=tags,
             )
 
         # Embed only what the caller has not already computed, in one batch.
@@ -880,6 +900,7 @@ class RagPipeline:
                 rerank_query=original_question,
                 workspace_id=workspace_id,
                 date_range=date_range,
+                tags=tags,
             )
             return retrieval.hits, retrieval.gate_score
 
@@ -892,6 +913,7 @@ class RagPipeline:
                 workspace_id=workspace_id,
                 source_provider=self._source_provider,
                 date_range=date_range,
+                tags=tags,
             ):
                 key = (hit.document_id, hit.chunk_index)
                 prev = merged.get(key)
@@ -1105,6 +1127,7 @@ class RagPipeline:
         conversation_id: str | None = None,
         workspace_id: str | None = None,
         date_range: DateRange | None = None,
+        tags: list[str] | None = None,
     ) -> _RecoveryAttempt:
         """One bounded recovery: expand retrieval expressions → re-retrieve → fuse.
 
@@ -1138,7 +1161,12 @@ class RagPipeline:
         for q_text, q_vec in zip(queries, vectors):
             try:
                 hits, _ = self._retrieve_once(
-                    org_id, q_text, q_vec, workspace_id=workspace_id, date_range=date_range
+                    org_id,
+                    q_text,
+                    q_vec,
+                    workspace_id=workspace_id,
+                    date_range=date_range,
+                    tags=tags,
                 )
             except Exception:
                 continue

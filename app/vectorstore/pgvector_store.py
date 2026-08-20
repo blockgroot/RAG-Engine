@@ -66,6 +66,7 @@ class PgVectorStore(VectorStore):
         embeddings: list[list[float]],
         source_uri: str | None = None,
         workspace_id: str | None = None,
+        tags: list[str] | None = None,
     ) -> str:
         if len(chunks) != len(embeddings):
             raise ProviderError(
@@ -78,11 +79,11 @@ class PgVectorStore(VectorStore):
         with get_connection(self._settings) as conn:
             doc_row = conn.execute(
                 """
-                INSERT INTO documents (org_id, title, source_uri, workspace_id)
-                VALUES (%s::uuid, %s, %s, %s::uuid)
+                INSERT INTO documents (org_id, title, source_uri, workspace_id, tags)
+                VALUES (%s::uuid, %s, %s, %s::uuid, %s)
                 RETURNING id
                 """,
-                (org_id, title, source_uri, workspace_id),
+                (org_id, title, source_uri, workspace_id, tags),
             ).fetchone()
             document_id = doc_row[0]
 
@@ -115,6 +116,7 @@ class PgVectorStore(VectorStore):
         workspace_id: str | None = None,
         source_provider: str | None = None,
         date_range: DateRange | None = None,
+        tags: list[str] | None = None,
     ) -> list[RetrievedChunk]:
         if not query_embedding:
             raise EmbeddingProviderError("query_embedding is empty")
@@ -122,12 +124,12 @@ class PgVectorStore(VectorStore):
         vector = _to_db_vector(query_embedding)
         after = date_range.after if date_range else None
         before = date_range.before if date_range else None
-        # ``documents`` is already LEFT JOINed for the title, so the provider
-        # and date filters are WHERE terms rather than a second join. With
-        # NULL each term is a no-op and the plan is unchanged from before
-        # these parameters existed; with a value the LEFT JOIN behaves as an
-        # inner one, which is correct — a chunk with no document row has no
-        # provider/date to match.
+        # ``documents`` is already LEFT JOINed for the title, so the provider,
+        # date, and tag filters are WHERE terms rather than a second join.
+        # With NULL each term is a no-op and the plan is unchanged from
+        # before these parameters existed; with a value the LEFT JOIN
+        # behaves as an inner one, which is correct — a chunk with no
+        # document row has no provider/date/tags to match.
         with get_connection(self._settings) as conn:
             rows = conn.execute(
                 """
@@ -144,6 +146,7 @@ class PgVectorStore(VectorStore):
                   AND (%s::text IS NULL OR d.source_provider = %s::text)
                   AND (%s::timestamptz IS NULL OR d.source_last_modified >= %s::timestamptz)
                   AND (%s::timestamptz IS NULL OR d.source_last_modified <= %s::timestamptz)
+                  AND (%s::text[] IS NULL OR d.tags && %s::text[])
                 ORDER BY c.embedding <=> %s
                 LIMIT %s
                 """,
@@ -157,6 +160,8 @@ class PgVectorStore(VectorStore):
                     after,
                     before,
                     before,
+                    tags,
+                    tags,
                     vector,
                     top_k,
                 ),
@@ -192,6 +197,7 @@ class PgVectorStore(VectorStore):
         workspace_id: str | None = None,
         source_provider: str | None = None,
         date_range: DateRange | None = None,
+        tags: list[str] | None = None,
     ) -> list[RetrievedChunk]:
         """Full-text keyword search within ``org_id`` (Phase 6 hybrid retrieval).
 
@@ -229,7 +235,9 @@ class PgVectorStore(VectorStore):
         # fail with "missing FROM-clause entry" whenever no filter was given.
         # Same join ``query()`` already always does; the cost is a PK lookup,
         # not a scan.
-        params: list = [source_provider, source_provider, after, after, before, before]
+        params: list = [
+            source_provider, source_provider, after, after, before, before, tags, tags,
+        ]
         with get_connection(self._settings) as conn:
             rows = conn.execute(
                 """
@@ -247,6 +255,7 @@ class PgVectorStore(VectorStore):
                       AND (%s::text IS NULL OR fd.source_provider = %s::text)
                       AND (%s::timestamptz IS NULL OR fd.source_last_modified >= %s::timestamptz)
                       AND (%s::timestamptz IS NULL OR fd.source_last_modified <= %s::timestamptz)
+                      AND (%s::text[] IS NULL OR fd.tags && %s::text[])
                     ORDER BY ts_rank(
                         c.content_tsv, websearch_to_tsquery('english', %s)
                     ) DESC
@@ -385,6 +394,7 @@ class PgVectorStore(VectorStore):
         source_uri: str | None = None,
         last_modified: datetime | None = None,
         workspace_id: str | None = None,
+        tags: list[str] | None = None,
     ) -> str:
         if len(chunks) != len(embeddings):
             raise ProviderError(
@@ -431,12 +441,21 @@ class PgVectorStore(VectorStore):
                 """
                 INSERT INTO documents (
                     org_id, title, source_uri, source_provider, source_external_id,
-                    source_last_modified, workspace_id
+                    source_last_modified, workspace_id, tags
                 )
-                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid, %s)
                 RETURNING id
                 """,
-                (org_id, title, source_uri, provider, external_id, last_modified, workspace_id),
+                (
+                    org_id,
+                    title,
+                    source_uri,
+                    provider,
+                    external_id,
+                    last_modified,
+                    workspace_id,
+                    tags,
+                ),
             ).fetchone()
             document_id = doc_row[0]
 
@@ -471,6 +490,7 @@ class PgVectorStore(VectorStore):
         source_uri: str | None = None,
         last_modified: datetime | None = None,
         workspace_id: str | None = None,
+        tags: list[str] | None = None,
     ) -> str:
         """Upsert metadata-only row so empty pages are not forever "new"."""
         if not external_id:
@@ -505,12 +525,21 @@ class PgVectorStore(VectorStore):
                 """
                 INSERT INTO documents (
                     org_id, title, source_uri, source_provider, source_external_id,
-                    source_last_modified, workspace_id
+                    source_last_modified, workspace_id, tags
                 )
-                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid, %s)
                 RETURNING id
                 """,
-                (org_id, title, source_uri, provider, external_id, last_modified, workspace_id),
+                (
+                    org_id,
+                    title,
+                    source_uri,
+                    provider,
+                    external_id,
+                    last_modified,
+                    workspace_id,
+                    tags,
+                ),
             ).fetchone()
         return str(row[0])
 

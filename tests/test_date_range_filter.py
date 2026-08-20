@@ -39,6 +39,7 @@ class _RecordingStore(VectorStore):
         workspace_id=None,
         source_provider=None,
         date_range=None,
+        tags=None,
     ):
         self.query_date_ranges.append(date_range)
         return [
@@ -56,6 +57,7 @@ class _RecordingStore(VectorStore):
         workspace_id=None,
         source_provider=None,
         date_range=None,
+        tags=None,
     ):
         self.keyword_date_ranges.append(date_range)
         return []

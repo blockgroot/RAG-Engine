@@ -80,6 +80,7 @@ class HybridRetriever:
         rerank_query: str | None = None,
         workspace_id: str | None = None,
         date_range: DateRange | None = None,
+        tags: list[str] | None = None,
     ) -> RetrievalResult:
         """Retrieve for ``query_text``; optionally fuse extra (sub-)queries first.
 
@@ -92,6 +93,10 @@ class HybridRetriever:
         ``date_range``: an optional hard filter (e.g. "updated after March")
         passed straight through to both the vector and keyword legs — a
         no-op when ``None``, identical to every existing call site.
+
+        ``tags``: an optional hard filter (e.g. department labels), same
+        no-op-when-``None`` and pass-through-to-both-legs behaviour as
+        ``date_range``.
         """
         top_k = self._rag_settings.top_k
         pool = self._settings.candidate_pool
@@ -102,7 +107,12 @@ class HybridRetriever:
             query_pairs.extend(extra_queries)
 
         ranked_lists = self._first_stage_all(
-            org_id, query_pairs, pool, workspace_id=workspace_id, date_range=date_range
+            org_id,
+            query_pairs,
+            pool,
+            workspace_id=workspace_id,
+            date_range=date_range,
+            tags=tags,
         )
 
         if len(ranked_lists) == 1:
@@ -131,6 +141,7 @@ class HybridRetriever:
         *,
         workspace_id: str | None = None,
         date_range: DateRange | None = None,
+        tags: list[str] | None = None,
     ) -> list[list[RetrievedChunk]]:
         """Run every first-stage search concurrently, one ranked list per query.
 
@@ -162,6 +173,7 @@ class HybridRetriever:
                     workspace_id=workspace_id,
                     source_provider=self._source_provider,
                     date_range=date_range,
+                    tags=tags,
                 )
             else:
                 try:
@@ -173,6 +185,7 @@ class HybridRetriever:
                         workspace_id=workspace_id,
                         source_provider=self._source_provider,
                         date_range=date_range,
+                        tags=tags,
                     )
                 except NotImplementedError:
                     hits = []

@@ -26,6 +26,7 @@ def _question_hash(
     workspace_id: str | None = None,
     source_provider: str | None = None,
     date_range: DateRange | None = None,
+    tags: list[str] | None = None,
 ) -> str:
     # Workspace-within-a-Workspace: folding workspace_id into the hash input
     # (rather than adding a column to query_answer_cache) keeps an org-wide
@@ -47,6 +48,8 @@ def _question_hash(
         key = f"{key}|src:{source_provider}"
     if date_range is not None and (date_range.after or date_range.before):
         key = f"{key}|dr:{date_range.after}:{date_range.before}"
+    if tags:
+        key = f"{key}|tags:{','.join(sorted(tags))}"
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
@@ -94,12 +97,13 @@ class QueryAnswerCache:
         workspace_id: str | None = None,
         source_provider: str | None = None,
         date_range: DateRange | None = None,
+        tags: list[str] | None = None,
     ):
         if not self._settings.enabled or not _valid_org_id(org_id):
             return None
 
         normalized = normalize_question(question)
-        qhash = _question_hash(normalized, workspace_id, source_provider, date_range)
+        qhash = _question_hash(normalized, workspace_id, source_provider, date_range, tags)
         with get_connection() as conn:
             row = conn.execute(
                 """
@@ -124,11 +128,12 @@ class QueryAnswerCache:
         workspace_id: str | None = None,
         source_provider: str | None = None,
         date_range: DateRange | None = None,
+        tags: list[str] | None = None,
     ) -> None:
         if not self._settings.enabled or not _valid_org_id(org_id):
             return
         normalized = normalize_question(question)
-        qhash = _question_hash(normalized, workspace_id, source_provider, date_range)
+        qhash = _question_hash(normalized, workspace_id, source_provider, date_range, tags)
         expires = datetime.now(timezone.utc) + timedelta(seconds=self._settings.ttl_seconds)
         payload = _serialize(result)
         with get_connection() as conn:
