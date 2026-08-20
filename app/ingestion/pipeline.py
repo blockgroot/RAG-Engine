@@ -471,7 +471,12 @@ def ingest_source(
             else:
                 report("contextualizing", done - 1, total_work)
                 chunks = contextualize_chunks(
-                    llm, clean, chunks, org_id=org_id, concurrency=contextual.concurrency
+                    llm,
+                    clean,
+                    chunks,
+                    org_id=org_id,
+                    concurrency=contextual.concurrency,
+                    hypothetical_questions=contextual.hypothetical_questions,
                 )
 
         report("embedding", done - 1, total_work)
@@ -568,7 +573,12 @@ def enrich_source_contextual(
                 report("enriching", i, total)
                 continue
             chunks = contextualize_chunks(
-                llm, clean, chunks, org_id=org_id, concurrency=contextual.concurrency
+                llm,
+                clean,
+                chunks,
+                org_id=org_id,
+                concurrency=contextual.concurrency,
+                hypothetical_questions=contextual.hypothetical_questions,
             )
             embeddings = embedder.embed(chunks)
             store.upsert_source_document(
