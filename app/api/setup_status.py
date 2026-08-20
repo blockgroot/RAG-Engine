@@ -44,6 +44,15 @@ def content_setup_status(org_id: str, workspace_id: str | None = None) -> dict:
                   AND workspace_id IS NOT DISTINCT FROM %(ws)s
               ) AS has_documents,
               EXISTS (
+                SELECT 1 FROM documents
+                WHERE org_id = %(org)s
+                  AND workspace_id IS NOT DISTINCT FROM %(ws)s
+                  AND source_provider IS DISTINCT FROM 'slack'
+                  AND source_provider IS DISTINCT FROM 'linear'
+                  AND source_provider IS DISTINCT FROM 'notion'
+                  AND source_provider IS DISTINCT FROM 'google'
+              ) AS has_legacy_documents,
+              EXISTS (
                 SELECT 1 FROM ingestion_jobs
                 WHERE org_id = %(org)s
                   AND workspace_id IS NOT DISTINCT FROM %(ws)s
@@ -71,10 +80,17 @@ def content_setup_status(org_id: str, workspace_id: str | None = None) -> dict:
             {"org": org_id, "ws": workspace_id},
         ).fetchone()
 
-    has_connection, has_documents, sync_in_progress, has_succeeded_sync = row[:4]
-    latest_job = (row[4], row[5]) if row[4] is not None else None
+    (
+        has_connection,
+        has_documents,
+        has_legacy_documents,
+        sync_in_progress,
+        has_succeeded_sync,
+    ) = row[:5]
+    latest_job = (row[5], row[6]) if row[5] is not None else None
 
     docs = bool(has_documents)
+    legacy_docs = bool(has_legacy_documents)
     syncing = bool(sync_in_progress)
     succeeded = bool(has_succeeded_sync)
     return {
@@ -99,4 +115,17 @@ def content_setup_status(org_id: str, workspace_id: str | None = None) -> dict:
         # now" have `sync_in_progress` for exactly that, and should surface it
         # as a passive indicator rather than a gate.
         "ready_to_ask": succeeded and docs,
+        # Whether the LEGACY combined "Docs" tab has anything of its own to
+        # answer from — deliberately narrower than `ready_to_ask`. A scope can
+        # have `ready_to_ask=True` purely because e.g. Slack synced
+        # successfully, but Slack already has its own dedicated, source-pinned
+        # tab (`app/agent/factory.py::build_slack_agent`); the legacy
+        # PolicyAgent/WorkspaceAgent this tab uses is UNSCOPED (no
+        # `source_provider` filter), so showing "Docs" here would let it
+        # answer straight from those same Slack/Linear/Notion/Drive chunks —
+        # exactly the cross-source blending the per-source split exists to
+        # prevent. `has_legacy_documents` only counts rows from a provider
+        # with no dedicated tab of its own, so "Docs" appears only when there
+        # is genuinely something for it, and only it, to answer from.
+        "policy_ready": succeeded and legacy_docs,
     }

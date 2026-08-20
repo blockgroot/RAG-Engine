@@ -86,6 +86,8 @@ function ChatPageInner() {
   const [workspaceLinear, setWorkspaceLinear] = useState(false);
   const [workspaceNotion, setWorkspaceNotion] = useState(false);
   const [workspaceDrive, setWorkspaceDrive] = useState(false);
+  const [workspacePolicyReady, setWorkspacePolicyReady] = useState(false);
+  const [workspaceName, setWorkspaceName] = useState<string | null>(null);
   const codeAvailable = workspaceId ? workspaceGithub : Boolean(me?.github_connected);
   // Slack is keyed on *ingested threads*, not merely on the connection existing
   // (see /me.slack_ready): unlike GitHub's live reads, a Slack connection whose
@@ -99,6 +101,12 @@ function ChatPageInner() {
   // because it is read live. So an org with only GitHub connected must not be
   // held behind the policy readiness gate.
   const policiesReady = readyToAsk !== false;
+  // Whether the legacy "Docs" tab has any content of its OWN, distinct from
+  // `policiesReady` above: a scope can be `ready_to_ask` purely because e.g.
+  // Slack synced, but Slack already has its own dedicated, source-pinned tab
+  // — the unscoped legacy PolicyAgent/WorkspaceAgent behind "Docs" would then
+  // answer straight from those same chunks unfiltered. See `Me.policy_ready`.
+  const policyReady = workspaceId ? workspacePolicyReady : Boolean(me?.policy_ready);
   // The legacy combined "Docs" tab (mixed Notion+Drive+anything-else corpus)
   // is offered ONLY when neither Notion nor Drive has its own tab — once a
   // company has either connected, this tab must never reappear, or it would
@@ -106,7 +114,7 @@ function ChatPageInner() {
   // prevent. It stays around for older/legacy orgs whose docs predate the
   // per-source split, or any future doc source that hasn't earned its own tab
   // yet.
-  const policyFallbackAvailable = !notionAvailable && !driveAvailable && policiesReady;
+  const policyFallbackAvailable = !notionAvailable && !driveAvailable && policyReady;
   const availableTabCount = [
     policyFallbackAvailable,
     codeAvailable,
@@ -254,6 +262,8 @@ function ChatPageInner() {
         setWorkspaceLinear(Boolean(ws.linear_ready));
         setWorkspaceNotion(Boolean(ws.notion_ready));
         setWorkspaceDrive(Boolean(ws.drive_ready));
+        setWorkspacePolicyReady(Boolean(ws.policy_ready));
+        setWorkspaceName(ws.name);
       })
       .catch(() => {
         if (!cancelled) setReadyToAsk(false);
@@ -498,7 +508,7 @@ function ChatPageInner() {
 
         <div className="chat-topbar">
           <div className="chat-topbar-copy">
-            <p className="chat-kicker">{workspaceId ? "Space" : "Company-wide"}</p>
+            <p className="chat-kicker">{workspaceId ? workspaceName || "Space" : "Company-wide"}</p>
             <h1>
               {askingCode
                 ? "Code"

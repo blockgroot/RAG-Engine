@@ -187,7 +187,16 @@ def build_linear_suggestions(titles: list[str]) -> list[str]:
     for i, template in enumerate(_LINEAR_TEMPLATES):
         if len(questions) >= _MAX:
             break
-        questions.append(template.format(title=_display_title(cleaned[i % len(cleaned)])))
+        # Linear issue titles run longer and more technical than a Notion page
+        # title (code spans, error strings, route paths) — the default 64-char
+        # trim still left a chip reading like a paragraph. A shorter cap keeps
+        # it scannable; clicking a chip sends this exact (trimmed) text as the
+        # question, and semantic + keyword retrieval still resolves a shorter
+        # title fragment to the same issue, same as an already-trimmed Notion
+        # title would.
+        questions.append(
+            template.format(title=_display_title(cleaned[i % len(cleaned)], max_len=36))
+        )
     return questions
 
 
