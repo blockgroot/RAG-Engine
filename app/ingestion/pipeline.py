@@ -22,7 +22,7 @@ from ..ingestion.chunking import chunk_text
 from ..ingestion.sanitize import sanitize_ingest_text
 from ..ingestion.contextualize import contextualize_chunks
 from ..ingestion.preprocessing import preprocess
-from ..llm import build_aux_llm_provider, build_llm_provider
+from ..llm import build_aux_llm_provider
 from ..llm.base import LLMProvider
 from ..sources.base import SourceAdapter, SourceRef
 from ..vectorstore import build_vector_store

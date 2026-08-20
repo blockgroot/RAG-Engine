@@ -1044,13 +1044,6 @@ table .role-chip.role-admin,
   50% { opacity: 1; transform: scale(1.1); }
 }
 
-.connection-card-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 1rem;
-}
-
 @media (max-width: 900px) {
   .app-shell-nav {
     height: auto;
@@ -1881,12 +1874,6 @@ table .role-chip.role-admin,
   min-height: 100vh; color: var(--ink-muted);
 }
 
-.auth-center-stage {
-  position: relative; z-index: 2;
-  min-height: calc(100vh - 5rem);
-  display: flex; flex-direction: column; align-items: center; justify-content: center;
-  padding: 1.5rem 1.25rem 2.5rem; gap: 1rem;
-}
 .auth-split-stage {
   position: relative;
   z-index: 2;
@@ -2118,44 +2105,6 @@ table .role-chip.role-admin,
   gap: 0.5rem;
   margin-top: 0.35rem;
 }
-.landing-connector-pill {
-  font-size: 0.75rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  color: var(--accent-strong);
-  background: rgba(255,255,255,0.85);
-  border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--border));
-  padding: 0.35rem 0.75rem;
-  border-radius: 999px;
-}
-.landing-product {
-  position: relative;
-  animation: rise-in 0.65s var(--ease) 0.12s both;
-}
-.landing-product-glow {
-  position: absolute;
-  inset: 8% 6% 4% 10%;
-  background: radial-gradient(ellipse at 50% 40%, rgba(45, 212, 191, 0.35), transparent 65%);
-  filter: blur(18px);
-  z-index: 0;
-  animation: glow-breathe 6s ease-in-out infinite;
-}
-@keyframes glow-breathe {
-  0%, 100% { opacity: 0.55; transform: scale(1); }
-  50% { opacity: 0.9; transform: scale(1.04); }
-}
-.landing-product-svg {
-  position: relative;
-  z-index: 1;
-  width: 100%;
-  height: auto;
-  display: block;
-  filter: drop-shadow(0 28px 50px rgba(15, 118, 110, 0.18));
-}
-.lp-card-1 { animation: float-card 6s ease-in-out infinite; }
-.lp-card-2 { animation: float-card 7s ease-in-out 0.35s infinite; }
-.lp-card-3 { animation: float-card 8s ease-in-out 0.15s infinite; }
-
 .landing-strip {
   width: min(1120px, 100%);
   margin: 0 auto 2.5rem;
@@ -2219,8 +2168,7 @@ table .role-chip.role-admin,
 }
 @media (prefers-reduced-motion: reduce) {
   .ask-blob-a, .ask-blob-b, .ask-float-1, .ask-float-2, .ask-float-3,
-  .ask-core, .ask-arc, .lp-card-1, .lp-card-2, .lp-card-3,
-  .landing-product-glow, .composer-spinner {
+  .ask-core, .ask-arc, .composer-spinner {
     animation: none !important;
   }
 }
@@ -3019,20 +2967,12 @@ table .role-chip.role-admin,
   position: relative;
   z-index: 1;
 }
-.create-space-form,
 .invite-form {
   width: 100%;
 }
-.create-space-form .button,
 .invite-form .button {
   width: fit-content;
   align-self: flex-start;
-}
-.create-space-form {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  margin-top: 0.15rem;
 }
 
 .people-layout {

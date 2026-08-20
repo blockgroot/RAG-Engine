@@ -65,7 +65,6 @@ import numpy as np
 from ..config.settings import (
     DecomposeSettings,
     MemorySettings,
-    QueryCacheSettings,
     QueryNormSettings,
     RagSettings,
     RecoverySettings,

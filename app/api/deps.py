@@ -32,8 +32,6 @@ from ..agent.workspace_agent import WorkspaceAgent
 from ..auth.session import SessionClaims, decode_session_token
 from ..core.exceptions import AuthError
 from ..db.connection import get_connection
-from ..vectorstore import build_vector_store
-from ..vectorstore.base import VectorStore
 
 SESSION_COOKIE_NAME = "session"
 # First-party cookie. Safe because the browser talks to the frontend origin
@@ -128,12 +126,6 @@ def get_github_agent() -> GitHubAgent:
     ``app/agent/github_agent.py`` on why ``reader_builder`` is a builder.
     """
     return build_github_agent()
-
-
-@lru_cache(maxsize=1)
-def get_vector_store() -> VectorStore:
-    """Process-wide singleton vector store (just a pooled DB connection)."""
-    return build_vector_store()
 
 
 def get_session(request: Request) -> SessionClaims:

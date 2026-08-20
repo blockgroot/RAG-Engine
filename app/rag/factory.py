@@ -39,7 +39,6 @@ from ..websearch import build_web_search_provider
 from ..websearch.base import WebSearchProvider
 from .pipeline import RagPipeline
 from .prompts import PromptProfile
-from .query_normalize import CorpusSpellNormalizer
 from .retrieval import HybridRetriever
 
 _UNSET = object()  # "argument omitted" vs an explicit None ("capability off")

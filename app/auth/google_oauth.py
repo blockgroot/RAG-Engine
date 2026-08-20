@@ -28,7 +28,6 @@ structural ways:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import httpx

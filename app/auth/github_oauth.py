@@ -36,7 +36,7 @@ Zero new dependencies: plain ``httpx``, exactly as ``google_oauth.py`` does.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from urllib.parse import urlencode
 
 import httpx

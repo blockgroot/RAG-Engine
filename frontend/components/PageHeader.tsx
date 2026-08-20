@@ -25,8 +25,8 @@ export function PageHeader({
         <h1>{title}</h1>
         {description ? <p className="lede">{description}</p> : null}
         {meta ? <div className="page-header-meta">{meta}</div> : null}
+        {actions ? <div className="page-header-actions">{actions}</div> : null}
       </div>
-      {actions ? <div className="page-header-actions">{actions}</div> : null}
       {scene ? <PageSceneArt variant={scene} /> : null}
     </header>
   );

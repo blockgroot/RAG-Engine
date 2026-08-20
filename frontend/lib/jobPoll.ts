@@ -8,10 +8,6 @@ import { api, JobRecord } from "./api";
 export const JOB_POLL_MS = 8000;
 export const ACTIVE_JOB_STATUSES = new Set(["queued", "running"]);
 
-export function isActiveJob(job: JobRecord): boolean {
-  return ACTIVE_JOB_STATUSES.has(job.status);
-}
-
 /**
  * Poll ingestion job status until ``shouldContinue`` returns false.
  *
