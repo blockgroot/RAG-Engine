@@ -164,13 +164,17 @@ function WorkspacesPageInner() {
               <div className="studio-empty">
                 <div className="studio-empty-mark" aria-hidden />
                 <h3>No spaces yet</h3>
-                <p className="muted">Create a room on the left — it stays isolated from company-wide documents.</p>
+                <p className="muted">Name a room in New space — it stays isolated from company-wide documents.</p>
               </div>
             ) : (
               <ul className="people-grid">
                 {workspaces.map((w, i) => (
-                  <li key={w.id} style={{ animationDelay: `${0.08 + i * 0.05}s` }}>
-                    <Link href={`/workspaces/${w.id}`} className="people-card space-row">
+                  <li key={w.id}>
+                    <Link
+                      href={`/workspaces/${w.id}`}
+                      className="people-card space-row"
+                      style={{ animationDelay: `${0.08 + i * 0.05}s` }}
+                    >
                       <span className="space-mark" aria-hidden>
                         {(w.name || "S").trim().charAt(0).toUpperCase()}
                       </span>

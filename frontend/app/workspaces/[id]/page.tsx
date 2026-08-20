@@ -528,15 +528,27 @@ function WorkspaceDetailPageInner() {
 
   return (
     <AppShell me={me} variant="app">
-      <main className="page-wide stack">
+      <main className="page-wide studio-page stack">
         <PageHeader
           eyebrow="Space"
           title={workspace?.name || "…"}
           description="Responses are drawn exclusively from this space’s connected documents and repositories, not the organization-wide sources."
+          scene="spaces"
+          meta={
+            <>
+              <span className="studio-chip">{workspace?.role === "owner" ? "Owner" : "Member"}</span>
+              <span className="studio-chip">{members.length} people</span>
+              {canAsk ? (
+                <span className="studio-chip studio-chip-ok">Ready to ask</span>
+              ) : (
+                <span className="studio-chip studio-chip-warn">Not ready</span>
+              )}
+            </>
+          }
           actions={
             canAsk ? (
               <Link href={`/chat?workspace=${workspaceId}`} className="button">
-                Ask →
+                Ask in this space
               </Link>
             ) : undefined
           }
@@ -588,158 +600,190 @@ function WorkspaceDetailPageInner() {
           </div>
         )}
 
-        <section className="panel stack">
-          <div className="panel-head">
-            <h2>People in this space</h2>
-          </div>
-          <div className="stack" style={{ gap: "0.45rem" }}>
-            {members.map((m) => (
-              <div key={m.user_id || m.email} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "1rem" }}>
-                <span>{m.email}</span>
-                <span className="people-card-actions" style={{ width: "auto", marginTop: 0 }}>
-                  <span className="badge">{m.role === "owner" ? "Owner" : "Member"}</span>
-                  {isOwner && m.role === "member" && (
-                    <button
-                      type="button"
-                      className="button button-secondary"
-                      disabled={makeOwnerBusy === m.user_id}
-                      onClick={() => handleMakeOwner(m.user_id, m.email)}
-                    >
-                      {makeOwnerBusy === m.user_id ? "…" : "Make owner"}
-                    </button>
-                  )}
-                  {isOwner && m.role === "member" && (
-                    <button
-                      type="button"
-                      className="button button-secondary"
-                      disabled={removeMemberBusy === m.user_id}
-                      onClick={() => handleRemoveMember(m.user_id, m.email)}
-                      title="Removes them from this space only — their Handbook account is untouched."
-                    >
-                      {removeMemberBusy === m.user_id ? "…" : "Remove"}
-                    </button>
-                  )}
-                </span>
+        <div className="people-layout">
+          {isOwner ? (
+            <section className="studio-panel invite-panel" aria-labelledby="space-invite-title">
+              <div className="studio-panel-glow" aria-hidden />
+              <div className="studio-section-head">
+                <h2 id="space-invite-title">Invite someone</h2>
+                <p className="muted">They must already be in this company — this only adds them to the room.</p>
               </div>
-            ))}
-          </div>
-          {isOwner && (
-            <form onSubmit={handleInvite} className="stack" style={{ marginTop: "0.35rem" }}>
-              <div className="field">
-                <label htmlFor="invite-email">Invite by email</label>
-                <input
-                  id="invite-email"
-                  className="input"
-                  type="email"
-                  placeholder="colleague@yourcompany.com"
-                  value={inviteEmail}
-                  onChange={(e) => setInviteEmail(e.target.value)}
-                  disabled={inviting}
-                />
+              <form onSubmit={handleInvite} className="invite-form">
+                <div className="field">
+                  <label htmlFor="invite-email">Work email</label>
+                  <input
+                    id="invite-email"
+                    className="input"
+                    type="email"
+                    placeholder="colleague@yourcompany.com"
+                    value={inviteEmail}
+                    onChange={(e) => setInviteEmail(e.target.value)}
+                    disabled={inviting}
+                  />
+                </div>
+                {inviteError && (
+                  <div className="banner banner-warn" role="alert">
+                    {inviteError}
+                  </div>
+                )}
+                {inviteMessage && (
+                  <div className="banner banner-ok" role="status">
+                    {inviteMessage}
+                  </div>
+                )}
+                <button
+                  className="button"
+                  type="submit"
+                  disabled={inviting || !inviteEmail.trim()}
+                >
+                  {inviting ? "Sending…" : "Send invite"}
+                </button>
+              </form>
+            </section>
+          ) : (
+            <section className="studio-panel" aria-labelledby="space-invite-title">
+              <div className="studio-section-head">
+                <h2 id="space-invite-title">This room</h2>
+                <p className="muted">Only the owner can invite people or connect sources.</p>
               </div>
-              {inviteError && <div className="banner banner-warn">{inviteError}</div>}
-              {inviteMessage && <div className="banner banner-ok">{inviteMessage}</div>}
-              <button
-                className="button button-secondary"
-                type="submit"
-                disabled={inviting || !inviteEmail.trim()}
-                style={{ width: "fit-content" }}
-              >
-                {inviting ? "Sending…" : "Send invite"}
-              </button>
-            </form>
+            </section>
           )}
-        </section>
+
+          <section className="studio-section" aria-labelledby="space-people-title">
+            <div className="studio-section-head">
+              <h2 id="space-people-title">People in this space</h2>
+              <p className="muted">Everyone who can ask here.</p>
+            </div>
+            {members.length === 0 ? (
+              <div className="studio-empty">
+                <div className="studio-empty-mark" aria-hidden />
+                <h3>No one here yet</h3>
+                <p className="muted">Invite a teammate to share this room.</p>
+              </div>
+            ) : (
+              <ul className="people-grid">
+                {members.map((m, i) => (
+                  <li
+                    key={m.user_id || m.email}
+                    className="people-card"
+                    style={{ animationDelay: `${0.08 + i * 0.05}s` }}
+                  >
+                    <span className="people-avatar" aria-hidden>
+                      {(m.email || "?").trim().charAt(0).toUpperCase()}
+                    </span>
+                    <div className="people-card-copy">
+                      <strong>{m.email}</strong>
+                      <span className="muted">{m.role === "owner" ? "Owns this room" : "Member"}</span>
+                    </div>
+                    <span className="badge">{m.role === "owner" ? "Owner" : "Member"}</span>
+                    {isOwner && m.role === "member" ? (
+                      <div className="people-card-actions">
+                        <button
+                          type="button"
+                          className="button button-secondary"
+                          disabled={makeOwnerBusy === m.user_id}
+                          onClick={() => handleMakeOwner(m.user_id, m.email)}
+                        >
+                          {makeOwnerBusy === m.user_id ? "…" : "Make owner"}
+                        </button>
+                        <button
+                          type="button"
+                          className="button button-secondary"
+                          disabled={removeMemberBusy === m.user_id}
+                          onClick={() => handleRemoveMember(m.user_id, m.email)}
+                          title="Removes them from this space only — their Handbook account is untouched."
+                        >
+                          {removeMemberBusy === m.user_id ? "…" : "Remove"}
+                        </button>
+                      </div>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </div>
 
         {isOwner ? (
-          <section className="stack">
-            <div className="panel-head" style={{ marginBottom: 0 }}>
-              <div>
-                <h2>Sources for this space</h2>
-                <p className="muted" style={{ marginTop: "0.35rem" }}>
-                  Documents are synced on a schedule; GitHub is queried live. Invited colleagues can ask questions here, scoped to whatever sources this space connects.
-                </p>
-              </div>
+          <section className="studio-section" aria-label="Sources for this space">
+            <div className="studio-section-head">
+              <h2>Sources for this space</h2>
+              <p className="muted">
+                Documents sync on a schedule; GitHub is queried live. Answers stay scoped to this room.
+              </p>
             </div>
-            {loadingConnections &&
-              // Placeholders, not Connect cards — this space's real sources are
-              // still unknown at this point.
-              PROVIDERS.map((provider) => (
-                <div key={provider} className="studio-skeleton source-skeleton" aria-hidden />
-              ))}
-            {!loadingConnections &&
-              PROVIDERS.map((provider) => {
-              const connection = connections.find((c) => c.provider === provider);
-              return (
-                <ConnectionCard
-                  key={provider}
-                  provider={provider}
-                  connection={connection}
-                  lastJob={connection ? lastJobs[connection.id] : undefined}
-                  changes={connection ? changesById[connection.id] : null}
-                  checkingChanges={connection ? checkingIds.has(connection.id) : false}
-                  onUpdate={handleUpdate}
-                  onCheckAgain={connection ? () => refreshChanges([connection]) : undefined}
-                  onConfigSaved={(updated) => {
-                    setConnections((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
-                    refreshChanges([updated]);
-                    // Covers GitHub's "Refresh list" (repo set changed) and a
-                    // Drive folder change — both change what the suggestion
-                    // chips should be built from.
-                    invalidateSuggestionsCache(workspaceId);
-                    void refreshWorkspace();
-                  }}
-                  onDisconnected={(connectionId) => {
-                    setConnections((prev) => prev.filter((c) => c.id !== connectionId));
-                    setChangesById((prev) => {
-                      const next = { ...prev };
-                      delete next[connectionId];
-                      return next;
-                    });
-                    setReauthById((prev) => {
-                      const next = { ...prev };
-                      delete next[connectionId];
-                      return next;
-                    });
-                    setMessage("Disconnected. Indexed docs for that source were removed.");
-                    invalidateSuggestionsCache(workspaceId);
-                    void refreshWorkspace();
-                  }}
-                  needsReauth={Boolean(connection && (connection.needs_reauth || reauthById[connection.id]))}
-                  onNeedsReauth={(needed) => {
-                    if (!connection) return;
-                    setReauthById((prev) => ({ ...prev, [connection.id]: needed }));
-                  }}
-                  workspaceId={workspaceId}
-                  onMembersInvited={async () => {
-                    const updated = await api.listWorkspaceMembers(workspaceId);
-                    setMembers(updated);
-                  }}
-                />
-              );
-              })}
+            <div className="source-bento">
+              {loadingConnections
+                ? PROVIDERS.map((provider) => (
+                    <div key={provider} className="studio-skeleton source-skeleton" aria-hidden />
+                  ))
+                : PROVIDERS.map((provider) => {
+                    const connection = connections.find((c) => c.provider === provider);
+                    return (
+                      <ConnectionCard
+                        key={provider}
+                        provider={provider}
+                        connection={connection}
+                        lastJob={connection ? lastJobs[connection.id] : undefined}
+                        changes={connection ? changesById[connection.id] : null}
+                        checkingChanges={connection ? checkingIds.has(connection.id) : false}
+                        onUpdate={handleUpdate}
+                        onCheckAgain={connection ? () => refreshChanges([connection]) : undefined}
+                        onConfigSaved={(updated) => {
+                          setConnections((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+                          refreshChanges([updated]);
+                          invalidateSuggestionsCache(workspaceId);
+                          void refreshWorkspace();
+                        }}
+                        onDisconnected={(connectionId) => {
+                          setConnections((prev) => prev.filter((c) => c.id !== connectionId));
+                          setChangesById((prev) => {
+                            const next = { ...prev };
+                            delete next[connectionId];
+                            return next;
+                          });
+                          setReauthById((prev) => {
+                            const next = { ...prev };
+                            delete next[connectionId];
+                            return next;
+                          });
+                          setMessage("Disconnected. Indexed docs for that source were removed.");
+                          invalidateSuggestionsCache(workspaceId);
+                          void refreshWorkspace();
+                        }}
+                        needsReauth={Boolean(connection && (connection.needs_reauth || reauthById[connection.id]))}
+                        onNeedsReauth={(needed) => {
+                          if (!connection) return;
+                          setReauthById((prev) => ({ ...prev, [connection.id]: needed }));
+                        }}
+                        workspaceId={workspaceId}
+                        onMembersInvited={async () => {
+                          const updated = await api.listWorkspaceMembers(workspaceId);
+                          setMembers(updated);
+                        }}
+                      />
+                    );
+                  })}
+            </div>
           </section>
         ) : (
           <p className="muted">Only the owner can connect or change documents for this space.</p>
         )}
 
         {isOwner && (
-          <section className="panel stack" style={{ borderColor: "var(--warn, #b45309)" }}>
-            <div className="panel-head">
-              <div>
-                <h2>Delete this space</h2>
-                <p className="muted" style={{ marginTop: "0.35rem" }}>
-                  Permanently removes this space, its members’ access here, connected sources,
-                  and indexed documents for this space only — not company-wide documents.
-                </p>
-              </div>
+          <section className="studio-panel" aria-labelledby="delete-space-title">
+            <div className="studio-section-head">
+              <h2 id="delete-space-title">Delete this space</h2>
+              <p className="muted">
+                Permanently removes this space, its members’ access here, connected sources,
+                and indexed documents for this space only — not company-wide documents.
+              </p>
             </div>
             <button
               type="button"
               className="button button-secondary"
               disabled={deletingSpace}
               onClick={() => void handleDeleteSpace()}
-              style={{ width: "fit-content" }}
             >
               {deletingSpace ? "Deleting…" : "Delete space"}
             </button>

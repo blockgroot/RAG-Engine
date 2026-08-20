@@ -2783,7 +2783,8 @@ table .role-chip.role-admin,
 }
 
 .page-header-studio .page-header-copy { grid-column: 1; }
-.page-header-studio .page-scene { grid-column: 2; grid-row: 1 / span 2; justify-self: end; }
+.page-header-studio .page-header-actions { margin-top: 0.85rem; }
+.page-header-studio .page-scene { grid-column: 2; grid-row: 1; justify-self: end; }
 .page-header-meta {
   display: flex;
   flex-wrap: wrap;
@@ -2982,140 +2983,65 @@ table .role-chip.role-admin,
   align-items: start;
 }
 
-/* —— Spaces hub: one grid, not two mismatched panels ——
-   Every space commits to its own two-tone identity (--card-a/--card-b, set
-   inline per-tile from a curated palette keyed off the space id) so a wall
-   of same-teal cards doesn't read as one undifferentiated list. The "New
-   space" tile lives INSIDE the grid as its first cell, dashed and
-   form-bearing, instead of a separate boring side panel — one visual
-   system, one scan path. */
-.spaces-hub { display: grid; gap: 1.1rem; }
-.spaces-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 1rem;
-}
-.space-card {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 1.1rem;
-  padding: 1.3rem 1.3rem 1.15rem;
-  border-radius: 20px;
-  background: var(--surface-elevated);
-  border: 1px solid color-mix(in srgb, var(--border) 85%, white);
-  box-shadow: var(--shadow-soft);
+/* Spaces hub reuses People layout: composer panel + roster rows.
+   Marks stay teal (same gradient as people-avatar) so the page doesn't
+   introduce a second palette. Square mark vs circular avatar is the
+   only identity cue. */
+a.people-card {
   text-decoration: none;
   color: inherit;
-  overflow: hidden;
   cursor: pointer;
-  animation: rise-in 0.4s var(--ease) both;
-  transition: transform 0.22s var(--ease), box-shadow 0.22s var(--ease), border-color 0.22s var(--ease);
 }
-.space-card::before {
+a.people-card:hover { color: inherit; }
+.space-row {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+}
+.space-row::before {
   content: "";
   position: absolute;
-  inset: 0 0 auto 0;
-  height: 4px;
-  background: linear-gradient(90deg, var(--card-a, var(--accent)), var(--card-b, var(--accent-strong)));
+  inset: 0 auto 0 0;
+  width: 3px;
+  border-radius: 16px 0 0 16px;
+  background: linear-gradient(180deg, #2dd4bf, var(--accent-strong));
+  opacity: 0.55;
 }
-.space-card:hover {
-  transform: translateY(-4px);
-  color: inherit;
-  box-shadow: var(--shadow-lift);
-  border-color: color-mix(in srgb, var(--card-a, var(--accent)) 40%, var(--border));
-}
-.space-card-top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.7rem;
-}
-.space-card-mark {
-  position: relative;
-  width: 2.9rem;
-  height: 2.9rem;
-  border-radius: 14px;
+.space-mark {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 12px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-weight: 800;
-  font-size: 1.05rem;
-  color: #fff;
-  background: linear-gradient(145deg, var(--card-a, #14b8a6), var(--card-b, var(--accent-strong)));
-  box-shadow: 0 12px 22px -12px color-mix(in srgb, var(--card-a, var(--accent)) 65%, transparent);
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--accent-ink);
+  background: linear-gradient(145deg, #14b8a6, var(--accent-strong));
+  box-shadow: 0 10px 18px -12px rgba(15, 118, 110, 0.55);
+  flex: none;
 }
-.space-card-mark::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: radial-gradient(circle at 30% 25%, rgba(255, 255, 255, 0.55), transparent 45%);
-}
-.space-card-body { min-width: 0; }
-.space-card-body h3 {
-  margin: 0;
-  font-size: 1.08rem;
-  letter-spacing: -0.02em;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.space-row .badge {
+  flex: 0 0 auto;
   white-space: nowrap;
 }
-.space-card-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: auto;
-  padding-top: 0.25rem;
-  border-top: 1px solid color-mix(in srgb, var(--border) 70%, white);
-}
-.space-card-cta {
+.space-row-cta {
   display: inline-flex;
   align-items: center;
-  gap: 0.3rem;
+  gap: 0.28rem;
   font-size: 0.82rem;
   font-weight: 700;
-  color: var(--card-b, var(--accent-strong));
-  transition: gap 0.18s var(--ease);
-}
-.space-card-cta::after { content: "→"; transition: transform 0.18s var(--ease); }
-.space-card:hover .space-card-cta::after { transform: translateX(3px); }
-
-.space-card-new {
-  cursor: default;
-  border: 1.5px dashed color-mix(in srgb, var(--accent) 45%, var(--border));
-  background:
-    radial-gradient(220px 120px at 15% 0%, rgba(45, 212, 191, 0.14), transparent 70%),
-    color-mix(in srgb, var(--surface) 92%, white);
-}
-.space-card-new:hover {
-  transform: none;
-  box-shadow: var(--shadow-soft);
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-}
-.space-card-new::before { display: none; }
-.space-card-new-icon {
-  width: 2.9rem;
-  height: 2.9rem;
-  border-radius: 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 1.5rem;
-  font-weight: 700;
-  line-height: 1;
   color: var(--accent-strong);
-  background: var(--accent-soft);
+  white-space: nowrap;
 }
-.space-card-new h3 { margin: 0 0 0.15rem; font-size: 1.02rem; letter-spacing: -0.02em; }
-.space-card-new p { margin: 0; }
-.space-card-new form {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-  margin-top: 0.1rem;
+.space-row-cta::after {
+  content: "→";
+  transition: transform 0.18s var(--ease);
 }
-.space-card-new .button { width: 100%; justify-content: center; }
+.space-row:hover .space-row-cta::after { transform: translateX(3px); }
+.space-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 
 .studio-empty {
   display: grid;
@@ -3146,8 +3072,8 @@ table .role-chip.role-admin,
 
 .studio-skeleton-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.85rem;
+  grid-template-columns: 1fr;
+  gap: 0.7rem;
 }
 /* Source-row-shaped placeholder, so the Sources list doesn't reflow when the
    real rows replace it. */
@@ -3174,6 +3100,7 @@ table .role-chip.role-admin,
   gap: 0.7rem;
 }
 .people-card {
+  position: relative;
   display: grid;
   grid-template-columns: auto 1fr auto;
   gap: 0.85rem;
@@ -3185,6 +3112,9 @@ table .role-chip.role-admin,
   box-shadow: var(--shadow-soft);
   animation: rise-in 0.4s var(--ease) both;
   transition: transform 0.2s var(--ease), box-shadow 0.2s var(--ease), border-color 0.2s var(--ease);
+}
+.people-card.space-row {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
 }
 .people-card:hover {
   transform: translateY(-2px);
@@ -3228,11 +3158,19 @@ table .role-chip.role-admin,
     width: min(100%, 260px);
   }
 }
+@media (max-width: 640px) {
+  .people-card.space-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .space-row .badge,
+  .space-row-cta { grid-column: 2; justify-self: start; }
+}
 @media (prefers-reduced-motion: reduce) {
   .ps-blob-a, .ps-blob-b, .ps-float-1, .ps-float-2, .ps-float-3,
-  .ps-arc, .studio-empty-mark, .studio-skeleton {
+  .ps-arc, .studio-empty-mark, .studio-skeleton, .people-card {
     animation: none !important;
   }
+  .people-card:hover { transform: none; }
 }
 
 /* ── "No account for that email" ──────────────────────────────────────────
