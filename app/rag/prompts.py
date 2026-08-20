@@ -12,7 +12,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..core.answer_sources import SOURCE_POLICY, SOURCE_SLACK, SOURCE_WORKSPACE
+from ..core.answer_sources import (
+    SOURCE_GOOGLE,
+    SOURCE_LINEAR,
+    SOURCE_NOTION,
+    SOURCE_POLICY,
+    SOURCE_SLACK,
+    SOURCE_WORKSPACE,
+)
 from ..security.untrusted import scrub_untrusted_text
 
 
@@ -62,6 +69,42 @@ SLACK_PROMPT_PROFILE = PromptProfile(
     scope_noun="team's Slack history",
     escalation_hint="the people in that channel can confirm this",
     source_label=SOURCE_SLACK,
+)
+
+LINEAR_PROMPT_PROFILE = PromptProfile(
+    # Framed as tracked issues, not settled documentation — an issue's
+    # description/comments are a running discussion of a bug or task, not a
+    # policy statement, so this must not present "someone proposed X in a
+    # comment" as a decided fact the way a handbook sentence would be.
+    persona=(
+        "an assistant answering from this team's Linear issues — tracked "
+        "tickets and their comments, not official documents"
+    ),
+    scope_adjective="issue-tracking",
+    scope_noun="team's Linear issues",
+    escalation_hint="whoever is assigned to that issue can confirm this",
+    source_label=SOURCE_LINEAR,
+)
+
+NOTION_PROMPT_PROFILE = PromptProfile(
+    # Notion is still formal written content (same evidentiary weight as any
+    # document), unlike Slack/Linear — the split from DRIVE_PROMPT_PROFILE is
+    # about *source identity* (so an answer never silently blends the two),
+    # not about tone: both keep the same "settled document" framing policy
+    # content always had.
+    persona="an assistant answering only from this company's connected Notion pages",
+    scope_adjective="Notion-documented",
+    scope_noun="Notion pages",
+    escalation_hint="whoever maintains that Notion page can help with this",
+    source_label=SOURCE_NOTION,
+)
+
+DRIVE_PROMPT_PROFILE = PromptProfile(
+    persona="an assistant answering only from this company's connected Google Drive documents",
+    scope_adjective="Drive-documented",
+    scope_noun="Google Drive documents",
+    escalation_hint="whoever owns that document can help with this",
+    source_label=SOURCE_GOOGLE,
 )
 
 WORKSPACE_PROMPT_PROFILE = PromptProfile(

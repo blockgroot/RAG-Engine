@@ -7,10 +7,11 @@ adding a branch here (keyed on ``SOURCE_TYPE``) — callers don't change.
 
 from __future__ import annotations
 
-from ..config.settings import DEFAULT_SOURCE_TYPE, NotionSettings
+from ..config.settings import DEFAULT_SOURCE_TYPE, LinearSettings, NotionSettings
 from ..core.exceptions import ConfigurationError
 from .base import SourceAdapter
 from .google_drive import GoogleDriveAdapter
+from .linear import LinearAdapter
 from .notion import NotionAdapter
 from .slack import SlackAdapter
 
@@ -80,6 +81,17 @@ def build_source_adapter(
         channel_names = (config or {}).get("channel_names") or {}
         return SlackAdapter(token=token, channel_ids=channel_ids, channel_names=channel_names)
 
+    if source_type == "linear":
+        settings = LinearSettings.from_env()
+        if token:
+            # A directly-passed token means the OAuth-connected path (the job
+            # worker's get_live_connection_token) — Linear sends the header
+            # differently for an OAuth token vs. a personal API key, so this
+            # is what tells LinearAdapter which one it holds.
+            return LinearAdapter(settings=settings, token=token, oauth=True)
+        resolved = settings.resolve_token(token_name)
+        return LinearAdapter(settings=settings, token=resolved, oauth=False)
+
     raise ConfigurationError(
-        f"Unknown source type: {source_type!r} (expected 'notion', 'google', or 'slack')"
+        f"Unknown source type: {source_type!r} (expected 'notion', 'google', 'slack', or 'linear')"
     )

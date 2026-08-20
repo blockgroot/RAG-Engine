@@ -11,6 +11,7 @@ from .base import SourceAdapter, SourceRef, SourceDocument
 from .notion import NotionAdapter
 from .google_drive import GoogleDriveAdapter
 from .slack import SlackAdapter
+from .linear import LinearAdapter
 from .factory import build_source_adapter
 from .google_drive_utils import (
     extract_drive_folder_id,
@@ -31,6 +32,7 @@ __all__ = [
     "NotionAdapter",
     "GoogleDriveAdapter",
     "SlackAdapter",
+    "LinearAdapter",
     "build_source_adapter",
     "extract_drive_folder_id",
     "search_drive_folders",

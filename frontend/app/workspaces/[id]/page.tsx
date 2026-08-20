@@ -27,11 +27,12 @@ import { invalidateSuggestionsCache } from "@/lib/suggestionsCache";
 // workspace with no GitHub connection gets the fallback rather than the org's
 // repos. That no-fallback scoping is what makes this safe; see
 // tests/test_github_workspace_scope.py.
-const PROVIDERS: ("notion" | "google" | "github" | "slack")[] = [
+const PROVIDERS: ("notion" | "google" | "github" | "slack" | "linear")[] = [
   "notion",
   "google",
   "github",
   "slack",
+  "linear",
 ];
 const ACTIVE_STATUSES = ACTIVE_JOB_STATUSES;
 

@@ -143,13 +143,19 @@ def test_document_chips_never_quote_a_slack_thread(store, embedder, org_cleanup)
     Poured into the document templates it produced chips like
     ``What does "No - it's intentionally limited, so it doesn't..." cover?``.
     Slack gets its own channel-shaped chips instead.
+
+    The non-Slack row here is seeded under a synthetic provider with no
+    dedicated tab of its own (not "notion"/"google" — those get excluded too
+    now that they have their own Notion/Drive tabs, same reasoning as Slack;
+    see ``_document_titles_for_scope``'s docstring). This test only needs to
+    prove Slack rows are excluded from whatever's left in that legacy bucket.
     """
     from app.api.chat import _document_titles_for_scope
 
     org_id = store.create_organization(f"Chip Scope {uuid.uuid4().hex[:8]}")
     org_cleanup.append(org_id)
 
-    _seed(store, embedder, org_id, "notion", "Leave Policy", "Annual leave is 20 days.")
+    _seed(store, embedder, org_id, "other", "Leave Policy", "Annual leave is 20 days.")
     _seed(
         store,
         embedder,

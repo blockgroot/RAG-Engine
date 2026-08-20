@@ -12,6 +12,7 @@ from ..core.exceptions import ConfigurationError
 from .base import OAuthProvider
 from .github_oauth import GitHubAppProvider
 from .google_oauth import GoogleOAuthProvider
+from .linear_oauth import LinearOAuthProvider
 from .notion_oauth import NotionOAuthProvider
 from .slack_oauth import SlackOAuthProvider
 
@@ -30,8 +31,10 @@ def build_oauth_provider(provider: str = DEFAULT_OAUTH_PROVIDER) -> OAuthProvide
         return GitHubAppProvider()
     elif provider == "slack":
         return SlackOAuthProvider()
+    elif provider == "linear":
+        return LinearOAuthProvider()
 
     raise ConfigurationError(
         f"Unknown OAuth provider: {provider!r} "
-        "(expected 'notion', 'google', 'github', or 'slack')"
+        "(expected 'notion', 'google', 'github', 'slack', or 'linear')"
     )

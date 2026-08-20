@@ -68,6 +68,27 @@ DEFAULT_SLACK_FALLBACK_RESPONSE = (
     "window."
 )
 
+# The Linear agent's refusal. Distinct copy for the same reason as Slack's: the
+# actionable next step differs from "it isn't in the handbook" — the issue may
+# just not be ingested yet, or the question doesn't match any tracked issue.
+DEFAULT_LINEAR_FALLBACK_RESPONSE = (
+    "I couldn't find that in the connected Linear issues. It may not have been "
+    "ingested yet, or no issue matches this question."
+)
+
+# The Notion/Drive agents' refusals. Distinct per source (not shared with the
+# old combined "policy" copy) so a miss on the Notion tab doesn't imply "check
+# your Drive docs" and vice versa — each tab can only ever point at its own
+# connected source.
+DEFAULT_NOTION_FALLBACK_RESPONSE = (
+    "I couldn't find that in the connected Notion pages. It may not have been "
+    "shared with the integration, or hasn't been ingested yet."
+)
+DEFAULT_DRIVE_FALLBACK_RESPONSE = (
+    "I couldn't find that in the connected Google Drive documents. It may not "
+    "be in the synced folder, or hasn't been ingested yet."
+)
+
 # The GitHub agent's refusal. Distinct copy because the *reason* differs: there
 # is no retrieval here, so a refusal means "no tool could supply evidence for
 # this", not "nothing matched in the corpus" — and the actionable next step for
@@ -451,6 +472,55 @@ class SlackAgentSettings:
 
 
 @dataclass(frozen=True)
+class LinearAgentSettings:
+    """Configuration specific to ``LinearAgent`` — same shape as
+    ``SlackAgentSettings``: a second, independent ``RagPipeline`` instance
+    differing only in prompt framing and its own fixed fallback string.
+    """
+
+    fallback_response: str = DEFAULT_LINEAR_FALLBACK_RESPONSE
+
+    @classmethod
+    def from_env(cls) -> "LinearAgentSettings":
+        return cls(
+            fallback_response=os.getenv("LINEAR_FALLBACK_RESPONSE")
+            or DEFAULT_LINEAR_FALLBACK_RESPONSE,
+        )
+
+
+@dataclass(frozen=True)
+class NotionAgentSettings:
+    """Configuration specific to ``NotionAgent`` — same shape as
+    ``SlackAgentSettings``/``LinearAgentSettings``: a second, independent
+    ``RagPipeline`` instance differing only in prompt framing and its own
+    fixed fallback string.
+    """
+
+    fallback_response: str = DEFAULT_NOTION_FALLBACK_RESPONSE
+
+    @classmethod
+    def from_env(cls) -> "NotionAgentSettings":
+        return cls(
+            fallback_response=os.getenv("NOTION_AGENT_FALLBACK_RESPONSE")
+            or DEFAULT_NOTION_FALLBACK_RESPONSE,
+        )
+
+
+@dataclass(frozen=True)
+class DriveAgentSettings:
+    """Configuration specific to ``DriveAgent`` — same shape as ``NotionAgentSettings``."""
+
+    fallback_response: str = DEFAULT_DRIVE_FALLBACK_RESPONSE
+
+    @classmethod
+    def from_env(cls) -> "DriveAgentSettings":
+        return cls(
+            fallback_response=os.getenv("DRIVE_AGENT_FALLBACK_RESPONSE")
+            or DEFAULT_DRIVE_FALLBACK_RESPONSE,
+        )
+
+
+@dataclass(frozen=True)
 class NotionSettings:
     """Configuration for the Notion content source (Phase 4, per-org since Phase 9).
 
@@ -523,6 +593,80 @@ class NotionSettings:
         raise ConfigurationError(
             "No Notion token configured. Set NOTION_TOKEN (default) or a per-org "
             "NOTION_TOKEN_<NAME> and pass its name to the ingestion run."
+        )
+
+
+# "read" is Linear's minimal read-only OAuth scope — enough for the GraphQL
+# reads LinearAdapter issues (issues + comments), never write/admin.
+DEFAULT_LINEAR_OAUTH_SCOPES = "read"
+
+
+@dataclass(frozen=True)
+class LinearSettings:
+    """Configuration for the Linear content source.
+
+    Two independent, non-fallback-linked credential paths — same coexistence
+    as ``NotionSettings`` (legacy static token vs. OAuth):
+
+    - ``token``/``tokens``: a personal API key is the simplest viable auth (no
+      OAuth app review needed), and per-org keys are discovered generically
+      from ``LINEAR_TOKEN_<NAME>`` env vars so a key can only see the Linear
+      workspace it belongs to — the tenant boundary is enforced by Linear
+      itself, not just our code. Used by ``scripts/ingest_linear.py`` /
+      ``LinearAdapter`` when built with ``token_name``/no ``token``.
+    - ``client_id``/``client_secret``/``redirect_uri``/``scopes``: the OAuth
+      "Connect Linear" flow (``app/auth/linear_oauth.py``), for the admin
+      self-serve path the product's other sources use. A token obtained this
+      way is passed to ``LinearAdapter`` as ``token=`` (already-resolved),
+      exactly like Google/Slack's OAuth-only paths — see
+      ``app/sources/factory.py``.
+    """
+
+    token: str | None
+    tokens: dict[str, str] = field(default_factory=dict)
+    client_id: str | None = None
+    client_secret: str | None = None
+    redirect_uri: str | None = None
+    scopes: str = DEFAULT_LINEAR_OAUTH_SCOPES
+
+    _TOKEN_PREFIX = "LINEAR_TOKEN_"
+
+    @classmethod
+    def from_env(cls) -> "LinearSettings":
+        tokens = {
+            key[len(cls._TOKEN_PREFIX):].lower(): value
+            for key, value in os.environ.items()
+            if key.startswith(cls._TOKEN_PREFIX)
+            and len(key) > len(cls._TOKEN_PREFIX)
+            and value
+        }
+        return cls(
+            token=os.getenv("LINEAR_TOKEN"),
+            tokens=tokens,
+            client_id=os.getenv("LINEAR_CLIENT_ID"),
+            client_secret=os.getenv("LINEAR_CLIENT_SECRET"),
+            redirect_uri=os.getenv("LINEAR_REDIRECT_URI"),
+            scopes=os.getenv("LINEAR_OAUTH_SCOPES", DEFAULT_LINEAR_OAUTH_SCOPES),
+        )
+
+    def resolve_token(self, name: str | None = None) -> str:
+        """Return the API key for ``name`` (or the default token). No fallback."""
+        from ..core.exceptions import ConfigurationError
+
+        if name:
+            token = self.tokens.get(name.lower())
+            if not token:
+                available = ", ".join(sorted(self.tokens)) or "(none configured)"
+                raise ConfigurationError(
+                    f"No Linear token named {name!r}. Set LINEAR_TOKEN_{name.upper()} "
+                    f"in your .env. Configured org tokens: {available}."
+                )
+            return token
+        if self.token:
+            return self.token
+        raise ConfigurationError(
+            "No Linear token configured. Set LINEAR_TOKEN (default) or a per-org "
+            "LINEAR_TOKEN_<NAME> and pass its name to the ingestion run."
         )
 
 

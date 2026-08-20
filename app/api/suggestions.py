@@ -36,6 +36,16 @@ _SLACK_TEMPLATES = (
     "Any open questions or blockers in #{channel}?",
 )
 
+# Linear tab — issue/ticket phrasing, not document phrasing. A ticket is a
+# tracked unit of work, so useful starters ask about status/resolution rather
+# than "what does <title> cover" (fine for a handbook page, odd for a bug).
+_LINEAR_TEMPLATES = (
+    'What is the status of "{title}"?',
+    'What was decided on "{title}"?',
+    'Summarize the discussion on "{title}".',
+    'Is "{title}" resolved?',
+)
+
 # Org-wide Policies tab — company handbook phrasing.
 _ORG_POLICY_TEMPLATES = (
     'What does "{title}" cover?',
@@ -148,6 +158,36 @@ def build_slack_suggestions(channel_names: list[str]) -> list[str]:
         if len(questions) >= _MAX:
             break
         questions.append(template.format(channel=_display_title(cleaned[i % len(cleaned)])))
+    return questions
+
+
+def build_linear_suggestions(titles: list[str]) -> list[str]:
+    """Turn ingested Linear issue titles into Linear-tab starter questions.
+
+    Same rotation/dedup shape as ``build_policy_suggestions``, with
+    ticket-status phrasing instead of document phrasing (see
+    ``_LINEAR_TEMPLATES``). Empty titles -> empty output.
+    """
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in titles:
+        title = " ".join((raw or "").split()).strip()
+        if not title:
+            continue
+        key = title.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(title)
+
+    if not cleaned:
+        return []
+
+    questions: list[str] = []
+    for i, template in enumerate(_LINEAR_TEMPLATES):
+        if len(questions) >= _MAX:
+            break
+        questions.append(template.format(title=_display_title(cleaned[i % len(cleaned)])))
     return questions
 
 

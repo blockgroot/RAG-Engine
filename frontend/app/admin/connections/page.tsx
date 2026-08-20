@@ -12,11 +12,12 @@ import { clearedSyncChanges } from "@/lib/syncChanges";
 import { syncPagesDetail, syncPhaseHeadline, updateCompleteMessage } from "@/lib/syncProgress";
 import { invalidateSuggestionsCache } from "@/lib/suggestionsCache";
 
-const PROVIDERS: ("notion" | "google" | "github" | "slack")[] = [
+const PROVIDERS: ("notion" | "google" | "github" | "slack" | "linear")[] = [
   "notion",
   "google",
   "github",
   "slack",
+  "linear",
 ];
 const ACTIVE_STATUSES = ACTIVE_JOB_STATUSES;
 
@@ -318,7 +319,7 @@ function ConnectionsPageInner() {
         <PageHeader
           eyebrow="Company"
           title="Sources"
-          description="Connect Notion, Google Drive, Slack, and company GitHub. Spaces need their own GitHub account — never the same install as here."
+          description="Connect Notion, Google Drive, Slack, Linear, and company GitHub. Spaces need their own GitHub account — never the same install as here."
           scene="sources"
           meta={
             loadingConnections ? (

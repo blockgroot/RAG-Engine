@@ -14,12 +14,18 @@ from functools import lru_cache
 from fastapi import Depends, HTTPException, Request
 
 from ..agent import (
+    build_drive_agent,
     build_github_agent,
+    build_linear_agent,
+    build_notion_agent,
     build_policy_agent,
     build_slack_agent,
     build_workspace_agent,
 )
+from ..agent.drive_agent import DriveAgent
 from ..agent.github_agent import GitHubAgent
+from ..agent.linear_agent import LinearAgent
+from ..agent.notion_agent import NotionAgent
 from ..agent.policy_agent import PolicyAgent
 from ..agent.slack_agent import SlackAgent
 from ..agent.workspace_agent import WorkspaceAgent
@@ -80,6 +86,34 @@ def get_slack_agent() -> SlackAgent:
     models; see ``get_policy_agent``.
     """
     return build_slack_agent()
+
+
+@lru_cache(maxsize=1)
+def get_linear_agent() -> LinearAgent:
+    """Process-wide singleton ``LinearAgent`` (Linear-only retrieval).
+
+    Same reasoning as ``get_slack_agent`` — its own pipeline pinned to
+    ``source_provider="linear"``, sharing the process-wide embedder/reranker
+    singletons rather than loading a second copy of the models.
+    """
+    return build_linear_agent()
+
+
+@lru_cache(maxsize=1)
+def get_notion_agent() -> NotionAgent:
+    """Process-wide singleton ``NotionAgent`` (Notion-only retrieval).
+
+    Same reasoning as ``get_slack_agent`` — its own pipeline pinned to
+    ``source_provider="notion"``, so a company with both Notion and Drive
+    connected never gets an answer silently blended from both.
+    """
+    return build_notion_agent()
+
+
+@lru_cache(maxsize=1)
+def get_drive_agent() -> DriveAgent:
+    """Process-wide singleton ``DriveAgent`` (Google Drive-only retrieval)."""
+    return build_drive_agent()
 
 
 @lru_cache(maxsize=1)

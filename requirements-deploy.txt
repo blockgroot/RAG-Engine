@@ -50,3 +50,7 @@ symspellpy>=6.7,<7
 fastapi>=0.110.0
 uvicorn[standard]>=0.29.0
 python-multipart>=0.0.9
+
+# Agent orchestration graph (app/agent/orchestration.py). Pinned to 0.2.x for
+# langchain-core compatibility — see requirements.txt for the full reasoning.
+langgraph==0.2.74

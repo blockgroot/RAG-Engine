@@ -17,15 +17,27 @@ from __future__ import annotations
 from dataclasses import replace
 
 from ..config.settings import (
+    DriveAgentSettings,
     GitHubAgentSettings,
+    LinearAgentSettings,
+    NotionAgentSettings,
     RagSettings,
     SlackAgentSettings,
     WorkspaceAgentSettings,
 )
 from ..llm import build_llm_provider
 from ..rag import RagPipeline, build_rag_pipeline
-from ..rag.prompts import SLACK_PROMPT_PROFILE, WORKSPACE_PROMPT_PROFILE
+from ..rag.prompts import (
+    DRIVE_PROMPT_PROFILE,
+    LINEAR_PROMPT_PROFILE,
+    NOTION_PROMPT_PROFILE,
+    SLACK_PROMPT_PROFILE,
+    WORKSPACE_PROMPT_PROFILE,
+)
+from .drive_agent import DriveAgent
 from .github_agent import GitHubAgent
+from .linear_agent import LinearAgent
+from .notion_agent import NotionAgent
 from .policy_agent import PolicyAgent
 from .slack_agent import SlackAgent
 from .workspace_agent import WorkspaceAgent
@@ -89,6 +101,83 @@ def build_slack_agent(
         pipeline_kwargs.setdefault("source_provider", "slack")
         pipeline = build_rag_pipeline(**pipeline_kwargs)
     return SlackAgent(pipeline)
+
+
+def build_linear_agent(
+    pipeline: RagPipeline | None = None, **pipeline_kwargs
+) -> LinearAgent:
+    """Build a ``LinearAgent``, defaulting its pipeline from configuration.
+
+    Same shape as ``build_slack_agent``: the pipeline is pinned to
+    ``source_provider="linear"``, so retrieval reaches only chunks ingested
+    from Linear (see ``linear_agent.py``) — a Policies-tab question never
+    silently pulls in an engineering ticket, and vice versa. Web search
+    defaults off for the same reason as Slack — "what's the status of X" has
+    no public-web answer.
+    """
+    if pipeline is None:
+        pipeline_kwargs.setdefault(
+            "settings",
+            replace(
+                RagSettings.from_env(),
+                fallback_response=LinearAgentSettings.from_env().fallback_response,
+            ),
+        )
+        pipeline_kwargs.setdefault("prompt_profile", LINEAR_PROMPT_PROFILE)
+        pipeline_kwargs.setdefault("web_search", None)
+        pipeline_kwargs.setdefault("source_provider", "linear")
+        pipeline = build_rag_pipeline(**pipeline_kwargs)
+    return LinearAgent(pipeline)
+
+
+def build_notion_agent(
+    pipeline: RagPipeline | None = None, **pipeline_kwargs
+) -> NotionAgent:
+    """Build a ``NotionAgent``, defaulting its pipeline from configuration.
+
+    Same shape as ``build_slack_agent``/``build_linear_agent``: the pipeline is
+    pinned to ``source_provider="notion"``, so a Notion-tab answer can never be
+    silently grounded on a Google Drive chunk (or vice versa) — Notion and
+    Drive may hold unrelated content, unlike Slack/Linear this split is about
+    source identity, not tone (see ``notion_agent.py``). Web search stays off
+    for the same reason as every other pinned-corpus agent.
+    """
+    if pipeline is None:
+        pipeline_kwargs.setdefault(
+            "settings",
+            replace(
+                RagSettings.from_env(),
+                fallback_response=NotionAgentSettings.from_env().fallback_response,
+            ),
+        )
+        pipeline_kwargs.setdefault("prompt_profile", NOTION_PROMPT_PROFILE)
+        pipeline_kwargs.setdefault("web_search", None)
+        pipeline_kwargs.setdefault("source_provider", "notion")
+        pipeline = build_rag_pipeline(**pipeline_kwargs)
+    return NotionAgent(pipeline)
+
+
+def build_drive_agent(
+    pipeline: RagPipeline | None = None, **pipeline_kwargs
+) -> DriveAgent:
+    """Build a ``DriveAgent``, defaulting its pipeline from configuration.
+
+    Same shape as ``build_notion_agent``, pinned to ``source_provider="google"``
+    (matching the value ``GoogleDriveAdapter``-ingested documents carry).
+    """
+    if pipeline is None:
+        pipeline_kwargs.setdefault(
+            "settings",
+            replace(
+                RagSettings.from_env(),
+                fallback_response=DriveAgentSettings.from_env().fallback_response,
+            ),
+        )
+        pipeline_kwargs.setdefault("prompt_profile", DRIVE_PROMPT_PROFILE)
+        pipeline_kwargs.setdefault("web_search", None)
+        pipeline_kwargs.setdefault("source_provider", "google")
+        pipeline = build_rag_pipeline(**pipeline_kwargs)
+    return DriveAgent(pipeline)
 
 
 def build_github_agent(

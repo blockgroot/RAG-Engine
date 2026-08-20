@@ -16,30 +16,48 @@ org's conversation by guessing/reusing its id. So this router is the one place
 that must verify a supplied ``conversation_id`` actually belongs to the
 caller's ``org_id`` before ever handing it to the agent.
 
-Agent routing: ``_select_agent`` is the one place the decision is made, and it
-is entirely deterministic — no LLM ever classifies a question to pick an agent,
-because a non-deterministic step in front of the tenant-scoped path is exactly
-what the confidence gate's design philosophy avoids.
+Agent routing: dispatch is a LangGraph graph (``app/agent/orchestration.py``,
+built once as ``deps.get_agent_graph()``), not a hand-rolled if/elif chain —
+but the decision itself is still entirely deterministic. No LLM ever
+classifies a question to pick an agent, because a non-deterministic step in
+front of the tenant-scoped path is exactly what the confidence gate's design
+philosophy avoids; the graph's routing function (``route_agent_key``) is a
+plain Python function keyed on the caller-supplied ``agent`` field, same as
+before. Using a graph here is about *scaling the registration*, not the
+decision: adding a future connector's agent means adding one getter + one
+node in ``orchestration.py``/``deps.get_agent_graph``, not growing an
+if/elif across three files.
 
 - ``agent == "github"``         -> ``GitHubAgent`` (live GitHub API reads, no
   retrieval at all — see app/agent/github_agent.py). The ``workspace_id``, when
   present, is threaded through to the agent, so a workspace's Code answers come
   from **that workspace's own** installation.
-- ``agent == "slack"``          -> ``SlackAgent`` (retrieval, but its pipeline is
-  pinned to ``source_provider="slack"`` so it answers only from ingested Slack
-  threads — see app/agent/slack_agent.py). Like GitHub it outranks
-  ``workspace_id``; safety comes from the ``workspace_id`` still being threaded
-  into ``answer()``, so a workspace's Slack tab retrieves only that workspace's
-  own Slack chunks and never the org-wide ones.
+- ``agent == "slack"``          -> ``SlackAgent`` (pipeline pinned to
+  ``source_provider="slack"`` — see app/agent/slack_agent.py).
+- ``agent == "linear"``         -> ``LinearAgent`` (pipeline pinned to
+  ``source_provider="linear"`` — see app/agent/linear_agent.py).
+- ``agent == "notion"``         -> ``NotionAgent`` (pipeline pinned to
+  ``source_provider="notion"`` — see app/agent/notion_agent.py). Split from
+  Drive so a company connecting both never gets an answer silently blended
+  from unrelated content in the two.
+- ``agent == "google"``         -> ``DriveAgent`` (pipeline pinned to
+  ``source_provider="google"`` — see app/agent/drive_agent.py).
+  All five direct-request agents outrank ``workspace_id``; safety comes from
+  ``workspace_id`` still being threaded into ``answer()``, so e.g. a
+  workspace's Notion tab retrieves only that workspace's own Notion chunks
+  and never the org-wide ones.
 - ``workspace_id`` set          -> ``WorkspaceAgent`` (a sub-workspace's own
   connected documents, its own pipeline — see app/agent/workspace_agent.py)
-- otherwise                     -> ``PolicyAgent``, exactly as before
+- otherwise                     -> ``PolicyAgent`` — the original combined,
+  unfiltered corpus. Kept for back-compat only; the frontend no longer
+  defaults here (it prefers "notion"/"google" per-source tabs) — see
+  ``frontend/app/chat/page.tsx``.
 
 The explicit ``agent`` field exists because a single scope can have documents
 *and* GitHub connected at once — true org-wide, and now true per workspace too —
 so "route by connected source" cannot disambiguate. The client names the target
-(rendered as a "Policies | Code" tab), which also keeps the user informed about
-which corpus answered rather than guessing on their behalf.
+(rendered as a "Notion | Drive | Code | ..." tab), which also keeps the user
+informed about which corpus answered rather than guessing on their behalf.
 
 **Ordering note (this changed).** ``workspace_id`` used to outrank the requested
 agent, so that a workspace question could never be served org-wide GitHub
@@ -109,6 +127,7 @@ def _word_chunks(text: str) -> Iterator[str]:
         i = j
 
 from ..agent.github_agent import GitHubAgent
+from ..agent.orchestration import build_agent_graph, route_agent_key
 from ..agent.policy_agent import PolicyAgent
 from ..agent.rag_pipeline_agent import RagPipelineAgent
 from ..agent.workspace_agent import WorkspaceAgent
@@ -118,7 +137,10 @@ from ..security.rate_limit import check_rate_limit
 from ..workspaces import assert_member
 from .deps import (
     SessionClaims,
+    get_drive_agent,
     get_github_agent,
+    get_linear_agent,
+    get_notion_agent,
     get_policy_agent,
     get_session,
     get_slack_agent,
@@ -127,6 +149,7 @@ from .deps import (
 
 from .suggestions import (
     build_github_suggestions,
+    build_linear_suggestions,
     build_policy_suggestions,
     build_slack_suggestions,
 )
@@ -138,6 +161,9 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 AGENT_GITHUB = "github"
 AGENT_POLICY = "policy"
 AGENT_SLACK = "slack"
+AGENT_LINEAR = "linear"
+AGENT_NOTION = "notion"
+AGENT_GOOGLE = "google"
 
 # Upper bound on a single question, in characters. Generous — a real question is
 # a sentence or two — but bounded, because the question is embedded verbatim and
@@ -151,9 +177,15 @@ def _select_agent(
     workspace_id: str | None,
     requested_agent: str | None = None,
 ) -> RagPipelineAgent | GitHubAgent:
-    """One place that decides which agent answers a request (see module docstring).
+    """Resolve a concrete agent object (see module docstring for the routing table).
 
-    Deterministic by construction — no LLM classifies anything here.
+    Deterministic by construction — ``route_agent_key`` (in
+    ``app/agent/orchestration.py``) is a plain Python function, no LLM
+    classifies anything here. This function exists (rather than always going
+    through the graph) because ``/chat/conversations`` needs an actual agent
+    *object* to read ``.pipeline.memory`` off of — the graph only ever hands
+    back a finished answer, not the agent that produced it. ``/chat/stream``
+    uses the graph directly (``deps.get_agent_graph``) instead of this.
 
     Agents are loaded *lazily*: only the chosen one is constructed. FastAPI
     ``Depends(get_policy_agent)`` + ``Depends(get_workspace_agent)`` used to
@@ -161,20 +193,51 @@ def _select_agent(
     cross-encoder twice into a 16GB machine and hung the Mac in swap — even for
     a GitHub-only question that needs neither model.
 
-    ``requested_agent == "github"`` wins over ``workspace_id`` (it used to be
-    the other way round). That inversion is only safe because the caller threads
-    ``workspace_id`` into ``GitHubAgent.answer``, which resolves its token and
-    repo allowlist from ``(org_id, workspace_id)`` together — a workspace with no
-    GitHub connection therefore raises and falls back, never reads the org-wide
-    installation. If you ever change that scoping, restore this ordering.
+    ``requested_agent == "github"`` (and every other direct request) wins over
+    ``workspace_id`` (it used to be the other way round for GitHub). That
+    inversion is only safe because the caller threads ``workspace_id`` into
+    each agent's ``answer()``, which resolves its token/connection from
+    ``(org_id, workspace_id)`` together — a workspace with no matching
+    connection therefore raises and falls back, never reads the org-wide one.
+    If you ever change that scoping, restore the old ordering.
     """
-    if requested_agent == AGENT_GITHUB:
-        return get_github_agent()
-    if requested_agent == AGENT_SLACK:
-        return get_slack_agent()
-    if workspace_id is not None:
-        return get_workspace_agent()
-    return get_policy_agent()
+    key = route_agent_key(workspace_id, requested_agent)
+    return _agent_getters()[key]()
+
+
+def _agent_getters() -> dict[str, RagPipelineAgent | GitHubAgent]:
+    """The ``{key: getter}`` map every agent-resolution path shares.
+
+    Built fresh on each call (not a module-level constant) so tests can
+    monkeypatch the bare ``get_*_agent`` names on this module — e.g.
+    ``monkeypatch.setattr("app.api.chat.get_policy_agent", fake)`` — and have
+    it take effect both here and in ``_agent_graph()`` below, which builds its
+    graph from this same dict. The dict itself is cheap to build (no I/O); the
+    actual cost (model loads) only happens inside whichever getter the
+    request's routing key selects.
+    """
+    return {
+        AGENT_GITHUB: get_github_agent,
+        AGENT_SLACK: get_slack_agent,
+        AGENT_LINEAR: get_linear_agent,
+        AGENT_NOTION: get_notion_agent,
+        AGENT_GOOGLE: get_drive_agent,
+        "workspace": get_workspace_agent,
+        AGENT_POLICY: get_policy_agent,
+    }
+
+
+def _agent_graph():
+    """The routing graph used by ``/chat/stream`` (see ``app/agent/orchestration.py``).
+
+    Rebuilt per call rather than cached: ``StateGraph.compile()`` is cheap,
+    pure-Python DAG construction with no I/O (verified — building it costs no
+    more than assembling the dict above), so there is no real cost to paying
+    it fresh, and it keeps this testable the same way ``_select_agent`` is —
+    a monkeypatched getter takes effect on the very next request instead of
+    being baked into a long-lived cached graph.
+    """
+    return build_agent_graph(_agent_getters())
 
 
 def _conversation_belongs_to_scope(
@@ -250,6 +313,24 @@ def list_suggestions(
         # cannot retrieve from.
         channels = _slack_channel_names_for_scope(session.org_id, workspace_id)
         return {"agent": AGENT_SLACK, "questions": build_slack_suggestions(channels)}
+
+    if requested == AGENT_LINEAR:
+        titles = _linear_titles_for_scope(session.org_id, workspace_id)
+        return {"agent": AGENT_LINEAR, "questions": build_linear_suggestions(titles)}
+
+    if requested == AGENT_NOTION:
+        titles = _titles_for_scope_by_provider(session.org_id, workspace_id, "notion")
+        return {
+            "agent": AGENT_NOTION,
+            "questions": build_policy_suggestions(titles, workspace=workspace_id is not None),
+        }
+
+    if requested == AGENT_GOOGLE:
+        titles = _titles_for_scope_by_provider(session.org_id, workspace_id, "google")
+        return {
+            "agent": AGENT_GOOGLE,
+            "questions": build_policy_suggestions(titles, workspace=workspace_id is not None),
+        }
 
     titles = _document_titles_for_scope(session.org_id, workspace_id)
     return {
@@ -338,17 +419,57 @@ def _document_titles_for_scope(org_id: str, workspace_id: str | None) -> list[st
     cover?``, which reads as broken even though every piece worked. Slack has
     its own tab and its own channel-shaped builder
     (``build_slack_suggestions``); this one is for things that have titles.
+
+    Linear rows are excluded for the same reason "own tab" reasoning applies,
+    even though an issue title reads fine on its own: a Policies chip phrased
+    "What are the key rules in <issue title>?" is the wrong shape of question
+    for a ticket. Linear has its own tab and builder (``build_linear_suggestions``).
+
+    Notion and Drive rows are ALSO excluded: they now have their own tabs
+    (see ``AGENT_NOTION``/``AGENT_GOOGLE`` above), so this bucket is a legacy
+    fallback for content with no per-source tab of its own — not the default
+    "everything" view it used to be. Offering it alongside dedicated Notion/
+    Drive tabs would reintroduce exactly the cross-source mixing those tabs
+    exist to prevent.
     """
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT title FROM documents "
             "WHERE org_id = %s AND workspace_id IS NOT DISTINCT FROM %s "
             "AND source_provider IS DISTINCT FROM 'slack' "
+            "AND source_provider IS DISTINCT FROM 'linear' "
+            "AND source_provider IS DISTINCT FROM 'notion' "
+            "AND source_provider IS DISTINCT FROM 'google' "
             "ORDER BY created_at DESC NULLS LAST "
             "LIMIT 12",
             (org_id, workspace_id),
         ).fetchall()
     return [str(r[0]) for r in rows if r and r[0]]
+
+
+def _titles_for_scope_by_provider(
+    org_id: str, workspace_id: str | None, provider: str
+) -> list[str]:
+    """Ingested document titles for one ``source_provider`` (org or one workspace).
+
+    Shared by Linear/Notion/Drive suggestion chips — each tab's corpus is
+    exactly one provider's rows, so this is the one query all three reuse.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT title FROM documents "
+            "WHERE org_id = %s AND workspace_id IS NOT DISTINCT FROM %s "
+            "AND source_provider = %s "
+            "ORDER BY created_at DESC NULLS LAST "
+            "LIMIT 12",
+            (org_id, workspace_id, provider),
+        ).fetchall()
+    return [str(r[0]) for r in rows if r and r[0]]
+
+
+def _linear_titles_for_scope(org_id: str, workspace_id: str | None) -> list[str]:
+    """Ingested Linear issue titles for this org (or one workspace), newest first."""
+    return _titles_for_scope_by_provider(org_id, workspace_id, "linear")
 
 
 @router.post("/conversations")
@@ -394,16 +515,24 @@ def _sse_event(event: str, data: dict | str) -> str:
 
 
 def _stream_answer(
-    agent: RagPipelineAgent | GitHubAgent,
     question: str,
     org_id: str,
     conversation_id: str | None,
     workspace_id: str | None = None,
+    requested_agent: str | None = None,
 ) -> Iterator[str]:
     try:
-        _chunks, result = agent.answer_stream(
-            question, org_id, conversation_id=conversation_id, workspace_id=workspace_id
+        state = _agent_graph().invoke(
+            {
+                "question": question,
+                "org_id": org_id,
+                "conversation_id": conversation_id,
+                "workspace_id": workspace_id,
+                "requested_agent": requested_agent,
+                "stream": True,
+            }
         )
+        result = state["response"]
     except LLMProviderError as exc:
         logger.warning("Chat LLM failure: %s", exc, exc_info=True)
         yield _sse_event("error", {"message": _user_facing_llm_error(exc)})
@@ -476,8 +605,13 @@ def chat_stream(
     ):
         raise HTTPException(status_code=404, detail="No such conversation for this organization")
 
-    agent = _select_agent(workspace_id, requested_agent)
     return StreamingResponse(
-        _stream_answer(agent, question, session.org_id, conversation_id, workspace_id=workspace_id),
+        _stream_answer(
+            question,
+            session.org_id,
+            conversation_id,
+            workspace_id=workspace_id,
+            requested_agent=requested_agent,
+        ),
         media_type="text/event-stream",
     )

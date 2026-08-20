@@ -12,7 +12,7 @@
 const cache = new Map<string, string[]>();
 
 export function suggestionsCacheKey(
-  agent: "policy" | "github" | "slack",
+  agent: "policy" | "github" | "slack" | "linear" | "notion" | "google",
   workspaceId: string | null
 ): string {
   return `${agent}:${workspaceId ?? "org"}`;
