@@ -21,12 +21,6 @@ import { clearedSyncChanges } from "@/lib/syncChanges";
 import { syncPagesDetail, syncPhaseHeadline, updateCompleteMessage } from "@/lib/syncProgress";
 import { invalidateSuggestionsCache } from "@/lib/suggestionsCache";
 
-// GitHub is now offered per workspace (it used to be org-level only). A
-// workspace owner connects their own installation, so the workspace's Code
-// answers come from that installation alone -- never the org-wide one, and a
-// workspace with no GitHub connection gets the fallback rather than the org's
-// repos. That no-fallback scoping is what makes this safe; see
-// tests/test_github_workspace_scope.py.
 const PROVIDERS: ("notion" | "google" | "github" | "slack" | "linear")[] = [
   "notion",
   "google",
@@ -69,12 +63,6 @@ function WorkspaceDetailPageInner() {
   const [workspace, setWorkspace] = useState<WorkspaceDetail | null>(null);
   const [members, setMembers] = useState<WorkspaceMemberRecord[]>([]);
   const [connections, setConnections] = useState<ConnectionRecord[]>([]);
-  /*
-   * See the identical field in app/admin/connections/page.tsx: an empty
-   * `connections` is indistinguishable from "nothing is connected", so the
-   * cards would offer Connect for a source this space already has — inviting a
-   * pointless fresh OAuth grant off a screen showing the wrong state.
-   */
   const [loadingConnections, setLoadingConnections] = useState(true);
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [changesById, setChangesById] = useState<Record<string, SyncChanges>>({});
@@ -83,7 +71,6 @@ function WorkspaceDetailPageInner() {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reauthById, setReauthById] = useState<Record<string, boolean>>({});
-  /** Structured OAuth refusal (not a single bulk paragraph). */
   const [connectNotice, setConnectNotice] = useState<{
     title: string;
     why: string;
@@ -127,8 +114,6 @@ function WorkspaceDetailPageInner() {
       const failedIds: string[] = [];
       await Promise.all(
         list.map(async (c) => {
-          // GitHub has no change-check; probe credential mint instead so
-          // needs_reauth is not refresh-list-only.
           if (c.provider === "github") {
             try {
               await api.checkWorkspaceConnectionHealth(workspaceId, c.id);
@@ -163,8 +148,6 @@ function WorkspaceDetailPageInner() {
               )
             );
           } catch (err) {
-            // Drop prior has_changes so a failed re-check after sync cannot
-            // leave a sticky Update button.
             failedIds.push(c.id);
             if (err instanceof ApiError && err.code === "oauth_reauth_required") {
               setReauthById((prev) => ({ ...prev, [c.id]: true }));
@@ -184,7 +167,7 @@ function WorkspaceDetailPageInner() {
         for (const id of ids) remaining.delete(id);
         return remaining;
       });
-      if (gen !== changesGen.current) return; // newer check won
+      if (gen !== changesGen.current) return;
       setChangesById((prev) => {
         const merged = { ...prev, ...next };
         for (const id of failedIds) delete merged[id];
@@ -211,8 +194,6 @@ function WorkspaceDetailPageInner() {
         setReauthById(
           Object.fromEntries(list.filter((c) => c.needs_reauth).map((c) => [c.id, true]))
         );
-        // Don't auto-check on load — only the Check button triggers a
-        // change-check.
       })
       .catch(() => {})
       .finally(() => setLoadingConnections(false));
@@ -225,8 +206,6 @@ function WorkspaceDetailPageInner() {
     }).catch(() => {});
   }, [me, workspaceId, refreshChanges, refreshWorkspace]);
 
-  // After GitHub/Notion/Drive OAuth, the API redirects here with ?connected=
-  // (success) or ?connect_error= (refused — e.g. same GitHub install as Company).
   useEffect(() => {
     if (!me) return;
     const connectError = searchParams.get("connect_error");
@@ -251,11 +230,6 @@ function WorkspaceDetailPageInner() {
       return;
     }
 
-    // GitHub finished on GitHub's side but its redirect could not complete the
-    // link (an install/setup redirect carries no authorization code, and `state`
-    // is not guaranteed to survive it). Not a conflict and not an error the user
-    // caused — the App is installed now, so one more Connect click finishes it
-    // against the existing installation.
     if (connectError === "github_finish_connect") {
       setError(null);
       setConnectNotice({
@@ -297,7 +271,6 @@ function WorkspaceDetailPageInner() {
         setReauthById(
           Object.fromEntries(list.filter((c) => c.needs_reauth).map((c) => [c.id, true]))
         );
-        // Same as above — no auto-check, wait for the Check button.
       })
       .catch(() => {});
     router.replace(`/workspaces/${workspaceId}`, { scroll: false });
@@ -306,10 +279,6 @@ function WorkspaceDetailPageInner() {
   useEffect(() => {
     if (!me) return;
     function onFocus() {
-      // Refreshing the workspace itself is one cheap query — always do it, so
-      // returning to the tab reflects a sync that finished elsewhere. The
-      // source change-check stays purely manual — only the Check button
-      // triggers it.
       void refreshWorkspace();
     }
     window.addEventListener("focus", onFocus);
@@ -354,9 +323,6 @@ function WorkspaceDetailPageInner() {
             [connectionId]: clearedSyncChanges(connectionId),
           }));
           void refreshWorkspace();
-          // This sync just changed what's ingested for this workspace —
-          // cached suggestion chips (document titles) would otherwise keep
-          // showing the pre-sync title set until a hard refresh.
           invalidateSuggestionsCache(workspaceId);
           requestAnimationFrame(() => {
             bannerRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -481,20 +447,6 @@ function WorkspaceDetailPageInner() {
     }
   }
 
-  // `workspace` must be loaded before rendering, not just `me`.
-  //
-  // Everything below derives from it — `isOwner`, `docsReady`, the title — and
-  // every one of those falls back to a *confident wrong answer* while it is
-  // still null: `workspace?.role === "owner"` is false, so the OWNER of a space
-  // was shown the member view ("Only the owner can connect or change documents
-  // for this space", "Waiting on the owner to connect a source") plus a "…"
-  // title and an empty member list, until the request landed. On a slow request
-  // that lasted 10-15s and looked like a real answer rather than a pending one.
-  //
-  // `isOwner === false` cannot distinguish "you are not the owner" from "we do
-  // not know yet", so the fix is to not render the branch at all until we know.
-  // `notFound` is checked first, so a genuinely inaccessible workspace still
-  // gets its own message rather than spinning forever.
   if (loading || !me || (!workspace && !notFound)) {
     return (
       <main className="page">
@@ -523,7 +475,6 @@ function WorkspaceDetailPageInner() {
   const lastJobs = latestJobByConnection(jobs);
   const docsReady = Boolean(workspace?.ready_to_ask);
   const githubReady = Boolean(workspace?.github_connected);
-  // Same idea as org Ask: docs need an ingest; GitHub is live — either unlocks Ask.
   const canAsk = docsReady || githubReady;
 
   return (

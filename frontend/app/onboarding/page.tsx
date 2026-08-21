@@ -30,15 +30,6 @@ function pickDisplayJob(
   return mine.find((j) => ACTIVE.has(j.status)) ?? mine[0];
 }
 
-/**
- * Turn a job row into something that visibly changes.
- *
- * The old copy was a fixed "This can take a few minutes" next to a spinner, so
- * a healthy multi-minute sync and a dead one rendered identically — which is
- * why refreshing "showed the same thing". These read the live progress fields
- * instead, and fall back to the old wording only before the first report
- * arrives (or against a backend that predates them).
- */
 function syncHeadline(job: JobRecord | undefined): string {
   const phase = job?.phase;
   if (phase === "listing") return "Looking at what's there…";
@@ -99,7 +90,6 @@ function OnboardingInner() {
 
   const effectiveMe = localMe ?? me;
 
-  // Prefer the connection that just completed OAuth; otherwise first connected source.
   const primary = useMemo(() => {
     const connectedProvider = searchParams.get("connected");
     if (connectedProvider) {
@@ -132,12 +122,6 @@ function OnboardingInner() {
       .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
   }, [jobs, primary, effectiveMe?.ready_to_ask]);
 
-  // Once a sync has succeeded and there are documents, a LATER background sync
-  // must not put this screen back into its blocking "waiting" state — the user
-  // would be stuck watching a spinner with their policies already ingested and
-  // no way to continue (seen in production after one redundant queued job).
-  // `activeJob` is already suppressed once ready_to_ask, so only the raw
-  // `sync_in_progress` flag needs the same guard.
   const syncInProgress =
     busy ||
     activeJob != null ||
@@ -147,8 +131,6 @@ function OnboardingInner() {
     if (me) setLocalMe(me);
   }, [me]);
 
-  // Reconnecting Drive from Sources still lands on /onboarding?connected=…
-  // Send already-setup admins back to Sources instead of the first-run flow.
   useEffect(() => {
     if (!effectiveMe) return;
     if (searchParams.get("connected") && isSetupComplete(effectiveMe)) {
@@ -211,7 +193,6 @@ function OnboardingInner() {
     [refresh]
   );
 
-  // Poll only while a job is active (or we just kicked one off) — not forever until ready.
   const pollEnabled =
     Boolean(me && me.role === "admin") &&
     (watchedJobId != null || Boolean(activeJob) || busy);
@@ -302,7 +283,6 @@ function OnboardingInner() {
     );
   }
 
-  // Step 2 until a full succeeded sync — never advance mid-ingest.
   const step: 1 | 2 | 3 = !effectiveMe.has_connection
     ? 1
     : !effectiveMe.ready_to_ask
@@ -421,12 +401,6 @@ function OnboardingInner() {
                 onClick={handleIngest}
                 disabled={syncInProgress || !canSync}
               >
-                {/* "Try again" is ONLY for a failure. The previous version fell
-                    through to it for *any* existing job, so a perfectly
-                    successful sync (11/11 pages stored) still offered
-                    "Try again" — telling the user something had gone wrong when
-                    nothing had. A completed sync offers "Sync again", which is
-                    what the button actually does at that point. */}
                 {syncInProgress
                   ? "Syncing…"
                   : displayJob?.status === "failed"

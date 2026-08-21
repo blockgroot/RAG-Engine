@@ -15,8 +15,6 @@ const PROVIDER_LABELS: Record<string, string> = {
   linear: "Linear",
 };
 
-/** Same real brand marks used on the landing/how-it-works pages — "google"
- * here is the API's provider key, BrandGlyph's asset is named "drive". */
 const BRAND_GLYPH: Record<string, BrandName> = {
   notion: "notion",
   google: "drive",
@@ -44,9 +42,6 @@ function friendlyWhen(iso: string | null | undefined): string {
     d.getFullYear() === now.getFullYear() &&
     d.getMonth() === now.getMonth() &&
     d.getDate() === now.getDate();
-  // hour12 forced explicitly — without it, toLocaleTimeString falls back to
-  // the browser's locale default, which is 24-hour in plenty of locales
-  // (e.g. en-GB) even when the rest of the product's copy assumes 12-hour.
   const time = d.toLocaleTimeString(undefined, {
     hour: "numeric",
     minute: "2-digit",
@@ -65,7 +60,6 @@ function friendlyWhen(iso: string | null | undefined): string {
 }
 
 
-/** Provider-side screens where the admin adds/removes what Folio can see. */
 function githubInstallSettingsUrl(installationId: string): string {
   return `https://github.com/settings/installations/${encodeURIComponent(installationId)}`;
 }
@@ -74,11 +68,8 @@ function googleFolderUrl(folderId: string): string {
   return `https://drive.google.com/drive/folders/${encodeURIComponent(folderId)}`;
 }
 
-/** Notion has no single "pick pages" URL — sharing is per-page in the app. */
 const NOTION_MANAGE_URL = "https://www.notion.so";
 
-/** Linear's own integrations settings — where an admin can review/revoke
- * what this OAuth app can see, same role NOTION_MANAGE_URL plays for Notion. */
 const LINEAR_MANAGE_URL = "https://linear.app/settings/integrations";
 
 type Provider = "notion" | "google" | "github" | "slack" | "linear";
@@ -103,13 +94,9 @@ function manageExternalHref(
   if (provider === "linear") {
     return LINEAR_MANAGE_URL;
   }
-  // Slack has no single "manage channels" URL -- membership/invites happen
-  // per-channel inside Slack itself, same reason Notion has none either.
   return null;
 }
 
-/** The row already names the provider next to its icon — the button doesn't
- * need to repeat it. */
 function manageExternalLabel(): string {
   return "Manage";
 }
@@ -127,16 +114,6 @@ function manageExternalTitle(provider: Provider): string {
   return "Open Notion to share or unshare pages with this integration";
 }
 
-/**
- * Provider card: connected sources no longer show a blunt "Sync now" that
- * re-dumps everything. Instead we surface a change notice when remote pages
- * differ, and "Update" runs an incremental upsert.
- *
- * Google also needs a folder URL before any sync — Drive has no Notion-style
- * "whatever was shared with the integration" boundary. Once a folder is set,
- * "Change folder" reuses the same config PUT (org or workspace) so the admin
- * can repoint scope without reconnecting OAuth.
- */
 export function ConnectionCard({
   provider,
   connection,
@@ -160,16 +137,10 @@ export function ConnectionCard({
   onUpdate: (connectionId: string) => void;
   onCheckAgain?: () => void;
   onConfigSaved?: (connection: ConnectionRecord) => void;
-  /** After Disconnect — parent drops the connection from local state. */
   onDisconnected?: (connectionId: string) => void;
-  /** Parent sets this when Check/Update got oauth_reauth_required. */
   needsReauth?: boolean;
   onNeedsReauth?: (needed: boolean) => void;
-  /** When set, this card manages a personal sub-workspace connection instead
-   * of the org-wide one (Workspace-within-a-Workspace) -- connect/config
-   * calls are routed to the workspace-scoped endpoints. */
   workspaceId?: string;
-  /** After a Slack member-invite picker successfully adds someone. */
   onMembersInvited?: () => void;
 }) {
   const available =
@@ -178,10 +149,6 @@ export function ConnectionCard({
     provider === "github" ||
     provider === "slack" ||
     provider === "linear";
-  // GitHub is a "live" source: nothing is ever fetched, chunked, embedded, or
-  // stored, so this card must hide every ingestion-shaped control (sync status,
-  // change counts, Update/Check). Showing them would promise a sync that does
-  // not exist -- and the API refuses those calls for GitHub anyway.
   const isLive = provider === "github";
   const syncInProgress = !isLive && lastJob != null && ACTIVE.has(lastJob.status);
   const needsUpdate = !isLive && Boolean(changes?.has_changes);
@@ -197,14 +164,12 @@ export function ConnectionCard({
   const [disconnecting, setDisconnecting] = useState(false);
   const [disconnectError, setDisconnectError] = useState<string | null>(null);
 
-  // What the admin actually authorized on GitHub's install screen.
   const repoSelection = connection?.source_config?.repository_selection;
   const repos = connection?.source_config?.repos ?? [];
   const installationId = connection?.source_config?.installation_id;
   const manageHref = connection ? manageExternalHref(provider, connection) : null;
   const [refreshingScope, setRefreshingScope] = useState(false);
   const [scopeError, setScopeError] = useState<string | null>(null);
-  /** Set after a successful GitHub "Refresh list" so we can show Up to date. */
   const [githubListFresh, setGithubListFresh] = useState(false);
 
   async function refreshScope() {
@@ -212,9 +177,6 @@ export function ConnectionCard({
     setRefreshingScope(true);
     setScopeError(null);
     try {
-      // Routed to the workspace endpoint when this card manages a workspace's
-      // own connection, so a refresh can never re-read the org-wide scope into
-      // a workspace row (or vice versa).
       const scope = workspaceId
         ? await api.refreshWorkspaceConnectionScope(workspaceId, connection.id)
         : await api.refreshConnectionScope(connection.id);
@@ -238,13 +200,10 @@ export function ConnectionCard({
 
   const [configError, setConfigError] = useState<string | null>(null);
 
-  // Drop the post-change hint once an Update is running — the job badge takes over.
   useEffect(() => {
     if (syncInProgress) setFolderHint(null);
   }, [syncInProgress]);
 
-  // Docs: after Check with no remote changes — same "Up to date" chip as a
-  // successful sync job. Prefer not to claim up-to-date while an update is due.
   const docsCheckedFresh =
     !isLive &&
     Boolean(connection) &&
@@ -256,7 +215,6 @@ export function ConnectionCard({
     changes != null &&
     !changes.has_changes;
 
-  // While Check is in flight, hide a stale "Up to date" so the Checking… line is clear.
   const showDocsJobBadge =
     !isLive && Boolean(lastJob) && !needsUpdate && !checkingChanges;
   const showGithubUpToDate =
@@ -655,7 +613,6 @@ export function ConnectionCard({
         </div>
       )}
 
-      {/* Check found nothing new, and there is no job badge yet (e.g. Drive). */}
       {docsCheckedFresh && !showDocsJobBadge && (
         <p
           className="muted"

@@ -1,9 +1,3 @@
-/**
- * Minimal SSE client over `fetch` (not `EventSource`) — `EventSource` can't
- * send a POST body or attach custom logic per chunk, and we need to POST the
- * question. Parses `event: <name>\ndata: <payload>\n\n` blocks as they arrive.
- */
-
 import { API_BASE_URL } from "./api";
 
 export interface ChatDonePayload {
@@ -19,7 +13,6 @@ export interface ChatDonePayload {
     | "notion"
     | "google"
     | "none";
-  /** Optional — kept for API compatibility; not shown in the UI. */
   citations?: { content: string; reference: string; score: number | null }[];
   resolved_question: string | null;
   latency_ms: number | null;
@@ -36,15 +29,6 @@ export async function streamChat(
   conversationId: string | null,
   handlers: ChatStreamHandlers,
   workspaceId?: string | null,
-  /**
-   * Which agent answers. Omitted (or "policy") uses the indexed policy corpus;
-   * "github" routes to the GitHub agent, which answers from live GitHub API
-   * reads instead of retrieval. The client names this explicitly because
-   * GitHub connects at the org level, so an org commonly has policies AND
-   * GitHub connected at once and "route by connected source" cannot
-   * disambiguate. The server decides deterministically from this value -- no
-   * LLM classifies the question.
-   */
   agent?: "policy" | "github" | "slack" | "linear" | "notion" | "google"
 ): Promise<void> {
   let response: Response;

@@ -1,35 +1,4 @@
-"""Slack implementation of the ``SourceAdapter`` interface.
-
-Phase 2 of the Slack Integration Plan (docs/plans/2026-08-17-slack-integration.md).
-Structurally mirrors ``google_drive.py``/``notion.py`` — same class shape, same
-``SourceError``/``ConfigurationError`` wrapping with ``cause=`` — over the plain
-Slack Web API via ``httpx`` (no vendor SDK; same "thin HTTP client, not a
-framework" reasoning as every other adapter here).
-
-**One Slack thread = one document** (decision D3): a lone reply is usually
-meaningless out of context, and a whole channel-day would blur unrelated
-conversations together, so the thread is the natural unit — same conclusion
-Onyx's community connector reached independently (see the plan's §0 research).
-A message with no replies is simply a one-message "thread."
-``external_id`` is ``"{channel_id}:{thread_ts}"``.
-
-**No persistent checkpoint** (a deliberate simplification vs. the plan's D4
-language): neither ``NotionAdapter`` nor ``GoogleDriveAdapter`` persist a
-walk checkpoint either — they just bound what one ``list_documents()`` call
-can return (Drive: ``max_walk_folders``/``max_documents``; Notion: page-tree
-size) and re-walk that bounded window every call. Slack follows the same
-existing convention rather than inventing new adapter-level state: every
-``list_documents()`` call re-walks the last ``backfill_days`` of each
-configured channel, bounded by ``max_documents_per_sync`` in aggregate.
-
-**Volume bounds** (plan §6), all from ``SlackSettings``, applied together:
-``backfill_days`` bounds history depth, ``min_thread_chars`` filters
-low-signal lone messages before they become a document, ``max_thread_messages``
-caps one thread's rendered size (truncation marker, never silent),
-``max_documents_per_sync`` caps the aggregate across one call. Config is
-required to name specific channels (``source_config["channel_ids"]``) — never
-"every channel the bot can see" (decision D2).
-"""
+"""Slack implementation of the ``SourceAdapter`` interface."""
 
 from __future__ import annotations
 
@@ -48,12 +17,6 @@ _TIMEOUT = 15.0
 _TRUNCATION_MARKER = "\n[... earlier replies truncated: thread exceeds ingest size limit ...]"
 _MAX_HTTP_ATTEMPTS = 5
 _RETRYABLE_SLACK_ERRORS = frozenset({"ratelimited", "internal_error", "fatal_error"})
-# Check and Update are separate HTTP walks of the same channels. Slack's
-# conversations.history budget is tight enough that the Update walk, seconds
-# after a successful Check, often comes back empty — the admin then sees
-# "nothing found" even though Check just listed threads, and a second
-# Check+Update works. Keep the last non-empty listing for a couple of minutes
-# so Update can reuse Check's snapshot instead of taking a blip as truth.
 # ponytail: process-local only; a separate worker process still lists itself.
 # Upgrade: persist refs on the ingestion job row.
 _LISTING_CACHE_TTL_SECONDS = 180
@@ -71,7 +34,6 @@ def _ts_to_dt(ts: str | None) -> datetime | None:
 
 
 def _thread_uri(channel_id: str, thread_ts: str) -> str:
-    # Slack's deep-link format drops the "." and zero-pads to 6 decimal places.
     padded = f"{thread_ts:0<17}".replace(".", "")
     return f"https://slack.com/archives/{channel_id}/p{padded}"
 
@@ -111,12 +73,6 @@ class SlackAdapter(SourceAdapter):
             )
         self._token = token
         self._channel_ids = list(channel_ids)
-        # Human channel name (config["channel_names"], the same map the Sources
-        # UI already stores) prefixed onto each thread's title. Without it a
-        # thread's "title" is just the first 80 chars of a message, which is
-        # both a bad citation label and — the reason this was added — leaves
-        # the Slack recap prompt no way to confirm a thread came from the
-        # channel a question names, so it declines rather than guess.
         self._channel_names = dict(channel_names or {})
         self._timeout = timeout
         self._settings = settings or SlackSettings.from_env()
@@ -194,7 +150,6 @@ class SlackAdapter(SourceAdapter):
             data = response.json()
             if data.get("ok"):
                 return data
-            # Slack's failure shape: HTTP 200 with {"ok": false, "error": "..."}.
             err = str(data.get("error") or "unknown")
             last_error = err
             if err in _RETRYABLE_SLACK_ERRORS and attempt < _MAX_HTTP_ATTEMPTS:
@@ -234,10 +189,6 @@ class SlackAdapter(SourceAdapter):
         if refs:
             self._store_listing(refs)
             return refs
-        # Live walk came back empty. Prefer Check's recent snapshot over
-        # treating that as "the channel has nothing" — the Update-after-Check
-        # failure. A first-sync retry still reaches Slack because we never
-        # cache an empty listing.
         return self._cached_listing() or refs
 
     def _list_documents_from_slack(self) -> list[SourceRef]:
@@ -255,11 +206,11 @@ class SlackAdapter(SourceAdapter):
                 for message in data.get("messages", []):
                     ts = message.get("ts")
                     if not ts or message.get("subtype"):
-                        continue  # skip join/leave/edit system messages
+                        continue
                     reply_count = message.get("reply_count", 0)
                     text = (message.get("text") or "").strip()
                     if reply_count == 0 and len(text) < self._settings.min_thread_chars:
-                        continue  # noise filter: a lone short message, plan §6.2
+                        continue
                     last_ts = message.get("latest_reply") or ts
                     refs.append(
                         SourceRef(
@@ -291,9 +242,6 @@ class SlackAdapter(SourceAdapter):
                 break
         truncated = len(messages) > self._settings.max_thread_messages
         if truncated:
-            # Keep the root message plus the most recent N-1 replies — the
-            # start of a conversation is as load-bearing as its tail, but the
-            # tail is what "what's the latest" questions actually need.
             root = messages[0]
             tail = messages[1:][-(self._settings.max_thread_messages - 1):]
             messages = [root, *tail]
@@ -310,10 +258,6 @@ class SlackAdapter(SourceAdapter):
 
         root_text = (messages[0].get("text") or "").strip()
         channel = self._channel_label(channel_id)
-        # Channel name goes on the stored title AND the chunk text. Ask chips
-        # are "what was discussed in #x" — without this, neither the keyword
-        # index nor the recap prompt can tell a thread came from #x, so the
-        # grounded/recap path correctly refuses even after a successful sync.
         lines = [f"Channel: #{channel}"]
         if truncated:
             lines.append(_TRUNCATION_MARKER.strip())

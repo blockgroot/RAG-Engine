@@ -837,11 +837,6 @@ class RateLimitSettings:
 
     enabled: bool = DEFAULT_RATE_LIMIT_ENABLED
     chat_requests_per_window: int = DEFAULT_RATE_LIMIT_CHAT_REQUESTS
-    # Separate budget for the unauthenticated magic-link endpoint. It must NOT
-    # share the chat limit: chat is per-org and per-session, this is per-IP with
-    # no session at all, so a whole office behind one NAT shares a single
-    # bucket. Sized to bound bulk account enumeration (see app/api/auth.py)
-    # while leaving room for everyone in a company to sign in at once.
     auth_requests_per_window: int = DEFAULT_RATE_LIMIT_AUTH_REQUESTS
     window_seconds: int = DEFAULT_RATE_LIMIT_WINDOW_SECONDS
 
@@ -883,11 +878,7 @@ class IngestSanitizeSettings:
 
 @dataclass(frozen=True)
 class IngestWorkerSettings:
-    """Ingestion worker memory admission gate (see ``DEFAULT_INGEST_MAX_RSS_MB``
-    above for the full reasoning). Checked once per ``run_once()`` call, before
-    ``queue.claim_next()`` — a coarse, cheap proactive circuit breaker, not a
-    replacement for the per-input bounds elsewhere in the ingestion pipeline.
-    """
+    """Ingestion worker memory admission settings."""
 
     memory_guard_enabled: bool = DEFAULT_INGEST_MEMORY_GUARD_ENABLED
     max_rss_mb: float = DEFAULT_INGEST_MAX_RSS_MB
@@ -904,15 +895,7 @@ class IngestWorkerSettings:
 
 @dataclass(frozen=True)
 class QueryNormSettings:
-    """Corpus-vocab spelling correction before retrieval (Phase 17).
-
-    First-time questions are otherwise embedded raw; only conversational
-    follow-ups get an LLM rewrite, and recovery spelling is reactive. This is
-    a cheap non-LLM first line — SymSpell against *this org's* chunk vocabulary
-    — so typos like "protien" map toward document terms without an LLM call on
-    every request. Default max edit distance is 1 (distance 2 falsely "fixed"
-    external entity names like Niva→five). See ``app/rag/query_normalize.py``.
-    """
+    """Corpus-vocabulary spelling correction before retrieval."""
 
     enabled: bool = DEFAULT_QUERY_NORM_ENABLED
     max_edit_distance: int = DEFAULT_QUERY_NORM_MAX_EDIT_DISTANCE
@@ -939,15 +922,7 @@ class QueryNormSettings:
 
 @dataclass(frozen=True)
 class WebSearchSettings:
-    """Web-search tool configuration (Phase 5).
-
-    - ``enabled``      whether the RAG pipeline offers the web-search tool at all.
-    - ``provider``     ``duckduckgo`` (keyless, default) or ``tavily`` (needs key).
-    - ``api_key``      required only by providers that need one (e.g. Tavily).
-    - ``max_results``  how many results to fetch and feed back to the model.
-    - ``timeout``      hard cap (seconds) on the search call; on timeout the
-      pipeline degrades to the fixed internal fallback.
-    """
+    """Web-search tool settings."""
 
     enabled: bool = DEFAULT_WEB_SEARCH_ENABLED
     provider: str = DEFAULT_WEB_SEARCH_PROVIDER
@@ -968,46 +943,12 @@ class WebSearchSettings:
 
 @dataclass(frozen=True)
 class ContextualSettings:
-    """Contextual-retrieval config (Phase 6, ingest-time).
-
-    When enabled, a short LLM-generated context is prepended to each chunk before
-    it is embedded and stored, so the chunk carries its surrounding meaning.
-
-    ``defer`` (default **on**): sync first embeds raw chunks and marks the job
-    succeeded so onboarding/chat unlock immediately; contextualize + re-embed
-    then runs in the worker as a best-effort ``enriching`` phase. That keeps the
-    Phase 6 quality intent without free-tier Gemini stalling users at "0 of N".
-    Set ``INGEST_CONTEXTUAL_DEFER=false`` for the old inline (blocking) behaviour.
-
-    ``concurrency`` is how many per-chunk calls run at once within one document
-    during inline or deferred enrich. Keep low (1–2) on free/metered endpoints.
-
-    ``max_chunks``: a document that chunks into more than this many pieces
-    skips contextual enrichment entirely (it keeps its plain, already-embedded
-    chunks — the same safe state every chunk starts in under ``defer``) rather
-    than issuing one sequential/low-concurrency LLM call per chunk with no
-    upper bound. A pathologically large single document (an entire book pasted
-    into one page) would otherwise tie up the worker for a very long time; this
-    makes that a bounded, cheap no-op instead, without touching normal-sized
-    documents (a typical page is well under this).
-    """
+    """Ingest-time contextual retrieval settings."""
 
     enabled: bool = DEFAULT_CONTEXTUAL_ENABLED
     defer: bool = DEFAULT_CONTEXTUAL_DEFER
     concurrency: int = DEFAULT_CONTEXTUAL_CONCURRENCY
     max_chunks: int = DEFAULT_CONTEXTUAL_MAX_CHUNKS
-    # Metadata-creation gap (production-RAG comparison #2): fold 2-3 LLM-
-    # generated hypothetical questions into the SAME contextualize call
-    # (never a second LLM round-trip per chunk — this endpoint is already
-    # rate-limited, see the 15rpm gotcha elsewhere in this file) and append
-    # them to the stored chunk text, so a rephrased user question can match
-    # one of them via vector OR keyword search. Independent kill-switch from
-    # ``enabled`` since it changes stored chunk *content*, not just whether
-    # contextualizing runs — default ON: it only ever adds retrieval signal
-    # (never touches the gate/prompt/generation path), same risk profile as
-    # contextual retrieval itself. Only takes effect when ``enabled`` is
-    # also true, and only for chunks contextualized from here on — it does
-    # not retroactively rewrite already-ingested content.
     hypothetical_questions: bool = DEFAULT_HYPOTHETICAL_QUESTIONS_ENABLED
 
     @classmethod
@@ -1030,15 +971,7 @@ class ContextualSettings:
 
 @dataclass(frozen=True)
 class KeywordExtractionSettings:
-    """Non-LLM keyword extraction, appended to stored chunk text at ingest.
-
-    Deterministic term-frequency extraction (``app/ingestion/keywords.py``) —
-    no model call, so unlike ``ContextualSettings.hypothetical_questions``
-    this has no latency/cost tradeoff to weigh; default ON.
-
-    - ``enabled``  kill-switch.
-    - ``top_n``    max keywords appended per chunk.
-    """
+    """Keyword-extraction settings for ingest-time chunk enrichment."""
 
     enabled: bool = DEFAULT_KEYWORD_EXTRACTION_ENABLED
     top_n: int = DEFAULT_KEYWORD_EXTRACTION_TOP_N
@@ -1053,14 +986,7 @@ class KeywordExtractionSettings:
 
 @dataclass(frozen=True)
 class RetrievalSettings:
-    """Query-time retrieval config (Phase 6).
-
-    - ``hybrid_enabled``   fuse keyword (BM25-style) results with vector results.
-    - ``rerank_enabled``   cross-encoder rerank the fused candidate pool.
-    - ``candidate_pool``   how many candidates to fetch (per signal) and rerank
-      before selecting the final ``RagSettings.top_k``.
-    - ``rrf_k``            Reciprocal Rank Fusion constant.
-    """
+    """Query-time retrieval settings."""
 
     hybrid_enabled: bool = DEFAULT_RETRIEVAL_HYBRID_ENABLED
     rerank_enabled: bool = DEFAULT_RETRIEVAL_RERANK_ENABLED

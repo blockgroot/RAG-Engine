@@ -1,7 +1,3 @@
-/** Official / provided brand marks from /public/brands, plus a couple of
- * inline SVG marks (github, sendgrid) for brands we don't have a static
- * asset for. */
-
 export type BrandName =
   | "notion"
   | "drive"
@@ -39,10 +35,6 @@ function GithubMark({ size }: { size: number }) {
   );
 }
 
-/** Stylized mark for SendGrid — the provider that sends Handbook's magic
- * links/invites. Not a pixel copy of SendGrid's logo (we have no licensed
- * asset for it), just a paper-plane-on-blue glyph in their brand blue that
- * reads as "outbound mail" at a glance. */
 function SendgridMark({ size }: { size: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
@@ -55,9 +47,6 @@ function SendgridMark({ size }: { size: number }) {
   );
 }
 
-/** Mark for "kept private" access guarantees — no vendor to license, just a
- * person-plus-lock glyph in the app's own accent color, distinct from the
- * generic shield used for "secure". */
 function PrivateMark({ size }: { size: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
@@ -75,10 +64,6 @@ function PrivateMark({ size }: { size: number }) {
   );
 }
 
-/** Stylized mark for Linear — the connector's brand purple with a circle and
- * receding diagonal strokes evoking Linear's own swoosh-into-a-circle mark.
- * Not a pixel copy of Linear's logo (no licensed asset here), same approach
- * as SendgridMark: reads as "Linear" at a glance in the app's UI. */
 function LinearMark({ size }: { size: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
@@ -93,10 +78,6 @@ function LinearMark({ size }: { size: number }) {
   );
 }
 
-/** Generic "grounded document answers" mark — a plain page glyph, not any
- * one connector's brand, since that feature spans every synced source
- * (Notion, Drive, Slack, Linear, ...), not just one of them. Same flat
- * rounded-square treatment as the other inline marks here. */
 function DocumentMark({ size }: { size: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
