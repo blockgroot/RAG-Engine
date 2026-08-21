@@ -148,12 +148,12 @@ function WorkspacesPageInner() {
             </form>
           </section>
 
-          <section className="studio-section" aria-labelledby="your-spaces-title">
-            <div className="studio-section-head">
+          <section className="roster-board" aria-labelledby="your-spaces-title">
+            <div className="studio-section-head roster-board-head">
               <h2 id="your-spaces-title">Your spaces</h2>
               <p className="muted">Open a space to connect sources, invite people, and ask.</p>
             </div>
-
+            <div className="roster-scroll">
             {loadingList ? (
               <div className="studio-skeleton-grid" aria-busy="true">
                 <div className="studio-skeleton source-skeleton" />
@@ -191,6 +191,7 @@ function WorkspacesPageInner() {
                 ))}
               </ul>
             )}
+            </div>
           </section>
         </div>
       </main>

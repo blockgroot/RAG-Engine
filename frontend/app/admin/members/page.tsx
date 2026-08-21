@@ -188,8 +188,8 @@ export default function MembersPage() {
             </form>
           </section>
 
-          <section className="studio-section people-roster" aria-labelledby="roster-title">
-            <div className="studio-section-head">
+          <section className="roster-board" aria-labelledby="roster-title">
+            <div className="studio-section-head roster-board-head">
               <h2 id="roster-title">Team roster</h2>
               <p className="muted">Everyone who can ask in this company.</p>
             </div>
@@ -203,6 +203,7 @@ export default function MembersPage() {
                 {rosterMessage}
               </div>
             )}
+            <div className="roster-scroll">
             {members.length === 0 ? (
               <div className="studio-empty">
                 <div className="studio-empty-mark" aria-hidden />
@@ -278,6 +279,7 @@ export default function MembersPage() {
                 })}
               </ul>
             )}
+            </div>
           </section>
         </div>
       </main>

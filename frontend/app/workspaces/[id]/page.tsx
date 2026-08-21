@@ -601,7 +601,7 @@ function WorkspaceDetailPageInner() {
         )}
 
         <div className="people-layout">
-          {isOwner ? (
+          {isOwner && (
             <section className="studio-panel invite-panel" aria-labelledby="space-invite-title">
               <div className="studio-panel-glow" aria-hidden />
               <div className="studio-section-head">
@@ -640,25 +640,25 @@ function WorkspaceDetailPageInner() {
                 </button>
               </form>
             </section>
-          ) : (
-            <section className="studio-panel" aria-labelledby="space-invite-title">
-              <div className="studio-section-head">
-                <h2 id="space-invite-title">This room</h2>
-                <p className="muted">Only the owner can invite people or connect sources.</p>
-              </div>
-            </section>
           )}
 
-          <section className="studio-section" aria-labelledby="space-people-title">
-            <div className="studio-section-head">
+          <section className="roster-board" aria-labelledby="space-people-title">
+            <div className="studio-section-head roster-board-head">
               <h2 id="space-people-title">People in this space</h2>
-              <p className="muted">Everyone who can ask here.</p>
+              <p className="muted">
+                {isOwner
+                  ? "Everyone who can ask here."
+                  : "Everyone who can ask here. The owner manages invites and sources."}
+              </p>
             </div>
+            <div className="roster-scroll">
             {members.length === 0 ? (
               <div className="studio-empty">
                 <div className="studio-empty-mark" aria-hidden />
                 <h3>No one here yet</h3>
-                <p className="muted">Invite a teammate to share this room.</p>
+                <p className="muted">
+                  {isOwner ? "Invite a teammate to share this room." : "Waiting on the owner to add people."}
+                </p>
               </div>
             ) : (
               <ul className="people-grid">
@@ -673,7 +673,9 @@ function WorkspaceDetailPageInner() {
                     </span>
                     <div className="people-card-copy">
                       <strong>{m.email}</strong>
-                      <span className="muted">{m.role === "owner" ? "Owns this room" : "Member"}</span>
+                      <span className="muted">
+                        Joined {new Date(m.joined_at).toLocaleDateString()}
+                      </span>
                     </div>
                     <div className="people-card-meta">
                     <span className="badge">{m.role === "owner" ? "Owner" : "Member"}</span>
@@ -705,10 +707,11 @@ function WorkspaceDetailPageInner() {
                 ))}
               </ul>
             )}
+            </div>
           </section>
         </div>
 
-        {isOwner ? (
+        {isOwner && (
           <section className="studio-section" aria-label="Sources for this space">
             <div className="studio-section-head">
               <h2>Sources for this space</h2>
@@ -770,8 +773,6 @@ function WorkspaceDetailPageInner() {
                   })}
             </div>
           </section>
-        ) : (
-          <p className="muted">Only the owner can connect or change documents for this space.</p>
         )}
 
         {isOwner && (
