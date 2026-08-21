@@ -121,6 +121,9 @@ DEFAULT_CONTEXTUAL_ENABLED = True          # keep the Phase 6 quality path
 DEFAULT_CONTEXTUAL_DEFER = True            # run it AFTER sync succeeds (no onboarding stall)
 DEFAULT_CONTEXTUAL_CONCURRENCY = 2         # background enrich; keep low vs 15 RPM free endpoints
 DEFAULT_CONTEXTUAL_MAX_CHUNKS = 200        # skip enrich (raw chunks stay) above this many chunks/doc
+DEFAULT_HYPOTHETICAL_QUESTIONS_ENABLED = True  # ingest-time only; additive, no gate/prompt change
+DEFAULT_KEYWORD_EXTRACTION_ENABLED = True  # non-LLM, zero added latency/cost
+DEFAULT_KEYWORD_EXTRACTION_TOP_N = 6
 DEFAULT_EMBED_BATCH_SIZE = 16              # encode in batches (avoids OOM on large docs)
 DEFAULT_RETRIEVAL_HYBRID_ENABLED = True    # fuse vector + keyword (BM25-style) search
 DEFAULT_RETRIEVAL_RERANK_ENABLED = True    # cross-encoder rerank of the candidate pool
@@ -140,6 +143,8 @@ DEFAULT_RETRIEVAL_REUSE_THRESHOLD = 0.72
 DEFAULT_TONE_CLASSIFY_ENABLED = True
 DEFAULT_RECOVERY_ENABLED = True
 DEFAULT_RECOVERY_MAX_QUERIES = 2
+
+DEFAULT_AUDIT_ENABLED = False
 
 # Compound-question decomposition (Phase 18). Heuristic gate first; LLM only when
 # the question likely bundles multiple distinct asks.
@@ -1034,6 +1039,30 @@ class RecoverySettings:
 
 
 @dataclass(frozen=True)
+class AuditSettings:
+    """Post-generation groundedness audit — the validation-layer gap (CLAUDE.md
+    §6 Phase 20, previously deferred pending a latency/cost decision).
+
+    A bounded second-opinion LLM call re-checks an already-drafted Mode A/B
+    answer against the same retrieved context. It can only downgrade an
+    answer to the fixed fallback, never edit or extend one, and any audit
+    failure (LLM error, unparseable verdict) degrades to skipping the audit
+    — the original answer stands. Default OFF: this is additive cost on top
+    of every answered question, so it opts in rather than changing existing
+    behaviour/latency by default.
+
+    - ``enabled``  kill-switch; off means byte-identical behaviour to before
+      this existed.
+    """
+
+    enabled: bool = DEFAULT_AUDIT_ENABLED
+
+    @classmethod
+    def from_env(cls) -> "AuditSettings":
+        return cls(enabled=env_bool("RAG_AUDIT_ENABLED", DEFAULT_AUDIT_ENABLED))
+
+
+@dataclass(frozen=True)
 class DecomposeSettings:
     """Compound-question decomposition before retrieval (Phase 18).
 
@@ -1250,6 +1279,19 @@ class ContextualSettings:
     defer: bool = DEFAULT_CONTEXTUAL_DEFER
     concurrency: int = DEFAULT_CONTEXTUAL_CONCURRENCY
     max_chunks: int = DEFAULT_CONTEXTUAL_MAX_CHUNKS
+    # Metadata-creation gap (production-RAG comparison #2): fold 2-3 LLM-
+    # generated hypothetical questions into the SAME contextualize call
+    # (never a second LLM round-trip per chunk — this endpoint is already
+    # rate-limited, see the 15rpm gotcha elsewhere in this file) and append
+    # them to the stored chunk text, so a rephrased user question can match
+    # one of them via vector OR keyword search. Independent kill-switch from
+    # ``enabled`` since it changes stored chunk *content*, not just whether
+    # contextualizing runs — default ON: it only ever adds retrieval signal
+    # (never touches the gate/prompt/generation path), same risk profile as
+    # contextual retrieval itself. Only takes effect when ``enabled`` is
+    # also true, and only for chunks contextualized from here on — it does
+    # not retroactively rewrite already-ingested content.
+    hypothetical_questions: bool = DEFAULT_HYPOTHETICAL_QUESTIONS_ENABLED
 
     @classmethod
     def from_env(cls) -> "ContextualSettings":
@@ -1262,6 +1304,33 @@ class ContextualSettings:
             max_chunks=_env_positive_int(
                 "INGEST_CONTEXTUAL_MAX_CHUNKS", DEFAULT_CONTEXTUAL_MAX_CHUNKS
             ),
+            hypothetical_questions=env_bool(
+                "INGEST_HYPOTHETICAL_QUESTIONS_ENABLED",
+                DEFAULT_HYPOTHETICAL_QUESTIONS_ENABLED,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class KeywordExtractionSettings:
+    """Non-LLM keyword extraction, appended to stored chunk text at ingest.
+
+    Deterministic term-frequency extraction (``app/ingestion/keywords.py``) —
+    no model call, so unlike ``ContextualSettings.hypothetical_questions``
+    this has no latency/cost tradeoff to weigh; default ON.
+
+    - ``enabled``  kill-switch.
+    - ``top_n``    max keywords appended per chunk.
+    """
+
+    enabled: bool = DEFAULT_KEYWORD_EXTRACTION_ENABLED
+    top_n: int = DEFAULT_KEYWORD_EXTRACTION_TOP_N
+
+    @classmethod
+    def from_env(cls) -> "KeywordExtractionSettings":
+        return cls(
+            enabled=env_bool("INGEST_KEYWORDS_ENABLED", DEFAULT_KEYWORD_EXTRACTION_ENABLED),
+            top_n=_env_positive_int("INGEST_KEYWORDS_TOP_N", DEFAULT_KEYWORD_EXTRACTION_TOP_N),
         )
 
 

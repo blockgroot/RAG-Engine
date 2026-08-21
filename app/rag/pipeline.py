@@ -63,6 +63,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from ..config.settings import (
+    AuditSettings,
     DecomposeSettings,
     MemorySettings,
     QueryNormSettings,
@@ -86,6 +87,7 @@ from ..embeddings.base import EmbeddingProvider
 from ..llm.base import LLMProvider
 from ..llm.metering import AUX_LLM_STAGES, log_llm_call
 from ..llm.stages import (
+    STAGE_AUDIT,
     STAGE_DECOMPOSE,
     STAGE_EMPATHY_OPENER,
     STAGE_GENERATE,
@@ -99,8 +101,9 @@ from ..llm.stages import (
 )
 from .query_signals import log_query_signal
 from ..memory.base import ConversationContext, ConversationStore, RetrievedChunkRecord
-from ..vectorstore.base import RetrievedChunk, VectorStore
+from ..vectorstore.base import DateRange, RetrievedChunk, VectorStore
 from ..websearch.base import SearchResult, WebSearchProvider
+from .audit import parse_audit_verdict
 from .retrieval import HybridRetriever, RetrievalResult
 from .context_assemble import assemble_context_texts
 from .decompose import looks_compound, parse_sub_questions
@@ -121,6 +124,7 @@ from .prompts import (
     POLICY_PROMPT_PROFILE,
     WEB_SEARCH_TOOL,
     PromptProfile,
+    build_audit_prompt,
     build_decompose_prompt,
     build_grounded_prompt,
     build_recovery_queries_prompt,
@@ -217,6 +221,10 @@ class RagResult:
       (``None`` if classify disabled/failed).
     - ``question_decomposed`` / ``sub_questions`` — Phase 18 compound-question
       split before retrieval (diagnostics).
+    - ``audit_used`` / ``audit_downgraded`` / ``audit_reason`` — post-generation
+      groundedness audit (validation layer, off by default: ``AuditSettings``).
+      ``audit_downgraded`` is ``True`` only when the auditor found an
+      unsupported claim and the answer was replaced with the fixed fallback.
     """
 
     answer: str
@@ -241,6 +249,9 @@ class RagResult:
     sub_questions: list[str] = field(default_factory=list)
     cache_hit: bool = False
     budget_exhausted: bool = False
+    audit_used: bool = False
+    audit_downgraded: bool = False
+    audit_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -283,6 +294,7 @@ class RagPipeline:
         prompt_profile: PromptProfile | None = None,
         tone_settings: ToneSettings | None = None,
         source_provider: str | None = None,
+        audit_settings: AuditSettings | None = None,
     ) -> None:
         self._llm = llm
         self._llm_aux = llm_aux or llm
@@ -321,6 +333,9 @@ class RagPipeline:
         # prompts.PromptProfile. Defaults to the original company-policy
         # wording, so every existing caller is byte-for-byte unchanged.
         self._prompt_profile = prompt_profile or POLICY_PROMPT_PROFILE
+        # Post-generation groundedness audit (validation layer, Phase 20-lite).
+        # Off by default — see AuditSettings.
+        self._audit_settings = audit_settings or AuditSettings.from_env()
 
     def _provider_for_stage(self, stage: str) -> LLMProvider:
         return self._llm_aux if stage in AUX_LLM_STAGES else self._llm
@@ -393,6 +408,8 @@ class RagPipeline:
         *,
         conversation_id: str | None = None,
         workspace_id: str | None = None,
+        date_range: DateRange | None = None,
+        tags: list[str] | None = None,
     ) -> RagResult:
         """Answer ``question`` using only ``org_id``'s chunks (with optional memory).
 
@@ -403,6 +420,12 @@ class RagPipeline:
         grounding guarantee below are completely unchanged; only which rows
         retrieval is allowed to see changes. Always paired with ``org_id``,
         never resolved from ``workspace_id`` alone.
+
+        ``date_range``: an optional hard filter on ``documents.source_last_modified``
+        (e.g. "only policies updated after March"). ``None`` (default) is a
+        no-op — every prior caller is unaffected. Like ``workspace_id`` it
+        narrows what retrieval is allowed to see; it never changes the gate
+        threshold or the grounded prompt.
 
         Retrieval is delegated to the vector store, which enforces the
         ``WHERE org_id`` tenant filter — this pipeline never sees another tenant's
@@ -432,6 +455,8 @@ class RagPipeline:
                 resolved,
                 workspace_id=workspace_id,
                 source_provider=self._source_provider,
+                date_range=date_range,
+                tags=tags,
             )
             if cached is not None:
                 out = replace(
@@ -448,6 +473,8 @@ class RagPipeline:
             conversation_id=conversation_id,
             budget=budget,
             workspace_id=workspace_id,
+            date_range=date_range,
+            tags=tags,
             # Tone/empathy must see the raw user turn — conversation rewrite
             # is retrieval-oriented and often strips personal-distress framing.
             user_question=question,
@@ -460,6 +487,8 @@ class RagPipeline:
                 result,
                 workspace_id=workspace_id,
                 source_provider=self._source_provider,
+                date_range=date_range,
+                tags=tags,
             )
 
         if conversation_id is not None and self._memory is not None:
@@ -484,6 +513,8 @@ class RagPipeline:
         conversation_id: str | None = None,
         chunk_chars: int = 40,
         workspace_id: str | None = None,
+        date_range: DateRange | None = None,
+        tags: list[str] | None = None,
     ) -> tuple[Iterator[str], RagResult]:
         """Answer, then hand back the text as a chunk iterator instead of one string.
 
@@ -507,7 +538,12 @@ class RagPipeline:
         it just never displays a token that could later be discarded.
         """
         result = self.answer(
-            question, org_id, conversation_id=conversation_id, workspace_id=workspace_id
+            question,
+            org_id,
+            conversation_id=conversation_id,
+            workspace_id=workspace_id,
+            date_range=date_range,
+            tags=tags,
         )
 
         return chunk_answer(result.answer, chunk_chars), result
@@ -522,6 +558,8 @@ class RagPipeline:
         conversation_id: str | None = None,
         budget: RequestBudget | None = None,
         workspace_id: str | None = None,
+        date_range: DateRange | None = None,
+        tags: list[str] | None = None,
         user_question: str | None = None,
     ) -> RagResult:
         """First retrieve as today; recover at most once if evidence is insufficient."""
@@ -540,7 +578,15 @@ class RagPipeline:
         sub_questions: list[str] = [retrieval_question]
         question_decomposed = False
 
-        reused = self._try_reuse(retrieval_question, org_id, query_vec, conversation_id)
+        # A date- or tag-filtered question must never reuse chunks retrieved
+        # under a different (or no) filter on the prior turn — the reused
+        # chunks could sit outside the requested range/tags. Skip reuse
+        # rather than risk it.
+        reused = (
+            None
+            if date_range is not None or tags is not None
+            else self._try_reuse(retrieval_question, org_id, query_vec, conversation_id)
+        )
         if reused is not None:
             hits, top_score = reused.hits, reused.gate_score
             retrieval_reused = True
@@ -560,6 +606,8 @@ class RagPipeline:
                 question,
                 sub_questions,
                 workspace_id=workspace_id,
+                date_range=date_range,
+                tags=tags,
                 # Already embedded above for the reuse check; without this the
                 # identical string is encoded a second time (~38ms) on every
                 # non-decomposed question.
@@ -570,6 +618,14 @@ class RagPipeline:
         recovery_used = False
         recovery_reason: str | None = None
         recovery_queries: list[str] = []
+        # Captured from whichever ``_generate()`` call last ran, so these
+        # diagnostics survive even when a later branch (e.g. an audit
+        # downgrade routing into recovery/``_gate_failed``) replaces
+        # ``result`` with a freshly built one that has no audit fields of
+        # its own.
+        audit_used = False
+        audit_downgraded = False
+        audit_reason: str | None = None
 
         def _finalize(result: RagResult) -> RagResult:
             after = result.top_score if result.top_score is not None else top_score
@@ -591,6 +647,9 @@ class RagPipeline:
                 question_decomposed=question_decomposed,
                 sub_questions=list(sub_questions) if question_decomposed else [],
                 budget_exhausted=budget_exhausted,
+                audit_used=audit_used,
+                audit_downgraded=audit_downgraded,
+                audit_reason=audit_reason,
             )
 
         # Gate miss → optional recovery before web/fallback.
@@ -604,6 +663,8 @@ class RagPipeline:
                     budget=budget,
                     conversation_id=conversation_id,
                     workspace_id=workspace_id,
+                    date_range=date_range,
+                    tags=tags,
                 )
                 recovery_used = True
                 recovery_reason = RECOVERY_REASON_GATE_MISS
@@ -633,6 +694,11 @@ class RagPipeline:
             budget=budget,
             user_question=tone_question,
         )
+        audit_used, audit_downgraded, audit_reason = (
+            result.audit_used,
+            result.audit_downgraded,
+            result.audit_reason,
+        )
 
         # Generation found evidence insufficient → one recovery if not yet used.
         if self._generation_found_evidence_insufficient(
@@ -647,6 +713,8 @@ class RagPipeline:
                     budget=budget,
                     conversation_id=conversation_id,
                     workspace_id=workspace_id,
+                    date_range=date_range,
+                    tags=tags,
                 )
             recovery_used = True
             recovery_reason = RECOVERY_REASON_INSUFFICIENT_EVIDENCE
@@ -673,6 +741,11 @@ class RagPipeline:
                 conversation_id=conversation_id,
                 budget=budget,
                 user_question=tone_question,
+            )
+            audit_used, audit_downgraded, audit_reason = (
+                result.audit_used,
+                result.audit_downgraded,
+                result.audit_reason,
             )
         elif not budget.can_spend(min_stage):
             budget_exhausted = True
@@ -720,10 +793,17 @@ class RagPipeline:
         query_vec: list[float],
         *,
         workspace_id: str | None = None,
+        date_range: DateRange | None = None,
+        tags: list[str] | None = None,
     ) -> tuple[list[RetrievedChunk], float | None]:
         if self._retriever is not None:
             retrieval = self._retriever.retrieve(
-                org_id, query_text, query_vec, workspace_id=workspace_id
+                org_id,
+                query_text,
+                query_vec,
+                workspace_id=workspace_id,
+                date_range=date_range,
+                tags=tags,
             )
             return retrieval.hits, retrieval.gate_score
         hits = self._store.query(
@@ -732,6 +812,8 @@ class RagPipeline:
             top_k=self._settings.top_k,
             workspace_id=workspace_id,
             source_provider=self._source_provider,
+            date_range=date_range,
+            tags=tags,
         )
         top_score = hits[0].score if hits else None
         return hits, top_score
@@ -769,6 +851,8 @@ class RagPipeline:
         sub_questions: list[str],
         *,
         workspace_id: str | None = None,
+        date_range: DateRange | None = None,
+        tags: list[str] | None = None,
         known_vectors: dict[str, list[float]] | None = None,
     ) -> tuple[list[RetrievedChunk], float | None]:
         """Retrieve for one or more sub-questions.
@@ -789,7 +873,14 @@ class RagPipeline:
             vec = known.get(only)
             if vec is None:
                 vec = self._embedder.embed([only])[0]
-            return self._retrieve_once(org_id, only, vec, workspace_id=workspace_id)
+            return self._retrieve_once(
+                org_id,
+                only,
+                vec,
+                workspace_id=workspace_id,
+                date_range=date_range,
+                tags=tags,
+            )
 
         # Embed only what the caller has not already computed, in one batch.
         missing = [s for s in sub_questions if s not in known]
@@ -808,6 +899,8 @@ class RagPipeline:
                 extra_queries=[(t, v) for t, v in extra],
                 rerank_query=original_question,
                 workspace_id=workspace_id,
+                date_range=date_range,
+                tags=tags,
             )
             return retrieval.hits, retrieval.gate_score
 
@@ -819,6 +912,8 @@ class RagPipeline:
                 top_k=self._settings.top_k,
                 workspace_id=workspace_id,
                 source_provider=self._source_provider,
+                date_range=date_range,
+                tags=tags,
             ):
                 key = (hit.document_id, hit.chunk_index)
                 prev = merged.get(key)
@@ -957,6 +1052,30 @@ class RagPipeline:
 
         answered = not self._is_refusal(text, self._settings.fallback_response)
         answer = text if answered else self._settings.fallback_response
+
+        # Validation layer: a bounded second opinion on an already-drafted
+        # Mode A/B answer. Mode C is already a refusal — nothing to audit.
+        audit_used = False
+        audit_downgraded = False
+        audit_reason: str | None = None
+        if (
+            answered
+            and mode in ("A", "B")
+            and self._audit_settings.enabled
+            and budget is not None
+            and budget.can_spend(self._budget_settings.min_stage_seconds)
+        ):
+            verdict = self._audit_answer(
+                question, contexts, answer, org_id=org_id, conversation_id=conversation_id
+            )
+            if verdict is not None and verdict.grounded is not None:
+                audit_used = True
+                if not verdict.grounded:
+                    audit_downgraded = True
+                    audit_reason = verdict.reason
+                    answered = False
+                    answer = self._settings.fallback_response
+
         if answered and opener:
             answer = compose_supportive_answer(opener, answer)
 
@@ -970,7 +1089,32 @@ class RagPipeline:
             response_mode=mode,
             tone_retry_used=tone_retry_used,
             question_tone=question_tone,
+            audit_used=audit_used,
+            audit_downgraded=audit_downgraded,
+            audit_reason=audit_reason,
         )
+
+    def _audit_answer(
+        self,
+        question: str,
+        contexts: list[str],
+        answer: str,
+        *,
+        org_id: str | None,
+        conversation_id: str | None,
+    ):
+        """One bounded groundedness check. ``None`` on any failure (skip audit)."""
+        try:
+            raw = self._generate_text(
+                STAGE_AUDIT,
+                build_audit_prompt(question, contexts, answer),
+                org_id=org_id,
+                conversation_id=conversation_id,
+                max_tokens=120,
+            )
+        except Exception:
+            return None
+        return parse_audit_verdict(raw)
 
     def _recover_once(
         self,
@@ -982,6 +1126,8 @@ class RagPipeline:
         budget: RequestBudget,
         conversation_id: str | None = None,
         workspace_id: str | None = None,
+        date_range: DateRange | None = None,
+        tags: list[str] | None = None,
     ) -> _RecoveryAttempt:
         """One bounded recovery: expand retrieval expressions → re-retrieve → fuse.
 
@@ -1014,7 +1160,14 @@ class RagPipeline:
 
         for q_text, q_vec in zip(queries, vectors):
             try:
-                hits, _ = self._retrieve_once(org_id, q_text, q_vec, workspace_id=workspace_id)
+                hits, _ = self._retrieve_once(
+                    org_id,
+                    q_text,
+                    q_vec,
+                    workspace_id=workspace_id,
+                    date_range=date_range,
+                    tags=tags,
+                )
             except Exception:
                 continue
             if hits:
