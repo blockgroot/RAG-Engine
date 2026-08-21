@@ -1,9 +1,4 @@
-"""Postgres + pgvector implementation of the ``VectorStore`` interface.
-
-Every read and write is scoped by ``org_id`` — inserts stamp it on every row,
-and ``query`` filters ``WHERE org_id = ...`` *before* ranking. That WHERE clause,
-not any index, is what guarantees tenant isolation.
-"""
+"""Postgres/pgvector implementation of the ``VectorStore`` interface."""
 
 from __future__ import annotations
 
@@ -19,12 +14,7 @@ from .base import DateRange, OrganizationRef, RetrievedChunk, StoredSourceDocume
 from .bm25_ranking import bm25_rank
 
 def _to_db_vector(embedding: list[float] | np.ndarray) -> Vector:
-    """Bind an embedding so psycopg dumps it as pgvector ``vector``, not ndarray.
-
-    ``register_vector`` makes ``Vector`` dump correctly; a raw ``np.ndarray``
-    still fails with ``cannot adapt type 'ndarray'`` when adapters are missing
-    or when some cursor paths skip them — wrapping is the reliable path.
-    """
+    """Bind an embedding as a pgvector ``Vector`` value."""
     arr = np.asarray(embedding, dtype=np.float32).reshape(-1)
     if arr.size == 0:
         raise EmbeddingProviderError("embedding is empty")
@@ -124,12 +114,6 @@ class PgVectorStore(VectorStore):
         vector = _to_db_vector(query_embedding)
         after = date_range.after if date_range else None
         before = date_range.before if date_range else None
-        # ``documents`` is already LEFT JOINed for the title, so the provider,
-        # date, and tag filters are WHERE terms rather than a second join.
-        # With NULL each term is a no-op and the plan is unchanged from
-        # before these parameters existed; with a value the LEFT JOIN
-        # behaves as an inner one, which is correct — a chunk with no
-        # document row has no provider/date/tags to match.
         with get_connection(self._settings) as conn:
             rows = conn.execute(
                 """
@@ -199,28 +183,7 @@ class PgVectorStore(VectorStore):
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
     ) -> list[RetrievedChunk]:
-        """Full-text keyword search within ``org_id`` (Phase 6 hybrid retrieval).
-
-        Phase 18: ranks matching chunks with in-process Okapi BM25 (see
-        ``bm25_ranking.py``) instead of Postgres ``ts_rank``. Each row still
-        carries cosine similarity vs ``query_embedding`` in ``score`` for the gate.
-
-        **Bounded candidate set.** This query used to have no ``LIMIT``: a common
-        term matched *every* such chunk, and for each one Postgres computed a
-        cosine distance, joined ``documents``, and shipped the full text back —
-        all to keep ``top_k`` (30) of them. Measured on a 400-chunk corpus, the
-        term "leave" pulled 160 rows to return 30, and that ratio grows linearly
-        with the corpus, so it is a scaling cliff rather than a constant cost.
-        Now Postgres orders by ``ts_rank`` and keeps the best
-        ``keyword_candidate_limit`` rows, and the expensive per-row work (cosine,
-        title join, content transfer) happens only for the survivors.
-
-        **Honest caveat:** on a corpus where a term matches more than the limit,
-        BM25 now ranks the top-N by ``ts_rank`` rather than every match, and its
-        IDF is computed over that subset. The default is set high enough to be a
-        no-op at realistic corpus sizes — where it *does* bite, the old
-        behaviour was pathological anyway.
-        """
+        """Full-text keyword search within one org."""
         if not query_embedding:
             raise EmbeddingProviderError("query_embedding is empty")
         if not query_text.strip():
@@ -229,12 +192,6 @@ class PgVectorStore(VectorStore):
         vector = _to_db_vector(query_embedding)
         after = date_range.after if date_range else None
         before = date_range.before if date_range else None
-        # The candidate CTE now always LEFT JOINs ``documents`` (as ``fd``) so
-        # the provider/date WHERE terms below can reference it unconditionally
-        # — a conditional join with an unconditional WHERE reference would
-        # fail with "missing FROM-clause entry" whenever no filter was given.
-        # Same join ``query()`` already always does; the cost is a PK lookup,
-        # not a scan.
         params: list = [
             source_provider, source_provider, after, after, before, before, tags, tags,
         ]
@@ -407,10 +364,6 @@ class PgVectorStore(VectorStore):
             raise ProviderError("external_id is required for upsert_source_document")
 
         with get_connection(self._settings) as conn:
-            # Drop prior copy of this page + legacy URI duplicates (no external id),
-            # scoped to this provider AND workspace so another provider's rows, or
-            # another workspace's/the org-wide connection's rows for the same
-            # provider, are never touched.
             if source_uri:
                 conn.execute(
                     """

@@ -1,11 +1,4 @@
-"""Ingestion orchestrator: pull from a source, store into the vector store.
-
-Wires a ``SourceAdapter`` into preprocess → chunk → [contextualize] → embed →
-store. Supports *incremental* sync: list metadata cheaply, compare
-``last_modified`` to stored rows, and only fetch/embed pages that are new or
-changed (and drop pages removed upstream). Re-sync therefore updates rows
-instead of appending duplicates.
-"""
+"""Ingestion orchestration for source fetch, chunk, embed, and upsert."""
 
 from __future__ import annotations
 
@@ -30,9 +23,6 @@ from ..vectorstore import build_vector_store
 from ..vectorstore.base import VectorStore
 
 
-# (phase, processed, total) -> None. Reported as each document finishes so a
-# caller (the job worker) can persist live progress; the pipeline itself stays
-# storage-agnostic and never imports app/jobs.
 ProgressCallback = Callable[[str, int, int], None]
 
 logger = logging.getLogger(__name__)
@@ -77,23 +67,7 @@ class IngestResult:
     ingested_external_ids: list[str] = field(default_factory=list)
 
 
-# A single unstable `list_documents()` call — a Notion search-index lag right
-# after an edit, a rate-limited/truncated response, a pagination race against
-# a page whose sort key (last_edited_time) is changing mid-walk — can make
-# pages that are still genuinely shared come back missing. Removal is
-# DESTRUCTIVE in ingest_source (real chunks/embeddings deleted) and there is
-# no confirmation step before it runs, so a transient listing glitch would
-# silently wipe real content. Same "bound the blast radius, never act on one
-# unverified read" discipline as the Notion fetch-size bound and the ingest
-# memory guard elsewhere in this module — never let one bad snapshot delete
-# most of what we already know about.
 _MAX_REMOVAL_FRACTION = 0.5
-# Below this many previously-known documents, a full wipe is ordinary —
-# emptying a brand-new workspace's one-doc connection, or a source that only
-# ever had two or three pages shared, removes 100% of them in a single
-# legitimate sync. The guard exists for the OTHER shape: a sync with real
-# scale (dozens of documents) suddenly reporting most of them gone, which is
-# far more likely to be a bad read than a real mass-unshare.
 _MIN_STORED_FOR_REMOVAL_GUARD = 5
 
 
@@ -113,22 +87,6 @@ def _sanitize_removals(removed_ids: list[str], stored_count: int) -> tuple[list[
     return removed_ids, False
 
 
-# The scale floor above deliberately lets a small connection be wiped in one
-# run — emptying a two-page source is ordinary. But that leaves the shape seen
-# live on Slack completely unguarded: a Check reported "4 removed" on a
-# connection whose four threads were all still present minutes later
-# (re-listing found removed_count=0, unchanged_count=4). Slack's
-# `conversations.history` is rate-limited hard enough that an empty snapshot is
-# routine, and under the floor one Update on that blip would have deleted the
-# entire corpus.
-#
-# Refusing every empty-listing wipe would be wrong in the other direction — a
-# source that genuinely went empty must eventually be cleaned up, or it keeps
-# answering from content that no longer exists. So an empty listing is not
-# refused, it is CONFIRMED: ask the source a second time, a few seconds later,
-# and only delete if both reads agree. A blip disagrees; a real deletion does
-# not. Same "never act on one unverified read" rule as the removal fraction,
-# but paying for a second opinion instead of guessing from the first.
 _EMPTY_LISTING_CONFIRM_DELAY_SECONDS = 5
 
 
@@ -152,24 +110,7 @@ def _empty_listing_is_confirmed(
         return False
 
 
-# Reported live: a brand-new connection's very first sync, run within
-# seconds of the OAuth grant completing (e.g. clicking through onboarding
-# quickly), got back only an index/parent page (its real content living in
-# child pages that Notion's search index hadn't caught up on yet) --
-# "0 policy documents loaded" despite the pages being correctly shared.
-# Re-running the identical listing a few seconds later found all of them,
-# confirming this is Notion's search index lagging a fresh permission
-# grant, not a sharing problem. A single retry, scoped tightly to a FIRST
-# sync (nothing stored yet) that comes back suspiciously small, targets
-# exactly that window without slowing down any normal re-sync, which
-# already has a real baseline to fall back on if one listing is off.
 _FIRST_SYNC_SUSPICIOUS_PAGE_COUNT = 1
-# One 5s retry was enough for Notion but not for Slack: a real first sync
-# ~60s after the OAuth grant listed zero threads twice (5s apart) and was
-# marked succeeded with nothing stored, leaving the admin to click "Update"
-# again by hand. The waits escalate so the common case still costs 5s, and a
-# slower grant no longer needs a human to retry it. Only ever paid on a FIRST
-# sync that looks empty — a re-sync has a real baseline and never waits.
 _FIRST_SYNC_RETRY_DELAYS = (5,)  # interactive change-check: stay snappy
 _FIRST_SYNC_INGEST_RETRY_DELAYS = (5, 15, 30)  # background job: patience is free
 
@@ -242,11 +183,6 @@ def detect_source_changes(
             unchanged_n += 1
 
     removed_ids = [eid for eid in stored if eid not in live_ids]
-    # Check is a preview. An empty live listing is how Slack presents a
-    # rate-limit right after Update — four stored threads come back as
-    # "4 removed" for a moment, then a later Check shows "4 pages". Never
-    # surface a total wipe from an empty walk; ingest still confirms before
-    # it deletes anything.
     if stored and not refs:
         safe_removed, suspicious = [], True
     else:
@@ -345,17 +281,6 @@ def ingest_source(
 ) -> IngestResult:
     """Ingest documents from ``adapter`` into ``org_id``.
 
-    ``provider`` (e.g. ``"notion"``, ``"google"``) must be supplied by the
-    caller from the connection's known provider, never inferred — sync state
-    is partitioned per provider so a Google sync never diffs against Notion's
-    rows in the same org (see CLAUDE.md §4). ``workspace_id`` (Workspace-
-    within-a-Workspace): ``None`` (default) ingests into the org-wide space,
-    unchanged from every prior caller; a non-``None`` value scopes the
-    fetched documents+chunks to that sub-workspace only, and sync state
-    (new/updated/removed) is diffed independently per workspace — mirroring
-    exactly how ``provider`` already partitions sync state so Google and
-    Notion never diff against each other's rows.
-
     With ``incremental=True`` (default): only new/changed pages are fetched and
     upserted; unchanged pages are skipped; pages gone from the source are
     deleted. With ``incremental=False``: every remote page is re-fetched and
@@ -365,8 +290,6 @@ def ingest_source(
     store = store or build_vector_store()
     contextual = contextual or ContextualSettings.from_env()
     keywords = keywords or KeywordExtractionSettings.from_env()
-    # Inline contextualize only when enabled AND not deferred. Deferred mode
-    # embeds raw chunks here so sync can finish; enrich runs after success.
     apply_contextual_inline = contextual.enabled and not contextual.defer
     if apply_contextual_inline and llm is None:
         llm = build_aux_llm_provider()
@@ -437,20 +360,15 @@ def ingest_source(
 
     work = [(r, False) for r in to_add] + [(r, True) for r in to_update]
     total_work = len(work)
-    # Report before the first page so the UI is not stuck on "listing" while
-    # we fetch/contextualize/embed page 1 (that used to look like a hang at 0/N).
     report("preparing", 0, total_work)
 
     for done, (ref, is_update) in enumerate(work, start=1):
-        # processed stays at done-1 until this page is fully stored — but phase
-        # advances so pollers can see movement inside a long document.
         report("preparing", done - 1, total_work)
         doc = adapter.fetch_document(ref.external_id)
         clean = preprocess(sanitize_ingest_text(doc.content))
         chunks = chunk_text(clean, chunking)
         raw_chunks = chunks
         if not chunks:
-            # Remember empty/index pages so change-check does not re-flag them as new.
             store.acknowledge_source_document(
                 org_id,
                 provider=provider,
@@ -486,9 +404,6 @@ def ingest_source(
                 )
 
         if keywords.enabled:
-            # Extracted from the RAW chunk (before any LLM-added context
-            # sentence dilutes the word frequencies), appended to whatever
-            # ends up stored — contextualized or plain.
             chunks = [
                 append_keyword_line(stored, raw, keywords.top_n)
                 for stored, raw in zip(chunks, raw_chunks)
@@ -546,17 +461,7 @@ def enrich_source_contextual(
     tags: list[str] | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> int:
-    """Re-apply contextual retrieval to pages already stored by a fast sync.
-
-    Best-effort: failures on one page skip that page and continue. Returns how
-    many pages were successfully re-embedded with context prefixes. Does not
-    change sync bookkeeping (last_modified already set by the fast pass).
-
-    ``tags``: ``upsert_source_document`` replaces the document row entirely,
-    so a caller that ingested with ``tags`` set on the fast pass MUST pass
-    the identical value here too, or this enrich pass will silently clear
-    it back to untagged.
-    """
+    """Re-apply deferred contextual retrieval to pages already stored."""
     if not external_ids:
         return 0
     contextual = contextual or ContextualSettings.from_env()
@@ -606,9 +511,6 @@ def enrich_source_contextual(
                 hypothetical_questions=contextual.hypothetical_questions,
             )
             if keywords.enabled:
-                # Re-derive from the raw chunk, same reasoning as the inline
-                # path — otherwise this enrich pass would silently drop the
-                # keyword line the fast pass had already appended.
                 chunks = [
                     append_keyword_line(stored, raw, keywords.top_n)
                     for stored, raw in zip(chunks, raw_chunks)

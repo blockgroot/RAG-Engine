@@ -1,48 +1,4 @@
-"""Auth router: signup-approval queue, admin-invited member login, admin
-OAuth "Connect" flow (Phase 13, simplified — domain auto-join removed;
-self-serve org creation gated behind manual approval, not a whitelist).
-
-Three entry points, all converging on the same passwordless magic-link
-session issuance — there is exactly one way to log in, admin or employee:
-1. Signup (``/auth/signup``) — a brand-new company's first user. Does NOT
-   create an org or account synchronously: it queues a pending
-   ``org_signup_requests`` row and emails the platform owner
-   (``EmailSettings.owner_notification_email``) a notification with
-   one-click approve/reject confirmation links — the ONLY review surface,
-   deliberately no CLI/admin UI. Only once approved does the org + admin
-   user get created and a magic-link sign-in email go out to the requester.
-2. Magic link (``/auth/magic-link`` + ``/auth/magic-link/verify``) — the
-   normal way back in for anyone who ALREADY has an account (an admin whose
-   signup request was approved, or a member an admin invited via
-   ``/admin/members``). An email with no existing account has no path to a
-   first login here — only an admin invite or an approved signup request
-   creates one.
-
-   **This endpoint DOES tell the caller whether an account exists** (``status``
-   is ``sent`` or ``no_account``). That is a deliberate reversal of the original
-   design, which returned one identical message either way so the endpoint could
-   not be used to enumerate accounts. It was changed on request because the
-   uniform response stranded real users: someone whose company has not onboarded
-   got "check your inbox" and waited for an email that was never coming, with no
-   way to find out why. The accepted cost is that this endpoint is now an
-   enumeration oracle. It is mitigated, not eliminated, by per-IP rate limiting
-   (``check_rate_limit``) so existence can be checked but not harvested in bulk.
-   To restore the original guarantee, collapse the two returns back into one
-   message and drop ``status`` from the response.
-3. OAuth connect (``/auth/{provider}/authorize`` + ``/auth/{provider}/callback``)
-   — admin-only, requires an existing session, used to link an org's Notion
-   (etc.) workspace. Fully separate from magic-link auth; it never issues a
-   session itself, only an ``oauth_connections`` row.
-
-The signup-approval one-click links (``/auth/signup-requests/approve`` and
-``/auth/signup-requests/reject``) are deliberately GET-a-confirmation-page,
-POST-to-act: a GET alone never mutates state, so a mail client or security
-scanner prefetching the link in the notification email can't silently
-approve/reject a request. Only clicking the button on the confirmation page
-(a same-URL POST) does. Like magic-link tokens, these are bearer possession
-tokens (single-use, expiring, hash-stored) — not a new authenticated
-HTTP/session surface.
-"""
+"""Auth routes for signup approval, magic-link login, and source connects."""
 
 from __future__ import annotations
 
@@ -122,9 +78,6 @@ def signup(body: dict, background_tasks: BackgroundTasks, http_request: Request)
     )
     if "@" not in email:
         raise HTTPException(status_code=400, detail="A valid email is required")
-    # Bounded because it is stored AND rendered into the owner's notification
-    # email and the approve/reject confirmation page — unbounded, one signup
-    # could make that page unusable.
     company_name = bounded(
         (body.get("company_name") or "").strip(),
         field="Company name",
@@ -175,25 +128,14 @@ def request_magic_link(
     if not email or "@" not in email:
         raise HTTPException(status_code=400, detail="A valid email is required")
 
-    # This endpoint now REPORTS whether an account exists (see the docstring
-    # note below), which makes it an enumeration surface. Rate-limit it per
-    # client so the answer cannot be harvested in bulk: knowing one address is
-    # unregistered is a support answer, sweeping a whole domain is recon.
-    # Keyed on the caller's IP because there is no session here by definition.
-    #
-    # Resolved via resolve_client_ip, NOT request.client.host: behind the
-    # Vercel -> Render proxy chain that host is the proxy's, identical for every
-    # user, so the "per-IP" budget was really one global bucket — and one script
-    # consuming it 429'd everybody's login. See app/security/client_ip.py.
+    # This endpoint intentionally reveals whether an account exists, so rate-limit
+    # it by client IP rather than the shared proxy address.
     client_ip = resolve_client_ip(request)
     check_rate_limit(
         f"magic-link:{client_ip}",
         limit=RateLimitSettings.from_env().auth_requests_per_window,
     )
 
-    # Only an EXISTING account (created at signup, or by an admin invite via
-    # /admin/members) ever gets a link — there is no auto-join path left that
-    # creates a first account here.
     user = get_user_by_email(email)
     dev_link = None
     known = user is not None and user.org_id is not None
@@ -211,13 +153,6 @@ def request_magic_link(
             "dev_link": dev_link,
         }
 
-    # NOTE ON WORDING: we say "no account", NOT "your organisation is not
-    # registered", because the backend cannot tell those apart. `org_domains`
-    # was removed, so there is no domain->org mapping: an unknown email may
-    # belong to a company that IS set up and simply has not invited this person
-    # yet. Claiming the organisation does not exist would be wrong in exactly
-    # the common case (a new hire at an existing customer) and would send them
-    # to sign their company up a second time.
     return {
         "status": "no_account",
         "message": (
@@ -234,16 +169,10 @@ def verify_magic_link(token: str, settings: ApiSettings = Depends(ApiSettings.fr
     try:
         email = consume_magic_link_token(token)
     except AuthError:
-        # Reached by a real browser navigation (the emailed link), so a raw
-        # JSON 401 here is a dead end for the user, not just an API error —
-        # give them the themed page + a way back in, not a JSON blob.
         return HTMLResponse(_expired_link_page(settings), status_code=401)
 
     user = get_user_by_email(email)
     if user is None or user.org_id is None:
-        # Shouldn't happen on the normal path (the user is created with org_id
-        # already resolved in request_magic_link), but never issue a session
-        # for an org-less user under any circumstance.
         raise HTTPException(status_code=401, detail="No resolved organization for this account")
 
     try:
@@ -251,23 +180,11 @@ def verify_magic_link(token: str, settings: ApiSettings = Depends(ApiSettings.fr
     except (AuthError, ConfigurationError) as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    # Redirect to the FRONTEND (not this API's own host) — this endpoint is
-    # reached by a real browser navigation from the emailed link, so the
-    # Set-Cookie below is what actually lands the session; the redirect target
-    # is purely where the user ends up next.
-    # Land on `/` so the frontend can route by role + setup status
-    # (admin → onboarding if incomplete, else chat; member → chat/waiting).
     base = (settings.frontend_url or "").rstrip("/")
     response = RedirectResponse(url=f"{base}/" if base else "/")
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=session_token,
-        # Without max_age this is a browser-session cookie (cleared on
-        # browser close) regardless of how long the JWT itself is valid for
-        # — that would silently defeat the point of a long-lived session TTL.
-        # Keep it tied to the same setting so the cookie's lifetime always
-        # matches the token's. Path=/ so a Set-Cookie on /api/auth/.../verify
-        # is still sent to /api/me after the Next.js rewrite.
         max_age=AuthSettings.from_env().session_ttl_minutes * 60,
         **SESSION_COOKIE_FLAGS,
     )
@@ -301,18 +218,6 @@ def authorize(provider: str, workspace_id: str | None = None, session=Depends(ge
         if session.role != "admin":
             raise HTTPException(status_code=403, detail="Admin role required")
     else:
-        # GitHub was org-level-only when first built (a per-workspace repo subset
-        # introduces repo-level access control inside an org, which nothing else
-        # here has). That restriction was lifted on request: a workspace owner may
-        # connect their own installation, which makes workspace membership a real
-        # access boundary over code as well as documents.
-        #
-        # What keeps that safe is NOT a check here but the scoping downstream:
-        # every GitHub read resolves its token and repo allowlist from
-        # ``(org_id, workspace_id)`` together, so a workspace with no GitHub
-        # connection raises rather than falling back to the org-wide one. See
-        # tests/test_github_workspace_scope.py — that no-fallback property is the
-        # whole reason this is safe, so do not "helpfully" add a fallback.
         try:
             role = assert_member(workspace_id, session.org_id, session.user_id)
         except AuthError as exc:
@@ -358,9 +263,6 @@ def _github_connect_success_path(workspace_id: str | None) -> str:
     return "/onboarding?connected=github"
 
 
-# Banner code for "GitHub finished on GitHub's side, but we could not complete
-# the link from that redirect — click Connect once more". Distinct from the
-# github_same_install / github_install_in_use refusals, which are real conflicts.
 GITHUB_FINISH_CONNECT = "github_finish_connect"
 
 
@@ -462,14 +364,10 @@ def github_install_pending_detail(token: str):
             )
         choices.append({**summary, "available": available, "unavailable_reason": reason})
 
-    # Fresh state so "Connect another account" can open GitHub's install
-    # screen and still return to our callback for the same Folio surface.
     fresh_state = create_state(
         pending.org_id, "github", workspace_id=pending.workspace_id
     )
     install_another_url = provider.install_url(fresh_state)
-    # Logout first so GitHub shows the account picker; return_to is a path on
-    # github.com (install URL without the host).
     from urllib.parse import urlparse, urlencode
 
     install_path = urlparse(install_another_url).path
@@ -528,8 +426,6 @@ def github_install_pending_choose(
         path = _github_connect_error_path(pending.workspace_id, error)
     else:
         path = _github_connect_success_path(pending.workspace_id)
-    # Return the absolute URL so the SPA can window.location without guessing
-    # FRONTEND_URL itself (API already knows it).
     base = (settings.frontend_url or "").rstrip("/")
     return {"redirect_to": f"{base}{path}" if base else path}
 
@@ -543,38 +439,9 @@ def callback(
     setup_action: str | None = None,
     settings: ApiSettings = Depends(ApiSettings.from_env),
 ):
-    """Finish a connect flow.
-
-    ``code`` and ``state`` are OPTIONAL, which looks wrong for an OAuth callback
-    and is not. GitHub reaches this route in two different shapes: the OAuth
-    redirect (``code`` + ``state``) and the *App install / setup* redirect, which
-    carries ``installation_id`` + ``setup_action`` and — per GitHub's own docs —
-    makes no promise about either of the other two. When they were declared
-    required, that second shape returned a raw **422 validation error**: a wall of
-    JSON on a page the user reached by clicking "Install", with the connect flow
-    silently abandoned and no way forward except guessing to go back to Handbook
-    and start again. Reported in production. Both missing-parameter cases are now
-    handled explicitly below and always land the user back in the product.
-
-    ``installation_id``/``setup_action`` are GitHub-only extras (a GitHub App
-    install redirect carries them; Notion and Google do not). Both are treated
-    as **untrusted** — ``installation_id`` is verified against the authorizing
-    user's own installations inside
-    ``GitHubAppProvider.exchange_code_with_installation`` before anything is
-    persisted, because GitHub's docs warn it can be spoofed (see
-    ``app/auth/github_oauth.py``). ``setup_action`` is accepted only so the
-    redirect doesn't 422 on an unexpected query parameter; nothing branches on
-    it.
-
-    GitHub without ``installation_id`` no longer auto-picks an install: it
-    parks the user token and sends the browser to the choose UI so Company
-    Sources vs a space never silently share one personal GitHub account.
-    """
+    """Finish a connect flow, including GitHub's install-redirect variant."""
     from ..auth.github_pending import create_github_install_pending
 
-    # Built up front, before the missing-parameter guards, because how an
-    # incomplete callback should be handled depends on the provider: only GitHub
-    # has a second redirect shape that legitimately arrives without code/state.
     try:
         oauth_provider = build_oauth_provider(provider)
     except (OAuthError, ConfigurationError) as exc:
@@ -582,11 +449,6 @@ def callback(
     is_github = isinstance(oauth_provider, GitHubAppProvider)
 
     if not code:
-        # GitHub's install/setup redirect carries no authorization code, so
-        # nothing can be exchanged and no connection can be created here — but
-        # the App IS now installed, and this flow starts with *user* OAuth
-        # precisely so a second Connect click completes against an existing
-        # installation. Send them back saying that, rather than stranding them.
         if not is_github:
             raise HTTPException(
                 status_code=400,
@@ -601,10 +463,6 @@ def callback(
         )
 
     if not state:
-        # Risk T3 realised: `state` did not survive the round trip. The code may
-        # be real, but with no state there is no trustworthy way to say WHICH
-        # org/workspace asked for this — and guessing is a cross-tenant mistake,
-        # not a UX shortcut. Refuse to bind it; a retry mints a fresh state.
         if not is_github:
             raise HTTPException(
                 status_code=400,
@@ -620,7 +478,6 @@ def callback(
 
         if is_github:
             if installation_id:
-                # Came from GitHub's install screen — account was chosen there.
                 tokens, verified_installation_id = (
                     oauth_provider.exchange_code_with_installation(
                         code, installation_id
@@ -666,12 +523,6 @@ def callback(
     )
 
 
-# A trimmed, self-contained copy of the subset of frontend/app/globals.css
-# ("Harbor Desk" — teal ink on mist panels) this page actually uses. This
-# page is served by the API, not the Next.js app, so it can't import that
-# stylesheet or next/font's self-hosted Outfit — the font falls back to the
-# same system stack globals.css itself falls back to (--font-ui-fallback),
-# so the page still reads as the same product even without the webfont.
 _PAGE_STYLE = """
 :root {
   --font-ui: "Avenir Next", "Segoe UI", sans-serif;
@@ -793,9 +644,7 @@ def _page(title: str, body: str) -> str:
 
 
 def _confirm_page(action: str, email: str, company_name: str, token: str) -> str:
-    """Confirmation page matching the app's own design (see `_PAGE_STYLE`).
-    GET renders this and does NOT mutate anything (see module docstring for
-    why); only the button's POST back to the same URL does."""
+    """Render the approve/reject confirmation page."""
     verb = "Approve" if action == "approve" else "Reject"
     button_class = "button" if action == "approve" else "button button-danger"
     extra_field = (
@@ -832,10 +681,7 @@ def _confirm_page(action: str, email: str, company_name: str, token: str) -> str
 
 
 def _expired_link_page(settings: ApiSettings) -> str:
-    """Shown when a magic-link token is invalid/expired/already used. Points
-    the user straight back to the login form rather than leaving them on a
-    dead JSON error page — that's the only way back in for a link that no
-    longer works."""
+    """Shown when a magic-link token is invalid, expired, or already used."""
     base = (settings.frontend_url or "").rstrip("/")
     login_url = f"{base}/login" if base else "/login"
     body = f"""
@@ -862,9 +708,7 @@ def _result_page(message: str, *, ok: bool = True) -> str:
 
 @router.get("/signup-requests/approve", response_class=HTMLResponse)
 def confirm_approve_signup_request(token: str):
-    """GET only renders a confirmation page — never approves. See module
-    docstring: this is what stops an email scanner prefetching the link
-    from silently creating an org."""
+    """GET renders the confirmation page; only POST mutates state."""
     request = get_request_by_approve_token(token)
     if request is None:
         return HTMLResponse(

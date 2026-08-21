@@ -13,73 +13,38 @@ DEFAULT_TIMEOUT = 60.0
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-m3"
 DEFAULT_EMBEDDING_BACKEND = "local"
 
-# Output dimension of the current embedding model (BGE-M3 = 1024). The DB schema
-# declares vector(EMBEDDING_DIM); the two MUST stay in sync — see CLAUDE.md.
 DEFAULT_EMBEDDING_DIM = 1024
 
-# Chunking defaults (tokens, BGE-M3 tokenizer). See app/ingestion/chunking.py.
 DEFAULT_CHUNK_SIZE = 256
 DEFAULT_CHUNK_OVERLAP = 40
-# "heuristic" (default) estimates token counts with zero dependencies and ~0MB.
-# "hf" loads the exact BGE-M3 tokenizer, which measures at ~378MB RSS and so
-# CANNOT fit alongside the API in a 512MB box — opt in only where memory allows
-# (see app/ingestion/chunk_tokens.py for the measurements).
 DEFAULT_CHUNK_TOKEN_BACKEND = "heuristic"
-# Absolute per-chunk character ceiling — a backstop on the TOKEN budget above,
-# not a second way to express it. Token counts (exact or estimated) can be
-# arbitrarily wrong on text no tokenizer segments the way prose is segmented:
-# measured against the real BGE-M3 tokenizer, a run of base64 bills 1 token per
-# CHARACTER, so the heuristic under-counts it 16x. Since 1 token/char is the
-# worst case any input can reach, bounding characters bounds tokens outright —
-# 4000 chars can never exceed the embedding model's 8192-token limit, whatever
-# the content. A legitimate 256-token prose chunk is ~1000-1300 chars, so this
-# never fires on real documents (the golden corpus tops out at 505).
 DEFAULT_MAX_CHUNK_CHARS = 4000
 
 DEFAULT_VECTOR_STORE_BACKEND = "pgvector"
 
-# RAG query-path defaults. See app/rag/pipeline.py for the reasoning behind the
-# similarity threshold value and the two-layer grounding design.
 DEFAULT_RAG_TOP_K = 5
 DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.35
-# Cap chars of retrieved context fed into the grounded prompt (latency).
 DEFAULT_RAG_MAX_CONTEXT_CHARS = 6000
-# Cap completion length for answer generation (latency on slow free endpoints).
 DEFAULT_RAG_MAX_ANSWER_TOKENS = 700
-# How long a follow-up may wait for the previous turn's summary fold.
 DEFAULT_MEMORY_FOLD_WAIT_SECONDS = 2.0
 DEFAULT_RAG_FALLBACK_RESPONSE = (
     "I don't have information on that in the available policy documents."
 )
-# WorkspaceAgent's own fallback copy (Workspace-within-a-Workspace agent split)
-# — a separate RagPipeline instance from the policy one, so it gets its own
-# fixed fallback string rather than reusing the policy-flavored one above.
 DEFAULT_WORKSPACE_FALLBACK_RESPONSE = (
     "I don't have anything about that in this workspace's connected content."
 )
 
-# The Slack agent's refusal. Distinct from the policy/workspace copy because
-# the *next step* differs: a Slack miss usually means the conversation happened
-# in a channel that isn't connected, or outside the backfill window — both of
-# which the user can act on, unlike "it isn't in the handbook".
 DEFAULT_SLACK_FALLBACK_RESPONSE = (
     "I couldn't find that in the connected Slack channels. It may have been "
     "discussed in a channel that isn't connected, or before the synced history "
     "window."
 )
 
-# The Linear agent's refusal. Distinct copy for the same reason as Slack's: the
-# actionable next step differs from "it isn't in the handbook" — the issue may
-# just not be ingested yet, or the question doesn't match any tracked issue.
 DEFAULT_LINEAR_FALLBACK_RESPONSE = (
     "I couldn't find that in the connected Linear issues. It may not have been "
     "ingested yet, or no issue matches this question."
 )
 
-# The Notion/Drive agents' refusals. Distinct per source (not shared with the
-# old combined "policy" copy) so a miss on the Notion tab doesn't imply "check
-# your Drive docs" and vice versa — each tab can only ever point at its own
-# connected source.
 DEFAULT_NOTION_FALLBACK_RESPONSE = (
     "I couldn't find that in the connected Notion pages. It may not have been "
     "shared with the integration, or hasn't been ingested yet."
@@ -89,34 +54,20 @@ DEFAULT_DRIVE_FALLBACK_RESPONSE = (
     "be in the synced folder, or hasn't been ingested yet."
 )
 
-# The GitHub agent's refusal. Distinct copy because the *reason* differs: there
-# is no retrieval here, so a refusal means "no tool could supply evidence for
-# this", not "nothing matched in the corpus" — and the actionable next step for
-# the user is different too (name a repo, or check it's in the installation).
 DEFAULT_GITHUB_FALLBACK_RESPONSE = (
     "I couldn't find that in the connected GitHub repositories. Try naming the "
     "repository, or check that it's included in this organization's GitHub "
     "installation."
 )
 
-# Connection-pool sizing for the Postgres backing store.
 DEFAULT_DB_POOL_MIN_SIZE = 1
 DEFAULT_DB_POOL_MAX_SIZE = 10
 DEFAULT_KEYWORD_CANDIDATE_LIMIT = 2000   # rows BM25 may rank for one query
 
-# External content sources (Phase 4). Only "notion" exists so far.
 DEFAULT_SOURCE_TYPE = "notion"
 
-# Conversation memory (Phase 5, revised Phase 8). A "turn" is one question + its
-# answer. ``recent_turns`` is the size of the verbatim window kept in full; every
-# turn that falls out of that window is *incrementally* folded into a running
-# summary (Phase 8 — no bulk threshold). See app/rag/pipeline.py for the reasoning
-# behind the window size.
 DEFAULT_MEMORY_RECENT_TURNS = 3
 
-# Retrieval improvements (Phase 6): contextual retrieval (ingest-time),
-# hybrid search + cross-encoder reranking (query-time). See app/rag/retrieval.py
-# and CLAUDE.md §2/§4 for the reasoning behind each value.
 DEFAULT_CONTEXTUAL_ENABLED = True          # keep the Phase 6 quality path
 DEFAULT_CONTEXTUAL_DEFER = True            # run it AFTER sync succeeds (no onboarding stall)
 DEFAULT_CONTEXTUAL_CONCURRENCY = 2         # background enrich; keep low vs 15 RPM free endpoints
@@ -131,95 +82,51 @@ DEFAULT_RETRIEVAL_CANDIDATE_POOL = 16      # how many candidates to fetch/rerank
 DEFAULT_RETRIEVAL_RRF_K = 60               # Reciprocal Rank Fusion constant (standard default)
 DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
 
-# Retrieval reuse across conversation turns (Phase 8). Before retrieval runs, the
-# rewritten question's embedding is compared (plain cosine, NO LLM) against the
-# previous turn's retrieved chunks; if the best similarity clears the threshold we
-# reuse those chunks and skip a fresh retrieval. Threshold reasoning: CLAUDE.md §4.
 DEFAULT_RETRIEVAL_REUSE_ENABLED = True
 DEFAULT_RETRIEVAL_REUSE_THRESHOLD = 0.72
 
-# Bounded retrieval recovery (Retrieval Discovery Gap). First retrieve stays as
-# today; at most one optional recovery when evidence looks insufficient.
 DEFAULT_TONE_CLASSIFY_ENABLED = True
 DEFAULT_RECOVERY_ENABLED = True
 DEFAULT_RECOVERY_MAX_QUERIES = 2
 
 DEFAULT_AUDIT_ENABLED = False
 
-# Compound-question decomposition (Phase 18). Heuristic gate first; LLM only when
-# the question likely bundles multiple distinct asks.
 DEFAULT_DECOMPOSE_ENABLED = True
 
-# Request-level time budget (Phase 19). Optional stages check remaining time before starting.
 DEFAULT_REQUEST_DEADLINE_SECONDS = 45.0
 DEFAULT_BUDGET_MIN_STAGE_SECONDS = 3.0
 
-# Query→answer cache for standalone questions (Phase 19).
 DEFAULT_QUERY_CACHE_ENABLED = True
 DEFAULT_QUERY_CACHE_TTL_SECONDS = 300
 
-# API rate limiting (Phase 21) — chat/query endpoint.
 DEFAULT_RATE_LIMIT_ENABLED = True
 DEFAULT_RATE_LIMIT_CHAT_REQUESTS = 30
-# Unauthenticated magic-link requests per IP per window. Higher than chat
-# because a whole office behind one NAT shares this bucket, but far below
-# what bulk account enumeration needs.
 DEFAULT_RATE_LIMIT_AUTH_REQUESTS = 60
 DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
 
-# Ingestion sanitization (Phase 21).
 DEFAULT_INGEST_MAX_DOCUMENT_CHARS = 2_000_000
 DEFAULT_INGEST_MAX_CONTROL_CHAR_RATIO = 0.05
 
-# Ingestion worker memory admission gate (defense-in-depth alongside the
-# per-input bounds above): before claiming a new job, the worker checks its
-# own current RSS and skips claiming — leaving the job queued for the next
-# tick — if already close to this ceiling. This catches memory pressure from
-# ANY cause, not just the specific unbounded inputs found and fixed by hand
-# (Notion fetch size, remote-embed batching, contextual chunk-count cap).
-# Default leaves ~112MB headroom under Render free's hard 512MB ceiling.
 DEFAULT_INGEST_MEMORY_GUARD_ENABLED = True
 DEFAULT_INGEST_MAX_RSS_MB = 400.0
 
-# Lightweight query spelling/normalization (Phase 17). Corpus-vocab
-# SymSpell — no LLM on the happy path. Kill-switch: QUERY_NORM_ENABLED=false.
 DEFAULT_QUERY_NORM_ENABLED = True
 DEFAULT_QUERY_NORM_MAX_EDIT_DISTANCE = 1
 DEFAULT_QUERY_NORM_MIN_WORD_LENGTH = 4
-# The per-org SymSpell dictionary is cached for the life of the process with
-# nothing evicting it (CLAUDE.md's query-latency section flagged this as a
-# known, never-fixed slow-leak risk once more than a handful of orgs are
-# onboarded). Bounding it to the N most-recently-used orgs turns unbounded
-# growth into a fixed ceiling with no behavior change for a single-org or
-# small-org deployment.
 DEFAULT_QUERY_NORM_CACHE_MAX_ORGS = 50
 
-# Web search tool (Phase 5). Keyless DuckDuckGo by default (no paid dependency);
-# set WEB_SEARCH_PROVIDER=tavily + WEB_SEARCH_API_KEY for production quality.
 DEFAULT_WEB_SEARCH_ENABLED = True
 DEFAULT_WEB_SEARCH_PROVIDER = "duckduckgo"
 DEFAULT_WEB_SEARCH_MAX_RESULTS = 5
 DEFAULT_WEB_SEARCH_TIMEOUT = 8.0
 
-# Auth / session (Phase 10). Session and magic-link TTLs are minutes.
-# Session default is long-lived (30 days) rather than a typical short web
-# session: this is a low-risk internal tool (not banking/finance), the cookie
-# is already httpOnly+Secure+SameSite=Lax, and there's no refresh-token flow
-# to silently keep a short-lived session alive — so the TTL itself has to be
-# the thing that keeps a user logged in across normal day-to-day use instead
-# of re-requesting a magic link every hour. Revisit with a proper refresh
-# mechanism if the risk profile changes (e.g. more sensitive data, external
-# users).
 DEFAULT_SESSION_TTL_MINUTES = 60 * 24 * 30  # 30 days
 DEFAULT_MAGIC_LINK_TTL_MINUTES = 10
 DEFAULT_SIGNUP_ACTION_TTL_HOURS = 72  # 3 days
 
-# HTTP API (Phase 10+).
 DEFAULT_API_HOST = "0.0.0.0"
 DEFAULT_API_PORT = 8000
 
-# Outbound email for magic links (Phase 10). "console" (default, dev) prints the
-# link instead of sending it — no external dependency required to run locally.
 DEFAULT_EMAIL_SENDER = "console"
 
 

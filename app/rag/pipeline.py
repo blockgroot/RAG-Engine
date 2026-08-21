@@ -1,56 +1,4 @@
-"""The RAG query path: question + org_id -> grounded, tenant-scoped answer.
-
-Composes the Phase 1/2 pieces (embed -> org-scoped retrieve -> gate -> generate).
-An *orchestrator*, not a swappable provider, so this package has ``pipeline`` +
-``factory`` but no ``base.py``. Two layers keep answers grounded: (1) a confidence
-gate — below ``similarity_threshold`` we return the fallback without an LLM call;
-(2) a strict prompt (``prompts.py``) that refuses when the context doesn't answer.
-Threshold + reasoning: CLAUDE.md §2/§4.
-
-Phase 5 adds two independent capabilities on top, without changing the gate/prompt
-logic itself:
-- **Conversation memory** — with a ``conversation_id``, the incoming question is
-  rewritten into a standalone question (a cheap LLM call) using recent turns + a
-  running summary, *before* it enters the retrieval path above.
-- **Web-search fallback** — when internal retrieval fails the gate, the model is
-  offered a ``web_search`` tool (real function-calling). If it judges the question
-  to be about a real external named entity, exactly one bounded search runs and
-  the model composes an answer clearly labelled as web-sourced. Anything the model
-  deems internal-but-missing still returns the fixed fallback, and a search
-  timeout/failure degrades to that same fallback.
-
-Phase 8 refines two earlier pieces, again without touching the gate/prompt:
-- **Incremental summarization** — the running summary is updated after *every*
-  turn by folding in only the single turn that just fell out of the verbatim
-  window (``_update_running_summary``), instead of bulk-summarizing older turns
-  once a threshold is crossed. Each update's input is the existing summary + one
-  turn, so its cost stays small and roughly constant however long the chat gets.
-- **Retrieval reuse** — before retrieval runs on a follow-up, a cheap *non-LLM*
-  cosine check (``_try_reuse``) compares the rewritten question against the
-  previous turn's retrieved chunks; if they still cover it, those chunks are reused
-  and retrieval is skipped. The reused chunks then flow through the *unchanged*
-  gate → generate path, so this only avoids redundant retrieval — it never
-  weakens or bypasses the confidence gate.
-
-Phase 15 moves the summary fold **off the critical path**: ``answer()`` schedules
-``_update_running_summary`` on a background executor (see ``summary_fold.py``)
-and returns the already-decided ``RagResult`` without waiting. The fold remains
-best-effort. A per-conversation barrier runs before the next turn's rewrite so
-a turn that left the verbatim window is never invisible to both the summary and
-recent turns while a fold is still in flight.
-
-Phase 17 adds a **non-LLM** corpus-vocab SymSpell pass on the retrieval
-query (``query_normalize.py``) so first-time typo'd questions still rank
-the right chunk — without paying an LLM rewrite on every request.
-
-Bounded retrieval recovery addresses **Retrieval Discovery Gaps**: the first
-retrieve runs exactly as today; only when available evidence looks insufficient
-(gate miss, or generation finds the context insufficient) may one optional
-recovery attempt produce alternative retrieval-oriented search expressions,
-re-retrieve, and RRF-merge — then the same gate + grounded prompt apply again.
-Recovery never answers the question, never replaces user intent, and never
-reduces grounding guarantees. Expander failure degrades to the existing path.
-"""
+"""RAG orchestration for grounded, org-scoped answers."""
 
 from __future__ import annotations
 
@@ -134,18 +82,13 @@ from .prompts import (
     build_web_decision_prompt,
 )
 
-# Unmistakable banner so a web-sourced answer never blends with a policy answer.
 WEB_ANSWER_LABEL = "🌐 From a web search (NOT your organization's policy documents):"
 
-# Re-exported here (canonical definition in core.answer_sources) so existing
-# `from app.rag.pipeline import RECOVERY_REASON_...` imports keep working.
 RECOVERY_REASON_GATE_MISS = _RECOVERY_REASON_GATE_MISS
 RECOVERY_REASON_INSUFFICIENT_EVIDENCE = _RECOVERY_REASON_INSUFFICIENT_EVIDENCE
 
 _MAX_RECOVERY_QUERY_LEN = 200
 
-# Parses the "MODE: A|B|C\n\n<answer>" tag the grounded prompt now requires
-# (see prompts.py rule 5). Case-insensitive; tolerant of extra whitespace.
 _MODE_TAG_RE = re.compile(r"^\s*MODE:\s*([ABC])\s*\n+(.*)", re.IGNORECASE | re.DOTALL)
 
 
@@ -305,36 +248,18 @@ class RagPipeline:
         self._web_search = web_search
         self._memory_settings = memory_settings or MemorySettings.from_env()
         self._web_search_settings = web_search_settings or WebSearchSettings.from_env()
-        # Phase 8: retrieval-reuse gate (a cheap non-LLM cosine check). Only active
-        # inside a conversation (needs a previous turn's chunks) and when enabled.
         self._reuse_settings = reuse_settings or ReuseSettings.from_env()
-        # Bounded retrieval recovery (optional; at most one attempt per answer).
         self._recovery_settings = recovery_settings or RecoverySettings.from_env()
         self._tone_settings = tone_settings or ToneSettings.from_env()
         self._decompose_settings = decompose_settings or DecomposeSettings.from_env()
         self._budget_settings = budget_settings or RequestBudgetSettings.from_env()
         self._query_cache = query_cache if query_cache is not None else QueryAnswerCache()
-        # Phase 17: cheap corpus-vocab spelling before embed/retrieve.
         self._query_norm = query_norm or CorpusSpellNormalizer(
             query_norm_settings or QueryNormSettings.from_env()
         )
-        # Phase 6: hybrid + reranking retriever. When None, fall back to plain
-        # vector search (the Phase 3 behaviour), keeping this pipeline usable
-        # without the retrieval upgrades.
         self._retriever = retriever
-        # Restrict retrieval to one ingested source (e.g. "slack"), or None for
-        # every provider — pinned per pipeline, since it describes the agent
-        # this pipeline backs rather than any individual question. Also folded
-        # into the query-answer cache key below: the same question asked of the
-        # Slack agent and the docs agent are different questions with different
-        # correct answers, and must never share a cache entry.
         self._source_provider = source_provider
-        # Domain framing for the grounded prompt (Workspace Agent split) — see
-        # prompts.PromptProfile. Defaults to the original company-policy
-        # wording, so every existing caller is byte-for-byte unchanged.
         self._prompt_profile = prompt_profile or POLICY_PROMPT_PROFILE
-        # Post-generation groundedness audit (validation layer, Phase 20-lite).
-        # Off by default — see AuditSettings.
         self._audit_settings = audit_settings or AuditSettings.from_env()
 
     def _provider_for_stage(self, stage: str) -> LLMProvider:
@@ -433,10 +358,6 @@ class RagPipeline:
         """
         resolved = question
         if conversation_id is not None and self._memory is not None:
-            # Phase 15: wait briefly for any in-flight fold so rewrite sees a
-            # consistent window. Bounded — a stuck fold must not delay the turn
-            # for the full FreeLLMAPI timeout (was unbounded and caused multi-minute
-            # follow-up latency).
             wait_for_conversation_fold(
                 conversation_id,
                 timeout=self._memory_settings.fold_wait_seconds,
@@ -475,8 +396,6 @@ class RagPipeline:
             workspace_id=workspace_id,
             date_range=date_range,
             tags=tags,
-            # Tone/empathy must see the raw user turn — conversation rewrite
-            # is retrieval-oriented and often strips personal-distress framing.
             user_question=question,
         )
 
@@ -494,11 +413,7 @@ class RagPipeline:
         if conversation_id is not None and self._memory is not None:
             result = replace(result, resolved_question=resolved)
             self._memory.append_turn(conversation_id, question, result.answer)
-            # Remember this turn's policy chunks so the next turn can try to reuse
-            # them (web/fallback answers have no reusable policy chunks -> cleared).
             self._remember_retrieval(conversation_id, org_id, result)
-            # Phase 15: pure bookkeeping — nothing in ``result`` depends on it.
-            # Schedule after the answer is known so the caller is not blocked.
             cid = conversation_id
             schedule_summary_fold(cid, lambda: self._update_running_summary(cid))
 
@@ -516,27 +431,7 @@ class RagPipeline:
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
     ) -> tuple[Iterator[str], RagResult]:
-        """Answer, then hand back the text as a chunk iterator instead of one string.
-
-        Why this does NOT stream token-by-token from the LLM: whether a given
-        ``_generate`` call is even the FINAL one is only known after inspecting
-        its output — a gate pass can still trigger recovery-then-regenerate if
-        ``_generation_found_evidence_insufficient`` fires (see ``_run``), and a
-        recovery-exhausted miss can still fall through to the web-search tool (a
-        different call shape entirely, ``generate_with_tools``). A declared Mode
-        B answer can also trigger the one bounded tone-compliance retry. Streaming
-        tokens as they arrive from a call that might get thrown away and replaced
-        would either leak a discarded draft to the caller or require buffering
-        anyway — so there is no correctness win, only risk, in threading a
-        streaming callback through the gate/recovery/tone-retry/web branches.
-
-        Instead this runs the complete, UNCHANGED ``answer()`` — every gate,
-        recovery, tone-compliance, and grounding decision is resolved exactly as
-        it always is — and only then chunks the final, already-decided answer
-        text for progressive delivery. From the caller's side (e.g. the CLI or
-        an SSE endpoint) this still avoids showing the whole answer in one go;
-        it just never displays a token that could later be discarded.
-        """
+        """Answer first, then stream the already-final text in chunks."""
         result = self.answer(
             question,
             org_id,
@@ -569,19 +464,12 @@ class RagPipeline:
         budget_exhausted = False
         tone_question = user_question or question
 
-        # Phase 17: correct OOV query tokens toward this org's chunk vocabulary
-        # before embed/retrieve/keyword. Generation still uses ``question``
-        # (conversation-resolved intent); only the retrieval key is normalized.
         retrieval_question = self._normalize_for_retrieval(question, org_id)
         query_vec = self._embedder.embed([retrieval_question])[0]
 
         sub_questions: list[str] = [retrieval_question]
         question_decomposed = False
 
-        # A date- or tag-filtered question must never reuse chunks retrieved
-        # under a different (or no) filter on the prior turn — the reused
-        # chunks could sit outside the requested range/tags. Skip reuse
-        # rather than risk it.
         reused = (
             None
             if date_range is not None or tags is not None
@@ -608,9 +496,6 @@ class RagPipeline:
                 workspace_id=workspace_id,
                 date_range=date_range,
                 tags=tags,
-                # Already embedded above for the reuse check; without this the
-                # identical string is encoded a second time (~38ms) on every
-                # non-decomposed question.
                 known_vectors={retrieval_question: query_vec},
             )
 
@@ -618,11 +503,6 @@ class RagPipeline:
         recovery_used = False
         recovery_reason: str | None = None
         recovery_queries: list[str] = []
-        # Captured from whichever ``_generate()`` call last ran, so these
-        # diagnostics survive even when a later branch (e.g. an audit
-        # downgrade routing into recovery/``_gate_failed``) replaces
-        # ``result`` with a freshly built one that has no audit fields of
-        # its own.
         audit_used = False
         audit_downgraded = False
         audit_reason: str | None = None
@@ -631,7 +511,6 @@ class RagPipeline:
             after = result.top_score if result.top_score is not None else top_score
             improved = False
             if recovery_used and after is not None:
-                # None before (empty first pass) → any positive after counts as improved.
                 before = 0.0 if top_score_before is None else top_score_before
                 improved = after > before
             return replace(
@@ -652,7 +531,6 @@ class RagPipeline:
                 audit_reason=audit_reason,
             )
 
-        # Gate miss → optional recovery before web/fallback.
         if self._gate_miss(hits, top_score):
             if self._recovery_available(recovery_used) and budget.can_spend(min_stage):
                 attempt = self._recover_once(
@@ -700,7 +578,6 @@ class RagPipeline:
             result.audit_reason,
         )
 
-        # Generation found evidence insufficient → one recovery if not yet used.
         if self._generation_found_evidence_insufficient(
             result
         ) and self._recovery_available(recovery_used):
@@ -721,7 +598,6 @@ class RagPipeline:
             recovery_queries = list(attempt.queries)
             hits, top_score = attempt.hits, attempt.gate_score
             if self._gate_miss(hits, top_score):
-                # Internal recovery exhausted; web (if enabled) then fallback.
                 return _finalize(
                     self._gate_failed(
                         question,
@@ -855,17 +731,7 @@ class RagPipeline:
         tags: list[str] | None = None,
         known_vectors: dict[str, list[float]] | None = None,
     ) -> tuple[list[RetrievedChunk], float | None]:
-        """Retrieve for one or more sub-questions.
-
-        ``known_vectors`` lets the caller hand in embeddings it has already
-        computed. On the common (non-decomposed) path the pipeline embeds the
-        normalized question up front — for the reuse check — and this method
-        used to embed *the identical string* a second time. A single BGE-M3
-        encode measures ~38ms locally, the most expensive CPU step on the query
-        path, so that was ~38ms of pure duplicate work on every question.
-        Keyed by text so a stale or mismatched vector cannot be picked up: a
-        miss simply embeds as before.
-        """
+        """Retrieve for one or more sub-questions."""
         known = known_vectors or {}
 
         if len(sub_questions) == 1:
@@ -882,7 +748,6 @@ class RagPipeline:
                 tags=tags,
             )
 
-        # Embed only what the caller has not already computed, in one batch.
         missing = [s for s in sub_questions if s not in known]
         if missing:
             fresh = self._embedder.embed(missing)
@@ -990,12 +855,6 @@ class RagPipeline:
         budget: RequestBudget | None = None,
         user_question: str | None = None,
     ) -> RagResult:
-        # A question that names its source by title (e.g. "what does 'X'
-        # cover?") has nothing to match against when a chunk's own body text
-        # never repeats that title — observed live on a Drive doc whose
-        # title never appears anywhere in its own content. Prefixing the
-        # source title onto each chunk is still just what's literally in
-        # CONTEXT (no invented fact), so it stays within Mode A's rules.
         contexts = assemble_context_texts(
             [
                 f"(From: {h.document_title}) {h.content}" if h.document_title else h.content
@@ -1003,8 +862,6 @@ class RagPipeline:
             ],
             self._settings.max_context_chars,
         )
-        # Classify/opener use the raw user turn when present (follow-up rewrite
-        # is for retrieval and often reads as a factual policy ask).
         tone_source = user_question or question
         question_tone = self._classify_question_tone(
             tone_source,
@@ -1012,8 +869,6 @@ class RagPipeline:
             conversation_id=conversation_id,
             budget=budget,
         )
-        # Fetch opener before grounded generate so a tight request budget is
-        # less likely to skip empathy after the main completion.
         opener: str | None = None
         if question_tone == "supportive":
             opener = self._empathy_opener(
@@ -1023,7 +878,6 @@ class RagPipeline:
                 budget=budget,
             )
 
-        # Grounding prompt is tone-agnostic — empathy is composed below.
         prompt = build_grounded_prompt(
             question=question,
             contexts=contexts,
@@ -1062,8 +916,6 @@ class RagPipeline:
         answered = not self._is_refusal(text, self._settings.fallback_response)
         answer = text if answered else self._settings.fallback_response
 
-        # Validation layer: a bounded second opinion on an already-drafted
-        # Mode A/B answer. Mode C is already a refusal — nothing to audit.
         audit_used = False
         audit_downgraded = False
         audit_reason: str | None = None
@@ -1143,7 +995,7 @@ class RagPipeline:
         On any expander/retrieve failure, returns the prior hits unchanged
         (graceful degradation — never fails the request).
         """
-        del reason  # logged by caller via recovery_reason; kept for call-site clarity
+        del reason
         queries = self._expand_recovery_queries(
             question, prior_hits, org_id=org_id, conversation_id=conversation_id
         )
@@ -1190,7 +1042,6 @@ class RagPipeline:
         else:
             fused = HybridRetriever._rrf_fuse(ranked_lists, k=60)
 
-        # Gate signal = best cosine among fused candidates (RRF never overwrites .score).
         gate_score = max((c.score for c in fused), default=None)
         fused = fused[: self._settings.top_k]
         return _RecoveryAttempt(hits=fused, gate_score=gate_score, queries=queries)
@@ -1456,11 +1307,6 @@ class RagPipeline:
             return question
 
         def corpus() -> list[str]:
-            # `list_chunk_texts` is optional on the VectorStore interface. An
-            # empty corpus makes normalize() a no-op, which is exactly the old
-            # behaviour — and it must be handled *here* rather than letting the
-            # error reach normalize(), which would log it as an exception on
-            # every single query.
             try:
                 return self._store.list_chunk_texts(org_id)
             except NotImplementedError:
@@ -1491,13 +1337,11 @@ class RagPipeline:
                 conversation_id=conversation_id,
             ).strip()
         except LLMProviderError:
-            return question  # never let rewriting break the main path
+            return question
 
-        # Guard against a model that "helps" by answering instead of rewriting:
-        # take the first line and require it to look like a single question.
         first_line = rewritten.splitlines()[0].strip() if rewritten else ""
         if not first_line or len(first_line) > 300 or not first_line.endswith("?"):
-            return question  # unreliable rewrite -> fall back to the original
+            return question
         return first_line
 
     def _update_running_summary(self, conversation_id: str) -> None:
@@ -1516,7 +1360,7 @@ class RagPipeline:
         window = self._memory_settings.recent_turns
         turns = self._memory.get_turns(conversation_id)
         if len(turns) <= window:
-            return  # window not full yet: everything is still kept verbatim
+            return
 
         falling_out = turns[:-window] if window > 0 else turns
         existing = self._memory.get_summary(conversation_id)
@@ -1530,7 +1374,7 @@ class RagPipeline:
                 conversation_id=conversation_id,
             ).strip()
         except LLMProviderError:
-            return  # best-effort; the turn stays verbatim and is folded in next time
+            return
         if summary:
             self._memory.set_summary_and_prune(conversation_id, summary, window)
 
