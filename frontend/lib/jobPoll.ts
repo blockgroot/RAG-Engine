@@ -1,4 +1,4 @@
-/** Shared ingest-job polling — longer interval, single-job when possible, pause when hidden. */
+/** Shared ingest-job polling. */
 
 "use client";
 
@@ -8,25 +8,12 @@ import { api, JobRecord } from "./api";
 export const JOB_POLL_MS = 8000;
 export const ACTIVE_JOB_STATUSES = new Set(["queued", "running"]);
 
-/**
- * Poll ingestion job status until ``shouldContinue`` returns false.
- *
- * - Prefers a single-job GET when ``jobId`` is set (one cheap request).
- * - Falls back to the jobs list when discovering / watching multiple jobs.
- * - With ``workspaceId``, uses workspace-scoped job endpoints; otherwise admin.
- * - Does **not** call readiness endpoints — callers refresh those on terminal status.
- * - Skips network work while the document tab is hidden; resumes on focus.
- */
 export function useJobPolling(options: {
   enabled: boolean;
-  /** Prefer this job id; omit/null to list all jobs each tick. */
   jobId?: string | null;
-  /** When set, poll ``/workspaces/{id}/jobs…`` instead of ``/admin/jobs…``. */
   workspaceId?: string | null;
-  /** Bump to restart the loop (e.g. after triggering ingest). */
   pollToken?: number;
   intervalMs?: number;
-  /** Return true to keep polling. */
   onJobs: (jobs: JobRecord[]) => boolean;
 }): void {
   const {

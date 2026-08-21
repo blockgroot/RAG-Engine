@@ -1,12 +1,4 @@
-"""Prompt builders for grounded generation and aux LLM stages.
-
-The grounded prompt is layer 2 of anti-hallucination (after the confidence gate):
-answer only from CONTEXT, refuse with a fixed fallback when evidence is missing,
-and use Mode B when CONTEXT is related but not explicit. Empathy for personal
-distress is composed outside this prompt (see ``app/rag/question_tone.py``).
-
-Meta-language compliance ("the document says…") lives in ``app/rag/source_meta.py``, not in this prompt text.
-"""
+"""Prompt builders for grounded generation and auxiliary LLM stages."""
 
 from __future__ import annotations
 
@@ -25,20 +17,7 @@ from ..security.untrusted import scrub_untrusted_text
 
 @dataclass(frozen=True)
 class PromptProfile:
-    """Domain framing for the grounded prompt (Workspace Agent split).
-
-    Parameterizes domain nouns so ``WorkspaceAgent`` reuses the same Mode
-    A/B/C grounded template as policy Q&A with different framing.
-
-    - ``persona``  who the assistant is, e.g. "a company policy assistant".
-    - ``scope_adjective``  qualifies a fact/claim, e.g. "company-specific".
-    - ``scope_noun``  the thing content belongs to, e.g. "company"/"workspace".
-    - ``escalation_hint``  example closing line when Mode B has no concrete
-      contact in CONTEXT, e.g. "your HR team can help with this".
-    - ``source_label``  the ``RagResult.source`` value for an answered
-      question (``"policy"`` / ``"workspace"``) — consumed by the pipeline,
-      not by this prompt.
-    """
+    """Domain framing for the grounded prompt."""
 
     persona: str
     scope_adjective: str
@@ -56,11 +35,6 @@ POLICY_PROMPT_PROFILE = PromptProfile(
 )
 
 SLACK_PROMPT_PROFILE = PromptProfile(
-    # Deliberately framed as *conversations*, not documents. Slack chunks are
-    # threads — people thinking out loud, disagreeing, changing their minds —
-    # so an answer must not present a passing remark as settled policy the way
-    # the same sentence in a handbook would be. The other profiles say "the
-    # company says"; this one has to preserve "someone said, in a thread".
     persona=(
         "an assistant answering from this team's Slack conversations — chat "
         "threads between colleagues, not official documents"
@@ -72,10 +46,6 @@ SLACK_PROMPT_PROFILE = PromptProfile(
 )
 
 LINEAR_PROMPT_PROFILE = PromptProfile(
-    # Framed as tracked issues, not settled documentation — an issue's
-    # description/comments are a running discussion of a bug or task, not a
-    # policy statement, so this must not present "someone proposed X in a
-    # comment" as a decided fact the way a handbook sentence would be.
     persona=(
         "an assistant answering from this team's Linear issues — tracked "
         "tickets and their comments, not official documents"
@@ -87,11 +57,6 @@ LINEAR_PROMPT_PROFILE = PromptProfile(
 )
 
 NOTION_PROMPT_PROFILE = PromptProfile(
-    # Notion is still formal written content (same evidentiary weight as any
-    # document), unlike Slack/Linear — the split from DRIVE_PROMPT_PROFILE is
-    # about *source identity* (so an answer never silently blends the two),
-    # not about tone: both keep the same "settled document" framing policy
-    # content always had.
     persona="an assistant answering only from this company's connected Notion pages",
     scope_adjective="Notion-documented",
     scope_noun="Notion pages",
@@ -119,14 +84,6 @@ WORKSPACE_PROMPT_PROFILE = PromptProfile(
     source_label=SOURCE_WORKSPACE,
 )
 
-# Mirrors the "never use meta-language about sources" rule below. Shared with
-# pipeline.py's deterministic tone-compliance guard so the same list is never
-# duplicated/out of sync between the instruction and the check. Originally
-# Mode-B-only; the guard now also applies to Mode A (see pipeline.py) since a
-# fully-supported answer can be just as robotic if it narrates "the document
-# says X" instead of just stating X. Includes "doc"/"docs" shorthand variants
-# alongside "document"/"documents" — a live query showed the model routing
-# around the ban by using the shorter form once it was forbidden.
 def build_grounded_prompt(
     question: str,
     contexts: list[str],
@@ -207,14 +164,7 @@ def build_grounded_prompt(
 
 
 def build_recovery_queries_prompt(question: str, hit_snippets: list[str]) -> str:
-    """Build the retrieval-recovery prompt (Retrieval Discovery Gap).
-
-    Produces alternative *retrieval-oriented search expressions* that preserve
-    the user's intent. This must NOT answer the question. Expressions may include
-    synonyms, abbreviations, spelling corrections, document terminology, alternate
-    phrasings, and related vocabulary — only to help retrieval discover better
-    evidence.
-    """
+    """Build the retrieval-recovery prompt."""
     if hit_snippets:
         snippets = "\n".join(
             f"- {scrub_untrusted_text(s)[:240]}" for s in hit_snippets if s and scrub_untrusted_text(s)
@@ -267,17 +217,8 @@ def build_decompose_prompt(question: str) -> str:
     )
 
 
-# --- Phase 5: conversation memory ------------------------------------------
-
 def build_rewrite_prompt(question: str, summary: str | None, recent: list[tuple[str, str]]) -> str:
-    """Build the cheap query-rewrite prompt (Capability A).
-
-    Turns a context-dependent follow-up ("what about part-timers?") into a
-    standalone, fully-resolved question suitable for embedding + retrieval. Its
-    ONLY job is reference resolution — it must not answer anything.
-
-    ``recent`` is a list of (question, answer) pairs, oldest first.
-    """
+    """Build the conversation rewrite prompt."""
     lines: list[str] = []
     if summary:
         lines.append(f"Summary of earlier conversation:\n{summary}")
@@ -320,9 +261,6 @@ def build_summary_prompt(existing_summary: str | None, turns: list[tuple[str, st
     )
 
 
-# --- Phase 5: web-search fallback ------------------------------------------
-
-# The tool schema offered to the model when internal retrieval fails the gate.
 WEB_SEARCH_TOOL = {
     "type": "function",
     "function": {
@@ -399,16 +337,6 @@ def build_web_answer_prompt(question: str, results_block: str) -> str:
         "ANSWER:"
     )
 
-
-# --------------------------------------------------------------------------
-# GitHub agent (GitHub Integration Plan Phase 6)
-#
-# GitHub answers come from live API reads, never retrieval, so there is no
-# similarity gate to lean on here. The equivalent guarantee has to be carried by
-# these prompts plus the agent's structure: the model is told, explicitly and
-# more than once, that it may only answer from tool output. "I don't know" is
-# always preferable to a plausible-sounding answer about someone's codebase.
-# --------------------------------------------------------------------------
 
 GET_README_TOOL = {
     "type": "function",
@@ -507,14 +435,7 @@ GITHUB_TOOLS = [GET_README_TOOL, GET_COMMIT_TOOL, LIST_COMMITS_TOOL]
 
 
 def format_repo_catalog(repos) -> str:
-    """Render the authorized repo list for the tool-decision prompt.
-
-    This block is what replaces retrieval for repo resolution: with no
-    embeddings, the repo names/descriptions/topics here are the only signal the
-    model has for turning "which service handles payments?" into a concrete repo
-    (see the plan's §1 known-limit note). Kept compact because it is prepended to
-    every GitHub question.
-    """
+    """Render the authorized repo list for the tool-decision prompt."""
     lines = []
     for repo in repos:
         parts = [f"- {repo.full_name}"]
@@ -556,26 +477,7 @@ def build_github_decision_prompt(question: str, repo_catalog: str) -> str:
 
 
 def build_github_answer_prompt(question: str, evidence_block: str) -> str:
-    """Compose the final answer from the fetched evidence, in one of three modes.
-
-    Same untrusted-data treatment as retrieved chunks and web results (Phase 16),
-    and for a sharper reason: a README or commit message is writable by **any
-    repository contributor**, a far wider authorship surface than a curated HR
-    policy document.
-
-    **Why three modes** (mirroring the RAG grounded prompt's A/B/C). The first
-    version of this prompt had one instruction for thin evidence — "say so
-    plainly" — and a live question exposed how badly that reads. Asked what
-    ``persistent-memory-assistant`` does, the agent fetched a README that turned
-    out to be the stock Vite template and replied "the provided evidence does not
-    describe what the repository does". Honest, and useless: it threw away what
-    the evidence *did* establish (a React + TypeScript + Vite app), named no
-    concrete gap, and offered no next step.
-
-    Mode B fixes that by requiring the useful parts of a partial answer. The tag
-    is also machine-parsed by ``GitHubAgent`` to decide whether **one** bounded
-    supplementary fetch is worth attempting — so it is load-bearing, not decoration.
-    """
+    """Compose the final answer from fetched GitHub evidence."""
     fenced = (
         "<<<UNTRUSTED_DOCUMENT_CONTENT>>>\n"
         f"{scrub_untrusted_text(evidence_block)}\n"
@@ -654,29 +556,7 @@ def build_github_answer_prompt(question: str, evidence_block: str) -> str:
 def build_slack_recap_prompt(
     question: str, chunks: list[tuple[str, str | None]], fallback: str
 ) -> str:
-    """Answer from the most RECENT Slack threads rather than the most similar ones.
-
-    The grounded prompt answers a question from chunks that resemble it. A
-    recap question ("catch me up on the last few days") resembles nothing, so
-    that path retrieves arbitrary threads and — correctly — refuses. This is
-    the second attempt for exactly that shape: the evidence is selected by
-    recency instead, and the model is asked to report what the threads say.
-
-    It keeps the same refusal discipline. Recency selection means the evidence
-    was chosen without reference to the question, so it may genuinely have
-    nothing to do with it; saying so is required, not optional. Nothing here
-    licenses answering from outside the block — that would turn a summary into
-    an invention about a customer's private conversations, which the reader
-    cannot tell apart from a real one.
-
-    ``chunks`` is ``(content, channel_name)`` pairs, not bare strings. Without
-    the channel name the model has no way to confirm a thread actually came
-    from the channel the question names, and — correctly, given the "never
-    invent" framing — it refuses rather than assume a match it cannot verify.
-    Labeling each thread with its real channel is what lets a channel-named
-    question ("what was discussed in #x") be answered with confidence instead
-    of declined for lack of proof.
-    """
+    """Answer from the most recent Slack threads instead of the most similar ones."""
     fenced = "\n\n".join(
         f"[{i + 1}] (#{channel})\n{scrub_untrusted_text(content)}"
         if channel
@@ -724,15 +604,7 @@ def build_slack_recap_prompt(
 
 
 def build_audit_prompt(question: str, contexts: list[str], answer: str) -> str:
-    """Build the post-generation groundedness-audit prompt (validation layer).
-
-    A single, bounded second opinion: does ``answer`` claim anything that is
-    NOT supported by CONTEXT? This runs AFTER ``build_grounded_prompt`` has
-    already produced ``answer`` — it never generates or edits the answer,
-    only judges it, mirroring how ``build_recovery_queries_prompt`` never
-    answers the question either. CONTEXT is untrusted document text, same
-    fencing/scrub discipline as the grounded prompt.
-    """
+    """Build the post-generation groundedness-audit prompt."""
     numbered = "\n\n".join(
         f"[{i + 1}] {scrub_untrusted_text(c)}"
         for i, c in enumerate(contexts)
