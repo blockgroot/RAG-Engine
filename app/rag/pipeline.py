@@ -990,8 +990,17 @@ class RagPipeline:
         budget: RequestBudget | None = None,
         user_question: str | None = None,
     ) -> RagResult:
+        # A question that names its source by title (e.g. "what does 'X'
+        # cover?") has nothing to match against when a chunk's own body text
+        # never repeats that title — observed live on a Drive doc whose
+        # title never appears anywhere in its own content. Prefixing the
+        # source title onto each chunk is still just what's literally in
+        # CONTEXT (no invented fact), so it stays within Mode A's rules.
         contexts = assemble_context_texts(
-            [h.content for h in hits],
+            [
+                f"(From: {h.document_title}) {h.content}" if h.document_title else h.content
+                for h in hits
+            ],
             self._settings.max_context_chars,
         )
         # Classify/opener use the raw user turn when present (follow-up rewrite

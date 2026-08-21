@@ -17,8 +17,17 @@ from __future__ import annotations
 import re
 
 # Drop whole blocks that look like planted system/override directives.
+#
+# ``\bSYSTEM\b`` (word-boundary-anchored), not a bare substring match: an
+# earlier version matched "SYSTEM" anywhere, including inside an ordinary
+# word like "Ecosystem"/"subsystem"/"filesystem" — and since there is
+# normally no "END SYSTEM" closer in real prose, the `.*?(...|$)` fallback
+# then deleted EVERYTHING from that point to the end of the string. Found
+# live: a Drive document titled "AI Development Ecosystem" had its entire
+# chunk content silently reduced to a five-word fragment on every query,
+# because "Ecosystem" alone triggered the block-deletion path.
 _SYSTEM_BLOCK = re.compile(
-    r"(?is)\*{0,3}\s*SYSTEM\s*\*{0,3}.*?(\*{0,3}\s*END\s*SYSTEM\s*\*{0,3}|$)"
+    r"(?is)\*{0,3}\s*\bSYSTEM\b\s*\*{0,3}.*?(\*{0,3}\s*\bEND\b\s*\bSYSTEM\b\s*\*{0,3}|$)"
 )
 _ASSISTANT_DIRECTIVE_BLOCK = re.compile(
     r"(?is)\[ASSISTANT DIRECTIVE[^\]]*\][\s\S]*?(?=\n#|\n<<<|$)"
