@@ -1,18 +1,4 @@
-/**
- * Typed fetch wrapper for the FastAPI backend.
- *
- * `credentials: "include"` on every call — the session lives in an httpOnly
- * cookie, never in JS-accessible storage, so there is no token to smuggle out
- * via an XSS payload.
- *
- * Default base is same-origin `/api`. `frontend/next.config.js` rewrites
- * `/api/:path*` to FastAPI (`API_PROXY_TARGET`), so the cookie is first-party
- * and SameSite=Lax works on a split Vercel/Render deploy. Set
- * `NEXT_PUBLIC_API_BASE_URL` to an absolute URL only for local-direct
- * (`http://localhost:8000`) or a same-site custom domain
- * (`https://api.example.com`). CORS (`API_CORS_ORIGINS`) only matters in
- * those absolute-URL cases.
- */
+/** Typed fetch wrapper for the FastAPI backend. */
 
 function resolveApiBaseUrl(): string {
   const raw = (process.env.NEXT_PUBLIC_API_BASE_URL || "/api").trim();
@@ -23,7 +9,6 @@ const API_BASE_URL = resolveApiBaseUrl();
 
 export class ApiError extends Error {
   status: number;
-  /** Machine-readable code when the API returns structured detail (e.g. oauth_reauth_required). */
   code: string | null;
   constructor(status: number, message: string, code: string | null = null) {
     super(message);
@@ -68,51 +53,16 @@ export interface Me {
   email: string | null;
   role: "admin" | "member";
   has_connection: boolean;
-  /** True once any document row exists (may still be mid-ingest). */
   has_documents: boolean;
-  /** Queued or running ingestion job for this org. */
   sync_in_progress: boolean;
   latest_job_status: string | null;
   latest_doc_count: number | null;
-  /** Safe to open Ask only after a full ingest job has succeeded. */
   ready_to_ask: boolean;
-  /**
-   * Whether the legacy combined "Docs" tab has anything of its own to answer
-   * from — narrower than `ready_to_ask`, which is also true when e.g. only
-   * Slack has synced. Slack/Linear/Notion/Drive each have their own
-   * source-pinned tab; "Docs" (the unscoped PolicyAgent/WorkspaceAgent) must
-   * only appear when a provider with no dedicated tab has real content, or it
-   * would silently answer from those same tabs' chunks unfiltered.
-   */
   policy_ready: boolean;
-  /**
-   * True when this org has an org-wide GitHub connection, so the chat UI can
-   * offer its "Code" tab. Reported on /me rather than read from
-   * /admin/connections because that route is admin-only and members must be
-   * able to ask repository questions too. A boolean only -- repository names
-   * stay behind require_admin.
-   *
-   * Note this is independent of `ready_to_ask`: GitHub answers are read live
-   * and need no ingest, so the Code tab works even before any policy sync.
-   */
   github_connected: boolean;
-  /**
-   * Whether the chat UI should offer its "Slack" tab.
-   *
-   * Unlike `github_connected` this is keyed on ingested Slack *threads*, not on
-   * the connection existing: Slack is a retrieval source, so a connection whose
-   * first sync produced nothing would give a tab that can only ever refuse.
-   */
   slack_ready: boolean;
-  /** Same rule as `slack_ready`, for the chat UI's "Linear" tab. */
   linear_ready: boolean;
-  /**
-   * Whether the chat UI should offer its "Notion" tab. Notion and Drive each
-   * get their own tab (never a combined corpus) so a company using both for
-   * unrelated content never gets an answer silently blended from the two.
-   */
   notion_ready: boolean;
-  /** Same rule as `notion_ready`, for the chat UI's "Drive" tab. */
   drive_ready: boolean;
 }
 
@@ -133,7 +83,6 @@ export interface SyncChanges {
   has_changes: boolean;
 }
 
-/** One repository a GitHub installation is authorized to read. */
 export interface GitHubRepoRef {
   full_name: string;
   description: string | null;
@@ -141,33 +90,23 @@ export interface GitHubRepoRef {
 }
 
 export interface ConnectionSourceConfig {
-  // Google Drive: the folder the admin picked.
   folder_id?: string;
   folder_name?: string;
-  // GitHub: what the admin actually authorized on GitHub's install screen.
-  // "all" means every repo of the connected account (including ones created
-  // later); "selected" means exactly `repos`. Stored rather than assumed --
-  // connecting GitHub does not by itself grant everything.
   installation_id?: string;
   account_login?: string;
   repository_selection?: "all" | "selected";
   repos?: GitHubRepoRef[];
-  // Slack: the channels the admin picked on the channel-picker screen (never
-  // "every channel the bot can see" -- see docs/plans/2026-08-17-slack-integration.md D2).
   channel_ids?: string[];
   channel_names?: Record<string, string>;
 }
 
-/** One Slack channel the connected bot can already see (channel-picker list). */
 export interface SlackChannel {
   id: string;
   name: string;
   is_private: boolean;
-  /** False for a private channel means "invite the bot in Slack first" (D7). */
   is_member: boolean;
 }
 
-/** One Slack channel member, flagged for the workspace invite picker. */
 export interface SlackChannelMember {
   id: string;
   name: string;
@@ -190,9 +129,7 @@ export interface ConnectionRecord {
   provider: "notion" | "google" | "github" | "slack" | "linear";
   external_workspace_name: string | null;
   created_at: string;
-  /** Non-secret ingestion scope (e.g. Google Drive folder, Slack channels). */
   source_config?: ConnectionSourceConfig | null;
-  /** Sticky reconnect signal from the server (survives page reload). */
   needs_reauth?: boolean;
   reauth_reason?: string | null;
 }
@@ -201,14 +138,11 @@ export interface ConnectionConfigResponse {
   connection_id: string;
   provider: string;
   config: ConnectionSourceConfig;
-  /** True when PUT replaced a different Drive folder_id (old corpus purged). */
   folder_changed?: boolean;
-  /** True when PUT dropped a previously-saved Slack channel (old corpus purged). */
   channels_changed?: boolean;
   documents_purged?: number;
 }
 
-/** One Drive folder the connected account can see (folder-picker dropdown). */
 export interface DriveFolder {
   id: string;
   name: string;
@@ -220,7 +154,6 @@ export interface JobRecord {
   status: "queued" | "running" | "succeeded" | "failed";
   doc_count: number | null;
   error: string | null;
-  /** Live progress — these change while `status` is still "running". */
   phase: string | null;
   total_documents: number | null;
   processed_documents: number;
@@ -230,27 +163,15 @@ export interface JobRecord {
 }
 
 export interface MagicLinkResponse {
-  // "sent"       — an account exists and a link was emailed.
-  // "no_account" — nothing was sent; the caller should be told why.
-  // The backend deliberately distinguishes these (it used to return one
-  // identical message either way) so someone whose company has not onboarded
-  // is not left waiting on an email that is never coming.
   status: "sent" | "no_account";
   message: string;
-  // Only ever set when the backend has no real email sender configured
-  // (EMAIL_SENDER=console, i.e. local dev) — lets the UI offer a direct link
-  // instead of "go check the server terminal". Always null once SMTP is
-  // configured for a real deployment.
   dev_link: string | null;
 }
 
 export interface SignupResponse {
-  // No dev_link: nothing is generated to sign in with yet — signup only
-  // queues a pending org_signup_requests row for platform-owner review.
   message: string;
 }
 
-/** A sub-workspace ("workspace within a workspace") the caller is a member of. */
 export interface WorkspaceRecord {
   id: string;
   name: string;
@@ -384,14 +305,6 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ channel_ids: channelIds }),
     }),
-  /**
-   * Re-read which repositories a GitHub installation may see.
-   *
-   * The GitHub analogue of Drive's "check for changes" -- but for *scope*, not
-   * content. Nothing is ever ingested from GitHub, so there is no content to
-   * sync; the only thing that can drift is which repos the admin authorized on
-   * GitHub's own install screen.
-   */
   checkConnectionHealth: (connectionId: string) =>
     request<{ connection_id: string; provider: string; status: string; needs_reauth: boolean }>(
       `/admin/connections/${connectionId}/health`
@@ -421,7 +334,6 @@ export const api = {
       body: JSON.stringify(workspaceId ? { workspace_id: workspaceId } : {}),
     }),
 
-  /** Starter chips from connected sources (docs / GitHub repos) — not hardcoded. */
   chatSuggestions: (
     agent: "policy" | "github" | "slack" | "linear" | "notion" | "google",
     workspaceId?: string | null
@@ -432,8 +344,6 @@ export const api = {
       `/chat/suggestions?${params.toString()}`
     );
   },
-
-  // --- Workspace-within-a-Workspace ---
 
   listWorkspaces: () => request<WorkspaceRecord[]>("/workspaces"),
   getWorkspace: (workspaceId: string) =>
@@ -507,7 +417,6 @@ export const api = {
       `/workspaces/${workspaceId}/connections/${connectionId}/slack-channels/${channelId}/invite-members`,
       { method: "POST", body: JSON.stringify({ emails }) }
     ),
-  /** Workspace equivalent of refreshConnectionScope (owner-only server-side). */
   checkWorkspaceConnectionHealth: (workspaceId: string, connectionId: string) =>
     request<{ connection_id: string; provider: string; status: string; needs_reauth: boolean }>(
       `/workspaces/${workspaceId}/connections/${connectionId}/health`

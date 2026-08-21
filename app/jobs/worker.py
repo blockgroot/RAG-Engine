@@ -1,14 +1,4 @@
-"""Ingestion job worker (Phase 12).
-
-Claims one queued job at a time and runs ``ingest_source`` (incremental by
-default) against it — durability and progress tracking only; the pipeline owns
-how pages are fetched and upserted.
-
-When contextual retrieval is enabled with ``defer=True`` (the default), the
-fast sync finishes and the job is marked ``succeeded`` first so onboarding can
-unlock; contextualize + re-embed then runs as a best-effort ``enriching``
-phase so Phase 6 quality still lands without blocking UX.
-"""
+"""Background worker for ingestion jobs."""
 
 from __future__ import annotations
 
@@ -32,19 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 def _contextual_settings_for(provider: str | None) -> ContextualSettings:
-    """Per-provider override of the global contextual-retrieval settings.
-
-    Slack Integration Plan decision D11: contextual retrieval defaults OFF
-    for Slack, unlike Notion/Drive. Two reasons stack: (1) it costs one LLM
-    call per chunk, and a Slack sync can produce orders of magnitude more
-    documents than a Notion/Drive sync (thread count scales with conversation
-    volume, not page count) — against the same 15rpm free-endpoint ceiling
-    documented in CLAUDE.md, this is the single biggest per-chunk cost the
-    other volume bounds (backfill window, thread size cap) don't touch at
-    all. (2) a thread's own channel name + timestamp already carries most of
-    the "situating context" the LLM call would add, so the value-per-call is
-    lower here too. ``SLACK_CONTEXTUAL_ENABLED=true`` opts back in explicitly.
-    """
+    """Disable contextualization for Slack unless explicitly re-enabled."""
     settings = ContextualSettings.from_env()
     if provider == "slack" and not env_bool("SLACK_CONTEXTUAL_ENABLED", False):
         return ContextualSettings(
@@ -57,23 +35,7 @@ def _contextual_settings_for(provider: str | None) -> ContextualSettings:
 
 
 def _current_rss_mb() -> float:
-    """CURRENT process RSS in MB, for the memory admission gate.
-
-    Deliberately NOT ``resource.getrusage(...).ru_maxrss``: that is a
-    monotonic **high-water mark** which never decreases even after memory is
-    freed (verified: a process that allocates 300MB and frees it still reports
-    312MB). Using it here was an outright bug — once the process had *ever*
-    peaked above the ceiling, the gate below would refuse to claim work for the
-    rest of the process's life, silently disabling ingestion entirely rather
-    than throttling it.
-
-    ``/proc/self/statm`` field 2 is resident pages, the real current figure on
-    Linux (Render's runtime). ``ps`` is the portable fallback for local dev on
-    macOS, where there is no ``/proc``; it costs a subprocess, which is
-    acceptable at one call per poll tick. If neither works we return 0.0 —
-    failing *open* on purpose, because a broken measurement must not be able to
-    block all ingestion.
-    """
+    """Current process RSS in MB for the memory admission gate."""
     try:
         with open("/proc/self/statm", encoding="ascii") as fh:
             resident_pages = int(fh.read().split()[1])
@@ -100,16 +62,7 @@ def _memory_guard_ok(settings: IngestWorkerSettings) -> bool:
 
 
 def run_once() -> queue.IngestionJob | None:
-    """Claim and process a single queued job, if any.
-
-    Returns the job's final record (``succeeded`` or ``failed``), ``None`` if
-    the queue was empty, or ``None`` if the memory admission gate declined to
-    claim anything this tick (see ``_memory_guard_ok`` — the job, if any,
-    stays queued for the next tick or another worker instance). Any exception
-    during ingestion is caught and recorded on the job as ``failed`` rather
-    than propagating — a worker loop must survive one bad job and keep
-    polling.
-    """
+    """Claim and process one queued job, if any."""
     memory_settings = IngestWorkerSettings.from_env()
     if not _memory_guard_ok(memory_settings):
         logger.warning(
@@ -132,11 +85,7 @@ def run_once() -> queue.IngestionJob | None:
         adapter = build_source_adapter(provider, token=token, config=config)
 
         def report(phase: str, processed: int, total: int) -> None:
-            """Persist live progress so a poller sees the run advance.
-
-            Without this the job row is unchanged from ``running`` until the
-            very end, so a multi-minute sync looks identical to a hung one.
-            """
+            """Persist live progress for polling clients."""
             queue.update_progress(
                 job.id, phase=phase, processed=processed, total=total
             )
@@ -151,7 +100,6 @@ def run_once() -> queue.IngestionJob | None:
             on_progress=report,
             contextual=contextual,
         )
-        # Unlock the product as soon as raw chunks are stored.
         queue.mark_succeeded(job.id, result.documents_ingested)
         clear_needs_reauth(job.org_id, provider, job.workspace_id)
 
@@ -194,17 +142,7 @@ def run_once() -> queue.IngestionJob | None:
 
 
 def run_maintenance() -> None:
-    """Delete rows nothing will ever read again. Never raises.
-
-    Two tables only ever grew: ``api_rate_counters`` (one row per scope per
-    closed window) and ``query_answer_cache`` (expired rows are invisible to
-    ``get`` but were never removed). Neither is load-bearing, so this is
-    swallowed on failure exactly like progress reporting — housekeeping must
-    never be able to stop ingestion.
-
-    Lives on the worker's existing periodic tick rather than an external cron so
-    the single self-hosted image keeps needing no scheduler (§1).
-    """
+    """Delete expired housekeeping rows without raising."""
     try:
         from ..rag.query_cache import prune_expired
 
@@ -243,9 +181,6 @@ def run_forever(
         logger.exception("Failed to re-queue interrupted ingestion jobs")
 
     last_reap = 0.0
-    # Start "already due" like last_reap so one sweep runs shortly after boot —
-    # on a free instance that restarts often, waiting a full hour every time
-    # would mean the prune effectively never happens.
     last_maintenance = 0.0
     while True:
         now = time.monotonic()

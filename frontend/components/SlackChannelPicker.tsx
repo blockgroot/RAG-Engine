@@ -3,16 +3,6 @@
 import { useEffect, useState } from "react";
 import { api, ConnectionSourceConfig, SlackChannel } from "@/lib/api";
 
-/**
- * Channel picker for a Slack connection (org-wide or workspace-scoped).
- *
- * Unlike Drive's folder picker, Slack's own OAuth grant screen doesn't let
- * the installer pick channels, so this is a REQUIRED second step after
- * connect, not an optional refinement — see
- * docs/plans/2026-08-17-slack-integration.md §5. Channels the bot can't yet
- * see (private, not invited) are shown but disabled with an explanation
- * (decision D7: no auto-join API exists for private channels).
- */
 export function SlackChannelPicker({
   connectionId,
   workspaceId,

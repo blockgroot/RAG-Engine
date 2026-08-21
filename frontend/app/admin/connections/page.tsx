@@ -51,18 +51,6 @@ function ConnectionsPageInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
   const [connections, setConnections] = useState<ConnectionRecord[]>([]);
-  /*
-   * Whether the connections list has been fetched yet.
-   *
-   * `connections` starting as `[]` is indistinguishable from "this org has
-   * connected nothing", so the cards used to render "Not linked yet" + a
-   * Connect button for an already-connected provider until the fetch landed.
-   * That is not just a cosmetic flash: clicking Connect on an already-connected
-   * source starts a fresh OAuth grant, which is a destructive-ish action the
-   * user was invited to take by a screen showing the wrong state. Same class of
-   * bug as the workspace owner briefly seeing the member-only view — an unknown
-   * value must not be rendered as `false`.
-   */
   const [loadingConnections, setLoadingConnections] = useState(true);
   const [jobs, setJobs] = useState<JobRecord[]>([]);
   const [changesById, setChangesById] = useState<Record<string, SyncChanges>>({});
@@ -70,7 +58,6 @@ function ConnectionsPageInner() {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reauthById, setReauthById] = useState<Record<string, boolean>>({});
-  /** Bumped when an update starts so job polling resumes (it stops when idle). */
   const [pollToken, setPollToken] = useState(0);
   const [watchedJobId, setWatchedJobId] = useState<string | null>(null);
   const prevStatuses = useRef<Record<string, string>>({});
@@ -85,9 +72,6 @@ function ConnectionsPageInner() {
         "That GitHub account is already linked to a space. Company Sources and each space must use different GitHub accounts — pick another on the chooser, or disconnect it from the space first."
       );
     } else if (connectError === "github_finish_connect") {
-      // GitHub's install/setup redirect carries no authorization code (and no
-      // guaranteed state), so it cannot complete the link on its own. The app is
-      // installed by this point, so one more Connect click finishes it.
       setError(
         "Almost there — GitHub sent you back without the details needed to link the account. The app is installed on your GitHub, so click Connect company account once more to finish. You should not need to install anything again."
       );
@@ -109,8 +93,6 @@ function ConnectionsPageInner() {
     const failedIds: string[] = [];
     await Promise.all(
       list.map(async (c) => {
-        // GitHub has no change-check; probe credential mint on load so a dead
-        // install shows Reconnect without waiting for Refresh list.
         if (c.provider === "github") {
           try {
             await api.checkConnectionHealth(c.id);
@@ -134,7 +116,6 @@ function ConnectionsPageInner() {
           }
           return;
         }
-        // Google needs a folder, Slack needs channels, before change-check works.
         if (c.provider === "google" && !c.source_config?.folder_id) return;
         if (c.provider === "slack" && !c.source_config?.channel_ids?.length) return;
         try {
@@ -146,8 +127,6 @@ function ConnectionsPageInner() {
             )
           );
         } catch (err) {
-          // Drop prior has_changes so a failed re-check after sync cannot
-          // leave a sticky Update button.
           failedIds.push(c.id);
           if (err instanceof ApiError && err.code === "oauth_reauth_required") {
             setReauthById((prev) => ({ ...prev, [c.id]: true }));
@@ -167,7 +146,7 @@ function ConnectionsPageInner() {
       for (const id of ids) remaining.delete(id);
       return remaining;
     });
-    if (gen !== changesGen.current) return; // newer check won
+    if (gen !== changesGen.current) return;
     setChangesById((prev) => {
       const merged = { ...prev, ...next };
       for (const id of failedIds) delete merged[id];
@@ -175,12 +154,6 @@ function ConnectionsPageInner() {
     });
   }, []);
 
-  // Fired on mount rather than gated on `me`, so the session lookup and these
-  // loads run CONCURRENTLY instead of as a waterfall — the wait before the cards
-  // know their real state was two sequential round trips, not one. Both are
-  // authenticated by the same cookie, so there is nothing to wait for; an
-  // unauthenticated/non-admin caller just gets a 401/403 here and useMe's guard
-  // does the redirect.
   useEffect(() => {
     if (loaded.current) return;
     loaded.current = true;
@@ -191,8 +164,6 @@ function ConnectionsPageInner() {
         setReauthById(
           Object.fromEntries(list.filter((c) => c.needs_reauth).map((c) => [c.id, true]))
         );
-        // Don't auto-check on load — a Drive/Slack change-check walks the
-        // source live and can take seconds; only the Check button triggers it.
       })
       .catch(() => {
         /* useMe owns the auth redirect; leave the cards in their unknown state */
@@ -205,7 +176,6 @@ function ConnectionsPageInner() {
       else if (active.length > 1) setWatchedJobId(null);
       if (active.length > 0) setPollToken((n) => n + 1);
     }).catch(() => undefined);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const hasActiveJob = jobs.some((j) => ACTIVE_STATUSES.has(j.status));
@@ -240,20 +210,10 @@ function ConnectionsPageInner() {
         if (curr === "succeeded") {
           setMessage(updateCompleteMessage(job));
           setError(null);
-          // Hide Update immediately — Drive change-check is slow; without this
-          // a stale has_changes from before the sync keeps the button up.
           setChangesById((prev) => ({
             ...prev,
             [connectionId]: clearedSyncChanges(connectionId),
           }));
-          // Do not Check the source again here. Slack's history quota is
-          // exhausted by the ingest that just finished, so this re-list
-          // comes back empty and the card flashes "N removed" even though
-          // the job stored those pages. The job row already has the count;
-          // Check stays on the button for when the admin wants a fresh diff.
-          // This sync just changed what's ingested org-wide — cached
-          // suggestion chips (document titles) would otherwise keep
-          // showing the pre-sync title set until a hard refresh.
           invalidateSuggestionsCache(null);
           requestAnimationFrame(() => {
             bannerRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -276,9 +236,7 @@ function ConnectionsPageInner() {
     updateInFlight.current.add(connectionId);
     setError(null);
     setMessage("Updating…");
-    // Drop any in-flight Check so it cannot land as "N removed" mid-sync.
     changesGen.current += 1;
-    // Optimistic: don't keep offering Update while the job is starting.
     setChangesById((prev) => ({
       ...prev,
       [connectionId]: clearedSyncChanges(connectionId),
@@ -328,9 +286,6 @@ function ConnectionsPageInner() {
           scene="sources"
           meta={
             loadingConnections ? (
-              // Both counts are derived from `connections`, so before it loads
-              // they would confidently read "0 linked" and "3 need attention" —
-              // exactly the claim that must not be made while unknown.
               <>
                 <span className="studio-chip">{PROVIDERS.length} providers</span>
                 <span className="studio-chip">Loading…</span>
@@ -369,10 +324,6 @@ function ConnectionsPageInner() {
           <div className="source-bento">
             {loadingConnections
               ? PROVIDERS.map((provider) => (
-                  // Placeholder, NOT a "Connect" card: until the list arrives we
-                  // do not know whether this provider is linked, and offering
-                  // Connect for an already-connected source invites a pointless
-                  // (and confusing) fresh OAuth grant.
                   <div key={provider} className="studio-skeleton source-skeleton" aria-hidden />
                 ))
               : PROVIDERS.map((provider) => {
@@ -394,9 +345,6 @@ function ConnectionsPageInner() {
                       prev.map((c) => (c.id === updated.id ? updated : c))
                     );
                     refreshChanges([updated]);
-                    // Covers GitHub's "Refresh list" (repo set changed) and a
-                    // Drive folder change — both change what the suggestion
-                    // chips should be built from.
                     invalidateSuggestionsCache(null);
                   }}
                   onDisconnected={(connectionId) => {

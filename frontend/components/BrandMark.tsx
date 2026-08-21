@@ -1,7 +1,3 @@
-/**
- * Handbook brand mark — HD book + chat logo (transparent PNG).
- * Keep in sync with app/icon.png + app/apple-icon.png.
- */
 export function BrandMark({ className = "brand-mark" }: { className?: string }) {
   return (
     <span className={className} aria-hidden>

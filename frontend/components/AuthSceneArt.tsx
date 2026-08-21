@@ -1,8 +1,3 @@
-/**
- * Auth left-panel scenes — Sign in and Request access get *different*
- * illustrations (not just different copy on the same search graphic).
- */
-
 function SharedDefs({ prefix }: { prefix: string }) {
   return (
     <defs>
@@ -22,7 +17,6 @@ function SharedDefs({ prefix }: { prefix: string }) {
   );
 }
 
-/** Returning user: magic-link mail → unlock → desk ready. */
 function LoginSceneSvg() {
   return (
     <svg className="auth-scene-svg" viewBox="0 0 420 300" fill="none" role="presentation">
@@ -31,7 +25,6 @@ function LoginSceneSvg() {
       <ellipse className="as-blob as-blob-a" cx="70" cy="220" rx="68" ry="48" fill="url(#loginMesh)" />
       <ellipse className="as-blob as-blob-b" cx="350" cy="60" rx="74" ry="52" fill="url(#loginMesh)" />
 
-      {/* Envelope with glowing magic link */}
       <g className="as-float as-float-1" filter="url(#loginSoft)">
         <rect x="42" y="78" width="150" height="110" rx="20" fill="url(#loginPanel)" stroke="#e4e7ec" />
         <path
@@ -51,7 +44,6 @@ function LoginSceneSvg() {
         <rect x="90" y="172" width="54" height="6" rx="3" fill="#f0fdfa" opacity="0.9" />
       </g>
 
-      {/* Unlock / keyless badge */}
       <g className="as-float as-float-2" filter="url(#loginSoft)">
         <rect x="248" y="48" width="128" height="88" rx="18" fill="url(#loginPanel)" stroke="#e4e7ec" />
         <circle cx="286" cy="92" r="22" fill="#ecfdf5" stroke="#99f6e4" strokeWidth="1.5" />
@@ -61,7 +53,6 @@ function LoginSceneSvg() {
         <rect x="318" y="94" width="28" height="6" rx="3" fill="#e4e7ec" />
       </g>
 
-      {/* Welcome-back desk / Ask ready */}
       <g className="as-float as-float-3" filter="url(#loginSoft)">
         <rect x="150" y="198" width="200" height="68" rx="18" fill="url(#loginPanel)" stroke="#e4e7ec" />
         <circle cx="178" cy="232" r="14" fill="#14b8a6" />
@@ -112,7 +103,6 @@ function LoginSceneSvg() {
   );
 }
 
-/** New org: request → review → sources waiting to connect. */
 function SignupSceneSvg() {
   return (
     <svg className="auth-scene-svg" viewBox="0 0 420 300" fill="none" role="presentation">
@@ -121,7 +111,6 @@ function SignupSceneSvg() {
       <ellipse className="as-blob as-blob-a" cx="340" cy="70" rx="70" ry="50" fill="url(#signupMesh)" />
       <ellipse className="as-blob as-blob-b" cx="80" cy="230" rx="76" ry="54" fill="url(#signupMesh)" />
 
-      {/* Company / org card */}
       <g className="as-float as-float-1" filter="url(#signupSoft)">
         <rect x="36" y="52" width="148" height="100" rx="18" fill="url(#signupPanel)" stroke="#e4e7ec" />
         <rect x="54" y="72" width="36" height="36" rx="10" fill="#ccfbf1" />
@@ -134,7 +123,6 @@ function SignupSceneSvg() {
         <rect x="54" y="122" width="112" height="10" rx="5" fill="#ecfdf5" stroke="#99f6e4" />
       </g>
 
-      {/* Review queue — pending approval */}
       <g className="as-core as-core-signup" filter="url(#signupSoft)">
         <rect x="196" y="88" width="168" height="112" rx="20" fill="url(#signupPanel)" stroke="#e4e7ec" />
         <circle cx="228" cy="124" r="16" fill="#fef3c7" stroke="#f59e0b" strokeWidth="1.5" />
@@ -150,7 +138,6 @@ function SignupSceneSvg() {
         <rect x="214" y="172" width="100" height="10" rx="5" fill="#ecfdf5" stroke="#99f6e4" />
       </g>
 
-      {/* Connect sources waiting — Notion / Drive / GitHub marks */}
       <g className="as-float as-float-3" filter="url(#signupSoft)">
         <rect x="88" y="208" width="244" height="64" rx="18" fill="url(#signupPanel)" stroke="#e4e7ec" />
         <rect x="108" y="224" width="28" height="28" rx="8" fill="#111827" />
@@ -208,8 +195,6 @@ function SignupSceneSvg() {
 export function AuthSceneArt({ variant = "login" }: { variant?: "login" | "signup" }) {
   const isSignup = variant === "signup";
 
-  // "Handbook" is a common noun, so "bring your company into Handbook" reads as
-  // a typo. Possessive phrasing makes the name work as a product name instead.
   const title = isSignup ? "Set up your company's Handbook" : "Sign in to Handbook";
   const blurb = isSignup
     ? "Tell us who you are. We review each request, then you connect sources and invite your team."

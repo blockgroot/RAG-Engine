@@ -8,6 +8,7 @@ and ``tests/test_auth.py``'s pattern for faking HTTP calls in this codebase.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from io import BytesIO
 
 import pytest
 
@@ -18,12 +19,15 @@ from app.sources.base import SourceDocument, SourceRef
 FOLDER_MIME = "application/vnd.google-apps.folder"
 DOC_MIME = "application/vnd.google-apps.document"
 SHORTCUT_MIME = "application/vnd.google-apps.shortcut"
+PDF_MIME = "application/pdf"
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
 class FakeResponse:
-    def __init__(self, payload=None, *, text=None, status_code=200):
+    def __init__(self, payload=None, *, text=None, content=None, status_code=200):
         self._payload = payload
         self._text = text
+        self._content = content
         self.status_code = status_code
 
     def raise_for_status(self):
@@ -40,6 +44,10 @@ class FakeResponse:
     @property
     def text(self):
         return self._text
+
+    @property
+    def content(self):
+        return self._content
 
 
 def _file(id, name, mime, modified="2026-01-15T10:30:00.000Z", parents=None, trashed=False):
@@ -209,7 +217,9 @@ def test_fetch_document_success(monkeypatch):
             assert params["mimeType"] == "text/markdown"
             return FakeResponse(text="# Handbook\n\nSome content.")
         if url.endswith("/files/doc-1"):
-            return FakeResponse({"name": "Handbook", "modifiedTime": "2026-02-01T00:00:00.000Z"})
+            return FakeResponse(
+                {"name": "Handbook", "mimeType": DOC_MIME, "modifiedTime": "2026-02-01T00:00:00.000Z"}
+            )
         raise AssertionError(f"unexpected call: {url}")
 
     monkeypatch.setattr("app.sources.google_drive.httpx.get", fake_get)
@@ -280,7 +290,9 @@ def test_source_ref_and_document_field_shapes(monkeypatch):
         if url.endswith("/export"):
             return FakeResponse(text="content")
         if url.endswith("/files/doc-1"):
-            return FakeResponse({"name": "Policy Doc", "modifiedTime": "2026-05-05T05:05:05.000Z"})
+            return FakeResponse(
+                {"name": "Policy Doc", "mimeType": DOC_MIME, "modifiedTime": "2026-05-05T05:05:05.000Z"}
+            )
         raise AssertionError(url)
 
     monkeypatch.setattr("app.sources.google_drive.httpx.get", fake_get)
@@ -399,3 +411,81 @@ def test_a_normal_folder_is_completely_unaffected_by_the_bounds(monkeypatch):
     monkeypatch.setattr("app.sources.google_drive.httpx.get", fake_get)
     refs = GoogleDriveAdapter(token="tok", folder_id="root").list_documents()
     assert {r.external_id for r in refs} == {"d1", "d2"}
+
+
+# --- PDF / DOCX ---------------------------------------------------------------
+
+
+def test_list_documents_includes_pdf_and_docx(monkeypatch):
+    doc = _file("doc-1", "Handbook", DOC_MIME)
+    pdf = _file("pdf-1", "Policy.pdf", PDF_MIME)
+    docx_file = _file("docx-1", "Policy.docx", DOCX_MIME)
+    sheet = _file("sheet-1", "Budget", "application/vnd.google-apps.spreadsheet")
+
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        if params["q"].startswith("'root'"):
+            return FakeResponse({"files": [doc, pdf, docx_file, sheet]})
+        raise AssertionError(f"unexpected call: {params}")
+
+    monkeypatch.setattr("app.sources.google_drive.httpx.get", fake_get)
+
+    adapter = GoogleDriveAdapter(token="tok", folder_id="root")
+    refs = {r.external_id: r for r in adapter.list_documents()}
+
+    assert set(refs) == {"doc-1", "pdf-1", "docx-1"}  # sheet excluded
+    assert refs["doc-1"].source_uri == "https://docs.google.com/document/d/doc-1/edit"
+    assert refs["pdf-1"].source_uri == "https://drive.google.com/file/d/pdf-1/view"
+    assert refs["docx-1"].source_uri == "https://drive.google.com/file/d/docx-1/view"
+
+
+def test_fetch_document_pdf_downloads_media_and_extracts_text(monkeypatch):
+    calls = []
+
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        calls.append(params)
+        if params.get("fields"):
+            return FakeResponse(
+                {"name": "Policy.pdf", "mimeType": PDF_MIME, "modifiedTime": "2026-02-01T00:00:00.000Z"}
+            )
+        if params.get("alt") == "media":
+            return FakeResponse(content=b"fake-pdf-bytes")
+        raise AssertionError(f"unexpected call: {params}")
+
+    monkeypatch.setattr("app.sources.google_drive.httpx.get", fake_get)
+    monkeypatch.setattr(
+        "app.sources.google_drive._extract_pdf_text",
+        lambda data: f"extracted:{data.decode()}",
+    )
+
+    adapter = GoogleDriveAdapter(token="tok", folder_id="root")
+    doc = adapter.fetch_document("pdf-1")
+
+    assert doc.content == "extracted:fake-pdf-bytes"
+    assert doc.title == "Policy.pdf"
+    assert doc.source_uri == "https://drive.google.com/file/d/pdf-1/view"
+
+
+def test_fetch_document_docx_extracts_real_text():
+    """Round-trips a real .docx through python-docx — no mocking of extraction."""
+    import docx
+
+    document = docx.Document()
+    document.add_paragraph("Sick leave is 12 days per year.")
+    buffer = BytesIO()
+    document.save(buffer)
+    docx_bytes = buffer.getvalue()
+
+    from app.sources.google_drive import _extract_docx_text
+
+    assert "Sick leave is 12 days per year." in _extract_docx_text(docx_bytes)
+
+
+def test_fetch_document_unsupported_mime_raises_source_error(monkeypatch):
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        return FakeResponse({"name": "Budget", "mimeType": "application/vnd.google-apps.spreadsheet"})
+
+    monkeypatch.setattr("app.sources.google_drive.httpx.get", fake_get)
+
+    adapter = GoogleDriveAdapter(token="tok", folder_id="root")
+    with pytest.raises(SourceError):
+        adapter.fetch_document("sheet-1")

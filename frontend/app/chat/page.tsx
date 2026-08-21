@@ -52,17 +52,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const [suggestedQuestions, setSuggestedQuestions] = useState<string[]>([]);
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
 
-
-  // Which agent answers. The tab only appears when GitHub is actually
-  // connected -- offering "Code" with nothing behind it would just produce
-  // fallbacks.
-  //
-  // Two independent signals, deliberately not merged: org-wide chat reads
-  // /me.github_connected (available to every member, unlike admin-only
-  // /admin/connections), while a workspace reads that WORKSPACE's own
-  // github_connected from GET /workspaces/{id}. An org-wide connection must not
-  // light up a workspace's Code tab -- the workspace answers only from its own
-  // installation, so offering the tab would promise code it cannot read.
   const [agentTab, setAgentTab] = useState<AgentTab>("policy");
   const [workspaceGithub, setWorkspaceGithub] = useState(false);
   const [workspaceSlack, setWorkspaceSlack] = useState(false);
@@ -72,31 +61,12 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const [workspacePolicyReady, setWorkspacePolicyReady] = useState(false);
   const [workspaceName, setWorkspaceName] = useState<string | null>(null);
   const codeAvailable = workspaceId ? workspaceGithub : Boolean(me?.github_connected);
-  // Slack is keyed on *ingested threads*, not merely on the connection existing
-  // (see /me.slack_ready): unlike GitHub's live reads, a Slack connection whose
-  // first sync produced nothing can only ever refuse, so the tab waits.
   const slackAvailable = workspaceId ? workspaceSlack : Boolean(me?.slack_ready);
-  // Same rule as Slack (see /me.linear_ready / /me.notion_ready / /me.drive_ready).
   const linearAvailable = workspaceId ? workspaceLinear : Boolean(me?.linear_ready);
   const notionAvailable = workspaceId ? workspaceNotion : Boolean(me?.notion_ready);
   const driveAvailable = workspaceId ? workspaceDrive : Boolean(me?.drive_ready);
-  // Policies need a successful ingest before they can answer; GitHub does not,
-  // because it is read live. So an org with only GitHub connected must not be
-  // held behind the policy readiness gate.
   const policiesReady = readyToAsk !== false;
-  // Whether the legacy "Docs" tab has any content of its OWN, distinct from
-  // `policiesReady` above: a scope can be `ready_to_ask` purely because e.g.
-  // Slack synced, but Slack already has its own dedicated, source-pinned tab
-  // — the unscoped legacy PolicyAgent/WorkspaceAgent behind "Docs" would then
-  // answer straight from those same chunks unfiltered. See `Me.policy_ready`.
   const policyReady = workspaceId ? workspacePolicyReady : Boolean(me?.policy_ready);
-  // The legacy combined "Docs" tab (mixed Notion+Drive+anything-else corpus)
-  // is offered ONLY when neither Notion nor Drive has its own tab — once a
-  // company has either connected, this tab must never reappear, or it would
-  // silently reintroduce the cross-source blending the split tabs exist to
-  // prevent. It stays around for older/legacy orgs whose docs predate the
-  // per-source split, or any future doc source that hasn't earned its own tab
-  // yet.
   const policyFallbackAvailable = !notionAvailable && !driveAvailable && policyReady;
   const availableTabCount = [
     policyFallbackAvailable,
@@ -106,16 +76,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     notionAvailable,
     driveAvailable,
   ].filter(Boolean).length;
-  // Whether there is anything at all to ask about — used for the "not ready
-  // yet" blocking screen below, distinct from `showAgentTabs` (whether to
-  // render the tab STRIP, which only makes sense with more than one choice).
   const anySourceAvailable = availableTabCount > 0;
   const showAgentTabs = availableTabCount > 1;
-  // The effective agent, after availability and readiness are applied — the tab
-  // state alone can be stale (a tab may disappear, or the current one may not
-  // be ready). Preference order when the current tab doesn't apply: Notion and
-  // Drive first (they're never just a fallback), then the live/ingested
-  // sources, then the legacy combined corpus last.
   const activeAgent: AgentTab =
     agentTab === "github" && codeAvailable
       ? "github"
@@ -146,9 +108,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const askingNotion = activeAgent === "notion";
   const askingDrive = activeAgent === "google";
 
-  // Policies and Code are separate surfaces (different agents, different
-  // starters). Switching tabs must open that tab's empty template — not leave
-  // the other tab's thread on screen with only the placeholder changed.
   function switchAgentTab(next: AgentTab) {
     if (next === agentTab || busy) return;
     setAgentTab(next);
@@ -180,7 +139,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     policiesReady,
   ]);
 
-  // Starter chips from connected sources (document titles / GitHub repos).
   useEffect(() => {
     if (!me) return;
     let cancelled = false;
@@ -188,8 +146,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     const cacheKey = suggestionsCacheKey(agent, workspaceId);
     const cached = getCachedSuggestions(cacheKey);
     if (cached) {
-      // Seed from cache so switching back to an already-fetched tab/workspace
-      // renders instantly instead of flashing "Loading suggestions…" again.
       setSuggestedQuestions(cached);
       setSuggestionsLoading(false);
     } else {
@@ -213,10 +169,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     };
   }, [me, activeAgent, workspaceId]);
 
-  // Keep the latest turn in view on send, while tokens stream, and when done.
-  // scrollIntoView walks scrollable ancestors (chat-log and/or app-body); the
-  // old one-shot logRef.scrollTo after streamChat often no-oped when the outer
-  // shell was the real scroller, and never followed streaming tokens.
   useEffect(() => {
     bottomRef.current?.scrollIntoView({
       behavior: busy ? "auto" : "smooth",
@@ -226,9 +178,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
 
   useEffect(() => {
     if (!me) return;
-    // Org Ask uses /me.ready_to_ask. Workspace Ask uses GET /workspaces/{id}
-    // — same gate shape, scoped to that workspace's own sync (independent of
-    // org-wide readiness).
     if (!workspaceId) {
       setReadyToAsk(me.ready_to_ask);
       return;
@@ -256,7 +205,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     };
   }, [me, workspaceId]);
 
-  // Poll readiness only while waiting for first sync — pause when tab is hidden.
   useEffect(() => {
     if (readyToAsk !== false) return;
     let cancelled = false;
@@ -317,7 +265,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       const { conversation_id } = await api.createConversation(workspaceId);
       conversationId.current = conversation_id;
     } catch {
-      // Memory may be disabled server-side; each question just goes standalone.
     }
     return conversationId.current;
   }
@@ -330,9 +277,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     setMessages((prev) => [...prev, { role: "user", text: question }]);
     setMessages((prev) => [...prev, { role: "assistant", text: "", streaming: true }]);
 
-    // GitHub answers are standalone: the agent has no conversation memory, and
-    // POST /chat/conversations rejects agent="github" rather than handing back
-    // an id that would silently do nothing. So skip the conversation entirely.
     const convId = askingCode ? null : await ensureConversation();
 
     await streamChat(
@@ -384,8 +328,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     );
   }
 
-  // GitHub answers need no ingest, so only block when there is genuinely
-  // nothing this user could ask about yet.
   if (readyToAsk === false && !anySourceAvailable) {
     const syncing = workspaceId ? workspaceSyncing : me.sync_in_progress;
     return (
@@ -425,9 +367,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     );
   }
 
-  // Code copy takes precedence over the workspace copy: a workspace can now have
-  // its own GitHub connection, so "this space" wording would misdescribe what is
-  // actually being asked.
   const emptyTitle = askingCode
     ? workspaceId
       ? "Ask this space’s code"

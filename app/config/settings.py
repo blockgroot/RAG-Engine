@@ -1,8 +1,4 @@
-"""Typed configuration, read from environment variables in one place.
-
-Nothing else in the app calls ``os.getenv`` for provider config — factories take
-these settings objects, so there is a single, documented source of truth.
-"""
+"""Typed settings loaded from environment variables."""
 
 from __future__ import annotations
 
@@ -13,73 +9,38 @@ DEFAULT_TIMEOUT = 60.0
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-m3"
 DEFAULT_EMBEDDING_BACKEND = "local"
 
-# Output dimension of the current embedding model (BGE-M3 = 1024). The DB schema
-# declares vector(EMBEDDING_DIM); the two MUST stay in sync — see CLAUDE.md.
 DEFAULT_EMBEDDING_DIM = 1024
 
-# Chunking defaults (tokens, BGE-M3 tokenizer). See app/ingestion/chunking.py.
 DEFAULT_CHUNK_SIZE = 256
 DEFAULT_CHUNK_OVERLAP = 40
-# "heuristic" (default) estimates token counts with zero dependencies and ~0MB.
-# "hf" loads the exact BGE-M3 tokenizer, which measures at ~378MB RSS and so
-# CANNOT fit alongside the API in a 512MB box — opt in only where memory allows
-# (see app/ingestion/chunk_tokens.py for the measurements).
 DEFAULT_CHUNK_TOKEN_BACKEND = "heuristic"
-# Absolute per-chunk character ceiling — a backstop on the TOKEN budget above,
-# not a second way to express it. Token counts (exact or estimated) can be
-# arbitrarily wrong on text no tokenizer segments the way prose is segmented:
-# measured against the real BGE-M3 tokenizer, a run of base64 bills 1 token per
-# CHARACTER, so the heuristic under-counts it 16x. Since 1 token/char is the
-# worst case any input can reach, bounding characters bounds tokens outright —
-# 4000 chars can never exceed the embedding model's 8192-token limit, whatever
-# the content. A legitimate 256-token prose chunk is ~1000-1300 chars, so this
-# never fires on real documents (the golden corpus tops out at 505).
 DEFAULT_MAX_CHUNK_CHARS = 4000
 
 DEFAULT_VECTOR_STORE_BACKEND = "pgvector"
 
-# RAG query-path defaults. See app/rag/pipeline.py for the reasoning behind the
-# similarity threshold value and the two-layer grounding design.
 DEFAULT_RAG_TOP_K = 5
 DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.35
-# Cap chars of retrieved context fed into the grounded prompt (latency).
 DEFAULT_RAG_MAX_CONTEXT_CHARS = 6000
-# Cap completion length for answer generation (latency on slow free endpoints).
 DEFAULT_RAG_MAX_ANSWER_TOKENS = 700
-# How long a follow-up may wait for the previous turn's summary fold.
 DEFAULT_MEMORY_FOLD_WAIT_SECONDS = 2.0
 DEFAULT_RAG_FALLBACK_RESPONSE = (
     "I don't have information on that in the available policy documents."
 )
-# WorkspaceAgent's own fallback copy (Workspace-within-a-Workspace agent split)
-# — a separate RagPipeline instance from the policy one, so it gets its own
-# fixed fallback string rather than reusing the policy-flavored one above.
 DEFAULT_WORKSPACE_FALLBACK_RESPONSE = (
     "I don't have anything about that in this workspace's connected content."
 )
 
-# The Slack agent's refusal. Distinct from the policy/workspace copy because
-# the *next step* differs: a Slack miss usually means the conversation happened
-# in a channel that isn't connected, or outside the backfill window — both of
-# which the user can act on, unlike "it isn't in the handbook".
 DEFAULT_SLACK_FALLBACK_RESPONSE = (
     "I couldn't find that in the connected Slack channels. It may have been "
     "discussed in a channel that isn't connected, or before the synced history "
     "window."
 )
 
-# The Linear agent's refusal. Distinct copy for the same reason as Slack's: the
-# actionable next step differs from "it isn't in the handbook" — the issue may
-# just not be ingested yet, or the question doesn't match any tracked issue.
 DEFAULT_LINEAR_FALLBACK_RESPONSE = (
     "I couldn't find that in the connected Linear issues. It may not have been "
     "ingested yet, or no issue matches this question."
 )
 
-# The Notion/Drive agents' refusals. Distinct per source (not shared with the
-# old combined "policy" copy) so a miss on the Notion tab doesn't imply "check
-# your Drive docs" and vice versa — each tab can only ever point at its own
-# connected source.
 DEFAULT_NOTION_FALLBACK_RESPONSE = (
     "I couldn't find that in the connected Notion pages. It may not have been "
     "shared with the integration, or hasn't been ingested yet."
@@ -89,137 +50,79 @@ DEFAULT_DRIVE_FALLBACK_RESPONSE = (
     "be in the synced folder, or hasn't been ingested yet."
 )
 
-# The GitHub agent's refusal. Distinct copy because the *reason* differs: there
-# is no retrieval here, so a refusal means "no tool could supply evidence for
-# this", not "nothing matched in the corpus" — and the actionable next step for
-# the user is different too (name a repo, or check it's in the installation).
 DEFAULT_GITHUB_FALLBACK_RESPONSE = (
     "I couldn't find that in the connected GitHub repositories. Try naming the "
     "repository, or check that it's included in this organization's GitHub "
     "installation."
 )
 
-# Connection-pool sizing for the Postgres backing store.
 DEFAULT_DB_POOL_MIN_SIZE = 1
 DEFAULT_DB_POOL_MAX_SIZE = 10
-DEFAULT_KEYWORD_CANDIDATE_LIMIT = 2000   # rows BM25 may rank for one query
+DEFAULT_KEYWORD_CANDIDATE_LIMIT = 2000
 
-# External content sources (Phase 4). Only "notion" exists so far.
 DEFAULT_SOURCE_TYPE = "notion"
 
-# Conversation memory (Phase 5, revised Phase 8). A "turn" is one question + its
-# answer. ``recent_turns`` is the size of the verbatim window kept in full; every
-# turn that falls out of that window is *incrementally* folded into a running
-# summary (Phase 8 — no bulk threshold). See app/rag/pipeline.py for the reasoning
-# behind the window size.
 DEFAULT_MEMORY_RECENT_TURNS = 3
 
-# Retrieval improvements (Phase 6): contextual retrieval (ingest-time),
-# hybrid search + cross-encoder reranking (query-time). See app/rag/retrieval.py
-# and CLAUDE.md §2/§4 for the reasoning behind each value.
-DEFAULT_CONTEXTUAL_ENABLED = True          # keep the Phase 6 quality path
-DEFAULT_CONTEXTUAL_DEFER = True            # run it AFTER sync succeeds (no onboarding stall)
-DEFAULT_CONTEXTUAL_CONCURRENCY = 2         # background enrich; keep low vs 15 RPM free endpoints
-DEFAULT_CONTEXTUAL_MAX_CHUNKS = 200        # skip enrich (raw chunks stay) above this many chunks/doc
-DEFAULT_HYPOTHETICAL_QUESTIONS_ENABLED = True  # ingest-time only; additive, no gate/prompt change
-DEFAULT_KEYWORD_EXTRACTION_ENABLED = True  # non-LLM, zero added latency/cost
+DEFAULT_CONTEXTUAL_ENABLED = True
+DEFAULT_CONTEXTUAL_DEFER = True
+DEFAULT_CONTEXTUAL_CONCURRENCY = 2
+DEFAULT_CONTEXTUAL_MAX_CHUNKS = 200
+DEFAULT_HYPOTHETICAL_QUESTIONS_ENABLED = True
+DEFAULT_KEYWORD_EXTRACTION_ENABLED = True
 DEFAULT_KEYWORD_EXTRACTION_TOP_N = 6
-DEFAULT_EMBED_BATCH_SIZE = 16              # encode in batches (avoids OOM on large docs)
-DEFAULT_RETRIEVAL_HYBRID_ENABLED = True    # fuse vector + keyword (BM25-style) search
-DEFAULT_RETRIEVAL_RERANK_ENABLED = True    # cross-encoder rerank of the candidate pool
-DEFAULT_RETRIEVAL_CANDIDATE_POOL = 16      # how many candidates to fetch/rerank before top_k
-DEFAULT_RETRIEVAL_RRF_K = 60               # Reciprocal Rank Fusion constant (standard default)
+DEFAULT_EMBED_BATCH_SIZE = 16
+DEFAULT_RETRIEVAL_HYBRID_ENABLED = True
+DEFAULT_RETRIEVAL_RERANK_ENABLED = True
+DEFAULT_RETRIEVAL_CANDIDATE_POOL = 16
+DEFAULT_RETRIEVAL_RRF_K = 60
 DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
 
-# Retrieval reuse across conversation turns (Phase 8). Before retrieval runs, the
-# rewritten question's embedding is compared (plain cosine, NO LLM) against the
-# previous turn's retrieved chunks; if the best similarity clears the threshold we
-# reuse those chunks and skip a fresh retrieval. Threshold reasoning: CLAUDE.md §4.
 DEFAULT_RETRIEVAL_REUSE_ENABLED = True
 DEFAULT_RETRIEVAL_REUSE_THRESHOLD = 0.72
 
-# Bounded retrieval recovery (Retrieval Discovery Gap). First retrieve stays as
-# today; at most one optional recovery when evidence looks insufficient.
 DEFAULT_TONE_CLASSIFY_ENABLED = True
 DEFAULT_RECOVERY_ENABLED = True
 DEFAULT_RECOVERY_MAX_QUERIES = 2
 
 DEFAULT_AUDIT_ENABLED = False
 
-# Compound-question decomposition (Phase 18). Heuristic gate first; LLM only when
-# the question likely bundles multiple distinct asks.
 DEFAULT_DECOMPOSE_ENABLED = True
 
-# Request-level time budget (Phase 19). Optional stages check remaining time before starting.
 DEFAULT_REQUEST_DEADLINE_SECONDS = 45.0
 DEFAULT_BUDGET_MIN_STAGE_SECONDS = 3.0
 
-# Query→answer cache for standalone questions (Phase 19).
 DEFAULT_QUERY_CACHE_ENABLED = True
 DEFAULT_QUERY_CACHE_TTL_SECONDS = 300
 
-# API rate limiting (Phase 21) — chat/query endpoint.
 DEFAULT_RATE_LIMIT_ENABLED = True
 DEFAULT_RATE_LIMIT_CHAT_REQUESTS = 30
-# Unauthenticated magic-link requests per IP per window. Higher than chat
-# because a whole office behind one NAT shares this bucket, but far below
-# what bulk account enumeration needs.
 DEFAULT_RATE_LIMIT_AUTH_REQUESTS = 60
 DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60
 
-# Ingestion sanitization (Phase 21).
 DEFAULT_INGEST_MAX_DOCUMENT_CHARS = 2_000_000
 DEFAULT_INGEST_MAX_CONTROL_CHAR_RATIO = 0.05
 
-# Ingestion worker memory admission gate (defense-in-depth alongside the
-# per-input bounds above): before claiming a new job, the worker checks its
-# own current RSS and skips claiming — leaving the job queued for the next
-# tick — if already close to this ceiling. This catches memory pressure from
-# ANY cause, not just the specific unbounded inputs found and fixed by hand
-# (Notion fetch size, remote-embed batching, contextual chunk-count cap).
-# Default leaves ~112MB headroom under Render free's hard 512MB ceiling.
 DEFAULT_INGEST_MEMORY_GUARD_ENABLED = True
 DEFAULT_INGEST_MAX_RSS_MB = 400.0
 
-# Lightweight query spelling/normalization (Phase 17). Corpus-vocab
-# SymSpell — no LLM on the happy path. Kill-switch: QUERY_NORM_ENABLED=false.
 DEFAULT_QUERY_NORM_ENABLED = True
 DEFAULT_QUERY_NORM_MAX_EDIT_DISTANCE = 1
 DEFAULT_QUERY_NORM_MIN_WORD_LENGTH = 4
-# The per-org SymSpell dictionary is cached for the life of the process with
-# nothing evicting it (CLAUDE.md's query-latency section flagged this as a
-# known, never-fixed slow-leak risk once more than a handful of orgs are
-# onboarded). Bounding it to the N most-recently-used orgs turns unbounded
-# growth into a fixed ceiling with no behavior change for a single-org or
-# small-org deployment.
 DEFAULT_QUERY_NORM_CACHE_MAX_ORGS = 50
 
-# Web search tool (Phase 5). Keyless DuckDuckGo by default (no paid dependency);
-# set WEB_SEARCH_PROVIDER=tavily + WEB_SEARCH_API_KEY for production quality.
 DEFAULT_WEB_SEARCH_ENABLED = True
 DEFAULT_WEB_SEARCH_PROVIDER = "duckduckgo"
 DEFAULT_WEB_SEARCH_MAX_RESULTS = 5
 DEFAULT_WEB_SEARCH_TIMEOUT = 8.0
 
-# Auth / session (Phase 10). Session and magic-link TTLs are minutes.
-# Session default is long-lived (30 days) rather than a typical short web
-# session: this is a low-risk internal tool (not banking/finance), the cookie
-# is already httpOnly+Secure+SameSite=Lax, and there's no refresh-token flow
-# to silently keep a short-lived session alive — so the TTL itself has to be
-# the thing that keeps a user logged in across normal day-to-day use instead
-# of re-requesting a magic link every hour. Revisit with a proper refresh
-# mechanism if the risk profile changes (e.g. more sensitive data, external
-# users).
-DEFAULT_SESSION_TTL_MINUTES = 60 * 24 * 30  # 30 days
+DEFAULT_SESSION_TTL_MINUTES = 60 * 24 * 30
 DEFAULT_MAGIC_LINK_TTL_MINUTES = 10
-DEFAULT_SIGNUP_ACTION_TTL_HOURS = 72  # 3 days
+DEFAULT_SIGNUP_ACTION_TTL_HOURS = 72
 
-# HTTP API (Phase 10+).
 DEFAULT_API_HOST = "0.0.0.0"
 DEFAULT_API_PORT = 8000
 
-# Outbound email for magic links (Phase 10). "console" (default, dev) prints the
-# link instead of sending it — no external dependency required to run locally.
 DEFAULT_EMAIL_SENDER = "console"
 
 
@@ -243,16 +146,7 @@ def env_bool(name: str, default: bool) -> bool:
 
 @dataclass(frozen=True)
 class LLMSettings:
-    """Configuration for the LLM provider.
-
-    - ``model``    provider/model string, e.g. ``openai/auto`` or
-      ``anthropic/claude-sonnet-5`` (required)
-    - ``aux_model`` optional cheaper/faster model for rewrite, decompose,
-      recovery expansion, summarization, and ingest contextualization (Phase 19).
-      When unset, every stage uses ``model``.
-    - ``api_key``  optional explicit key (else provider's standard env var)
-    - ``base_url`` optional; for OpenAI-compatible / self-hosted endpoints
-    """
+    """LLM provider configuration."""
 
     model: str | None
     aux_model: str | None
@@ -273,18 +167,7 @@ class LLMSettings:
 
 @dataclass(frozen=True)
 class EmbeddingSettings:
-    """Configuration for the embedding provider.
-
-    - ``backend``  ``local`` (in-process sentence-transformers) or ``remote``
-      (HTTP OpenAI-compatible endpoint)
-    - ``model``    embedding model id
-    - ``device``   optional device for the local backend (cpu/cuda/mps)
-    - ``api_key`` / ``base_url``  used only by the remote backend
-    - ``batch_size``  send/encode at most this many texts per call, on EITHER
-      backend, so a document with an unusually large number of chunks cannot
-      build one unbounded request (local: OOM the in-process model; remote:
-      one huge HTTP request/response payload) in a single shot.
-    """
+    """Embedding provider configuration."""
 
     backend: str
     model: str | None
@@ -311,22 +194,12 @@ class EmbeddingSettings:
 
 @dataclass(frozen=True)
 class DatabaseSettings:
-    """Configuration for the Postgres/pgvector backing store.
-
-    - ``url``  standard libpq connection string, e.g.
-      ``postgresql://user:pass@host:5432/dbname``
-    - ``embedding_dim``  vector dimension the ``chunks.embedding`` column uses;
-      must match the embedding model's output (BGE-M3 = 1024)
-    """
+    """Postgres and pgvector configuration."""
 
     url: str | None
     embedding_dim: int = DEFAULT_EMBEDDING_DIM
     pool_min_size: int = DEFAULT_DB_POOL_MIN_SIZE
     pool_max_size: int = DEFAULT_DB_POOL_MAX_SIZE
-    # Ceiling on rows the keyword (BM25) search pulls back for one query. The
-    # query was previously unbounded, so a common term's cost grew with the
-    # corpus. Set high enough to be a no-op at realistic sizes; see
-    # ``PgVectorStore.keyword_search`` for what changes past it.
     keyword_candidate_limit: int = DEFAULT_KEYWORD_CANDIDATE_LIMIT
 
     @classmethod
@@ -380,25 +253,7 @@ class VectorStoreSettings:
 
 @dataclass(frozen=True)
 class RagSettings:
-    """Configuration for the RAG query path (retrieve -> gate -> generate).
-
-    - ``top_k``  how many chunks to retrieve per question.
-    - ``similarity_threshold``  minimum cosine similarity (in [0, 1]) the *best*
-      retrieved chunk must clear before the LLM is called at all. Below it, we
-      short-circuit to ``fallback_response`` and never invoke the model. This is
-      the cheap first line of defence against answering from irrelevant context;
-      the strict prompt (see ``app/rag/prompts.py``) is the second. Reasoning for
-      the default value lives in ``app/rag/pipeline.py``.
-    - ``fallback_response``  the single, fixed "I don't know" string. It is used
-      in three places that MUST agree: the confidence gate, the LLM's refusal
-      instruction, and the pipeline's refusal detection — so it lives here as one
-      source of truth rather than being duplicated.
-    - ``max_context_chars``  total characters of retrieved chunk text placed in
-      the grounded prompt (most-relevant first; later chunks truncated/dropped).
-      Keeps prompt tokens bounded so slow endpoints stay usable.
-    - ``max_answer_tokens``  completion cap for generate / tone-retry calls
-      (``None`` / 0 = provider default). Shorter caps finish faster on free LLMs.
-    """
+    """RAG retrieval and generation settings."""
 
     top_k: int = DEFAULT_RAG_TOP_K
     similarity_threshold: float = DEFAULT_RAG_SIMILARITY_THRESHOLD
@@ -430,22 +285,7 @@ class RagSettings:
 
 @dataclass(frozen=True)
 class WorkspaceAgentSettings:
-    """Configuration specific to ``WorkspaceAgent`` (Workspace-within-a-Workspace).
-
-    ``WorkspaceAgent`` reuses the same ``RagPipeline`` machinery as
-    ``PolicyAgent`` (gate, retrieval, tone-compliance) via a separate pipeline
-    instance with a different ``PromptProfile`` (see ``app/rag/prompts.py``)
-    — everything else (``top_k``, ``similarity_threshold``, etc.) comes from
-    the same ``RagSettings.from_env()`` shared with the policy pipeline. Only
-    the fixed fallback string is distinct, since it must be exact-string-matched
-    consistently within ONE pipeline (gate/prompt/refusal-detection), and this
-    is a second, independent pipeline instance.
-
-    - ``fallback_response``  the single, fixed "I don't know" string for a
-      workspace-scoped question. Same three-consumer-agreement discipline as
-      ``RagSettings.fallback_response``, just a separate string for a separate
-      pipeline.
-    """
+    """Workspace-agent-specific settings."""
 
     fallback_response: str = DEFAULT_WORKSPACE_FALLBACK_RESPONSE
 
@@ -459,12 +299,7 @@ class WorkspaceAgentSettings:
 
 @dataclass(frozen=True)
 class SlackAgentSettings:
-    """Configuration specific to ``SlackAgent`` — same shape as
-    ``WorkspaceAgentSettings``: a second, independent ``RagPipeline`` instance
-    differing only in prompt framing and its own fixed fallback string (which
-    must be exact-string-matched consistently *within* that one pipeline by the
-    gate, the prompt, and refusal detection).
-    """
+    """Slack-agent-specific settings."""
 
     fallback_response: str = DEFAULT_SLACK_FALLBACK_RESPONSE
 
@@ -478,10 +313,7 @@ class SlackAgentSettings:
 
 @dataclass(frozen=True)
 class LinearAgentSettings:
-    """Configuration specific to ``LinearAgent`` — same shape as
-    ``SlackAgentSettings``: a second, independent ``RagPipeline`` instance
-    differing only in prompt framing and its own fixed fallback string.
-    """
+    """Linear-agent-specific settings."""
 
     fallback_response: str = DEFAULT_LINEAR_FALLBACK_RESPONSE
 
@@ -495,11 +327,7 @@ class LinearAgentSettings:
 
 @dataclass(frozen=True)
 class NotionAgentSettings:
-    """Configuration specific to ``NotionAgent`` — same shape as
-    ``SlackAgentSettings``/``LinearAgentSettings``: a second, independent
-    ``RagPipeline`` instance differing only in prompt framing and its own
-    fixed fallback string.
-    """
+    """Notion-agent-specific settings."""
 
     fallback_response: str = DEFAULT_NOTION_FALLBACK_RESPONSE
 
@@ -513,7 +341,7 @@ class NotionAgentSettings:
 
 @dataclass(frozen=True)
 class DriveAgentSettings:
-    """Configuration specific to ``DriveAgent`` — same shape as ``NotionAgentSettings``."""
+    """Drive-agent-specific settings."""
 
     fallback_response: str = DEFAULT_DRIVE_FALLBACK_RESPONSE
 
@@ -771,24 +599,9 @@ class SlackSettings:
     client_secret: str | None
     redirect_uri: str | None
     scopes: str = DEFAULT_SLACK_BOT_SCOPES
-    # First-sync backfill window. Slack's `conversations.history` sits in one
-    # of Slack's more restricted rate tiers and has been tightened further for
-    # non-Marketplace apps pulling non-recent history, so a channel's full
-    # history is never pulled in one run — only the last N days.
     backfill_days: int = DEFAULT_SLACK_BACKFILL_DAYS
-    # A standalone (no-reply) message shorter than this is skipped before it
-    # ever becomes a document — most single-line Slack chatter ("thanks",
-    # ":+1:") is noise that would only compete with a real answer in
-    # retrieval. Threads WITH replies are never filtered this way (a real
-    # conversation happened), only lone short messages.
     min_thread_chars: int = DEFAULT_SLACK_MIN_THREAD_CHARS
-    # A thread with more replies than this is rendered from only the most
-    # recent N, with a truncation marker — same per-unit size bound as
-    # CHUNK_MAX_CHARS, applied at the thread level instead of the chunk level.
     max_thread_messages: int = DEFAULT_SLACK_MAX_THREAD_MESSAGES
-    # Aggregate cap across one list_documents() call (summed over every
-    # configured channel) — bounds the SUM, which backfill_days/min_thread_chars/
-    # max_thread_messages each bound only per-channel/per-thread, not in total.
     max_documents_per_sync: int = DEFAULT_SLACK_MAX_DOCUMENTS_PER_SYNC
 
     @classmethod
@@ -815,22 +628,7 @@ class SlackSettings:
 
 @dataclass(frozen=True)
 class GitHubSettings:
-    """Configuration for the GitHub App "Connect" flow (GitHub Integration D1).
-
-    Like ``GoogleSettings`` there is deliberately **no** static-token path: a
-    GitHub App installed on the customer's GitHub organization is the only
-    supported credential, because repo access is then granted (and enforced) by
-    GitHub's own install screen rather than by a field in our database — the
-    same externally-enforced tenant boundary that made per-org Notion secrets
-    the right call (CLAUDE.md §2).
-
-    ``private_key`` is new secret material: an RS256 PEM used *only* to sign
-    the short-lived App JWT that mints installation tokens
-    (``app/auth/github_app.py``). It is never logged and never leaves the
-    process. ``app_slug`` is the App's URL slug, needed to build the install
-    URL — GitHub's install page lives at ``/apps/<slug>/installations/new``,
-    not at an OAuth authorize endpoint.
-    """
+    """GitHub App connect settings."""
 
     app_slug: str | None = None
     client_id: str | None = None
@@ -844,31 +642,15 @@ class GitHubSettings:
             app_slug=os.getenv("GITHUB_APP_SLUG"),
             client_id=os.getenv("GITHUB_CLIENT_ID"),
             client_secret=os.getenv("GITHUB_CLIENT_SECRET"),
-            # Accept a ``\n``-escaped single-line value so a multi-line PEM
-            # survives .env files and secret managers that only hold flat
-            # strings. A real multi-line value passes through untouched.
             private_key=raw_key.replace("\\n", "\n") if raw_key else None,
         )
 
 
 @dataclass(frozen=True)
 class GitHubAgentSettings:
-    """Configuration specific to ``GitHubAgent``.
-
-    Only the fallback string, mirroring ``WorkspaceAgentSettings`` — but for a
-    different reason. There, the string must stay consistent across one
-    pipeline's gate/prompt/refusal-detection. Here there is no pipeline at all:
-    the agent returns this string whenever no tool could supply evidence, so it
-    has exactly one consumer and simply needs to be configurable.
-    """
+    """GitHub-agent-specific settings."""
 
     fallback_response: str = DEFAULT_GITHUB_FALLBACK_RESPONSE
-    # When the first answer declares its evidence insufficient (MODE: C), fetch
-    # complementary evidence ONCE and regenerate. Bounded exactly like
-    # RECOVERY_ENABLED on the RAG side: at most one extra round, never a loop
-    # chasing better evidence. Added after a live question hit a repo whose
-    # README was an unmodified project template -- recent commit subjects
-    # described the project fine, but nothing went looking for them.
     evidence_recovery_enabled: bool = True
     recovery_commit_count: int = 10
 
@@ -887,19 +669,7 @@ class GitHubAgentSettings:
 
 @dataclass(frozen=True)
 class GitHubLiveSettings:
-    """Bounds on live GitHub reads (GitHub Integration Plan Phase 5).
-
-    Every value here exists to stop an unbounded payload reaching a prompt. That
-    is not a tidiness concern: GitHub documents that a commit diff can span 300
-    files per page up to 3 000 total and that "larger diffs may time out", and a
-    README can be arbitrarily long. Feeding either in whole would blow the
-    context window and, worse, could silently drop the part of the evidence the
-    answer depended on. Truncation here is always *marked* so the model can see
-    the evidence is partial (risk T6).
-
-    Unlike the RAG path there is no cache behind these calls, so timeouts are the
-    only thing standing between a slow GitHub and a slow answer (risk T8).
-    """
+    """Bounds for live GitHub reads."""
 
     enabled: bool = True
     timeout: float = 10.0
@@ -924,14 +694,7 @@ class GitHubLiveSettings:
 
 @dataclass(frozen=True)
 class MemorySettings:
-    """Conversation-memory sizing (Phase 5, revised Phase 8).
-
-    - ``recent_turns``  the verbatim window: how many of the most recent turns are
-      kept in full (and shown to the query-rewriter). Every turn that falls out of
-      this window is folded into the running summary *incrementally* — one turn per
-      update, after every turn — so there is no separate bulk-summarize threshold.
-      See ``app/rag/pipeline.py`` (``_update_running_summary``) for the reasoning.
-    """
+    """Conversation-memory sizing."""
 
     recent_turns: int = DEFAULT_MEMORY_RECENT_TURNS
     fold_wait_seconds: float = DEFAULT_MEMORY_FOLD_WAIT_SECONDS
@@ -948,33 +711,7 @@ class MemorySettings:
 
 @dataclass(frozen=True)
 class ReuseSettings:
-    """Retrieval-reuse gate for conversation follow-ups (Phase 8).
-
-    A cheap, deterministic, *non-LLM* check that runs BEFORE retrieval on a
-    follow-up turn: it compares the rewritten question's embedding against the
-    previous turn's retrieved chunks and, if the best cosine similarity clears
-    ``threshold``, reuses those chunks instead of running retrieval again.
-
-    - ``enabled``    whether the reuse check runs at all (needs a conversation).
-    - ``threshold``  minimum cosine similarity (in [0, 1]) between the new question
-      and the *best* previously-retrieved chunk before we trust the old chunks to
-      still cover it. Deliberately well ABOVE the confidence gate (0.35): reuse
-      demands strong "same-fact" similarity, not mere answerability.
-
-      Chosen HIGH (0.72) on purpose. Measured on BGE-M3 (CLAUDE.md §4), a genuinely
-      new-info follow-up on an adjacent topic still scores high against the old
-      chunk (e.g. "how many sick days?" vs the annual-leave chunk ≈ 0.67), and can
-      even outscore a legitimate same-chunk follow-up ("...carried over?" ≈ 0.63) —
-      so no threshold cleanly separates the two. The costs are asymmetric: a wrong
-      reuse skips the chunk that actually answers the question and forces a wrong
-      "I don't know", whereas a missed reuse only costs one redundant retrieval. So
-      we set the bar above the highest observed new-topic score (~0.67): only
-      near-verbatim repeats/clarifications of the *same* fact (~0.75+) reuse; when
-      in doubt we retrieve. Like the 0.35 gate this is a *starting point* to be
-      validated against logged production similarities, NOT a final value. It never
-      bypasses the gate: when reuse fires, the reused chunks still pass through the
-      unchanged retrieve→gate→generate path.
-    """
+    """Retrieval-reuse settings for conversation follow-ups."""
 
     enabled: bool = DEFAULT_RETRIEVAL_REUSE_ENABLED
     threshold: float = DEFAULT_RETRIEVAL_REUSE_THRESHOLD
@@ -992,14 +729,7 @@ class ReuseSettings:
 
 @dataclass(frozen=True)
 class ToneSettings:
-    """Semantic question-tone classification (factual vs supportive).
-
-    A cheap aux-LLM call labels whether the user is asking for policy
-    information or personally seeking help coping. Empathy is required only
-    for ``supportive``; policy-topic asks (even mental health) stay factual.
-    Kill-switch: ``TONE_CLASSIFY_ENABLED=false`` falls back to prompt-only
-    judgement with no empathy force/strip retry.
-    """
+    """Question-tone classification settings."""
 
     enabled: bool = DEFAULT_TONE_CLASSIFY_ENABLED
 
@@ -1012,20 +742,7 @@ class ToneSettings:
 
 @dataclass(frozen=True)
 class RecoverySettings:
-    """Bounded retrieval recovery for Retrieval Discovery Gaps.
-
-    The normal retrieve → gate → generate path is unchanged. When the pipeline
-    determines available evidence is insufficient (gate miss, or generation finds
-    the context insufficient), at most **one** recovery attempt may run: an LLM
-    produces alternative retrieval-oriented search expressions (preserving user
-    intent), those are retrieved and RRF-fused with the first-pass hits, then the
-    unchanged gate + grounded prompt apply again. Recovery never answers the
-    question and never weakens grounding. On expander failure the existing path
-    continues (graceful degradation).
-
-    - ``enabled``      kill-switch; when false, behaviour matches the pre-recovery pipeline.
-    - ``max_queries``  cap on alternate retrieval expressions per recovery attempt.
-    """
+    """Bounded retrieval-recovery settings."""
 
     enabled: bool = DEFAULT_RECOVERY_ENABLED
     max_queries: int = DEFAULT_RECOVERY_MAX_QUERIES
@@ -1120,11 +837,6 @@ class RateLimitSettings:
 
     enabled: bool = DEFAULT_RATE_LIMIT_ENABLED
     chat_requests_per_window: int = DEFAULT_RATE_LIMIT_CHAT_REQUESTS
-    # Separate budget for the unauthenticated magic-link endpoint. It must NOT
-    # share the chat limit: chat is per-org and per-session, this is per-IP with
-    # no session at all, so a whole office behind one NAT shares a single
-    # bucket. Sized to bound bulk account enumeration (see app/api/auth.py)
-    # while leaving room for everyone in a company to sign in at once.
     auth_requests_per_window: int = DEFAULT_RATE_LIMIT_AUTH_REQUESTS
     window_seconds: int = DEFAULT_RATE_LIMIT_WINDOW_SECONDS
 
@@ -1166,11 +878,7 @@ class IngestSanitizeSettings:
 
 @dataclass(frozen=True)
 class IngestWorkerSettings:
-    """Ingestion worker memory admission gate (see ``DEFAULT_INGEST_MAX_RSS_MB``
-    above for the full reasoning). Checked once per ``run_once()`` call, before
-    ``queue.claim_next()`` — a coarse, cheap proactive circuit breaker, not a
-    replacement for the per-input bounds elsewhere in the ingestion pipeline.
-    """
+    """Ingestion worker memory admission settings."""
 
     memory_guard_enabled: bool = DEFAULT_INGEST_MEMORY_GUARD_ENABLED
     max_rss_mb: float = DEFAULT_INGEST_MAX_RSS_MB
@@ -1187,15 +895,7 @@ class IngestWorkerSettings:
 
 @dataclass(frozen=True)
 class QueryNormSettings:
-    """Corpus-vocab spelling correction before retrieval (Phase 17).
-
-    First-time questions are otherwise embedded raw; only conversational
-    follow-ups get an LLM rewrite, and recovery spelling is reactive. This is
-    a cheap non-LLM first line — SymSpell against *this org's* chunk vocabulary
-    — so typos like "protien" map toward document terms without an LLM call on
-    every request. Default max edit distance is 1 (distance 2 falsely "fixed"
-    external entity names like Niva→five). See ``app/rag/query_normalize.py``.
-    """
+    """Corpus-vocabulary spelling correction before retrieval."""
 
     enabled: bool = DEFAULT_QUERY_NORM_ENABLED
     max_edit_distance: int = DEFAULT_QUERY_NORM_MAX_EDIT_DISTANCE
@@ -1222,15 +922,7 @@ class QueryNormSettings:
 
 @dataclass(frozen=True)
 class WebSearchSettings:
-    """Web-search tool configuration (Phase 5).
-
-    - ``enabled``      whether the RAG pipeline offers the web-search tool at all.
-    - ``provider``     ``duckduckgo`` (keyless, default) or ``tavily`` (needs key).
-    - ``api_key``      required only by providers that need one (e.g. Tavily).
-    - ``max_results``  how many results to fetch and feed back to the model.
-    - ``timeout``      hard cap (seconds) on the search call; on timeout the
-      pipeline degrades to the fixed internal fallback.
-    """
+    """Web-search tool settings."""
 
     enabled: bool = DEFAULT_WEB_SEARCH_ENABLED
     provider: str = DEFAULT_WEB_SEARCH_PROVIDER
@@ -1251,46 +943,12 @@ class WebSearchSettings:
 
 @dataclass(frozen=True)
 class ContextualSettings:
-    """Contextual-retrieval config (Phase 6, ingest-time).
-
-    When enabled, a short LLM-generated context is prepended to each chunk before
-    it is embedded and stored, so the chunk carries its surrounding meaning.
-
-    ``defer`` (default **on**): sync first embeds raw chunks and marks the job
-    succeeded so onboarding/chat unlock immediately; contextualize + re-embed
-    then runs in the worker as a best-effort ``enriching`` phase. That keeps the
-    Phase 6 quality intent without free-tier Gemini stalling users at "0 of N".
-    Set ``INGEST_CONTEXTUAL_DEFER=false`` for the old inline (blocking) behaviour.
-
-    ``concurrency`` is how many per-chunk calls run at once within one document
-    during inline or deferred enrich. Keep low (1–2) on free/metered endpoints.
-
-    ``max_chunks``: a document that chunks into more than this many pieces
-    skips contextual enrichment entirely (it keeps its plain, already-embedded
-    chunks — the same safe state every chunk starts in under ``defer``) rather
-    than issuing one sequential/low-concurrency LLM call per chunk with no
-    upper bound. A pathologically large single document (an entire book pasted
-    into one page) would otherwise tie up the worker for a very long time; this
-    makes that a bounded, cheap no-op instead, without touching normal-sized
-    documents (a typical page is well under this).
-    """
+    """Ingest-time contextual retrieval settings."""
 
     enabled: bool = DEFAULT_CONTEXTUAL_ENABLED
     defer: bool = DEFAULT_CONTEXTUAL_DEFER
     concurrency: int = DEFAULT_CONTEXTUAL_CONCURRENCY
     max_chunks: int = DEFAULT_CONTEXTUAL_MAX_CHUNKS
-    # Metadata-creation gap (production-RAG comparison #2): fold 2-3 LLM-
-    # generated hypothetical questions into the SAME contextualize call
-    # (never a second LLM round-trip per chunk — this endpoint is already
-    # rate-limited, see the 15rpm gotcha elsewhere in this file) and append
-    # them to the stored chunk text, so a rephrased user question can match
-    # one of them via vector OR keyword search. Independent kill-switch from
-    # ``enabled`` since it changes stored chunk *content*, not just whether
-    # contextualizing runs — default ON: it only ever adds retrieval signal
-    # (never touches the gate/prompt/generation path), same risk profile as
-    # contextual retrieval itself. Only takes effect when ``enabled`` is
-    # also true, and only for chunks contextualized from here on — it does
-    # not retroactively rewrite already-ingested content.
     hypothetical_questions: bool = DEFAULT_HYPOTHETICAL_QUESTIONS_ENABLED
 
     @classmethod
@@ -1313,15 +971,7 @@ class ContextualSettings:
 
 @dataclass(frozen=True)
 class KeywordExtractionSettings:
-    """Non-LLM keyword extraction, appended to stored chunk text at ingest.
-
-    Deterministic term-frequency extraction (``app/ingestion/keywords.py``) —
-    no model call, so unlike ``ContextualSettings.hypothetical_questions``
-    this has no latency/cost tradeoff to weigh; default ON.
-
-    - ``enabled``  kill-switch.
-    - ``top_n``    max keywords appended per chunk.
-    """
+    """Keyword-extraction settings for ingest-time chunk enrichment."""
 
     enabled: bool = DEFAULT_KEYWORD_EXTRACTION_ENABLED
     top_n: int = DEFAULT_KEYWORD_EXTRACTION_TOP_N
@@ -1336,14 +986,7 @@ class KeywordExtractionSettings:
 
 @dataclass(frozen=True)
 class RetrievalSettings:
-    """Query-time retrieval config (Phase 6).
-
-    - ``hybrid_enabled``   fuse keyword (BM25-style) results with vector results.
-    - ``rerank_enabled``   cross-encoder rerank the fused candidate pool.
-    - ``candidate_pool``   how many candidates to fetch (per signal) and rerank
-      before selecting the final ``RagSettings.top_k``.
-    - ``rrf_k``            Reciprocal Rank Fusion constant.
-    """
+    """Query-time retrieval settings."""
 
     hybrid_enabled: bool = DEFAULT_RETRIEVAL_HYBRID_ENABLED
     rerank_enabled: bool = DEFAULT_RETRIEVAL_RERANK_ENABLED

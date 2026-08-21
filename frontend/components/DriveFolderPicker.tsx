@@ -3,21 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api, ConnectionSourceConfig, DriveFolder } from "@/lib/api";
 
-// Raised from 300ms. Each search is expensive on the server side — four
-// sequential DB round trips before the Google call even starts — so a keystroke
-// that will immediately be superseded is pure waste. 450ms still feels
-// responsive while typing but issues far fewer doomed requests.
 const FOLDER_SEARCH_DEBOUNCE_MS = 450;
 
-/**
- * Search-as-you-type Drive folder picker (org-wide or workspace-scoped).
- *
- * Selecting a result saves by folder id; pasting a Drive URL/id and clicking
- * Save still works as a fallback — same UX as Sources / personal workspaces.
- *
- * ``mode="change"`` is for swapping an already-saved folder: same API, clearer
- * copy, and Cancel to dismiss without saving.
- */
 export function DriveFolderPicker({
   connectionId,
   workspaceId,
@@ -33,7 +20,6 @@ export function DriveFolderPicker({
   workspaceId?: string;
   inputId?: string;
   mode?: "set" | "change";
-  /** When set, saving the same id is a no-op (closes via onCancel if provided). */
   currentFolderId?: string | null;
   currentFolderName?: string | null;
   onSaved: (
@@ -50,25 +36,6 @@ export function DriveFolderPicker({
   const [folderSearchError, setFolderSearchError] = useState<string | null>(null);
   const [dropdownOpen, setDropdownOpen] = useState(false);
 
-  /*
-   * Results already fetched, keyed by the exact query string.
-   *
-   * Every search costs four sequential DB round trips plus a Google call, and
-   * the picker previously re-paid that for queries it had already answered:
-   * closing and reopening the dropdown re-ran the *empty* query — the most
-   * expensive one, since it asks Drive for every folder across every shared
-   * drive ordered by modified time — and backspacing re-ran a prefix that had
-   * just been fetched. A cache hit now renders instantly with no request and no
-   * spinner at all.
-   *
-   * Scoped to this mounted picker (a ref, not a module global) and keyed by
-   * query alone, which is safe precisely because the component is already bound
-   * to one connectionId/workspaceId — a different connection is a different
-   * mount with a different cache, so results can never cross connections.
-   * Deliberately not persisted: a folder created in Drive moments ago should
-   * appear on the next fresh open, so the cache lives only as long as the
-   * picker is on screen.
-   */
   const folderCache = useRef<Map<string, DriveFolder[]>>(new Map());
 
   useEffect(() => {
@@ -100,8 +67,6 @@ export function DriveFolderPicker({
         setFolderSearchError(null);
       } catch (err) {
         if (cancelled) return;
-        // Failures are NOT cached — a timeout or a transient Drive error must be
-        // retryable, not remembered as "this query has no folders".
         setFolderResults([]);
         setFolderSearchError(
           err instanceof Error ? err.message : "Could not search Drive folders."
@@ -118,7 +83,6 @@ export function DriveFolderPicker({
 
   async function saveFolder(value: string) {
     if (!value) return;
-    // Same folder already linked (bare id or URL containing it) — dismiss.
     if (
       currentFolderId &&
       (value === currentFolderId || value.includes(currentFolderId))

@@ -3,19 +3,6 @@
 import { useEffect, useState } from "react";
 import { api, SlackChannelMember } from "@/lib/api";
 
-/**
- * After a workspace owner connects Slack channels, let them invite members of
- * those channels into this workspace — without leaving Handbook to look up
- * emails by hand. Backend-only until now (the endpoints existed, nothing
- * called them): see docs/plans/2026-08-17-slack-integration.md.
- *
- * Only members who already have a Handbook account in this org are
- * selectable (``already_org_member``) — the backend refuses anyone else
- * (workspaces never create new org accounts from this flow, see
- * ``workspaces.invite_member``), so this UI reflects that rather than
- * fighting it: non-org members are shown, not hidden, but disabled with an
- * explanation.
- */
 export function SlackMemberInvitePicker({
   workspaceId,
   connectionId,
@@ -27,7 +14,6 @@ export function SlackMemberInvitePicker({
   connectionId: string;
   channelIds: string[];
   channelNames?: Record<string, string>;
-  /** Fires after at least one invite actually succeeded — refresh "People in this space" here. */
   onInvited?: () => void;
 }) {
   type Row = SlackChannelMember & { channelId: string };
@@ -52,8 +38,6 @@ export function SlackMemberInvitePicker({
     )
       .then((lists) => {
         if (cancelled) return;
-        // One row per email — a member in two connected channels is only
-        // asked about once, attributed to whichever channel listed them first.
         const seen = new Set<string>();
         const merged: Row[] = [];
         for (const row of lists.flat()) {
@@ -89,8 +73,6 @@ export function SlackMemberInvitePicker({
     setSending(true);
     setLoadError(null);
     try {
-      // Group selected emails by the channel they came from — the endpoint
-      // is per-channel, though membership it grants is workspace-wide.
       const byChannel = new Map<string, string[]>();
       for (const row of rows) {
         if (!selected.has(row.email)) continue;

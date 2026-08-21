@@ -25,13 +25,6 @@ export default function WorkspacesPage() {
 function WorkspacesPageInner() {
   const { me, loading } = useMe({ enforceSetupFlow: false });
   const searchParams = useSearchParams();
-  /*
-   * A GitHub connect whose redirect could not be completed lands HERE when the
-   * OAuth `state` was lost, because at that point the backend cannot tell which
-   * space (or the org) started it — and /admin/connections would bounce a
-   * non-admin space owner. Without this banner the user would arrive at a normal
-   * Spaces list with no idea why, which is the dead end being fixed.
-   */
   const [notice, setNotice] = useState<string | null>(null);
   useEffect(() => {
     if (searchParams.get("connect_error") === "github_finish_connect") {
@@ -48,11 +41,6 @@ function WorkspacesPageInner() {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Fired on mount rather than gated on `me`, so the session lookup and the
-  // list load run CONCURRENTLY instead of as a two-round-trip waterfall. Both
-  // are authenticated by the same cookie, so there is nothing to wait for; if
-  // the caller turns out to be unauthenticated this 401s harmlessly and
-  // useMe's guard does the redirect.
   useEffect(() => {
     let cancelled = false;
     api

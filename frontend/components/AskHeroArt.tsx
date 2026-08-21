@@ -1,7 +1,3 @@
-/**
- * Decorative Ask empty-state scene — Soft UI / dimensional layering.
- * Pure SVG (no emoji). Motion lives in CSS so prefers-reduced-motion can kill it.
- */
 export function AskHeroArt({ variant = "policy" }: { variant?: "policy" | "code" | "space" }) {
   const label =
     variant === "code" ? "Live GitHub" : variant === "space" ? "This space" : "Your documents";
@@ -24,11 +20,9 @@ export function AskHeroArt({ variant = "policy" }: { variant?: "policy" | "code"
           </filter>
         </defs>
 
-        {/* ambient blobs */}
         <ellipse className="ask-blob ask-blob-a" cx="90" cy="70" rx="70" ry="52" fill="url(#askMesh)" />
         <ellipse className="ask-blob ask-blob-b" cx="340" cy="200" rx="85" ry="60" fill="url(#askMesh)" />
 
-        {/* floating panels */}
         <g className="ask-float ask-float-1" filter="url(#askSoft)">
           <rect x="36" y="48" width="118" height="72" rx="16" fill="url(#askPanel)" stroke="#e4e7ec" />
           <rect x="52" y="66" width="36" height="36" rx="10" fill="#ccfbf1" />
@@ -56,7 +50,6 @@ export function AskHeroArt({ variant = "policy" }: { variant?: "policy" | "code"
           <rect x="330" y="74" width="32" height="6" rx="3" fill="#e4e7ec" />
         </g>
 
-        {/* central search orb */}
         <g className="ask-core" filter="url(#askSoft)">
           <circle cx="210" cy="148" r="54" fill="#0f766e" />
           <circle cx="210" cy="148" r="54" fill="url(#askMesh)" opacity="0.45" />
@@ -70,7 +63,6 @@ export function AskHeroArt({ variant = "policy" }: { variant?: "policy" | "code"
           />
         </g>
 
-        {/* answer beam / result card */}
         <g className="ask-float ask-float-3" filter="url(#askSoft)">
           <rect x="118" y="198" width="184" height="56" rx="16" fill="url(#askPanel)" stroke="#e4e7ec" />
           <circle cx="142" cy="226" r="10" fill="#14b8a6" />
@@ -78,7 +70,6 @@ export function AskHeroArt({ variant = "policy" }: { variant?: "policy" | "code"
           <rect x="162" y="230" width="78" height="6" rx="3" fill="#d0d5dd" />
         </g>
 
-        {/* connection arcs */}
         <path
           className="ask-arc"
           d="M154 100C170 120 186 132 210 148"
