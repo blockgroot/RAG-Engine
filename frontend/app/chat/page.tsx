@@ -1,7 +1,7 @@
 "use client";
 
-import { Suspense, useEffect, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import { useParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { AskHeroArt } from "@/components/AskHeroArt";
 import { ChatMessageView, Message } from "@/components/ChatMessage";
@@ -33,28 +33,11 @@ function ChipIcon({ kind }: { kind: "policy" | "code" }) {
 type AgentTab = "policy" | "github" | "slack" | "linear" | "notion" | "google";
 
 export default function ChatPage() {
-  return (
-    <Suspense
-      fallback={
-        <main className="page">
-          <p className="muted">Loading…</p>
-        </main>
-      }
-    >
-      <ChatPageInner />
-    </Suspense>
-  );
+  const workspaceId = useParams<{ id?: string }>().id ?? null;
+  return <ChatPageInner workspaceId={workspaceId} />;
 }
 
-function ChatPageInner() {
-  // Workspace-within-a-Workspace: ?workspace=<id> scopes the whole page to a
-  // sub-workspace instead of the org-wide space -- same component, same
-  // /chat/stream call, just an extra id threaded through (per the plan:
-  // "the SAME chat component as the main org chat, parameterized by
-  // workspace_id", not a forked second chat UI).
-  const searchParams = useSearchParams();
-  const workspaceId = searchParams.get("workspace");
-
+function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const { me, loading, refresh } = useMe({ enforceSetupFlow: !workspaceId });
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");

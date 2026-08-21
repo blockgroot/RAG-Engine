@@ -163,7 +163,7 @@ export function DriveFolderPicker({
             : "Pick a different Drive folder. Update will drop docs that are no longer in scope."
           : "Choose a Drive folder to use."}
       </p>
-      <div className="field" style={{ position: "relative" }}>
+      <div className="field folder-picker-field">
         <label htmlFor={inputId}>{isChange ? "New folder" : "Folder"}</label>
         <input
           id={inputId}

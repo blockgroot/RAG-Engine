@@ -34,4 +34,8 @@ export function setCachedSuggestions(key: string, value: string[]): void {
 export function invalidateSuggestionsCache(workspaceId: string | null): void {
   cache.delete(suggestionsCacheKey("policy", workspaceId));
   cache.delete(suggestionsCacheKey("github", workspaceId));
+  cache.delete(suggestionsCacheKey("slack", workspaceId));
+  cache.delete(suggestionsCacheKey("linear", workspaceId));
+  cache.delete(suggestionsCacheKey("notion", workspaceId));
+  cache.delete(suggestionsCacheKey("google", workspaceId));
 }

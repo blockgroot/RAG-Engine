@@ -547,7 +547,7 @@ function WorkspaceDetailPageInner() {
           }
           actions={
             canAsk ? (
-              <Link href={`/chat?workspace=${workspaceId}`} className="button">
+              <Link href={`/workspaces/${workspaceId}/ask`} className="button">
                 Ask in this space
               </Link>
             ) : undefined

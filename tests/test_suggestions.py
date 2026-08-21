@@ -63,12 +63,34 @@ def test_linear_suggestions_use_issue_titles_not_policy_phrasing():
     assert len(qs) == 4
     assert any("Login button broken" in q for q in qs)
     assert any("Add dark mode" in q for q in qs)
+    assert all(" — " in q for q in qs)
     # Must not read like a handbook chip.
     assert not any("key rules" in q or "for an employee" in q for q in qs)
 
 
 def test_linear_suggestions_empty_without_titles():
     assert build_linear_suggestions([]) == []
+
+
+def test_linear_suggestions_are_plain_english_not_quoted_ticket_dumps():
+    qs = build_linear_suggestions(
+        [
+            "[bug] Checkout 502 on `POST /v1/checkout`",
+            "[incident] 19 Aug: search latency p99",
+            '[bug] Drive sync reports "11 removed"',
+            "[feature] Invoice PDF should show the wrong address",
+        ]
+    )
+    assert len(qs) == 4
+    joined = " ".join(qs)
+    assert "[bug]" not in joined
+    assert "[feature]" not in joined
+    assert "[incident]" not in joined
+    assert "`" not in joined
+    assert "What is the status of" not in joined
+    assert any("Checkout 502" in q and "status" in q.lower() for q in qs)
+    assert any("search latency" in q.lower() and ("happened" in q.lower() or "decided" in q.lower()) for q in qs)
+    assert any("Invoice PDF" in q and "done" in q.lower() for q in qs)
 
 
 def test_workspace_suggestions_sound_like_notes_not_hr_policy():

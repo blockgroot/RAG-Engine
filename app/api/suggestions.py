@@ -8,6 +8,7 @@ agent can actually ground (README / commits for code; retrieval for policy).
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 
@@ -39,11 +40,32 @@ _SLACK_TEMPLATES = (
 # Linear tab — issue/ticket phrasing, not document phrasing. A ticket is a
 # tracked unit of work, so useful starters ask about status/resolution rather
 # than "what does <title> cover" (fine for a handbook page, odd for a bug).
-_LINEAR_TEMPLATES = (
-    'What is the status of "{title}"?',
-    'What was decided on "{title}"?',
-    'Summarize the discussion on "{title}".',
-    'Is "{title}" resolved?',
+#
+# Chips are "{short topic} — {plain question}" so a Linear title like
+# `[bug] Checkout 502 on \`POST /v1/checkout\`` does not get stuffed, quoted,
+# and mid-word truncated into the question itself.
+_LINEAR_KIND_RE = re.compile(r"^\[([^\]]+)\]\s*")
+_LINEAR_KIND_ALIASES = {
+    "bug": "bug",
+    "incident": "incident",
+    "feature": "feature",
+    "feat": "feature",
+    "chore": "task",
+    "task": "task",
+    "improvement": "improvement",
+}
+_LINEAR_KIND_QUESTIONS = {
+    "bug": ("What's the current status?", "What's still open?"),
+    "incident": ("What happened?", "What was decided?"),
+    "feature": ("Is this done?", "What's left to ship?"),
+    "task": ("What's the current status?", "Is this done?"),
+    "improvement": ("Is this done?", "What's left?"),
+}
+_LINEAR_GENERIC_QUESTIONS = (
+    "What's the current status?",
+    "What was decided?",
+    "Summarize the discussion.",
+    "Is this done?",
 )
 
 # Org-wide Policies tab — company handbook phrasing.
@@ -75,6 +97,31 @@ def _display_title(title: str, *, max_len: int = 64) -> str:
     if len(title) <= max_len:
         return title
     return title[: max_len - 1].rstrip() + "…"
+
+
+def _trim_at_word(title: str, max_len: int) -> str:
+    """Trim at a word boundary so chips don't end on ``POST /v1/che…``."""
+    if len(title) <= max_len:
+        return title
+    cut = title[: max_len].rsplit(" ", 1)[0].rstrip(".,;:/-")
+    if len(cut) < max_len // 2:
+        cut = title[: max_len - 1].rstrip()
+    return cut + "…"
+
+
+def _linear_chip_topic(title: str) -> tuple[str | None, str]:
+    """Strip Linear type tags / code ticks; return (kind, short topic)."""
+    raw = " ".join((title or "").split()).strip()
+    kind: str | None = None
+    match = _LINEAR_KIND_RE.match(raw)
+    if match:
+        kind = _LINEAR_KIND_ALIASES.get(match.group(1).strip().lower())
+        raw = raw[match.end() :]
+    raw = raw.replace("`", "").replace('"', "").replace("'", "")
+    raw = " ".join(raw.split()).strip(" .-")
+    if kind and raw.lower().endswith(kind):
+        raw = raw[: -len(kind)].rstrip(" -")
+    return kind, _trim_at_word(raw, 42)
 
 
 def build_github_suggestions(repos: list[dict[str, Any]]) -> list[str]:
@@ -164,39 +211,37 @@ def build_slack_suggestions(channel_names: list[str]) -> list[str]:
 def build_linear_suggestions(titles: list[str]) -> list[str]:
     """Turn ingested Linear issue titles into Linear-tab starter questions.
 
-    Same rotation/dedup shape as ``build_policy_suggestions``, with
-    ticket-status phrasing instead of document phrasing (see
-    ``_LINEAR_TEMPLATES``). Empty titles -> empty output.
+    Same rotation/dedup shape as ``build_policy_suggestions``, but chips are
+    ``topic — question`` so a long ticket title is a label, not the sentence.
+    Empty titles -> empty output.
     """
-    cleaned: list[str] = []
+    cleaned: list[tuple[str | None, str]] = []
     seen: set[str] = set()
     for raw in titles:
-        title = " ".join((raw or "").split()).strip()
-        if not title:
+        kind, topic = _linear_chip_topic(raw)
+        if not topic:
             continue
-        key = title.lower()
+        key = topic.lower()
         if key in seen:
             continue
         seen.add(key)
-        cleaned.append(title)
+        cleaned.append((kind, topic))
 
     if not cleaned:
         return []
 
+    kind_counts: dict[str, int] = {}
     questions: list[str] = []
-    for i, template in enumerate(_LINEAR_TEMPLATES):
-        if len(questions) >= _MAX:
-            break
-        # Linear issue titles run longer and more technical than a Notion page
-        # title (code spans, error strings, route paths) — the default 64-char
-        # trim still left a chip reading like a paragraph. A shorter cap keeps
-        # it scannable; clicking a chip sends this exact (trimmed) text as the
-        # question, and semantic + keyword retrieval still resolves a shorter
-        # title fragment to the same issue, same as an already-trimmed Notion
-        # title would.
-        questions.append(
-            template.format(title=_display_title(cleaned[i % len(cleaned)], max_len=36))
-        )
+    for i in range(_MAX):
+        kind, topic = cleaned[i % len(cleaned)]
+        if kind and kind in _LINEAR_KIND_QUESTIONS:
+            variants = _LINEAR_KIND_QUESTIONS[kind]
+            n = kind_counts.get(kind, 0)
+            kind_counts[kind] = n + 1
+            ask = variants[n % len(variants)]
+        else:
+            ask = _LINEAR_GENERIC_QUESTIONS[i % len(_LINEAR_GENERIC_QUESTIONS)]
+        questions.append(f"{topic} — {ask}")
     return questions
 
 
