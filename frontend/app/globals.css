@@ -1,9 +1,3 @@
-/*
-  Aesthetic: "Handbook Depth" — Soft UI Evolution + dimensional layering
-  (ui-ux-pro-max). Enterprise Work AI clarity with illustrated empty states,
-  product mock, and purposeful motion. Display: Plus Jakarta Sans · teal accent.
-*/
-
 :root {
   --font-display: var(--font-brand), "Avenir Next", "Segoe UI", sans-serif;
   --font-body: var(--font-brand), "Avenir Next", "Segoe UI", sans-serif;
@@ -116,9 +110,6 @@ a { color: var(--accent-strong); transition: color 0.2s var(--ease); }
 a:hover { color: var(--accent); }
 button { font-family: inherit; }
 
-/* —— Shell / sidebar ——
-   Fixed viewport columns: rail always full height, main scrolls alone.
-   Avoids the "short sidebar floating above the page" look. */
 .app-shell {
   min-height: 100vh;
   display: grid;
@@ -285,7 +276,6 @@ button { font-family: inherit; }
   overflow-y: auto;
 }
 
-/* —— Page chrome —— */
 .page, .page-wide {
   margin: 0 auto;
   padding: 1.35rem 1.5rem 2rem;
@@ -385,8 +375,6 @@ form.card:hover { transform: none; }
   box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
-/* In-flow results, not a floating overlay. Absolute + z-index still lost to
-   later .source-row/.card stacking contexts (position + hover transform). */
 .folder-picker-field:has(.folder-dropdown) .input {
   border-bottom-left-radius: 0;
   border-bottom-right-radius: 0;
@@ -481,9 +469,6 @@ form.card:hover { transform: none; }
   text-transform: uppercase;
   color: var(--accent-strong);
 }
-
-/* legacy auth-stage removed — see .auth-v2 */
-
 
 .nav {
   display: flex;

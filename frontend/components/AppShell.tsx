@@ -89,9 +89,6 @@ export function AppShell({
     } catch {
       /* still clear local route */
     }
-    // The session is cached in-module to keep navigation instant (lib/useMe),
-    // so it must be dropped here or a signed-out tab could still render the
-    // previous user from cache until a full reload.
     clearMeCache();
     router.replace("/login");
     router.refresh();
@@ -101,7 +98,6 @@ export function AppShell({
   const showAdmin = me ? canAccessAdminPortal(me) : false;
   const homeHref = setupDone || me?.role === "member" ? "/chat" : "/onboarding";
   const showMainNav = Boolean(me && variant !== "onboarding");
-  // First name from the email local-part (e.g. "sana.asiwal@syvora.com" -> "Sana").
   const firstName = (() => {
     const local = me?.email?.split("@")[0] || "";
     const name = local.split(/[.\-_]/)[0];

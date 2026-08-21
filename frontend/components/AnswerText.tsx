@@ -1,15 +1,3 @@
-/**
- * Renders the model's answer as basic formatted text instead of a raw
- * pre-wrapped string. The grounded-generation prompt (app/rag/prompts.py)
- * produces simple markdown — **bold**, "- "/"* "/"1. " lists — which a plain
- * <p> does not render usefully. Any leftover ``[n]`` markers from older
- * prompt versions are stripped so they do not show up as noise.
- *
- * Parsing is line-oriented: a mixed block of prose + bullets must NOT collapse
- * into one HTML paragraph (browsers collapse `\n` inside `<p>` to spaces),
- * which is what made answers look like a single cluttered run-on sentence.
- */
-
 import { Fragment, type ReactNode } from "react";
 
 const CITATION_MARKERS = /\s?(\[\d+\])+/g;
@@ -30,7 +18,6 @@ type Block =
   | { kind: "paragraph"; text: string }
   | { kind: "list"; items: string[] };
 
-/** Split answer text into alternating paragraph / list blocks. */
 function parseBlocks(text: string): Block[] {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const blocks: Block[] = [];
