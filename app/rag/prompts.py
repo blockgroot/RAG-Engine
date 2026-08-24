@@ -41,7 +41,7 @@ SLACK_PROMPT_PROFILE = PromptProfile(
     ),
     scope_adjective="team-discussion",
     scope_noun="team's Slack history",
-    escalation_hint="the people in that channel can confirm this",
+    escalation_hint="your HR team can help with this",
     source_label=SOURCE_SLACK,
 )
 
@@ -52,7 +52,7 @@ LINEAR_PROMPT_PROFILE = PromptProfile(
     ),
     scope_adjective="issue-tracking",
     scope_noun="team's Linear issues",
-    escalation_hint="whoever is assigned to that issue can confirm this",
+    escalation_hint="your HR team can help with this",
     source_label=SOURCE_LINEAR,
 )
 
@@ -60,7 +60,7 @@ NOTION_PROMPT_PROFILE = PromptProfile(
     persona="an assistant answering only from this company's connected Notion pages",
     scope_adjective="Notion-documented",
     scope_noun="Notion pages",
-    escalation_hint="whoever maintains that Notion page can help with this",
+    escalation_hint="your HR team can help with this",
     source_label=SOURCE_NOTION,
 )
 
@@ -68,7 +68,7 @@ DRIVE_PROMPT_PROFILE = PromptProfile(
     persona="an assistant answering only from this company's connected Google Drive documents",
     scope_adjective="Drive-documented",
     scope_noun="Google Drive documents",
-    escalation_hint="whoever owns that document can help with this",
+    escalation_hint="your HR team can help with this",
     source_label=SOURCE_GOOGLE,
 )
 
@@ -80,7 +80,7 @@ WORKSPACE_PROMPT_PROFILE = PromptProfile(
     ),
     scope_adjective="workspace-specific",
     scope_noun="workspace",
-    escalation_hint="whoever owns this workspace can help with this",
+    escalation_hint="your HR team can help with this",
     source_label=SOURCE_WORKSPACE,
 )
 
