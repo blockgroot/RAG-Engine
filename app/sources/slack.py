@@ -227,6 +227,59 @@ class SlackAdapter(SourceAdapter):
                     break
         return refs
 
+    def fetch_recent_messages(
+        self, since: float, *, max_messages: int = 300
+    ) -> list[dict]:
+        """Messages posted since ``since`` (unix seconds), as an activity feed.
+
+        Deliberately NOT ``list_documents``: that returns thread *refs* for the
+        ingestion pipeline to chunk and embed. The Prompt-Driven Activity
+        Scheduler wants the actual recent messages to hand an LLM, and stores
+        nothing — so it needs the raw feed, not documents.
+
+        Reuses the same ``conversations.history`` + ``oldest`` call the listing
+        already makes; the only real difference is that ``since`` comes from the
+        caller (a scheduler's last run) instead of a fixed rolling window, and
+        no ``min_thread_chars``/thread filtering applies — a one-line message is
+        still activity worth reporting on.
+
+        Bounded by ``max_messages`` across all channels for the same reason the
+        listing is bounded: an unbounded fetch on a busy workspace would build
+        an unbounded prompt.
+        """
+        collected: list[dict] = []
+        for channel_id in self._channel_ids:
+            cursor = None
+            while True:
+                if len(collected) >= max_messages:
+                    return collected
+                params = {"channel": channel_id, "oldest": since, "limit": 200}
+                if cursor:
+                    params["cursor"] = cursor
+                data = self._get("conversations.history", params)
+                for message in data.get("messages", []):
+                    ts = message.get("ts")
+                    text = (message.get("text") or "").strip()
+                    # Skip join/leave/etc. system events and empty posts: they
+                    # are noise in a report, not activity.
+                    if not ts or message.get("subtype") or not text:
+                        continue
+                    collected.append(
+                        {
+                            "channel": self._channel_label(channel_id),
+                            "user": self._display_name(message.get("user")),
+                            "text": text,
+                            "at": _ts_to_dt(ts),
+                            "reply_count": message.get("reply_count", 0),
+                        }
+                    )
+                    if len(collected) >= max_messages:
+                        return collected
+                cursor = (data.get("response_metadata") or {}).get("next_cursor")
+                if not cursor:
+                    break
+        return collected
+
     def _fetch_thread_messages(self, channel_id: str, thread_ts: str) -> tuple[list[dict], bool]:
         """Return (messages, truncated) for one thread, newest-kept if oversized."""
         messages: list[dict] = []
