@@ -272,6 +272,63 @@ def send_workspace_invite_email_safe(
         logger.warning("Workspace-invite email to %s failed: %s", to, exc)
 
 
+def send_scheduler_report_email(
+    to: str,
+    report_text: str,
+    *,
+    provider: str,
+    frequency: str,
+    scheduler_prompt: str,
+    settings: EmailSettings | None = None,
+) -> None:
+    """Deliver one run of a user's recurring activity report.
+
+    The subject names the service and cadence rather than the free-text
+    prompt: prompts are sentences ("flag anything stuck in review more than
+    3 days"), which make an unreadable subject line and can be long enough
+    to be truncated mid-word by a mail client. The prompt is echoed in the
+    footer instead, so a reader who forgot which of their schedulers this is
+    can tell — and, since a user may have several on the same service, that
+    footer is the only thing distinguishing two otherwise-identical mails.
+    """
+    body = (
+        f"{report_text.strip()}\n\n"
+        "—\n"
+        f"This is your {frequency} {provider} report, generated from your "
+        f"standing request:\n"
+        f'  "{scheduler_prompt.strip()}"\n'
+    )
+    _dispatch(to, f"Your {frequency} {provider} report", body, settings)
+
+
+def send_scheduler_report_email_safe(
+    to: str,
+    report_text: str,
+    *,
+    provider: str,
+    frequency: str,
+    scheduler_prompt: str,
+) -> None:
+    """Worker wrapper: a mail failure must not fail the scheduler run.
+
+    Swallowing here is deliberate, not laziness. The run already did its
+    expensive work (fetch + LLM); letting a transient mail error propagate
+    would mark the scheduler failed and retry the *whole* run later, which
+    on a partial mail outage means the user gets the same report twice.
+    A dropped report is logged and the cycle moves on.
+    """
+    try:
+        send_scheduler_report_email(
+            to,
+            report_text,
+            provider=provider,
+            frequency=frequency,
+            scheduler_prompt=scheduler_prompt,
+        )
+    except (ConfigurationError, ProviderError) as exc:
+        logger.warning("Scheduler report email to %s failed: %s", to, exc)
+
+
 def send_signup_approved_email(
     to: str, link: str, *, settings: EmailSettings | None = None
 ) -> None:
