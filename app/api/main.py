@@ -37,6 +37,7 @@ from . import admin as admin_router
 from . import auth as auth_router
 from . import chat as chat_router
 from . import orgs as orgs_router
+from . import schedulers as schedulers_router
 from . import workspaces as workspaces_router
 
 # Every scripts/*.py entrypoint calls this before reading settings; the ASGI
@@ -202,6 +203,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_router.router)
     app.include_router(chat_router.router)
     app.include_router(workspaces_router.router)
+    app.include_router(schedulers_router.router)
 
     @app.get("/health")
     def health():
