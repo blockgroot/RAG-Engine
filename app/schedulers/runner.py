@@ -75,34 +75,43 @@ def run_scheduler_once(
         )
 
     since = window_start(scheduler)
-    activity_text = fetch_activity(
+    digest = fetch_activity(
         scheduler.provider, scheduler.org_id, since, workspace_id=workspace_id
     )
 
-    if not activity_text:
+    if not digest:
         # Skip the LLM entirely — there is nothing to summarise, and a model
         # handed an empty context is exactly where invention happens. Same
         # instinct as the RAG confidence gate refusing before generating.
+        # Note `digest` is falsy on *items*, not notes: a run that only
+        # learned "channels checked: …" still has nothing to report on.
         report = NO_ACTIVITY_NOTE
     else:
         llm = llm or build_aux_llm_provider()
         prompt = build_scheduler_report_prompt(
-            scheduler.prompt, activity_text, scheduler.provider
+            scheduler.prompt, digest, scheduler.provider
         )
         report = llm.generate(prompt).strip()
 
+    # Items and notes go to the email, not through the model: the template
+    # renders each source link itself so a link can never be invented or
+    # dropped, and the coverage notes reach the reader even when the model
+    # declines to mention them.
     send_scheduler_report_email_safe(
         user.email,
         report,
         provider=scheduler.provider,
         frequency=scheduler.frequency,
         scheduler_prompt=scheduler.prompt,
+        items=digest.items,
+        notes=digest.notes,
     )
     logger.info(
-        "Scheduler %s: emailed %s report to %s (%s chars of activity)",
+        "Scheduler %s: emailed %s report to %s (%s item(s), %s chars)",
         scheduler.id,
         scheduler.provider,
         user.email,
-        len(activity_text),
+        len(digest.items),
+        len(digest.text),
     )
     return report

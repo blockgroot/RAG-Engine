@@ -13,7 +13,12 @@ indirect-injection shape ``app/security/untrusted.py`` exists for.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from ..security.untrusted import scrub_untrusted_text
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .activity import ActivityDigest
 
 FENCE_START = "<<<UNTRUSTED_ACTIVITY_CONTENT>>>"
 FENCE_END = "<<<END_UNTRUSTED_ACTIVITY_CONTENT>>>"
@@ -31,18 +36,29 @@ _PROVIDER_LABEL = {
 
 
 def build_scheduler_report_prompt(
-    user_prompt: str, activity_text: str, provider: str
+    user_prompt: str, digest: "ActivityDigest", provider: str
 ) -> str:
-    """Turn a user's standing instruction + raw activity into a report prompt.
+    """Turn a user's standing instruction + fetched activity into a prompt.
 
     The user's prompt is the instruction and the activity is the evidence —
     but the activity is *fenced data*, never instructions, even though the
     user's own prompt is honoured as one. That asymmetry is the whole point:
     the person who owns the scheduler gets to direct the report; whoever
     wrote a commit message does not.
+
+    Two things this prompt deliberately does NOT ask for:
+
+    - **Links.** The email renders every item's URL from structured data, so
+      the model is never asked to produce one and therefore cannot invent,
+      drop, or mangle one.
+    - **Coverage claims.** What was actually checked is stated in COVERAGE
+      below, and the model is told not to imply anything beyond it. A report
+      that reads as complete when it only saw three of nine channels is the
+      failure mode here, and the reader cannot detect it.
     """
     label = _PROVIDER_LABEL.get(provider, f"{provider} activity")
-    activity = scrub_untrusted_text(activity_text).strip()
+    activity = scrub_untrusted_text(digest.text).strip()
+    coverage = "\n".join(f"- {note}" for note in digest.notes)
 
     return (
         "You write a short, factual activity report for one person, on their "
@@ -59,13 +75,21 @@ def build_scheduler_report_prompt(
         f"2. If the activity does not contain what the request asks for, say "
         f"so plainly in one line. If there is no activity at all, reply with "
         f"exactly: {NO_ACTIVITY_NOTE}\n"
-        "3. Write prose and short bullet lists a person can skim. No preamble "
+        "3. Never claim or imply coverage beyond what COVERAGE states. If the "
+        "request asks about something outside what was checked (a channel, "
+        "repository, or project that is not listed), say plainly that it was "
+        "not covered rather than answering from what happens to be present.\n"
+        "4. Do NOT write URLs, links, or citation markers. Each item's source "
+        "link is attached automatically after your report; a link you write "
+        "yourself would be a guess.\n"
+        "5. Write prose and short bullet lists a person can skim. No preamble "
         "about being an AI, no restating the request back, no meta-language "
         "about 'the provided data'.\n"
-        "4. Keep it proportionate: a quiet week is a couple of lines, not a "
+        "6. Keep it proportionate: a quiet week is a couple of lines, not a "
         "padded page.\n\n"
         f"THE READER'S STANDING REQUEST:\n{user_prompt.strip()}\n\n"
-        f"{label.upper()} FOR THIS PERIOD:\n"
+        + (f"COVERAGE (what was actually checked):\n{coverage}\n\n" if coverage else "")
+        + f"{label.upper()} FOR THIS PERIOD:\n"
         f"{FENCE_START}\n"
         f"{activity or '(none)'}\n"
         f"{FENCE_END}\n\n"

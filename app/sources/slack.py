@@ -227,6 +227,16 @@ class SlackAdapter(SourceAdapter):
                     break
         return refs
 
+    def channel_labels(self) -> list[str]:
+        """The channels this adapter reads, by name where known.
+
+        Exposed so an activity report can state its own coverage. A Slack
+        connection only ever sees the channels an admin picked and the bot was
+        invited to, so a report that stayed silent about that would imply
+        whole-workspace coverage it never had.
+        """
+        return [self._channel_label(cid) for cid in self._channel_ids]
+
     def fetch_recent_messages(
         self, since: float, *, max_messages: int = 300
     ) -> list[dict]:
@@ -267,10 +277,15 @@ class SlackAdapter(SourceAdapter):
                     collected.append(
                         {
                             "channel": self._channel_label(channel_id),
+                            "channel_id": channel_id,
                             "user": self._display_name(message.get("user")),
                             "text": text,
                             "at": _ts_to_dt(ts),
                             "reply_count": message.get("reply_count", 0),
+                            # Built from channel_id + ts rather than fetched:
+                            # chat.getPermalink would cost one API call PER
+                            # message, and this is the same URL Slack returns.
+                            "permalink": _thread_uri(channel_id, ts),
                         }
                     )
                     if len(collected) >= max_messages:

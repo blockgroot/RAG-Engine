@@ -1,4 +1,4 @@
-"""Fetch "what happened on this service since T", as plain text for a prompt.
+"""Fetch "what happened on this service since T", for a report prompt.
 
 This is the one part of the scheduler that differs per service, and it is
 deliberately *live-read only* — the GitHub pattern (``app/githublive/``),
@@ -7,16 +7,29 @@ not the ingestion pattern. Nothing here writes a ``documents`` row, a
 at run time and then discarded, so there is no sync lifecycle and no
 staleness window to manage.
 
-Each fetcher returns a plain-text digest rather than structured objects,
-because its only consumer is an LLM prompt. Keeping the formatting here (not
-in the runner) mirrors how ``SourceAdapter`` implementations own their own
-format conversion — the caller never learns what a commit or a Slack message
-looks like.
+Each fetcher returns an ``ActivityDigest``: the flattened text an LLM prompt
+consumes, PLUS the same items as structured ``ActivityItem`` records
+carrying a source link, PLUS coverage notes.
+
+**Why items are structured rather than only flattened.** The email renders
+every item's link itself, from this data. The model is never asked to write
+a URL, so it cannot fabricate one, drop one, or mangle one — the failure
+mode with links is silent and expensive, because a plausible-looking wrong
+commit URL is worse than no link at all. Keeping per-service formatting here
+(not in the runner) mirrors how ``SourceAdapter`` implementations own their
+own format conversion — the caller never learns what a commit or a Slack
+message looks like.
+
+**Coverage notes** exist for the same honesty reason as the truncation
+markers: a Slack connection only ever sees the channels an admin picked, so
+a report that said nothing about which channels it read would imply
+whole-workspace coverage it never had.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from ..core.exceptions import ConfigurationError, SourceError
@@ -56,22 +69,60 @@ def _clip(text: str, limit: int = MAX_ENTRY_CHARS) -> str:
     return text[:limit].rstrip() + " […]"
 
 
-def _join_bounded(lines: list[str]) -> str:
-    """Join digest lines, stopping at MAX_DIGEST_CHARS with a marker.
+@dataclass(frozen=True)
+class ActivityItem:
+    """One thing that happened, with a link back to it where one exists.
 
-    Truncation is *marked* rather than silent for the same reason the GitHub
-    diff cap and the Notion fetch bound mark theirs: a report composed from
-    half the evidence while appearing complete is the failure that matters.
+    ``summary`` is the human one-liner (never contains the URL — the email
+    template appends that, so the model never handles a link).
     """
-    out: list[str] = []
+
+    summary: str
+    url: str | None = None
+
+
+@dataclass(frozen=True)
+class ActivityDigest:
+    """Everything one report run knows about the window it covers."""
+
+    items: tuple[ActivityItem, ...] = ()
+    #: Coverage disclosures and truncation warnings, shown to the model AND
+    #: the reader. Never silently dropped.
+    notes: tuple[str, ...] = ()
+    #: Flattened, bounded text for the prompt.
+    text: str = ""
+
+    def __bool__(self) -> bool:
+        """Truthy only when something actually happened.
+
+        Notes alone ("channels checked: …") are not activity — otherwise a
+        quiet week would call the LLM with nothing to summarise, which is
+        exactly where invention happens.
+        """
+        return bool(self.items)
+
+
+def _digest(items: list[ActivityItem], notes: list[str]) -> ActivityDigest:
+    """Bound the item list to the char budget and flatten it for the prompt.
+
+    Truncation drops items from the *end* and records a note, so the reader
+    is told the report is partial rather than being handed half the evidence
+    that looks whole.
+    """
+    kept: list[ActivityItem] = []
+    lines: list[str] = []
     used = 0
-    for line in lines:
+    for item in items:
+        line = _clip(item.summary)
         if used + len(line) + 1 > MAX_DIGEST_CHARS:
-            out.append(_TRUNCATION_MARKER)
+            notes = [*notes, _TRUNCATION_MARKER]
             break
-        out.append(line)
+        kept.append(ActivityItem(summary=line, url=item.url))
+        lines.append(line)
         used += len(line) + 1
-    return "\n".join(out).strip()
+    return ActivityDigest(
+        items=tuple(kept), notes=tuple(notes), text="\n".join(lines).strip()
+    )
 
 
 def fetch_github_activity(
@@ -79,16 +130,17 @@ def fetch_github_activity(
     since: datetime,
     *,
     workspace_id: str | None = None,
-) -> str:
+) -> ActivityDigest:
     """Commits pushed across this connection's authorized repos since ``since``.
 
     Reuses ``RestGitHubReader.list_commits(since=)``, which already speaks
     GitHub's own ``since`` parameter — no adapter change was needed for
     GitHub, unlike every other source.
 
-    A repo that fails individually is skipped with a warning rather than
-    failing the whole report: one archived or permission-changed repo should
-    not cost the user every other repo's activity.
+    A repo that fails individually is skipped, but the skip is *disclosed* in
+    the notes rather than only logged: one archived or permission-changed
+    repo should not cost the user every other repo's activity, and it must
+    not silently make the report look complete either.
     """
     from ..githublive import build_github_reader
     from ..githublive.scope import load_scope
@@ -96,14 +148,16 @@ def fetch_github_activity(
     scope = load_scope(org_id, workspace_id)
     reader = build_github_reader(org_id, workspace_id)
 
-    lines: list[str] = []
     repos = list(scope.repos)[:MAX_REPOS]
+    notes: list[str] = []
     if len(scope.repos) > MAX_REPOS:
-        lines.append(
-            f"[note: only the first {MAX_REPOS} of {len(scope.repos)} "
-            "authorized repositories were checked]"
+        notes.append(
+            f"Only the first {MAX_REPOS} of {len(scope.repos)} authorized "
+            "repositories were checked."
         )
 
+    items: list[ActivityItem] = []
+    unreachable: list[str] = []
     for repo in repos:
         try:
             commits = reader.list_commits(
@@ -112,21 +166,33 @@ def fetch_github_activity(
                 limit=MAX_COMMITS_PER_REPO,
             )
         except SourceError as exc:
-            logger.warning(
-                "Scheduler: skipping repo %s (%s)", repo.full_name, exc
-            )
+            logger.warning("Scheduler: skipping repo %s (%s)", repo.full_name, exc)
+            unreachable.append(repo.full_name)
             continue
-        if not commits:
-            continue
-        lines.append(f"\nRepository {repo.full_name}:")
         for commit in commits:
             when = commit.date.strftime("%Y-%m-%d") if commit.date else "unknown date"
             author = commit.author or "unknown author"
-            lines.append(
-                _clip(f"- [{when}] {commit.sha[:7]} {commit.message} (by {author})")
+            items.append(
+                ActivityItem(
+                    summary=(
+                        f"[{when}] {repo.full_name} {commit.sha[:7]} "
+                        f"{commit.message} (by {author})"
+                    ),
+                    # Prefer the URL GitHub itself returned; fall back to the
+                    # canonical form only if the API omitted it.
+                    url=commit.url
+                    or f"https://github.com/{repo.full_name}/commit/{commit.sha}",
+                )
             )
 
-    return _join_bounded(lines)
+    checked = [r.full_name for r in repos if r.full_name not in unreachable]
+    if checked:
+        notes.append(f"Repositories checked: {', '.join(checked)}.")
+    if unreachable:
+        notes.append(
+            "Could not be read this run: " + ", ".join(unreachable) + "."
+        )
+    return _digest(items, notes)
 
 
 def fetch_slack_activity(
@@ -134,8 +200,14 @@ def fetch_slack_activity(
     since: datetime,
     *,
     workspace_id: str | None = None,
-) -> str:
-    """Messages posted in this connection's configured channels since ``since``."""
+) -> ActivityDigest:
+    """Messages posted in this connection's configured channels since ``since``.
+
+    Always discloses which channels were read. A Slack connection only ever
+    sees the channels an admin picked and the bot was invited to, so a report
+    that stayed silent about scope would read as whole-workspace coverage it
+    never had — and the reader has no way to know otherwise.
+    """
     from ..auth.credentials import get_connection_config, get_live_connection_token
     from ..sources import build_source_adapter
 
@@ -148,18 +220,29 @@ def fetch_slack_activity(
     messages = adapter.fetch_recent_messages(
         since.timestamp(), max_messages=MAX_SLACK_MESSAGES
     )
-    lines: list[str] = []
+
+    channels = adapter.channel_labels()
+    notes: list[str] = []
+    if channels:
+        notes.append(
+            "Channels checked: " + ", ".join(f"#{c}" for c in channels) + "."
+        )
+
+    items: list[ActivityItem] = []
     for message in messages:
         when = message["at"].strftime("%Y-%m-%d %H:%M") if message["at"] else "unknown"
         replies = message.get("reply_count") or 0
         thread_note = f" [{replies} replies]" if replies else ""
-        lines.append(
-            _clip(
-                f"- [{when}] #{message['channel']} {message['user']}: "
-                f"{message['text']}{thread_note}"
+        items.append(
+            ActivityItem(
+                summary=(
+                    f"[{when}] #{message['channel']} {message['user']}: "
+                    f"{message['text']}{thread_note}"
+                ),
+                url=message.get("permalink"),
             )
         )
-    return _join_bounded(lines)
+    return _digest(items, notes)
 
 
 def fetch_linear_activity(
@@ -167,7 +250,7 @@ def fetch_linear_activity(
     since: datetime,
     *,
     workspace_id: str | None = None,
-) -> str:
+) -> ActivityDigest:
     """Issues updated in this connection's Linear workspace since ``since``.
 
     Unlike Slack and GitHub, Linear has **two** independent credential paths
@@ -186,7 +269,7 @@ def fetch_linear_activity(
     adapter = build_source_adapter("linear", token=token, config=config)
 
     issues = adapter.fetch_recent_issues(since, max_issues=MAX_LINEAR_ISSUES)
-    lines: list[str] = []
+    items: list[ActivityItem] = []
     for issue in issues:
         when = issue["at"].strftime("%Y-%m-%d %H:%M") if issue["at"] else "unknown"
         who = f" · {issue['assignee']}" if issue["assignee"] else " · unassigned"
@@ -195,13 +278,18 @@ def fetch_linear_activity(
         # fixed Linear vocabulary the model can reason about.
         state = issue["state"] or "unknown state"
         kind = f" ({issue['state_type']})" if issue["state_type"] else ""
-        lines.append(
-            _clip(
-                f"- [{when}] {issue['identifier']} {issue['title']} — "
-                f"{state}{kind}{who}"
+        items.append(
+            ActivityItem(
+                summary=(
+                    f"[{when}] {issue['identifier']} {issue['title']} — "
+                    f"{state}{kind}{who}"
+                ),
+                url=issue.get("url") or None,
             )
         )
-    return _join_bounded(lines)
+    # Linear grants no per-team subset here, so scope is "whatever this token
+    # can see" — stating that is more honest than listing nothing.
+    return _digest(items, ["Scope: all Linear issues visible to this connection."])
 
 
 _FETCHERS = {
@@ -217,8 +305,8 @@ def fetch_activity(
     since: datetime,
     *,
     workspace_id: str | None = None,
-) -> str:
-    """Activity digest for one provider since ``since``. Empty string if none.
+) -> ActivityDigest:
+    """Activity digest for one provider since ``since``.
 
     Raises ``ConfigurationError`` for a provider with no fetcher rather than
     returning empty: a scheduler that silently reports "no activity" every

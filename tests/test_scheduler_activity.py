@@ -18,6 +18,7 @@ from app.core.exceptions import ConfigurationError, SourceError
 from app.githublive.base import CommitSummary
 from app.githublive.repos import InstallationScope, RepoRef
 from app.schedulers import activity
+from app.schedulers.activity import ActivityItem
 from app.sources.linear import LinearAdapter
 from app.sources.slack import SlackAdapter
 
@@ -94,17 +95,19 @@ def test_slack_activity_digest_is_plain_text(monkeypatch):
     adapter = _FakeSlack({"C1": [_message("1750000000.0", "deployed v2", reply_count=3)]})
     _patch_slack_wiring(monkeypatch, adapter)
 
-    text = activity.fetch_slack_activity("org-1", SINCE)
+    digest = activity.fetch_slack_activity("org-1", SINCE)
 
-    assert "deployed v2" in text
-    assert "#C1" in text
-    assert "3 replies" in text
+    assert "deployed v2" in digest.text
+    assert "#C1" in digest.text
+    assert "3 replies" in digest.text
 
 
 def test_slack_activity_is_empty_when_nothing_happened(monkeypatch):
     _patch_slack_wiring(monkeypatch, _FakeSlack({"C1": []}))
 
-    assert activity.fetch_slack_activity("org-1", SINCE) == ""
+    digest = activity.fetch_slack_activity("org-1", SINCE)
+    assert not digest  # falsy: no items
+    assert digest.text == ""
 
 
 def _patch_slack_wiring(monkeypatch, adapter):
@@ -173,12 +176,12 @@ def test_github_fetch_passes_since_and_formats_commits(monkeypatch):
     reader = _FakeReader({"acme/api": [_commit("acme/api", "abc1234def", "fix login")]})
     _patch_github_wiring(monkeypatch, reader, ["acme/api"])
 
-    text = activity.fetch_github_activity("org-1", SINCE)
+    digest = activity.fetch_github_activity("org-1", SINCE)
 
     assert reader.calls == [("acme/api", SINCE.isoformat())]
-    assert "acme/api" in text
-    assert "abc1234" in text  # short sha, not the full one
-    assert "fix login" in text
+    assert "acme/api" in digest.text
+    assert "abc1234" in digest.text  # short sha, not the full one
+    assert "fix login" in digest.text
 
 
 def test_github_one_bad_repo_does_not_lose_the_others(monkeypatch):
@@ -189,16 +192,19 @@ def test_github_one_bad_repo_does_not_lose_the_others(monkeypatch):
     )
     _patch_github_wiring(monkeypatch, reader, ["acme/bad", "acme/good"])
 
-    text = activity.fetch_github_activity("org-1", SINCE)
+    digest = activity.fetch_github_activity("org-1", SINCE)
 
-    assert "still works" in text
-    assert "acme/bad" not in text
+    assert "still works" in digest.text
+    assert "acme/bad" not in digest.text
+    # The skip is disclosed, not just logged — a silent skip would make a
+    # partial report look complete.
+    assert any("acme/bad" in n for n in digest.notes)
 
 
 def test_github_activity_is_empty_when_no_commits(monkeypatch):
     _patch_github_wiring(monkeypatch, _FakeReader({}), ["acme/api"])
 
-    assert activity.fetch_github_activity("org-1", SINCE) == ""
+    assert not activity.fetch_github_activity("org-1", SINCE)
 
 
 def test_github_marks_when_repo_list_was_truncated(monkeypatch):
@@ -206,9 +212,9 @@ def test_github_marks_when_repo_list_was_truncated(monkeypatch):
     names = [f"acme/repo{i}" for i in range(activity.MAX_REPOS + 5)]
     _patch_github_wiring(monkeypatch, _FakeReader({}), names)
 
-    text = activity.fetch_github_activity("org-1", SINCE)
+    digest = activity.fetch_github_activity("org-1", SINCE)
 
-    assert f"first {activity.MAX_REPOS}" in text
+    assert any(f"first {activity.MAX_REPOS}" in n for n in digest.notes)
 
 
 # --------------------------------------------------------------------------
@@ -217,10 +223,9 @@ def test_github_marks_when_repo_list_was_truncated(monkeypatch):
 
 
 def test_dispatch_routes_to_the_right_fetcher(monkeypatch):
-    monkeypatch.setattr(
-        activity, "_FETCHERS", {"slack": lambda *a, **k: "slack digest"}
-    )
-    assert activity.fetch_activity("slack", "org-1", SINCE) == "slack digest"
+    sentinel = activity.ActivityDigest(text="slack digest")
+    monkeypatch.setattr(activity, "_FETCHERS", {"slack": lambda *a, **k: sentinel})
+    assert activity.fetch_activity("slack", "org-1", SINCE) is sentinel
 
 
 def test_dispatch_raises_for_a_provider_with_no_fetcher():
@@ -254,23 +259,25 @@ def test_a_short_entry_is_untouched():
 
 def test_the_digest_stops_at_the_char_budget_with_a_marker():
     """Three real Slack messages measured 6,637 chars — count alone can't bound this."""
-    lines = [f"- entry {i} " + "y" * 1500 for i in range(200)]
+    items = [ActivityItem(f"entry {i} " + "y" * 1500) for i in range(200)]
 
-    digest = activity._join_bounded(lines)
+    digest = activity._digest(items, [])
 
-    assert len(digest) <= activity.MAX_DIGEST_CHARS + len(activity._TRUNCATION_MARKER) + 1
-    assert activity._TRUNCATION_MARKER in digest
-    assert "entry 0" in digest  # kept the earliest, dropped the tail
+    assert len(digest.text) <= activity.MAX_DIGEST_CHARS
+    assert activity._TRUNCATION_MARKER in digest.notes
+    assert "entry 0" in digest.text  # kept the earliest, dropped the tail
+    assert len(digest.items) < len(items)
 
 
 def test_a_normal_digest_is_never_truncated():
     """The bound must not fire on ordinary activity."""
-    lines = [f"- [2026-08-0{i}] sha{i} did a thing (by dev)" for i in range(1, 9)]
+    items = [ActivityItem(f"[2026-08-0{i}] sha{i} did a thing (by dev)") for i in range(1, 9)]
 
-    digest = activity._join_bounded(lines)
+    digest = activity._digest(items, [])
 
-    assert activity._TRUNCATION_MARKER not in digest
-    assert digest.count("\n") == 7
+    assert activity._TRUNCATION_MARKER not in digest.notes
+    assert len(digest.items) == 8
+    assert digest.text.count("\n") == 7
 
 
 def test_slack_digest_applies_the_bounds(monkeypatch):
@@ -279,9 +286,9 @@ def test_slack_digest_applies_the_bounds(monkeypatch):
     )
     _patch_slack_wiring(monkeypatch, adapter)
 
-    text = activity.fetch_slack_activity("org-1", SINCE)
+    digest = activity.fetch_slack_activity("org-1", SINCE)
 
-    assert len(text) <= activity.MAX_DIGEST_CHARS + len(activity._TRUNCATION_MARKER) + 1
+    assert len(digest.text) <= activity.MAX_DIGEST_CHARS
 
 
 def test_github_digest_applies_the_bounds(monkeypatch):
@@ -291,9 +298,9 @@ def test_github_digest_applies_the_bounds(monkeypatch):
     )
     _patch_github_wiring(monkeypatch, reader, ["acme/api"])
 
-    text = activity.fetch_github_activity("org-1", SINCE)
+    digest = activity.fetch_github_activity("org-1", SINCE)
 
-    assert len(text) <= activity.MAX_DIGEST_CHARS + len(activity._TRUNCATION_MARKER) + 1
+    assert len(digest.text) <= activity.MAX_DIGEST_CHARS
 
 
 # --------------------------------------------------------------------------
@@ -385,13 +392,13 @@ def test_linear_activity_digest_names_the_issue_state_and_owner(monkeypatch):
     monkeypatch.setattr("app.auth.credentials.get_connection_config", lambda *a, **k: {})
     monkeypatch.setattr("app.sources.build_source_adapter", lambda *a, **k: adapter)
 
-    text = activity.fetch_linear_activity("org-1", SINCE)
+    digest = activity.fetch_linear_activity("org-1", SINCE)
 
-    assert "ENG-42" in text
-    assert "migrate payments" in text
-    assert "Done" in text
-    assert "completed" in text
-    assert "Ada" in text
+    assert "ENG-42" in digest.text
+    assert "migrate payments" in digest.text
+    assert "Done" in digest.text
+    assert "completed" in digest.text
+    assert "Ada" in digest.text
 
 
 def test_linear_activity_uses_the_oauth_credential_path(monkeypatch):
@@ -427,7 +434,7 @@ def test_linear_activity_is_empty_when_nothing_moved(monkeypatch):
         "app.sources.build_source_adapter", lambda *a, **k: _FakeLinear([_page([])])
     )
 
-    assert activity.fetch_linear_activity("org-1", SINCE) == ""
+    assert not activity.fetch_linear_activity("org-1", SINCE)
 
 
 def test_linear_digest_applies_the_size_bounds(monkeypatch):
@@ -438,9 +445,9 @@ def test_linear_digest_applies_the_size_bounds(monkeypatch):
     monkeypatch.setattr("app.auth.credentials.get_connection_config", lambda *a, **k: {})
     monkeypatch.setattr("app.sources.build_source_adapter", lambda *a, **k: adapter)
 
-    text = activity.fetch_linear_activity("org-1", SINCE)
+    digest = activity.fetch_linear_activity("org-1", SINCE)
 
-    assert len(text) <= activity.MAX_DIGEST_CHARS + len(activity._TRUNCATION_MARKER) + 1
+    assert len(digest.text) <= activity.MAX_DIGEST_CHARS
 
 
 # --------------------------------------------------------------------------
@@ -455,3 +462,122 @@ def test_every_supported_provider_has_a_fetcher():
     from app.schedulers.store import SUPPORTED_PROVIDERS
 
     assert set(SUPPORTED_PROVIDERS) == set(activity._FETCHERS)
+
+
+# --------------------------------------------------------------------------
+# Source traceability per provider
+# --------------------------------------------------------------------------
+
+
+def test_slack_items_carry_a_permalink_built_without_an_extra_api_call(monkeypatch):
+    """chat.getPermalink would cost one call PER message; channel_id + ts is
+    the same URL for free."""
+    adapter = _FakeSlack({"C1": [_message("1750000000.123456", "deployed v2")]})
+    _patch_slack_wiring(monkeypatch, adapter)
+
+    digest = activity.fetch_slack_activity("org-1", SINCE)
+
+    url = digest.items[0].url
+    assert url.startswith("https://slack.com/archives/C1/p")
+    assert "." not in url.rsplit("/p", 1)[1]  # ts flattened, as Slack expects
+    # Only conversations.history was called — no per-message permalink lookup.
+    assert {c["method"] for c in adapter.calls} == {"conversations.history"}
+
+
+def test_github_items_carry_the_commit_url(monkeypatch):
+    reader = _FakeReader({"acme/api": [_commit("acme/api", "abc1234def", "fix login")]})
+    _patch_github_wiring(monkeypatch, reader, ["acme/api"])
+
+    digest = activity.fetch_github_activity("org-1", SINCE)
+
+    assert digest.items[0].url == "https://github.com/acme/api/commit/abc1234def"
+
+
+def test_linear_items_carry_the_issue_url(monkeypatch):
+    adapter = _FakeLinear([_page([_issue("ENG-42", "migrate payments")])])
+    monkeypatch.setattr(
+        "app.auth.credentials.get_live_connection_token", lambda *a, **k: "lin_fake"
+    )
+    monkeypatch.setattr("app.auth.credentials.get_connection_config", lambda *a, **k: {})
+    monkeypatch.setattr("app.sources.build_source_adapter", lambda *a, **k: adapter)
+
+    digest = activity.fetch_linear_activity("org-1", SINCE)
+
+    assert digest.items[0].url == "https://linear.app/acme/issue/ENG-42"
+
+
+def test_no_summary_contains_a_url():
+    """Summaries stay link-free: the email attaches URLs, so a summary that
+    embedded one would render it twice."""
+    item = activity.ActivityItem("[2026-08-01] abc1234 fix login (by dev)", "https://x/1")
+
+    assert "http" not in item.summary
+
+
+# --------------------------------------------------------------------------
+# Coverage disclosure per provider
+# --------------------------------------------------------------------------
+
+
+def test_slack_always_discloses_which_channels_it_read(monkeypatch):
+    """A Slack connection only sees channels an admin picked; silence about
+    that reads as whole-workspace coverage."""
+    adapter = _FakeSlack({"C1": [_message("1.0", "hi")]})
+    _patch_slack_wiring(monkeypatch, adapter)
+
+    digest = activity.fetch_slack_activity("org-1", SINCE)
+
+    assert any("Channels checked" in n and "#C1" in n for n in digest.notes)
+
+
+def test_slack_discloses_channels_even_when_nothing_was_posted(monkeypatch):
+    """A quiet week must still say what was checked."""
+    _patch_slack_wiring(monkeypatch, _FakeSlack({"C1": []}))
+
+    digest = activity.fetch_slack_activity("org-1", SINCE)
+
+    assert not digest  # no activity
+    assert any("Channels checked" in n for n in digest.notes)  # …but scope is stated
+
+
+def test_github_discloses_which_repositories_it_read(monkeypatch):
+    reader = _FakeReader({"acme/api": [_commit("acme/api", "1111111", "x")]})
+    _patch_github_wiring(monkeypatch, reader, ["acme/api"])
+
+    digest = activity.fetch_github_activity("org-1", SINCE)
+
+    assert any("Repositories checked" in n and "acme/api" in n for n in digest.notes)
+
+
+def test_linear_states_its_scope(monkeypatch):
+    adapter = _FakeLinear([_page([_issue("ENG-1", "x")])])
+    monkeypatch.setattr(
+        "app.auth.credentials.get_live_connection_token", lambda *a, **k: "lin_fake"
+    )
+    monkeypatch.setattr("app.auth.credentials.get_connection_config", lambda *a, **k: {})
+    monkeypatch.setattr("app.sources.build_source_adapter", lambda *a, **k: adapter)
+
+    digest = activity.fetch_linear_activity("org-1", SINCE)
+
+    assert any("Scope" in n for n in digest.notes)
+
+
+def test_every_fetcher_discloses_coverage(monkeypatch):
+    """Pinned as a cross-provider rule, not per-connector goodwill: a new
+    fetcher that returns no notes would silently imply full coverage."""
+    reader = _FakeReader({"acme/api": [_commit("acme/api", "1", "x")]})
+    _patch_github_wiring(monkeypatch, reader, ["acme/api"])
+    assert activity.fetch_github_activity("org-1", SINCE).notes
+
+    _patch_slack_wiring(monkeypatch, _FakeSlack({"C1": [_message("1.0", "hi")]}))
+    assert activity.fetch_slack_activity("org-1", SINCE).notes
+
+    monkeypatch.setattr(
+        "app.sources.build_source_adapter",
+        lambda *a, **k: _FakeLinear([_page([_issue("E-1", "x")])]),
+    )
+    monkeypatch.setattr(
+        "app.auth.credentials.get_live_connection_token", lambda *a, **k: "t"
+    )
+    monkeypatch.setattr("app.auth.credentials.get_connection_config", lambda *a, **k: {})
+    assert activity.fetch_linear_activity("org-1", SINCE).notes

@@ -17,6 +17,7 @@ from app.auth.users import invite_member
 from app.config.settings import SchedulerSettings
 from app.db.connection import get_connection
 from app.jobs import worker as jobs_worker
+from app.schedulers.activity import ActivityDigest, ActivityItem
 from app.schedulers import store as sched_store
 from app.schedulers import worker as sched_worker
 
@@ -222,11 +223,22 @@ def test_end_to_end_produces_a_real_report_with_the_configured_llm(
     sched = _create(scheduler_org, "Summarise what the team worked on.")
     _make_due(sched.id)
 
+    items = (
+        ActivityItem(
+            "[2026-08-19 10:02] #eng alice: merged the billing retry fix",
+            "https://slack.com/archives/C1/p1000",
+        ),
+        ActivityItem(
+            "[2026-08-19 14:40] #eng bob: staging deploy is green",
+            "https://slack.com/archives/C1/p2000",
+        ),
+    )
     monkeypatch.setattr(
         "app.schedulers.runner.fetch_activity",
-        lambda provider, org, since, workspace_id=None: (
-            "- [2026-08-19 10:02] #eng alice: merged the billing retry fix\n"
-            "- [2026-08-19 14:40] #eng bob: staging deploy is green"
+        lambda provider, org, since, workspace_id=None: ActivityDigest(
+            items=items,
+            notes=("Channels checked: #eng.",),
+            text="\n".join(i.summary for i in items),
         ),
     )
     monkeypatch.setenv("EMAIL_SENDER", "console")
@@ -243,3 +255,7 @@ def test_end_to_end_produces_a_real_report_with_the_configured_llm(
     assert "[email:console]" in printed
     # The model was given billing/deploy activity; a real report mentions it.
     assert "billing" in printed.lower() or "deploy" in printed.lower()
+    # Source links come from the template, not the model — so they are always
+    # present regardless of what the LLM chose to write.
+    assert "https://slack.com/archives/C1/p1000" in printed
+    assert "Channels checked: #eng." in printed

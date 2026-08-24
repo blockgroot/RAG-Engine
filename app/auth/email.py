@@ -29,6 +29,7 @@ from __future__ import annotations
 import html
 import logging
 import smtplib
+from collections.abc import Sequence
 from email.message import EmailMessage
 
 import httpx
@@ -279,6 +280,8 @@ def send_scheduler_report_email(
     provider: str,
     frequency: str,
     scheduler_prompt: str,
+    items: "Sequence[object]" = (),
+    notes: "Sequence[str]" = (),
     settings: EmailSettings | None = None,
 ) -> None:
     """Deliver one run of a user's recurring activity report.
@@ -290,14 +293,36 @@ def send_scheduler_report_email(
     footer instead, so a reader who forgot which of their schedulers this is
     can tell — and, since a user may have several on the same service, that
     footer is the only thing distinguishing two otherwise-identical mails.
+
+    ``items`` are the ``ActivityItem`` records the report was built from, and
+    their links are rendered HERE rather than by the model. That is the whole
+    point: a link the model wrote would be a guess, and a plausible-looking
+    wrong commit URL is worse than no link, because the reader has no way to
+    tell. Rendering them from the same structured data the fetcher produced
+    makes a fabricated or dropped link impossible.
+
+    ``notes`` state what was actually checked (channels, repositories) and
+    whether the list was truncated, so the report cannot read as complete
+    coverage it never had.
     """
-    body = (
-        f"{report_text.strip()}\n\n"
-        "—\n"
+    parts = [report_text.strip()]
+
+    if items:
+        lines = []
+        for item in items:
+            summary = getattr(item, "summary", str(item))
+            url = getattr(item, "url", None)
+            lines.append(f"- {summary}" + (f"\n  {url}" if url else ""))
+        parts.append("Activity this report was built from:\n" + "\n".join(lines))
+
+    if notes:
+        parts.append("\n".join(f"({note})" for note in notes))
+
+    parts.append(
         f"This is your {frequency} {provider} report, generated from your "
-        f"standing request:\n"
-        f'  "{scheduler_prompt.strip()}"\n'
+        f"standing request:\n  \"{scheduler_prompt.strip()}\""
     )
+    body = "\n\n—\n\n".join(parts) + "\n"
     _dispatch(to, f"Your {frequency} {provider} report", body, settings)
 
 
@@ -308,6 +333,8 @@ def send_scheduler_report_email_safe(
     provider: str,
     frequency: str,
     scheduler_prompt: str,
+    items: "Sequence[object]" = (),
+    notes: "Sequence[str]" = (),
 ) -> None:
     """Worker wrapper: a mail failure must not fail the scheduler run.
 
@@ -324,6 +351,8 @@ def send_scheduler_report_email_safe(
             provider=provider,
             frequency=frequency,
             scheduler_prompt=scheduler_prompt,
+            items=items,
+            notes=notes,
         )
     except (ConfigurationError, ProviderError) as exc:
         logger.warning("Scheduler report email to %s failed: %s", to, exc)
