@@ -56,6 +56,11 @@ DEFAULT_GITHUB_FALLBACK_RESPONSE = (
     "installation."
 )
 
+DEFAULT_CONFLUENCE_FALLBACK_RESPONSE = (
+    "I couldn't find that in the connected Confluence pages. It may not be in "
+    "the synced space, or hasn't been ingested yet."
+)
+
 DEFAULT_DB_POOL_MIN_SIZE = 1
 DEFAULT_DB_POOL_MAX_SIZE = 10
 DEFAULT_KEYWORD_CANDIDATE_LIMIT = 2000
@@ -354,6 +359,20 @@ class DriveAgentSettings:
 
 
 @dataclass(frozen=True)
+class ConfluenceAgentSettings:
+    """Confluence-agent-specific settings."""
+
+    fallback_response: str = DEFAULT_CONFLUENCE_FALLBACK_RESPONSE
+
+    @classmethod
+    def from_env(cls) -> "ConfluenceAgentSettings":
+        return cls(
+            fallback_response=os.getenv("CONFLUENCE_AGENT_FALLBACK_RESPONSE")
+            or DEFAULT_CONFLUENCE_FALLBACK_RESPONSE,
+        )
+
+
+@dataclass(frozen=True)
 class NotionSettings:
     """Configuration for the Notion content source (Phase 4, per-org since Phase 9).
 
@@ -500,6 +519,91 @@ class LinearSettings:
         raise ConfigurationError(
             "No Linear token configured. Set LINEAR_TOKEN (default) or a per-org "
             "LINEAR_TOKEN_<NAME> and pass its name to the ingestion run."
+        )
+
+
+@dataclass(frozen=True)
+class ConfluenceCredential:
+    """One org's resolved Confluence credential — a site is required, unlike
+    Notion/Linear, because Confluence Cloud has no single global API host."""
+
+    base_url: str
+    email: str
+    token: str
+
+
+@dataclass(frozen=True)
+class ConfluenceSettings:
+    """Configuration for the Confluence content source.
+
+    Auth is HTTP Basic with an Atlassian *API token* (email + token) — the
+    simplest viable auth given there's no OAuth app to review, same tradeoff
+    Notion made in Phase 4 and Linear made for its legacy path. Unlike those,
+    a Confluence credential also needs the tenant's own site URL (e.g.
+    ``https://acme.atlassian.net/wiki``), since Confluence Cloud has no shared
+    API host to call — so each org needs THREE env vars, not one.
+
+    Per-org discovery is generic, same as ``NotionSettings``/``LinearSettings``:
+    every ``CONFLUENCE_BASE_URL_<NAME>`` / ``_EMAIL_<NAME>`` / ``_TOKEN_<NAME>``
+    triple becomes one entry keyed by ``<name>`` (lower-cased). Nothing hardcodes
+    how many orgs exist. ``resolve(name)`` returns only that org's credential —
+    never falling back to another org's or the bare default — same "the tenant
+    boundary must not depend on our code remembering to check" discipline as
+    ``NotionSettings.resolve_token``.
+    """
+
+    base_url: str | None
+    email: str | None
+    token: str | None
+    credentials: dict[str, ConfluenceCredential] = field(default_factory=dict)
+
+    _BASE_URL_PREFIX = "CONFLUENCE_BASE_URL_"
+    _EMAIL_PREFIX = "CONFLUENCE_EMAIL_"
+    _TOKEN_PREFIX = "CONFLUENCE_TOKEN_"
+
+    @classmethod
+    def from_env(cls) -> "ConfluenceSettings":
+        names = {
+            key[len(cls._TOKEN_PREFIX):].lower()
+            for key in os.environ
+            if key.startswith(cls._TOKEN_PREFIX) and len(key) > len(cls._TOKEN_PREFIX)
+        }
+        credentials: dict[str, ConfluenceCredential] = {}
+        for name in names:
+            base_url = os.getenv(f"{cls._BASE_URL_PREFIX}{name.upper()}")
+            email = os.getenv(f"{cls._EMAIL_PREFIX}{name.upper()}")
+            token = os.getenv(f"{cls._TOKEN_PREFIX}{name.upper()}")
+            if base_url and email and token:
+                credentials[name] = ConfluenceCredential(base_url, email, token)
+        return cls(
+            base_url=os.getenv("CONFLUENCE_BASE_URL"),
+            email=os.getenv("CONFLUENCE_EMAIL"),
+            token=os.getenv("CONFLUENCE_TOKEN"),
+            credentials=credentials,
+        )
+
+    def resolve(self, name: str | None = None) -> ConfluenceCredential:
+        """Return the (base_url, email, token) credential for ``name``, or the
+        default. Raises ``ConfigurationError`` if incomplete/missing."""
+        from ..core.exceptions import ConfigurationError
+
+        if name:
+            credential = self.credentials.get(name.lower())
+            if not credential:
+                available = ", ".join(sorted(self.credentials)) or "(none configured)"
+                raise ConfigurationError(
+                    f"No Confluence credential named {name!r}. Set "
+                    f"CONFLUENCE_BASE_URL_{name.upper()} / _EMAIL_{name.upper()} / "
+                    f"_TOKEN_{name.upper()} in your .env. Configured org "
+                    f"credentials: {available}."
+                )
+            return credential
+        if self.base_url and self.email and self.token:
+            return ConfluenceCredential(self.base_url, self.email, self.token)
+        raise ConfigurationError(
+            "No Confluence credential configured. Set CONFLUENCE_BASE_URL / "
+            "_EMAIL / _TOKEN (default), or a per-org CONFLUENCE_BASE_URL_<NAME> "
+            "/ _EMAIL_<NAME> / _TOKEN_<NAME> and pass its name to the ingestion run."
         )
 
 

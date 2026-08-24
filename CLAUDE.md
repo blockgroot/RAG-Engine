@@ -504,9 +504,35 @@ their policy documents; their employees ask questions and get answers grounded i
   evoking Linear's own swoosh-into-a-circle mark — same "reads as X at a
   glance, not a pixel copy" approach as the existing `SendgridMark` (no
   licensed asset here either).
+- **Confluence is a fifth ingested source (`app/sources/confluence.py`,
+  branch `feature/confluence-integration`), API-token-only — no OAuth flow
+  yet.** Same shape as Notion/Linear: each Confluence *page* (title +
+  `export_view` HTML body, converted to plain text) is one document. Auth is
+  Atlassian's HTTP Basic (email + API token) — the simplest viable auth given
+  there's no OAuth app registered, the same tradeoff Notion made in Phase 4
+  and Linear made for its legacy path. Unlike Notion/Linear, a Confluence
+  credential needs a THIRD piece — the tenant's own site URL (Confluence
+  Cloud has no shared API host) — so per-org discovery reads three env vars
+  per org (`CONFLUENCE_BASE_URL_<NAME>` / `_EMAIL_<NAME>` / `_TOKEN_<NAME>`,
+  `ConfluenceSettings.resolve` in `app/config/settings.py`), still with the
+  same no-fallback discipline as `NotionSettings.resolve_token`. HTML→text
+  uses the stdlib `html.parser.HTMLParser`, not a new dependency — Confluence
+  is the first adapter here to face literal HTML rather than a block-tree API
+  (Notion) or GraphQL (Linear), and adding `bs4`/`lxml` for tag-stripping
+  would violate the same dependency-light reasoning that kept Notion on the
+  official SDK over a LlamaIndex reader. `ConfluenceAgent` + its own
+  `CONFLUENCE_PROMPT_PROFILE` follow the established per-source-agent split
+  (§ below) — a Policies-tab answer must never silently blend Confluence
+  content with Notion/Drive/Linear. **Deliberately deferred, matching Notion's
+  own Phase-4 shape before OAuth arrived:** no "Connect Confluence" self-serve
+  flow, no admin Sources-page card, no frontend wiring at all — onboarding an
+  org today means the manual `scripts/ingest_confluence.py --org … --token …`
+  path only. Add OAuth + the frontend card later exactly as Notion's Phase
+  10-14 did, when a real Atlassian OAuth app is registered.
 - **Every ingested source gets its OWN pinned agent — `SlackAgent`, `LinearAgent`,
-  `NotionAgent`, `DriveAgent` — never one combined corpus, and routing between
-  them is now a LangGraph graph, not a hand-rolled if/elif.** The platform
+  `NotionAgent`, `DriveAgent`, `ConfluenceAgent` — never one combined corpus,
+  and routing between them is now a LangGraph graph, not a hand-rolled
+  if/elif.** The platform
   stopped being "a policy Q&A tool that happens to read Notion" and became a
   general connector platform: a company may use Notion and Google Drive for
   *unrelated* content (not just company policy), so `PolicyAgent`'s original
@@ -844,10 +870,10 @@ app/
                 #   Phase 8: incremental summary update + pre-retrieval reuse check.
   reranker/     # base.py (Reranker) + local.py (CrossEncoder) + factory.py. P6
                 #   cross-encoder reranking of the candidate pool (bge-reranker-v2-m3).
-  sources/      # base.py (SourceAdapter) + notion.py + google_drive.py +
+  sources/      # base.py (SourceAdapter) + notion.py + google_drive.py + slack.py +
+                #   linear.py + confluence.py (API-token only, no OAuth yet) +
                 #   google_drive_utils.py (folder URL parse + files.get validate) +
-                #   factory.py. External content sources (Notion + Google Drive;
-                #   GitHub/Slack later) behind one interface.
+                #   factory.py. External content sources behind one interface.
   memory/       # base.py (ConversationStore) + pg_store.py + factory.py. Org-scoped
                 #   conversation history (turns + running summary) for follow-ups.
                 #   P8: incremental summary update + set_last_retrieval/get_last_retrieval

@@ -25,6 +25,7 @@ knowing any of that.
 """
 
 from .base import Agent, AgentResponse, Citation
+from .confluence_agent import ConfluenceAgent
 from .drive_agent import DriveAgent
 from .github_agent import GitHubAgent
 from .linear_agent import LinearAgent
@@ -34,6 +35,7 @@ from .rag_pipeline_agent import RagPipelineAgent
 from .slack_agent import SlackAgent
 from .workspace_agent import WorkspaceAgent
 from .factory import (
+    build_confluence_agent,
     build_drive_agent,
     build_github_agent,
     build_linear_agent,
@@ -47,6 +49,7 @@ __all__ = [
     "Agent",
     "AgentResponse",
     "Citation",
+    "ConfluenceAgent",
     "DriveAgent",
     "GitHubAgent",
     "LinearAgent",
@@ -55,6 +58,7 @@ __all__ = [
     "RagPipelineAgent",
     "SlackAgent",
     "WorkspaceAgent",
+    "build_confluence_agent",
     "build_drive_agent",
     "build_github_agent",
     "build_linear_agent",

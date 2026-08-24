@@ -7,9 +7,15 @@ adding a branch here (keyed on ``SOURCE_TYPE``) — callers don't change.
 
 from __future__ import annotations
 
-from ..config.settings import DEFAULT_SOURCE_TYPE, LinearSettings, NotionSettings
+from ..config.settings import (
+    DEFAULT_SOURCE_TYPE,
+    ConfluenceSettings,
+    LinearSettings,
+    NotionSettings,
+)
 from ..core.exceptions import ConfigurationError
 from .base import SourceAdapter
+from .confluence import ConfluenceAdapter
 from .google_drive import GoogleDriveAdapter
 from .linear import LinearAdapter
 from .notion import NotionAdapter
@@ -92,6 +98,11 @@ def build_source_adapter(
         resolved = settings.resolve_token(token_name)
         return LinearAdapter(settings=settings, token=resolved, oauth=False)
 
+    if source_type == "confluence":
+        settings = ConfluenceSettings.from_env()
+        return ConfluenceAdapter(settings=settings, credential=settings.resolve(token_name))
+
     raise ConfigurationError(
-        f"Unknown source type: {source_type!r} (expected 'notion', 'google', 'slack', or 'linear')"
+        f"Unknown source type: {source_type!r} (expected 'notion', 'google', 'slack', "
+        "'linear', or 'confluence')"
     )

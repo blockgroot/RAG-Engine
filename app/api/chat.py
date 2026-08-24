@@ -48,6 +48,7 @@ from ..security.rate_limit import check_rate_limit
 from ..workspaces import assert_member
 from .deps import (
     SessionClaims,
+    get_confluence_agent,
     get_drive_agent,
     get_github_agent,
     get_linear_agent,
@@ -75,6 +76,7 @@ AGENT_SLACK = "slack"
 AGENT_LINEAR = "linear"
 AGENT_NOTION = "notion"
 AGENT_GOOGLE = "google"
+AGENT_CONFLUENCE = "confluence"
 
 MAX_QUESTION_CHARS = 4000
 
@@ -96,6 +98,7 @@ def _agent_getters() -> dict[str, RagPipelineAgent | GitHubAgent]:
         AGENT_LINEAR: get_linear_agent,
         AGENT_NOTION: get_notion_agent,
         AGENT_GOOGLE: get_drive_agent,
+        AGENT_CONFLUENCE: get_confluence_agent,
         "workspace": get_workspace_agent,
         AGENT_POLICY: get_policy_agent,
     }
@@ -179,6 +182,13 @@ def list_suggestions(
         titles = _titles_for_scope_by_provider(session.org_id, workspace_id, "google")
         return {
             "agent": AGENT_GOOGLE,
+            "questions": build_policy_suggestions(titles, workspace=workspace_id is not None),
+        }
+
+    if requested == AGENT_CONFLUENCE:
+        titles = _titles_for_scope_by_provider(session.org_id, workspace_id, "confluence")
+        return {
+            "agent": AGENT_CONFLUENCE,
             "questions": build_policy_suggestions(titles, workspace=workspace_id is not None),
         }
 
@@ -269,6 +279,7 @@ def _document_titles_for_scope(org_id: str, workspace_id: str | None) -> list[st
             "AND source_provider IS DISTINCT FROM 'linear' "
             "AND source_provider IS DISTINCT FROM 'notion' "
             "AND source_provider IS DISTINCT FROM 'google' "
+            "AND source_provider IS DISTINCT FROM 'confluence' "
             "ORDER BY created_at DESC NULLS LAST "
             "LIMIT 12",
             (org_id, workspace_id),

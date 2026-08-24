@@ -40,7 +40,7 @@ from .base import AgentResponse
 # a tuple, not re-derived from the getters dict, so a caller can't silently
 # make an internal-only key (e.g. "workspace") directly selectable from the
 # client-facing ``agent`` field.
-DIRECT_AGENT_KEYS = ("github", "slack", "linear", "notion", "google")
+DIRECT_AGENT_KEYS = ("github", "slack", "linear", "notion", "google", "confluence")
 
 WORKSPACE_KEY = "workspace"
 POLICY_KEY = "policy"

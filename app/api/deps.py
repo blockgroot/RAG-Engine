@@ -14,6 +14,7 @@ from functools import lru_cache
 from fastapi import Depends, HTTPException, Request
 
 from ..agent import (
+    build_confluence_agent,
     build_drive_agent,
     build_github_agent,
     build_linear_agent,
@@ -22,6 +23,7 @@ from ..agent import (
     build_slack_agent,
     build_workspace_agent,
 )
+from ..agent.confluence_agent import ConfluenceAgent
 from ..agent.drive_agent import DriveAgent
 from ..agent.github_agent import GitHubAgent
 from ..agent.linear_agent import LinearAgent
@@ -112,6 +114,17 @@ def get_notion_agent() -> NotionAgent:
 def get_drive_agent() -> DriveAgent:
     """Process-wide singleton ``DriveAgent`` (Google Drive-only retrieval)."""
     return build_drive_agent()
+
+
+@lru_cache(maxsize=1)
+def get_confluence_agent() -> ConfluenceAgent:
+    """Process-wide singleton ``ConfluenceAgent`` (Confluence-only retrieval).
+
+    Same reasoning as ``get_notion_agent`` — its own pipeline pinned to
+    ``source_provider="confluence"``, so an answer never blends Confluence
+    content with Notion/Drive/Linear.
+    """
+    return build_confluence_agent()
 
 
 @lru_cache(maxsize=1)

@@ -16,6 +16,7 @@ SOURCE_SLACK = "slack"
 SOURCE_LINEAR = "linear"
 SOURCE_NOTION = "notion"
 SOURCE_GOOGLE = "google"
+SOURCE_CONFLUENCE = "confluence"
 SOURCE_WEB = "web"
 SOURCE_NONE = "none"
 
@@ -29,6 +30,7 @@ ANSWER_SOURCES = frozenset(
         SOURCE_LINEAR,
         SOURCE_NOTION,
         SOURCE_GOOGLE,
+        SOURCE_CONFLUENCE,
         SOURCE_WEB,
         SOURCE_NONE,
     }

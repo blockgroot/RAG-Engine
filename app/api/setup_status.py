@@ -29,6 +29,7 @@ def content_setup_status(org_id: str, workspace_id: str | None = None) -> dict:
                   AND source_provider IS DISTINCT FROM 'linear'
                   AND source_provider IS DISTINCT FROM 'notion'
                   AND source_provider IS DISTINCT FROM 'google'
+                  AND source_provider IS DISTINCT FROM 'confluence'
               ) AS has_legacy_documents,
               EXISTS (
                 SELECT 1 FROM ingestion_jobs

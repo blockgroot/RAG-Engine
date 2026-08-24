@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from ..config.settings import (
+    ConfluenceAgentSettings,
     DriveAgentSettings,
     GitHubAgentSettings,
     LinearAgentSettings,
@@ -28,12 +29,14 @@ from ..config.settings import (
 from ..llm import build_llm_provider
 from ..rag import RagPipeline, build_rag_pipeline
 from ..rag.prompts import (
+    CONFLUENCE_PROMPT_PROFILE,
     DRIVE_PROMPT_PROFILE,
     LINEAR_PROMPT_PROFILE,
     NOTION_PROMPT_PROFILE,
     SLACK_PROMPT_PROFILE,
     WORKSPACE_PROMPT_PROFILE,
 )
+from .confluence_agent import ConfluenceAgent
 from .drive_agent import DriveAgent
 from .github_agent import GitHubAgent
 from .linear_agent import LinearAgent
@@ -178,6 +181,30 @@ def build_drive_agent(
         pipeline_kwargs.setdefault("source_provider", "google")
         pipeline = build_rag_pipeline(**pipeline_kwargs)
     return DriveAgent(pipeline)
+
+
+def build_confluence_agent(
+    pipeline: RagPipeline | None = None, **pipeline_kwargs
+) -> ConfluenceAgent:
+    """Build a ``ConfluenceAgent``, defaulting its pipeline from configuration.
+
+    Same shape as ``build_notion_agent``/``build_drive_agent``, pinned to
+    ``source_provider="confluence"`` (matching the value ``ConfluenceAdapter``
+    -ingested documents carry).
+    """
+    if pipeline is None:
+        pipeline_kwargs.setdefault(
+            "settings",
+            replace(
+                RagSettings.from_env(),
+                fallback_response=ConfluenceAgentSettings.from_env().fallback_response,
+            ),
+        )
+        pipeline_kwargs.setdefault("prompt_profile", CONFLUENCE_PROMPT_PROFILE)
+        pipeline_kwargs.setdefault("web_search", None)
+        pipeline_kwargs.setdefault("source_provider", "confluence")
+        pipeline = build_rag_pipeline(**pipeline_kwargs)
+    return ConfluenceAgent(pipeline)
 
 
 def build_github_agent(

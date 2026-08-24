@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..core.answer_sources import (
+    SOURCE_CONFLUENCE,
     SOURCE_GOOGLE,
     SOURCE_LINEAR,
     SOURCE_NOTION,
@@ -62,6 +63,14 @@ NOTION_PROMPT_PROFILE = PromptProfile(
     scope_noun="Notion pages",
     escalation_hint="your HR team can help with this",
     source_label=SOURCE_NOTION,
+)
+
+CONFLUENCE_PROMPT_PROFILE = PromptProfile(
+    persona="an assistant answering only from this company's connected Confluence pages",
+    scope_adjective="Confluence-documented",
+    scope_noun="Confluence pages",
+    escalation_hint="your HR team can help with this",
+    source_label=SOURCE_CONFLUENCE,
 )
 
 DRIVE_PROMPT_PROFILE = PromptProfile(
