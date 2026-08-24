@@ -489,3 +489,33 @@ CREATE TABLE IF NOT EXISTS api_rate_counters (
     request_count  INT NOT NULL DEFAULT 0,
     PRIMARY KEY (scope_key, window_start)
 );
+
+-- Prompt-Driven Activity Scheduler (Phase 1, org scope): a user-authored
+-- recurring question against one already-connected service. The row IS the
+-- queue entry (definition + run state combined, same shape as
+-- ingestion_jobs) — no separate run-history table for Phase 1 (YAGNI; add
+-- one if per-run history is ever needed). Any org member may create one
+-- against any org-wide connection; list/edit/delete are scoped to the
+-- owning user_id, not the whole org, per "see/edit/remove their OWN
+-- schedulers". Phase 1 supports github/slack only — provider is unchecked
+-- here (same discipline as ingestion_jobs.status: validated by the
+-- application, not a CHECK constraint) so adding a source later needs no
+-- migration.
+CREATE TABLE IF NOT EXISTS schedulers (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id        UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    user_id       UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    connection_id UUID NOT NULL REFERENCES oauth_connections (id) ON DELETE CASCADE,
+    provider      TEXT NOT NULL,
+    frequency     TEXT NOT NULL,           -- 'weekly' | 'monthly'
+    prompt        TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'active',  -- active | failed
+    last_run_at   TIMESTAMPTZ,
+    next_run_at   TIMESTAMPTZ NOT NULL,
+    attempts      INT NOT NULL DEFAULT 0,
+    last_error    TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_schedulers_org ON schedulers (org_id);
+CREATE INDEX IF NOT EXISTS idx_schedulers_user ON schedulers (user_id);
+CREATE INDEX IF NOT EXISTS idx_schedulers_due ON schedulers (next_run_at) WHERE status = 'active';
