@@ -30,6 +30,48 @@ MAX_COMMITS_PER_REPO = 30
 MAX_REPOS = 20
 MAX_SLACK_MESSAGES = 300
 
+# Total characters any one digest may reach, and the per-entry cap that keeps
+# one giant item from consuming the whole budget on its own.
+#
+# Counting entries is NOT enough, which a real fetch proved: three actual
+# Slack messages produced 6,637 characters, so 300 of them would be ~600KB of
+# prompt. Same lesson as CHUNK_MAX_CHARS in app/ingestion/chunking.py — bound
+# the thing itself rather than a proxy for it, because the proxy (message
+# count, commit count) has no fixed relationship to size. A long-form Slack
+# post and a squashed commit body are both routinely thousands of characters.
+#
+# ~40k leaves a large real report intact while keeping the prompt well inside
+# any provider's context and its per-request cost predictable.
+MAX_DIGEST_CHARS = 40_000
+MAX_ENTRY_CHARS = 2_000
+_TRUNCATION_MARKER = "[... truncated: more activity than fits in one report ...]"
+
+
+def _clip(text: str, limit: int = MAX_ENTRY_CHARS) -> str:
+    """Shorten one entry, marking it so the model can't read it as complete."""
+    text = " ".join(text.split())  # collapse newlines: one entry, one line
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + " […]"
+
+
+def _join_bounded(lines: list[str]) -> str:
+    """Join digest lines, stopping at MAX_DIGEST_CHARS with a marker.
+
+    Truncation is *marked* rather than silent for the same reason the GitHub
+    diff cap and the Notion fetch bound mark theirs: a report composed from
+    half the evidence while appearing complete is the failure that matters.
+    """
+    out: list[str] = []
+    used = 0
+    for line in lines:
+        if used + len(line) + 1 > MAX_DIGEST_CHARS:
+            out.append(_TRUNCATION_MARKER)
+            break
+        out.append(line)
+        used += len(line) + 1
+    return "\n".join(out).strip()
+
 
 def fetch_github_activity(
     org_id: str,
@@ -80,10 +122,10 @@ def fetch_github_activity(
             when = commit.date.strftime("%Y-%m-%d") if commit.date else "unknown date"
             author = commit.author or "unknown author"
             lines.append(
-                f"- [{when}] {commit.sha[:7]} {commit.message} (by {author})"
+                _clip(f"- [{when}] {commit.sha[:7]} {commit.message} (by {author})")
             )
 
-    return "\n".join(lines).strip()
+    return _join_bounded(lines)
 
 
 def fetch_slack_activity(
@@ -111,10 +153,12 @@ def fetch_slack_activity(
         replies = message.get("reply_count") or 0
         thread_note = f" [{replies} replies]" if replies else ""
         lines.append(
-            f"- [{when}] #{message['channel']} {message['user']}: "
-            f"{message['text']}{thread_note}"
+            _clip(
+                f"- [{when}] #{message['channel']} {message['user']}: "
+                f"{message['text']}{thread_note}"
+            )
         )
-    return "\n".join(lines).strip()
+    return _join_bounded(lines)
 
 
 _FETCHERS = {

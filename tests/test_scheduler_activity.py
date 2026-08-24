@@ -226,3 +226,70 @@ def test_dispatch_raises_for_a_provider_with_no_fetcher():
     """Silently returning empty would look like 'nothing happened' forever."""
     with pytest.raises(ConfigurationError):
         activity.fetch_activity("notion", "org-1", SINCE)
+
+
+# --------------------------------------------------------------------------
+# Size bounds (counting entries is not enough — measured on real data)
+# --------------------------------------------------------------------------
+
+
+def test_one_huge_entry_is_clipped_and_marked():
+    """Real Slack posts run to thousands of chars; one must not eat the budget."""
+    clipped = activity._clip("x" * 10_000)
+
+    assert len(clipped) < activity.MAX_ENTRY_CHARS + 20
+    assert clipped.endswith("[…]")  # marked, so the model can't read it as whole
+
+
+def test_entry_newlines_are_collapsed_so_one_entry_stays_one_line():
+    assert "\n" not in activity._clip("line one\nline two\n\nline three")
+
+
+def test_a_short_entry_is_untouched():
+    assert activity._clip("- [2026-08-01] abc1234 fix login (by dev)") == (
+        "- [2026-08-01] abc1234 fix login (by dev)"
+    )
+
+
+def test_the_digest_stops_at_the_char_budget_with_a_marker():
+    """Three real Slack messages measured 6,637 chars — count alone can't bound this."""
+    lines = [f"- entry {i} " + "y" * 1500 for i in range(200)]
+
+    digest = activity._join_bounded(lines)
+
+    assert len(digest) <= activity.MAX_DIGEST_CHARS + len(activity._TRUNCATION_MARKER) + 1
+    assert activity._TRUNCATION_MARKER in digest
+    assert "entry 0" in digest  # kept the earliest, dropped the tail
+
+
+def test_a_normal_digest_is_never_truncated():
+    """The bound must not fire on ordinary activity."""
+    lines = [f"- [2026-08-0{i}] sha{i} did a thing (by dev)" for i in range(1, 9)]
+
+    digest = activity._join_bounded(lines)
+
+    assert activity._TRUNCATION_MARKER not in digest
+    assert digest.count("\n") == 7
+
+
+def test_slack_digest_applies_the_bounds(monkeypatch):
+    adapter = _FakeSlack(
+        {"C1": [_message(f"{i}.0", "z" * 5000) for i in range(50)]}
+    )
+    _patch_slack_wiring(monkeypatch, adapter)
+
+    text = activity.fetch_slack_activity("org-1", SINCE)
+
+    assert len(text) <= activity.MAX_DIGEST_CHARS + len(activity._TRUNCATION_MARKER) + 1
+
+
+def test_github_digest_applies_the_bounds(monkeypatch):
+    """Squashed commit bodies are routinely thousands of characters."""
+    reader = _FakeReader(
+        {"acme/api": [_commit("acme/api", f"sha{i:07d}", "m" * 5000) for i in range(40)]}
+    )
+    _patch_github_wiring(monkeypatch, reader, ["acme/api"])
+
+    text = activity.fetch_github_activity("org-1", SINCE)
+
+    assert len(text) <= activity.MAX_DIGEST_CHARS + len(activity._TRUNCATION_MARKER) + 1
