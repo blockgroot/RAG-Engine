@@ -16,13 +16,31 @@ import {
 const PROVIDER_LABEL: Record<string, string> = {
   github: "GitHub",
   slack: "Slack",
+  linear: "Linear",
 };
 
-/** Only providers the backend can actually build a report from appear here. */
+/**
+ * Glyphs for the providers a report can read. Kept as a lookup rather than a
+ * switch so adding a source is one line here — the same reason
+ * ConnectionCard is table-driven. The backend decides what is *offered*
+ * (`GET /schedulers/connections`); an unmapped provider still renders, just
+ * with an initial instead of a mark.
+ */
 const PROVIDER_GLYPH: Record<string, BrandName> = {
   github: "github",
   slack: "slack",
+  linear: "linear",
 };
+
+/**
+ * "GitHub, Slack or Linear" — derived, not written out, so this copy cannot
+ * drift the next time a source is added (it already had, once).
+ */
+const SCHEDULABLE_LABELS = (() => {
+  const names = Object.values(PROVIDER_LABEL);
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`;
+})();
 
 const OPENING_LINE =
   "Tell me what you'd like to keep an eye on — which service, how often, and what the report should cover.";
@@ -213,8 +231,8 @@ export default function SchedulersPage() {
 
             {nothingConnected ? (
               <div className="banner banner-wait" role="status">
-                Reports can currently read GitHub and Slack. Ask an admin to connect one
-                on the Sources page, then come back.
+                Reports can currently read {SCHEDULABLE_LABELS}. Ask an admin to connect
+                one on the Sources page, then come back.
               </div>
             ) : (
               <>
