@@ -29,6 +29,15 @@ function IconSpaces() {
   );
 }
 
+function IconReports() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <rect x="4" y="3" width="16" height="18" rx="2" stroke="currentColor" strokeWidth="1.75" />
+      <path d="M8 8h8M8 12h8M8 16h5" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function IconSources() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -157,6 +166,20 @@ export function AppShell({
               <span className="rail-link-copy">
                 <span className="rail-link-title">Spaces</span>
                 <span className="rail-link-hint">Private, invite-only</span>
+              </span>
+            </Link>
+            <Link
+              href="/schedulers"
+              className="rail-link"
+              data-active={pathname.startsWith("/schedulers") ? "true" : "false"}
+              aria-current={pathname.startsWith("/schedulers") ? "page" : undefined}
+            >
+              <span className="rail-ico">
+                <IconReports />
+              </span>
+              <span className="rail-link-copy">
+                <span className="rail-link-title">Reports</span>
+                <span className="rail-link-hint">Emailed on a schedule</span>
               </span>
             </Link>
 

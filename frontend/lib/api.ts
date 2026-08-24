@@ -213,6 +213,50 @@ export interface WorkspaceMemberRecord {
   joined_at: string;
 }
 
+/** A recurring activity report the signed-in person owns. */
+export interface SchedulerRecord {
+  id: string;
+  provider: string;
+  frequency: "weekly" | "monthly";
+  /** The user's own standing instruction, re-applied on every run. */
+  prompt: string;
+  /** "active" while scheduled; "failed" once it gave up after repeated errors. */
+  status: string;
+  last_run_at: string | null;
+  next_run_at: string;
+  /** Why the most recent run failed, if it did. Cleared on the next success. */
+  last_error: string | null;
+  created_at: string;
+}
+
+/**
+ * A connected service a report can be built against. Only providers with a
+ * real "activity since" feed appear here (GitHub, Slack) — a connected
+ * Notion/Drive is deliberately absent, since a report on it would fail every
+ * cycle.
+ */
+export interface SchedulableConnection {
+  id: string;
+  provider: string;
+  workspace_name: string | null;
+}
+
+/**
+ * One turn of the conversational setup flow. Either the assistant needs more
+ * from the user (`done: false`, show `reply`) or it had everything and the
+ * report now exists (`done: true`).
+ */
+export interface SetupChatResponse {
+  done: boolean;
+  reply?: string;
+  scheduler?: SchedulerRecord;
+}
+
+export interface SetupChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export const api = {
   signup: (email: string, companyName: string) =>
     request<SignupResponse>("/auth/signup", {
@@ -444,6 +488,37 @@ export const api = {
     request<JobRecord>(`/workspaces/${workspaceId}/jobs/${jobId}`),
   connectWorkspaceUrl: (workspaceId: string, provider: string) =>
     `${API_BASE_URL}/auth/${provider}/authorize?workspace_id=${workspaceId}`,
+
+  // Scheduled reports. Member-level, not admin — every one of these is scoped
+  // to the caller's own user_id server-side, so there is no id to pass for
+  // "mine" and no way to reach someone else's.
+  listSchedulers: () =>
+    request<{ schedulers: SchedulerRecord[] }>("/schedulers").then((r) => r.schedulers),
+  listSchedulableConnections: () =>
+    request<{ connections: SchedulableConnection[] }>("/schedulers/connections").then(
+      (r) => r.connections
+    ),
+  createScheduler: (provider: string, frequency: string, prompt: string) =>
+    request<SchedulerRecord>("/schedulers", {
+      method: "POST",
+      body: JSON.stringify({ provider, frequency, prompt }),
+    }),
+  updateScheduler: (
+    schedulerId: string,
+    changes: { frequency?: string; prompt?: string }
+  ) =>
+    request<SchedulerRecord>(`/schedulers/${schedulerId}`, {
+      method: "PATCH",
+      body: JSON.stringify(changes),
+    }),
+  deleteScheduler: (schedulerId: string) =>
+    request<void>(`/schedulers/${schedulerId}`, { method: "DELETE" }),
+  /** Send the whole conversation each turn — the endpoint is stateless. */
+  schedulerSetupChat: (messages: SetupChatMessage[]) =>
+    request<SetupChatResponse>("/schedulers/setup-chat", {
+      method: "POST",
+      body: JSON.stringify({ messages }),
+    }),
 };
 
 export { API_BASE_URL };
