@@ -30,7 +30,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from ..config.settings import ApiSettings, env_bool
+from ..config.settings import ApiSettings, SchedulerSettings, env_bool
 from ..db import close_pool
 from ..rag import shutdown_summary_folds
 from . import admin as admin_router
@@ -51,12 +51,19 @@ logger = logging.getLogger(__name__)
 
 
 def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
-    """Drain ``ingestion_jobs`` in-process so Sync works without run_worker.py."""
+    """Drain ``ingestion_jobs`` in-process so Sync works without run_worker.py.
+
+    Also ticks the activity scheduler on the same thread. Sharing one loop
+    (rather than adding a second thread) keeps the deployment story unchanged
+    — still one process, no new infra — and the two are never contended for:
+    ingestion polls every couple of seconds, schedulers every few minutes.
+    """
     from ..jobs import queue
-    from ..jobs.worker import run_once
+    from ..jobs.worker import run_once, run_scheduler_tick
 
     poll_interval = float(os.getenv("INGEST_WORKER_POLL_SECONDS", "2"))
     reap_interval = float(os.getenv("INGEST_WORKER_REAP_SECONDS", "60"))
+    scheduler_settings = SchedulerSettings.from_env()
 
     def _loop() -> None:
         logger.info(
@@ -73,13 +80,33 @@ def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
                 )
         except Exception:  # noqa: BLE001
             logger.exception("Failed to re-queue interrupted ingestion jobs")
+        try:
+            from ..jobs.scheduler_queue import requeue_interrupted_running
+
+            n = requeue_interrupted_running(
+                max_attempts=scheduler_settings.max_attempts
+            )
+            if n:
+                logger.info("Re-queued %s interrupted scheduler run(s)", n)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to re-queue interrupted scheduler runs")
         last_reap = 0.0
+        # Start at -poll_seconds so the first scheduler tick happens promptly
+        # after boot rather than one whole interval later — a scheduler that
+        # came due while the process was down should not wait 5 more minutes.
+        last_scheduler = -float(scheduler_settings.poll_seconds)
         while not stop.is_set():
             try:
                 now = time.monotonic()
                 if now - last_reap >= reap_interval:
                     queue.reap_stuck()
                     last_reap = now
+                if (
+                    scheduler_settings.enabled
+                    and now - last_scheduler >= scheduler_settings.poll_seconds
+                ):
+                    run_scheduler_tick(scheduler_settings)
+                    last_scheduler = now
                 job = run_once()
                 if job is None:
                     stop.wait(poll_interval)

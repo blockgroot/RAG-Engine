@@ -36,19 +36,27 @@ def claim_due(limit: int = 5) -> list[Scheduler]:
     a later write, so counting on completion would leave exactly the rows
     that need bounding at zero forever.
     """
+    # The row set is selected in a CTE, not an `id IN (SELECT ... LIMIT n)`
+    # subquery: with `IN`, Postgres is free to re-evaluate the subquery and the
+    # LIMIT does not bind the number of rows updated (measured — a limit of 2
+    # claimed all 5 due rows). queue.py's `id = (SELECT ... LIMIT 1)` is safe
+    # only because a scalar subquery is evaluated once; claiming several needs
+    # this form.
     with get_connection() as conn:
         rows = conn.execute(
             f"""
-            UPDATE schedulers
-            SET status = 'running', attempts = attempts + 1
-            WHERE id IN (
+            WITH due AS (
                 SELECT id FROM schedulers
                 WHERE status = 'active' AND next_run_at <= now()
                 ORDER BY next_run_at
                 FOR UPDATE SKIP LOCKED
                 LIMIT %s
             )
-            RETURNING {COLUMNS}
+            UPDATE schedulers AS s
+            SET status = 'running', attempts = s.attempts + 1
+            FROM due
+            WHERE s.id = due.id
+            RETURNING {", ".join("s." + c.strip() for c in COLUMNS.split(","))}
             """,
             (limit,),
         ).fetchall()
