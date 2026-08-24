@@ -18,6 +18,7 @@ from app.core.exceptions import ConfigurationError, SourceError
 from app.githublive.base import CommitSummary
 from app.githublive.repos import InstallationScope, RepoRef
 from app.schedulers import activity
+from app.sources.linear import LinearAdapter
 from app.sources.slack import SlackAdapter
 
 SINCE = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
@@ -293,3 +294,164 @@ def test_github_digest_applies_the_bounds(monkeypatch):
     text = activity.fetch_github_activity("org-1", SINCE)
 
     assert len(text) <= activity.MAX_DIGEST_CHARS + len(activity._TRUNCATION_MARKER) + 1
+
+
+# --------------------------------------------------------------------------
+# Linear
+# --------------------------------------------------------------------------
+
+
+class _FakeLinear(LinearAdapter):
+    """LinearAdapter with its GraphQL transport replaced, recording queries."""
+
+    def __init__(self, pages: list[dict]):
+        super().__init__(token="lin_api_fake", oauth=True)
+        self._pages = pages
+        self.calls: list[dict] = []
+
+    def _query(self, query: str, variables: dict | None = None) -> dict:  # type: ignore[override]
+        self.calls.append({"query": query, "variables": variables or {}})
+        page = self._pages[min(len(self.calls) - 1, len(self._pages) - 1)]
+        return {"issues": page}
+
+
+def _issue(identifier: str, title: str, state="In Review", state_type="started", assignee="Priya"):
+    return {
+        "identifier": identifier,
+        "title": title,
+        "url": f"https://linear.app/acme/issue/{identifier}",
+        "updatedAt": "2026-08-02T09:30:00.000Z",
+        "state": {"name": state, "type": state_type},
+        "assignee": {"name": assignee} if assignee else None,
+    }
+
+
+def _page(nodes, has_next=False, cursor=None):
+    return {"nodes": nodes, "pageInfo": {"hasNextPage": has_next, "endCursor": cursor}}
+
+
+def test_linear_fetch_filters_server_side_on_updated_at():
+    """The whole point: Linear supports this natively, the adapter never asked."""
+    adapter = _FakeLinear([_page([_issue("ENG-1", "fix billing")])])
+
+    adapter.fetch_recent_issues(SINCE)
+
+    variables = adapter.calls[0]["variables"]
+    assert variables["filter"] == {"updatedAt": {"gt": SINCE.isoformat()}}
+    assert "IssueFilter" in adapter.calls[0]["query"]
+
+
+def test_linear_fetch_returns_state_and_assignee_not_just_titles():
+    """"What shipped" / "what's stuck" is unanswerable from titles alone."""
+    adapter = _FakeLinear([_page([_issue("ENG-7", "ship checkout", "Done", "completed", "Sam")])])
+
+    issues = adapter.fetch_recent_issues(SINCE)
+
+    assert issues[0]["identifier"] == "ENG-7"
+    assert issues[0]["state"] == "Done"
+    assert issues[0]["state_type"] == "completed"
+    assert issues[0]["assignee"] == "Sam"
+    assert issues[0]["at"] is not None
+
+
+def test_linear_fetch_handles_an_unassigned_issue():
+    """`assignee` is null in Linear's response, not an empty object."""
+    adapter = _FakeLinear([_page([_issue("ENG-9", "triage", assignee=None)])])
+
+    assert adapter.fetch_recent_issues(SINCE)[0]["assignee"] == ""
+
+
+def test_linear_fetch_follows_pagination_but_stops_at_the_cap():
+    pages = [_page([_issue(f"ENG-{i}", f"t{i}") for i in range(5)], True, "c1")] * 10
+    adapter = _FakeLinear(pages)
+
+    issues = adapter.fetch_recent_issues(SINCE, max_issues=12)
+
+    assert len(issues) == 12
+
+
+def test_linear_fetch_stops_when_there_is_no_next_page():
+    adapter = _FakeLinear([_page([_issue("ENG-1", "only one")], has_next=False)])
+
+    assert len(adapter.fetch_recent_issues(SINCE, max_issues=300)) == 1
+    assert len(adapter.calls) == 1  # did not keep paginating
+
+
+def test_linear_activity_digest_names_the_issue_state_and_owner(monkeypatch):
+    adapter = _FakeLinear([_page([_issue("ENG-42", "migrate payments", "Done", "completed", "Ada")])])
+    monkeypatch.setattr(
+        "app.auth.credentials.get_live_connection_token", lambda *a, **k: "lin_fake"
+    )
+    monkeypatch.setattr("app.auth.credentials.get_connection_config", lambda *a, **k: {})
+    monkeypatch.setattr("app.sources.build_source_adapter", lambda *a, **k: adapter)
+
+    text = activity.fetch_linear_activity("org-1", SINCE)
+
+    assert "ENG-42" in text
+    assert "migrate payments" in text
+    assert "Done" in text
+    assert "completed" in text
+    assert "Ada" in text
+
+
+def test_linear_activity_uses_the_oauth_credential_path(monkeypatch):
+    """A scheduler is created against an oauth_connections row, never an env key.
+
+    Passing `token=` is also what makes the adapter send `Bearer <token>` —
+    get this wrong and every request 401s while looking authenticated.
+    """
+    seen: dict = {}
+    monkeypatch.setattr(
+        "app.auth.credentials.get_live_connection_token", lambda *a, **k: "lin_oauth"
+    )
+    monkeypatch.setattr("app.auth.credentials.get_connection_config", lambda *a, **k: {})
+
+    def _build(source_type, **kwargs):
+        seen.update({"source_type": source_type, **kwargs})
+        return _FakeLinear([_page([])])
+
+    monkeypatch.setattr("app.sources.build_source_adapter", _build)
+
+    activity.fetch_linear_activity("org-1", SINCE)
+
+    assert seen["source_type"] == "linear"
+    assert seen["token"] == "lin_oauth"  # not a token_name env lookup
+
+
+def test_linear_activity_is_empty_when_nothing_moved(monkeypatch):
+    monkeypatch.setattr(
+        "app.auth.credentials.get_live_connection_token", lambda *a, **k: "lin_fake"
+    )
+    monkeypatch.setattr("app.auth.credentials.get_connection_config", lambda *a, **k: {})
+    monkeypatch.setattr(
+        "app.sources.build_source_adapter", lambda *a, **k: _FakeLinear([_page([])])
+    )
+
+    assert activity.fetch_linear_activity("org-1", SINCE) == ""
+
+
+def test_linear_digest_applies_the_size_bounds(monkeypatch):
+    adapter = _FakeLinear([_page([_issue(f"ENG-{i}", "q" * 5000) for i in range(60)])])
+    monkeypatch.setattr(
+        "app.auth.credentials.get_live_connection_token", lambda *a, **k: "lin_fake"
+    )
+    monkeypatch.setattr("app.auth.credentials.get_connection_config", lambda *a, **k: {})
+    monkeypatch.setattr("app.sources.build_source_adapter", lambda *a, **k: adapter)
+
+    text = activity.fetch_linear_activity("org-1", SINCE)
+
+    assert len(text) <= activity.MAX_DIGEST_CHARS + len(activity._TRUNCATION_MARKER) + 1
+
+
+# --------------------------------------------------------------------------
+# The store/fetcher invariant
+# --------------------------------------------------------------------------
+
+
+def test_every_supported_provider_has_a_fetcher():
+    """A provider offered by the API but missing a fetcher would create
+    schedulers that fail every single cycle — and vice versa, a fetcher no
+    provider can select is dead code. Pin them together."""
+    from app.schedulers.store import SUPPORTED_PROVIDERS
+
+    assert set(SUPPORTED_PROVIDERS) == set(activity._FETCHERS)

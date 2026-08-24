@@ -14,11 +14,18 @@ from datetime import datetime
 
 from ..db.connection import get_connection
 
-# Phase 1 supports the two services that already have a real "activity since
-# timestamp T" primitive (GitHub ``list_commits(since=)``, Slack
-# ``conversations.history(oldest=)``). Notion/Linear/Drive need new fetch
-# logic before they can be added here.
-SUPPORTED_PROVIDERS = ("github", "slack")
+# Services with a real "activity since timestamp T" primitive, which is what
+# a recurring report needs: GitHub ``list_commits(since=)``, Slack
+# ``conversations.history(oldest=)``, Linear ``issues(filter: {updatedAt:
+# {gt: …}})``. Notion and Drive are still absent — their adapters can only
+# answer "what documents exist and are they stale", never "what happened
+# between T1 and T2", so a report on either would need genuinely new fetch
+# logic (Drive's Changes API, a Notion last_edited_time filter).
+#
+# Keep this in step with ``app/schedulers/activity.py::_FETCHERS`` — a
+# provider listed here without a fetcher would create schedulers that fail
+# every cycle.
+SUPPORTED_PROVIDERS = ("github", "slack", "linear")
 FREQUENCIES = ("weekly", "monthly")
 
 # Postgres interval per frequency — used both to seed ``next_run_at`` at

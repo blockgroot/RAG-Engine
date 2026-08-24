@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 MAX_COMMITS_PER_REPO = 30
 MAX_REPOS = 20
 MAX_SLACK_MESSAGES = 300
+MAX_LINEAR_ISSUES = 300
 
 # Total characters any one digest may reach, and the per-entry cap that keeps
 # one giant item from consuming the whole budget on its own.
@@ -161,9 +162,52 @@ def fetch_slack_activity(
     return _join_bounded(lines)
 
 
+def fetch_linear_activity(
+    org_id: str,
+    since: datetime,
+    *,
+    workspace_id: str | None = None,
+) -> str:
+    """Issues updated in this connection's Linear workspace since ``since``.
+
+    Unlike Slack and GitHub, Linear has **two** independent credential paths
+    (an OAuth connection, or a legacy per-org ``LINEAR_TOKEN_<NAME>`` env
+    key), and they are deliberately not linked by a fallback. A scheduler is
+    created against an ``oauth_connections`` row, so this takes the OAuth
+    path only — passing ``token=`` is also what tells the adapter to send
+    ``Bearer <token>`` rather than a raw personal key, which is the one place
+    the two paths cannot be symmetric.
+    """
+    from ..auth.credentials import get_connection_config, get_live_connection_token
+    from ..sources import build_source_adapter
+
+    token = get_live_connection_token(org_id, "linear", workspace_id)
+    config = get_connection_config(org_id, "linear", workspace_id)
+    adapter = build_source_adapter("linear", token=token, config=config)
+
+    issues = adapter.fetch_recent_issues(since, max_issues=MAX_LINEAR_ISSUES)
+    lines: list[str] = []
+    for issue in issues:
+        when = issue["at"].strftime("%Y-%m-%d %H:%M") if issue["at"] else "unknown"
+        who = f" · {issue['assignee']}" if issue["assignee"] else " · unassigned"
+        # state_type is what makes "what shipped" answerable — a state *name*
+        # is workspace-specific ("Shipped", "Live", "QA"), while the type is a
+        # fixed Linear vocabulary the model can reason about.
+        state = issue["state"] or "unknown state"
+        kind = f" ({issue['state_type']})" if issue["state_type"] else ""
+        lines.append(
+            _clip(
+                f"- [{when}] {issue['identifier']} {issue['title']} — "
+                f"{state}{kind}{who}"
+            )
+        )
+    return _join_bounded(lines)
+
+
 _FETCHERS = {
     "github": fetch_github_activity,
     "slack": fetch_slack_activity,
+    "linear": fetch_linear_activity,
 }
 
 

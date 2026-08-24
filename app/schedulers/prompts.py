@@ -26,6 +26,7 @@ NO_ACTIVITY_NOTE = "No activity was recorded on this service during this period.
 _PROVIDER_LABEL = {
     "github": "GitHub commit activity",
     "slack": "Slack channel activity",
+    "linear": "Linear issue activity",
 }
 
 
