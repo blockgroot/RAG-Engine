@@ -55,12 +55,18 @@ class Scheduler:
     attempts: int
     last_error: str | None
     created_at: datetime
+    #: NULL = the org-wide connection; set = one sub-workspace's own. Always
+    #: paired with org_id, never used alone (Workspace-within-a-Workspace).
+    #: Last with a default so an org-wide Scheduler can still be built
+    #: positionally; ``row_to_scheduler`` maps by keyword, so this says nothing
+    #: about column order.
+    workspace_id: str | None = None
 
 
 COLUMNS = (
-    "id::text, org_id::text, user_id::text, connection_id::text, provider, "
-    "frequency, prompt, status, last_run_at, next_run_at, attempts, "
-    "last_error, created_at"
+    "id::text, org_id::text, user_id::text, connection_id::text, "
+    "workspace_id::text, provider, frequency, prompt, status, last_run_at, "
+    "next_run_at, attempts, last_error, created_at"
 )
 
 
@@ -70,15 +76,16 @@ def row_to_scheduler(row) -> Scheduler:
         org_id=row[1],
         user_id=row[2],
         connection_id=row[3],
-        provider=row[4],
-        frequency=row[5],
-        prompt=row[6],
-        status=row[7],
-        last_run_at=row[8],
-        next_run_at=row[9],
-        attempts=row[10] or 0,
-        last_error=row[11],
-        created_at=row[12],
+        workspace_id=row[4],
+        provider=row[5],
+        frequency=row[6],
+        prompt=row[7],
+        status=row[8],
+        last_run_at=row[9],
+        next_run_at=row[10],
+        attempts=row[11] or 0,
+        last_error=row[12],
+        created_at=row[13],
     )
 
 
@@ -99,8 +106,14 @@ def create_scheduler(
     provider: str,
     frequency: str,
     prompt: str,
+    workspace_id: str | None = None,
 ) -> Scheduler:
     """Create a scheduler, first run one full interval from now.
+
+    ``workspace_id`` is ``None`` for an org-wide report and a sub-workspace id
+    for a space-scoped one. It is NOT validated here — membership is checked
+    by ``workspaces.store.assert_member`` at the API edge, the one place a
+    ``workspace_id`` is ever validated against a user.
 
     ``next_run_at = now() + interval`` rather than ``now()``: the first
     report should cover a real period of activity, not fire immediately with
@@ -122,12 +135,21 @@ def create_scheduler(
         row = conn.execute(
             f"""
             INSERT INTO schedulers
-                (org_id, user_id, connection_id, provider, frequency, prompt,
-                 next_run_at)
-            VALUES (%s, %s, %s, %s, %s, %s, now() + %s::interval)
+                (org_id, user_id, connection_id, workspace_id, provider,
+                 frequency, prompt, next_run_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, now() + %s::interval)
             RETURNING {COLUMNS}
             """,
-            (org_id, user_id, connection_id, provider, frequency, prompt, interval),
+            (
+                org_id,
+                user_id,
+                connection_id,
+                workspace_id,
+                provider,
+                frequency,
+                prompt,
+                interval,
+            ),
         ).fetchone()
     return row_to_scheduler(row)
 

@@ -227,6 +227,10 @@ export interface SchedulerRecord {
   /** Why the most recent run failed, if it did. Cleared on the next success. */
   last_error: string | null;
   created_at: string;
+  /** null = the company-wide connection; set = one space's own connection. */
+  workspace_id: string | null;
+  /** Resolved name for `workspace_id`, so a card can show it without a lookup. */
+  workspace_name: string | null;
 }
 
 /**
@@ -239,6 +243,29 @@ export interface SchedulableConnection {
   id: string;
   provider: string;
   workspace_name: string | null;
+  /** "org" = the company-wide connection; "workspace" = one space's own. */
+  scope: "org" | "workspace";
+  /** The space this connection belongs to, or null for the company-wide one. */
+  space_id: string | null;
+  space_name: string | null;
+}
+
+/**
+ * A scope a report can be built in: the company, or one space the signed-in
+ * person belongs to.
+ *
+ * `providers` is what can actually be scheduled here. `connected` is
+ * everything connected to the space including sources with no activity feed
+ * yet (Notion, Drive) — a space appears even when `providers` is empty, so
+ * "Meeting notes has nothing schedulable yet" is visible rather than looking
+ * like a missing space.
+ */
+export interface SchedulerSpace {
+  id: string | null;
+  name: string;
+  scope: "org" | "workspace";
+  providers: string[];
+  connected: string[];
 }
 
 /**
@@ -495,13 +522,23 @@ export const api = {
   listSchedulers: () =>
     request<{ schedulers: SchedulerRecord[] }>("/schedulers").then((r) => r.schedulers),
   listSchedulableConnections: () =>
-    request<{ connections: SchedulableConnection[] }>("/schedulers/connections").then(
-      (r) => r.connections
+    request<{ connections: SchedulableConnection[]; spaces: SchedulerSpace[] }>(
+      "/schedulers/connections"
     ),
-  createScheduler: (provider: string, frequency: string, prompt: string) =>
+  createScheduler: (
+    provider: string,
+    frequency: string,
+    prompt: string,
+    workspaceId: string | null = null
+  ) =>
     request<SchedulerRecord>("/schedulers", {
       method: "POST",
-      body: JSON.stringify({ provider, frequency, prompt }),
+      body: JSON.stringify({
+        provider,
+        frequency,
+        prompt,
+        workspace_id: workspaceId,
+      }),
     }),
   updateScheduler: (
     schedulerId: string,

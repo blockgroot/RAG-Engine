@@ -137,6 +137,18 @@ embeds nothing** (the `app/githublive/` pattern).
   the point.
 - Every route is member-level and scoped by `(org_id, user_id)` — a
   scheduler is personal.
+- **Scope = the company or ONE space**: `schedulers.workspace_id` (NULL =
+  org-wide) is chosen in the UI, membership-checked with `assert_member`, and
+  the connection is resolved **within that scope only** — a space-scoped
+  report must never fall back to the org connection. The row's scope wins at
+  run time (`runner` passes `scheduler.workspace_id`). `/schedulers/connections`
+  also returns every space the member is in, **including ones whose only
+  sources aren't schedulable yet** — an empty `providers` list plus a
+  `connected` list, so "Meeting notes has Drive, not schedulable" is visible
+  instead of the space silently vanishing.
+- The setup-chat endpoint stays **org-wide only** (it has no space slot); the
+  page now uses explicit space/service/cadence dropdowns, since which
+  connection is read is not a thing to infer from prose.
 
 ## 4. Layout
 
@@ -290,8 +302,7 @@ portal; Workspace-within-a-Workspace; signup-approval queue; injection,
 latency, security and eval hardening; the Activity Scheduler.
 
 **Pending / known gaps**
-- Scheduler: workspace scope (threaded through `activity.py`/runner already —
-  only the API surface is missing); Notion/Drive fetchers (Drive takes
+- Scheduler: Notion/Drive fetchers (Drive takes
   `modifiedTime > …`, Notion needs sort-desc + early stop; both report only
   *that* a doc changed); **email delivery is unverified — `console` only**.
 - No live walkthrough against real Notion/Drive/GitHub OAuth apps; the GitHub

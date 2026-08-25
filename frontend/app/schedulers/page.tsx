@@ -1,17 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { AnswerText } from "@/components/AnswerText";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AppShell } from "@/components/AppShell";
 import { BrandGlyph, type BrandName } from "@/components/BrandGlyph";
 import { PageHeader } from "@/components/PageHeader";
 import { useMe } from "@/lib/useMe";
-import {
-  api,
-  SchedulableConnection,
-  SchedulerRecord,
-  SetupChatMessage,
-} from "@/lib/api";
+import { api, SchedulerRecord, SchedulerSpace } from "@/lib/api";
 
 const PROVIDER_LABEL: Record<string, string> = {
   github: "GitHub",
@@ -42,8 +36,22 @@ const SCHEDULABLE_LABELS = (() => {
   return `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`;
 })();
 
-const OPENING_LINE =
-  "Tell me what you'd like to keep an eye on — which service, how often, and what the report should cover.";
+/**
+ * Labels for the sources a space can have connected, schedulable or not —
+ * this is what the chip after a space name shows ("Meeting notes · Drive"),
+ * so it needs Notion and Drive too.
+ */
+const SOURCE_LABEL: Record<string, string> = {
+  ...PROVIDER_LABEL,
+  notion: "Notion",
+};
+
+/** "Company", or the space name plus what it has connected. */
+function spaceLabel(space: SchedulerSpace): string {
+  if (space.scope === "org") return space.name;
+  const sources = space.connected.map((p) => SOURCE_LABEL[p] ?? p).join(", ");
+  return sources ? `${space.name} · ${sources}` : `${space.name} · nothing connected`;
+}
 
 /**
  * Human timestamp for a run. Inlined rather than imported: there is no shared
@@ -65,7 +73,7 @@ export default function SchedulersPage() {
   // connection the org already set up, and the API is member-level to match.
   const { me, loading } = useMe();
   const [schedulers, setSchedulers] = useState<SchedulerRecord[]>([]);
-  const [connections, setConnections] = useState<SchedulableConnection[]>([]);
+  const [spaces, setSpaces] = useState<SchedulerSpace[]>([]);
   const [listError, setListError] = useState<string | null>(null);
   const [listMessage, setListMessage] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -74,13 +82,21 @@ export default function SchedulersPage() {
   const [draftFrequency, setDraftFrequency] = useState("weekly");
   const clearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Setup conversation. Held here, not on the server: the endpoint is
-  // stateless and this exchange is over in a couple of turns.
-  const [messages, setMessages] = useState<SetupChatMessage[]>([]);
-  const [draft, setDraft] = useState("");
-  const [thinking, setThinking] = useState(false);
-  const [chatError, setChatError] = useState<string | null>(null);
-  const bottomRef = useRef<HTMLDivElement | null>(null);
+  // New-report form. Three explicit slots (space, service, cadence) plus the
+  // free-text intent. Deterministic on purpose: the space and service decide
+  // which connection is read, and that is not a thing to infer from prose.
+  // "" = nothing picked yet; "org" = the company-wide connection.
+  const [spaceKey, setSpaceKey] = useState("");
+  const [provider, setProvider] = useState("");
+  const [frequency, setFrequency] = useState("weekly");
+  const [prompt, setPrompt] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const selectedSpace = useMemo(
+    () => spaces.find((s) => (s.id ?? "org") === spaceKey) ?? null,
+    [spaces, spaceKey]
+  );
 
   function refresh() {
     api
@@ -101,53 +117,50 @@ export default function SchedulersPage() {
   useEffect(() => {
     if (me) {
       refresh();
-      api.listSchedulableConnections().then(setConnections).catch(() => setConnections([]));
+      api
+        .listSchedulableConnections()
+        .then((r) => setSpaces(r.spaces))
+        .catch(() => setSpaces([]));
     }
     return () => {
       if (clearTimer.current) clearTimeout(clearTimer.current);
     };
   }, [me]);
 
+  // Changing the space invalidates the chosen service: a space sees only its
+  // own connections, so carrying the old pick over could submit a provider
+  // this space never connected.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, thinking]);
+    setProvider("");
+  }, [spaceKey]);
 
-  async function send(e: React.FormEvent) {
+  async function create(e: React.FormEvent) {
     e.preventDefault();
-    const text = draft.trim();
-    if (!text || thinking) return;
-
-    const next: SetupChatMessage[] = [...messages, { role: "user", content: text }];
-    setMessages(next);
-    setDraft("");
-    setChatError(null);
-    setThinking(true);
+    if (creating || !selectedSpace || !provider || !prompt.trim()) return;
+    setCreating(true);
+    setFormError(null);
     try {
-      const result = await api.schedulerSetupChat(next);
-      if (result.done && result.scheduler) {
-        // Created: close the conversation out rather than leaving a dangling
-        // exchange the user might keep adding to.
-        setMessages([]);
-        flash(
-          `Scheduled a ${result.scheduler.frequency} ${
-            PROVIDER_LABEL[result.scheduler.provider] ?? result.scheduler.provider
-          } report — first one arrives ${whenLabel(result.scheduler.next_run_at)}.`
-        );
-        refresh();
-      } else {
-        setMessages([
-          ...next,
-          { role: "assistant", content: result.reply || "Could you say a bit more?" },
-        ]);
-      }
+      const created = await api.createScheduler(
+        provider,
+        frequency,
+        prompt.trim(),
+        selectedSpace.id
+      );
+      setPrompt("");
+      flash(
+        `Scheduled a ${created.frequency} ${
+          PROVIDER_LABEL[created.provider] ?? created.provider
+        } report${
+          created.workspace_name ? ` for ${created.workspace_name}` : ""
+        } — first one arrives ${whenLabel(created.next_run_at)}.`
+      );
+      refresh();
     } catch (err) {
-      // Keep the user's message in the log — retyping it would be the wrong
-      // punishment for a transient failure.
-      setChatError(
-        err instanceof Error ? err.message : "Could not reach the assistant just now."
+      setFormError(
+        err instanceof Error ? err.message : "Could not create that report."
       );
     } finally {
-      setThinking(false);
+      setCreating(false);
     }
   }
 
@@ -198,7 +211,9 @@ export default function SchedulersPage() {
     );
   }
 
-  const nothingConnected = connections.length === 0;
+  // Every schedulable provider across every scope this member can reach.
+  const nothingConnected =
+    spaces.length > 0 && spaces.every((space) => space.providers.length === 0);
 
   return (
     <AppShell me={me}>
@@ -207,6 +222,7 @@ export default function SchedulersPage() {
           eyebrow="Explore"
           title="Scheduled reports"
           description="Ask a standing question about a connected service and get the answer emailed to you on a schedule. Your question is re-applied every run, so each report covers only what changed since the last one."
+          scene="reports"
           meta={
             <>
               <span className="studio-chip">
@@ -225,77 +241,103 @@ export default function SchedulersPage() {
               <p className="muted">
                 {nothingConnected
                   ? "Nothing schedulable is connected yet."
-                  : "Describe it in your own words — no forms."}
+                  : "Pick where to read from, then say what you want to know."}
               </p>
             </div>
 
             {nothingConnected ? (
               <div className="banner banner-wait" role="status">
                 Reports can currently read {SCHEDULABLE_LABELS}. Ask an admin to connect
-                one on the Sources page, then come back.
+                one on the Sources page, or connect one inside a space, then come back.
               </div>
             ) : (
-              <>
-                <div className="chat-log" style={{ minHeight: "12rem" }}>
-                  <div className="chat-bubble chat-bubble-assistant">
-                    <AnswerText text={OPENING_LINE} />
-                  </div>
-                  {messages.map((message, i) =>
-                    message.role === "user" ? (
-                      <div key={i} className="chat-bubble chat-bubble-user">
-                        {message.content}
-                      </div>
-                    ) : (
-                      <div key={i} className="chat-bubble chat-bubble-assistant">
-                        <AnswerText text={message.content} />
-                      </div>
-                    )
-                  )}
-                  {thinking && (
-                    <div className="chat-bubble chat-bubble-assistant" data-thinking>
-                      <div className="chat-thinking" role="status" aria-live="polite">
-                        <span className="chat-thinking-dots" aria-hidden>
-                          <span />
-                          <span />
-                          <span />
-                        </span>
-                        <span className="chat-thinking-label">Thinking…</span>
-                      </div>
-                    </div>
-                  )}
-                  <div ref={bottomRef} />
+              <form onSubmit={create} className="stack">
+                <div className="field">
+                  <label htmlFor="space">1 · Which space?</label>
+                  <select
+                    id="space"
+                    className="input"
+                    value={spaceKey}
+                    onChange={(e) => setSpaceKey(e.target.value)}
+                    disabled={creating}
+                  >
+                    <option value="">Select a space…</option>
+                    {spaces.map((space) => (
+                      <option key={space.id ?? "org"} value={space.id ?? "org"}>
+                        {spaceLabel(space)}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
-                {chatError && (
+                <div className="field">
+                  <label htmlFor="provider">2 · Which service?</label>
+                  <select
+                    id="provider"
+                    className="input"
+                    value={provider}
+                    onChange={(e) => setProvider(e.target.value)}
+                    disabled={creating || !selectedSpace || !selectedSpace.providers.length}
+                  >
+                    <option value="">
+                      {selectedSpace ? "Select a service…" : "Pick a space first"}
+                    </option>
+                    {(selectedSpace?.providers ?? []).map((name) => (
+                      <option key={name} value={name}>
+                        {PROVIDER_LABEL[name] ?? name}
+                      </option>
+                    ))}
+                  </select>
+                  {/* Disclosed, not hidden: a space whose only sources have no
+                      "what happened since T" feed would otherwise look broken. */}
+                  {selectedSpace && !selectedSpace.providers.length && (
+                    <p className="muted" style={{ fontSize: "0.8rem" }}>
+                      {selectedSpace.connected.length
+                        ? `${selectedSpace.name} has ${selectedSpace.connected
+                            .map((c) => SOURCE_LABEL[c] ?? c)
+                            .join(", ")} connected, which cannot be scheduled yet. Reports need a service with an activity feed: ${SCHEDULABLE_LABELS}.`
+                        : `${selectedSpace.name} has nothing connected yet.`}
+                    </p>
+                  )}
+                </div>
+
+                <div className="field">
+                  <label htmlFor="prompt">3 · What should the report cover?</label>
+                  <div className="scheduler-compose">
+                    <input
+                      id="prompt"
+                      className="input"
+                      value={prompt}
+                      onChange={(e) => setPrompt(e.target.value)}
+                      placeholder="e.g. summarise what the team discussed and flag anything urgent"
+                      disabled={creating}
+                    />
+                    <select
+                      className="input"
+                      value={frequency}
+                      onChange={(e) => setFrequency(e.target.value)}
+                      aria-label="How often?"
+                      disabled={creating}
+                    >
+                      <option value="weekly">Weekly</option>
+                      <option value="monthly">Monthly</option>
+                    </select>
+                    <button
+                      className="button"
+                      type="submit"
+                      disabled={creating || !selectedSpace || !provider || !prompt.trim()}
+                    >
+                      {creating ? "Creating…" : "Create"}
+                    </button>
+                  </div>
+                </div>
+
+                {formError && (
                   <div className="banner banner-warn" role="alert">
-                    {chatError}
+                    {formError}
                   </div>
                 )}
-
-                <form onSubmit={send} className="chat-composer">
-                  <input
-                    className="chat-composer-input"
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    placeholder="e.g. weekly Slack summary of what shipped"
-                    aria-label="Describe the report you want"
-                    disabled={thinking}
-                  />
-                  <button
-                    className="chat-composer-send"
-                    type="submit"
-                    disabled={thinking || !draft.trim()}
-                    aria-label="Send"
-                  >
-                    →
-                  </button>
-                </form>
-
-                <p className="muted" style={{ marginTop: "0.5rem", fontSize: "0.8rem" }}>
-                  Available now:{" "}
-                  {connections.map((c) => PROVIDER_LABEL[c.provider] ?? c.provider).join(", ")}
-                </p>
-              </>
+              </form>
             )}
           </section>
 
@@ -382,7 +424,14 @@ export default function SchedulersPage() {
                             <>
                               <strong>{scheduler.prompt}</strong>
                               <span className="muted">
-                                {label} · {scheduler.frequency} · next{" "}
+                                {label}
+                                {/* Which scope it reads: two reports on the
+                                    same service in different spaces are
+                                    otherwise indistinguishable. */}
+                                {scheduler.workspace_name
+                                  ? ` in ${scheduler.workspace_name}`
+                                  : " · company-wide"}{" "}
+                                · {scheduler.frequency} · next{" "}
                                 {whenLabel(scheduler.next_run_at)}
                                 {scheduler.last_run_at
                                   ? ` · last sent ${whenLabel(scheduler.last_run_at)}`

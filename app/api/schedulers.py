@@ -40,10 +40,15 @@ MAX_SETUP_MESSAGES = 20
 MAX_SETUP_MESSAGE_CHARS = 4000
 
 
-def _payload(scheduler) -> dict:
+def _payload(scheduler, workspace_names: dict[str, str] | None = None) -> dict:
+    names = workspace_names or {}
     return {
         "id": scheduler.id,
         "provider": scheduler.provider,
+        "workspace_id": scheduler.workspace_id,
+        # Resolved for display: a report card showing "Meeting notes" is
+        # checkable by the reader in a way a UUID is not.
+        "workspace_name": names.get(scheduler.workspace_id or ""),
         "frequency": scheduler.frequency,
         "prompt": scheduler.prompt,
         "status": scheduler.status,
@@ -54,47 +59,144 @@ def _payload(scheduler) -> dict:
     }
 
 
-def _connected_providers(org_id: str) -> list[dict]:
-    """Org-wide connections a scheduler can target, metadata only.
+def _connected_providers(org_id: str, user_id: str) -> list[dict]:
+    """Connections a scheduler can target, metadata only, per scope.
+
+    Two scopes in one list, each row carrying its own:
+
+    - ``scope="org"`` — the org-wide connection (``workspace_id IS NULL``),
+      available to every member.
+    - ``scope="workspace"`` — one sub-workspace's own connection, returned ONLY
+      for workspaces this user is a member of. The membership filter is the
+      join against ``workspace_members``, so a workspace the caller cannot see
+      is not merely hidden from the UI — its connection id never leaves the DB.
 
     Deliberately its own query rather than reusing ``list_connections``: that
-    one is shaped for the admin Sources page (it returns reauth state and
-    source_config) and is reached only behind ``require_admin``. A member
-    needs strictly less — enough to pick a service — so this returns strictly
-    less, and never a token.
+    one is shaped for the admin Sources page (reauth state, source_config) and
+    is reached only behind ``require_admin``. A member needs strictly less —
+    enough to pick a service — so this returns strictly less, and never a
+    token.
 
-    Phase 1 filters to the providers with a real "activity since T" fetcher.
-    A Notion or Drive connection is genuinely present in the org but cannot
-    be scheduled yet, and offering it would create a scheduler that fails
-    every cycle.
+    Filtered to providers with a real "activity since T" fetcher. A Notion or
+    Drive connection is genuinely present but cannot be scheduled yet, and
+    offering it would create a scheduler that fails every cycle — see
+    ``_unschedulable_spaces`` for how that is disclosed rather than hidden.
     """
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT id::text, provider, external_workspace_name "
-            "FROM oauth_connections "
-            "WHERE org_id = %s AND workspace_id IS NULL AND provider = ANY(%s) "
-            "ORDER BY provider",
-            (org_id, list(SUPPORTED_PROVIDERS)),
+            """
+            SELECT c.id::text, c.provider, c.external_workspace_name,
+                   c.workspace_id::text, w.name
+            FROM oauth_connections c
+            LEFT JOIN workspaces w ON w.id = c.workspace_id
+            LEFT JOIN workspace_members wm
+                   ON wm.workspace_id = c.workspace_id AND wm.user_id = %s
+            WHERE c.org_id = %s
+              AND c.provider = ANY(%s)
+              AND (c.workspace_id IS NULL OR wm.user_id IS NOT NULL)
+            ORDER BY c.workspace_id NULLS FIRST, c.provider
+            """,
+            (user_id, org_id, list(SUPPORTED_PROVIDERS)),
         ).fetchall()
     return [
-        {"id": row[0], "provider": row[1], "workspace_name": row[2]} for row in rows
+        {
+            "id": row[0],
+            "provider": row[1],
+            "workspace_name": row[2],
+            "scope": "workspace" if row[3] else "org",
+            "space_id": row[3],
+            "space_name": row[4],
+        }
+        for row in rows
     ]
 
 
-def _resolve_connection(org_id: str, provider: str) -> str:
-    """The org-wide connection id for ``provider``, or 400.
+def _spaces(org_id: str, user_id: str) -> list[dict]:
+    """Every space this member could scope a report to, schedulable or not.
+
+    A space with only a Notion or Drive connection appears with an empty
+    ``providers`` list rather than being dropped: "Meeting notes has nothing
+    schedulable yet" is a fact the user can act on, while a silently missing
+    space reads as a bug. Same disclosure instinct as the coverage notes in a
+    report.
+    """
+    from ..workspaces.store import list_my_workspaces
+
+    connections = _connected_providers(org_id, user_id)
+    # Every connection in the org, schedulable or not — this is what the label
+    # after a space name reports ("Meeting notes · Drive").
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT workspace_id::text, provider FROM oauth_connections "
+            "WHERE org_id = %s",
+            (org_id,),
+        ).fetchall()
+    all_by_space: dict[str | None, set[str]] = {}
+    for space_id, provider in rows:
+        all_by_space.setdefault(space_id, set()).add(provider)
+
+    spaces = [
+        {
+            "id": None,
+            "name": "Company (organisation-wide)",
+            "scope": "org",
+            "providers": [c["provider"] for c in connections if c["scope"] == "org"],
+            "connected": sorted(all_by_space.get(None, set())),
+        }
+    ]
+    for workspace in list_my_workspaces(org_id, user_id):
+        spaces.append(
+            {
+                "id": workspace.id,
+                "name": workspace.name,
+                "scope": "workspace",
+                "providers": [
+                    c["provider"]
+                    for c in connections
+                    if c["space_id"] == workspace.id
+                ],
+                # Everything connected to the space, including sources that
+                # cannot be scheduled yet — what the label after the space
+                # name shows.
+                "connected": sorted(all_by_space.get(workspace.id, set())),
+            }
+        )
+    return spaces
+
+
+def _resolve_connection(
+    org_id: str, user_id: str, provider: str, workspace_id: str | None
+) -> str:
+    """The connection id for ``provider`` **in this scope**, or 400.
 
     Resolved server-side from the session's org rather than taken from the
     request, so a client (or an LLM tool call) naming another tenant's
     connection id simply has no way to express it.
+
+    A workspace-scoped request is membership-checked first, and matched only
+    against that workspace's own connection — never the org-wide one. Falling
+    back would hand a space the company connection it was never given, which
+    is the failure Workspace-within-a-Workspace exists to prevent.
     """
-    for connection in _connected_providers(org_id):
-        if connection["provider"] == provider:
+    if workspace_id:
+        from ..core.exceptions import AuthError
+        from ..workspaces.store import assert_member
+
+        try:
+            assert_member(workspace_id, org_id, user_id)
+        except AuthError as exc:
+            raise HTTPException(
+                status_code=403, detail="Not a member of that space."
+            ) from exc
+
+    for connection in _connected_providers(org_id, user_id):
+        if connection["provider"] == provider and connection["space_id"] == workspace_id:
             return connection["id"]
+    where = "that space" if workspace_id else "this organization"
     raise HTTPException(
         status_code=400,
         detail=(
-            f"{provider} is not connected for this organization, or does not "
+            f"{provider} is not connected for {where}, or does not "
             "support scheduled reports yet."
         ),
     )
@@ -102,15 +204,19 @@ def _resolve_connection(org_id: str, provider: str) -> str:
 
 @router.get("/connections")
 def list_schedulable_connections(session: SessionClaims = Depends(get_session)):
-    """Which services this member can build a scheduler against."""
-    return {"connections": _connected_providers(session.org_id)}
+    """Which services this member can build a scheduler against, by scope."""
+    return {
+        "connections": _connected_providers(session.org_id, session.user_id),
+        "spaces": _spaces(session.org_id, session.user_id),
+    }
 
 
 @router.get("")
 def list_my_schedulers(session: SessionClaims = Depends(get_session)):
+    names = _workspace_names(session.org_id, session.user_id)
     return {
         "schedulers": [
-            _payload(s)
+            _payload(s, names)
             for s in sched_store.list_schedulers(session.org_id, session.user_id)
         ]
     }
@@ -120,6 +226,8 @@ class CreateSchedulerRequest(BaseModel):
     provider: str
     frequency: str
     prompt: str
+    #: None = the org-wide connection; a workspace id = that space's own.
+    workspace_id: str | None = None
 
 
 @router.post("", status_code=201)
@@ -128,13 +236,30 @@ def create(
 ):
     return _payload(
         _create_scheduler_checked(
-            session.org_id, session.user_id, body.provider, body.frequency, body.prompt
-        )
+            session.org_id,
+            session.user_id,
+            body.provider,
+            body.frequency,
+            body.prompt,
+            workspace_id=body.workspace_id,
+        ),
+        _workspace_names(session.org_id, session.user_id),
     )
 
 
+def _workspace_names(org_id: str, user_id: str) -> dict[str, str]:
+    from ..workspaces.store import list_my_workspaces
+
+    return {w.id: w.name for w in list_my_workspaces(org_id, user_id)}
+
+
 def _create_scheduler_checked(
-    org_id: str, user_id: str, provider: str, frequency: str, prompt: str
+    org_id: str,
+    user_id: str,
+    provider: str,
+    frequency: str,
+    prompt: str,
+    workspace_id: str | None = None,
 ):
     """Validate then create. Shared by the REST route and the chat flow.
 
@@ -149,10 +274,16 @@ def _create_scheduler_checked(
             status_code=400,
             detail=f"frequency must be one of {list(FREQUENCIES)}.",
         )
-    connection_id = _resolve_connection(org_id, provider)
+    connection_id = _resolve_connection(org_id, user_id, provider, workspace_id)
     try:
         return sched_store.create_scheduler(
-            org_id, user_id, connection_id, provider, frequency, prompt
+            org_id,
+            user_id,
+            connection_id,
+            provider,
+            frequency,
+            prompt,
+            workspace_id=workspace_id,
         )
     except SchedulerError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -188,7 +319,7 @@ def update(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if updated is None:
         raise HTTPException(status_code=404, detail="Scheduler not found")
-    return _payload(updated)
+    return _payload(updated, _workspace_names(session.org_id, session.user_id))
 
 
 @router.delete("/{scheduler_id}", status_code=204)
@@ -249,7 +380,14 @@ def setup_chat(
             limit=MAX_SETUP_MESSAGE_CHARS,
         )
 
-    connected = [c["provider"] for c in _connected_providers(session.org_id)]
+    # The chat flow has no space slot, so it offers and creates ONLY org-wide
+    # reports. Listing a space's provider here would let the model create an
+    # org-wide scheduler for a service the org itself has not connected.
+    connected = [
+        c["provider"]
+        for c in _connected_providers(session.org_id, session.user_id)
+        if c["scope"] == "org"
+    ]
 
     # Lazy import: keeps the LLM client out of module import time, matching how
     # githublive/credentials defer theirs.

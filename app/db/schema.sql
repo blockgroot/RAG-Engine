@@ -522,3 +522,11 @@ CREATE TABLE IF NOT EXISTS schedulers (
 CREATE INDEX IF NOT EXISTS idx_schedulers_org ON schedulers (org_id);
 CREATE INDEX IF NOT EXISTS idx_schedulers_user ON schedulers (user_id);
 CREATE INDEX IF NOT EXISTS idx_schedulers_due ON schedulers (next_run_at) WHERE status = 'active';
+
+-- Workspace-within-a-Workspace: a scheduler may target either the org-wide
+-- connection (NULL, the default) or one sub-workspace's own connection. Nested
+-- INSIDE org_id like every other workspace_id here — never valid alone. The
+-- fetchers already take workspace_id; this column is what lets a saved
+-- scheduler remember which scope it was created for.
+ALTER TABLE schedulers ADD COLUMN IF NOT EXISTS workspace_id UUID
+    REFERENCES workspaces (id) ON DELETE CASCADE;

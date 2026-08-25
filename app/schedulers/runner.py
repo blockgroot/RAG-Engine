@@ -75,8 +75,15 @@ def run_scheduler_once(
         )
 
     since = window_start(scheduler)
+    # The row's own scope wins; the argument stays only as a test/manual
+    # override. A scheduler created against a sub-workspace's connection must
+    # keep reading that connection, never silently fall back to the org-wide
+    # one — a space sees ONLY its own rows (CLAUDE.md §3).
     digest = fetch_activity(
-        scheduler.provider, scheduler.org_id, since, workspace_id=workspace_id
+        scheduler.provider,
+        scheduler.org_id,
+        since,
+        workspace_id=workspace_id or scheduler.workspace_id,
     )
 
     if not digest:

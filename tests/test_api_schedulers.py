@@ -73,6 +73,25 @@ def member_org(store, org_cleanup):
     return _org_with_slack(store, org_cleanup)
 
 
+def _space_with_connection(org_id, user_id, provider="linear", name="Meeting notes"):
+    """A sub-workspace the user belongs to, with its OWN connection."""
+    from app.workspaces.store import create_workspace
+
+    workspace_id = create_workspace(org_id, name, user_id)
+    save_connection(
+        org_id,
+        provider,
+        OAuthTokens(
+            access_token="space-token",
+            refresh_token=None,
+            expires_at=None,
+            external_workspace_id=f"sp-{uuid.uuid4().hex[:6]}",
+        ),
+        workspace_id=workspace_id,
+    )
+    return workspace_id
+
+
 # --------------------------------------------------------------------------
 # Auth + scoping
 # --------------------------------------------------------------------------
@@ -393,3 +412,136 @@ def test_setup_chat_asks_before_creating_from_a_vague_request(client, member_org
     assert body["done"] is False, f"should have asked, but created: {body}"
     assert body["reply"].strip()
     assert sched_store.list_schedulers(org_id, member.id) == []
+
+
+# --------------------------------------------------------------------------
+# Space scope (Workspace-within-a-Workspace)
+# --------------------------------------------------------------------------
+
+
+@requires_db
+def test_connections_lists_the_company_and_each_of_my_spaces(client, member_org):
+    """The picker needs both scopes, each carrying its own connections."""
+    org_id, member, cookies = member_org
+    _space_with_connection(org_id, member.id)
+
+    body = client.get("/schedulers/connections", cookies=cookies).json()
+
+    by_name = {s["name"]: s for s in body["spaces"]}
+    assert by_name["Company (organisation-wide)"]["providers"] == ["slack"]
+    assert by_name["Meeting notes"]["providers"] == ["linear"]
+    # The space's own connection is listed as a workspace-scoped one.
+    assert {(c["provider"], c["scope"]) for c in body["connections"]} == {
+        ("slack", "org"),
+        ("linear", "workspace"),
+    }
+
+
+@requires_db
+def test_a_space_i_am_not_in_is_never_listed(client, member_org, store, org_cleanup):
+    """Membership, not the UI, is what hides another person's space."""
+    org_id, member, cookies = member_org
+    other = invite_member(f"other-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    _space_with_connection(org_id, other.id, name="Not mine")
+
+    body = client.get("/schedulers/connections", cookies=cookies).json()
+
+    assert "Not mine" not in {s["name"] for s in body["spaces"]}
+    assert all(c["space_name"] != "Not mine" for c in body["connections"])
+
+
+@requires_db
+def test_creating_in_a_space_binds_that_spaces_connection(client, member_org):
+    org_id, member, cookies = member_org
+    workspace_id = _space_with_connection(org_id, member.id)
+
+    created = client.post(
+        "/schedulers",
+        json={
+            "provider": "linear",
+            "frequency": "weekly",
+            "prompt": "What moved in our board?",
+            "workspace_id": workspace_id,
+        },
+        cookies=cookies,
+    )
+
+    assert created.status_code == 201, created.text
+    assert created.json()["workspace_id"] == workspace_id
+    assert created.json()["workspace_name"] == "Meeting notes"
+    stored = sched_store.list_schedulers(org_id, member.id)[0]
+    assert stored.workspace_id == workspace_id
+
+
+@requires_db
+def test_a_space_scheduler_never_falls_back_to_the_org_connection(client, member_org):
+    """Slack is connected org-wide but NOT in the space: this must 400, not
+    silently hand the space the company's connection."""
+    org_id, member, cookies = member_org
+    workspace_id = _space_with_connection(org_id, member.id)
+
+    response = client.post(
+        "/schedulers",
+        json={
+            "provider": "slack",
+            "frequency": "weekly",
+            "prompt": "What did we discuss?",
+            "workspace_id": workspace_id,
+        },
+        cookies=cookies,
+    )
+
+    assert response.status_code == 400
+    assert "that space" in response.json()["detail"]
+
+
+@requires_db
+def test_creating_in_someone_elses_space_is_refused(client, member_org):
+    """A forged workspace_id must fail on membership, before any connection
+    lookup — the same rule as every other workspace-scoped route."""
+    org_id, member, cookies = member_org
+    other = invite_member(f"other-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    workspace_id = _space_with_connection(org_id, other.id, name="Theirs")
+
+    response = client.post(
+        "/schedulers",
+        json={
+            "provider": "linear",
+            "frequency": "weekly",
+            "prompt": "peek",
+            "workspace_id": workspace_id,
+        },
+        cookies=cookies,
+    )
+
+    assert response.status_code == 403
+    assert sched_store.list_schedulers(org_id, member.id) == []
+
+
+@requires_db
+def test_a_space_with_only_unschedulable_sources_is_still_listed(client, member_org):
+    """"Meeting notes has Drive, which cannot be scheduled yet" is a fact the
+    user can act on; a missing space reads as a bug."""
+    org_id, member, cookies = member_org
+    _space_with_connection(org_id, member.id, provider="google", name="Docs space")
+
+    spaces = {s["name"]: s for s in
+              client.get("/schedulers/connections", cookies=cookies).json()["spaces"]}
+
+    assert spaces["Docs space"]["providers"] == []
+    assert spaces["Docs space"]["connected"] == ["google"]
+
+
+@requires_db
+def test_an_org_wide_report_still_has_no_workspace(client, member_org):
+    """The default path must keep writing NULL, not the caller's first space."""
+    _, _, cookies = member_org
+
+    created = client.post(
+        "/schedulers",
+        json={"provider": "slack", "frequency": "weekly", "prompt": "What shipped?"},
+        cookies=cookies,
+    )
+
+    assert created.json()["workspace_id"] is None
+    assert created.json()["workspace_name"] is None

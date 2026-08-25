@@ -2,11 +2,17 @@
  * Decorative header scenes for admin/explore pages.
  * Soft UI + dimensional layering — SVG only, motion via CSS.
  */
-export type PageSceneVariant = "sources" | "spaces" | "people";
+export type PageSceneVariant = "sources" | "spaces" | "people" | "reports";
 
 export function PageSceneArt({ variant }: { variant: PageSceneVariant }) {
   const label =
-    variant === "sources" ? "Connected knowledge" : variant === "spaces" ? "Team rooms" : "Your people";
+    variant === "sources"
+      ? "Connected knowledge"
+      : variant === "spaces"
+        ? "Team rooms"
+        : variant === "reports"
+          ? "On a schedule"
+          : "Your people";
 
   return (
     <div className={`page-scene page-scene--${variant}`} aria-hidden>
@@ -108,6 +114,54 @@ export function PageSceneArt({ variant }: { variant: PageSceneVariant }) {
               <rect x="106" y="152" width="72" height="8" rx="4" fill="#d0d5dd" />
               <rect x="190" y="150" width="28" height="12" rx="6" fill="#ccfbf1" />
             </g>
+          </>
+        )}
+        {/* Reports: what a scheduled report IS — activity on the left,
+            folded into an envelope, on a repeating cadence. Shares the panel
+            gradient, soft shadow and float classes with the other scenes, so
+            it reads as the same family without repeating any of their shapes. */}
+        {variant === "reports" && (
+          <>
+            {/* Activity being summarised: a sparkline of what happened. */}
+            <g className="ps-float ps-float-1" filter={`url(#psSoft-${variant})`}>
+              <rect x="30" y="96" width="104" height="72" rx="14" fill={`url(#psPanel-${variant})`} stroke="#e4e7ec" />
+              <rect x="44" y="140" width="10" height="16" rx="3" fill="#ccfbf1" />
+              <rect x="60" y="128" width="10" height="28" rx="3" fill="#5eead4" opacity="0.75" />
+              <rect x="76" y="118" width="10" height="38" rx="3" fill="#14b8a6" opacity="0.8" />
+              <rect x="92" y="134" width="10" height="22" rx="3" fill="#5eead4" opacity="0.6" />
+              <rect x="108" y="124" width="10" height="32" rx="3" fill="#0f766e" opacity="0.45" />
+              <rect x="44" y="110" width="42" height="7" rx="3.5" fill="#d0d5dd" />
+            </g>
+
+            {/* The report itself, as a sealed envelope. */}
+            <g className="ps-float ps-float-2" filter={`url(#psSoft-${variant})`}>
+              <rect x="150" y="44" width="128" height="84" rx="14" fill={`url(#psPanel-${variant})`} stroke="#e4e7ec" />
+              <path d="M150 58l64 42 64-42" stroke="#14b8a6" strokeWidth="2" opacity="0.55" fill="none" />
+              <rect x="166" y="104" width="52" height="7" rx="3.5" fill="#d0d5dd" />
+              <rect x="226" y="102" width="36" height="11" rx="5.5" fill="#ccfbf1" />
+            </g>
+
+            {/* Cadence: four ticks, the next one filled — weekly, repeating. */}
+            <g className="ps-float ps-float-3" filter={`url(#psSoft-${variant})`}>
+              <rect x="146" y="140" width="136" height="40" rx="13" fill={`url(#psPanel-${variant})`} stroke="#e4e7ec" />
+              <circle cx="168" cy="160" r="7" fill="#14b8a6" opacity="0.85" />
+              <circle cx="192" cy="160" r="6" fill="#5eead4" opacity="0.6" />
+              <circle cx="214" cy="160" r="6" fill="#d0d5dd" />
+              <circle cx="236" cy="160" r="6" fill="#e4e7ec" />
+              <rect x="252" y="154" width="18" height="12" rx="6" fill="#ccfbf1" />
+            </g>
+
+            {/* Activity folded into the report — the one line that ties the
+                two panels together, same dashed idiom as the sources arc. */}
+            <path
+              className="ps-arc"
+              d="M134 120C158 116 168 108 176 98"
+              stroke="#0f766e"
+              strokeWidth="1.5"
+              strokeDasharray="4 5"
+              opacity="0.45"
+              fill="none"
+            />
           </>
         )}
       </svg>

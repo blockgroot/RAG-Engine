@@ -2989,6 +2989,20 @@ table .role-chip.role-admin,
   width: 100%;
 }
 .people-layout .invite-form .field { min-width: 0; }
+
+/* New-report composer: prompt, cadence and submit on one line. Grid rather
+   than flex so the prompt is the only thing that grows, and the cadence never
+   shrinks to an unreadable width. Collapses to stacked rows on narrow. */
+.scheduler-compose {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0.6rem;
+  align-items: center;
+}
+.scheduler-compose select { min-width: 8.5rem; }
+@media (max-width: 720px) {
+  .scheduler-compose { grid-template-columns: 1fr; }
+}
 .people-layout .invite-form .banner { grid-column: 1 / -1; }
 .people-layout .invite-form .button {
   width: auto;

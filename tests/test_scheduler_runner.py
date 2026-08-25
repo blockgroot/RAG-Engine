@@ -84,6 +84,7 @@ def _set_activity(monkeypatch, text="alice: shipped it", fail=False, notes=(), u
         if fail:
             raise ProviderError("slack is down")
         _fetch.since = since
+        _fetch.workspace_id = workspace_id
         items = (ActivityItem(summary=text, url=url),) if text else ()
         return ActivityDigest(items=items, notes=tuple(notes), text=text)
 
@@ -210,6 +211,34 @@ def test_first_run_window_matches_the_cadence():
     now = datetime.now(timezone.utc)
     assert timedelta(days=6) < now - weekly < timedelta(days=8)
     assert timedelta(days=29) < now - monthly < timedelta(days=31)
+
+
+def test_the_rows_space_reaches_the_fetcher(monkeypatch, wiring):
+    """A space-scoped scheduler must keep reading that space's connection.
+
+    Falling back to the org-wide one would hand a space the company connection
+    it was never given — the failure Workspace-within-a-Workspace exists to
+    prevent.
+    """
+    seen: dict = {}
+
+    def _fetch(provider, org_id, since, *, workspace_id=None):
+        seen["workspace_id"] = workspace_id
+        return ActivityDigest(items=(ActivityItem("a: hi"),), text="a: hi")
+
+    monkeypatch.setattr(runner, "fetch_activity", _fetch)
+
+    runner.run_scheduler_once(_scheduler(workspace_id="ws-7"), llm=_FakeLLM())
+
+    assert seen["workspace_id"] == "ws-7"
+
+
+def test_an_org_wide_scheduler_passes_no_space(monkeypatch, wiring):
+    fetch = _set_activity(monkeypatch)
+
+    runner.run_scheduler_once(_scheduler(), llm=_FakeLLM())
+
+    assert fetch.workspace_id is None
 
 
 def test_the_window_reaches_the_fetcher(monkeypatch, wiring):
