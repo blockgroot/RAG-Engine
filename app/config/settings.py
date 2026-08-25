@@ -1181,3 +1181,39 @@ class EmailSettings:
             sendgrid_api_key=os.getenv("EMAIL_SENDGRID_API_KEY"),
             owner_notification_email=os.getenv("OWNER_NOTIFICATION_EMAIL"),
         )
+
+
+# Prompt-Driven Activity Scheduler. The poll interval is generous because
+# schedulers are weekly/monthly: polling every few seconds like the ingestion
+# queue would spend a query a second to catch a row that becomes due once a
+# week. batch_size bounds how many run per tick so a burst of simultaneously
+# due schedulers can't monopolise the shared worker thread.
+DEFAULT_SCHEDULER_POLL_SECONDS = 300
+DEFAULT_SCHEDULER_MAX_ATTEMPTS = 3
+DEFAULT_SCHEDULER_BATCH_SIZE = 5
+
+
+@dataclass(frozen=True)
+class SchedulerSettings:
+    """Configuration for the recurring activity-report scheduler."""
+
+    enabled: bool = True
+    poll_seconds: int = DEFAULT_SCHEDULER_POLL_SECONDS
+    max_attempts: int = DEFAULT_SCHEDULER_MAX_ATTEMPTS
+    batch_size: int = DEFAULT_SCHEDULER_BATCH_SIZE
+
+    @classmethod
+    def from_env(cls) -> "SchedulerSettings":
+        return cls(
+            enabled=(os.getenv("SCHEDULER_ENABLED", "true").strip().lower()
+                     not in {"false", "0", "no"}),
+            poll_seconds=int(
+                os.getenv("SCHEDULER_POLL_SECONDS") or DEFAULT_SCHEDULER_POLL_SECONDS
+            ),
+            max_attempts=int(
+                os.getenv("SCHEDULER_MAX_ATTEMPTS") or DEFAULT_SCHEDULER_MAX_ATTEMPTS
+            ),
+            batch_size=int(
+                os.getenv("SCHEDULER_BATCH_SIZE") or DEFAULT_SCHEDULER_BATCH_SIZE
+            ),
+        )

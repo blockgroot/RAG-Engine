@@ -42,6 +42,7 @@ eval = [
 [tool.pytest.ini_options]
 markers = [
     "network: test needs outbound network (e.g. DuckDuckGo web search); deselect in CI fast tier with -m 'not network'",
+    "live_llm: test asserts on a REAL LLM's output (non-deterministic, costs quota); deselect with -m 'not live_llm'",
 ]
 
 [tool.setuptools.packages.find]

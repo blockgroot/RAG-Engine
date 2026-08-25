@@ -162,14 +162,45 @@ def run_maintenance() -> None:
         logger.debug("Rate-counter prune failed", exc_info=True)
 
 
+def run_scheduler_tick(settings=None) -> int:
+    """Run any due activity schedulers. Never raises. Returns how many ran.
+
+    Wrapped here rather than at each call site because both worker paths
+    (this module's ``run_forever`` and the in-API loop in ``app/api/main.py``)
+    need identical swallowing: a scheduler batch that raised would abort the
+    ingestion tick sharing the same loop, coupling two unrelated features.
+    """
+    try:
+        from ..schedulers.worker import run_due_schedulers_once
+
+        ran = run_due_schedulers_once(settings)
+        if ran:
+            logger.info("Ran %s due scheduler(s)", ran)
+        return ran
+    except Exception:  # noqa: BLE001 - must never break the shared worker loop
+        logger.exception("Scheduler tick failed")
+        return 0
+
+
 def run_forever(
     *,
     poll_interval: float = 5.0,
     reap_interval: int = 60,
     maintenance_interval: int = 3600,
 ) -> None:
-    """Poll for queued jobs forever, reaping stuck ``running`` jobs periodically."""
+    """Poll for queued jobs forever, reaping stuck ``running`` jobs periodically.
+
+    Also ticks the activity scheduler, on the same interleaved-timer pattern
+    as reaping and maintenance, so the standalone worker process and the
+    in-API worker behave identically (see ``app/api/main.py``). Running
+    schedulers in only one of the two would mean reports silently stop
+    whenever ``INGEST_WORKER_IN_API`` is flipped.
+    """
     import time
+
+    from ..config.settings import SchedulerSettings
+
+    scheduler_settings = SchedulerSettings.from_env()
 
     try:
         n = queue.requeue_interrupted_running()
@@ -180,8 +211,18 @@ def run_forever(
     except Exception:  # noqa: BLE001
         logger.exception("Failed to re-queue interrupted ingestion jobs")
 
+    try:
+        from ..jobs.scheduler_queue import requeue_interrupted_running as requeue_sched
+
+        n = requeue_sched(max_attempts=scheduler_settings.max_attempts)
+        if n:
+            logger.info("Re-queued %s interrupted scheduler run(s)", n)
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to re-queue interrupted scheduler runs")
+
     last_reap = 0.0
     last_maintenance = 0.0
+    last_scheduler = -float(scheduler_settings.poll_seconds)
     while True:
         now = time.monotonic()
         if now - last_reap >= reap_interval:
@@ -190,6 +231,12 @@ def run_forever(
         if now - last_maintenance >= maintenance_interval:
             run_maintenance()
             last_maintenance = now
+        if (
+            scheduler_settings.enabled
+            and now - last_scheduler >= scheduler_settings.poll_seconds
+        ):
+            run_scheduler_tick(scheduler_settings)
+            last_scheduler = now
 
         job = run_once()
         if job is None:

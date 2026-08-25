@@ -29,6 +29,7 @@ from __future__ import annotations
 import html
 import logging
 import smtplib
+from collections.abc import Sequence
 from email.message import EmailMessage
 
 import httpx
@@ -270,6 +271,91 @@ def send_workspace_invite_email_safe(
         )
     except (ConfigurationError, ProviderError) as exc:
         logger.warning("Workspace-invite email to %s failed: %s", to, exc)
+
+
+def send_scheduler_report_email(
+    to: str,
+    report_text: str,
+    *,
+    provider: str,
+    frequency: str,
+    scheduler_prompt: str,
+    items: "Sequence[object]" = (),
+    notes: "Sequence[str]" = (),
+    settings: EmailSettings | None = None,
+) -> None:
+    """Deliver one run of a user's recurring activity report.
+
+    The subject names the service and cadence rather than the free-text
+    prompt: prompts are sentences ("flag anything stuck in review more than
+    3 days"), which make an unreadable subject line and can be long enough
+    to be truncated mid-word by a mail client. The prompt is echoed in the
+    footer instead, so a reader who forgot which of their schedulers this is
+    can tell — and, since a user may have several on the same service, that
+    footer is the only thing distinguishing two otherwise-identical mails.
+
+    ``items`` are the ``ActivityItem`` records the report was built from, and
+    their links are rendered HERE rather than by the model. That is the whole
+    point: a link the model wrote would be a guess, and a plausible-looking
+    wrong commit URL is worse than no link, because the reader has no way to
+    tell. Rendering them from the same structured data the fetcher produced
+    makes a fabricated or dropped link impossible.
+
+    ``notes`` state what was actually checked (channels, repositories) and
+    whether the list was truncated, so the report cannot read as complete
+    coverage it never had.
+    """
+    parts = [report_text.strip()]
+
+    if items:
+        lines = []
+        for item in items:
+            summary = getattr(item, "summary", str(item))
+            url = getattr(item, "url", None)
+            lines.append(f"- {summary}" + (f"\n  {url}" if url else ""))
+        parts.append("Activity this report was built from:\n" + "\n".join(lines))
+
+    if notes:
+        parts.append("\n".join(f"({note})" for note in notes))
+
+    parts.append(
+        f"This is your {frequency} {provider} report, generated from your "
+        f"standing request:\n  \"{scheduler_prompt.strip()}\""
+    )
+    body = "\n\n—\n\n".join(parts) + "\n"
+    _dispatch(to, f"Your {frequency} {provider} report", body, settings)
+
+
+def send_scheduler_report_email_safe(
+    to: str,
+    report_text: str,
+    *,
+    provider: str,
+    frequency: str,
+    scheduler_prompt: str,
+    items: "Sequence[object]" = (),
+    notes: "Sequence[str]" = (),
+) -> None:
+    """Worker wrapper: a mail failure must not fail the scheduler run.
+
+    Swallowing here is deliberate, not laziness. The run already did its
+    expensive work (fetch + LLM); letting a transient mail error propagate
+    would mark the scheduler failed and retry the *whole* run later, which
+    on a partial mail outage means the user gets the same report twice.
+    A dropped report is logged and the cycle moves on.
+    """
+    try:
+        send_scheduler_report_email(
+            to,
+            report_text,
+            provider=provider,
+            frequency=frequency,
+            scheduler_prompt=scheduler_prompt,
+            items=items,
+            notes=notes,
+        )
+    except (ConfigurationError, ProviderError) as exc:
+        logger.warning("Scheduler report email to %s failed: %s", to, exc)
 
 
 def send_signup_approved_email(

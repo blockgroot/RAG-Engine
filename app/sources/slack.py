@@ -227,6 +227,91 @@ class SlackAdapter(SourceAdapter):
                     break
         return refs
 
+    def channel_labels(self) -> list[str]:
+        """The channels this adapter reads, by name where known.
+
+        Exposed so an activity report can state its own coverage. A Slack
+        connection only ever sees the channels an admin picked and the bot was
+        invited to, so a report that stayed silent about that would imply
+        whole-workspace coverage it never had.
+        """
+        return [self._channel_label(cid) for cid in self._channel_ids]
+
+    def fetch_recent_messages(
+        self, since: float, *, max_messages: int = 300
+    ) -> tuple[list[dict], list[str]]:
+        """Messages posted since ``since`` (unix seconds), as an activity feed.
+
+        Returns ``(messages, truncated_channels)`` — the caller needs the
+        second element to disclose partial coverage, since a report that read
+        half of #general while claiming to have checked it is the failure that
+        matters here.
+
+        Deliberately NOT ``list_documents``: that returns thread *refs* for the
+        ingestion pipeline to chunk and embed. The Prompt-Driven Activity
+        Scheduler wants the actual recent messages to hand an LLM, and stores
+        nothing — so it needs the raw feed, not documents.
+
+        Reuses the same ``conversations.history`` + ``oldest`` call the listing
+        already makes; the only real difference is that ``since`` comes from the
+        caller (a scheduler's last run) instead of a fixed rolling window, and
+        no ``min_thread_chars``/thread filtering applies — a one-line message is
+        still activity worth reporting on.
+
+        ``max_messages`` is split **per channel** rather than spent greedily in
+        channel order: one busy channel would otherwise consume the whole
+        budget and every later channel would silently contribute nothing while
+        ``channel_labels()`` still claimed it was checked. Slack returns
+        history newest-first, so what a per-channel cap drops is always the
+        oldest end of the window.
+        """
+        channel_ids = list(self._channel_ids)
+        if not channel_ids:
+            return [], []
+        per_channel = max(1, max_messages // len(channel_ids))
+
+        collected: list[dict] = []
+        truncated: list[str] = []
+        for channel_id in channel_ids:
+            kept = 0
+            cursor = None
+            while True:
+                params = {"channel": channel_id, "oldest": since, "limit": 200}
+                if cursor:
+                    params["cursor"] = cursor
+                data = self._get("conversations.history", params)
+                for message in data.get("messages", []):
+                    ts = message.get("ts")
+                    text = (message.get("text") or "").strip()
+                    # Skip join/leave/etc. system events and empty posts: they
+                    # are noise in a report, not activity.
+                    if not ts or message.get("subtype") or not text:
+                        continue
+                    if kept >= per_channel:
+                        truncated.append(self._channel_label(channel_id))
+                        break
+                    collected.append(
+                        {
+                            "channel": self._channel_label(channel_id),
+                            "channel_id": channel_id,
+                            "user": self._display_name(message.get("user")),
+                            "text": text,
+                            "at": _ts_to_dt(ts),
+                            "reply_count": message.get("reply_count", 0),
+                            # Built from channel_id + ts rather than fetched:
+                            # chat.getPermalink would cost one API call PER
+                            # message, and this is the same URL Slack returns.
+                            "permalink": _thread_uri(channel_id, ts),
+                        }
+                    )
+                    kept += 1
+                else:
+                    cursor = (data.get("response_metadata") or {}).get("next_cursor")
+                    if cursor:
+                        continue
+                break
+        return collected, truncated
+
     def _fetch_thread_messages(self, channel_id: str, thread_ts: str) -> tuple[list[dict], bool]:
         """Return (messages, truncated) for one thread, newest-kept if oversized."""
         messages: list[dict] = []

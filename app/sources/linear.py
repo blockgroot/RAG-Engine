@@ -52,6 +52,36 @@ query Issue($id: String!) {
 }
 """
 
+# Issues touched since a caller-supplied instant, for activity reports (NOT
+# ingestion). Two differences from _ISSUES_QUERY that both matter:
+#
+# 1. It filters server-side on ``updatedAt``. Linear supports this natively;
+#    the listing query above simply never asked, which is why the ingestion
+#    path walks every issue every time.
+# 2. It asks for ``identifier``/``state``/``assignee``. A report needs to say
+#    "ENG-142 moved to Done, assigned to Priya" — the issue's UUID and title
+#    alone can't answer "what shipped" or "what's stuck".
+#
+# The whole filter is passed as one ``IssueFilter`` variable rather than
+# naming the inner comparator's scalar type: Linear has renamed that scalar
+# (DateTime -> DateTimeOrDuration) across API versions, and referencing the
+# input object by name keeps this query working across both.
+_RECENT_ISSUES_QUERY = """
+query RecentIssues($after: String, $filter: IssueFilter) {
+  issues(first: %d, after: $after, filter: $filter, orderBy: updatedAt) {
+    nodes {
+      identifier
+      title
+      url
+      updatedAt
+      state { name type }
+      assignee { name }
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+""" % _PAGE_SIZE
+
 
 def _parse_dt(value: str | None) -> datetime | None:
     if not value:
@@ -128,6 +158,54 @@ class LinearAdapter(SourceAdapter):
                 break
             cursor = page_info["endCursor"]
         return refs
+
+    def fetch_recent_issues(
+        self, since: datetime, *, max_issues: int = 300
+    ) -> list[dict]:
+        """Issues updated since ``since``, as an activity feed.
+
+        Deliberately NOT ``list_documents``: that returns every issue as a
+        ``SourceRef`` for the ingestion pipeline to chunk and embed. A
+        scheduled report wants only what moved, with the state and assignee
+        that make it a *report* rather than a list of titles — and stores
+        nothing.
+
+        Bounded by ``max_issues`` on top of Linear's own pagination, for the
+        same reason ``_MAX_ISSUES`` bounds the listing: a busy workspace's
+        month of activity must not build an unbounded prompt.
+        """
+        collected: list[dict] = []
+        cursor: str | None = None
+        # Linear's comparators take an ISO-8601 instant; normalise to UTC "Z"
+        # so a naive/offset-aware datetime from the caller behaves the same.
+        variables_filter = {"updatedAt": {"gt": since.isoformat()}}
+        while len(collected) < max_issues:
+            data = self._query(
+                _RECENT_ISSUES_QUERY,
+                {"after": cursor, "filter": variables_filter},
+            )["issues"]
+            for node in data["nodes"]:
+                state = node.get("state") or {}
+                assignee = node.get("assignee") or {}
+                collected.append(
+                    {
+                        "identifier": node.get("identifier") or "",
+                        "title": node.get("title") or "",
+                        "url": node.get("url") or "",
+                        "state": state.get("name") or "",
+                        # backlog | unstarted | started | completed | canceled
+                        "state_type": state.get("type") or "",
+                        "assignee": assignee.get("name") or "",
+                        "at": _parse_dt(node.get("updatedAt")),
+                    }
+                )
+                if len(collected) >= max_issues:
+                    return collected
+            page_info = data["pageInfo"]
+            if not page_info["hasNextPage"]:
+                break
+            cursor = page_info["endCursor"]
+        return collected
 
     def fetch_document(self, external_id: str) -> SourceDocument:
         issue = self._query(_ISSUE_QUERY, {"id": external_id})["issue"]
