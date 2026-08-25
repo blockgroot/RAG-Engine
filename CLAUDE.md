@@ -70,7 +70,12 @@ grounded generate → `RagResult`.
 - **Web fallback**: on gate miss the model may call `web_search` for real
   *external* entities — one search, no loop, labelled `source="web"`.
 - **Untrusted input is fenced + scrubbed** (`app/security/untrusted.py`) — a
-  partial mitigation; measure with multi-run probes.
+  partial mitigation; measure with multi-run probes. The `SYSTEM` block marker
+  must be **uppercase AND decorated** (`***SYSTEM***`, `[SYSTEM]`, `SYSTEM:`,
+  `--- SYSTEM ---`): the bare word ate content twice (`Ecosystem`, then a
+  plain "…RAG system…" sentence), deleting everything after it. Scrubbing to
+  empty now returns empty, **not the original** — the old fallback fail-OPENed
+  on the one input that is certainly an attack.
 
 **Agents (`app/agent/`)** — `Agent.answer(...) -> AgentResponse`,
 source-agnostic on purpose.
@@ -186,6 +191,11 @@ frontend/ Next.js 15 portal · tests/ pytest
 ## 5. Gotchas — each of these cost real debugging time
 
 **Grounding / retrieval**
+- **A content-destroying scrub is invisible until you measure it.** A 2,004-char
+  Slack post reached the LLM as 196 chars because `\bSYSTEM\b` matched the word
+  "system"; the report summarised a detailed post as one sentence and looked
+  like a weak model. Diagnose thin generations by printing what the prompt
+  ACTUALLY received, not by upgrading the model.
 - **Do NOT raise the 0.35 gate.** Bands overlap on a tiny sample (answerable
   0.54–0.74 vs on-topic-unanswered 0.46–0.52) and the golden set showed zero
   false negatives; the strict prompt does the fine discrimination. Never feed

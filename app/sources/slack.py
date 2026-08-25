@@ -23,6 +23,28 @@ _LISTING_CACHE_TTL_SECONDS = 180
 _LISTING_CACHE: dict[tuple, tuple[float, list[SourceRef]]] = {}
 
 
+def _plain_text(text: str) -> str:
+    """Slack mrkdwn -> readable text.
+
+    Slack escapes ``&``/``<``/``>`` in message text and wraps links as
+    ``<https://x|label>``, so raw ``text`` renders as "Vector &amp;
+    Relational" and dumps full URLs mid-sentence. Both were visible in a real
+    report before this: the escaping is not cosmetic, it is the difference
+    between a paragraph and noise.
+
+    Deliberately minimal — this unescapes and unwraps links; it does not try
+    to strip ``*bold*``/``_italic_`` markers, which read fine as-is and whose
+    removal risks eating literal asterisks from a code snippet.
+    """
+    import html as _html
+    import re as _re
+
+    text = _re.sub(r"<(?:https?://[^|>]+)\|([^>]+)>", r"\1", text)  # <url|label>
+    text = _re.sub(r"<(https?://[^>]+)>", r"\1", text)               # <url>
+    text = _re.sub(r"<[@#]([^|>]+)(?:\|([^>]+))?>", lambda m: f"@{m.group(2) or m.group(1)}", text)
+    return _html.unescape(text)
+
+
 def _ts_to_dt(ts: str | None) -> datetime | None:
     """Slack timestamps are ``"1234567890.123456"`` (seconds, as a string)."""
     if not ts:
@@ -282,7 +304,7 @@ class SlackAdapter(SourceAdapter):
                 data = self._get("conversations.history", params)
                 for message in data.get("messages", []):
                     ts = message.get("ts")
-                    text = (message.get("text") or "").strip()
+                    text = _plain_text((message.get("text") or "").strip())
                     # Skip join/leave/etc. system events and empty posts: they
                     # are noise in a report, not activity.
                     if not ts or message.get("subtype") or not text:

@@ -61,6 +61,27 @@ MAX_ENTRY_CHARS = 2_000
 _TRUNCATION_MARKER = "[... truncated: more activity than fits in one report ...]"
 
 
+def _stamp(value) -> str:
+    """A timestamp a person reads, not an ISO string.
+
+    "20 Aug, 7:11 am" rather than "2026-08-20 07:11". These strings end up in
+    the report page's activity list and in the LLM's context, and a wall of
+    machine timestamps is the single biggest reason that list reads as
+    clutter. Year is omitted deliberately: every item in a report is inside
+    one weekly or monthly window, so the year is never the distinguishing
+    part.
+    """
+    if not value:
+        return "unknown date"
+    # %-d/%-I are POSIX (no zero padding); the platform is macOS/Linux here.
+    return value.strftime("%-d %b, %-I:%M %p").replace("AM", "am").replace("PM", "pm")
+
+
+def _stamp_day(value) -> str:
+    """Date only — for sources whose timestamps are day-granular in practice."""
+    return value.strftime("%-d %b") if value else "unknown date"
+
+
 def _clip(text: str, limit: int = MAX_ENTRY_CHARS) -> str:
     """Shorten one entry, marking it so the model can't read it as complete."""
     text = " ".join(text.split())  # collapse newlines: one entry, one line
@@ -182,13 +203,12 @@ def fetch_github_activity(
             # end of the window — but the reader must be told it happened.
             capped.append(repo.full_name)
         for commit in commits:
-            when = commit.date.strftime("%Y-%m-%d") if commit.date else "unknown date"
+            when = _stamp_day(commit.date)
             author = commit.author or "unknown author"
             items.append(
                 ActivityItem(
                     summary=(
-                        f"[{when}] {repo.full_name} {commit.sha[:7]} "
-                        f"{commit.message} (by {author})"
+                        f"{commit.message} — {repo.full_name} · {author} · {when}"
                     ),
                     # Prefer the URL GitHub itself returned; fall back to the
                     # canonical form only if the API omitted it.
@@ -256,14 +276,14 @@ def fetch_slack_activity(
 
     items: list[ActivityItem] = []
     for message in messages:
-        when = message["at"].strftime("%Y-%m-%d %H:%M") if message["at"] else "unknown"
+        when = _stamp(message["at"])
         replies = message.get("reply_count") or 0
-        thread_note = f" [{replies} replies]" if replies else ""
+        thread_note = f" · {replies} replies" if replies else ""
         items.append(
             ActivityItem(
                 summary=(
-                    f"[{when}] #{message['channel']} {message['user']}: "
-                    f"{message['text']}{thread_note}"
+                    f"{message['user']} in #{message['channel']} · {when}"
+                    f"{thread_note} — {message['text']}"
                 ),
                 url=message.get("permalink"),
             )
@@ -297,7 +317,7 @@ def fetch_linear_activity(
     issues = adapter.fetch_recent_issues(since, max_issues=MAX_LINEAR_ISSUES)
     items: list[ActivityItem] = []
     for issue in issues:
-        when = issue["at"].strftime("%Y-%m-%d %H:%M") if issue["at"] else "unknown"
+        when = _stamp(issue["at"])
         who = f" · {issue['assignee']}" if issue["assignee"] else " · unassigned"
         # state_type is what makes "what shipped" answerable — a state *name*
         # is workspace-specific ("Shipped", "Live", "QA"), while the type is a
@@ -307,8 +327,8 @@ def fetch_linear_activity(
         items.append(
             ActivityItem(
                 summary=(
-                    f"[{when}] {issue['identifier']} {issue['title']} — "
-                    f"{state}{kind}{who}"
+                    f"{issue['identifier']}: {issue['title']} — "
+                    f"{state}{kind}{who} · {when}"
                 ),
                 url=issue.get("url") or None,
             )

@@ -204,7 +204,11 @@ def test_github_fetch_passes_since_and_formats_commits(monkeypatch):
 
     assert reader.calls == [("acme/api", SINCE.isoformat())]
     assert "acme/api" in digest.text
-    assert "abc1234" in digest.text  # short sha, not the full one
+    # The sha is no longer printed in the summary — it was noise in a line a
+    # person reads, and the item's URL still carries it, so "which commit?" is
+    # one click rather than a hex string to eyeball.
+    assert "abc1234" not in digest.text
+    assert digest.items[0].url.endswith("abc1234def")
     assert "fix login" in digest.text
 
 
