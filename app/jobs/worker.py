@@ -191,6 +191,34 @@ def run_maintenance() -> None:
     except Exception:  # noqa: BLE001 - housekeeping must never break the worker
         logger.debug("Query-cache prune failed", exc_info=True)
 
+    # Slack channel labels. Every OTHER trigger for this needs someone to do
+    # something — press Check, run a sync, own a scheduler that comes due — so
+    # a renamed channel could stay unfindable indefinitely on a quiet org. This
+    # is the one path that runs on its own.
+    #
+    # Cheap enough for the hourly tick: one paginated conversations.list per
+    # connected Slack workspace, and it only writes when a name actually moved.
+    try:
+        from ..sources.slack_utils import refresh_channel_names
+
+        from ..db.connection import get_connection
+
+        with get_connection() as conn:
+            slack = conn.execute(
+                "SELECT org_id::text, workspace_id::text FROM oauth_connections "
+                "WHERE provider = 'slack'"
+            ).fetchall()
+        for org_id, workspace_id in slack:
+            for old, new in refresh_channel_names(org_id, workspace_id):
+                logger.info(
+                    "Maintenance: Slack channel #%s is now #%s (org %s)",
+                    old,
+                    new,
+                    org_id,
+                )
+    except Exception:  # noqa: BLE001 - housekeeping must never break the worker
+        logger.debug("Slack channel-name refresh failed", exc_info=True)
+
     try:
         from ..security.rate_limit import prune_old_windows
 

@@ -202,3 +202,17 @@ def test_list_channel_members_skips_bots_deleted_and_emailless(monkeypatch):
     monkeypatch.setattr("app.sources.slack_utils.httpx.get", fake_get)
     members = list_channel_members("xoxb-abc", "C1")
     assert [m["id"] for m in members] == ["U1"]
+
+
+# --------------------------------------------------------------------------
+# A rename must not make indexed content unfindable
+# --------------------------------------------------------------------------
+
+
+def test_relabel_rejects_a_channel_name_that_is_not_name_shaped():
+    """The name reaches a LIKE pattern and a substring offset, so it is
+    validated rather than trusted."""
+    from app.sources.slack_utils import relabel_indexed_channel
+
+    assert relabel_indexed_channel("org", "ok-name", "bad name; drop table") == 0
+    assert relabel_indexed_channel("org", "same", "same") == 0
