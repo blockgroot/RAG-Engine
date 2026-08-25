@@ -589,6 +589,12 @@ export default function SchedulersPage() {
                         </div>
 
                         <div className="people-card-meta">
+                          {/* Cadence beside the status: "active" alone does not
+                              say how often, and the line below it is where the
+                              eye goes last. */}
+                          <span className="studio-chip">
+                            {scheduler.frequency === "weekly" ? "weekly" : "monthly"}
+                          </span>
                           <span
                             className={`studio-chip ${
                               stopped ? "studio-chip-warn" : "studio-chip-ok"
