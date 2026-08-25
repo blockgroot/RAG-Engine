@@ -226,3 +226,53 @@ def test_a_space_without_the_provider_raises_instead_of_falling_back(
 
     with pytest.raises(ProviderError):
         activity.fetch_slack_activity(org_id, SINCE, workspace_id=workspace_id)
+
+
+# --------------------------------------------------------------------------
+# A rename must reach the next report without anyone pressing a button
+# --------------------------------------------------------------------------
+
+
+@requires_db
+def test_a_scheduled_run_refreshes_channel_labels_first(org_and_space, monkeypatch):
+    """The coverage note is snapshotted into the report, so a stale label there
+    is wrong forever. A run must not depend on someone having opened Sources."""
+    org_id, _, workspace_id = org_and_space
+    save_connection(org_id, "slack", _tokens(SPACE_TOKEN), workspace_id=workspace_id)
+    set_connection_config(
+        org_id,
+        "slack",
+        {"channel_ids": ["C1"], "channel_names": {"C1": "old-name"}},
+        workspace_id=workspace_id,
+    )
+
+    # Slack now reports the channel under its new name.
+    monkeypatch.setattr(
+        "app.sources.slack_utils.list_slack_channels",
+        lambda token: [{"id": "C1", "name": "new-name", "is_private": False, "is_member": True}],
+    )
+
+    class _Adapter:
+        def __init__(self, config):
+            self._config = config
+
+        def fetch_recent_messages(self, since, *, max_messages=300):
+            return [], []
+
+        def channel_labels(self):
+            return [self._config["channel_names"]["C1"]]
+
+    monkeypatch.setattr(
+        "app.sources.build_source_adapter",
+        lambda source_type, *, token=None, config=None, **kw: _Adapter(config),
+    )
+
+    digest = activity.fetch_slack_activity(org_id, SINCE, workspace_id=workspace_id)
+
+    # The note names the channel as it is called NOW, and the refreshed label
+    # was persisted rather than only used in memory.
+    assert any("#new-name" in note for note in digest.notes)
+    from app.auth.credentials import get_connection_config
+
+    stored = get_connection_config(org_id, "slack", workspace_id=workspace_id)
+    assert stored["channel_names"]["C1"] == "new-name"

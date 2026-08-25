@@ -81,6 +81,13 @@ export interface SyncChanges {
   unchanged_count: number;
   remote_total: number;
   has_changes: boolean;
+  /**
+   * Channels renamed in Slack since the labels were stored. Reported apart
+   * from `has_changes` because a rename needs no sync — no message id or
+   * timestamp moved — but the client should drop cached labels and can say
+   * what moved.
+   */
+  renamed?: { from: string; to: string }[];
 }
 
 export interface GitHubRepoRef {

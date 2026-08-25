@@ -260,6 +260,14 @@ def fetch_slack_activity(
     from ..auth.credentials import get_connection_config, get_live_connection_token
     from ..sources import build_source_adapter
 
+    # Refresh the channel labels before reading, so this report's coverage
+    # note names the channel as it is called TODAY. The note is snapshotted
+    # into the report, so a stale label here is wrong forever — and a run is
+    # weekly or monthly, which makes one extra listing call free in practice.
+    from ..sources.slack_utils import refresh_channel_names
+
+    refresh_channel_names(org_id, workspace_id)
+
     config = get_connection_config(org_id, "slack", workspace_id)
     if not config:
         raise ConfigurationError("Slack is not connected for this organization.")

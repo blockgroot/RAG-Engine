@@ -65,6 +65,7 @@ from .connection_ops import (
     note_live_success,
     purge_provider_documents,
     raise_token_http,
+    refresh_slack_channel_names,
     slack_channels_changed,
 )
 from .deps import SessionClaims, get_session, get_workspace_role, require_workspace_owner
@@ -721,6 +722,11 @@ def connection_changes(
 ):
     conn = _owned_workspace_connection(session.org_id, workspace_id, connection_id)
     _reject_if_github(conn.provider, "Change checking")
+    # See the org-wide route: a Slack rename is invisible to change detection
+    # (no id or timestamp moves) but leaves every stored label wrong.
+    renamed: list[tuple[str, str]] = []
+    if conn.provider == "slack":
+        renamed = refresh_slack_channel_names(session.org_id, workspace_id=workspace_id)
     try:
         token = get_live_connection_token(session.org_id, conn.provider, workspace_id=workspace_id)
         config = get_connection_config(session.org_id, conn.provider, workspace_id=workspace_id)
@@ -747,9 +753,8 @@ def connection_changes(
         "unchanged_count": report.unchanged_count,
         "remote_total": report.remote_total,
         "has_changes": report.has_changes,
+        "renamed": [{"from": old, "to": new} for old, new in renamed],
     }
-
-
 
 
 @router.delete("/{workspace_id}/connections/{connection_id}")

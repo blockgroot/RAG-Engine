@@ -40,6 +40,7 @@ from ..sources import (
     validate_slack_channels,
 )
 from .connection_ops import (
+    refresh_slack_channel_names,
     disconnect_connection,
     find_slack_channel_conflict,
     folder_id_changed,
@@ -458,6 +459,15 @@ def connection_changes(connection_id: str, session: SessionClaims = Depends(requ
     conn = _owned_connection(session.org_id, connection_id)
     _reject_if_github(conn.provider, "Change checking")
 
+    # A Slack rename touches no message id or timestamp, so it is invisible to
+    # change detection — correctly, there is nothing to re-ingest. But the
+    # stored channel LABEL is a snapshot, so every display of it stays wrong
+    # until something refreshes it. Checking for changes is exactly when
+    # someone expects the connection to be re-read.
+    renamed: list[tuple[str, str]] = []
+    if conn.provider == "slack":
+        renamed = refresh_slack_channel_names(session.org_id)
+
     try:
         adapter = _build_connection_adapter(session.org_id, conn.provider)
         report = detect_source_changes(adapter, session.org_id, provider=conn.provider)
@@ -477,6 +487,9 @@ def connection_changes(connection_id: str, session: SessionClaims = Depends(requ
         "unchanged_count": report.unchanged_count,
         "remote_total": report.remote_total,
         "has_changes": report.has_changes,
+        # Reported separately from has_changes: a rename needs no sync, but the
+        # client does need to drop cached labels and can say what moved.
+        "renamed": [{"from": old, "to": new} for old, new in renamed],
     }
 
 

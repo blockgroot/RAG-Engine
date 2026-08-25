@@ -110,6 +110,69 @@ def list_slack_channels(token: str) -> list[dict]:
     return channels
 
 
+def refresh_channel_names(org_id: str, workspace_id: str | None = None) -> list[tuple[str, str]]:
+    """Re-read each connected channel's CURRENT name and persist it.
+
+    ``source_config.channel_names`` is a snapshot written when someone picked
+    the channels, and a Slack rename touches no message id or timestamp — so
+    change detection correctly reports "up to date" while every label goes on
+    showing the old name: the suggested questions, a report's coverage note,
+    "#old-name" inside an activity item.
+
+    Channel *ids* are stable across a rename, which is what makes this safe:
+    only labels move, never which channels are connected. A channel missing
+    from the listing keeps its stored name — a name we once knew beats a bare
+    id.
+
+    Lives here (with the other Slack API knowledge) rather than in the API
+    layer, because the consumers are the ingest worker and the scheduler, and
+    a domain module must not import from ``app/api``. Returns the
+    ``(old, new)`` pairs that changed. Best-effort: a Slack or DB failure
+    returns ``[]``, since a stale label must never break a sync, a report, or
+    the page that was only checking for changes.
+    """
+    from ..auth import get_live_connection_token
+    from ..auth.credentials import get_connection_config, set_connection_config
+
+    try:
+        config = get_connection_config(org_id, "slack", workspace_id=workspace_id) or {}
+        channel_ids = list(config.get("channel_ids") or [])
+        if not channel_ids:
+            return []
+        stored = dict(config.get("channel_names") or {})
+        token = get_live_connection_token(org_id, "slack", workspace_id=workspace_id)
+        live = {c["id"]: c["name"] for c in list_slack_channels(token)}
+    except Exception as exc:  # noqa: BLE001 - a label refresh is never fatal
+        logger.warning("Slack channel-name refresh failed for org %s: %s", org_id, exc)
+        return []
+
+    renamed: list[tuple[str, str]] = []
+    updated = dict(stored)
+    for channel_id in channel_ids:
+        current = live.get(channel_id)
+        if not current:
+            continue
+        previous = stored.get(channel_id)
+        if previous and previous != current:
+            renamed.append((previous, current))
+        if previous != current:
+            updated[channel_id] = current
+
+    if updated != stored:
+        try:
+            set_connection_config(
+                org_id, "slack", {**config, "channel_names": updated},
+                workspace_id=workspace_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not persist Slack channel names: %s", exc)
+            return []
+        logger.info(
+            "Refreshed Slack channel names for org %s (%s renamed)", org_id, len(renamed)
+        )
+    return renamed
+
+
 def join_public_channels(
     token: str, channel_ids: list[str], known: dict[str, dict] | None = None
 ) -> None:

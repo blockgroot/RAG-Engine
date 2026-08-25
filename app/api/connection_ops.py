@@ -6,6 +6,8 @@ place so org Sources and Spaces never drift.
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import HTTPException
 
 from ..auth import delete_connection, get_connection_config
@@ -17,6 +19,8 @@ from ..auth.credentials import (
 from ..core.exceptions import ConfigurationError, OAuthReauthRequiredError, SourceError
 from ..db.connection import get_connection
 from ..vectorstore import build_vector_store
+
+logger = logging.getLogger(__name__)
 
 # Providers that store documents/chunks. GitHub is live-only — disconnect
 # only drops the oauth_connections row.
@@ -82,6 +86,22 @@ def slack_channels_changed(
     existing = get_connection_config(org_id, provider, workspace_id=workspace_id) or {}
     old_ids = set(existing.get("channel_ids") or [])
     return bool(old_ids) and not old_ids.issubset(set(new_channel_ids))
+
+
+def refresh_slack_channel_names(
+    org_id: str,
+    *,
+    workspace_id: str | None = None,
+) -> list[tuple[str, str]]:
+    """API-facing wrapper — the implementation lives with the Slack helpers.
+
+    Kept as a name here because the change-check routes read better calling
+    it, but the same refresh runs from the ingest worker and the scheduler, so
+    it cannot live in the API layer.
+    """
+    from ..sources.slack_utils import refresh_channel_names
+
+    return refresh_channel_names(org_id, workspace_id=workspace_id)
 
 
 def find_slack_channel_conflict(

@@ -141,6 +141,16 @@ function WorkspaceDetailPageInner() {
           if (c.provider === "slack" && !c.source_config?.channel_ids?.length) return;
           try {
             next[c.id] = await api.checkWorkspaceConnectionChanges(workspaceId, c.id);
+            // A rename changes no content, so it never shows as "1 updated" —
+            // but the stored labels the suggestion chips were built from are
+            // now wrong, and those are cached client-side.
+            if (next[c.id].renamed?.length) {
+              const moved = next[c.id]
+                .renamed!.map((r) => `#${r.from} → #${r.to}`)
+                .join(", ");
+              invalidateSuggestionsCache(workspaceId);
+              setMessage(`Channel renamed in Slack (${moved}). Labels updated — no re-sync needed.`);
+            }
             setReauthById((prev) => ({ ...prev, [c.id]: false }));
             setConnections((prev) =>
               prev.map((row) =>

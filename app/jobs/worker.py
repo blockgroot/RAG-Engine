@@ -107,6 +107,16 @@ def run_once() -> queue.IngestionJob | None:
                 job.id, phase=phase, processed=processed, total=total
             )
 
+        if provider == "slack":
+            # Every sync, not only when an admin presses Check: a rename is
+            # invisible to change detection, so without this the stored label
+            # can stay wrong indefinitely and every thread title, suggestion
+            # chip and report coverage note keeps showing the old name.
+            from ..sources.slack_utils import refresh_channel_names
+
+            for old, new in refresh_channel_names(job.org_id, job.workspace_id):
+                logger.info("Job %s: channel #%s is now #%s", job.id, old, new)
+
         contextual = _contextual_settings_for(provider)
         result = ingest_source(
             adapter,

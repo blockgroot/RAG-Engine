@@ -38,28 +38,26 @@ function GithubMark({ size }: { size: number }) {
 }
 
 function MailMark({ size }: { size: number }) {
-  // An envelope, not a paper plane. Every place this mark is used means
-  // "email" — magic-link sign-in, invite by email, the delivered report — and
-  // the send-arrow read as a chat app instead. The `sendgrid` key is kept
-  // because it is what the call sites pass; the mark was never vendor
-  // branding, so it takes the app's teal rather than SendGrid blue.
+  // The supplied mail icon: a solid blue disc with a white envelope. Drawn
+  // rather than dropped in as a PNG so it scales at every size the glyph is
+  // used at (18-30px here) and needs no asset step. The `sendgrid` key is
+  // historical — every call site means "email", never the vendor.
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
-      <rect width="24" height="24" rx="6" fill="#0f766e" />
-      <rect x="4.5" y="7" width="15" height="10" rx="2" fill="#fff" />
+      <circle cx="12" cy="12" r="12" fill="#2E77BC" />
+      <rect x="5.4" y="8" width="13.2" height="8.6" rx="0.9" fill="#fff" />
       <path
-        d="M5.4 8.4 12 13l6.6-4.6"
-        stroke="#0f766e"
-        strokeWidth="1.6"
+        d="M5.4 8.9 12 13.3l6.6-4.4"
+        stroke="#2E77BC"
+        strokeWidth="1.5"
         strokeLinecap="round"
         strokeLinejoin="round"
         fill="none"
       />
       <path
-        d="M5.4 15.8 10 12.1M18.6 15.8 14 12.1"
-        stroke="#0f766e"
-        strokeOpacity="0.35"
-        strokeWidth="1.3"
+        d="M5.9 16.1 10.4 12M18.1 16.1 13.6 12"
+        stroke="#2E77BC"
+        strokeWidth="1.2"
         strokeLinecap="round"
         fill="none"
       />
@@ -68,17 +66,50 @@ function MailMark({ size }: { size: number }) {
 }
 
 function PrivateMark({ size }: { size: number }) {
+  // The supplied privacy icon: a person on a pink disc with a padlock badge.
+  // Outlined in ink like the source art, which is why it carries strokes the
+  // other marks here do not — it is the one glyph whose meaning ("only these
+  // people, locked") depends on reading two objects at a glance.
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
-      <rect width="24" height="24" rx="6" fill="#0d5c56" />
-      <circle cx="10.3" cy="8.6" r="3.1" fill="#fff" />
+      <circle cx="12" cy="12" r="11.2" fill="#FB6C93" stroke="#111" strokeWidth="1.1" />
+      {/* Shoulders, clipped by the disc. */}
       <path
-        fill="#fff"
-        d="M5 18.1c0-3.3 2.4-5.6 5.3-5.6 1.1 0 2.1.3 2.9.9a4.5 4.5 0 0 0-1.6 3.5c0 .4.06.9.18 1.3H5.3c-.2-.5-.3-1-.3-1.1Z"
+        d="M3.4 18.6c1.5-3 4.8-4.6 8.6-4.6s7.1 1.6 8.6 4.6A11.2 11.2 0 0 1 3.4 18.6Z"
+        fill="#7FD8F2"
+        stroke="#111"
+        strokeWidth="1.1"
+        strokeLinejoin="round"
       />
+      {/* Head. */}
+      <rect
+        x="8.3"
+        y="4.4"
+        width="7.4"
+        height="10"
+        rx="3.7"
+        fill="#F9BFA6"
+        stroke="#111"
+        strokeWidth="1.1"
+      />
+      {/* Padlock badge. */}
+      <circle cx="17.6" cy="17.4" r="5" fill="#EAF2FC" stroke="#111" strokeWidth="1.1" />
       <path
-        fill="#fff"
-        d="M15.8 12.5a2.5 2.5 0 0 1 2.5 2.5v.6h.2c.6 0 1.1.5 1.1 1.1v2.5c0 .6-.5 1.1-1.1 1.1h-5.4c-.6 0-1.1-.5-1.1-1.1v-2.5c0-.6.5-1.1 1.1-1.1h.2v-.6a2.5 2.5 0 0 1 2.5-2.5Zm0 1.3c-.7 0-1.2.5-1.2 1.2v.6h2.4v-.6c0-.7-.5-1.2-1.2-1.2Z"
+        d="M15.9 16.6v-1.1a1.7 1.7 0 0 1 3.4 0v1.1"
+        stroke="#111"
+        strokeWidth="1.1"
+        fill="none"
+        strokeLinecap="round"
+      />
+      <rect
+        x="15.2"
+        y="16.5"
+        width="4.8"
+        height="3.6"
+        rx="0.5"
+        fill="#FBD024"
+        stroke="#111"
+        strokeWidth="1.1"
       />
     </svg>
   );

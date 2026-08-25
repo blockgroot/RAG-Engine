@@ -257,6 +257,17 @@ frontend/ Next.js 15 portal · tests/ pytest
   means "org-wide"; Postgres treats NULLs as distinct in a plain `UNIQUE`.
 
 **Sources**
+- **A Slack channel rename is invisible to change detection** — no message id
+  or `ts` moves, so "up to date" is correct — but `source_config.channel_names`
+  is a SNAPSHOT, so every label (suggestion chips, report coverage notes,
+  `#channel` in an activity item) stays stale forever. Both change-check routes
+  now call `slack_utils.refresh_channel_names` (ids are stable across a rename,
+  so only labels move) and return `renamed` so the client can drop its cached
+  suggestions. It also runs **automatically** on every Slack ingest job and
+  before every scheduled Slack report, so a rename reaches the labels without
+  anyone pressing Check — the implementation lives in `app/sources/`, not
+  `app/api/`, precisely because the worker and scheduler call it. A missing channel keeps its stored name — a name we once
+  knew beats a bare id.
 - **Per-org Notion tokens must NOT fall back** (`resolve_token` raises); a
   page must also be explicitly *shared* with the integration. Its block walk
   needs a **shared char budget** — unbounded nesting built an unbounded

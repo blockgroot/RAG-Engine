@@ -3043,7 +3043,6 @@ table .role-chip.role-admin,
 }
 .report-items li:hover {
   border-color: color-mix(in srgb, var(--border-strong) 70%, #14b8a6);
-  transform: translateY(-1px);
   box-shadow: 0 6px 16px -12px rgba(15, 118, 110, 0.5);
 }
 .report-items a,
@@ -3142,11 +3141,22 @@ table .role-chip.role-admin,
   text-decoration: none;
   transition: border-color 0.2s var(--ease), transform 0.2s var(--ease);
 }
+/* No hover transform here, deliberately: a row that shifts 1px under the
+   cursor can land mousedown and mouseup on different boxes, and the click is
+   then never delivered — reported as "the latest report will not open" while
+   the link itself was fine. Colour and shadow give the same affordance
+   without moving the target. `position: relative` keeps the row above any
+   sibling in the panel's stacking context. */
+.report-row {
+  position: relative;
+  z-index: 1;
+  min-height: 3.1rem;
+}
 .report-row:hover {
   border-color: color-mix(in srgb, var(--border-strong) 70%, #14b8a6);
-  transform: translateY(-1px);
   box-shadow: 0 8px 20px -14px rgba(15, 118, 110, 0.55);
 }
+.report-history { position: relative; z-index: 2; }
 .report-row-title { font-weight: 650; overflow-wrap: anywhere; }
 .report-row-labels { display: flex; flex-wrap: wrap; gap: 0.35rem; }
 .report-row-when { font-size: 0.8rem; white-space: nowrap; }
