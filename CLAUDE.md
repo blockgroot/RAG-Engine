@@ -125,8 +125,13 @@ embeds nothing** (the `app/githublive/` pattern).
   `next_run_at` and returns to `active`. `attempts` is capped in **both**
   `mark_run_failed` and `requeue_interrupted_running`.
 - **Fetch/LLM failures retry; email failures don't** (work already done;
-  retrying re-sends). `last_run_at` advances only on delivery, so a retry
-  still covers everything since the last *delivered* report.
+  retrying re-sends). `last_run_at` advances only on *success*, so a retry
+  still covers everything since the last delivered report.
+- **`last_run_at` IS the next window's start, so it is stamped BEFORE the run**
+  (`worker.py` → `mark_run_success(covered_until=…)`), never `now()` at
+  delivery — the LLM+SMTP latency is tens of seconds, and anything happening
+  in it belonged to no window at all. Stamping early can only overlap by
+  milliseconds (a visible duplicate), never skip.
 - **No activity ⇒ the LLM is never called** (an empty context is where
   invention happens). One `try/except` **per scheduler** — the broad one is
   the point.

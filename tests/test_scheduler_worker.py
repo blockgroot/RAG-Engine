@@ -91,6 +91,37 @@ def test_a_due_scheduler_runs_and_its_next_run_advances(monkeypatch, scheduler_o
 
 
 @requires_db
+def test_the_next_window_starts_before_the_report_was_delivered(
+    monkeypatch, scheduler_org
+):
+    """The window boundary must land at the START of the run, not at delivery.
+
+    ``last_run_at`` is what the next run fetches from, so anything that happens
+    while the LLM is generating and the mail is sending would otherwise fall in
+    no window at all. Simulated here with a slow run.
+    """
+    import time
+    from datetime import datetime, timezone
+
+    org_id, user_id, _ = scheduler_org
+    sched = _create(scheduler_org, "window boundary")
+    _make_due(sched.id)
+
+    def _slow(s):
+        time.sleep(1.5)  # stand in for one LLM call plus an SMTP round trip
+
+    monkeypatch.setattr("app.schedulers.runner.run_scheduler_once", _slow)
+
+    sched_worker.run_due_schedulers_once(SETTINGS)
+    delivered_at = datetime.now(timezone.utc)
+
+    after = sched_store.get_scheduler(org_id, user_id, sched.id)
+    # A full second of the run is on the covered side of the boundary; with
+    # now()-at-delivery it would have been on neither side.
+    assert (delivered_at - after.last_run_at).total_seconds() > 1
+
+
+@requires_db
 def test_a_not_yet_due_scheduler_is_left_alone(monkeypatch, scheduler_org):
     org_id, user_id, _ = scheduler_org
     sched = _create(scheduler_org, "not due yet")

@@ -137,6 +137,42 @@ def test_claim_increments_attempts_and_success_resets_them(scheduler_org):
 
 
 @requires_db
+def test_success_records_the_window_end_not_the_delivery_time(scheduler_org):
+    """``last_run_at`` IS the next window's start, so it must be the instant the
+    run began. Stamping delivery time leaves the LLM+email latency covered by no
+    report at all — a message posted in that hole is reported nowhere."""
+    from datetime import datetime, timedelta, timezone
+
+    org_id, user_id, connection_id = scheduler_org
+    sched = sched_store.create_scheduler(
+        org_id, user_id, connection_id, "slack", "weekly", "window end"
+    )
+    # Stand in for "the run began a minute before it finished delivering".
+    began = datetime.now(timezone.utc) - timedelta(minutes=1)
+
+    scheduler_queue.mark_run_success(sched.id, "weekly", covered_until=began)
+
+    after = sched_store.get_scheduler(org_id, user_id, sched.id)
+    assert abs((after.last_run_at - began).total_seconds()) < 1
+    # The next window therefore starts before delivery: the boundary can only
+    # overlap, never skip.
+    assert after.last_run_at < datetime.now(timezone.utc)
+
+
+@requires_db
+def test_success_without_a_stamp_still_advances_last_run_at(scheduler_org):
+    """An ad-hoc call must not leave the window start NULL and re-fetch 7 days."""
+    org_id, user_id, connection_id = scheduler_org
+    sched = sched_store.create_scheduler(
+        org_id, user_id, connection_id, "slack", "weekly", "no stamp"
+    )
+
+    scheduler_queue.mark_run_success(sched.id, "weekly")
+
+    assert sched_store.get_scheduler(org_id, user_id, sched.id).last_run_at is not None
+
+
+@requires_db
 def test_repeated_failure_retires_the_scheduler_instead_of_retrying_forever(
     scheduler_org,
 ):

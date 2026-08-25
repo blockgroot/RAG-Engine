@@ -13,6 +13,7 @@ for the next cycle.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from ..db.connection import get_connection
 from ..schedulers.store import COLUMNS, Scheduler, interval_for, row_to_scheduler
@@ -63,21 +64,38 @@ def claim_due(limit: int = 5) -> list[Scheduler]:
     return [row_to_scheduler(row) for row in rows]
 
 
-def mark_run_success(scheduler_id: str, frequency: str) -> None:
+def mark_run_success(
+    scheduler_id: str, frequency: str, covered_until: datetime | None = None
+) -> None:
     """Record a completed run and schedule the next one.
 
     ``next_run_at`` advances from ``now()``, not from the previous
     ``next_run_at``: a scheduler that ran late (worker down, retries) should
     not immediately fire again to "catch up" — the next window starts when
     this report actually covered up to.
+
+    ``last_run_at`` is set to ``covered_until`` — **the instant the run began,
+    stamped by the caller before it fetched** — and NOT to ``now()``.
+    ``last_run_at`` IS the next window's start (``runner.window_start``), so
+    delivery time would skip everything that happened while the report was
+    generated and mailed: an LLM call plus an SMTP round trip is tens of
+    seconds, and a message posted in that hole appeared in no report at all.
+    Stamping before the fetch means the boundary can only ever *overlap* by
+    the few hundred milliseconds between the stamp and the API read — a
+    visible duplicate rather than a silent loss, which is the direction this
+    codebase takes everywhere else (CLAUDE.md §2, "mark truncation").
+
+    Falls back to ``now()`` when no stamp is given, so an ad-hoc call still
+    advances the window rather than leaving it NULL and re-fetching 7 days.
     """
     interval = interval_for(frequency)
     with get_connection() as conn:
         conn.execute(
-            "UPDATE schedulers SET status = 'active', last_run_at = now(), "
+            "UPDATE schedulers SET status = 'active', "
+            "last_run_at = coalesce(%s, now()), "
             "next_run_at = now() + %s::interval, attempts = 0, last_error = NULL "
             "WHERE id = %s",
-            (interval, scheduler_id),
+            (covered_until, interval, scheduler_id),
         )
 
 

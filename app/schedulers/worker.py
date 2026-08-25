@@ -9,6 +9,7 @@ something threaded through the run itself.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from ..config.settings import SchedulerSettings
 from ..jobs import scheduler_queue
@@ -47,6 +48,11 @@ def run_due_schedulers_once(settings: SchedulerSettings | None = None) -> int:
     from .runner import run_scheduler_once
 
     for scheduler in due:
+        # Stamped BEFORE the run, and handed to mark_run_success as the next
+        # window's start. Delivery time would leave the LLM+email latency
+        # (tens of seconds) covered by no report at all — see
+        # scheduler_queue.mark_run_success.
+        covered_until = datetime.now(timezone.utc)
         try:
             run_scheduler_once(scheduler)
         except Exception as exc:  # noqa: BLE001 - see docstring
@@ -61,6 +67,8 @@ def run_due_schedulers_once(settings: SchedulerSettings | None = None) -> int:
                 scheduler.id, str(exc), max_attempts=settings.max_attempts
             )
         else:
-            scheduler_queue.mark_run_success(scheduler.id, scheduler.frequency)
+            scheduler_queue.mark_run_success(
+                scheduler.id, scheduler.frequency, covered_until=covered_until
+            )
 
     return len(due)
