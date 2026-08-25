@@ -153,6 +153,30 @@ class QueryAnswerCache:
             )
 
 
+def delete_org_entries(org_id: str) -> int:
+    """Drop every cached answer for one org. Returns how many rows went.
+
+    Called after a successful ingest. Without this, a sync that adds new
+    content is invisible for up to the cache TTL: the question was already
+    asked, so the pre-sync answer is served straight back, and to the person
+    who just pressed Update it reads as "the sync did nothing". Correctness
+    beats a cache hit here — the cache exists to save a repeat LLM call, and
+    the whole point of a repeat call after new content is that the answer may
+    differ.
+
+    Org-wide rather than per-provider on purpose: the provider is folded into
+    the question HASH, not stored as a column, so there is nothing to filter
+    on — and a cross-source question ("what did we decide about pricing")
+    could be answered from the corpus that just changed anyway.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            "DELETE FROM query_answer_cache WHERE org_id = %s RETURNING 1",
+            (org_id,),
+        ).fetchall()
+    return len(rows)
+
+
 def prune_expired(limit: int = 10_000) -> int:
     """Delete already-expired cache rows. Returns how many went.
 

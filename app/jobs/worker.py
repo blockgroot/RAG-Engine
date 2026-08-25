@@ -21,6 +21,23 @@ from . import queue
 logger = logging.getLogger(__name__)
 
 
+def _clear_answer_cache(org_id: str, job_id: str) -> None:
+    """Drop this org's cached answers. Best-effort, never fails the job.
+
+    Called on every path that changes what a question would retrieve — the
+    ingest itself, and deferred contextual enrichment, which rewrites chunk
+    content after the ingest already reported success.
+    """
+    try:
+        from ..rag.query_cache import delete_org_entries
+
+        dropped = delete_org_entries(org_id)
+        if dropped:
+            logger.info("Job %s: cleared %s cached answer(s)", job_id, dropped)
+    except Exception as exc:  # noqa: BLE001 - a cache miss beats a failed ingest
+        logger.warning("Job %s: could not clear the answer cache: %s", job_id, exc)
+
+
 def _contextual_settings_for(provider: str | None) -> ContextualSettings:
     """Disable contextualization for Slack unless explicitly re-enabled."""
     settings = ContextualSettings.from_env()
@@ -103,6 +120,13 @@ def run_once() -> queue.IngestionJob | None:
         queue.mark_succeeded(job.id, result.documents_ingested)
         clear_needs_reauth(job.org_id, provider, job.workspace_id)
 
+        # New content must not sit behind a cached answer: without this the
+        # sync is invisible for up to QUERY_CACHE_TTL_SECONDS (300s), and to
+        # the person who just pressed Update that reads as "the sync did
+        # nothing".
+        if result.documents_ingested or result.documents_removed:
+            _clear_answer_cache(job.org_id, job.id)
+
         if (
             contextual.enabled
             and contextual.defer
@@ -118,6 +142,11 @@ def run_once() -> queue.IngestionJob | None:
                     contextual=contextual,
                     on_progress=report,
                 )
+                # Enrichment REWRITES chunk content, so it moves the answer
+                # again — and it runs after the clear above, which would
+                # otherwise have been repopulated with pre-enrichment answers
+                # by any question asked in between.
+                _clear_answer_cache(job.org_id, job.id)
             except Exception as exc:  # noqa: BLE001 - enrich must not flip success→failed
                 logger.warning(
                     "Deferred contextual enrich failed for job %s: %s",

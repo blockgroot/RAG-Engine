@@ -28,6 +28,12 @@ const CONNECTORS: Integration[] = [
 ];
 
 const PLATFORM: Integration[] = [
+  {
+    id: "reports",
+    mark: "schedule",
+    label: "Scheduled reports",
+    hint: "Weekly or monthly, emailed",
+  },
   { id: "mail", mark: "sendgrid", label: "Email", hint: "Magic-link sign-in", size: 30 },
   { id: "spaces", mark: "workspace", label: "Workspaces", hint: "Team & project spaces" },
 ];

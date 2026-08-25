@@ -195,21 +195,12 @@ export default function RootPage() {
                   <span>Grounded answers, org-scoped</span>
                 </span>
               </li>
-              <li className="landing-close-step" style={{ ["--step" as string]: "3" }}>
-                <span className="landing-close-step-mark" aria-hidden>
-                  <BrandGlyph name="schedule" size={18} />
-                </span>
-                <span className="landing-close-step-body">
-                  <strong>Schedule</strong>
-                  <span>Weekly or monthly, in your inbox</span>
-                </span>
-              </li>
             </ol>
           </div>
 
           <div className="landing-close-copy">
             <p className="landing-eyebrow">Start here</p>
-            <h2 id="close-title">Four steps from sources to answers.</h2>
+            <h2 id="close-title">Three steps from sources to answers.</h2>
             <p className="landing-close-lead">
               Handbook is ready once your docs are connected and your team is
               invited — then every question is answered from that content, and

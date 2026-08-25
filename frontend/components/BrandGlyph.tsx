@@ -37,13 +37,31 @@ function GithubMark({ size }: { size: number }) {
   );
 }
 
-function SendgridMark({ size }: { size: number }) {
+function MailMark({ size }: { size: number }) {
+  // An envelope, not a paper plane. Every place this mark is used means
+  // "email" — magic-link sign-in, invite by email, the delivered report — and
+  // the send-arrow read as a chat app instead. The `sendgrid` key is kept
+  // because it is what the call sites pass; the mark was never vendor
+  // branding, so it takes the app's teal rather than SendGrid blue.
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
-      <rect width="24" height="24" rx="6" fill="#1A82E2" />
+      <rect width="24" height="24" rx="6" fill="#0f766e" />
+      <rect x="4.5" y="7" width="15" height="10" rx="2" fill="#fff" />
       <path
-        fill="#fff"
-        d="M5 12.4 18.4 6.2c.5-.2 1 .3.8.8l-3.4 12.9c-.1.5-.7.7-1.1.4l-3.4-2.6-2 1.9c-.3.3-.8.1-.8-.3v-3l7.4-6.8c.2-.2 0-.5-.2-.4L7 13.4l-2-1c-.4-.2-.4-.8 0-1Z"
+        d="M5.4 8.4 12 13l6.6-4.6"
+        stroke="#0f766e"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        fill="none"
+      />
+      <path
+        d="M5.4 15.8 10 12.1M18.6 15.8 14 12.1"
+        stroke="#0f766e"
+        strokeOpacity="0.35"
+        strokeWidth="1.3"
+        strokeLinecap="round"
+        fill="none"
       />
     </svg>
   );
@@ -147,7 +165,7 @@ export function BrandGlyph({
   }
 
   if (name === "sendgrid") {
-    return <SendgridMark size={size} />;
+    return <MailMark size={size} />;
   }
 
   if (name === "private") {

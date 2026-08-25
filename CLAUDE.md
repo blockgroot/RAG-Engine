@@ -191,6 +191,17 @@ frontend/ Next.js 15 portal · tests/ pytest
 ## 5. Gotchas — each of these cost real debugging time
 
 **Grounding / retrieval**
+- **A successful ingest clears that org's `query_answer_cache`** (`worker.py`).
+  Without it new content is invisible for the 300s TTL — the same question
+  returns its pre-sync answer, which reads as "the sync did nothing".
+- **`SLACK_MIN_THREAD_CHARS` was 40, now 15.** At 40 a real one-liner ("Deploy
+  is frozen till Monday", 28 chars) was dropped from ingestion *and* from
+  change detection, so the Sources check truthfully said "up to date" while the
+  channel had new content. A filter that hides content also hides changes.
+- **Retrieval has no recency preference** — "what was discussed recently?"
+  ranks by cosine only, so an older, wordier thread outranks yesterday's
+  message and the answer *looks* stale even when the new content is indexed.
+  `DateRange` filtering exists but nothing infers recency intent yet.
 - **A content-destroying scrub is invisible until you measure it.** A 2,004-char
   Slack post reached the LLM as 196 chars because `\bSYSTEM\b` matched the word
   "system"; the report summarised a detailed post as one sentence and looked

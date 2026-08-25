@@ -579,7 +579,13 @@ DEFAULT_SLACK_BOT_SCOPES = (
 # bound in CLAUDE.md §4). A busy channel's full history is not safe to embed
 # unbounded, so every knob here caps something rather than trusting input size.
 DEFAULT_SLACK_BACKFILL_DAYS = 90
-DEFAULT_SLACK_MIN_THREAD_CHARS = 40
+# 40 was too high: "Deploy is frozen till Monday" is 28 characters, so a real
+# standalone announcement was dropped from ingestion AND from change detection
+# — the Sources check truthfully said "up to date" while the channel had new
+# content, and the answer stayed stale because the message was never indexed.
+# 15 still excludes the noise this bound exists for ("ok", "thanks", "+1",
+# an emoji) without deciding that a short sentence is not information.
+DEFAULT_SLACK_MIN_THREAD_CHARS = 15
 DEFAULT_SLACK_MAX_THREAD_MESSAGES = 50
 DEFAULT_SLACK_MAX_DOCUMENTS_PER_SYNC = 20000
 
