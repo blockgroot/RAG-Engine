@@ -233,6 +233,32 @@ export interface SchedulerRecord {
   workspace_name: string | null;
 }
 
+/** One generated report, as a row in "Your reports". */
+export interface ReportRow {
+  id: string;
+  scheduler_id: string | null;
+  provider: string;
+  frequency: "weekly" | "monthly";
+  /** The standing request the report answers — used as its title. */
+  title: string;
+  /** The space it read, or null for company-wide. */
+  space_name: string | null;
+  item_count: number;
+  /** Whether the notification email was accepted. The report is readable regardless. */
+  delivered: boolean;
+  window_start: string;
+  window_end: string;
+  created_at: string;
+}
+
+/** A report plus its body. Only the detail route returns these three fields. */
+export interface ReportDetail extends ReportRow {
+  report_text: string;
+  /** Activity the report was built from; links are rendered from here. */
+  items: { summary: string; url: string | null }[];
+  notes: string[];
+}
+
 /**
  * A connected service a report can be built against. Only providers with a
  * real "activity since" feed appear here (GitHub, Slack) — a connected
@@ -248,6 +274,12 @@ export interface SchedulableConnection {
   /** The space this connection belongs to, or null for the company-wide one. */
   space_id: string | null;
   space_name: string | null;
+  /**
+   * Names of what this connection can actually read — the picked Slack
+   * channels, the authorized GitHub repos. Empty for Linear, whose scope is
+   * "whatever the token can see" with no stored subset to name.
+   */
+  topics: string[];
 }
 
 /**
@@ -550,6 +582,10 @@ export const api = {
     }),
   deleteScheduler: (schedulerId: string) =>
     request<void>(`/schedulers/${schedulerId}`, { method: "DELETE" }),
+  listReports: () =>
+    request<{ reports: ReportRow[] }>("/schedulers/reports").then((r) => r.reports),
+  getReport: (reportId: string) =>
+    request<ReportDetail>(`/schedulers/reports/${reportId}`),
   /** Send the whole conversation each turn — the endpoint is stateless. */
   schedulerSetupChat: (messages: SetupChatMessage[]) =>
     request<SetupChatResponse>("/schedulers/setup-chat", {

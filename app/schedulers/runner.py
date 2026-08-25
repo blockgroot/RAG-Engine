@@ -14,6 +14,11 @@ Failure policy, which is the interesting part:
 - An email failure is **swallowed** by ``..._safe``. The expensive work is
   already done; retrying the whole run on a transient mail error risks
   delivering the same report twice, which is worse than dropping one.
+
+The report is **saved before the mail is attempted**, and the mail is only a
+notification with a link into the app. That ordering is what makes the
+swallowed email failure cheap: the run's output is already readable, so what
+a failed send costs is the nudge, not the report.
 """
 
 from __future__ import annotations
@@ -23,9 +28,12 @@ from datetime import datetime, timedelta, timezone
 
 from ..auth.email import send_scheduler_report_email_safe
 from ..auth.users import get_user
+from ..config.settings import ApiSettings
 from ..core.exceptions import ConfigurationError
 from ..llm import build_aux_llm_provider
 from ..llm.base import LLMProvider
+from ..workspaces.store import get_workspace_name
+from . import reports
 from .activity import fetch_activity
 from .prompts import NO_ACTIVITY_NOTE, build_scheduler_report_prompt
 from .store import Scheduler
@@ -54,6 +62,18 @@ def window_start(scheduler: Scheduler) -> datetime:
     return datetime.now(timezone.utc) - window
 
 
+def report_link(report_id: str, settings: ApiSettings | None = None) -> str:
+    """Where a reader opens this report.
+
+    Built against the FRONTEND origin, never the API host: the session cookie
+    is ``SameSite=Lax`` and would not travel to a different origin, so a link
+    to the API would land the reader on a login page (CLAUDE.md §5).
+    """
+    settings = settings or ApiSettings.from_env()
+    base = (settings.frontend_url or "").rstrip("/")
+    return f"{base}/schedulers/reports/{report_id}"
+
+
 def run_scheduler_once(
     scheduler: Scheduler,
     *,
@@ -74,16 +94,20 @@ def run_scheduler_once(
             f"{scheduler.user_id} is gone)."
         )
 
+    window_end = datetime.now(timezone.utc)
     since = window_start(scheduler)
-    # The row's own scope wins; the argument stays only as a test/manual
-    # override. A scheduler created against a sub-workspace's connection must
-    # keep reading that connection, never silently fall back to the org-wide
-    # one — a space sees ONLY its own rows (CLAUDE.md §3).
+    # The row's own scope wins; the argument is a test/manual override only.
+    scope_id = workspace_id or scheduler.workspace_id
+    # Snapshotted into the report so an archived one keeps reading correctly
+    # after the space is renamed — or deleted.
+    space_name = (
+        get_workspace_name(scheduler.org_id, scope_id) if scope_id else None
+    )
+    # A scheduler created against a sub-workspace's connection must keep
+    # reading that connection, never silently fall back to the org-wide one —
+    # a space sees ONLY its own rows (CLAUDE.md §3).
     digest = fetch_activity(
-        scheduler.provider,
-        scheduler.org_id,
-        since,
-        workspace_id=workspace_id or scheduler.workspace_id,
+        scheduler.provider, scheduler.org_id, since, workspace_id=scope_id
     )
 
     if not digest:
@@ -100,25 +124,47 @@ def run_scheduler_once(
         )
         report = llm.generate(prompt).strip()
 
-    # Items and notes go to the email, not through the model: the template
-    # renders each source link itself so a link can never be invented or
-    # dropped, and the coverage notes reach the reader even when the model
-    # declines to mention them.
-    send_scheduler_report_email_safe(
+    # Items and notes are stored as structured data, not folded into the
+    # model's prose: the report page renders each source link itself so a link
+    # can never be invented or dropped, and the coverage notes reach the reader
+    # even when the model declines to mention them.
+    saved = reports.save_report(
+        scheduler_id=scheduler.id,
+        org_id=scheduler.org_id,
+        user_id=scheduler.user_id,
+        provider=scheduler.provider,
+        frequency=scheduler.frequency,
+        prompt=scheduler.prompt,
+        space_name=space_name,
+        report_text=report,
+        items=[{"summary": i.summary, "url": i.url} for i in digest.items],
+        notes=list(digest.notes),
+        window_start=since,
+        window_end=window_end,
+    )
+
+    delivered = send_scheduler_report_email_safe(
         user.email,
-        report,
         provider=scheduler.provider,
         frequency=scheduler.frequency,
         scheduler_prompt=scheduler.prompt,
-        items=digest.items,
-        notes=digest.notes,
+        link=report_link(saved.id),
+        item_count=len(digest.items),
+        space_name=space_name,
     )
+    if delivered:
+        # Stamped only on an accepted send, so "was this actually emailed?"
+        # stays answerable rather than assumed — the report is readable either
+        # way, which is the point of saving first.
+        reports.mark_delivered(saved.id, user.email)
+
     logger.info(
-        "Scheduler %s: emailed %s report to %s (%s item(s), %s chars)",
+        "Scheduler %s: %s report saved as %s (%s item(s), %s chars); email %s",
         scheduler.id,
         scheduler.provider,
-        user.email,
+        saved.id,
         len(digest.items),
         len(digest.text),
+        "sent" if delivered else "FAILED",
     )
     return report

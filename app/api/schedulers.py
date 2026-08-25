@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..db.connection import get_connection
+from ..schedulers import reports as sched_reports
 from ..schedulers import store as sched_store
 from ..schedulers.prompts import CREATE_SCHEDULER_TOOL, build_setup_system_prompt
 from ..schedulers.store import FREQUENCIES, SUPPORTED_PROVIDERS, SchedulerError
@@ -86,7 +87,7 @@ def _connected_providers(org_id: str, user_id: str) -> list[dict]:
         rows = conn.execute(
             """
             SELECT c.id::text, c.provider, c.external_workspace_name,
-                   c.workspace_id::text, w.name
+                   c.workspace_id::text, w.name, c.source_config
             FROM oauth_connections c
             LEFT JOIN workspaces w ON w.id = c.workspace_id
             LEFT JOIN workspace_members wm
@@ -106,9 +107,61 @@ def _connected_providers(org_id: str, user_id: str) -> list[dict]:
             "scope": "workspace" if row[3] else "org",
             "space_id": row[3],
             "space_name": row[4],
+            "topics": _topics(row[1], row[5]),
         }
         for row in rows
     ]
+
+
+# What one connection actually covers — the channels an admin picked, the
+# repos an installation authorized. Enough to offer "summarise #product" as a
+# starting point instead of leaving the member to guess what is readable.
+MAX_TOPICS = 12
+
+
+def _topics(provider: str, config) -> list[str]:
+    """Human names of the resources this connection can read.
+
+    Derived from ``source_config`` we already selected, rather than a query
+    per connection (``chat.py`` has one-scope-at-a-time helpers; this listing
+    covers every scope at once and would otherwise fan out).
+
+    Names ONLY — never the rest of the config, and never a token. A member can
+    already see these channel/repo names when they ask a question against the
+    same scope, and a workspace connection reaches this list only for members
+    of that workspace (see the join in ``_connected_providers``).
+
+    Linear returns nothing on purpose: a Linear connection has no stored
+    subset to name — its scope is "whatever this token can see" — and
+    inventing team names here would be a guess.
+    """
+    if isinstance(config, str):
+        try:
+            config = json.loads(config)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(config, dict):
+        return []
+
+    if provider == "slack":
+        names = config.get("channel_names") or {}
+        ids = config.get("channel_ids") or []
+        if isinstance(names, dict):
+            # Keep the admin's picked order; fall back to the id so a
+            # suggestion is never rendered as a bare "#".
+            picked = [str(names.get(cid) or cid) for cid in ids]
+        else:
+            picked = [str(cid) for cid in ids]
+        return picked[:MAX_TOPICS]
+
+    if provider == "github":
+        return [
+            str(repo.get("full_name"))
+            for repo in (config.get("repos") or [])
+            if repo.get("full_name")
+        ][:MAX_TOPICS]
+
+    return []
 
 
 def _spaces(org_id: str, user_id: str) -> list[dict]:
@@ -138,7 +191,9 @@ def _spaces(org_id: str, user_id: str) -> list[dict]:
     spaces = [
         {
             "id": None,
-            "name": "Company (organisation-wide)",
+            # Matches the UI's first dropdown option exactly, so an error or
+            # empty-state message naming the scope reads the same as the pick.
+            "name": "Organisation",
             "scope": "org",
             "providers": [c["provider"] for c in connections if c["scope"] == "org"],
             "connected": sorted(all_by_space.get(None, set())),
@@ -287,6 +342,62 @@ def _create_scheduler_checked(
         )
     except SchedulerError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _report_row(report) -> dict:
+    """List shape: enough for a row (title, labels, when), never the body.
+
+    The body is only sent by the detail route, so a long list of long reports
+    cannot turn the index into a megabyte of prose nobody scrolled to.
+    """
+    return {
+        "id": report.id,
+        "scheduler_id": report.scheduler_id,
+        "provider": report.provider,
+        "frequency": report.frequency,
+        # The title IS the standing request — it is what the reader asked for,
+        # in their words, and it is what distinguishes two reports on the same
+        # service in the same space.
+        "title": report.prompt,
+        "space_name": report.space_name,
+        "item_count": len(report.items),
+        "delivered": report.delivered_to is not None,
+        "window_start": report.window_start,
+        "window_end": report.window_end,
+        "created_at": report.created_at,
+    }
+
+
+@router.get("/reports")
+def list_my_reports(session: SessionClaims = Depends(get_session)):
+    """Every report this member has been sent, newest first."""
+    return {
+        "reports": [
+            _report_row(r)
+            for r in sched_reports.list_reports(session.org_id, session.user_id)
+        ]
+    }
+
+
+@router.get("/reports/{report_id}")
+def get_my_report(report_id: str, session: SessionClaims = Depends(get_session)):
+    """One full report.
+
+    404 rather than 403 for someone else's: both scoping columns are in the
+    query, so a guessed id is indistinguishable from a deleted one — there is
+    nothing to learn from probing.
+    """
+    report = sched_reports.get_report(session.org_id, session.user_id, report_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return {
+        **_report_row(report),
+        "report_text": report.report_text,
+        # Rendered by the page from this structured data — the model never
+        # wrote a URL, so none can be invented, dropped, or mangled.
+        "items": report.items,
+        "notes": report.notes,
+    }
 
 
 class UpdateSchedulerRequest(BaseModel):

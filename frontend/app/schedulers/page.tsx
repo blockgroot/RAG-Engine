@@ -1,11 +1,18 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
 import { BrandGlyph, type BrandName } from "@/components/BrandGlyph";
 import { PageHeader } from "@/components/PageHeader";
 import { useMe } from "@/lib/useMe";
-import { api, SchedulerRecord, SchedulerSpace } from "@/lib/api";
+import {
+  api,
+  ReportRow,
+  SchedulableConnection,
+  SchedulerRecord,
+  SchedulerSpace,
+} from "@/lib/api";
 
 const PROVIDER_LABEL: Record<string, string> = {
   github: "GitHub",
@@ -46,6 +53,33 @@ const SOURCE_LABEL: Record<string, string> = {
   notion: "Notion",
 };
 
+/**
+ * Report intents built from what a connection actually covers, so the prompt
+ * field starts from a real channel or repo rather than a blank box. One
+ * template per topic name, plus a scope-wide one that needs no topic — Linear
+ * has no stored subset to name, so it only ever gets the latter.
+ *
+ * These are starting points a person then edits: the field stays free text,
+ * because the whole feature is a standing question in the user's own words.
+ */
+function promptSuggestions(provider: string, topics: string[]): string[] {
+  const perTopic: Record<string, (t: string) => string> = {
+    slack: (t) => `Summarise what was discussed in #${t.replace(/^#/, "")} and flag anything urgent`,
+    github: (t) => `Summarise the commits in ${t} and call out anything risky`,
+  };
+  const scopeWide: Record<string, string> = {
+    slack: "Summarise the week's discussions and flag anything that needs a decision",
+    github: "Summarise what was merged and call out anything risky",
+    linear: "What shipped, what moved, and what is stuck waiting on someone",
+  };
+
+  const template = perTopic[provider];
+  const suggestions = template ? topics.map(template) : [];
+  const wide = scopeWide[provider];
+  if (wide) suggestions.push(wide);
+  return suggestions;
+}
+
 /** "Company", or the space name plus what it has connected. */
 function spaceLabel(space: SchedulerSpace): string {
   if (space.scope === "org") return space.name;
@@ -74,6 +108,8 @@ export default function SchedulersPage() {
   const { me, loading } = useMe();
   const [schedulers, setSchedulers] = useState<SchedulerRecord[]>([]);
   const [spaces, setSpaces] = useState<SchedulerSpace[]>([]);
+  const [connections, setConnections] = useState<SchedulableConnection[]>([]);
+  const [reports, setReports] = useState<ReportRow[]>([]);
   const [listError, setListError] = useState<string | null>(null);
   const [listMessage, setListMessage] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -82,23 +118,36 @@ export default function SchedulersPage() {
   const [draftFrequency, setDraftFrequency] = useState("weekly");
   const clearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // New-report form. Three explicit slots (space, service, cadence) plus the
-  // free-text intent. Deterministic on purpose: the space and service decide
-  // which connection is read, and that is not a thing to infer from prose.
-  // "" = nothing picked yet; "org" = the company-wide connection.
-  const [spaceKey, setSpaceKey] = useState("");
+  // New-report form. Explicit slots (scope, space, service, cadence) plus the
+  // free-text intent. Deterministic on purpose: those slots decide which
+  // connection is read, and that is not a thing to infer from prose.
+  //
+  // Scope and space are two steps rather than one flat list: "company or one
+  // of my spaces" is the question the user actually answers first, and a
+  // single mixed dropdown made the company option look like just another
+  // space. "" = nothing picked yet.
+  const [scope, setScope] = useState<"" | "org" | "personal">("");
+  const [spaceId, setSpaceId] = useState("");
   const [provider, setProvider] = useState("");
   const [frequency, setFrequency] = useState("weekly");
   const [prompt, setPrompt] = useState("");
   const [creating, setCreating] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
-  const selectedSpace = useMemo(
-    () => spaces.find((s) => (s.id ?? "org") === spaceKey) ?? null,
-    [spaces, spaceKey]
-  );
+  const orgSpace = useMemo(() => spaces.find((s) => s.scope === "org") ?? null, [spaces]);
+  const mySpaces = useMemo(() => spaces.filter((s) => s.scope === "workspace"), [spaces]);
+
+  /** The scope a report will actually be created in, once fully chosen. */
+  const selectedSpace = useMemo(() => {
+    if (scope === "org") return orgSpace;
+    if (scope === "personal") return mySpaces.find((s) => s.id === spaceId) ?? null;
+    return null;
+  }, [scope, spaceId, orgSpace, mySpaces]);
 
   function refresh() {
+    // Reports are refreshed alongside the schedules: creating or deleting one
+    // changes both lists, and a stale report list is the confusing half.
+    api.listReports().then(setReports).catch(() => setReports([]));
     api
       .listSchedulers()
       .then(setSchedulers)
@@ -119,20 +168,40 @@ export default function SchedulersPage() {
       refresh();
       api
         .listSchedulableConnections()
-        .then((r) => setSpaces(r.spaces))
-        .catch(() => setSpaces([]));
+        .then((r) => {
+          setSpaces(r.spaces);
+          setConnections(r.connections);
+        })
+        .catch(() => {
+          setSpaces([]);
+          setConnections([]);
+        });
     }
     return () => {
       if (clearTimer.current) clearTimeout(clearTimer.current);
     };
   }, [me]);
 
-  // Changing the space invalidates the chosen service: a space sees only its
-  // own connections, so carrying the old pick over could submit a provider
-  // this space never connected.
+  // Changing the scope or the space invalidates everything downstream: a
+  // space sees only its own connections, so carrying an old pick over could
+  // submit a provider this space never connected.
+  useEffect(() => {
+    setSpaceId("");
+    setProvider("");
+  }, [scope]);
+
   useEffect(() => {
     setProvider("");
-  }, [spaceKey]);
+  }, [spaceId]);
+
+  /** Suggestions for the exact connection the two pickers landed on. */
+  const suggestions = useMemo(() => {
+    if (!selectedSpace || !provider) return [];
+    const connection = connections.find(
+      (c) => c.provider === provider && c.space_id === (selectedSpace.id ?? null)
+    );
+    return promptSuggestions(provider, connection?.topics ?? []);
+  }, [connections, selectedSpace, provider]);
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
@@ -221,7 +290,7 @@ export default function SchedulersPage() {
         <PageHeader
           eyebrow="Explore"
           title="Scheduled reports"
-          description="Ask a standing question about a connected service and get the answer emailed to you on a schedule. Your question is re-applied every run, so each report covers only what changed since the last one."
+          description="Set a task once — get it done and emailed to you every week or month, covering only what changed since the last one."
           scene="reports"
           meta={
             <>
@@ -253,25 +322,51 @@ export default function SchedulersPage() {
             ) : (
               <form onSubmit={create} className="stack">
                 <div className="field">
-                  <label htmlFor="space">1 · Which space?</label>
+                  <label htmlFor="scope">1 · Which space?</label>
                   <select
-                    id="space"
+                    id="scope"
                     className="input"
-                    value={spaceKey}
-                    onChange={(e) => setSpaceKey(e.target.value)}
+                    value={scope}
+                    onChange={(e) => setScope(e.target.value as "" | "org" | "personal")}
                     disabled={creating}
                   >
                     <option value="">Select a space…</option>
-                    {spaces.map((space) => (
-                      <option key={space.id ?? "org"} value={space.id ?? "org"}>
-                        {spaceLabel(space)}
-                      </option>
-                    ))}
+                    <option value="org">Organisation</option>
+                    <option value="personal" disabled={!mySpaces.length}>
+                      {mySpaces.length
+                        ? "Personal space"
+                        : "Personal space (you have none yet)"}
+                    </option>
                   </select>
                 </div>
 
+                {/* Only asked when it is a real question — the company scope
+                    has exactly one connection set, so there is nothing to
+                    choose between. */}
+                {scope === "personal" && (
+                  <div className="field">
+                    <label htmlFor="space">2 · Which one?</label>
+                    <select
+                      id="space"
+                      className="input"
+                      value={spaceId}
+                      onChange={(e) => setSpaceId(e.target.value)}
+                      disabled={creating}
+                    >
+                      <option value="">Select a space…</option>
+                      {mySpaces.map((space) => (
+                        <option key={space.id} value={space.id ?? ""}>
+                          {spaceLabel(space)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 <div className="field">
-                  <label htmlFor="provider">2 · Which service?</label>
+                  <label htmlFor="provider">
+                    {scope === "personal" ? "3" : "2"} · Which service?
+                  </label>
                   <select
                     id="provider"
                     className="input"
@@ -280,7 +375,11 @@ export default function SchedulersPage() {
                     disabled={creating || !selectedSpace || !selectedSpace.providers.length}
                   >
                     <option value="">
-                      {selectedSpace ? "Select a service…" : "Pick a space first"}
+                      {!scope
+                        ? "Pick a space first"
+                        : scope === "personal" && !spaceId
+                          ? "Pick which space first"
+                          : "Select a service…"}
                     </option>
                     {(selectedSpace?.providers ?? []).map((name) => (
                       <option key={name} value={name}>
@@ -302,7 +401,31 @@ export default function SchedulersPage() {
                 </div>
 
                 <div className="field">
-                  <label htmlFor="prompt">3 · What should the report cover?</label>
+                  <label htmlFor="prompt">
+                    {scope === "personal" ? "4" : "3"} · What should the report cover?
+                  </label>
+                  {/* Built from what the chosen connection actually covers —
+                      the picked channels, the authorized repos — so the field
+                      starts from a real topic instead of a blank box. Writing
+                      into the input rather than replacing it: the prompt stays
+                      free text, which is the whole point of the feature. */}
+                  {suggestions.length > 0 && (
+                    <select
+                      className="input"
+                      value=""
+                      onChange={(e) => e.target.value && setPrompt(e.target.value)}
+                      aria-label="Use a suggested report"
+                      disabled={creating}
+                      style={{ marginBottom: "0.5rem" }}
+                    >
+                      <option value="">Suggestions for this source…</option>
+                      {suggestions.map((text) => (
+                        <option key={text} value={text}>
+                          {text}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                   <div className="scheduler-compose">
                     <input
                       id="prompt"
@@ -343,7 +466,7 @@ export default function SchedulersPage() {
 
           <section className="roster-board" aria-labelledby="reports-title">
             <div className="studio-section-head roster-board-head">
-              <h2 id="reports-title">Your reports</h2>
+              <h2 id="reports-title">Your schedules</h2>
               <p className="muted">Only yours — nobody else in the company sees these.</p>
             </div>
 
@@ -507,6 +630,57 @@ export default function SchedulersPage() {
             </div>
           </section>
         </div>
+
+        <section className="studio-panel" aria-labelledby="delivered-title">
+          <div className="studio-panel-glow" aria-hidden />
+          <div className="studio-section-head">
+            <h2 id="delivered-title">Delivered reports</h2>
+            <p className="muted">
+              Every report that has been generated for you. The email is just the
+              nudge — the full report lives here.
+            </p>
+          </div>
+
+          {reports.length === 0 ? (
+            <div className="studio-empty">
+              <div className="studio-empty-mark" aria-hidden />
+              <h3>Nothing delivered yet</h3>
+              <p className="muted">
+                Your first report arrives one full period after you create a
+                schedule, so there is nothing to read on day one.
+              </p>
+            </div>
+          ) : (
+            <ul className="report-list">
+              {reports.map((report) => (
+                <li key={report.id}>
+                  <Link className="report-row" href={`/schedulers/reports/${report.id}`}>
+                    {/* Title = the standing request, which is what tells two
+                        reports on the same service in the same space apart. */}
+                    <span className="report-row-title">{report.title}</span>
+                    <span className="report-row-labels">
+                      <span className="studio-chip">
+                        {report.frequency === "weekly" ? "Weekly" : "Monthly"}
+                      </span>
+                      <span className="studio-chip">
+                        {PROVIDER_LABEL[report.provider] ?? report.provider}
+                      </span>
+                      <span className="studio-chip">
+                        {report.space_name ?? "Company-wide"}
+                      </span>
+                      {!report.delivered && (
+                        <span className="studio-chip studio-chip-warn">Email failed</span>
+                      )}
+                    </span>
+                    <span className="muted report-row-when">
+                      {whenLabel(report.created_at)}
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
       </main>
     </AppShell>
   );

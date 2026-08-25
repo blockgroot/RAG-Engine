@@ -112,6 +112,15 @@ embeds nothing** (the `app/githublive/` pattern).
   (`filter:{updatedAt:{gt:…}}`). Notion/Drive are absent on purpose —
   `SourceAdapter` answers "does this exist / is it stale", never "what
   happened between T1 and T2". `SUPPORTED_PROVIDERS` **must equal** `_FETCHERS`.
+- **The email is a notification, not the report.** Each run **saves** a
+  `scheduler_reports` row first, then mails a short "ready" note (plain +
+  HTML) linking to `/schedulers/reports/{id}` on the FRONTEND origin (a
+  `SameSite=Lax` cookie won't reach the API host). So a send failure costs the
+  nudge, not the run's work; `delivered_to` is stamped only on an accepted
+  send, so "was it emailed?" is a fact. Everything displayed is **snapshotted**
+  (prompt, provider, cadence, `space_name`) — re-resolving would rewrite
+  history on an edit or rename. No excerpt of the report text in the mail: a
+  two-line preview of a grounded summary reads as the whole answer.
 - **Fetchers return an `ActivityDigest`**: structured items (summary + url) +
   coverage notes + prompt text. **The email renders links, never the model** —
   the prompt forbids writing URLs, so a fabricated link is impossible rather
@@ -279,7 +288,10 @@ partial unique indexes: org-wide vs workspace) · `ingestion_jobs`
 (+`phase`/`attempts`/`progress_at`) · `magic_link_tokens` · `oauth_states` ·
 `github_install_pending` · `query_answer_cache` · `api_rate_counters` ·
 `workspaces` / `workspace_members` · `org_signup_requests` · `schedulers`
-(scoped by `org_id` **and** `user_id`, unlike every other tenant table).
+(scoped by `org_id` **and** `user_id`, unlike every other tenant table) ·
+`scheduler_reports` (same `(org_id, user_id)` scoping; snapshots its labels
+rather than joining, so an archived report survives a rename or a deleted
+space — it cascades only from the scheduler, org and user).
 
 - Deletes cascade from `organizations`/`workspaces`. **Exception:**
   `org_signup_requests.org_id` is `ON DELETE SET NULL` (audit trail), so test
@@ -304,7 +316,9 @@ latency, security and eval hardening; the Activity Scheduler.
 **Pending / known gaps**
 - Scheduler: Notion/Drive fetchers (Drive takes
   `modifiedTime > …`, Notion needs sort-desc + early stop; both report only
-  *that* a doc changed); **email delivery is unverified — `console` only**.
+  *that* a doc changed); **email delivery is unverified — `console` only** (a
+  failed send now costs only the notification: the report is stored and
+  readable in-app either way).
 - No live walkthrough against real Notion/Drive/GitHub OAuth apps; the GitHub
   one also settles **T3** (whether `state` survives the install redirect —
   assumed, not verified).

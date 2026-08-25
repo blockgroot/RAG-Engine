@@ -530,3 +530,33 @@ CREATE INDEX IF NOT EXISTS idx_schedulers_due ON schedulers (next_run_at) WHERE 
 -- scheduler remember which scope it was created for.
 ALTER TABLE schedulers ADD COLUMN IF NOT EXISTS workspace_id UUID
     REFERENCES workspaces (id) ON DELETE CASCADE;
+
+-- One generated report, kept so the email can be a short "it's ready" note
+-- plus a link instead of a wall of plain text, and so a report survives a
+-- failed send (the run's work is no longer lost with the mail).
+--
+-- Deliberately snapshotted, not joined: ``prompt``, ``provider``, ``frequency``
+-- and ``space_name`` are copied at generation time. A report is an immutable
+-- record of what was asked and what came back — re-resolving them later would
+-- silently rewrite history when someone edits their scheduler or renames a
+-- space, and would delete archived reports when a space is deleted.
+CREATE TABLE IF NOT EXISTS scheduler_reports (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    scheduler_id UUID REFERENCES schedulers (id) ON DELETE CASCADE,
+    org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    user_id      UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    provider     TEXT NOT NULL,
+    frequency    TEXT NOT NULL,
+    prompt       TEXT NOT NULL,
+    space_name   TEXT,                     -- NULL = company-wide
+    report_text  TEXT NOT NULL,
+    items        JSONB NOT NULL DEFAULT '[]'::jsonb,
+    notes        JSONB NOT NULL DEFAULT '[]'::jsonb,
+    window_start TIMESTAMPTZ NOT NULL,
+    window_end   TIMESTAMPTZ NOT NULL,
+    delivered_to TEXT,                     -- NULL until the mail is accepted
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- Every read is "this person's reports, newest first".
+CREATE INDEX IF NOT EXISTS idx_scheduler_reports_owner
+    ON scheduler_reports (org_id, user_id, created_at DESC);

@@ -65,16 +65,59 @@ class _FakeLLM:
 
 @pytest.fixture
 def wiring(monkeypatch):
-    """Stub user lookup + email capture; each test sets its own activity."""
-    sent: list[dict] = []
+    """Stub user lookup, report persistence and email; each test sets activity.
+
+    ``wiring.sent`` is what the *notification* carried, ``wiring.saved`` is
+    what was *stored* — two different things now that the mail is a link and
+    the report lives in the app, and several tests care which is which.
+    """
+    from app.schedulers import reports as reports_module
+
+    class _Captured(list):
+        """A list of notifications that also carries what was stored."""
+
+    sent = _Captured()
+    saved: list[dict] = []
+    delivered: list[tuple] = []
+
+    monkeypatch.setattr(runner, "get_user", lambda uid: _user(uid))
+    monkeypatch.setattr(runner, "get_workspace_name", lambda org_id, ws: f"Space {ws}")
     monkeypatch.setattr(
-        runner, "get_user", lambda uid: _user(uid)
+        runner, "report_link", lambda report_id, *a, **k: f"https://app/reports/{report_id}"
+    )
+
+    def _save(**kwargs):
+        saved.append(kwargs)
+        return reports_module.Report(
+            id=f"rep-{len(saved)}",
+            scheduler_id=kwargs["scheduler_id"],
+            org_id=kwargs["org_id"],
+            user_id=kwargs["user_id"],
+            provider=kwargs["provider"],
+            frequency=kwargs["frequency"],
+            prompt=kwargs["prompt"],
+            space_name=kwargs["space_name"],
+            report_text=kwargs["report_text"],
+            items=kwargs["items"],
+            notes=kwargs["notes"],
+            window_start=kwargs["window_start"],
+            window_end=kwargs["window_end"],
+            delivered_to=None,
+            created_at=NOW,
+        )
+
+    monkeypatch.setattr(runner.reports, "save_report", _save)
+    monkeypatch.setattr(
+        runner.reports, "mark_delivered", lambda rid, to: delivered.append((rid, to))
     )
     monkeypatch.setattr(
         runner,
         "send_scheduler_report_email_safe",
-        lambda to, text, **kw: sent.append({"to": to, "text": text, **kw}),
+        lambda to, **kw: (sent.append({"to": to, **kw}), True)[1],
     )
+
+    sent.saved = saved
+    sent.delivered = delivered
     return sent
 
 
@@ -135,7 +178,7 @@ def test_run_generates_from_activity_and_emails_the_owner(monkeypatch, wiring):
     assert len(llm.prompts) == 1
     assert "alice: shipped billing" in llm.prompts[0]
     assert wiring[0]["to"] == "me@example.com"
-    assert wiring[0]["text"] == report
+    assert wiring.saved[0]["report_text"] == report
     assert wiring[0]["frequency"] == "weekly"
 
 
@@ -148,7 +191,9 @@ def test_run_skips_the_llm_entirely_when_there_was_no_activity(monkeypatch, wiri
 
     assert report == NO_ACTIVITY_NOTE
     assert llm.prompts == []
-    assert wiring[0]["text"] == NO_ACTIVITY_NOTE  # still told, not silently skipped
+    # Still reported, not silently skipped — the report exists and says so.
+    assert wiring.saved[0]["report_text"] == NO_ACTIVITY_NOTE
+    assert wiring[0]["item_count"] == 0
 
 
 def test_fetch_failure_propagates_so_the_worker_can_retry(monkeypatch, wiring):
@@ -167,14 +212,15 @@ def test_llm_failure_propagates_so_the_worker_can_retry(monkeypatch, wiring):
     assert wiring == []
 
 
-def test_email_failure_does_not_fail_the_run(monkeypatch):
-    """The expensive work is done; retrying would re-send the same report."""
+def test_email_failure_does_not_fail_the_run(monkeypatch, wiring):
+    """The report is already stored, so a failed send costs the nudge only."""
     _set_activity(monkeypatch)
+    # Real _safe wrapper this time, with the transport blown up under it.
+    from app.auth.email import send_scheduler_report_email_safe
+
     monkeypatch.setattr(
-        runner, "get_user", lambda uid: _user(uid)
+        runner, "send_scheduler_report_email_safe", send_scheduler_report_email_safe
     )
-    # The real _safe wrapper swallows; prove the runner relies on that and
-    # returns normally rather than propagating.
     monkeypatch.setattr(
         "app.auth.email._dispatch",
         lambda *a, **k: (_ for _ in ()).throw(ProviderError("smtp down")),
@@ -183,6 +229,10 @@ def test_email_failure_does_not_fail_the_run(monkeypatch):
     report = runner.run_scheduler_once(_scheduler(), llm=_FakeLLM())
 
     assert report == "Team shipped the billing fix."
+    # Stored anyway — the run's output is not lost with the mail.
+    assert wiring.saved and wiring.saved[0]["report_text"] == report
+    # …and NOT marked delivered, so "was this emailed?" stays answerable.
+    assert wiring.delivered == []
 
 
 def test_run_fails_when_the_owning_user_is_gone(monkeypatch):
@@ -251,18 +301,17 @@ def test_the_window_reaches_the_fetcher(monkeypatch, wiring):
 
 
 # --------------------------------------------------------------------------
-# Source traceability: links are rendered by the template, never the model
+# Source traceability: links are rendered from stored data, never the model
 # --------------------------------------------------------------------------
 
 
-def test_links_reach_the_email_as_structured_items(monkeypatch, wiring):
-    """The email gets items+notes so it can render links itself."""
+def test_links_are_persisted_with_the_report(monkeypatch, wiring):
+    """The report page renders links from these, so they must be stored."""
     _set_activity(monkeypatch, "alice: shipped billing", url="https://slack/p123")
 
     runner.run_scheduler_once(_scheduler(), llm=_FakeLLM())
 
-    items = wiring[0]["items"]
-    assert [i.url for i in items] == ["https://slack/p123"]
+    assert [i["url"] for i in wiring.saved[0]["items"]] == ["https://slack/p123"]
 
 
 def test_the_model_is_never_shown_a_link(monkeypatch, wiring):
@@ -277,62 +326,70 @@ def test_the_model_is_never_shown_a_link(monkeypatch, wiring):
     assert "Do NOT write URLs" in llm.prompts[0]
 
 
-def test_the_email_renders_each_items_link():
-    """Rendered from structured data, so a link cannot be dropped or invented."""
-    from app.auth.email import send_scheduler_report_email
+def test_items_are_stored_structured_so_a_link_cannot_be_lost(monkeypatch, wiring):
+    """Links live in the stored items, never in the model's prose — the report
+    page renders them from this, so one cannot be invented or dropped."""
+    _set_activity(monkeypatch, "abc1234 fix login", url="https://github.com/a/b/commit/abc1234")
 
-    sent: dict = {}
-    import app.auth.email as email_mod
+    runner.run_scheduler_once(_scheduler(provider="github"), llm=_FakeLLM())
 
-    original = email_mod._dispatch
-    try:
-        email_mod._dispatch = lambda to, subject, body, settings, **kw: sent.update(
-            {"to": to, "subject": subject, "body": body}
-        )
-        send_scheduler_report_email(
-            "me@example.com",
-            "Two things happened.",
-            provider="github",
-            frequency="weekly",
-            scheduler_prompt="what shipped",
-            items=[
-                ActivityItem("abc1234 fix login", "https://github.com/a/b/commit/abc1234"),
-                ActivityItem("def5678 add tests", "https://github.com/a/b/commit/def5678"),
-            ],
-            notes=["Repositories checked: a/b."],
-        )
-    finally:
-        email_mod._dispatch = original
-
-    assert "https://github.com/a/b/commit/abc1234" in sent["body"]
-    assert "https://github.com/a/b/commit/def5678" in sent["body"]
-    assert "Repositories checked: a/b." in sent["body"]
-    assert "what shipped" in sent["body"]
+    stored = wiring.saved[0]
+    assert stored["items"] == [
+        {"summary": "abc1234 fix login", "url": "https://github.com/a/b/commit/abc1234"}
+    ]
+    # The notification carries a link to the report, not the activity links.
+    assert "https://github.com/a/b/commit/abc1234" not in str(wiring[0])
+    assert wiring[0]["link"] == "https://app/reports/rep-1"
 
 
-def test_an_item_without_a_link_still_renders():
-    """Not every source has a per-item URL; absence must not break the mail."""
-    from app.auth.email import send_scheduler_report_email
-    import app.auth.email as email_mod
+def test_an_item_without_a_link_is_still_stored(monkeypatch, wiring):
+    """Not every source has a per-item URL; absence must not drop the item."""
+    _set_activity(monkeypatch, "something happened", url=None)
 
-    sent: dict = {}
-    original = email_mod._dispatch
-    try:
-        email_mod._dispatch = lambda to, subject, body, settings, **kw: sent.update(
-            {"body": body}
-        )
-        send_scheduler_report_email(
-            "me@example.com",
-            "One thing.",
-            provider="slack",
-            frequency="weekly",
-            scheduler_prompt="x",
-            items=[ActivityItem("something happened", None)],
-        )
-    finally:
-        email_mod._dispatch = original
+    runner.run_scheduler_once(_scheduler(), llm=_FakeLLM())
 
-    assert "something happened" in sent["body"]
+    assert wiring.saved[0]["items"] == [{"summary": "something happened", "url": None}]
+
+
+def test_the_notification_says_what_it_covers_without_repeating_the_report(
+    monkeypatch, wiring
+):
+    """The mail is a nudge: scope and counts, never a second summary of prose
+    the reader is about to read in full."""
+    _set_activity(monkeypatch, "alice: shipped billing")
+
+    runner.run_scheduler_once(_scheduler(), llm=_FakeLLM(reply="Billing shipped."))
+
+    notification = wiring[0]
+    assert notification["item_count"] == 1
+    assert notification["provider"] == "slack"
+    assert notification["frequency"] == "weekly"
+    assert "Billing shipped." not in str(notification)
+
+
+def test_the_report_snapshots_the_prompt_and_space_it_was_run_for(
+    monkeypatch, wiring
+):
+    """An archived report must keep reading correctly after the scheduler's
+    prompt is edited or its space renamed — so both are copied in."""
+    _set_activity(monkeypatch)
+
+    runner.run_scheduler_once(
+        _scheduler(workspace_id="ws-7", prompt="What moved?"), llm=_FakeLLM()
+    )
+
+    stored = wiring.saved[0]
+    assert stored["prompt"] == "What moved?"
+    assert stored["space_name"] == "Space ws-7"
+    assert stored["window_start"] < stored["window_end"]
+
+
+def test_a_delivered_report_is_recorded_as_delivered(monkeypatch, wiring):
+    _set_activity(monkeypatch)
+
+    runner.run_scheduler_once(_scheduler(), llm=_FakeLLM())
+
+    assert wiring.delivered == [("rep-1", "me@example.com")]
 
 
 # --------------------------------------------------------------------------
@@ -351,7 +408,7 @@ def test_coverage_notes_reach_both_the_prompt_and_the_email(monkeypatch, wiring)
 
     assert "Channels checked: #product, #eng." in llm.prompts[0]
     assert "COVERAGE" in llm.prompts[0]
-    assert wiring[0]["notes"] == ("Channels checked: #product, #eng.",)
+    assert wiring.saved[0]["notes"] == ["Channels checked: #product, #eng."]
 
 
 def test_the_prompt_forbids_claiming_coverage_it_did_not_have():
@@ -382,4 +439,4 @@ def test_a_digest_with_only_notes_counts_as_no_activity(monkeypatch, wiring):
     assert report == NO_ACTIVITY_NOTE
     assert llm.prompts == []
     # …but the reader is still told which channels were quiet.
-    assert wiring[0]["notes"] == ("Channels checked: #quiet.",)
+    assert wiring.saved[0]["notes"] == ["Channels checked: #quiet."]

@@ -275,87 +275,99 @@ def send_workspace_invite_email_safe(
 
 def send_scheduler_report_email(
     to: str,
-    report_text: str,
     *,
     provider: str,
     frequency: str,
     scheduler_prompt: str,
-    items: "Sequence[object]" = (),
-    notes: "Sequence[str]" = (),
+    link: str,
+    item_count: int,
+    space_name: str | None = None,
     settings: EmailSettings | None = None,
 ) -> None:
-    """Deliver one run of a user's recurring activity report.
+    """Tell someone their report is ready and link them to it.
 
-    The subject names the service and cadence rather than the free-text
-    prompt: prompts are sentences ("flag anything stuck in review more than
-    3 days"), which make an unreadable subject line and can be long enough
-    to be truncated mid-word by a mail client. The prompt is echoed in the
-    footer instead, so a reader who forgot which of their schedulers this is
-    can tell — and, since a user may have several on the same service, that
-    footer is the only thing distinguishing two otherwise-identical mails.
+    The report itself is NOT in the mail. It lives in the app (see
+    ``app/schedulers/reports.py``) and this is a notification, for three
+    reasons:
 
-    ``items`` are the ``ActivityItem`` records the report was built from, and
-    their links are rendered HERE rather than by the model. That is the whole
-    point: a link the model wrote would be a guess, and a plausible-looking
-    wrong commit URL is worse than no link, because the reader has no way to
-    tell. Rendering them from the same structured data the fetcher produced
-    makes a fabricated or dropped link impossible.
+    - A report is a formatted document — prose, an activity list with real
+      links, coverage notes. Plain-text mail flattens all of it, and an HTML
+      mail carrying the whole thing renders differently in every client.
+    - Source links belong beside the activity they came from, laid out on a
+      page. Twenty bare URLs in a mail body is the version nobody reads.
+    - Storing first and mailing second means a delivery failure costs a
+      notification, not the run's work — the report is already readable.
 
-    ``notes`` state what was actually checked (channels, repositories) and
-    whether the list was truncated, so the report cannot read as complete
-    coverage it never had.
+    Deliberately no excerpt of the report text: a two-line preview of a
+    grounded summary is exactly where "several things changed" gets read as
+    the whole answer. Counts and scope are facts; the prose is not summarised
+    a second time.
     """
-    parts = [report_text.strip()]
-
-    if items:
-        lines = []
-        for item in items:
-            summary = getattr(item, "summary", str(item))
-            url = getattr(item, "url", None)
-            lines.append(f"- {summary}" + (f"\n  {url}" if url else ""))
-        parts.append("Activity this report was built from:\n" + "\n".join(lines))
-
-    if notes:
-        parts.append("\n".join(f"({note})" for note in notes))
-
-    parts.append(
-        f"This is your {frequency} {provider} report, generated from your "
-        f"standing request:\n  \"{scheduler_prompt.strip()}\""
+    where = f" · {space_name}" if space_name else ""
+    activity = (
+        f"{item_count} item{'' if item_count == 1 else 's'} of activity"
+        if item_count
+        else "No activity in this period"
     )
-    body = "\n\n—\n\n".join(parts) + "\n"
-    _dispatch(to, f"Your {frequency} {provider} report", body, settings)
+    subject = f"Your {frequency} {provider} report is ready"
+    body = (
+        f"Your {frequency} {provider} report{where} has been generated.\n\n"
+        f"Covered: {activity}\n\n"
+        f"Read it here:\n{link}\n\n"
+        f"Generated from your standing request:\n  \"{scheduler_prompt.strip()}\"\n"
+    )
+
+    safe_prompt = html.escape(scheduler_prompt.strip())
+    safe_where = html.escape(space_name or "Company-wide")
+    safe_provider = html.escape(provider)
+    html_body = f"""\
+<div style="font-family:-apple-system,'Segoe UI',Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#12201e;">
+  <p style="font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#0b5f5a;margin:0 0 8px;">{html.escape(frequency)} report</p>
+  <h2 style="margin:0 0 16px;font-size:20px;">Your {safe_provider} report is ready</h2>
+  <table role="presentation" style="width:100%;border-collapse:collapse;margin-bottom:20px;font-size:14px;">
+    <tr><td style="padding:6px 0;color:#5a6d69;">Source</td><td style="padding:6px 0;text-align:right;font-weight:600;">{safe_provider}</td></tr>
+    <tr><td style="padding:6px 0;color:#5a6d69;border-top:1px solid #d3dedb;">Space</td><td style="padding:6px 0;text-align:right;font-weight:600;border-top:1px solid #d3dedb;">{safe_where}</td></tr>
+    <tr><td style="padding:6px 0;color:#5a6d69;border-top:1px solid #d3dedb;">Covered</td><td style="padding:6px 0;text-align:right;font-weight:600;border-top:1px solid #d3dedb;">{html.escape(activity)}</td></tr>
+  </table>
+  <a href="{link}" style="{_EMAIL_APPROVE_BUTTON_STYLE}">Read the full report</a>
+  <p style="margin-top:20px;font-size:12px;color:#8a9a95;">Your standing request: &ldquo;{safe_prompt}&rdquo;</p>
+</div>
+"""
+    _dispatch(to, subject, body, settings, html_body=html_body)
 
 
 def send_scheduler_report_email_safe(
     to: str,
-    report_text: str,
     *,
     provider: str,
     frequency: str,
     scheduler_prompt: str,
-    items: "Sequence[object]" = (),
-    notes: "Sequence[str]" = (),
-) -> None:
+    link: str,
+    item_count: int,
+    space_name: str | None = None,
+) -> bool:
     """Worker wrapper: a mail failure must not fail the scheduler run.
 
-    Swallowing here is deliberate, not laziness. The run already did its
-    expensive work (fetch + LLM); letting a transient mail error propagate
-    would mark the scheduler failed and retry the *whole* run later, which
-    on a partial mail outage means the user gets the same report twice.
-    A dropped report is logged and the cycle moves on.
+    Returns whether the send was accepted, so the caller can record delivery
+    honestly rather than assume it. Swallowing is deliberate: the report is
+    already saved and readable, so a transient mail error costs a
+    notification — while raising would retry the whole run and risk sending
+    the same report twice.
     """
     try:
         send_scheduler_report_email(
             to,
-            report_text,
             provider=provider,
             frequency=frequency,
             scheduler_prompt=scheduler_prompt,
-            items=items,
-            notes=notes,
+            link=link,
+            item_count=item_count,
+            space_name=space_name,
         )
+        return True
     except (ConfigurationError, ProviderError) as exc:
         logger.warning("Scheduler report email to %s failed: %s", to, exc)
+        return False
 
 
 def send_signup_approved_email(

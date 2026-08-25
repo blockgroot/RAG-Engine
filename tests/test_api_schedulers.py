@@ -428,7 +428,7 @@ def test_connections_lists_the_company_and_each_of_my_spaces(client, member_org)
     body = client.get("/schedulers/connections", cookies=cookies).json()
 
     by_name = {s["name"]: s for s in body["spaces"]}
-    assert by_name["Company (organisation-wide)"]["providers"] == ["slack"]
+    assert by_name["Organisation"]["providers"] == ["slack"]
     assert by_name["Meeting notes"]["providers"] == ["linear"]
     # The space's own connection is listed as a workspace-scoped one.
     assert {(c["provider"], c["scope"]) for c in body["connections"]} == {
@@ -545,3 +545,159 @@ def test_an_org_wide_report_still_has_no_workspace(client, member_org):
 
     assert created.json()["workspace_id"] is None
     assert created.json()["workspace_name"] is None
+
+
+@requires_db
+def test_connections_carry_the_topics_a_report_can_start_from(client, member_org):
+    """The prompt field offers real channels/repos, so it must know them —
+    names only, never the rest of source_config and never a token."""
+    from app.auth.credentials import set_connection_config
+
+    org_id, member, cookies = member_org
+    set_connection_config(
+        org_id,
+        "slack",
+        {
+            "channel_ids": ["C1", "C2"],
+            "channel_names": {"C1": "product", "C2": "eng"},
+        },
+    )
+
+    body = client.get("/schedulers/connections", cookies=cookies).json()
+    slack = next(c for c in body["connections"] if c["provider"] == "slack")
+
+    # The admin's picked order is preserved — suggestions read in the order
+    # someone chose the channels.
+    assert slack["topics"] == ["product", "eng"]
+    assert "channel_ids" not in slack and "source_config" not in slack
+
+
+@requires_db
+def test_linear_offers_no_topics_because_it_stores_no_subset(client, store, org_cleanup):
+    """A Linear connection's scope is "whatever the token can see" — naming
+    teams here would be inventing them."""
+    org_id, member, cookies = _org_with_slack(store, org_cleanup, provider="linear")
+
+    body = client.get("/schedulers/connections", cookies=cookies).json()
+
+    assert next(c for c in body["connections"] if c["provider"] == "linear")["topics"] == []
+
+
+@requires_db
+def test_github_topics_are_the_authorized_repos(client, store, org_cleanup):
+    from app.auth.credentials import set_connection_config
+
+    org_id, member, cookies = _org_with_slack(store, org_cleanup, provider="github")
+    set_connection_config(
+        org_id,
+        "github",
+        {
+            "installation_id": "9",
+            "repository_selection": "selected",
+            "repos": [{"full_name": "acme/api"}, {"full_name": "acme/web"}],
+        },
+    )
+
+    body = client.get("/schedulers/connections", cookies=cookies).json()
+
+    github = next(c for c in body["connections"] if c["provider"] == "github")
+    assert github["topics"] == ["acme/api", "acme/web"]
+
+
+# --------------------------------------------------------------------------
+# Stored reports (the email is a link; the report lives here)
+# --------------------------------------------------------------------------
+
+
+def _save_report(org_id, user_id, scheduler_id, **overrides):
+    from datetime import datetime, timedelta, timezone
+
+    from app.schedulers import reports as sched_reports
+
+    now = datetime.now(timezone.utc)
+    fields = dict(
+        scheduler_id=scheduler_id,
+        org_id=org_id,
+        user_id=user_id,
+        provider="slack",
+        frequency="weekly",
+        prompt="What did the team discuss?",
+        space_name=None,
+        report_text="The team shipped billing.",
+        items=[{"summary": "alice: shipped billing", "url": "https://slack/p1"}],
+        notes=["Channels checked: #product."],
+        window_start=now - timedelta(days=7),
+        window_end=now,
+    )
+    fields.update(overrides)
+    return sched_reports.save_report(**fields)
+
+
+@requires_db
+def test_a_report_is_listed_then_readable_in_full(client, member_org):
+    org_id, member, cookies = member_org
+    created = client.post(
+        "/schedulers",
+        json={
+            "provider": "slack",
+            "frequency": "weekly",
+            "prompt": "What did the team discuss?",
+        },
+        cookies=cookies,
+    ).json()
+    saved = _save_report(org_id, member.id, created["id"])
+
+    rows = client.get("/schedulers/reports", cookies=cookies).json()["reports"]
+    assert [r["id"] for r in rows] == [saved.id]
+    row = rows[0]
+    # The row carries exactly the labels the list renders — title, cadence,
+    # service, space — and NOT the body.
+    assert row["title"] == "What did the team discuss?"
+    assert (row["frequency"], row["provider"], row["space_name"]) == (
+        "weekly",
+        "slack",
+        None,
+    )
+    assert "report_text" not in row
+
+    full = client.get(f"/schedulers/reports/{saved.id}", cookies=cookies).json()
+    assert full["report_text"] == "The team shipped billing."
+    assert full["items"] == [
+        {"summary": "alice: shipped billing", "url": "https://slack/p1"}
+    ]
+    assert full["notes"] == ["Channels checked: #product."]
+
+
+@requires_db
+def test_another_members_report_is_a_404_not_a_403(client, member_org):
+    """Both scoping columns are in the query, so a guessed id is
+    indistinguishable from a deleted one — nothing to learn by probing."""
+    org_id, member, cookies = member_org
+    other = invite_member(f"other-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    theirs = _save_report(org_id, other.id, None)
+
+    assert client.get(f"/schedulers/reports/{theirs.id}", cookies=cookies).status_code == 404
+    assert client.get("/schedulers/reports", cookies=cookies).json()["reports"] == []
+
+
+@requires_db
+def test_a_report_records_whether_the_email_actually_landed(client, member_org):
+    """The report is readable either way, so "was it emailed?" must be a fact
+    rather than an assumption."""
+    from app.schedulers import reports as sched_reports
+
+    org_id, member, cookies = member_org
+    saved = _save_report(org_id, member.id, None)
+
+    rows = client.get("/schedulers/reports", cookies=cookies).json()["reports"]
+    assert rows[0]["delivered"] is False
+
+    sched_reports.mark_delivered(saved.id, member.email)
+    rows = client.get("/schedulers/reports", cookies=cookies).json()["reports"]
+    assert rows[0]["delivered"] is True
+
+
+@requires_db
+def test_reports_require_a_session(client):
+    assert client.get("/schedulers/reports").status_code == 401
+    assert client.get(f"/schedulers/reports/{uuid.uuid4()}").status_code == 401

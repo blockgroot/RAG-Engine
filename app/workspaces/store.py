@@ -103,6 +103,23 @@ def list_my_workspaces(org_id: str, user_id: str) -> list[WorkspaceInfo]:
     ]
 
 
+def get_workspace_name(org_id: str, workspace_id: str) -> str | None:
+    """Display name for one workspace, or None if it is not in this org.
+
+    ``org_id`` is in the WHERE clause like everywhere else here, so a stale or
+    forged id from another tenant resolves to nothing rather than leaking a
+    name. Read-only and membership-free on purpose: callers use it to LABEL a
+    scope they have already authorized (a stored scheduler, an archived
+    report), not to reach into one.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT name FROM workspaces WHERE id = %s AND org_id = %s",
+            (workspace_id, org_id),
+        ).fetchone()
+    return row[0] if row else None
+
+
 def list_workspace_members(workspace_id: str) -> list[dict]:
     with get_connection() as conn:
         rows = conn.execute(
