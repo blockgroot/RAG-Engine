@@ -116,7 +116,11 @@ embeds nothing** (the `app/githublive/` pattern).
   coverage notes + prompt text. **The email renders links, never the model** —
   the prompt forbids writing URLs, so a fabricated link is impossible rather
   than discouraged. Every provider discloses what it checked, so a report
-  can't imply coverage it lacked.
+  can't imply coverage it lacked — **including item-count caps**: Slack's
+  `max_messages` is split *per channel* (greedy spending let one busy channel
+  starve every later one while the notes still claimed it was checked), and
+  hitting a Slack/GitHub/Linear cap adds a note. All three sources page
+  newest-first, so a cap only ever drops the oldest end of the window.
 - **The row IS the queue entry**, but as a *due list*: a claimed row advances
   `next_run_at` and returns to `active`. `attempts` is capped in **both**
   `mark_run_failed` and `requeue_interrupted_running`.
@@ -242,6 +246,9 @@ frontend/ Next.js 15 portal · tests/ pytest
 - Three `test_jobs.py` worker tests are **pre-existing-broken** (their
   `FakeIngestResult` lacks `ingested_external_ids`) — not a regression.
 - The Phase 3 `rag` fixture disables memory + web search on purpose.
+- Tests asserting on a **real** LLM's free-form output are marked `live_llm`
+  and deselected in CI (`-m "not network and not live_llm"`); the golden-set
+  path-firing checks still gate on the real model.
 - The suite is slow environmentally (remote DB + 15 rpm LLM): run the phase's
   own file; `pytest --collect-only` catches import breakage.
 

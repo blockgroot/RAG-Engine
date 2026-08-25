@@ -156,19 +156,31 @@ def fetch_github_activity(
             "repositories were checked."
         )
 
+    # The reader clamps ``limit`` to GITHUB_MAX_COMMITS, so the effective cap
+    # can be lower than MAX_COMMITS_PER_REPO. Compute it here rather than
+    # assume it, or the truncation note below never fires.
+    from ..config.settings import GitHubLiveSettings
+
+    per_repo = min(MAX_COMMITS_PER_REPO, GitHubLiveSettings.from_env().max_commits)
+
     items: list[ActivityItem] = []
     unreachable: list[str] = []
+    capped: list[str] = []
     for repo in repos:
         try:
             commits = reader.list_commits(
                 repo.full_name,
                 since=since.isoformat(),
-                limit=MAX_COMMITS_PER_REPO,
+                limit=per_repo,
             )
         except SourceError as exc:
             logger.warning("Scheduler: skipping repo %s (%s)", repo.full_name, exc)
             unreachable.append(repo.full_name)
             continue
+        if len(commits) >= per_repo:
+            # GitHub returns commits newest-first, so the cap drops the oldest
+            # end of the window — but the reader must be told it happened.
+            capped.append(repo.full_name)
         for commit in commits:
             when = commit.date.strftime("%Y-%m-%d") if commit.date else "unknown date"
             author = commit.author or "unknown author"
@@ -191,6 +203,12 @@ def fetch_github_activity(
     if unreachable:
         notes.append(
             "Could not be read this run: " + ", ".join(unreachable) + "."
+        )
+    if capped:
+        notes.append(
+            f"Only the {per_repo} most recent commits were read in "
+            + ", ".join(capped)
+            + " — older commits in this window were left out."
         )
     return _digest(items, notes)
 
@@ -217,7 +235,7 @@ def fetch_slack_activity(
     token = get_live_connection_token(org_id, "slack", workspace_id)
     adapter = build_source_adapter("slack", token=token, config=config)
 
-    messages = adapter.fetch_recent_messages(
+    messages, truncated = adapter.fetch_recent_messages(
         since.timestamp(), max_messages=MAX_SLACK_MESSAGES
     )
 
@@ -226,6 +244,14 @@ def fetch_slack_activity(
     if channels:
         notes.append(
             "Channels checked: " + ", ".join(f"#{c}" for c in channels) + "."
+        )
+    if truncated:
+        # Hitting the message cap is disclosed, not just logged: the reader
+        # would otherwise read "Channels checked: #general" as complete.
+        notes.append(
+            "Only the most recent messages were read in "
+            + ", ".join(f"#{c}" for c in dict.fromkeys(truncated))
+            + " — older activity in this window was left out."
         )
 
     items: list[ActivityItem] = []
@@ -289,7 +315,15 @@ def fetch_linear_activity(
         )
     # Linear grants no per-team subset here, so scope is "whatever this token
     # can see" — stating that is more honest than listing nothing.
-    return _digest(items, ["Scope: all Linear issues visible to this connection."])
+    notes = ["Scope: all Linear issues visible to this connection."]
+    if len(issues) >= MAX_LINEAR_ISSUES:
+        # Ordered by updatedAt descending, so the cap drops the least recently
+        # updated issues — disclosed rather than silently dropped.
+        notes.append(
+            f"Only the {MAX_LINEAR_ISSUES} most recently updated issues were "
+            "read — older updates in this window were left out."
+        )
+    return _digest(items, notes)
 
 
 _FETCHERS = {

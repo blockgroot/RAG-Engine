@@ -75,12 +75,14 @@ def test_slack_fetch_skips_system_events_and_empty_posts():
         }
     )
 
-    messages = adapter.fetch_recent_messages(SINCE.timestamp())
+    messages, truncated = adapter.fetch_recent_messages(SINCE.timestamp())
 
     assert [m["text"] for m in messages] == ["real message"]
+    assert truncated == []
 
 
-def test_slack_fetch_is_bounded_across_channels():
+def test_slack_fetch_budget_is_split_per_channel_and_truncation_disclosed():
+    """A busy channel must not starve every later one out of the report."""
     adapter = _FakeSlack(
         {
             "C1": [_message(f"{i}.0", f"m{i}") for i in range(10)],
@@ -88,7 +90,15 @@ def test_slack_fetch_is_bounded_across_channels():
         }
     )
 
-    assert len(adapter.fetch_recent_messages(SINCE.timestamp(), max_messages=5)) == 5
+    messages, truncated = adapter.fetch_recent_messages(
+        SINCE.timestamp(), max_messages=6
+    )
+
+    assert len(messages) == 6
+    # Both channels represented — greedily spending the budget in channel
+    # order would have returned six C1 messages and nothing from C2.
+    assert {m["channel"] for m in messages} == {"C1", "C2"}
+    assert sorted(set(truncated)) == ["C1", "C2"]
 
 
 def test_slack_activity_digest_is_plain_text(monkeypatch):
@@ -100,6 +110,20 @@ def test_slack_activity_digest_is_plain_text(monkeypatch):
     assert "deployed v2" in digest.text
     assert "#C1" in digest.text
     assert "3 replies" in digest.text
+
+
+def test_slack_activity_discloses_a_truncated_channel(monkeypatch):
+    """A capped channel must show up in the notes, not only in the logs."""
+    adapter = _FakeSlack(
+        {"C1": [_message(f"{i}.0", f"m{i}") for i in range(5)]}
+    )
+    monkeypatch.setattr(activity, "MAX_SLACK_MESSAGES", 2)
+    _patch_slack_wiring(monkeypatch, adapter)
+
+    digest = activity.fetch_slack_activity("org-1", SINCE)
+
+    assert len(digest.items) == 2
+    assert any("older activity" in note for note in digest.notes)
 
 
 def test_slack_activity_is_empty_when_nothing_happened(monkeypatch):
@@ -448,6 +472,37 @@ def test_linear_digest_applies_the_size_bounds(monkeypatch):
     digest = activity.fetch_linear_activity("org-1", SINCE)
 
     assert len(digest.text) <= activity.MAX_DIGEST_CHARS
+
+
+def test_linear_activity_never_fetches_descriptions_or_comments():
+    """The char budget holds for Linear *because* a line is title-sized.
+
+    Measured: at 80-char titles a digest line is ~138 chars, so 300 issues is
+    ~40k and the char budget binds before MAX_LINEAR_ISSUES does. Adding
+    `description` or `comments` to this query would move the size axis from
+    titles to bodies — the same "count-based cap protects the wrong axis"
+    mistake Slack already cost us once (3 messages = 6,637 chars). Those
+    fields belong to _ISSUE_QUERY / fetch_document, the ingestion path.
+    """
+    from app.sources.linear import _RECENT_ISSUES_QUERY
+
+    assert "description" not in _RECENT_ISSUES_QUERY
+    assert "comments" not in _RECENT_ISSUES_QUERY
+
+
+def test_a_busy_monthly_linear_digest_truncates_on_chars_not_count():
+    """300 realistically-titled issues must stay inside the budget, disclosed."""
+    line = "[2026-08-02 09:30] ENG-1234 {} — In Review (started) · Priya"
+    items = [
+        ActivityItem(line.format("t" * 80)) for _ in range(activity.MAX_LINEAR_ISSUES)
+    ]
+
+    digest = activity._digest(items, ["Scope: all Linear issues visible."])
+
+    assert len(digest.text) <= activity.MAX_DIGEST_CHARS
+    # The char budget bites first — the item cap never gets to.
+    assert len(digest.items) < activity.MAX_LINEAR_ISSUES
+    assert activity._TRUNCATION_MARKER in digest.notes
 
 
 # --------------------------------------------------------------------------

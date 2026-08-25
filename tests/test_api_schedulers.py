@@ -345,6 +345,7 @@ def test_setup_chat_degrades_when_the_llm_is_unreachable(
 
 @requires_db
 @requires_llm
+@pytest.mark.live_llm
 def test_setup_chat_creates_a_scheduler_from_one_complete_message(client, member_org):
     """REAL remote LLM: a fully-specified request should complete in one turn."""
     org_id, member, cookies = member_org
@@ -378,6 +379,7 @@ def test_setup_chat_creates_a_scheduler_from_one_complete_message(client, member
 
 @requires_db
 @requires_llm
+@pytest.mark.live_llm
 def test_setup_chat_asks_before_creating_from_a_vague_request(client, member_org):
     """REAL remote LLM: incomplete request must not silently invent the slots."""
     org_id, member, cookies = member_org

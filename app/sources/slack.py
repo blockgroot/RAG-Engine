@@ -239,8 +239,13 @@ class SlackAdapter(SourceAdapter):
 
     def fetch_recent_messages(
         self, since: float, *, max_messages: int = 300
-    ) -> list[dict]:
+    ) -> tuple[list[dict], list[str]]:
         """Messages posted since ``since`` (unix seconds), as an activity feed.
+
+        Returns ``(messages, truncated_channels)`` — the caller needs the
+        second element to disclose partial coverage, since a report that read
+        half of #general while claiming to have checked it is the failure that
+        matters here.
 
         Deliberately NOT ``list_documents``: that returns thread *refs* for the
         ingestion pipeline to chunk and embed. The Prompt-Driven Activity
@@ -253,16 +258,24 @@ class SlackAdapter(SourceAdapter):
         no ``min_thread_chars``/thread filtering applies — a one-line message is
         still activity worth reporting on.
 
-        Bounded by ``max_messages`` across all channels for the same reason the
-        listing is bounded: an unbounded fetch on a busy workspace would build
-        an unbounded prompt.
+        ``max_messages`` is split **per channel** rather than spent greedily in
+        channel order: one busy channel would otherwise consume the whole
+        budget and every later channel would silently contribute nothing while
+        ``channel_labels()`` still claimed it was checked. Slack returns
+        history newest-first, so what a per-channel cap drops is always the
+        oldest end of the window.
         """
+        channel_ids = list(self._channel_ids)
+        if not channel_ids:
+            return [], []
+        per_channel = max(1, max_messages // len(channel_ids))
+
         collected: list[dict] = []
-        for channel_id in self._channel_ids:
+        truncated: list[str] = []
+        for channel_id in channel_ids:
+            kept = 0
             cursor = None
             while True:
-                if len(collected) >= max_messages:
-                    return collected
                 params = {"channel": channel_id, "oldest": since, "limit": 200}
                 if cursor:
                     params["cursor"] = cursor
@@ -274,6 +287,9 @@ class SlackAdapter(SourceAdapter):
                     # are noise in a report, not activity.
                     if not ts or message.get("subtype") or not text:
                         continue
+                    if kept >= per_channel:
+                        truncated.append(self._channel_label(channel_id))
+                        break
                     collected.append(
                         {
                             "channel": self._channel_label(channel_id),
@@ -288,12 +304,13 @@ class SlackAdapter(SourceAdapter):
                             "permalink": _thread_uri(channel_id, ts),
                         }
                     )
-                    if len(collected) >= max_messages:
-                        return collected
-                cursor = (data.get("response_metadata") or {}).get("next_cursor")
-                if not cursor:
-                    break
-        return collected
+                    kept += 1
+                else:
+                    cursor = (data.get("response_metadata") or {}).get("next_cursor")
+                    if cursor:
+                        continue
+                break
+        return collected, truncated
 
     def _fetch_thread_messages(self, channel_id: str, thread_ts: str) -> tuple[list[dict], bool]:
         """Return (messages, truncated) for one thread, newest-kept if oversized."""

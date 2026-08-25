@@ -501,6 +501,9 @@ CREATE TABLE IF NOT EXISTS api_rate_counters (
 -- here (same discipline as ingestion_jobs.status: validated by the
 -- application, not a CHECK constraint) so adding a source later needs no
 -- migration.
+-- NOTE: the ONLY tenant table scoped by (org_id, user_id) — a scheduler is
+-- personal, so every read/write must filter on BOTH. Do not copy this shape
+-- for shared org data; every other table here is org_id (+ workspace_id) only.
 CREATE TABLE IF NOT EXISTS schedulers (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id        UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,

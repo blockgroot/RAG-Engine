@@ -98,8 +98,10 @@ jobs:
 
       - name: Golden-set path-firing + full suite (needs LLM secrets)
         if: env.LLM_MODEL != ''
-        # -m "not network" excludes the DDG web cases; everything else must pass.
-        run: pytest -q -m "not network"
+        # -m excludes the DDG web cases and the tests that assert on a real
+        # LLM's free-form output (flaky + quota); the golden-set path-firing
+        # checks above still gate on the real model.
+        run: pytest -q -m "not network and not live_llm"
 
       - name: Notice when LLM checks are skipped
         if: env.LLM_MODEL == ''

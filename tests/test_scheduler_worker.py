@@ -211,6 +211,7 @@ def test_a_disabled_scheduler_setting_stops_the_tick_firing(monkeypatch, schedul
 
 @requires_db
 @requires_llm
+@pytest.mark.live_llm
 def test_end_to_end_produces_a_real_report_with_the_configured_llm(
     monkeypatch, scheduler_org, capsys
 ):
