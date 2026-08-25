@@ -97,7 +97,14 @@ function whenLabel(iso: string | null): string {
   const when = new Date(iso);
   const today = new Date();
   const sameDay = when.toDateString() === today.toDateString();
-  const time = when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  // hour12 forced rather than left to the locale: the browser's locale decides
+  // 12h vs 24h otherwise, so an en-GB reader saw "15:02" while en-US saw
+  // "3:02 PM" on the same page. ConnectionCard already pins it the same way.
+  const time = when.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
   if (sameDay) return `today at ${time}`;
   return `${when.toLocaleDateString([], { month: "short", day: "numeric" })} at ${time}`;
 }
@@ -215,7 +222,16 @@ export default function SchedulersPage() {
         prompt.trim(),
         selectedSpace.id
       );
+      // Reset every slot, not just the prompt: the form is the "add another"
+      // surface, and a half-filled one reads as "this is still being edited"
+      // right after the thing was created. Scope last — its effect clears the
+      // space and service, so an explicit reset here is belt-and-braces
+      // rather than load-bearing.
       setPrompt("");
+      setFrequency("weekly");
+      setProvider("");
+      setSpaceId("");
+      setScope("");
       flash(
         `Scheduled a ${created.frequency} ${
           PROVIDER_LABEL[created.provider] ?? created.provider
@@ -290,7 +306,7 @@ export default function SchedulersPage() {
         <PageHeader
           eyebrow="Explore"
           title="Scheduled reports"
-          description="Set a task once — get it done and emailed to you every week or month, covering only what changed since the last one."
+          description="Set a task once — it runs weekly or monthly and covers only what changed since the last report. We email you when it's ready to read."
           scene="reports"
           meta={
             <>

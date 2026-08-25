@@ -86,7 +86,10 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
 
   return (
     <AppShell me={me}>
-      <main className="page studio-page stack">
+      {/* page-wide, like every other studio page: `.page` is 640px, which
+          squeezes the studio header's art column. The prose keeps its own
+          68ch measure via .report-body, so the wider shell costs nothing. */}
+      <main className="page-wide studio-page stack">
         <PageHeader
           eyebrow={`${report.frequency} report`}
           title={report.title}

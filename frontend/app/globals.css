@@ -3003,6 +3003,17 @@ table .role-chip.role-admin,
 
 /* Report page: a document, so it gets document measure and rhythm rather
    than the compact spacing the dashboards use. */
+/* Headings inside answer/report prose. Sized BELOW the page title so the
+   document has one obvious top, and tight to the paragraph that follows. */
+.answer-heading {
+  margin: 1.15rem 0 0.4rem;
+  font-size: 0.98rem;
+  font-weight: 700;
+  letter-spacing: -0.005em;
+  color: var(--ink);
+}
+.answer-heading:first-child { margin-top: 0; }
+
 .report-body { line-height: 1.65; }
 .report-body > * { max-width: 68ch; }
 .report-notes,
