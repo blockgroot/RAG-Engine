@@ -640,3 +640,44 @@ def test_every_fetcher_discloses_coverage(monkeypatch):
     )
     monkeypatch.setattr("app.auth.credentials.get_connection_config", lambda *a, **k: {})
     assert activity.fetch_linear_activity("org-1", SINCE).notes
+
+
+# --------------------------------------------------------------------------
+# Meta is kept apart from content (so the page can lay a row out)
+# --------------------------------------------------------------------------
+
+
+def test_slack_item_separates_who_where_when_from_the_message(monkeypatch):
+    """As one string the page could only render a flat clamped line, where the
+    metadata competed with the message for the two lines available."""
+    adapter = _FakeSlack(
+        {"C1": [_message("1750000000.0", "deployed v2", reply_count=3)]}
+    )
+    _patch_slack_wiring(monkeypatch, adapter)
+
+    item = activity.fetch_slack_activity("org-1", SINCE).items[0]
+
+    assert item.summary == "deployed v2"
+    assert "#C1" in item.meta and "3 replies" in item.meta
+
+
+def test_the_prompt_still_sees_meta_and_content_as_one_line():
+    """The model needs the author and timestamp to attribute anything — only
+    the page keeps them apart."""
+    digest = activity._digest(
+        [ActivityItem(summary="deployed v2", meta="sana in #product · 20 Aug")], []
+    )
+
+    assert digest.text == "sana in #product · 20 Aug — deployed v2"
+
+
+def test_the_char_budget_counts_the_joined_line_not_just_the_content():
+    """Otherwise a long meta prefix escapes the budget it belongs to."""
+    items = [
+        ActivityItem(summary="x" * 1500, meta="m" * 400) for _ in range(40)
+    ]
+
+    digest = activity._digest(items, [])
+
+    assert len(digest.text) <= activity.MAX_DIGEST_CHARS
+    assert activity._TRUNCATION_MARKER in digest.notes

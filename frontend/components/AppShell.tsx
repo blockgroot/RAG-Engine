@@ -30,10 +30,16 @@ function IconSpaces() {
 }
 
 function IconReports() {
+  // Calendar + clock: what the section is (something that runs on a cadence),
+  // not a generic document. Monochrome `currentColor` like every other rail
+  // icon — the colour version of this mark lives in BrandGlyph for the
+  // marketing pages.
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <rect x="4" y="3" width="16" height="18" rx="2" stroke="currentColor" strokeWidth="1.75" />
-      <path d="M8 8h8M8 12h8M8 16h5" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
+      <rect x="3" y="5" width="14" height="14" rx="2" stroke="currentColor" strokeWidth="1.75" />
+      <path d="M3 9h14M7.5 3v3.5M12.5 3v3.5" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
+      <circle cx="17.5" cy="16.5" r="4" fill="var(--surface, #fff)" stroke="currentColor" strokeWidth="1.6" />
+      <path d="M17.5 14.7v1.9h1.4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
     </svg>
   );
 }

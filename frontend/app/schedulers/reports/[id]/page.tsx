@@ -185,25 +185,38 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
               </p>
             </div>
             <ul className="report-items">
-              {report.items.map((item, i) => (
-                <li key={`${i}-${item.summary}`}>
-                  {/* Clamped to two lines: one long Slack post used to fill a
-                      screen and bury every item after it. title= keeps the
-                      whole thing reachable without an expand control. */}
-                  {item.url ? (
-                    <a
-                      href={item.url}
-                      target="_blank"
-                      rel="noreferrer noopener"
-                      title={item.summary}
-                    >
-                      {item.summary}
-                    </a>
-                  ) : (
-                    <span title={item.summary}>{item.summary}</span>
-                  )}
-                </li>
-              ))}
+              {report.items.map((item, i) => {
+                // meta above, content below: the eye lands on what happened,
+                // and the attribution is there when it is wanted. Content is
+                // clamped to two lines — one long Slack post used to fill a
+                // screen and bury every item after it — with the full text in
+                // title= so nothing is unreachable.
+                const body = (
+                  <>
+                    {item.meta && <span className="report-item-meta">{item.meta}</span>}
+                    <span className="report-item-text">{item.summary}</span>
+                  </>
+                );
+                return (
+                  <li key={`${i}-${item.summary}`}>
+                    {item.url ? (
+                      <a
+                        href={item.url}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        title={item.summary}
+                      >
+                        {body}
+                        <span className="report-item-go" aria-hidden>
+                          ↗
+                        </span>
+                      </a>
+                    ) : (
+                      <div title={item.summary}>{body}</div>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           </section>
         )}

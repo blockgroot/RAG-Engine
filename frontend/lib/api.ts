@@ -254,8 +254,13 @@ export interface ReportRow {
 /** A report plus its body. Only the detail route returns these three fields. */
 export interface ReportDetail extends ReportRow {
   report_text: string;
-  /** Activity the report was built from; links are rendered from here. */
-  items: { summary: string; url: string | null }[];
+  /**
+   * Activity the report was built from; links are rendered from here.
+   * `meta` is the who/where/when prefix, kept apart from `summary` so a row
+   * can set it small rather than letting it compete with the content. Null on
+   * reports generated before items carried it.
+   */
+  items: { summary: string; url: string | null; meta?: string | null }[];
   notes: string[];
 }
 

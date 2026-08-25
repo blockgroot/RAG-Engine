@@ -8,7 +8,8 @@ export type BrandName =
   | "workspace"
   | "secure"
   | "private"
-  | "document";
+  | "document"
+  | "schedule";
 
 const BRAND_SRC: Record<BrandName, string | null> = {
   sendgrid: null,
@@ -21,6 +22,7 @@ const BRAND_SRC: Record<BrandName, string | null> = {
   linear: null,
   private: null,
   document: null,
+  schedule: null,
 };
 
 function GithubMark({ size }: { size: number }) {
@@ -91,6 +93,36 @@ function DocumentMark({ size }: { size: number }) {
   );
 }
 
+function ScheduleMark({ size }: { size: number }) {
+  // A calendar with a clock over it — the same idea as the icon supplied for
+  // the scheduler, redrawn as a 24x24 rounded-square glyph so it sits in the
+  // same family as the other marks here (a full-colour illustration would be
+  // the only glyph on the page with its own outline weight).
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
+      <rect width="24" height="24" rx="6" fill="#0f766e" />
+      <rect x="4.5" y="6" width="15" height="13.5" rx="2" fill="#fff" />
+      <rect x="4.5" y="6" width="15" height="3.6" rx="2" fill="#ef4444" />
+      {/* Binder rings, as on the source icon. */}
+      <rect x="7.6" y="3.8" width="1.5" height="3.4" rx="0.75" fill="#e2e8e6" />
+      <rect x="14.9" y="3.8" width="1.5" height="3.4" rx="0.75" fill="#e2e8e6" />
+      {/* Ticked days. */}
+      <rect x="6.6" y="11.4" width="2.6" height="2.6" rx="0.7" fill="#5eead4" />
+      <rect x="10.2" y="11.4" width="2.6" height="2.6" rx="0.7" fill="#5eead4" />
+      <rect x="6.6" y="15" width="2.6" height="2.6" rx="0.7" fill="#cbd5d3" />
+      {/* Clock, bottom-right, as on the source icon. */}
+      <circle cx="16" cy="16" r="4.3" fill="#facc15" stroke="#0f766e" strokeWidth="1.1" />
+      <path
+        d="M16 13.9V16h1.7"
+        stroke="#0f766e"
+        strokeWidth="1.1"
+        strokeLinecap="round"
+        fill="none"
+      />
+    </svg>
+  );
+}
+
 export function BrandGlyph({
   name,
   size = 28,
@@ -128,6 +160,10 @@ export function BrandGlyph({
 
   if (name === "document") {
     return <DocumentMark size={size} />;
+  }
+
+  if (name === "schedule") {
+    return <ScheduleMark size={size} />;
   }
 
   return <GithubMark size={size} />;

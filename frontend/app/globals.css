@@ -3014,7 +3014,14 @@ table .role-chip.role-admin,
 }
 .answer-heading:first-child { margin-top: 0; }
 
-.report-body { line-height: 1.65; }
+.report-body {
+  line-height: 1.65;
+  /* Same ambient teal wash the studio header uses, so a report reads as part
+     of the app rather than a plain document dropped into it. */
+  background:
+    radial-gradient(520px 220px at 100% 0%, rgba(45, 212, 191, 0.10), transparent 65%),
+    var(--surface);
+}
 .report-body > * { max-width: 68ch; }
 .report-items {
   list-style: none;
@@ -3022,30 +3029,59 @@ table .role-chip.role-admin,
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.45rem;
 }
 .report-items li {
-  font-size: 0.86rem;
-  line-height: 1.45;
-  padding: 0.6rem 0.75rem;
   border: 1px solid color-mix(in srgb, var(--border) 85%, white);
   border-radius: var(--radius-sm);
-  background: var(--surface-elevated);
+  /* A whisper of the brand teal rather than flat white — the app's surfaces
+     all carry it, and a stack of plain boxes read as a different product. */
+  background:
+    linear-gradient(180deg, rgba(204, 251, 241, 0.28), rgba(255, 255, 255, 0.9));
+  transition: border-color 0.2s var(--ease), transform 0.2s var(--ease),
+    box-shadow 0.2s var(--ease);
+}
+.report-items li:hover {
+  border-color: color-mix(in srgb, var(--border-strong) 70%, #14b8a6);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px -12px rgba(15, 118, 110, 0.5);
+}
+.report-items a,
+.report-items li > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.15rem 0.6rem;
+  padding: 0.6rem 0.75rem;
+  color: inherit;
+  text-decoration: none;
   overflow-wrap: anywhere;
 }
-/* Two lines, then ellipsis: one long Slack post filled a whole screen and
-   buried every item after it. The full text stays in title=. */
-.report-items a,
-.report-items li > span {
+/* Attribution: small, quiet, above the content. */
+.report-item-meta {
+  grid-column: 1;
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  color: color-mix(in srgb, var(--ink-muted) 80%, #0f766e);
+}
+/* Content: two lines, then ellipsis. Full text stays in title=. */
+.report-item-text {
+  grid-column: 1;
+  font-size: 0.87rem;
+  line-height: 1.45;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  color: inherit;
-  text-decoration: none;
 }
-.report-items a:hover { text-decoration: underline; }
-.report-items li:has(a):hover { border-color: var(--border-strong); }
+.report-item-go {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  font-size: 0.85rem;
+  color: color-mix(in srgb, var(--ink-muted) 60%, #14b8a6);
+}
+.report-items a:hover .report-item-text { text-decoration: underline; }
 
 /* Coverage: one quiet line, not a panel. It must be present on every report
    (a report may never imply coverage it lacked) without out-weighing the
@@ -3059,8 +3095,8 @@ table .role-chip.role-admin,
   padding: 0.55rem 0.8rem;
   font-size: 0.8rem;
   color: var(--ink-muted);
-  border-left: 2px solid color-mix(in srgb, var(--border) 60%, white);
-  background: color-mix(in srgb, var(--surface) 96%, white);
+  border-left: 2px solid color-mix(in srgb, #14b8a6 45%, var(--border));
+  background: color-mix(in srgb, #ccfbf1 22%, var(--surface));
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
 .report-coverage-label {
@@ -3073,6 +3109,7 @@ table .role-chip.role-admin,
 
 /* Quiet period: a result, not an error state. */
 .report-quiet h2 { margin: 0 0 0.35rem; font-size: 1.02rem; }
+.report-quiet-scope { color: color-mix(in srgb, var(--ink-muted) 85%, #0f766e); }
 .report-quiet p { margin: 0; max-width: 60ch; }
 .report-quiet-scope { margin-top: 0.6rem !important; font-size: 0.8rem; }
 
@@ -3081,10 +3118,10 @@ table .role-chip.role-admin,
   margin-left: 0.5rem;
   font-size: 0.72rem;
   font-weight: 700;
-  padding: 0.15rem 0.45rem;
+  padding: 0.15rem 0.5rem;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--surface) 88%, var(--ink));
-  color: var(--ink-muted);
+  background: #ccfbf1;
+  color: #0b5f5a;
   vertical-align: middle;
 }
 
@@ -3099,18 +3136,56 @@ table .role-chip.role-admin,
   padding: 0.7rem 0.9rem;
   border: 1px solid color-mix(in srgb, var(--border) 85%, white);
   border-radius: var(--radius-sm);
-  background: var(--surface-elevated);
+  background:
+    linear-gradient(180deg, rgba(204, 251, 241, 0.32), rgba(255, 255, 255, 0.92));
   color: inherit;
   text-decoration: none;
   transition: border-color 0.2s var(--ease), transform 0.2s var(--ease);
 }
-.report-row:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+.report-row:hover {
+  border-color: color-mix(in srgb, var(--border-strong) 70%, #14b8a6);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px -14px rgba(15, 118, 110, 0.55);
+}
 .report-row-title { font-weight: 650; overflow-wrap: anywhere; }
 .report-row-labels { display: flex; flex-wrap: wrap; gap: 0.35rem; }
 .report-row-when { font-size: 0.8rem; white-space: nowrap; }
 @media (max-width: 720px) {
   .report-row { grid-template-columns: 1fr; }
 }
+
+/* Report history: collapsed by default so the latest report per schedule is
+   what the page shows. Native <details> — the browser owns the toggle. */
+.report-list > li + li { margin-top: 0.5rem; }
+.report-history { margin: 0.3rem 0 0 0.9rem; }
+.report-history > summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: var(--ink-muted);
+  padding: 0.25rem 0;
+  width: fit-content;
+}
+.report-history > summary:hover { color: var(--ink); }
+.report-history > ul {
+  list-style: none;
+  margin: 0.2rem 0 0.3rem;
+  padding: 0 0 0 0.75rem;
+  border-left: 2px solid color-mix(in srgb, var(--border) 70%, white);
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.report-history > ul a {
+  display: flex;
+  gap: 0.6rem;
+  align-items: baseline;
+  padding: 0.3rem 0.4rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  color: inherit;
+  text-decoration: none;
+}
+.report-history > ul a:hover { background: var(--surface-elevated); }
 @media (max-width: 720px) {
   .scheduler-compose { grid-template-columns: 1fr; }
 }

@@ -201,6 +201,30 @@ export default function SchedulersPage() {
     setProvider("");
   }, [spaceId]);
 
+  /**
+   * Reports grouped by the schedule that produced them, newest group first.
+   *
+   * A flat list was the wrong shape: the question a reader has is "what does
+   * the latest X say", and one row per run buries that under history —
+   * twenty schedules times a year of weeks is a thousand rows. Grouping
+   * answers it directly and keeps the history one click away.
+   *
+   * Keyed by scheduler_id, falling back to the title so reports whose
+   * schedule was deleted still group together instead of scattering.
+   */
+  const reportGroups = useMemo(() => {
+    const groups = new Map<string, ReportRow[]>();
+    for (const report of reports) {
+      const key = report.scheduler_id ?? `deleted:${report.title}`;
+      const bucket = groups.get(key);
+      if (bucket) bucket.push(report);
+      else groups.set(key, [report]);
+    }
+    // `reports` arrives newest-first, so each bucket is already ordered and
+    // the map preserves first-seen (= newest) order across groups.
+    return [...groups.values()];
+  }, [reports]);
+
   /** Suggestions for the exact connection the two pickers landed on. */
   const suggestions = useMemo(() => {
     if (!selectedSpace || !provider) return [];
@@ -663,7 +687,7 @@ export default function SchedulersPage() {
             </p>
           </div>
 
-          {reports.length === 0 ? (
+          {reportGroups.length === 0 ? (
             <div className="studio-empty">
               <div className="studio-empty-mark" aria-hidden />
               <h3>Nothing delivered yet</h3>
@@ -674,32 +698,64 @@ export default function SchedulersPage() {
             </div>
           ) : (
             <ul className="report-list">
-              {reports.map((report) => (
-                <li key={report.id}>
-                  <Link className="report-row" href={`/schedulers/reports/${report.id}`}>
-                    {/* Title = the standing request, which is what tells two
-                        reports on the same service in the same space apart. */}
-                    <span className="report-row-title">{report.title}</span>
-                    <span className="report-row-labels">
-                      <span className="studio-chip">
-                        {report.frequency === "weekly" ? "Weekly" : "Monthly"}
+              {reportGroups.map((group) => {
+                const [latest, ...earlier] = group;
+                return (
+                  <li key={latest.scheduler_id ?? latest.id}>
+                    <Link
+                      className="report-row"
+                      href={`/schedulers/reports/${latest.id}`}
+                    >
+                      {/* Title = the standing request, which is what tells two
+                          schedules on the same service in the same space apart. */}
+                      <span className="report-row-title">{latest.title}</span>
+                      <span className="report-row-labels">
+                        <span className="studio-chip">
+                          {latest.frequency === "weekly" ? "Weekly" : "Monthly"}
+                        </span>
+                        <span className="studio-chip">
+                          {PROVIDER_LABEL[latest.provider] ?? latest.provider}
+                        </span>
+                        <span className="studio-chip">
+                          {latest.space_name ?? "Company-wide"}
+                        </span>
+                        {!latest.delivered && (
+                          <span className="studio-chip studio-chip-warn">Email failed</span>
+                        )}
                       </span>
-                      <span className="studio-chip">
-                        {PROVIDER_LABEL[report.provider] ?? report.provider}
+                      <span className="muted report-row-when">
+                        {whenLabel(latest.created_at)}
                       </span>
-                      <span className="studio-chip">
-                        {report.space_name ?? "Company-wide"}
-                      </span>
-                      {!report.delivered && (
-                        <span className="studio-chip studio-chip-warn">Email failed</span>
-                      )}
-                    </span>
-                    <span className="muted report-row-when">
-                      {whenLabel(report.created_at)}
-                    </span>
-                  </Link>
-                </li>
-              ))}
+                    </Link>
+
+                    {/* <details>, not a dropdown with state: the browser owns
+                        open/closed, it is keyboard- and screen-reader-correct
+                        for free, and nothing is hidden behind a control the
+                        reader has to discover. */}
+                    {earlier.length > 0 && (
+                      <details className="report-history">
+                        <summary>
+                          {earlier.length} earlier report
+                          {earlier.length === 1 ? "" : "s"}
+                        </summary>
+                        <ul>
+                          {earlier.map((report) => (
+                            <li key={report.id}>
+                              <Link href={`/schedulers/reports/${report.id}`}>
+                                <span>{whenLabel(report.created_at)}</span>
+                                <span className="muted">
+                                  {report.item_count} item
+                                  {report.item_count === 1 ? "" : "s"}
+                                </span>
+                              </Link>
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </section>

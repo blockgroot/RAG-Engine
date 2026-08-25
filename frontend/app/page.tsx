@@ -53,8 +53,8 @@ export default function RootPage() {
           </h1>
           <p className="landing-subtitle">
             Connect Notion, Google Drive, Slack, Linear, and GitHub. Handbook answers
-            employee questions from your connected content — and says when the
-            documents don&rsquo;t cover it.
+            employee questions from your connected content, emails you a report on
+            a schedule — and says when the documents don&rsquo;t cover it.
           </p>
           <div className="landing-cta-row">
             <Link href="/signup" className="button landing-cta-primary">
@@ -108,6 +108,17 @@ export default function RootPage() {
           </article>
           <article className="landing-feature">
             <span className="landing-feature-mark">
+              <BrandGlyph name="schedule" size={22} />
+            </span>
+            <h3>Reports on a schedule</h3>
+            <p>
+              Say what you want to keep an eye on in your own words, pick weekly
+              or monthly, and read it in your inbox — each report covers only
+              what changed on GitHub, Slack, or Linear since the last one.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
               <BrandGlyph name="workspace" size={22} />
             </span>
             <h3>Team workspaces</h3>
@@ -139,7 +150,8 @@ export default function RootPage() {
           </div>
           <p className="landing-section-lead">
             Sync Notion or Drive for your documents, Slack for team
-            conversations, and Linear for issues. Use GitHub live for code.
+            conversations, and Linear for issues. Use GitHub live for code, and
+            schedule a recurring report on any of the three that track activity.
             Sign in with a magic link — no extra password to manage.
           </p>
         </div>
@@ -183,15 +195,25 @@ export default function RootPage() {
                   <span>Grounded answers, org-scoped</span>
                 </span>
               </li>
+              <li className="landing-close-step" style={{ ["--step" as string]: "3" }}>
+                <span className="landing-close-step-mark" aria-hidden>
+                  <BrandGlyph name="schedule" size={18} />
+                </span>
+                <span className="landing-close-step-body">
+                  <strong>Schedule</strong>
+                  <span>Weekly or monthly, in your inbox</span>
+                </span>
+              </li>
             </ol>
           </div>
 
           <div className="landing-close-copy">
             <p className="landing-eyebrow">Start here</p>
-            <h2 id="close-title">Three steps from sources to answers.</h2>
+            <h2 id="close-title">Four steps from sources to answers.</h2>
             <p className="landing-close-lead">
               Handbook is ready once your docs are connected and your team is
-              invited — then every question is answered from that content.
+              invited — then every question is answered from that content, and
+              the updates you keep asking for arrive on their own.
             </p>
             <div className="landing-close-actions">
               <Link href="/signup" className="button landing-cta-primary landing-close-primary">

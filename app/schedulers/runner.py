@@ -143,7 +143,10 @@ def run_scheduler_once(
         prompt=scheduler.prompt,
         space_name=space_name,
         report_text=report,
-        items=[{"summary": i.summary, "url": i.url} for i in digest.items],
+        items=[
+            {"summary": i.summary, "url": i.url, "meta": i.meta}
+            for i in digest.items
+        ],
         notes=list(digest.notes),
         window_start=since,
         window_end=window_end,

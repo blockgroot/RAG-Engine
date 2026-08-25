@@ -335,7 +335,11 @@ def test_items_are_stored_structured_so_a_link_cannot_be_lost(monkeypatch, wirin
 
     stored = wiring.saved[0]
     assert stored["items"] == [
-        {"summary": "abc1234 fix login", "url": "https://github.com/a/b/commit/abc1234"}
+        {
+            "summary": "abc1234 fix login",
+            "url": "https://github.com/a/b/commit/abc1234",
+            "meta": None,
+        }
     ]
     # The notification carries a link to the report, not the activity links.
     assert "https://github.com/a/b/commit/abc1234" not in str(wiring[0])
@@ -348,7 +352,9 @@ def test_an_item_without_a_link_is_still_stored(monkeypatch, wiring):
 
     runner.run_scheduler_once(_scheduler(), llm=_FakeLLM())
 
-    assert wiring.saved[0]["items"] == [{"summary": "something happened", "url": None}]
+    assert wiring.saved[0]["items"] == [
+        {"summary": "something happened", "url": None, "meta": None}
+    ]
 
 
 def test_the_notification_says_what_it_covers_without_repeating_the_report(

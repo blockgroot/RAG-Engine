@@ -94,12 +94,21 @@ def _clip(text: str, limit: int = MAX_ENTRY_CHARS) -> str:
 class ActivityItem:
     """One thing that happened, with a link back to it where one exists.
 
-    ``summary`` is the human one-liner (never contains the URL — the email
-    template appends that, so the model never handles a link).
+    ``summary`` is the human one-liner (never contains the URL — the report
+    page renders that from ``url``, so the model never handles a link).
+
+    ``meta`` is the who/where/when prefix, kept SEPARATE from the content
+    rather than concatenated into ``summary``: as one string the report page
+    could only render a flat clamped line, where "Sana in #product · 20 Aug,
+    5:20 am · 3 replies" competed with the message itself for the two lines
+    available. Split, the page can set the meta small and give the content the
+    room. The prompt still sees them joined (``_digest``), because the model
+    needs both to attribute anything.
     """
 
     summary: str
     url: str | None = None
+    meta: str | None = None
 
 
 @dataclass(frozen=True)
@@ -135,12 +144,15 @@ def _digest(items: list[ActivityItem], notes: list[str]) -> ActivityDigest:
     used = 0
     for item in items:
         line = _clip(item.summary)
-        if used + len(line) + 1 > MAX_DIGEST_CHARS:
+        # The model sees meta and content as one line — it needs the author and
+        # timestamp to attribute anything. Only the PAGE keeps them apart.
+        prompt_line = f"{item.meta} — {line}" if item.meta else line
+        if used + len(prompt_line) + 1 > MAX_DIGEST_CHARS:
             notes = [*notes, _TRUNCATION_MARKER]
             break
-        kept.append(ActivityItem(summary=line, url=item.url))
-        lines.append(line)
-        used += len(line) + 1
+        kept.append(ActivityItem(summary=line, url=item.url, meta=item.meta))
+        lines.append(prompt_line)
+        used += len(prompt_line) + 1
     return ActivityDigest(
         items=tuple(kept), notes=tuple(notes), text="\n".join(lines).strip()
     )
@@ -207,9 +219,8 @@ def fetch_github_activity(
             author = commit.author or "unknown author"
             items.append(
                 ActivityItem(
-                    summary=(
-                        f"{commit.message} — {repo.full_name} · {author} · {when}"
-                    ),
+                    summary=commit.message,
+                    meta=f"{repo.full_name} · {author} · {when}",
                     # Prefer the URL GitHub itself returned; fall back to the
                     # canonical form only if the API omitted it.
                     url=commit.url
@@ -281,9 +292,9 @@ def fetch_slack_activity(
         thread_note = f" · {replies} replies" if replies else ""
         items.append(
             ActivityItem(
-                summary=(
-                    f"{message['user']} in #{message['channel']} · {when}"
-                    f"{thread_note} — {message['text']}"
+                summary=message["text"],
+                meta=(
+                    f"{message['user']} in #{message['channel']} · {when}{thread_note}"
                 ),
                 url=message.get("permalink"),
             )
@@ -326,10 +337,8 @@ def fetch_linear_activity(
         kind = f" ({issue['state_type']})" if issue["state_type"] else ""
         items.append(
             ActivityItem(
-                summary=(
-                    f"{issue['identifier']}: {issue['title']} — "
-                    f"{state}{kind}{who} · {when}"
-                ),
+                summary=f"{issue['identifier']}: {issue['title']}",
+                meta=f"{state}{kind}{who} · {when}",
                 url=issue.get("url") or None,
             )
         )

@@ -20,7 +20,8 @@ export default function HowItWorksPage() {
         <p className="how-lead">
           Handbook retrieves from your company&rsquo;s connected content,
           checks confidence, then answers only from that evidence — or clearly
-          says when it can&rsquo;t.
+          says when it can&rsquo;t. Ask once and it can keep answering on a
+          weekly or monthly schedule.
         </p>
       </section>
 
@@ -102,6 +103,89 @@ export default function HowItWorksPage() {
               <li>Only repositories you authorized are allowed.</li>
               <li>If nothing usable returns, you get a clear fallback.</li>
             </ol>
+          </article>
+
+          <article className="how-path">
+            <header className="how-path-head">
+              <div className="how-path-sources" aria-label="Schedulable sources">
+                <BrandGlyph name="github" size={24} />
+                <BrandGlyph name="slack" size={24} />
+                <BrandGlyph name="linear" size={24} />
+              </div>
+              <div>
+                <strong>On a schedule</strong>
+                <span>GitHub &middot; Slack &middot; Linear</span>
+              </div>
+            </header>
+            <ol>
+              <li>You describe what to watch, and pick weekly or monthly.</li>
+              <li>Each run reads only what changed since your last report.</li>
+              <li>Nothing is stored from the source — it is read at run time.</li>
+              <li>You get an email; the full report opens in Handbook.</li>
+            </ol>
+          </article>
+        </div>
+      </section>
+
+      <section className="landing-section landing-wrap" aria-labelledby="reports-title">
+        <div className="landing-section-head">
+          <div>
+            <p className="landing-eyebrow">Scheduled reports</p>
+            <h2 id="reports-title" className="landing-section-title">
+              Stop chasing the same update every week.
+            </h2>
+          </div>
+          <p className="landing-section-lead">
+            Some questions are not one-offs — &ldquo;what shipped&rdquo;,
+            &ldquo;what is stuck&rdquo;, &ldquo;what did the team decide&rdquo;.
+            Ask once, and the answer arrives on its own.
+          </p>
+        </div>
+
+        <div className="landing-feature-grid">
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="schedule" size={22} />
+            </span>
+            <h3>Your words, every run</h3>
+            <p>
+              Pick the space and the service, then say what the report should
+              cover in plain English. That instruction is re-applied on every
+              run — you never rewrite it.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="linear" size={22} />
+            </span>
+            <h3>Only what changed</h3>
+            <p>
+              Each report covers the window since the last one was delivered, so
+              nothing repeats and nothing is skipped — even if a run fails and
+              retries later.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="document" size={22} />
+            </span>
+            <h3>Every claim traceable</h3>
+            <p>
+              Each report lists the commits, messages, or issues it was built
+              from, with links straight to the source. The summary never writes a
+              link, so none can be invented.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="secure" size={22} />
+            </span>
+            <h3>Yours alone</h3>
+            <p>
+              A report is personal — nobody else in the company sees yours, and a
+              report scoped to one space only ever reads that space&rsquo;s own
+              connection.
+            </p>
           </article>
         </div>
       </section>
