@@ -1242,9 +1242,15 @@ class RagPipeline:
         )
         messages = [{"role": "user", "content": decision_prompt}]
         try:
-            decision = self._llm.generate_with_tools(
-                messages, tools=[WEB_SEARCH_TOOL], tool_choice="auto"
-            )
+            # Internal decision, so it bypasses _generate_text's stage split and
+            # must pin the model itself: whether to leave the tenant's own
+            # corpus for the open web is machinery, not prose, and must not
+            # change because a member picked a different model. It also needs
+            # dependable tool calling, which a free model does not guarantee.
+            with default_model_only():
+                decision = self._llm.generate_with_tools(
+                    messages, tools=[WEB_SEARCH_TOOL], tool_choice="auto"
+                )
             log_llm_call(
                 STAGE_WEB_DECISION,
                 self._llm,

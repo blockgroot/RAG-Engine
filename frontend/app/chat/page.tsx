@@ -617,6 +617,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
               <label className="sr-only" htmlFor="model-select">
                 Model
               </label>
+              <span className="composer-model-wrap">
               <select
                 id="model-select"
                 className="composer-model"
@@ -638,6 +639,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                   </option>
                 ))}
               </select>
+              </span>
             </>
           )}
           <button
