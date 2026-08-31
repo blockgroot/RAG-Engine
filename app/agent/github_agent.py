@@ -46,6 +46,7 @@ from ..core.answer_sources import (
     SOURCE_NONE,
 )
 from ..core.exceptions import ConfigurationError, LLMProviderError, ProviderError, SourceError
+from ..llm.routed import default_model_only
 from ..core.streaming import chunk_answer
 from ..githublive.base import CommitDetail, CommitSummary, GitHubReader, RepoReadme
 from ..llm.base import LLMProvider
@@ -294,11 +295,19 @@ class GitHubAgent(Agent):
         """One call: which tool, with which arguments? ``None`` means "no tool"."""
         prompt = build_github_decision_prompt(question, format_repo_catalog(repos))
         try:
-            result = self._llm.generate_with_tools(
-                [{"role": "user", "content": prompt}],
-                tools=GITHUB_TOOLS,
-                tool_choice="auto",
-            )
+            # Pinned to the configured model. Two reasons: choosing a tool is
+            # machinery, not an answer; and this agent grounds STRUCTURALLY —
+            # no tool call returns the fixed fallback — so a member picking a
+            # model with unreliable function calling would silently turn every
+            # GitHub question into the fallback, which reads as a broken
+            # product rather than a bad model choice. The composed answer
+            # (_compose) still follows their pick, because that is the chat.
+            with default_model_only():
+                result = self._llm.generate_with_tools(
+                    [{"role": "user", "content": prompt}],
+                    tools=GITHUB_TOOLS,
+                    tool_choice="auto",
+                )
         except LLMProviderError:
             return None
 

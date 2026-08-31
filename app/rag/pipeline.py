@@ -46,7 +46,9 @@ from ..llm.stages import (
     STAGE_TONE_RETRY,
     STAGE_WEB_ANSWER,
     STAGE_WEB_DECISION,
+    USER_FACING_LLM_STAGES,
 )
+from ..llm.routed import default_model_only
 from .query_signals import log_query_signal
 from ..memory.base import ConversationContext, ConversationStore, RetrievedChunkRecord
 from ..vectorstore.base import DateRange, RetrievedChunk, VectorStore
@@ -275,7 +277,17 @@ class RagPipeline:
         max_tokens: int | None = None,
     ) -> str:
         provider = self._provider_for_stage(stage)
-        text = provider.generate(prompt, max_tokens=max_tokens)
+        if stage in USER_FACING_LLM_STAGES:
+            # The reader sees this text, so it is written by the model they
+            # chose (or the default, when they chose none).
+            text = provider.generate(prompt, max_tokens=max_tokens)
+        else:
+            # Machinery. Pinned to the configured model regardless of the
+            # member's pick: rewriting, the web-search decision and the
+            # groundedness audit are what the grounding guarantees rest on, and
+            # they must not vary because someone changed a dropdown.
+            with default_model_only():
+                text = provider.generate(prompt, max_tokens=max_tokens)
         log_llm_call(stage, provider, org_id=org_id, conversation_id=conversation_id)
         return text
 
@@ -1230,9 +1242,15 @@ class RagPipeline:
         )
         messages = [{"role": "user", "content": decision_prompt}]
         try:
-            decision = self._llm.generate_with_tools(
-                messages, tools=[WEB_SEARCH_TOOL], tool_choice="auto"
-            )
+            # Internal decision, so it bypasses _generate_text's stage split and
+            # must pin the model itself: whether to leave the tenant's own
+            # corpus for the open web is machinery, not prose, and must not
+            # change because a member picked a different model. It also needs
+            # dependable tool calling, which a free model does not guarantee.
+            with default_model_only():
+                decision = self._llm.generate_with_tools(
+                    messages, tools=[WEB_SEARCH_TOOL], tool_choice="auto"
+                )
             log_llm_call(
                 STAGE_WEB_DECISION,
                 self._llm,

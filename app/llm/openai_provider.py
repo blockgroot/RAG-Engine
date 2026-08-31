@@ -162,9 +162,29 @@ class OpenAICompatProvider(LLMProvider):
             output_tokens=getattr(usage, "completion_tokens", None) if usage else None,
         )
 
-        content = response.choices[0].message.content
-        if content is None:
-            raise LLMProviderError("LLM returned an empty message content")
+        choice = response.choices[0]
+        content = choice.message.content
+        if content is None or not str(content).strip():
+            # Name the model and WHY, because the bare message cost a
+            # production debugging session: a reasoning model spends the whole
+            # ``max_tokens`` budget on internal reasoning and returns empty
+            # content with finish_reason="length". Without these fields the log
+            # says only "empty content" and gives no hint which of the four
+            # selectable models did it, or that the cap was the cause.
+            finish = getattr(choice, "finish_reason", None)
+            used = getattr(response.usage, "completion_tokens", None) if response.usage else None
+            detail = f"model={self.last_resolved_model or self.model}"
+            if finish:
+                detail += f" finish_reason={finish}"
+            if used is not None:
+                detail += f" completion_tokens={used}"
+            if finish == "length":
+                detail += (
+                    " — the token cap was consumed before any visible content "
+                    "(a reasoning model spending max_tokens on reasoning). Raise "
+                    "RAG_MAX_ANSWER_TOKENS or use a non-reasoning model."
+                )
+            raise LLMProviderError(f"LLM returned an empty message content: {detail}")
 
         return content
 

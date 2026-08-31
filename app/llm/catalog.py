@@ -52,6 +52,15 @@ class ModelChoice:
 #     CANNOT be offered without opting tenant content into training.
 #   - z-ai/glm-5.2 and google/gemma-4-* returned provider 429s on every attempt
 #     during testing. Not a capability failure; retry before adding them.
+#   - dots-studio/dots-3-note-preview and openrouter/free are REASONING models
+#     (the router picks them at random). With production's
+#     ``RAG_MAX_ANSWER_TOKENS=700`` they spend the entire budget on internal
+#     reasoning and return EMPTY content with finish_reason="length" — a hard
+#     LLMProviderError, so chat shows an error rather than an answer. Note
+#     ``reasoning: {"exclude": True}`` does NOT prevent this: it strips
+#     reasoning from the RESPONSE, while the tokens are still generated and
+#     still counted. Verified in production, and it is why the admission test
+#     now sends the real answer cap.
 #   - minimax/minimax-m3 and minimax/minimax-m2.7 answer and tag correctly but
 #     their tool calls are INTERMITTENT — one probe returned tool calls, the
 #     next returned no choices at all. Excluded on purpose: GitHubAgent grounds
@@ -63,11 +72,6 @@ class ModelChoice:
 # model that fails a probe would defeat the reason this file is hardcoded.
 MODELS: tuple[ModelChoice, ...] = (
     ModelChoice(
-        id="dots-studio/dots-3-note-preview:free",
-        label="Dots 3 Note",
-        note="512K context, strong on long-form summarising.",
-    ),
-    ModelChoice(
         id="inclusionai/ling-3.0-flash-fin:free",
         label="Ling 3.0 Flash",
         note="Fast, 262K context.",
@@ -76,14 +80,6 @@ MODELS: tuple[ModelChoice, ...] = (
         id="cohere/north-mini-code:free",
         label="Cohere North Mini",
         note="Low latency, reliable tool calling.",
-    ),
-    ModelChoice(
-        id="openrouter/free",
-        label="Any available",
-        note=(
-            "Routes to whichever free model is up and supports what the "
-            "question needs. Use when a specific pick is rate-limited."
-        ),
     ),
 )
 

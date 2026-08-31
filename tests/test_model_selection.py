@@ -177,11 +177,13 @@ def test_aux_provider_is_not_routable():
 # --------------------------------------------------------------------------
 # Schedulers — the report surface
 # --------------------------------------------------------------------------
-def test_scheduler_run_applies_its_own_model(monkeypatch):
-    """A worker runs schedulers back to back in one long-lived process.
+def test_scheduler_reports_always_use_the_configured_model(monkeypatch):
+    """A scheduled run is UNATTENDED, so it never follows a model choice.
 
-    If the model were applied once at startup rather than per run, the first
-    scheduler's pick would silently generate every later scheduler's report.
+    A chat answer from a flaky free model costs one retry the person can see.
+    A failed report burns retry attempts and is noticed only when the mail
+    never arrives — so reports are pinned even if something upstream left a
+    selection set in this context.
     """
     from datetime import datetime, timezone
 
@@ -194,23 +196,19 @@ def test_scheduler_run_applies_its_own_model(monkeypatch):
     class _Probe:
         def generate(self, prompt, **kwargs):
             seen.append(selected_model())
-            return "MODE: A\n\nreport"
+            return "report"
 
-    def _scheduler(model: str | None) -> Scheduler:
-        now = datetime.now(timezone.utc)
-        return Scheduler(
-            id="s", org_id="o", user_id="u", connection_id="c", provider="slack",
-            frequency="weekly", prompt="p", status="active", last_run_at=now,
-            next_run_at=now, attempts=0, last_error=None, created_at=now,
-            model=model,
-        )
-
+    now = datetime.now(timezone.utc)
+    scheduler = Scheduler(
+        id="s", org_id="o", user_id="u", connection_id="c", provider="slack",
+        frequency="weekly", prompt="p", status="active", last_run_at=now,
+        next_run_at=now, attempts=0, last_error=None, created_at=now,
+    )
     monkeypatch.setattr(
         runner, "get_user", lambda _: type("U", (), {"email": "a@b.c"})()
     )
     monkeypatch.setattr(
-        runner,
-        "fetch_activity",
+        runner, "fetch_activity",
         lambda *a, **k: ActivityDigest(items=(ActivityItem(summary="x"),), text="x"),
     )
     monkeypatch.setattr(
@@ -220,10 +218,194 @@ def test_scheduler_run_applies_its_own_model(monkeypatch):
         runner, "send_scheduler_report_email_safe", lambda *a, **k: False
     )
 
-    picked = catalog.MODELS[0].id
-    runner.run_scheduler_once(_scheduler(picked), llm=_Probe())
-    runner.run_scheduler_once(_scheduler(None), llm=_Probe())
+    # Deliberately hostile: a selection is live when the run starts.
+    use_model(catalog.MODELS[0].id)
+    runner.run_scheduler_once(scheduler, llm=_Probe())
 
-    assert seen == [picked, None], (
-        "each run must use its own scheduler's model, not the previous one's"
+    assert seen == [None], "a report must generate on the configured model"
+
+
+# --------------------------------------------------------------------------
+# Reasoning-token starvation (production incident)
+# --------------------------------------------------------------------------
+class _EmptyContentClient:
+    """An endpoint that spends the whole token cap on internal reasoning.
+
+    This is what a reasoning model actually returns: content is None,
+    finish_reason is "length", and completion_tokens equals the cap. Note
+    ``reasoning: {"exclude": True}`` does NOT prevent it — that strips
+    reasoning from the RESPONSE while the tokens are still generated and still
+    counted against max_tokens.
+    """
+
+    def __init__(self) -> None:
+        self.chat = self
+
+    @property
+    def completions(self):
+        return self
+
+    def create(self, **kwargs):
+        cap = kwargs.get("max_tokens") or 0
+
+        class _Msg:
+            content = None
+            tool_calls = None
+
+        class _Choice:
+            message = _Msg()
+            finish_reason = "length"
+
+        class _Usage:
+            prompt_tokens = 2300
+            completion_tokens = cap
+
+        class _Resp:
+            choices = [_Choice()]
+            usage = _Usage()
+            model = "some/reasoning-model:free"
+
+        return _Resp()
+
+
+def test_empty_content_error_names_the_model_and_the_cause():
+    """The bare message "empty message content" cost a debugging session.
+
+    It said nothing about WHICH of the selectable models failed or WHY, so the
+    log was indistinguishable from a dead endpoint. The message must carry
+    enough to diagnose it from the log alone.
+    """
+    from app.core.exceptions import LLMProviderError
+    from app.llm.openai_provider import OpenAICompatProvider
+
+    provider = OpenAICompatProvider(model="some/reasoning-model:free", api_key="k")
+    provider._client = _EmptyContentClient()
+
+    with pytest.raises(LLMProviderError) as exc:
+        provider.generate("a grounded prompt", max_tokens=700)
+
+    message = str(exc.value)
+    assert "some/reasoning-model:free" in message, "must name the model"
+    assert "finish_reason=length" in message, "must say why it was empty"
+    assert "completion_tokens=700" in message, "must show the cap was consumed"
+    assert "reasoning" in message.lower(), "must point at the actual cause"
+
+
+def test_no_catalogued_model_is_a_known_reasoning_model():
+    """Reasoning models cannot work under RAG_MAX_ANSWER_TOKENS=700.
+
+    They return empty content, which is a hard LLMProviderError — chat shows an
+    error instead of an answer. Verified in production, so these ids stay out
+    until the admission test proves otherwise.
+    """
+    starved = {
+        "dots-studio/dots-3-note-preview:free",
+        "openrouter/free",  # routes to reasoning models at random
+    }
+    offered = {m.id for m in catalog.MODELS}
+    assert not (offered & starved), (
+        f"catalogued model(s) known to starve on the answer cap: {offered & starved}"
+    )
+
+
+# --------------------------------------------------------------------------
+# Gemini for machinery, the member's pick for the answer
+# --------------------------------------------------------------------------
+def test_only_user_facing_stages_follow_the_selected_model():
+    """A member's dropdown choice must not reach the grounding machinery.
+
+    Query rewriting, the web-search decision and above all the groundedness
+    AUDIT are what the product's guarantees rest on. An auditor running on
+    whichever free model someone picked is worse than no auditor, because it
+    still returns a verdict. Also keeps it to one OpenRouter call per question,
+    which matters on a 50-request/day tier.
+    """
+    from app.llm.stages import AUX_LLM_STAGES, USER_FACING_LLM_STAGES
+    from app.rag.pipeline import RagPipeline
+
+    seen: dict[str, str | None] = {}
+
+    class _Probe:
+        model = "probe"
+        last_usage = None
+
+        def generate(self, prompt, **kwargs):
+            seen[prompt] = selected_model()
+            return "MODE: A\n\nok"
+
+    pipeline = RagPipeline.__new__(RagPipeline)
+    probe = _Probe()
+    pipeline._llm = probe
+    pipeline._llm_aux = probe
+
+    picked = catalog.MODELS[0].id
+    use_model(picked)
+
+    every_stage = sorted(AUX_LLM_STAGES | USER_FACING_LLM_STAGES | {"web-decision"})
+    for stage in every_stage:
+        pipeline._generate_text(stage, prompt=stage)
+
+    for stage in every_stage:
+        expected = picked if stage in USER_FACING_LLM_STAGES else None
+        assert seen[stage] == expected, (
+            f"stage {stage!r} saw model {seen[stage]!r}, expected {expected!r}"
+        )
+
+    # The selection survives the internal stages — one must not strand the rest
+    # of the request on the default.
+    assert selected_model() == picked
+
+
+def test_audit_never_runs_on_a_members_chosen_model():
+    """Called out separately because it is the most expensive one to get wrong."""
+    from app.llm.stages import STAGE_AUDIT, USER_FACING_LLM_STAGES
+
+    assert STAGE_AUDIT not in USER_FACING_LLM_STAGES
+
+
+# --------------------------------------------------------------------------
+# Structural audit: no LLM call may bypass the split unnoticed
+# --------------------------------------------------------------------------
+def test_machinery_call_sites_pin_the_default_model():
+    """These call the LLM directly, NOT through RagPipeline._generate_text.
+
+    The stage split cannot reach them, so each has to pin the model itself.
+    They are listed by name because the failure is silent: a member's pick
+    would quietly start steering a decision rather than an answer, and nothing
+    in the response would look wrong.
+    """
+    import inspect
+
+    from app.agent.github_agent import GitHubAgent
+    from app.rag.pipeline import RagPipeline
+
+    machinery = [
+        (RagPipeline, "_try_web_search"),
+        (GitHubAgent, "_decide_tool"),
+    ]
+    for cls, name in machinery:
+        dotted = f"{cls.__name__}.{name}"
+        source = inspect.getsource(getattr(cls, name))
+        assert "default_model_only" in source, (
+            f"{dotted} calls the LLM outside _generate_text and does not pin "
+            "the model — a member's choice would steer machinery"
+        )
+
+
+def test_ingestion_and_setup_chat_use_the_unrouted_aux_provider():
+    """Neither may follow a member's pick, and both are guaranteed structurally.
+
+    Ingest contextualization must write one corpus with one model; the setup
+    chat is slot-filling, not prose.
+    """
+    import inspect
+
+    import app.ingestion.pipeline as ingest
+    import app.llm.factory as factory
+
+    assert "RoutedLLMProvider" not in inspect.getsource(
+        factory.build_aux_llm_provider
+    ), "the aux provider must never be wrapped"
+    assert "build_llm_provider" not in inspect.getsource(ingest), (
+        "ingestion must use the aux (unrouted) provider only"
     )

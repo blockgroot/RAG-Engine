@@ -696,27 +696,70 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 .chat-composer-send:hover:not(:disabled) { transform: scale(1.05); filter: brightness(1.05); }
 .chat-composer-send:disabled { opacity: 0.4; cursor: not-allowed; }
 
-/* Model picker. A native <select> on purpose: free keyboard navigation, free
-   mobile behaviour, free accessibility, and no dependency — the same reason
-   this stylesheet has no UI kit behind it. */
-.composer-model {
+/* Model picker. Still a native <select> — free keyboard nav, free mobile
+   behaviour, free accessibility — but stripped of the OS chrome so it reads as
+   a soft chip riding inside the composer pill rather than a form control
+   bolted onto it. The wrapper carries the chevron so it can inherit
+   currentColor; a background-image data URI could not. */
+.composer-model-wrap {
+  position: relative;
   flex: none;
-  max-width: 9.5rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm, 8px);
-  background: var(--surface);
-  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+}
+.composer-model-wrap::after {
+  content: "";
+  position: absolute;
+  right: 0.7rem;
+  width: 0.42rem;
+  height: 0.42rem;
+  border-right: 1.6px solid currentColor;
+  border-bottom: 1.6px solid currentColor;
+  transform: translateY(-0.12rem) rotate(45deg);
+  color: var(--ink-muted);
+  opacity: 0.75;
+  pointer-events: none;  /* the click must reach the select underneath */
+  transition: color 0.2s var(--ease), opacity 0.2s var(--ease);
+}
+.composer-model-wrap:hover::after { color: var(--accent); opacity: 1; }
+
+.composer-model {
+  appearance: none;
+  -webkit-appearance: none;
+  max-width: 11rem;
+  border: 1px solid transparent;
+  /* Fully round, echoing the composer pill and the circular send button —
+     the composer has no square corners anywhere else. */
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  color: var(--ink-muted);
   font-family: inherit;
-  font-size: 0.82rem;
-  padding: 0.4rem 0.55rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  padding: 0.46rem 1.75rem 0.46rem 0.85rem;
   cursor: pointer;
-  transition: color 0.2s var(--ease), border-color 0.2s var(--ease);
+  text-overflow: ellipsis;
+  transition: background 0.2s var(--ease), color 0.2s var(--ease),
+    border-color 0.2s var(--ease);
 }
 .composer-model:hover:not(:disabled) {
-  color: var(--ink);
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+  color: var(--accent-strong);
 }
-.composer-model:disabled { opacity: 0.5; cursor: not-allowed; }
+/* Focus ring on the wrapper's terms, not the browser's default outline —
+   the composer already owns a focus-within glow and two rings would fight. */
+.composer-model:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+.composer-model:disabled { opacity: 0.45; cursor: not-allowed; }
+/* The dropdown list itself is OS-drawn; only its colours are ours to set. */
+.composer-model option {
+  background: var(--surface-elevated);
+  color: var(--ink);
+}
 
 /* "Answered by X" — deliberately quiet. It is provenance, not a headline. */
 .chat-model-tag {

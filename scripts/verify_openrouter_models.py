@@ -32,11 +32,20 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config.settings import OpenRouterSettings  # noqa: E402
 from app.llm.catalog import MODELS  # noqa: E402
 from app.llm.openai_provider import OpenAICompatProvider  # noqa: E402
+from app.config.settings import RagSettings  # noqa: E402
 from app.llm.routed import _ROUTING_PREFS  # noqa: E402
 
 # The same anchor the pipeline uses. Imported by shape rather than by import so
 # this script keeps working if the pipeline's regex is loosened.
 MODE_RE = re.compile(r"^\s*MODE:\s*([ABC])\s*\n+(.*)", re.IGNORECASE | re.DOTALL)
+
+# Production's answer cap. Sending the prompt WITHOUT it is what let a model
+# that cannot work here pass verification: a reasoning model spends the whole
+# cap on internal reasoning tokens and returns empty content with
+# finish_reason="length". Unbounded, it eventually produces text and looks
+# fine. An admission test that does not reproduce production's limits does not
+# test production.
+_ANSWER_CAP = RagSettings.from_env().max_answer_tokens
 
 MODE_PROMPT = (
     "Begin your reply with a mode tag on its own line — 'MODE: A' — then a "
@@ -70,7 +79,7 @@ def probe(model_id: str, settings: OpenRouterSettings) -> dict:
         extra_body=_ROUTING_PREFS,
     )
     try:
-        text = client.generate(MODE_PROMPT)
+        text = client.generate(MODE_PROMPT, max_tokens=_ANSWER_CAP)
         result["resolved"] = client.last_resolved_model
         result["content"] = bool(text and text.strip())
         result["mode_tag"] = bool(MODE_RE.match(text or ""))
