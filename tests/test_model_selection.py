@@ -365,3 +365,51 @@ def test_audit_never_runs_on_a_members_chosen_model():
     from app.llm.stages import STAGE_AUDIT, USER_FACING_LLM_STAGES
 
     assert STAGE_AUDIT not in USER_FACING_LLM_STAGES
+
+
+# --------------------------------------------------------------------------
+# Structural audit: no LLM call may bypass the split unnoticed
+# --------------------------------------------------------------------------
+def test_machinery_call_sites_pin_the_default_model():
+    """These call the LLM directly, NOT through RagPipeline._generate_text.
+
+    The stage split cannot reach them, so each has to pin the model itself.
+    They are listed by name because the failure is silent: a member's pick
+    would quietly start steering a decision rather than an answer, and nothing
+    in the response would look wrong.
+    """
+    import inspect
+
+    from app.agent.github_agent import GitHubAgent
+    from app.rag.pipeline import RagPipeline
+
+    machinery = [
+        (RagPipeline, "_try_web_search"),
+        (GitHubAgent, "_decide_tool"),
+    ]
+    for cls, name in machinery:
+        dotted = f"{cls.__name__}.{name}"
+        source = inspect.getsource(getattr(cls, name))
+        assert "default_model_only" in source, (
+            f"{dotted} calls the LLM outside _generate_text and does not pin "
+            "the model — a member's choice would steer machinery"
+        )
+
+
+def test_ingestion_and_setup_chat_use_the_unrouted_aux_provider():
+    """Neither may follow a member's pick, and both are guaranteed structurally.
+
+    Ingest contextualization must write one corpus with one model; the setup
+    chat is slot-filling, not prose.
+    """
+    import inspect
+
+    import app.ingestion.pipeline as ingest
+    import app.llm.factory as factory
+
+    assert "RoutedLLMProvider" not in inspect.getsource(
+        factory.build_aux_llm_provider
+    ), "the aux provider must never be wrapped"
+    assert "build_llm_provider" not in inspect.getsource(ingest), (
+        "ingestion must use the aux (unrouted) provider only"
+    )
