@@ -93,7 +93,19 @@ def list_models(session: SessionClaims = Depends(get_session)):
 
     provider = build_llm_provider()
     backends = provider.configured_backends()
-    return {"default": catalog.AUTO, "models": catalog.as_dicts(backends)}
+    # The default option is labelled with the deployment's actual model rather
+    # than the word "Auto": "Auto" reads as a router that picks for you, when it
+    # in fact means one specific model. Sent from here, not hardcoded in the
+    # frontend, so it follows LLM_MODEL instead of drifting from it. The VALUE
+    # stays ``catalog.AUTO`` — the sentinel is what keeps an untouched dropdown
+    # byte-identical to pre-feature behaviour, so only the label moves.
+    from ..config.settings import LLMSettings
+
+    return {
+        "default": catalog.AUTO,
+        "default_label": LLMSettings.from_env().model or "Auto",
+        "models": catalog.as_dicts(backends),
+    }
 
 AGENT_GITHUB = "github"
 AGENT_POLICY = "policy"

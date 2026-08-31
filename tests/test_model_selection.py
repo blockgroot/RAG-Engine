@@ -484,3 +484,23 @@ def test_picker_only_offers_models_whose_backend_is_configured():
     assert all(d["backend"] == "groq" for d in cat.as_dicts(groq_only))
 
     assert cat.as_dicts(_routed(None, None).configured_backends()) == []
+
+
+def test_default_option_is_labelled_with_the_configured_model(monkeypatch):
+    """The default option shows LLM_MODEL, but its VALUE stays the sentinel.
+
+    "Auto" read as a router that picks a model for you, when it actually means
+    one specific model. Only the label moved: if the value ever stops being
+    ``catalog.AUTO``, ``normalize`` no longer collapses it and the untouched
+    dropdown starts splitting the answer cache and sending a bogus model id.
+    """
+    from app.api.chat import list_models
+
+    monkeypatch.setenv("LLM_MODEL", "gemini-3.1-flash-lite")
+    payload = list_models(session=None)  # session is unused by this route
+
+    assert payload["default"] == catalog.AUTO == "auto"
+    assert payload["default_label"] == "gemini-3.1-flash-lite"
+    # Not asserted here: the LLM_MODEL-unset case. ``build_llm_provider()``
+    # raises ConfigurationError before this route can render a label, so the
+    # ``or "Auto"`` fallback is unreachable belt-and-braces, not a branch.

@@ -54,6 +54,9 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
 
   const [agentTab, setAgentTab] = useState<AgentTab>("policy");
   const [models, setModels] = useState<ModelChoice[]>([]);
+  // The deployment's own model name, shown on the default option instead of
+  // "Auto". Falls back until /chat/models answers.
+  const [defaultLabel, setDefaultLabel] = useState("Auto");
   // "auto" = send no model at all, i.e. the deployment's configured default.
   // Restored from localStorage so a preference survives a reload; a stale id
   // that has since left the catalog is discarded on load rather than sent and
@@ -126,9 +129,10 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     let cancelled = false;
     api
       .chatModels()
-      .then(({ models: available }) => {
+      .then(({ models: available, default_label }) => {
         if (cancelled) return;
         setModels(available);
+        if (default_label) setDefaultLabel(default_label);
         const saved = localStorage.getItem("chat.model");
         // Only restore a choice the backend still offers.
         if (saved && available.some((m) => m.id === saved)) setModel(saved);
@@ -629,10 +633,10 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                 disabled={busy}
                 title={
                   models.find((m) => m.id === model)?.note ??
-                  "Answer with the default model"
+                  `Answer with the default model (${defaultLabel})`
                 }
               >
-                <option value="auto">Auto</option>
+                <option value="auto">{defaultLabel}</option>
                 {models.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.label}

@@ -467,7 +467,9 @@ export const api = {
   },
 
   chatModels: () =>
-    request<{ default: string; models: ModelChoice[] }>("/chat/models"),
+    request<{ default: string; default_label: string; models: ModelChoice[] }>(
+      "/chat/models",
+    ),
 
   listWorkspaces: () => request<WorkspaceRecord[]>("/workspaces"),
   getWorkspace: (workspaceId: string) =>
