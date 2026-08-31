@@ -35,3 +35,34 @@ AUX_LLM_STAGES = frozenset(
         STAGE_AUDIT,
     }
 )
+
+
+# Stages whose output the USER ACTUALLY READS. Only these follow a member's
+# model choice (Multi-Model Selection); every other stage stays on the
+# deployment's configured model.
+#
+# The split is not about cost, it is about what a selected model is allowed to
+# influence. Rewriting a follow-up, deciding whether to search the web,
+# classifying tone, and — above all — AUDITING an answer for groundedness are
+# machinery: the grounding guarantees depend on them behaving consistently, and
+# handing them to whichever free model a member picked from a dropdown would
+# make the product's core promise vary per request. A groundedness auditor
+# running on an unknown model is worse than no auditor, because it still
+# reports a verdict.
+#
+# It also means one OpenRouter call per question rather than several, which
+# matters on a 50-request/day free tier.
+#
+# EMPATHY_OPENER is here because it is prose prepended to the answer — the
+# reader sees one voice, so it must come from the same model as the answer.
+USER_FACING_LLM_STAGES = frozenset(
+    {
+        STAGE_GENERATE,
+        STAGE_TONE_RETRY,
+        STAGE_WEB_ANSWER,
+        STAGE_EMPATHY_OPENER,
+    }
+)
+
+# An aux stage can never also be user-facing: aux exists for mechanical steps.
+assert not (AUX_LLM_STAGES & USER_FACING_LLM_STAGES)

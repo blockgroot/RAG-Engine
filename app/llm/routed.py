@@ -37,6 +37,7 @@ not a rule someone has to remember.
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from contextvars import ContextVar
 
 from ..config.settings import OpenRouterSettings
@@ -93,6 +94,24 @@ def use_model(model_id: str | None) -> None:
     # Reset in step, so a pooled thread cannot report the previous request's
     # answering model for a stream that has not generated anything yet.
     _RESOLVED.set(None)
+
+
+@contextmanager
+def default_model_only():
+    """Force the configured default inside this block, whatever was selected.
+
+    Used by the pipeline for every stage the reader does not see, so a member's
+    dropdown choice cannot change how the machinery behaves — query rewriting,
+    the web-search decision, and the groundedness audit must not vary per
+    request. Restores the previous selection on exit, including on an
+    exception, so one internal stage can never strand the rest of the request
+    on the default model.
+    """
+    token = _SELECTED.set(None)
+    try:
+        yield
+    finally:
+        _SELECTED.reset(token)
 
 
 def selected_model() -> str | None:

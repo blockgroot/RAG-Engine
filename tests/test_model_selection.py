@@ -310,3 +310,58 @@ def test_no_catalogued_model_is_a_known_reasoning_model():
     assert not (offered & starved), (
         f"catalogued model(s) known to starve on the answer cap: {offered & starved}"
     )
+
+
+# --------------------------------------------------------------------------
+# Gemini for machinery, the member's pick for the answer
+# --------------------------------------------------------------------------
+def test_only_user_facing_stages_follow_the_selected_model():
+    """A member's dropdown choice must not reach the grounding machinery.
+
+    Query rewriting, the web-search decision and above all the groundedness
+    AUDIT are what the product's guarantees rest on. An auditor running on
+    whichever free model someone picked is worse than no auditor, because it
+    still returns a verdict. Also keeps it to one OpenRouter call per question,
+    which matters on a 50-request/day tier.
+    """
+    from app.llm.stages import AUX_LLM_STAGES, USER_FACING_LLM_STAGES
+    from app.rag.pipeline import RagPipeline
+
+    seen: dict[str, str | None] = {}
+
+    class _Probe:
+        model = "probe"
+        last_usage = None
+
+        def generate(self, prompt, **kwargs):
+            seen[prompt] = selected_model()
+            return "MODE: A\n\nok"
+
+    pipeline = RagPipeline.__new__(RagPipeline)
+    probe = _Probe()
+    pipeline._llm = probe
+    pipeline._llm_aux = probe
+
+    picked = catalog.MODELS[0].id
+    use_model(picked)
+
+    every_stage = sorted(AUX_LLM_STAGES | USER_FACING_LLM_STAGES | {"web-decision"})
+    for stage in every_stage:
+        pipeline._generate_text(stage, prompt=stage)
+
+    for stage in every_stage:
+        expected = picked if stage in USER_FACING_LLM_STAGES else None
+        assert seen[stage] == expected, (
+            f"stage {stage!r} saw model {seen[stage]!r}, expected {expected!r}"
+        )
+
+    # The selection survives the internal stages — one must not strand the rest
+    # of the request on the default.
+    assert selected_model() == picked
+
+
+def test_audit_never_runs_on_a_members_chosen_model():
+    """Called out separately because it is the most expensive one to get wrong."""
+    from app.llm.stages import STAGE_AUDIT, USER_FACING_LLM_STAGES
+
+    assert STAGE_AUDIT not in USER_FACING_LLM_STAGES
