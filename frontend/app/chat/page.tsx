@@ -7,7 +7,7 @@ import { AskHeroArt } from "@/components/AskHeroArt";
 import { ChatMessageView, Message } from "@/components/ChatMessage";
 import { useMe } from "@/lib/useMe";
 import { streamChat } from "@/lib/sse";
-import { api } from "@/lib/api";
+import { api, ModelChoice } from "@/lib/api";
 import { JOB_POLL_MS } from "@/lib/jobPoll";
 import {
   getCachedSuggestions,
@@ -53,6 +53,12 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
 
   const [agentTab, setAgentTab] = useState<AgentTab>("policy");
+  const [models, setModels] = useState<ModelChoice[]>([]);
+  // "auto" = send no model at all, i.e. the deployment's configured default.
+  // Restored from localStorage so a preference survives a reload; a stale id
+  // that has since left the catalog is discarded on load rather than sent and
+  // rejected with a 400.
+  const [model, setModel] = useState<string>("auto");
   const [workspaceGithub, setWorkspaceGithub] = useState(false);
   const [workspaceSlack, setWorkspaceSlack] = useState(false);
   const [workspaceLinear, setWorkspaceLinear] = useState(false);
@@ -115,6 +121,25 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     setInput("");
     conversationId.current = null;
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .chatModels()
+      .then(({ models: available }) => {
+        if (cancelled) return;
+        setModels(available);
+        const saved = localStorage.getItem("chat.model");
+        // Only restore a choice the backend still offers.
+        if (saved && available.some((m) => m.id === saved)) setModel(saved);
+      })
+      // A picker is an enhancement: if the catalog cannot be read, chat still
+      // works on the default model. Never surface this as a chat error.
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (agentTab === "policy" && policyFallbackAvailable) return;
@@ -310,7 +335,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
         },
       },
       workspaceId,
-      activeAgent
+      activeAgent,
+      model
     );
 
   }
@@ -586,6 +612,34 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             disabled={busy}
             autoFocus
           />
+          {models.length > 0 && (
+            <>
+              <label className="sr-only" htmlFor="model-select">
+                Model
+              </label>
+              <select
+                id="model-select"
+                className="composer-model"
+                value={model}
+                onChange={(e) => {
+                  setModel(e.target.value);
+                  localStorage.setItem("chat.model", e.target.value);
+                }}
+                disabled={busy}
+                title={
+                  models.find((m) => m.id === model)?.note ??
+                  "Answer with the default model"
+                }
+              >
+                <option value="auto">Auto</option>
+                {models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </>
+          )}
           <button
             className="chat-composer-send"
             type="submit"

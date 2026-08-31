@@ -164,12 +164,43 @@ embeds nothing** (the `app/githublive/` pattern).
   page now uses explicit space/service/cadence dropdowns, since which
   connection is read is not a thing to infer from prose.
 
+**Multi-Model Selection (`app/llm/routed.py`, `catalog.py`)** — a member picks
+which model answers, on every prompt surface (chat composer, scheduler create,
+setup chat). Default `auto` = the configured `LLM_MODEL`, so an untouched
+dropdown is byte-identical to pre-feature behaviour.
+- **The model is a PER-CALL value, never a constructor arg.** Agents are
+  `lru_cache(maxsize=1)` singletons holding the BGE-M3 embedder + cross-encoder;
+  keying that cache by model would load a second copy of the weights per choice.
+  `RoutedLLMProvider` dispatches on a request-scoped `ContextVar` and satisfies
+  `LLMProvider`, so `RagPipeline`, every agent and `schedulers/runner` learn
+  nothing about selection. A ContextVar, not a threaded param, because the
+  pipeline calls the LLM from ~6 places for one request.
+- **`build_aux_llm_provider` is deliberately NOT wrapped.** That absence is what
+  makes ingest contextualization unroutable — chunks authored by different
+  models would be ranked against each other inside one index. The guarantee is
+  structural, not a rule to remember. Embeddings/reranker likewise never switch.
+- **Every OpenRouter call carries `provider.data_collection="deny"`** — a RAG
+  prompt contains the tenant's retrieved private content, so it must never reach
+  a provider that may train on or publish it. Per-request, not the account-level
+  privacy toggle (one global switch governing every tenant, silently wrong the
+  moment someone edits a dashboard). `require_parameters=true` makes tool
+  support a server-side guarantee rather than a hand-kept flag.
+- **~5 hardcoded models, admitted by `scripts/verify_openrouter_models.py`** —
+  not a live `/models` fetch. A model id is not a capability, and free models
+  rotate out without warning.
+- The `done` SSE event and `scheduler_reports.model` report the **resolved**
+  model (`response.model`), never the word "auto" — under a provider fallback
+  the served model differs from the requested one, and only the former is a
+  fact. `null` on the default path: naming the deployment's model to every
+  member is noise, not provenance.
+
 ## 4. Layout
 
 ```
 app/config/   typed settings — the ONLY place env is read
 app/core/     ProviderError hierarchy
 app/{llm,embeddings,reranker,vectorstore,websearch}/  base + impls + factory
+app/llm/      + routed.py (per-request model) + catalog.py (the 5 offered)
 app/db/       schema.sql, connection.py (pool), migrate.py
 app/ingestion/ preprocess, chunk, contextualize, pipeline  (orchestrator)
 app/rag/      pipeline, prompts, retrieval, query_normalize, summary_fold, …
@@ -207,6 +238,25 @@ frontend/ Next.js 15 portal · tests/ pytest
   "system"; the report summarised a detailed post as one sentence and looked
   like a weak model. Diagnose thin generations by printing what the prompt
   ACTUALLY received, not by upgrading the model.
+- **A selected model that breaks the `MODE: A|B|C` tag silently disables the
+  groundedness audit.** `_MODE_TAG_RE` (`pipeline.py:92`) is anchored at the
+  start of the response, so a `<think>` block or a "Sure, here's…" preamble
+  yields `mode=None` — and the audit at `pipeline.py:923` only runs for modes A
+  and B. The answer still renders, so the lost layer is invisible. Mitigated by
+  `reasoning: {exclude: true}` on every routed call, and gated by the
+  verify script. Diagnose a "worse model" by checking the tag parsed, not by
+  assuming the model is weak.
+- **`query_answer_cache` keys on the selected model** (`query_cache.py`,
+  read from the request ContextVar, not passed in). Without it one member's
+  Gemini answer is served verbatim to another who explicitly asked on Claude —
+  a wrong answer, not a slow one. Reading it inside `_question_hash` means a
+  future call site cannot forget it.
+- **OpenRouter's free tier is 20 RPM / 50 req/day (1,000 after a one-time $10),
+  account-wide across all tenants** — which is why `auto` stays on the existing
+  Gemini config: OpenRouter is only hit on an explicit selection. A `:free`
+  model with `data_collection: "deny"` can also have ZERO eligible endpoints
+  ("No endpoints found matching your data policy") — the correct outcome for
+  tenant data, and it means that model cannot be offered.
 - **Do NOT raise the 0.35 gate.** Bands overlap on a tiny sample (answerable
   0.54–0.74 vs on-topic-unanswered 0.46–0.52) and the golden set showed zero
   false negatives; the strict prompt does the fine discrimination. Never feed
@@ -320,7 +370,7 @@ partial unique indexes: org-wide vs workspace) · `ingestion_jobs`
 (+`phase`/`attempts`/`progress_at`) · `magic_link_tokens` · `oauth_states` ·
 `github_install_pending` · `query_answer_cache` · `api_rate_counters` ·
 `workspaces` / `workspace_members` · `org_signup_requests` · `schedulers`
-(scoped by `org_id` **and** `user_id`, unlike every other tenant table) ·
+(scoped by `org_id` **and** `user_id`, unlike every other tenant table; `model` NULL = the configured default) ·
 `scheduler_reports` (same `(org_id, user_id)` scoping; snapshots its labels
 rather than joining, so an archived report survives a rename or a deleted
 space — it cascades only from the scheduler, org and user).
@@ -343,7 +393,8 @@ bounded recovery); Notion/Drive/Slack/Linear ingestion; GitHub live reads;
 per-source agents + LangGraph routing; golden-set eval in CI (+ nightly
 RAGAS); identity/OAuth/admin/ingestion queue/HTTP API/streaming chat; Next.js
 portal; Workspace-within-a-Workspace; signup-approval queue; injection,
-latency, security and eval hardening; the Activity Scheduler.
+latency, security and eval hardening; the Activity Scheduler; Multi-Model
+Selection (OpenRouter, ~5 models, per-request routing).
 
 **Pending / known gaps**
 - Scheduler: Notion/Drive fetchers (Drive takes
@@ -355,7 +406,11 @@ latency, security and eval hardening; the Activity Scheduler.
   one also settles **T3** (whether `state` survives the install redirect —
   assumed, not verified).
 - Production secrets (`AUTH_JWT_SECRET`, `AUTH_ENCRYPTION_KEYS`,
-  `GITHUB_APP_PRIVATE_KEY`) are a config surface, not provisioned.
+  `GITHUB_APP_PRIVATE_KEY`, `OPENROUTER_API_KEY`) are a config surface, not
+  provisioned.
+- **The 5 catalogued models are UNVERIFIED against a live key** — run
+  `scripts/verify_openrouter_models.py` before trusting the picker; a model
+  that fails the MODE-tag check must be replaced, not shipped.
 - Validate the 0.35 gate and 0.72 reuse threshold against production
   `rag.query_signals` logs rather than hand-measured examples.
 - **Deferred by decision:** structural citations + NLI (cost/latency);

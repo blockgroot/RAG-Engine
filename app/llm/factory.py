@@ -10,16 +10,28 @@ from __future__ import annotations
 from ..config.settings import LLMSettings
 from .base import LLMProvider
 from .openai_provider import OpenAICompatProvider
+from .routed import RoutedLLMProvider
 
 
 def build_llm_provider(settings: LLMSettings | None = None) -> LLMProvider:
-    """Build the configured LLM provider (defaults to reading env vars)."""
+    """Build the main LLM provider, wrapped for per-request model selection.
+
+    The wrapper is transparent when nothing is selected: it delegates straight
+    to the configured default, so a deployment that never sets
+    ``OPENROUTER_API_KEY`` behaves exactly as it did before this feature.
+
+    Note this is the MAIN provider only. ``build_aux_llm_provider`` is
+    deliberately left unwrapped — see ``routed`` for why ingestion must not be
+    routable.
+    """
     settings = settings or LLMSettings.from_env()
-    return OpenAICompatProvider(
-        model=settings.model,
-        api_key=settings.api_key,
-        base_url=settings.base_url,
-        timeout=settings.timeout,
+    return RoutedLLMProvider(
+        OpenAICompatProvider(
+            model=settings.model,
+            api_key=settings.api_key,
+            base_url=settings.base_url,
+            timeout=settings.timeout,
+        )
     )
 
 

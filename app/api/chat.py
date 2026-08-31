@@ -42,7 +42,10 @@ def _word_chunks(text: str) -> Iterator[str]:
 from ..agent.github_agent import GitHubAgent
 from ..agent.orchestration import build_agent_graph, route_agent_key
 from ..agent.rag_pipeline_agent import RagPipelineAgent
+from ..config.settings import OpenRouterSettings
 from ..core.exceptions import AuthError, LLMProviderError, ProviderError
+from ..llm import catalog
+from ..llm.routed import answering_model, selected_model, use_model
 from ..db.connection import get_connection
 from ..security.rate_limit import check_rate_limit
 from ..workspaces import assert_member
@@ -68,6 +71,26 @@ from .suggestions import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+
+@router.get("/models")
+def list_models(session: SessionClaims = Depends(get_session)):
+    """The models a member may pick, plus the default's identity.
+
+    Session-gated like every other chat route — the catalog is not secret, but
+    an unauthenticated endpoint that names the deployment's models is free
+    reconnaissance for no benefit.
+
+    ``models`` is empty when ``OPENROUTER_API_KEY`` is unset, which is how the
+    picker hides itself on a deployment that has not enabled the feature: the
+    frontend renders nothing rather than offering choices that would all
+    silently fall back to the default.
+    """
+    settings = OpenRouterSettings.from_env()
+    return {
+        "default": catalog.AUTO,
+        "models": catalog.as_dicts() if settings.enabled else [],
+    }
 
 AGENT_GITHUB = "github"
 AGENT_POLICY = "policy"
@@ -330,13 +353,33 @@ def _sse_event(event: str, data: dict | str) -> str:
     return f"event: {event}\ndata: {payload}\n\n"
 
 
+def _answering_model() -> str | None:
+    """The model that produced this request's answer, as best we can know it.
+
+    Prefers what the endpoint reported (``response.model``), which is the only
+    reliable answer once routing or a provider fallback is involved; falls back
+    to what was selected. ``None`` on the default path, which the UI reads as
+    "nothing to disclose" rather than printing the deployment's model to every
+    member.
+    """
+    return answering_model() or selected_model()
+
+
 def _stream_answer(
     question: str,
     org_id: str,
     conversation_id: str | None,
     workspace_id: str | None = None,
     requested_agent: str | None = None,
+    model: str | None = None,
 ) -> Iterator[str]:
+    # Set inside the generator, NOT in the route that returns the
+    # StreamingResponse: Starlette runs a sync generator via
+    # iterate_in_threadpool, so a ContextVar set before the response is
+    # returned is not reliably the context this body executes in. Setting it
+    # here also resets it per stream, so a pooled thread cannot leak one
+    # request's model choice into the next.
+    use_model(model)
     try:
         state = _agent_graph().invoke(
             {
@@ -375,6 +418,11 @@ def _stream_answer(
             ],
             "resolved_question": result.resolved_question,
             "latency_ms": result.latency_ms,
+            # What actually answered, resolved — never the word "auto".
+            # Under a router or a provider fallback the served model differs
+            # from the requested one, and "which model wrote this?" has to be
+            # answerable or the picker is unfalsifiable.
+            "model": _answering_model(),
         },
     )
 
@@ -399,6 +447,15 @@ def chat_stream(
         )
 
     requested_agent = body.get("agent")
+    # Validated HERE, before the StreamingResponse exists: once a stream's
+    # headers are sent, a raise inside the generator can no longer produce a
+    # status code, so the caller would see a truncated 200 instead of a 400.
+    # A client-supplied model string is untrusted input like any other field —
+    # it must never reach an outbound call or a cache key unchecked.
+    model = body.get("model")
+    if not catalog.is_selectable(model):
+        raise HTTPException(status_code=400, detail="Unknown model")
+
     workspace_id = body.get("workspace_id")
     if workspace_id is not None:
         try:
@@ -419,6 +476,7 @@ def chat_stream(
             conversation_id,
             workspace_id=workspace_id,
             requested_agent=requested_agent,
+            model=model,
         ),
         media_type="text/event-stream",
     )

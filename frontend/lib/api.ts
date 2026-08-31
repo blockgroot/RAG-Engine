@@ -328,6 +328,12 @@ export interface SetupChatMessage {
   content: string;
 }
 
+export interface ModelChoice {
+  id: string;
+  label: string;
+  note: string;
+}
+
 export const api = {
   signup: (email: string, companyName: string) =>
     request<SignupResponse>("/auth/signup", {
@@ -460,6 +466,9 @@ export const api = {
     );
   },
 
+  chatModels: () =>
+    request<{ default: string; models: ModelChoice[] }>("/chat/models"),
+
   listWorkspaces: () => request<WorkspaceRecord[]>("/workspaces"),
   getWorkspace: (workspaceId: string) =>
     request<WorkspaceDetail>(`/workspaces/${workspaceId}`),
@@ -573,7 +582,8 @@ export const api = {
     provider: string,
     frequency: string,
     prompt: string,
-    workspaceId: string | null = null
+    workspaceId: string | null = null,
+    model: string | null = null
   ) =>
     request<SchedulerRecord>("/schedulers", {
       method: "POST",
@@ -582,11 +592,13 @@ export const api = {
         frequency,
         prompt,
         workspace_id: workspaceId,
+        // Omitted on "auto" so the request is identical to a pre-feature one.
+        ...(model && model !== "auto" ? { model } : {}),
       }),
     }),
   updateScheduler: (
     schedulerId: string,
-    changes: { frequency?: string; prompt?: string }
+    changes: { frequency?: string; prompt?: string; model?: string | null }
   ) =>
     request<SchedulerRecord>(`/schedulers/${schedulerId}`, {
       method: "PATCH",

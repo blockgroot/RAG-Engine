@@ -16,6 +16,9 @@ export interface ChatDonePayload {
   citations?: { content: string; reference: string; score: number | null }[];
   resolved_question: string | null;
   latency_ms: number | null;
+  /** The model that actually answered, resolved by the endpoint. Null on the
+   *  default path — there is nothing to disclose when nobody chose. */
+  model?: string | null;
 }
 
 export interface ChatStreamHandlers {
@@ -29,7 +32,8 @@ export async function streamChat(
   conversationId: string | null,
   handlers: ChatStreamHandlers,
   workspaceId?: string | null,
-  agent?: "policy" | "github" | "slack" | "linear" | "notion" | "google"
+  agent?: "policy" | "github" | "slack" | "linear" | "notion" | "google",
+  model?: string | null
 ): Promise<void> {
   let response: Response;
   try {
@@ -42,6 +46,9 @@ export async function streamChat(
         conversation_id: conversationId,
         ...(workspaceId ? { workspace_id: workspaceId } : {}),
         ...(agent && agent !== "policy" ? { agent } : {}),
+        // Omitted entirely on "auto" so the request is byte-identical to one
+        // sent before this feature existed.
+        ...(model && model !== "auto" ? { model } : {}),
       }),
     });
   } catch {

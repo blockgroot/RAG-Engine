@@ -26,7 +26,7 @@ from ..db.connection import get_connection
 COLUMNS = (
     "id::text, scheduler_id::text, org_id::text, user_id::text, provider, "
     "frequency, prompt, space_name, report_text, items, notes, "
-    "window_start, window_end, delivered_to, created_at"
+    "window_start, window_end, delivered_to, created_at, model"
 )
 
 
@@ -54,6 +54,9 @@ class Report:
     #: report itself is still readable — that is the point of storing it.
     delivered_to: str | None
     created_at: datetime
+    #: The model that generated this report. None = the deployment's default,
+    #: which is what every report written before Multi-Model Selection means.
+    model: str | None = None
 
 
 def _loads(value) -> list:
@@ -83,6 +86,7 @@ def row_to_report(row) -> Report:
         window_end=row[12],
         delivered_to=row[13],
         created_at=row[14],
+        model=row[15],
     )
 
 
@@ -100,6 +104,7 @@ def save_report(
     notes: list[str],
     window_start: datetime,
     window_end: datetime,
+    model: str | None = None,
 ) -> Report:
     """Persist one run's output. Called BEFORE the email is attempted.
 
@@ -113,8 +118,10 @@ def save_report(
             f"""
             INSERT INTO scheduler_reports
                 (scheduler_id, org_id, user_id, provider, frequency, prompt,
-                 space_name, report_text, items, notes, window_start, window_end)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s)
+                 space_name, report_text, items, notes, window_start,
+                 window_end, model)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s,
+                    %s, %s)
             RETURNING {COLUMNS}
             """,
             (
@@ -130,6 +137,7 @@ def save_report(
                 json.dumps(notes),
                 window_start,
                 window_end,
+                model,
             ),
         ).fetchone()
     return row_to_report(row)

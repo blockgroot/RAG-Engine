@@ -531,6 +531,14 @@ CREATE INDEX IF NOT EXISTS idx_schedulers_due ON schedulers (next_run_at) WHERE 
 ALTER TABLE schedulers ADD COLUMN IF NOT EXISTS workspace_id UUID
     REFERENCES workspaces (id) ON DELETE CASCADE;
 
+-- Multi-Model Selection: which model generates this scheduler's report.
+-- NULL = the deployment's configured default, which is what every existing
+-- row means and what an untouched picker sends. Validated against
+-- app/llm/catalog.py at the API edge, never trusted from a request body.
+-- Same ALTER-after-CREATE ordering rule as workspace_id above: on a fresh
+-- database this would fail if it ran before the table existed.
+ALTER TABLE schedulers ADD COLUMN IF NOT EXISTS model TEXT;
+
 -- One generated report, kept so the email can be a short "it's ready" note
 -- plus a link instead of a wall of plain text, and so a report survives a
 -- failed send (the run's work is no longer lost with the mail).
@@ -557,6 +565,13 @@ CREATE TABLE IF NOT EXISTS scheduler_reports (
     delivered_to TEXT,                     -- NULL until the mail is accepted
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- The model that actually produced this report, snapshotted for the same
+-- reason prompt/provider/space_name are: a reader comparing last month's
+-- report against this month's needs to know whether the MODEL changed, and
+-- re-resolving it from the scheduler would rewrite that history the moment
+-- someone switched their pick. NULL = generated on the configured default.
+ALTER TABLE scheduler_reports ADD COLUMN IF NOT EXISTS model TEXT;
 -- Every read is "this person's reports, newest first".
 CREATE INDEX IF NOT EXISTS idx_scheduler_reports_owner
     ON scheduler_reports (org_id, user_id, created_at DESC);

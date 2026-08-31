@@ -83,6 +83,8 @@ class OpenAICompatProvider(LLMProvider):
         api_key: str | None = None,
         base_url: str | None = None,
         timeout: float = DEFAULT_TIMEOUT,
+        extra_body: dict | None = None,
+        default_headers: dict | None = None,
     ) -> None:
         if not model:
             raise ConfigurationError("Missing required LLM configuration: LLM_MODEL")
@@ -95,8 +97,30 @@ class OpenAICompatProvider(LLMProvider):
         self.base_url = base_url
         self.timeout = timeout
         self.last_usage: TokenUsage | None = None
+        #: Non-OpenAI request fields merged into every call. Used for
+        #: OpenRouter's routing preferences (``provider.data_collection``,
+        #: ``require_parameters``) — they must ride on EVERY request rather
+        #: than an account-level setting, so a training provider can never be
+        #: routed to for one tenant's content.
+        self._extra_body = dict(extra_body) if extra_body else None
+        #: The model the endpoint said actually answered. With a router or a
+        #: provider fallback this differs from ``model``, and it is the only
+        #: honest thing to show a reader — "auto" is not an answer to "which
+        #: model wrote this?".
+        self.last_resolved_model: str | None = None
         # base_url=None makes the client use OpenAI's default endpoint.
-        self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+        self._client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            default_headers=default_headers or None,
+        )
+
+    def _with_extras(self, kwargs: dict) -> dict:
+        """Merge the per-provider ``extra_body`` into one request's kwargs."""
+        if self._extra_body:
+            kwargs["extra_body"] = {**self._extra_body, **kwargs.get("extra_body", {})}
+        return kwargs
 
     def generate(self, prompt: str, *, max_tokens: int | None = None) -> str:
         kwargs: dict = {
@@ -106,7 +130,7 @@ class OpenAICompatProvider(LLMProvider):
         if max_tokens is not None and max_tokens > 0:
             kwargs["max_tokens"] = max_tokens
         try:
-            response = self._client.chat.completions.create(**kwargs)
+            response = self._client.chat.completions.create(**self._with_extras(kwargs))
         except APITimeoutError as exc:
             raise LLMProviderError(
                 f"LLM request timed out after {self.timeout}s", cause=exc
@@ -127,6 +151,10 @@ class OpenAICompatProvider(LLMProvider):
 
         if not response.choices:
             raise LLMProviderError("LLM returned no choices in the response")
+
+        # Recorded before content handling so a resolved model is available
+        # even on a response we go on to reject as empty.
+        self.last_resolved_model = getattr(response, "model", None) or self.model
 
         usage = response.usage
         self.last_usage = TokenUsage(
@@ -156,7 +184,7 @@ class OpenAICompatProvider(LLMProvider):
             kwargs["timeout"] = timeout
 
         try:
-            response = self._client.chat.completions.create(**kwargs)
+            response = self._client.chat.completions.create(**self._with_extras(kwargs))
         except APITimeoutError as exc:
             raise LLMProviderError(
                 f"LLM tool request timed out after {timeout or self.timeout}s", cause=exc
@@ -177,6 +205,10 @@ class OpenAICompatProvider(LLMProvider):
 
         if not response.choices:
             raise LLMProviderError("LLM returned no choices in the response")
+
+        # Recorded before content handling so a resolved model is available
+        # even on a response we go on to reject as empty.
+        self.last_resolved_model = getattr(response, "model", None) or self.model
 
         usage = response.usage
         self.last_usage = TokenUsage(

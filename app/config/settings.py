@@ -125,6 +125,9 @@ DEFAULT_API_PORT = 8000
 
 DEFAULT_EMAIL_SENDER = "console"
 
+# OpenRouter's OpenAI-compatible endpoint (Multi-Model Selection).
+DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
 
 def _env_positive_int(name: str, default: int) -> int:
     raw = os.getenv(name)
@@ -162,6 +165,41 @@ class LLMSettings:
             api_key=os.getenv("LLM_API_KEY"),
             base_url=os.getenv("LLM_BASE_URL"),
             timeout=float(os.getenv("LLM_TIMEOUT") or DEFAULT_TIMEOUT),
+        )
+
+
+@dataclass(frozen=True)
+class OpenRouterSettings:
+    """Credentials for the user-selectable models (Multi-Model Selection).
+
+    Deliberately separate from ``LLMSettings`` rather than extra fields on it:
+    the deployment's default model and the models a member may *pick* are two
+    different things with two different endpoints and keys. Auto keeps using
+    ``LLMSettings``; only an explicit selection reaches OpenRouter, so a
+    deployment with no key here still runs exactly as it does today — the
+    picker is simply empty.
+    """
+
+    api_key: str | None
+    base_url: str = DEFAULT_OPENROUTER_BASE_URL
+    timeout: float = DEFAULT_TIMEOUT
+    #: Sent to OpenRouter for app attribution; optional, purely cosmetic.
+    referer: str | None = None
+    title: str | None = None
+
+    @property
+    def enabled(self) -> bool:
+        """No key = no selectable models. The dropdown hides itself."""
+        return bool(self.api_key)
+
+    @classmethod
+    def from_env(cls) -> "OpenRouterSettings":
+        return cls(
+            api_key=os.getenv("OPENROUTER_API_KEY") or None,
+            base_url=os.getenv("OPENROUTER_BASE_URL") or DEFAULT_OPENROUTER_BASE_URL,
+            timeout=float(os.getenv("OPENROUTER_TIMEOUT") or DEFAULT_TIMEOUT),
+            referer=os.getenv("OPENROUTER_REFERER") or None,
+            title=os.getenv("OPENROUTER_TITLE") or None,
         )
 
 
