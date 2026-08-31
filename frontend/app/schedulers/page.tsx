@@ -8,7 +8,6 @@ import { PageHeader } from "@/components/PageHeader";
 import { useMe } from "@/lib/useMe";
 import {
   api,
-  ModelChoice,
   ReportRow,
   SchedulableConnection,
   SchedulerRecord,
@@ -138,9 +137,6 @@ export default function SchedulersPage() {
   const [spaceId, setSpaceId] = useState("");
   const [provider, setProvider] = useState("");
   const [frequency, setFrequency] = useState("weekly");
-  const [models, setModels] = useState<ModelChoice[]>([]);
-  // "auto" = the deployment's configured default model.
-  const [model, setModel] = useState("auto");
   const [prompt, setPrompt] = useState("");
   const [creating, setCreating] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -173,15 +169,6 @@ export default function SchedulersPage() {
     setListMessage(ok);
     if (ok) clearTimer.current = setTimeout(() => setListMessage(null), 4000);
   }
-
-  useEffect(() => {
-    // A picker is an enhancement — if the catalog cannot be read, scheduling
-    // still works on the default model. Never surfaced as a form error.
-    api
-      .chatModels()
-      .then(({ models: available }) => setModels(available))
-      .catch(() => undefined);
-  }, []);
 
   useEffect(() => {
     if (me) {
@@ -257,8 +244,7 @@ export default function SchedulersPage() {
         provider,
         frequency,
         prompt.trim(),
-        selectedSpace.id,
-        model
+        selectedSpace.id
       );
       // Reset every slot, not just the prompt: the form is the "add another"
       // surface, and a half-filled one reads as "this is still being edited"
@@ -499,27 +485,6 @@ export default function SchedulersPage() {
                       <option value="weekly">Weekly</option>
                       <option value="monthly">Monthly</option>
                     </select>
-                    {/* Which model writes the report. Sits with the cadence
-                        because both describe HOW the report is produced, not
-                        what it covers. Hidden entirely when the deployment has
-                        no OpenRouter key — offering choices that all silently
-                        fall back to the default would be a lie. */}
-                    {models.length > 0 && (
-                      <select
-                        className="input"
-                        value={model}
-                        onChange={(e) => setModel(e.target.value)}
-                        aria-label="Which model should write it?"
-                        disabled={creating}
-                      >
-                        <option value="auto">Auto</option>
-                        {models.map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.label}
-                          </option>
-                        ))}
-                      </select>
-                    )}
                     <button
                       className="button"
                       type="submit"

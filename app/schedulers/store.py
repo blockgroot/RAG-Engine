@@ -34,9 +34,6 @@ FREQUENCIES = ("weekly", "monthly")
 _FREQUENCY_INTERVAL = {"weekly": "7 days", "monthly": "1 month"}
 
 
-_UNSET = object()  # "argument omitted" vs an explicit None ("use the default")
-
-
 class SchedulerError(Exception):
     """Invalid scheduler input (unsupported provider or frequency)."""
 
@@ -64,16 +61,12 @@ class Scheduler:
     #: positionally; ``row_to_scheduler`` maps by keyword, so this says nothing
     #: about column order.
     workspace_id: str | None = None
-    #: Which model generates this report. NULL/None = the deployment's
-    #: configured default (Multi-Model Selection), which is what every
-    #: pre-existing row means.
-    model: str | None = None
 
 
 COLUMNS = (
     "id::text, org_id::text, user_id::text, connection_id::text, "
     "workspace_id::text, provider, frequency, prompt, status, last_run_at, "
-    "next_run_at, attempts, last_error, created_at, model"
+    "next_run_at, attempts, last_error, created_at"
 )
 
 
@@ -93,7 +86,6 @@ def row_to_scheduler(row) -> Scheduler:
         attempts=row[11] or 0,
         last_error=row[12],
         created_at=row[13],
-        model=row[14],
     )
 
 
@@ -115,7 +107,6 @@ def create_scheduler(
     frequency: str,
     prompt: str,
     workspace_id: str | None = None,
-    model: str | None = None,
 ) -> Scheduler:
     """Create a scheduler, first run one full interval from now.
 
@@ -145,8 +136,8 @@ def create_scheduler(
             f"""
             INSERT INTO schedulers
                 (org_id, user_id, connection_id, workspace_id, provider,
-                 frequency, prompt, model, next_run_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now() + %s::interval)
+                 frequency, prompt, next_run_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, now() + %s::interval)
             RETURNING {COLUMNS}
             """,
             (
@@ -157,7 +148,6 @@ def create_scheduler(
                 provider,
                 frequency,
                 prompt,
-                model,
                 interval,
             ),
         ).fetchone()
@@ -192,7 +182,6 @@ def update_scheduler(
     *,
     frequency: str | None = None,
     prompt: str | None = None,
-    model: str | None = _UNSET,  # type: ignore[assignment]
 ) -> Scheduler | None:
     """Edit a scheduler's cadence and/or prompt. Returns None if not theirs.
 
@@ -202,12 +191,6 @@ def update_scheduler(
     """
     sets: list[str] = []
     params: list[object] = []
-    # Sentinel, not None: None is a MEANING here ("back to the default
-    # model"), so an omitted argument and an explicit reset must be
-    # distinguishable — otherwise the picker could never be set back to Auto.
-    if model is not _UNSET:
-        sets.append("model = %s")
-        params.append(model)
     if prompt is not None:
         if not prompt.strip():
             raise SchedulerError("A scheduler needs a non-empty prompt.")

@@ -177,11 +177,13 @@ def test_aux_provider_is_not_routable():
 # --------------------------------------------------------------------------
 # Schedulers — the report surface
 # --------------------------------------------------------------------------
-def test_scheduler_run_applies_its_own_model(monkeypatch):
-    """A worker runs schedulers back to back in one long-lived process.
+def test_scheduler_reports_always_use_the_configured_model(monkeypatch):
+    """A scheduled run is UNATTENDED, so it never follows a model choice.
 
-    If the model were applied once at startup rather than per run, the first
-    scheduler's pick would silently generate every later scheduler's report.
+    A chat answer from a flaky free model costs one retry the person can see.
+    A failed report burns retry attempts and is noticed only when the mail
+    never arrives — so reports are pinned even if something upstream left a
+    selection set in this context.
     """
     from datetime import datetime, timezone
 
@@ -194,23 +196,19 @@ def test_scheduler_run_applies_its_own_model(monkeypatch):
     class _Probe:
         def generate(self, prompt, **kwargs):
             seen.append(selected_model())
-            return "MODE: A\n\nreport"
+            return "report"
 
-    def _scheduler(model: str | None) -> Scheduler:
-        now = datetime.now(timezone.utc)
-        return Scheduler(
-            id="s", org_id="o", user_id="u", connection_id="c", provider="slack",
-            frequency="weekly", prompt="p", status="active", last_run_at=now,
-            next_run_at=now, attempts=0, last_error=None, created_at=now,
-            model=model,
-        )
-
+    now = datetime.now(timezone.utc)
+    scheduler = Scheduler(
+        id="s", org_id="o", user_id="u", connection_id="c", provider="slack",
+        frequency="weekly", prompt="p", status="active", last_run_at=now,
+        next_run_at=now, attempts=0, last_error=None, created_at=now,
+    )
     monkeypatch.setattr(
         runner, "get_user", lambda _: type("U", (), {"email": "a@b.c"})()
     )
     monkeypatch.setattr(
-        runner,
-        "fetch_activity",
+        runner, "fetch_activity",
         lambda *a, **k: ActivityDigest(items=(ActivityItem(summary="x"),), text="x"),
     )
     monkeypatch.setattr(
@@ -220,13 +218,11 @@ def test_scheduler_run_applies_its_own_model(monkeypatch):
         runner, "send_scheduler_report_email_safe", lambda *a, **k: False
     )
 
-    picked = catalog.MODELS[0].id
-    runner.run_scheduler_once(_scheduler(picked), llm=_Probe())
-    runner.run_scheduler_once(_scheduler(None), llm=_Probe())
+    # Deliberately hostile: a selection is live when the run starts.
+    use_model(catalog.MODELS[0].id)
+    runner.run_scheduler_once(scheduler, llm=_Probe())
 
-    assert seen == [picked, None], (
-        "each run must use its own scheduler's model, not the previous one's"
-    )
+    assert seen == [None], "a report must generate on the configured model"
 
 
 # --------------------------------------------------------------------------
