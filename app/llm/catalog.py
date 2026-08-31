@@ -35,33 +35,55 @@ class ModelChoice:
     note: str = ""
 
 
-# Free-tier OpenRouter ids. Kept small on purpose (see module docstring).
-# Every entry must pass scripts/verify_openrouter_models.py before it lands.
+# Free-tier OpenRouter ids, each VERIFIED against a live key by
+# scripts/verify_openrouter_models.py: non-empty content, a parseable
+# ``MODE: A|B|C`` tag, and a real tool-call round-trip.
+#
+# The first five ids tried here (deepseek-chat-v3.1:free, llama-3.3-70b:free,
+# gemini-2.0-flash-exp:free, mistral-small-3.2:free, qwen3-235b:free) were all
+# 404 — "unavailable for free, use the paid slug". That is the churn this
+# module's docstring predicts, and it is why the list is verified rather than
+# copied from a blog post. Re-run the script when the picker starts failing.
+#
+# Two more classes of exclusion, both discovered the same way:
+#   - nvidia/* and poolside/* return "No endpoints found matching your data
+#     policy (Free model training)" — every free provider for them retains or
+#     trains on prompts, so ``data_collection: "deny"`` correctly refuses. They
+#     CANNOT be offered without opting tenant content into training.
+#   - z-ai/glm-5.2 and google/gemma-4-* returned provider 429s on every attempt
+#     during testing. Not a capability failure; retry before adding them.
+#   - minimax/minimax-m3 and minimax/minimax-m2.7 answer and tag correctly but
+#     their tool calls are INTERMITTENT — one probe returned tool calls, the
+#     next returned no choices at all. Excluded on purpose: GitHubAgent grounds
+#     structurally, so a model whose tool calling works most of the time
+#     answers some GitHub questions with the fixed fallback and looks broken
+#     rather than rate-limited. "Usually supports tools" is not support.
+#
+# Four entries, not five: a verified list is the point, and padding it with a
+# model that fails a probe would defeat the reason this file is hardcoded.
 MODELS: tuple[ModelChoice, ...] = (
     ModelChoice(
-        id="deepseek/deepseek-chat-v3.1:free",
-        label="DeepSeek V3.1",
-        note="Strong general reasoning, long context.",
+        id="dots-studio/dots-3-note-preview:free",
+        label="Dots 3 Note",
+        note="512K context, strong on long-form summarising.",
     ),
     ModelChoice(
-        id="meta-llama/llama-3.3-70b-instruct:free",
-        label="Llama 3.3 70B",
-        note="Open weights, reliable instruction following.",
+        id="inclusionai/ling-3.0-flash-fin:free",
+        label="Ling 3.0 Flash",
+        note="Fast, 262K context.",
     ),
     ModelChoice(
-        id="google/gemini-2.0-flash-exp:free",
-        label="Gemini 2.0 Flash",
-        note="Fast, good on long retrieved context.",
+        id="cohere/north-mini-code:free",
+        label="Cohere North Mini",
+        note="Low latency, reliable tool calling.",
     ),
     ModelChoice(
-        id="mistralai/mistral-small-3.2-24b-instruct:free",
-        label="Mistral Small 3.2",
-        note="Low latency, solid function calling.",
-    ),
-    ModelChoice(
-        id="qwen/qwen3-235b-a22b:free",
-        label="Qwen3 235B",
-        note="Largest of the five; best on multi-part questions.",
+        id="openrouter/free",
+        label="Any available",
+        note=(
+            "Routes to whichever free model is up and supports what the "
+            "question needs. Use when a specific pick is rate-limited."
+        ),
     ),
 )
 
