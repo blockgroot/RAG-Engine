@@ -95,20 +95,22 @@ MODELS: tuple[ModelChoice, ...] = (
     ),
 )
 
-#: Groq-hosted candidates. Marked UNVERIFIED: unlike the OpenRouter entries
-#: above, these have not been through scripts/verify_models.py
-#: against a live key, so they are not yet trusted to survive the grounded
-#: prompt, the answer-token cap, or a tool call. Run the script with
-#: GROQ_API_KEY set and delete whatever fails — shipping unverified ids is
-#: exactly the mistake that put five dead models in the first version of this
-#: file.
-GROQ_CANDIDATES: tuple[ModelChoice, ...] = (
-    ModelChoice(
-        id="llama-3.3-70b-versatile",
-        label="Llama 3.3 70B",
-        note="Fast on Groq's hardware, reliable instruction following.",
-        backend=BACKEND_GROQ,
-    ),
+#: Groq-hosted models, each VERIFIED by scripts/verify_models.py against a
+#: live key: grounds (Mode A), refuses VERBATIM on unanswerable context,
+#: resists an injection planted in retrieved content, and makes a real tool
+#: call — all under production's RAG_MAX_ANSWER_TOKENS cap.
+#:
+#: Rejected here, and why (re-probe before re-adding any of them):
+#:   - llama-3.3-70b-versatile, llama-3.1-8b-instant: 404, no longer served.
+#:     They were my guess from documentation, which is exactly the mistake
+#:     that put five dead OpenRouter ids in the first version of this file.
+#:   - qwen/qwen3.6-27b: refuses and resists correctly but emits NO MODE tag,
+#:     so the groundedness audit would silently never run for it.
+#:   - groq/compound-mini: 400 "`tool calling` is not supported" — it is an
+#:     agentic system with its own built-in tools, so GitHubAgent would return
+#:     the fixed fallback for every question.
+#:   - whisper-*/orpheus-*/prompt-guard-*: not chat models.
+GROQ_MODELS: tuple[ModelChoice, ...] = (
     ModelChoice(
         id="openai/gpt-oss-120b",
         label="GPT-OSS 120B",
@@ -116,14 +118,20 @@ GROQ_CANDIDATES: tuple[ModelChoice, ...] = (
         backend=BACKEND_GROQ,
     ),
     ModelChoice(
-        id="llama-3.1-8b-instant",
-        label="Llama 3.1 8B",
-        note="Lowest latency of the set.",
+        id="openai/gpt-oss-20b",
+        label="GPT-OSS 20B",
+        note="Much faster, same family — a good default for quick questions.",
+        backend=BACKEND_GROQ,
+    ),
+    ModelChoice(
+        id="qwen/qwen3.8-27b",
+        label="Qwen 3.8 27B",
+        note="Strong general reasoning at low latency.",
         backend=BACKEND_GROQ,
     ),
 )
 
-ALL_MODELS: tuple[ModelChoice, ...] = MODELS + GROQ_CANDIDATES
+ALL_MODELS: tuple[ModelChoice, ...] = MODELS + GROQ_MODELS
 
 _BY_ID = {m.id: m for m in ALL_MODELS}
 

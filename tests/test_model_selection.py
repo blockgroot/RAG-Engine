@@ -426,16 +426,16 @@ def _routed(openrouter_key=None, groq_key=None):
 
 def test_a_model_is_sent_to_its_own_backend():
     """The id alone cannot say where to send it — both hosts serve Llamas."""
-    from app.llm.catalog import BACKEND_GROQ, GROQ_CANDIDATES, MODELS
+    from app.llm.catalog import BACKEND_GROQ, GROQ_MODELS, MODELS
 
     provider = _routed(openrouter_key="or-key", groq_key="groq-key")
 
     use_model(MODELS[0].id)
     assert "openrouter.ai" in provider.active().base_url
 
-    use_model(GROQ_CANDIDATES[0].id)
+    use_model(GROQ_MODELS[0].id)
     assert "groq.com" in provider.active().base_url
-    assert GROQ_CANDIDATES[0].backend == BACKEND_GROQ
+    assert GROQ_MODELS[0].backend == BACKEND_GROQ
 
 
 def test_openrouter_routing_prefs_are_never_sent_to_groq():
@@ -445,7 +445,7 @@ def test_openrouter_routing_prefs_are_never_sent_to_groq():
     between and no data policy to negotiate. Sending them is at best ignored
     and at worst a 400 on a stricter endpoint.
     """
-    from app.llm.catalog import GROQ_CANDIDATES, MODELS
+    from app.llm.catalog import GROQ_MODELS, MODELS
 
     provider = _routed(openrouter_key="or-key", groq_key="groq-key")
 
@@ -453,16 +453,16 @@ def test_openrouter_routing_prefs_are_never_sent_to_groq():
     assert provider.active()._extra_body is not None
     assert provider.active()._extra_body["provider"]["data_collection"] == "deny"
 
-    use_model(GROQ_CANDIDATES[0].id)
+    use_model(GROQ_MODELS[0].id)
     assert provider.active()._extra_body is None
 
 
 def test_a_backend_without_a_key_falls_back_rather_than_erroring():
     """Offering a model whose backend is unconfigured must not break chat."""
-    from app.llm.catalog import GROQ_CANDIDATES
+    from app.llm.catalog import GROQ_MODELS
 
     provider = _routed(openrouter_key="or-key", groq_key=None)
-    use_model(GROQ_CANDIDATES[0].id)
+    use_model(GROQ_MODELS[0].id)
     assert provider.generate("hi") == "answered by default-model"
 
 

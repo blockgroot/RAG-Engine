@@ -185,9 +185,18 @@ dropdown is byte-identical to pre-feature behaviour.
   privacy toggle (one global switch governing every tenant, silently wrong the
   moment someone edits a dashboard). `require_parameters=true` makes tool
   support a server-side guarantee rather than a hand-kept flag.
+- **Two backends, not one: OpenRouter AND Groq** (`catalog.ModelChoice.backend`).
+  Quota is the binding constraint — OpenRouter free is 50 req/day account-wide,
+  Groq's is thousands — so drawing from both means one being exhausted does not
+  empty the picker. `provider`/`reasoning` are OpenRouter request *extensions*
+  and are never sent to Groq. A model whose backend has no key is not offered,
+  never silently answered on the default.
 - **~5 hardcoded models, admitted by `scripts/verify_models.py`** —
   not a live `/models` fetch. A model id is not a capability, and free models
-  rotate out without warning.
+  rotate out without warning: all 5 originally catalogued OpenRouter ids and 2
+  of 3 guessed Groq ids were already dead when first probed. The test sends
+  production's `RAG_MAX_ANSWER_TOKENS`, without which a reasoning model passes
+  unbounded and then returns EMPTY content in production.
 - The `done` SSE event and `scheduler_reports.model` report the **resolved**
   model (`response.model`), never the word "auto" — under a provider fallback
   the served model differs from the requested one, and only the former is a
