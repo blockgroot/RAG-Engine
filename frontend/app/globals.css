@@ -696,6 +696,36 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 .chat-composer-send:hover:not(:disabled) { transform: scale(1.05); filter: brightness(1.05); }
 .chat-composer-send:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* Model picker. A native <select> on purpose: free keyboard navigation, free
+   mobile behaviour, free accessibility, and no dependency — the same reason
+   this stylesheet has no UI kit behind it. */
+.composer-model {
+  flex: none;
+  max-width: 9.5rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--surface);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 0.82rem;
+  padding: 0.4rem 0.55rem;
+  cursor: pointer;
+  transition: color 0.2s var(--ease), border-color 0.2s var(--ease);
+}
+.composer-model:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+.composer-model:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* "Answered by X" — deliberately quiet. It is provenance, not a headline. */
+.chat-model-tag {
+  display: block;
+  margin-top: 0.5rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
 .chat-bubble {
   border-radius: calc(var(--radius) + 2px);
   padding: 1rem 1.15rem;

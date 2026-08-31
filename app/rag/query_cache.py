@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 from ..config.settings import QueryCacheSettings
 from ..db.connection import get_connection
+from ..llm.routed import selected_model
 from ..vectorstore.base import DateRange, RetrievedChunk
 
 
@@ -50,6 +51,17 @@ def _question_hash(
         key = f"{key}|dr:{date_range.after}:{date_range.before}"
     if tags:
         key = f"{key}|tags:{','.join(sorted(tags))}"
+    # The selected model follows the identical reasoning, and is the one
+    # ingredient read from the request context rather than passed in: the
+    # choice is already request-scoped (see app/llm/routed.py), and reading it
+    # here means a future call site cannot forget to fold it in. Getting this
+    # wrong is not a slow cache, it is a WRONG answer — one member's Gemini
+    # answer served verbatim to another member who explicitly asked on a
+    # different model. Appended only when set, so every pre-existing key for an
+    # un-overridden request is byte-identical to before.
+    model = selected_model()
+    if model is not None:
+        key = f"{key}|model:{model}"
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 

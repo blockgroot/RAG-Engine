@@ -9,6 +9,7 @@ Public API:
 from .base import LLMProvider, ChatResult, ToolCall
 from .openai_provider import OpenAICompatProvider
 from .factory import build_aux_llm_provider, build_llm_provider
+from .routed import RoutedLLMProvider, selected_model, use_model
 
 __all__ = [
     "LLMProvider",
@@ -17,4 +18,7 @@ __all__ = [
     "OpenAICompatProvider",
     "build_llm_provider",
     "build_aux_llm_provider",
+    "RoutedLLMProvider",
+    "use_model",
+    "selected_model",
 ]

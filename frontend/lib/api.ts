@@ -328,6 +328,12 @@ export interface SetupChatMessage {
   content: string;
 }
 
+export interface ModelChoice {
+  id: string;
+  label: string;
+  note: string;
+}
+
 export const api = {
   signup: (email: string, companyName: string) =>
     request<SignupResponse>("/auth/signup", {
@@ -459,6 +465,9 @@ export const api = {
       `/chat/suggestions?${params.toString()}`
     );
   },
+
+  chatModels: () =>
+    request<{ default: string; models: ModelChoice[] }>("/chat/models"),
 
   listWorkspaces: () => request<WorkspaceRecord[]>("/workspaces"),
   getWorkspace: (workspaceId: string) =>

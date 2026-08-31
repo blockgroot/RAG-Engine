@@ -11,7 +11,8 @@ export interface Message {
 
 /**
  * Chat bubble for Ask. Shows the answer plus a small provenance pill
- * (policy vs web vs GitHub) when the stream finishes.
+ * (policy vs web vs GitHub) when the stream finishes, and — when the member
+ * picked a model — which model actually answered.
  */
 export function ChatMessageView({ message }: { message: Message }) {
   if (message.role === "user") {
@@ -36,6 +37,12 @@ export function ChatMessageView({ message }: { message: Message }) {
         <>
           <AnswerText text={message.text} />
           {message.streaming && <span className="chat-stream-caret" aria-hidden />}
+          {/* Only when a model was actually selected. On the default path the
+              backend sends null, and naming the deployment's model to every
+              member would be noise, not provenance. */}
+          {message.done?.model && (
+            <span className="chat-model-tag">Answered by {message.done.model}</span>
+          )}
         </>
       )}
     </div>
