@@ -51,6 +51,16 @@ services:
       - key: LLM_TIMEOUT
         value: "45"
 
+      # -- Multi-Model Selection (optional; unset = picker hidden, LLM_* only)
+      # OpenRouter is a SECOND endpoint used only when a member picks a model.
+      # Free tier is 50 req/day account-wide, which is why Auto stays on LLM_*.
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_BASE_URL
+        value: https://openrouter.ai/api/v1
+      - key: OPENROUTER_TIMEOUT
+        value: "45"
+
       # -- Embedding (remote — see .env.example) --
       - key: EMBEDDING_BACKEND
         value: remote
