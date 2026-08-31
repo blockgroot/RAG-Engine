@@ -227,3 +227,86 @@ def test_scheduler_run_applies_its_own_model(monkeypatch):
     assert seen == [picked, None], (
         "each run must use its own scheduler's model, not the previous one's"
     )
+
+
+# --------------------------------------------------------------------------
+# Reasoning-token starvation (production incident)
+# --------------------------------------------------------------------------
+class _EmptyContentClient:
+    """An endpoint that spends the whole token cap on internal reasoning.
+
+    This is what a reasoning model actually returns: content is None,
+    finish_reason is "length", and completion_tokens equals the cap. Note
+    ``reasoning: {"exclude": True}`` does NOT prevent it — that strips
+    reasoning from the RESPONSE while the tokens are still generated and still
+    counted against max_tokens.
+    """
+
+    def __init__(self) -> None:
+        self.chat = self
+
+    @property
+    def completions(self):
+        return self
+
+    def create(self, **kwargs):
+        cap = kwargs.get("max_tokens") or 0
+
+        class _Msg:
+            content = None
+            tool_calls = None
+
+        class _Choice:
+            message = _Msg()
+            finish_reason = "length"
+
+        class _Usage:
+            prompt_tokens = 2300
+            completion_tokens = cap
+
+        class _Resp:
+            choices = [_Choice()]
+            usage = _Usage()
+            model = "some/reasoning-model:free"
+
+        return _Resp()
+
+
+def test_empty_content_error_names_the_model_and_the_cause():
+    """The bare message "empty message content" cost a debugging session.
+
+    It said nothing about WHICH of the selectable models failed or WHY, so the
+    log was indistinguishable from a dead endpoint. The message must carry
+    enough to diagnose it from the log alone.
+    """
+    from app.core.exceptions import LLMProviderError
+    from app.llm.openai_provider import OpenAICompatProvider
+
+    provider = OpenAICompatProvider(model="some/reasoning-model:free", api_key="k")
+    provider._client = _EmptyContentClient()
+
+    with pytest.raises(LLMProviderError) as exc:
+        provider.generate("a grounded prompt", max_tokens=700)
+
+    message = str(exc.value)
+    assert "some/reasoning-model:free" in message, "must name the model"
+    assert "finish_reason=length" in message, "must say why it was empty"
+    assert "completion_tokens=700" in message, "must show the cap was consumed"
+    assert "reasoning" in message.lower(), "must point at the actual cause"
+
+
+def test_no_catalogued_model_is_a_known_reasoning_model():
+    """Reasoning models cannot work under RAG_MAX_ANSWER_TOKENS=700.
+
+    They return empty content, which is a hard LLMProviderError — chat shows an
+    error instead of an answer. Verified in production, so these ids stay out
+    until the admission test proves otherwise.
+    """
+    starved = {
+        "dots-studio/dots-3-note-preview:free",
+        "openrouter/free",  # routes to reasoning models at random
+    }
+    offered = {m.id for m in catalog.MODELS}
+    assert not (offered & starved), (
+        f"catalogued model(s) known to starve on the answer cap: {offered & starved}"
+    )
