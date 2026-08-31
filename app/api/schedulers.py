@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from ..db.connection import get_connection
+from ..llm import catalog
 from ..schedulers import reports as sched_reports
 from ..schedulers import store as sched_store
 from ..schedulers.prompts import CREATE_SCHEDULER_TOOL, build_setup_system_prompt
@@ -57,6 +58,8 @@ def _payload(scheduler, workspace_names: dict[str, str] | None = None) -> dict:
         "next_run_at": scheduler.next_run_at,
         "last_error": scheduler.last_error,
         "created_at": scheduler.created_at,
+        # None = the deployment's default model (Multi-Model Selection).
+        "model": scheduler.model,
     }
 
 
@@ -283,6 +286,8 @@ class CreateSchedulerRequest(BaseModel):
     prompt: str
     #: None = the org-wide connection; a workspace id = that space's own.
     workspace_id: str | None = None
+    #: None/"auto" = the deployment's default model.
+    model: str | None = None
 
 
 @router.post("", status_code=201)
@@ -297,6 +302,7 @@ def create(
             body.frequency,
             body.prompt,
             workspace_id=body.workspace_id,
+            model=body.model,
         ),
         _workspace_names(session.org_id, session.user_id),
     )
@@ -315,6 +321,7 @@ def _create_scheduler_checked(
     frequency: str,
     prompt: str,
     workspace_id: str | None = None,
+    model: str | None = None,
 ):
     """Validate then create. Shared by the REST route and the chat flow.
 
@@ -324,6 +331,11 @@ def _create_scheduler_checked(
     provider would reach the table.
     """
     prompt = bounded(prompt.strip(), field="prompt", limit=MAX_PROMPT_CHARS)
+    # Untrusted like every other field here — and this one ends up as an
+    # outbound model id, so an uncatalogued value must never reach the table.
+    if not catalog.is_selectable(model):
+        raise HTTPException(status_code=400, detail="Unknown model")
+    model = catalog.normalize(model)
     if frequency not in FREQUENCIES:
         raise HTTPException(
             status_code=400,
@@ -393,6 +405,10 @@ def get_my_report(report_id: str, session: SessionClaims = Depends(get_session))
     return {
         **_report_row(report),
         "report_text": report.report_text,
+        # Snapshotted at generation time, not resolved now: the reader needs
+        # to know which model wrote THIS report, even after the scheduler's
+        # pick has since changed. None = the deployment's default.
+        "model": report.model,
         # Rendered by the page from this structured data — the model never
         # wrote a URL, so none can be invented, dropped, or mangled.
         "items": report.items,
@@ -403,6 +419,9 @@ def get_my_report(report_id: str, session: SessionClaims = Depends(get_session))
 class UpdateSchedulerRequest(BaseModel):
     frequency: str | None = None
     prompt: str | None = None
+    #: "auto" resets to the default; omitted leaves the current pick alone.
+    #: The two are different, so this cannot be a plain optional None.
+    model: str | None = None
 
 
 @router.patch("/{scheduler_id}")
@@ -418,6 +437,12 @@ def update(
     prompt = body.prompt
     if prompt is not None:
         prompt = bounded(prompt.strip(), field="prompt", limit=MAX_PROMPT_CHARS)
+    if not catalog.is_selectable(body.model):
+        raise HTTPException(status_code=400, detail="Unknown model")
+    # A body that omits "model" leaves the current pick alone; one that sends
+    # "auto" resets to the default. Pydantic collapses both to None, so the
+    # raw body is what distinguishes them.
+    model_fields = body.model_fields_set
     try:
         updated = sched_store.update_scheduler(
             session.org_id,
@@ -425,6 +450,11 @@ def update(
             scheduler_id,
             frequency=body.frequency,
             prompt=prompt,
+            **(
+                {"model": catalog.normalize(body.model)}
+                if "model" in model_fields
+                else {}
+            ),
         )
     except SchedulerError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -454,6 +484,13 @@ class SetupMessage(BaseModel):
 
 class SetupChatRequest(BaseModel):
     messages: list[SetupMessage]
+    #: Which model should generate the reports this conversation creates.
+    #: A UI field, deliberately NOT a fourth argument on create_scheduler:
+    #: a model asked to name a model will confidently invent an id, and the
+    #: three slots the tool does fill are already validated for exactly that
+    #: reason. The setup conversation itself still runs on the aux model —
+    #: it is slot-filling, not the report.
+    model: str | None = None
 
 
 @router.post("/setup-chat")
@@ -546,5 +583,6 @@ def setup_chat(
         str(arguments.get("provider") or ""),
         str(arguments.get("frequency") or ""),
         str(arguments.get("prompt") or ""),
+        model=body.model,
     )
     return {"done": True, "scheduler": _payload(scheduler)}

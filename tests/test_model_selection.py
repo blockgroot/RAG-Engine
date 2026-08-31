@@ -172,3 +172,58 @@ def test_aux_provider_is_not_routable():
     import app.llm.factory as factory_module
     source = __import__("inspect").getsource(factory_module.build_aux_llm_provider)
     assert "RoutedLLMProvider" not in source
+
+
+# --------------------------------------------------------------------------
+# Schedulers — the report surface
+# --------------------------------------------------------------------------
+def test_scheduler_run_applies_its_own_model(monkeypatch):
+    """A worker runs schedulers back to back in one long-lived process.
+
+    If the model were applied once at startup rather than per run, the first
+    scheduler's pick would silently generate every later scheduler's report.
+    """
+    from datetime import datetime, timezone
+
+    from app.schedulers import runner
+    from app.schedulers.activity import ActivityDigest, ActivityItem
+    from app.schedulers.store import Scheduler
+
+    seen: list[str | None] = []
+
+    class _Probe:
+        def generate(self, prompt, **kwargs):
+            seen.append(selected_model())
+            return "MODE: A\n\nreport"
+
+    def _scheduler(model: str | None) -> Scheduler:
+        now = datetime.now(timezone.utc)
+        return Scheduler(
+            id="s", org_id="o", user_id="u", connection_id="c", provider="slack",
+            frequency="weekly", prompt="p", status="active", last_run_at=now,
+            next_run_at=now, attempts=0, last_error=None, created_at=now,
+            model=model,
+        )
+
+    monkeypatch.setattr(
+        runner, "get_user", lambda _: type("U", (), {"email": "a@b.c"})()
+    )
+    monkeypatch.setattr(
+        runner,
+        "fetch_activity",
+        lambda *a, **k: ActivityDigest(items=(ActivityItem(summary="x"),), text="x"),
+    )
+    monkeypatch.setattr(
+        runner.reports, "save_report", lambda **kw: type("R", (), {"id": "r"})()
+    )
+    monkeypatch.setattr(
+        runner, "send_scheduler_report_email_safe", lambda *a, **k: False
+    )
+
+    picked = catalog.MODELS[0].id
+    runner.run_scheduler_once(_scheduler(picked), llm=_Probe())
+    runner.run_scheduler_once(_scheduler(None), llm=_Probe())
+
+    assert seen == [picked, None], (
+        "each run must use its own scheduler's model, not the previous one's"
+    )

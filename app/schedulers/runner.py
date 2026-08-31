@@ -31,6 +31,7 @@ from ..auth.users import get_user
 from ..config.settings import ApiSettings
 from ..core.exceptions import ConfigurationError
 from ..llm import build_llm_provider
+from ..llm.routed import answering_model, use_model
 from ..llm.base import LLMProvider
 from ..workspaces.store import get_workspace_name
 from . import reports
@@ -85,6 +86,12 @@ def run_scheduler_once(
     Raises on a fetch or LLM failure so the caller can record it; never
     raises for a mail problem (see the module docstring).
     """
+    # The scheduler's own model choice, applied for this run only. The worker
+    # is a long-lived process running one scheduler after another, so this must
+    # be set per run — not once at startup — or the first scheduler's pick
+    # would silently generate every later scheduler's report.
+    use_model(scheduler.model)
+
     user = get_user(scheduler.user_id)
     if user is None or not user.email:
         # The owning user was deleted between claim and run. Not retryable —
@@ -150,6 +157,13 @@ def run_scheduler_once(
         notes=list(digest.notes),
         window_start=since,
         window_end=window_end,
+        # Snapshotted for the same reason prompt/provider/space_name are: a
+        # reader comparing two months of reports needs to see whether the
+        # MODEL changed, and re-resolving it from the scheduler would rewrite
+        # that history the moment someone switched their pick. Prefer what the
+        # endpoint reported over what was requested — under a provider
+        # fallback they differ, and only the former is a fact.
+        model=answering_model() or scheduler.model,
     )
 
     delivered = send_scheduler_report_email_safe(
