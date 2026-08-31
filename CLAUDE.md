@@ -185,7 +185,7 @@ dropdown is byte-identical to pre-feature behaviour.
   privacy toggle (one global switch governing every tenant, silently wrong the
   moment someone edits a dashboard). `require_parameters=true` makes tool
   support a server-side guarantee rather than a hand-kept flag.
-- **~5 hardcoded models, admitted by `scripts/verify_openrouter_models.py`** —
+- **~5 hardcoded models, admitted by `scripts/verify_models.py`** —
   not a live `/models` fetch. A model id is not a capability, and free models
   rotate out without warning.
 - The `done` SSE event and `scheduler_reports.model` report the **resolved**
@@ -409,7 +409,7 @@ Selection (OpenRouter, ~5 models, per-request routing).
   `GITHUB_APP_PRIVATE_KEY`, `OPENROUTER_API_KEY`) are a config surface, not
   provisioned.
 - **The 5 catalogued models are UNVERIFIED against a live key** — run
-  `scripts/verify_openrouter_models.py` before trusting the picker; a model
+  `scripts/verify_models.py` before trusting the picker; a model
   that fails the MODE-tag check must be replaced, not shipped.
 - Validate the 0.35 gate and 0.72 reuse threshold against production
   `rag.query_signals` logs rather than hand-measured examples.

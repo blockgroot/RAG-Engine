@@ -409,3 +409,78 @@ def test_ingestion_and_setup_chat_use_the_unrouted_aux_provider():
     assert "build_llm_provider" not in inspect.getsource(ingest), (
         "ingestion must use the aux (unrouted) provider only"
     )
+
+
+# --------------------------------------------------------------------------
+# Multiple backends (OpenRouter + Groq)
+# --------------------------------------------------------------------------
+def _routed(openrouter_key=None, groq_key=None):
+    from app.config.settings import GroqSettings, OpenRouterSettings
+
+    return RoutedLLMProvider(
+        _Recording("default-model"),
+        settings=OpenRouterSettings(api_key=openrouter_key),
+        groq=GroqSettings(api_key=groq_key),
+    )
+
+
+def test_a_model_is_sent_to_its_own_backend():
+    """The id alone cannot say where to send it — both hosts serve Llamas."""
+    from app.llm.catalog import BACKEND_GROQ, GROQ_CANDIDATES, MODELS
+
+    provider = _routed(openrouter_key="or-key", groq_key="groq-key")
+
+    use_model(MODELS[0].id)
+    assert "openrouter.ai" in provider.active().base_url
+
+    use_model(GROQ_CANDIDATES[0].id)
+    assert "groq.com" in provider.active().base_url
+    assert GROQ_CANDIDATES[0].backend == BACKEND_GROQ
+
+
+def test_openrouter_routing_prefs_are_never_sent_to_groq():
+    """``provider``/``reasoning`` are OpenRouter request extensions.
+
+    Groq is a single provider on its own hardware: there is nothing to route
+    between and no data policy to negotiate. Sending them is at best ignored
+    and at worst a 400 on a stricter endpoint.
+    """
+    from app.llm.catalog import GROQ_CANDIDATES, MODELS
+
+    provider = _routed(openrouter_key="or-key", groq_key="groq-key")
+
+    use_model(MODELS[0].id)
+    assert provider.active()._extra_body is not None
+    assert provider.active()._extra_body["provider"]["data_collection"] == "deny"
+
+    use_model(GROQ_CANDIDATES[0].id)
+    assert provider.active()._extra_body is None
+
+
+def test_a_backend_without_a_key_falls_back_rather_than_erroring():
+    """Offering a model whose backend is unconfigured must not break chat."""
+    from app.llm.catalog import GROQ_CANDIDATES
+
+    provider = _routed(openrouter_key="or-key", groq_key=None)
+    use_model(GROQ_CANDIDATES[0].id)
+    assert provider.generate("hi") == "answered by default-model"
+
+
+def test_picker_only_offers_models_whose_backend_is_configured():
+    """A model that would silently answer on the default must not be listed.
+
+    It would come back labelled with a model that never ran, which is worse
+    than not offering it.
+    """
+    from app.llm import catalog as cat
+
+    both = _routed("or-key", "groq-key").configured_backends()
+    assert len(cat.as_dicts(both)) == len(cat.ALL_MODELS)
+
+    or_only = _routed("or-key", None).configured_backends()
+    assert all(d["backend"] == "openrouter" for d in cat.as_dicts(or_only))
+
+    groq_only = _routed(None, "groq-key").configured_backends()
+    assert all(d["backend"] == "groq" for d in cat.as_dicts(groq_only))
+
+    assert cat.as_dicts(_routed(None, None).configured_backends()) == []

@@ -115,7 +115,7 @@ model returns if everything lands in `reasoning`. Covered by the same switch.
 
 ## 6. Phases
 
-- **0 — verify** `scripts/verify_openrouter_models.py`: per candidate, assert
+- **0 — verify** `scripts/verify_models.py`: per candidate, assert
   non-empty content, MODE tag parses, a tool call round-trips, and record the
   resolved `response.model`. Gates entry into the catalog.
 - **1 — backend** catalog, `RoutedLLMProvider`, `OpenRouterSettings`,

@@ -18,7 +18,7 @@ no catalogue can tell you about:
 So each candidate is probed for exactly those three things. Free models rotate
 out without warning, so re-run this when the picker starts misbehaving.
 
-    OPENROUTER_API_KEY=... python scripts/verify_openrouter_models.py
+    OPENROUTER_API_KEY=... python scripts/verify_models.py
 """
 
 from __future__ import annotations
@@ -29,8 +29,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app.config.settings import OpenRouterSettings  # noqa: E402
-from app.llm.catalog import MODELS  # noqa: E402
+from app.config.settings import GroqSettings, OpenRouterSettings  # noqa: E402
+from app.llm.catalog import ALL_MODELS, BACKEND_GROQ  # noqa: E402
 from app.llm.openai_provider import OpenAICompatProvider  # noqa: E402
 from app.config.settings import RagSettings  # noqa: E402
 from app.llm.routed import _ROUTING_PREFS  # noqa: E402
@@ -67,7 +67,7 @@ TOOL = {
 }
 
 
-def probe(model_id: str, settings: OpenRouterSettings) -> dict:
+def probe(model_id: str, settings, *, extra_body: dict | None = None) -> dict:
     """Run all three checks for one model. Never raises — a failure IS data."""
     result = {"model": model_id, "resolved": None, "content": False,
               "mode_tag": False, "tools": False, "error": None}
@@ -76,7 +76,7 @@ def probe(model_id: str, settings: OpenRouterSettings) -> dict:
         api_key=settings.api_key,
         base_url=settings.base_url,
         timeout=settings.timeout,
-        extra_body=_ROUTING_PREFS,
+        extra_body=extra_body,
     )
     try:
         text = client.generate(MODE_PROMPT, max_tokens=_ANSWER_CAP)
@@ -100,26 +100,49 @@ def probe(model_id: str, settings: OpenRouterSettings) -> dict:
 
 
 def main() -> int:
-    settings = OpenRouterSettings.from_env()
-    if not settings.enabled:
-        print("OPENROUTER_API_KEY is not set — nothing to verify.")
+    openrouter = OpenRouterSettings.from_env()
+    groq = GroqSettings.from_env()
+    if not (openrouter.enabled or groq.enabled):
+        print("Neither OPENROUTER_API_KEY nor GROQ_API_KEY is set.")
         return 2
 
-    print(f"Probing {len(MODELS)} catalogued models against {settings.base_url}\n")
-    rows = [probe(choice.id, settings) for choice in MODELS]
+    rows = []
+    for choice in ALL_MODELS:
+        # Each backend is probed with its OWN credentials and its own request
+        # extras. OpenRouter's `provider`/`reasoning` blocks are its request
+        # extensions, not part of the OpenAI schema, so they are not sent to
+        # Groq.
+        if choice.backend == BACKEND_GROQ:
+            if not groq.enabled:
+                print(f"SKIP  {choice.id} (GROQ_API_KEY unset)")
+                continue
+            rows.append((choice, probe(choice.id, groq)))
+        else:
+            if not openrouter.enabled:
+                print(f"SKIP  {choice.id} (OPENROUTER_API_KEY unset)")
+                continue
+            rows.append((choice, probe(choice.id, openrouter, extra_body=_ROUTING_PREFS)))
 
     failures = 0
-    for row in rows:
-        ok = row["content"] and row["mode_tag"] and row["tools"]
+    for choice, row in rows:
+        ok = row["grounds"] and row["refuses"] and row["resists"] and row["tools"]
         failures += 0 if ok else 1
-        print(f"{'PASS' if ok else 'FAIL'}  {row['model']}")
-        print(f"      resolved={row['resolved']}  content={row['content']}  "
-              f"mode_tag={row['mode_tag']}  tools={row['tools']}")
+        print(f"{'PASS' if ok else 'FAIL'}  [{choice.backend}] {row['model']}")
+        print(f"      resolved={row['resolved']}")
+        print(f"      grounds={row['grounds']} (mode={row['mode']})  "
+              f"refuses={row['refuses']}  resists={row['resists']}  "
+              f"tools={row['tools']}")
         if row["error"]:
             print(f"      error: {row['error']}")
-        if row["content"] and not row["mode_tag"]:
-            print("      ^ answers, but breaks MODE parsing — the groundedness "
-                  "audit would silently never run for this model.")
+        if row["grounds"] and not row["refuses"]:
+            print("      ^ ANSWERS WHAT IT SHOULD REFUSE, or paraphrases the")
+            print("        fallback. The pipeline compares the fallback by string")
+            print("        equality, so this counts as a grounded answer.")
+            print(f"        got: {row['refusal_text']!r}")
+        if not row["resists"]:
+            print("      ^ COMPLIED WITH AN INJECTION in retrieved content.")
+        if row["grounds"] and row["mode"] is None:
+            print("      ^ no MODE tag — the groundedness audit would never run.")
     print(f"\n{len(rows) - failures}/{len(rows)} usable.")
     return 1 if failures else 0
 

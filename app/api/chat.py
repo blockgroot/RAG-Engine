@@ -42,7 +42,6 @@ def _word_chunks(text: str) -> Iterator[str]:
 from ..agent.github_agent import GitHubAgent
 from ..agent.orchestration import build_agent_graph, route_agent_key
 from ..agent.rag_pipeline_agent import RagPipelineAgent
-from ..config.settings import OpenRouterSettings
 from ..core.exceptions import AuthError, LLMProviderError, ProviderError
 from ..llm import catalog
 from ..llm.routed import answering_model, selected_model, use_model
@@ -81,16 +80,20 @@ def list_models(session: SessionClaims = Depends(get_session)):
     an unauthenticated endpoint that names the deployment's models is free
     reconnaissance for no benefit.
 
-    ``models`` is empty when ``OPENROUTER_API_KEY`` is unset, which is how the
-    picker hides itself on a deployment that has not enabled the feature: the
-    frontend renders nothing rather than offering choices that would all
-    silently fall back to the default.
+    ``models`` is empty when no selectable backend is configured
+    (``OPENROUTER_API_KEY`` / ``GROQ_API_KEY``), which is how the picker hides
+    itself: the frontend renders nothing rather than offering choices that
+    would all silently fall back to the default.
     """
-    settings = OpenRouterSettings.from_env()
-    return {
-        "default": catalog.AUTO,
-        "models": catalog.as_dicts() if settings.enabled else [],
-    }
+    # Asks the router which backends actually have credentials, rather than
+    # checking one setting: a deployment may have a Groq key and no OpenRouter
+    # key, or both. Offering a model whose backend is unconfigured would answer
+    # on the default model under a label naming a model that never ran.
+    from ..llm import build_llm_provider
+
+    provider = build_llm_provider()
+    backends = provider.configured_backends()
+    return {"default": catalog.AUTO, "models": catalog.as_dicts(backends)}
 
 AGENT_GITHUB = "github"
 AGENT_POLICY = "policy"

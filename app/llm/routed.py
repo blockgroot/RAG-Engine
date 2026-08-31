@@ -40,10 +40,11 @@ import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from ..config.settings import OpenRouterSettings
+from ..config.settings import GroqSettings, OpenRouterSettings
 from ..core.exceptions import ConfigurationError
 from .base import ChatResult, LLMProvider
-from .catalog import normalize
+from . import catalog
+from .catalog import BACKEND_GROQ, BACKEND_OPENROUTER, normalize
 from .openai_provider import OpenAICompatProvider
 
 logger = logging.getLogger(__name__)
@@ -140,10 +141,21 @@ class RoutedLLMProvider(LLMProvider):
         self,
         default: LLMProvider,
         settings: OpenRouterSettings | None = None,
+        groq: GroqSettings | None = None,
     ) -> None:
         self._default = default
         self._settings = settings or OpenRouterSettings.from_env()
+        self._groq = groq or GroqSettings.from_env()
         self._clients: dict[str, OpenAICompatProvider] = {}
+
+    def configured_backends(self) -> set[str]:
+        """Backends with credentials. Drives which models the picker offers."""
+        backends: set[str] = set()
+        if self._settings.enabled:
+            backends.add(BACKEND_OPENROUTER)
+        if self._groq.enabled:
+            backends.add(BACKEND_GROQ)
+        return backends
 
     # -- dispatch ---------------------------------------------------------
     def _client_for(self, model_id: str) -> LLMProvider:
@@ -155,30 +167,55 @@ class RoutedLLMProvider(LLMProvider):
         feature. The answer is still grounded and still labelled with the model
         that actually produced it, so nothing silently misreports.
         """
-        if not self._settings.enabled:
-            logger.warning(
-                "Model %s requested but OPENROUTER_API_KEY is unset; "
-                "answering with the default model instead.",
-                model_id,
-            )
-            return self._default
-
         client = self._clients.get(model_id)
-        if client is None:
-            headers = {}
+        if client is not None:
+            return client
+
+        choice = catalog.get(model_id)
+        backend = choice.backend if choice else BACKEND_OPENROUTER
+
+        headers: dict[str, str] = {}
+        if backend == BACKEND_GROQ:
+            if not self._groq.enabled:
+                logger.warning(
+                    "Model %s requested but GROQ_API_KEY is unset; answering "
+                    "with the default model instead.",
+                    model_id,
+                )
+                return self._default
+            api_key, base_url = self._groq.api_key, self._groq.base_url
+            timeout = self._groq.timeout
+            # No routing preferences: ``provider`` and ``reasoning`` are
+            # OpenRouter's own request extensions, and Groq is a single
+            # provider serving its own hardware — there is nothing to route
+            # between and no data policy to negotiate (Groq states it does not
+            # train on inputs). Sending them would be, at best, ignored.
+            extra_body = None
+        else:
+            if not self._settings.enabled:
+                logger.warning(
+                    "Model %s requested but OPENROUTER_API_KEY is unset; "
+                    "answering with the default model instead.",
+                    model_id,
+                )
+                return self._default
+            api_key, base_url = self._settings.api_key, self._settings.base_url
+            timeout = self._settings.timeout
+            extra_body = _ROUTING_PREFS
             if self._settings.referer:
                 headers["HTTP-Referer"] = self._settings.referer
             if self._settings.title:
                 headers["X-Title"] = self._settings.title
-            client = OpenAICompatProvider(
-                model=model_id,
-                api_key=self._settings.api_key,
-                base_url=self._settings.base_url,
-                timeout=self._settings.timeout,
-                extra_body=_ROUTING_PREFS,
-                default_headers=headers or None,
-            )
-            self._clients[model_id] = client
+
+        client = OpenAICompatProvider(
+            model=model_id,
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            extra_body=extra_body,
+            default_headers=headers or None,
+        )
+        self._clients[model_id] = client
         return client
 
     def active(self) -> LLMProvider:

@@ -7,7 +7,7 @@ grounding depends on model behaviour that a model id cannot tell you about:
 the ``MODE: A|B|C`` tag the pipeline parses off the front of every generation
 (``app/rag/pipeline.py``), the fixed fallback string compared by equality, and
 function calling for ``GitHubAgent``. Five ids admitted by a golden-set run
-beat three hundred that merely exist. ``scripts/verify_openrouter_models.py``
+beat three hundred that merely exist. ``scripts/verify_models.py``
 is what revalidates this list.
 
 ``AUTO`` is not a model. It means "no override" — the deployment's configured
@@ -23,20 +23,32 @@ from dataclasses import dataclass
 AUTO = "auto"
 
 
+#: Which endpoint serves a model. Two, not one, because quota is the binding
+#: constraint on a free tier: OpenRouter allows 50 requests/day account-wide
+#: while Groq allows thousands, so drawing from both means one being exhausted
+#: does not empty the picker.
+BACKEND_OPENROUTER = "openrouter"
+BACKEND_GROQ = "groq"
+
+
 @dataclass(frozen=True)
 class ModelChoice:
     """One selectable model, as the picker and the API both see it."""
 
-    #: OpenRouter model id, sent verbatim as ``model``.
+    #: Model id, sent verbatim as ``model`` to whichever backend serves it.
     id: str
     #: What the dropdown shows.
     label: str
     #: One line under the label — why someone would pick this one.
     note: str = ""
+    #: Which endpoint to send it to. The id alone cannot say: Groq and
+    #: OpenRouter both serve Llama under different slugs, and only one of them
+    #: accepts OpenRouter's routing preferences.
+    backend: str = BACKEND_OPENROUTER
 
 
 # Free-tier OpenRouter ids, each VERIFIED against a live key by
-# scripts/verify_openrouter_models.py: non-empty content, a parseable
+# scripts/verify_models.py: non-empty content, a parseable
 # ``MODE: A|B|C`` tag, and a real tool-call round-trip.
 #
 # The first five ids tried here (deepseek-chat-v3.1:free, llama-3.3-70b:free,
@@ -83,7 +95,37 @@ MODELS: tuple[ModelChoice, ...] = (
     ),
 )
 
-_BY_ID = {m.id: m for m in MODELS}
+#: Groq-hosted candidates. Marked UNVERIFIED: unlike the OpenRouter entries
+#: above, these have not been through scripts/verify_models.py
+#: against a live key, so they are not yet trusted to survive the grounded
+#: prompt, the answer-token cap, or a tool call. Run the script with
+#: GROQ_API_KEY set and delete whatever fails — shipping unverified ids is
+#: exactly the mistake that put five dead models in the first version of this
+#: file.
+GROQ_CANDIDATES: tuple[ModelChoice, ...] = (
+    ModelChoice(
+        id="llama-3.3-70b-versatile",
+        label="Llama 3.3 70B",
+        note="Fast on Groq's hardware, reliable instruction following.",
+        backend=BACKEND_GROQ,
+    ),
+    ModelChoice(
+        id="openai/gpt-oss-120b",
+        label="GPT-OSS 120B",
+        note="Largest on Groq; strongest on multi-part questions.",
+        backend=BACKEND_GROQ,
+    ),
+    ModelChoice(
+        id="llama-3.1-8b-instant",
+        label="Llama 3.1 8B",
+        note="Lowest latency of the set.",
+        backend=BACKEND_GROQ,
+    ),
+)
+
+ALL_MODELS: tuple[ModelChoice, ...] = MODELS + GROQ_CANDIDATES
+
+_BY_ID = {m.id: m for m in ALL_MODELS}
 
 
 def is_selectable(model_id: str | None) -> bool:
@@ -113,6 +155,25 @@ def normalize(model_id: str | None) -> str | None:
     return model_id
 
 
-def as_dicts() -> list[dict]:
+def get(model_id: str) -> ModelChoice | None:
+    """The catalogued choice for an id, or ``None`` if it is not offered."""
+    return _BY_ID.get(model_id)
+
+
+def available(backends: set[str]) -> list[ModelChoice]:
+    """Only models whose backend actually has credentials configured.
+
+    A deployment with an OpenRouter key but no Groq key must not offer Groq
+    models: they would fall back to the default model and answer under a label
+    naming a model that never ran, which is worse than not offering them.
+    """
+    return [m for m in ALL_MODELS if m.backend in backends]
+
+
+def as_dicts(backends: set[str] | None = None) -> list[dict]:
     """Catalog shape for ``GET /chat/models``."""
-    return [{"id": m.id, "label": m.label, "note": m.note} for m in MODELS]
+    models = available(backends) if backends is not None else list(ALL_MODELS)
+    return [
+        {"id": m.id, "label": m.label, "note": m.note, "backend": m.backend}
+        for m in models
+    ]

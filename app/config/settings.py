@@ -127,6 +127,10 @@ DEFAULT_EMAIL_SENDER = "console"
 
 # OpenRouter's OpenAI-compatible endpoint (Multi-Model Selection).
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+# Groq's OpenAI-compatible endpoint. A second selectable backend, not a
+# replacement: its free tier allows far more requests per day than
+# OpenRouter's and it does not train on inputs, so the two are complementary.
+DEFAULT_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
 
 def _env_positive_int(name: str, default: int) -> int:
@@ -200,6 +204,38 @@ class OpenRouterSettings:
             timeout=float(os.getenv("OPENROUTER_TIMEOUT") or DEFAULT_TIMEOUT),
             referer=os.getenv("OPENROUTER_REFERER") or None,
             title=os.getenv("OPENROUTER_TITLE") or None,
+        )
+
+
+@dataclass(frozen=True)
+class GroqSettings:
+    """Credentials for Groq-hosted selectable models.
+
+    Separate from ``OpenRouterSettings`` because they are different accounts
+    with different keys and different quotas — and quota is the reason both
+    exist. OpenRouter's free tier allows 50 requests/day account-wide; Groq's
+    allows thousands. Offering models from both means one being exhausted or
+    rate-limited does not empty the picker.
+
+    Groq also states it does not train on inputs, so unlike OpenRouter's free
+    endpoints there is no per-request data policy to negotiate — which is why
+    no routing preferences are sent to it (see ``app/llm/routed.py``).
+    """
+
+    api_key: str | None
+    base_url: str = DEFAULT_GROQ_BASE_URL
+    timeout: float = DEFAULT_TIMEOUT
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.api_key)
+
+    @classmethod
+    def from_env(cls) -> "GroqSettings":
+        return cls(
+            api_key=os.getenv("GROQ_API_KEY") or None,
+            base_url=os.getenv("GROQ_BASE_URL") or DEFAULT_GROQ_BASE_URL,
+            timeout=float(os.getenv("GROQ_TIMEOUT") or DEFAULT_TIMEOUT),
         )
 
 

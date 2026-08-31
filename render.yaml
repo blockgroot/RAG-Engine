@@ -61,6 +61,16 @@ services:
       - key: OPENROUTER_TIMEOUT
         value: "45"
 
+      # Second selectable backend. Independent of OpenRouter — thousands of
+      # requests/day rather than 50, and no training on inputs. Unset = its
+      # models are simply not offered.
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: GROQ_TIMEOUT
+        value: "60"
+
       # -- Embedding (remote — see .env.example) --
       - key: EMBEDDING_BACKEND
         value: remote
