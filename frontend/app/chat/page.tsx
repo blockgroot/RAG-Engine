@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { AskHeroArt } from "@/components/AskHeroArt";
@@ -30,7 +31,6 @@ function ChipIcon({ kind }: { kind: "policy" | "code" }) {
   );
 }
 
-type AgentTab = "policy" | "github" | "slack" | "linear" | "notion" | "google";
 
 export default function ChatPage() {
   const workspaceId = useParams<{ id?: string }>().id ?? null;
@@ -85,24 +85,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     driveAvailable,
   ].filter(Boolean).length;
   const anySourceAvailable = connectedSourceCount > 0;
-  /**
-   * Which source's example questions to show on the empty state. NOT a routing
-   * decision — the backend measures that per question (app/agent/routing.py),
-   * and a chip typed into the box goes wherever the router sends it. This only
-   * decides whose examples make the best starting point, so first-connected
-   * wins and nothing depends on getting it right.
-   */
-  const suggestionSource: AgentTab = notionAvailable
-    ? "notion"
-    : driveAvailable
-      ? "google"
-      : slackAvailable
-        ? "slack"
-        : linearAvailable
-          ? "linear"
-          : codeAvailable
-            ? "github"
-            : "policy";
 
 
   useEffect(() => {
@@ -128,8 +110,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   useEffect(() => {
     if (!me) return;
     let cancelled = false;
-    const agent = suggestionSource;
-    const cacheKey = suggestionsCacheKey(agent, workspaceId);
+    const cacheKey = suggestionsCacheKey(workspaceId);
     const cached = getCachedSuggestions(cacheKey);
     if (cached) {
       setSuggestedQuestions(cached);
@@ -138,7 +119,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       setSuggestionsLoading(true);
     }
     api
-      .chatSuggestions(agent, workspaceId)
+      .chatSuggestions(workspaceId)
       .then((res) => {
         const questions = res.questions || [];
         setCachedSuggestions(cacheKey, questions);
@@ -153,7 +134,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     return () => {
       cancelled = true;
     };
-  }, [me, suggestionSource, workspaceId]);
+  }, [me, workspaceId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({
@@ -396,7 +377,19 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
 
         <div className="chat-topbar">
           <div className="chat-topbar-copy">
-            <p className="chat-kicker">{workspaceId ? workspaceName || "Space" : "Company-wide"}</p>
+            {/* A link when scoped to a space: members now land HERE rather than
+                on the space page, so this is their only route to that space's
+                people and connections. Plain text company-wide, where there is
+                no such page to reach. */}
+            <p className="chat-kicker">
+              {workspaceId ? (
+                <Link href={`/workspaces/${workspaceId}`} className="chat-kicker-link">
+                  {workspaceName || "Space"}
+                </Link>
+              ) : (
+                "Company-wide"
+              )}
+            </p>
             {/* One destination, so one title. Which source answered is stated
                 per ANSWER (see ChatMessageView) rather than per page: it is a
                 property of the reply, not of the box you typed into. */}
@@ -425,7 +418,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                       className="suggested-chip suggested-chip-card"
                       onClick={() => ask(q)}
                     >
-                      <ChipIcon kind={suggestionSource === "github" ? "code" : "policy"} />
+                      <ChipIcon kind="policy" />
                       <span>{q}</span>
                     </button>
                   ))}

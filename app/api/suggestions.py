@@ -8,6 +8,17 @@ from typing import Any
 
 _MAX = 4
 
+# The combined empty state shows more than a single provider's chips did: with
+# four sources connected, four chips cannot represent them all, and the point of
+# the combined view is that a member SEES what is connected. Six fits the
+# two-column bento layout without scrolling.
+_MAX_COMBINED = 6
+
+# Fixed order so chips do not reshuffle between renders. Documents first
+# because they answer the questions people actually arrive with; GitHub last
+# because its answers are live reads and the least likely starting point.
+_COMBINED_ORDER = ("notion", "google", "policy", "slack", "linear", "github")
+
 _GITHUB_TEMPLATES = (
     "What does the {name} repository do?",
     "What changed recently in {name}?",
@@ -221,3 +232,49 @@ def build_policy_suggestions(
         title = cleaned[i % len(cleaned)]
         questions.append(template.format(title=_display_title(title)))
     return questions
+
+
+def build_combined_suggestions(
+    per_provider: dict[str, list[str]], *, workspace: bool = False
+) -> list[str]:
+    """Starter chips spanning EVERY connected source, one turn each.
+
+    Ask is a single box now (``app/agent/routing.py`` picks the agent), so a
+    chip set drawn from one provider would teach the wrong thing: it reads as
+    "this box is for Notion" when the point is that it is for everything. It
+    would also hide a source entirely from someone who has never asked about
+    it — the empty state is the only place most people learn what is
+    connected.
+
+    Interleaved round-robin rather than concatenated, because concatenation
+    means the last provider never appears once ``_MAX_COMBINED`` bites: a
+    tenant with Notion and Slack would show four Notion chips and no Slack.
+    Providers are taken in a fixed order so the chips do not reshuffle between
+    renders for no reason.
+
+    ``per_provider`` maps a provider key to that provider's already-built
+    suggestions — this function does no fetching, matching how every other
+    builder here takes plain data.
+    """
+    order = [p for p in _COMBINED_ORDER if per_provider.get(p)]
+    if not order:
+        return []
+    if len(order) == 1:
+        return per_provider[order[0]][:_MAX_COMBINED]
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for round_index in range(_MAX_COMBINED):
+        for provider in order:
+            questions = per_provider[provider]
+            if round_index >= len(questions):
+                continue
+            question = questions[round_index]
+            key = question.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(question)
+            if len(out) >= _MAX_COMBINED:
+                return out
+    return out

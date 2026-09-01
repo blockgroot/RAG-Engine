@@ -474,6 +474,18 @@ def test_suggestions_from_connected_sources(client_and_session, store):
     assert cq and any("LiveDemoRepo" in q for q in cq)
     assert all("Fact-Verification" not in q for q in cq)
 
+    # No agent = every connected source, which is what the single Ask box asks
+    # for. Both a document title and a repo name must survive, or the empty
+    # state hides a source from anyone who never asked about it.
+    combined = client.get("/chat/suggestions", cookies=cookies)
+    assert combined.status_code == 200
+    body = combined.json()
+    assert body["agent"] is None, "no single agent produced these"
+    joined = " ".join(body["questions"])
+    assert "Parental Leave Handbook" in joined
+    assert "LiveDemoRepo" in joined
+    assert "github" in body["sources"]
+
 
 def test_word_chunks_keeps_trailing_whitespace():
     from app.api.chat import _word_chunks

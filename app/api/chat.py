@@ -63,6 +63,7 @@ from .deps import (
 )
 
 from .suggestions import (
+    build_combined_suggestions,
     build_github_suggestions,
     build_linear_suggestions,
     build_policy_suggestions,
@@ -203,19 +204,102 @@ def _user_facing_llm_error(exc: BaseException) -> str:
     return "I couldn't reach the answer service just now. Please try again shortly."
 
 
+def _combined_suggestions(org_id: str, workspace_id: str | None) -> dict:
+    """Chips from every source connected in this scope.
+
+    Each provider's own builder is reused unchanged, so the chips a member sees
+    in the combined view are exactly the ones the pinned view would have shown
+    — one place decides what a good Slack question looks like.
+
+    Every lookup is wrapped: a single unreachable source must cost its own
+    chips, never the whole empty state. Suggestions are a convenience, and a
+    500 here would make Ask look broken when it works fine.
+    """
+    per_provider: dict[str, list[str]] = {}
+
+    def _try(key: str, build) -> None:
+        try:
+            questions = build()
+        except Exception:  # noqa: BLE001 - chips are a convenience
+            logger.debug("Suggestions: %s lookup failed", key, exc_info=True)
+            return
+        if questions:
+            per_provider[key] = questions
+
+    in_space = workspace_id is not None
+
+    _try(
+        "notion",
+        lambda: build_policy_suggestions(
+            _titles_for_scope_by_provider(org_id, workspace_id, "notion"),
+            workspace=in_space,
+        ),
+    )
+    _try(
+        "google",
+        lambda: build_policy_suggestions(
+            _titles_for_scope_by_provider(org_id, workspace_id, "google"),
+            workspace=in_space,
+        ),
+    )
+    _try(
+        "slack",
+        lambda: build_slack_suggestions(
+            _slack_channel_names_for_scope(org_id, workspace_id)
+        ),
+    )
+    _try(
+        "linear",
+        lambda: build_linear_suggestions(_linear_titles_for_scope(org_id, workspace_id)),
+    )
+    _try(
+        "github",
+        lambda: build_github_suggestions(_github_repos_for_scope(org_id, workspace_id)),
+    )
+
+    if not per_provider.keys() & {"notion", "google"}:
+        # Provider-agnostic document titles, and ONLY when no document provider
+        # resolved. A tenant whose rows predate source_provider partitioning (or
+        # were ingested without one) has documents that match no provider
+        # filter, so without this their chips are all GitHub and every document
+        # is invisible in the empty state — which is exactly what the combined
+        # view exists to prevent. Conditional rather than always-on because
+        # these titles are a SUPERSET of the per-provider ones: adding both
+        # would show two near-identical chips for the same document.
+        _try(
+            "policy",
+            lambda: build_policy_suggestions(
+                _document_titles_for_scope(org_id, workspace_id),
+                workspace=in_space,
+            ),
+        )
+
+    questions = build_combined_suggestions(per_provider, workspace=in_space)
+
+    # No single agent produced these, and saying "policy" would be a lie the
+    # client might act on.
+    return {"agent": None, "sources": sorted(per_provider), "questions": questions}
+
+
 @router.get("/suggestions")
 def list_suggestions(
-    agent: str = AGENT_POLICY,
+    agent: str | None = None,
     workspace_id: str | None = None,
     session: SessionClaims = Depends(get_session),
 ):
     """Starter questions derived from *this tenant's* connected sources.
 
-    Never hardcoded product copy: Policies chips come from ingested document
-    titles; Code chips come from the GitHub installation's stored repo list.
-    Exposed to every signed-in member (not admin-only) so the Ask empty state
-    works for ordinary employees — only names/titles needed for chips, not
-    OAuth secrets.
+    Never hardcoded product copy: document chips come from ingested titles,
+    Code chips from the GitHub installation's stored repo list. Exposed to every
+    signed-in member (not admin-only) so the Ask empty state works for ordinary
+    employees — only names/titles are needed for chips, not OAuth secrets.
+
+    **No ``agent`` means EVERY connected source**, interleaved. Ask is one box
+    now, so chips from a single provider would read as "this box is for Notion"
+    and would hide every other source from someone who has never asked about
+    it — the empty state is where most people learn what is connected. The
+    per-agent branches are kept because ``agent`` is still an accepted query
+    param, and pinning one is how a caller asks "what could I ask Slack?".
     """
     if workspace_id is not None:
         try:
@@ -223,7 +307,10 @@ def list_suggestions(
         except AuthError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
 
-    requested = (agent or AGENT_POLICY).strip().lower()
+    if not agent:
+        return _combined_suggestions(session.org_id, workspace_id)
+
+    requested = agent.strip().lower()
     if requested == AGENT_GITHUB:
         repos = _github_repos_for_scope(session.org_id, workspace_id)
         return {"agent": AGENT_GITHUB, "questions": build_github_suggestions(repos)}
