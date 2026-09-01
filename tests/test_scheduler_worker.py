@@ -18,6 +18,7 @@ from app.config.settings import SchedulerSettings
 from app.db.connection import get_connection
 from app.jobs import worker as jobs_worker
 from app.schedulers.activity import ActivityDigest, ActivityItem
+from app.schedulers import reports
 from app.schedulers import store as sched_store
 from app.schedulers import worker as sched_worker
 
@@ -285,9 +286,24 @@ def test_end_to_end_produces_a_real_report_with_the_configured_llm(
 
     printed = capsys.readouterr().out
     assert "[email:console]" in printed
+
+    # The email is a NOTIFICATION, not the report: it carries a link and no
+    # excerpt, deliberately, because a two-line preview of a grounded summary
+    # reads as the whole answer (CLAUDE.md §3). So the report's content is
+    # asserted against the STORED row, which is the artifact a reader opens.
+    stored = reports.list_reports(org_id, user_id)
+    assert len(stored) == 1
+    report = stored[0]
+
     # The model was given billing/deploy activity; a real report mentions it.
-    assert "billing" in printed.lower() or "deploy" in printed.lower()
-    # Source links come from the template, not the model — so they are always
-    # present regardless of what the LLM chose to write.
-    assert "https://slack.com/archives/C1/p1000" in printed
-    assert "Channels checked: #eng." in printed
+    body = report.report_text.lower()
+    assert "billing" in body or "deploy" in body
+    # Source links live in structured items, never in model prose — so they are
+    # present regardless of what the LLM chose to write, and cannot be invented.
+    assert any(
+        item.get("url") == "https://slack.com/archives/C1/p1000"
+        for item in report.items
+    )
+    assert "Channels checked: #eng." in report.notes
+    # The model was told not to write URLs, and the report page renders them.
+    assert "http" not in report.report_text

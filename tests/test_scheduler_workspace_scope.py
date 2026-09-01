@@ -1,14 +1,21 @@
 """Space-scoped schedulers read the SPACE's connection, never the org's.
 
-The fetchers already took a ``workspace_id``, and the API now stores one per
-scheduler — but "it is threaded through" is exactly the kind of claim that is
-true in three places and quietly false in the fourth. These tests save BOTH an
-org-wide and a workspace connection for the same provider, with *different*
-tokens, and assert each fetcher resolves the workspace one.
+What is left here is **GitHub**, the only provider whose report still resolves a
+credential to read activity. It saves BOTH an org-wide and a workspace
+connection for the same provider with *different* scopes, so a fetcher reading
+the wrong one is visible rather than inferred — "it is threaded through" being
+exactly the claim that is true in three places and quietly false in the fourth.
 
-Real Postgres (credential resolution is the subject — that is where a scope
-mistake would live), but no network: the adapter/reader factories are stubbed
-to record what they were handed.
+Slack, Linear, Notion and Drive moved to reading our own index
+(``activity.py::fetch_indexed_activity``), so their scope is enforced by a
+WHERE clause instead of by credential resolution — a different and sharper
+risk, since a missing predicate leaks another space's documents rather than
+merely failing. That is proved in BOTH directions in
+``tests/test_scheduler_indexed.py``, along with the rule this file still
+covers: a space without the connection raises instead of falling back.
+
+Real Postgres, no network: the reader factory is stubbed to record what it was
+handed.
 """
 
 from __future__ import annotations
@@ -58,9 +65,6 @@ def org_and_space(store, org_cleanup):
     return org_id, owner.id, workspace_id
 
 
-def _connect_both(org_id: str, workspace_id: str, provider: str) -> None:
-    save_connection(org_id, provider, _tokens(ORG_TOKEN))
-    save_connection(org_id, provider, _tokens(SPACE_TOKEN), workspace_id=workspace_id)
 
 
 # --------------------------------------------------------------------------
@@ -68,68 +72,8 @@ def _connect_both(org_id: str, workspace_id: str, provider: str) -> None:
 # --------------------------------------------------------------------------
 
 
-@requires_db
-def test_slack_in_a_space_reads_that_spaces_connection(org_and_space, monkeypatch):
-    org_id, _, workspace_id = org_and_space
-    _connect_both(org_id, workspace_id, "slack")
-    # Distinct channel scope per connection: a report that read the company's
-    # channels from inside a space is the leak this scoping prevents.
-    set_connection_config(org_id, "slack", {"channel_ids": ["C-ORG"]})
-    set_connection_config(
-        org_id, "slack", {"channel_ids": ["C-SPACE"]}, workspace_id=workspace_id
-    )
-
-    seen: dict = {}
-
-    class _Adapter:
-        def fetch_recent_messages(self, since, *, max_messages=300):
-            return [], []
-
-        def channel_labels(self):
-            return ["space-only"]
-
-    def _build(source_type, *, token=None, config=None, **kwargs):
-        seen["token"] = token
-        seen["config"] = config
-        return _Adapter()
-
-    monkeypatch.setattr("app.sources.build_source_adapter", _build)
-
-    activity.fetch_slack_activity(org_id, SINCE, workspace_id=workspace_id)
-
-    assert seen["token"] == SPACE_TOKEN
-    assert seen["config"]["channel_ids"] == ["C-SPACE"]
 
 
-@requires_db
-def test_slack_without_a_space_still_reads_the_org_connection(
-    org_and_space, monkeypatch
-):
-    """The org-wide path must be untouched by the space plumbing."""
-    org_id, _, workspace_id = org_and_space
-    _connect_both(org_id, workspace_id, "slack")
-    set_connection_config(org_id, "slack", {"channel_ids": ["C-ORG"]})
-
-    seen: dict = {}
-
-    class _Adapter:
-        def fetch_recent_messages(self, since, *, max_messages=300):
-            return [], []
-
-        def channel_labels(self):
-            return ["org-wide"]
-
-    monkeypatch.setattr(
-        "app.sources.build_source_adapter",
-        lambda source_type, *, token=None, config=None, **kw: (
-            seen.update(token=token, config=config) or _Adapter()
-        ),
-    )
-
-    activity.fetch_slack_activity(org_id, SINCE)
-
-    assert seen["token"] == ORG_TOKEN
-    assert seen["config"]["channel_ids"] == ["C-ORG"]
 
 
 # --------------------------------------------------------------------------
@@ -137,28 +81,13 @@ def test_slack_without_a_space_still_reads_the_org_connection(
 # --------------------------------------------------------------------------
 
 
-@requires_db
-def test_linear_in_a_space_reads_that_spaces_connection(org_and_space, monkeypatch):
-    """Linear carries no per-connection config, so the token IS the scope."""
-    org_id, _, workspace_id = org_and_space
-    _connect_both(org_id, workspace_id, "linear")
 
-    seen: dict = {}
 
-    class _Adapter:
-        def fetch_recent_issues(self, since, *, max_issues=300):
-            return []
-
-    monkeypatch.setattr(
-        "app.sources.build_source_adapter",
-        lambda source_type, *, token=None, config=None, **kw: (
-            seen.update(token=token) or _Adapter()
-        ),
-    )
-
-    activity.fetch_linear_activity(org_id, SINCE, workspace_id=workspace_id)
-
-    assert seen["token"] == SPACE_TOKEN
+def _connect_both(org_id: str, workspace_id: str, provider: str) -> None:
+    """Same provider connected org-wide AND in the space, with DIFFERENT
+    tokens — so a fetcher reading the wrong scope is visible, not inferred."""
+    save_connection(org_id, provider, _tokens(ORG_TOKEN))
+    save_connection(org_id, provider, _tokens(SPACE_TOKEN), workspace_id=workspace_id)
 
 
 # --------------------------------------------------------------------------
@@ -233,46 +162,3 @@ def test_a_space_without_the_provider_raises_instead_of_falling_back(
 # --------------------------------------------------------------------------
 
 
-@requires_db
-def test_a_scheduled_run_refreshes_channel_labels_first(org_and_space, monkeypatch):
-    """The coverage note is snapshotted into the report, so a stale label there
-    is wrong forever. A run must not depend on someone having opened Sources."""
-    org_id, _, workspace_id = org_and_space
-    save_connection(org_id, "slack", _tokens(SPACE_TOKEN), workspace_id=workspace_id)
-    set_connection_config(
-        org_id,
-        "slack",
-        {"channel_ids": ["C1"], "channel_names": {"C1": "old-name"}},
-        workspace_id=workspace_id,
-    )
-
-    # Slack now reports the channel under its new name.
-    monkeypatch.setattr(
-        "app.sources.slack_utils.list_slack_channels",
-        lambda token: [{"id": "C1", "name": "new-name", "is_private": False, "is_member": True}],
-    )
-
-    class _Adapter:
-        def __init__(self, config):
-            self._config = config
-
-        def fetch_recent_messages(self, since, *, max_messages=300):
-            return [], []
-
-        def channel_labels(self):
-            return [self._config["channel_names"]["C1"]]
-
-    monkeypatch.setattr(
-        "app.sources.build_source_adapter",
-        lambda source_type, *, token=None, config=None, **kw: _Adapter(config),
-    )
-
-    digest = activity.fetch_slack_activity(org_id, SINCE, workspace_id=workspace_id)
-
-    # The note names the channel as it is called NOW, and the refreshed label
-    # was persisted rather than only used in memory.
-    assert any("#new-name" in note for note in digest.notes)
-    from app.auth.credentials import get_connection_config
-
-    stored = get_connection_config(org_id, "slack", workspace_id=workspace_id)
-    assert stored["channel_names"]["C1"] == "new-name"
