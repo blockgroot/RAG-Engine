@@ -18,6 +18,10 @@ const PROVIDER_LABEL: Record<string, string> = {
   github: "GitHub",
   slack: "Slack",
   linear: "Linear",
+  notion: "Notion",
+  // Drive's provider string is "google" — what the connect flow stores. Keying
+  // this "google_drive" would render a raw "google" and match nothing.
+  google: "Google Drive",
 };
 
 /**
@@ -31,6 +35,8 @@ const PROVIDER_GLYPH: Record<string, BrandName> = {
   github: "github",
   slack: "slack",
   linear: "linear",
+  notion: "notion",
+  google: "drive",
 };
 
 /**
@@ -44,14 +50,13 @@ const SCHEDULABLE_LABELS = (() => {
 })();
 
 /**
- * Labels for the sources a space can have connected, schedulable or not —
- * this is what the chip after a space name shows ("Meeting notes · Drive"),
- * so it needs Notion and Drive too.
+ * Labels for the sources a space can have connected. Every provider is now
+ * schedulable, so this is just PROVIDER_LABEL — kept as its own name because
+ * it answers a different question (what a space HAS, in the chip after its
+ * name) and the two would diverge again the moment a non-schedulable source
+ * is added.
  */
-const SOURCE_LABEL: Record<string, string> = {
-  ...PROVIDER_LABEL,
-  notion: "Notion",
-};
+const SOURCE_LABEL: Record<string, string> = { ...PROVIDER_LABEL };
 
 /**
  * Report intents built from what a connection actually covers, so the prompt
