@@ -112,11 +112,30 @@ conversion lives *inside* the adapter. Thin SDKs, never frameworks.
 + a cadence; each run fetches that service's activity since the last run,
 hands it plus the prompt to an LLM, and emails the result. **Reads live,
 embeds nothing** (the `app/githublive/` pattern).
-- **Sources = only those with an "activity since T" primitive**: GitHub
-  (`list_commits(since=)`), Slack (`history(oldest=)`), Linear
-  (`filter:{updatedAt:{gt:…}}`). Notion/Drive are absent on purpose —
-  `SourceAdapter` answers "does this exist / is it stale", never "what
-  happened between T1 and T2". `SUPPORTED_PROVIDERS` **must equal** `_FETCHERS`.
+- **All five sources are schedulable, but only GitHub reads live.** Slack,
+  Linear, Notion and Drive read what CHANGED from **our own index**
+  (`activity.py::fetch_indexed_activity`, keyed on
+  `documents.source_last_modified`) — one query answers both "which changed"
+  and "what they say", so the four collapse to one function and Notion/Drive
+  become schedulable at all despite having no "activity since T" primitive.
+  Only honest because syncing is automatic (§ Automatic freshness); before
+  that, `source_last_modified` advanced only when a human pressed Update.
+  GitHub stays live — it embeds nothing, so there is no index, and it has a
+  real `list_commits(since=)`. `SUPPORTED_PROVIDERS` **must equal**
+  `_FETCHERS`; Drive's provider string is **`google`**, not `google_drive`.
+- **An indexed report describes CURRENT CONTENT, never a diff** — nothing
+  stores the previous version, so `prompts._NO_DIFF_RULE` (rule 9, indexed
+  providers only) forbids "added/removed/edited/changed". GitHub is excluded:
+  change *is* what it has. Every indexed digest also discloses **when the
+  source last synced**, including on a quiet run — that is what separates
+  "nothing happened" from "nothing was fetched".
+- **A missing connection must not look like a quiet week.** Reading the index
+  directly would make "this space has no Notion" indistinguishable from "no
+  activity", so `_connection_sync_state` still resolves the connection in scope
+  and **raises** — which is also what preserves "a space-scoped report never
+  falls back to the org connection". Scope is now a WHERE clause, so a missing
+  predicate *leaks* rather than fails; `tests/test_scheduler_indexed.py` pins
+  it in both directions.
 - **The email is a notification, not the report.** Each run **saves** a
   `scheduler_reports` row first, then mails a short "ready" note (plain +
   HTML) linking to `/schedulers/reports/{id}` on the FRONTEND origin (a
@@ -471,11 +490,14 @@ latency, security and eval hardening; the Activity Scheduler; Multi-Model
 Selection (OpenRouter, ~5 models, per-request routing); automatic freshness (interval + webhook-flag sync, external tick, LLM pacing).
 
 **Pending / known gaps**
-- Scheduler: Notion/Drive fetchers (Drive takes
-  `modifiedTime > …`, Notion needs sort-desc + early stop; both report only
-  *that* a doc changed); **email delivery is unverified — `console` only** (a
-  failed send now costs only the notification: the report is stored and
-  readable in-app either way).
+- Scheduler: **email delivery is unverified — `console` only** (a failed send
+  now costs only the notification: the report is stored and readable in-app
+  either way).
+- Indexed reports inherit the ingest pipeline's filters and shape: content
+  dropped by `SLACK_MIN_THREAD_CHARS` can never appear in a report, Slack items
+  are threads (not per-message, so no author attribution), and Notion/Drive/
+  Linear chunk text carries its LLM context prefix — factual but verbose, and
+  it spends the char budget.
 - No live walkthrough against real Notion/Drive/GitHub OAuth apps; the GitHub
   one also settles **T3** (whether `state` survives the install redirect —
   assumed, not verified).
