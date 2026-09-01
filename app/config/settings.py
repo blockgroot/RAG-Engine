@@ -1297,3 +1297,52 @@ class SchedulerSettings:
                 os.getenv("SCHEDULER_BATCH_SIZE") or DEFAULT_SCHEDULER_BATCH_SIZE
             ),
         )
+
+
+# Automatic sync. Freshness must not depend on anyone pressing a button, so
+# every connection is re-synced on an interval even when no webhook arrives.
+#
+# The interval is a FLOOR, not the plan: Slack/Linear/Notion push an event and
+# get synced within one tick, while Drive can only ever be polled (its push
+# notifications require a Google-verified domain, which a *.onrender.com host
+# cannot be). 6h keeps a free Gemini contextualization budget intact while
+# bounding worst-case staleness to a working day.
+#
+# batch_size bounds how many connections one tick may enqueue: a 40-connection
+# org must not turn a single tick into 40 simultaneous ingests on a 512MB box.
+DEFAULT_AUTO_SYNC_INTERVAL_HOURS = 6
+DEFAULT_AUTO_SYNC_BATCH_SIZE = 5
+
+
+@dataclass(frozen=True)
+class AutoSyncSettings:
+    """Configuration for background connection syncing."""
+
+    enabled: bool = True
+    interval_hours: int = DEFAULT_AUTO_SYNC_INTERVAL_HOURS
+    batch_size: int = DEFAULT_AUTO_SYNC_BATCH_SIZE
+    #: Shared secret for ``POST /internal/tick``. Unset disables the endpoint
+    #: entirely rather than leaving it open — an unauthenticated tick is a free
+    #: way for anyone to spend the org's provider quota.
+    tick_secret: str | None = None
+
+    @classmethod
+    def from_env(cls) -> "AutoSyncSettings":
+        return cls(
+            enabled=(os.getenv("AUTO_SYNC_ENABLED", "true").strip().lower()
+                     not in {"false", "0", "no"}),
+            interval_hours=max(
+                1,
+                int(
+                    os.getenv("AUTO_SYNC_INTERVAL_HOURS")
+                    or DEFAULT_AUTO_SYNC_INTERVAL_HOURS
+                ),
+            ),
+            batch_size=max(
+                1,
+                int(
+                    os.getenv("AUTO_SYNC_BATCH_SIZE") or DEFAULT_AUTO_SYNC_BATCH_SIZE
+                ),
+            ),
+            tick_secret=(os.getenv("INTERNAL_TICK_SECRET") or None),
+        )

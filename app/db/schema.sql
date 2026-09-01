@@ -348,6 +348,27 @@ ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS source_config JSONB;
 ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS needs_reauth BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS reauth_reason TEXT;
 
+-- Automatic sync (freshness without a human). Two columns, because there are
+-- exactly two reasons to sync: a service TOLD us something changed
+-- (``sync_requested_at``, stamped by a webhook handler) or enough time has
+-- passed that we should look anyway (``last_sync_at`` + the configured
+-- interval). The poll is the floor, not the plan: it covers Drive (whose push
+-- notifications need a Google-verified domain we do not own) and any webhook
+-- that was dropped while the free-tier box was asleep.
+--
+-- ``sync_requested_at`` is a FLAG, not a queue: a burst of fifty Slack
+-- messages stamps it fifty times and produces one job, because the tick reads
+-- it once and clears it. That is the whole debounce -- no timer, no counter.
+-- The webhook handler must never ingest inline: Slack requires a 3-second ack.
+ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS sync_requested_at TIMESTAMPTZ;
+ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS last_sync_at TIMESTAMPTZ;
+
+-- Partial: only rows actually waiting are scanned, and "waiting" is the
+-- common-case empty set.
+CREATE INDEX IF NOT EXISTS idx_oauth_connections_sync_requested
+    ON oauth_connections (sync_requested_at)
+    WHERE sync_requested_at IS NOT NULL;
+
 -- Admin-triggered ingestion jobs (Phase 10/12). A durable, pollable record of a
 -- background fetch->chunk->embed->store run so an admin sees progress instead
 -- of a blocking script. Consumed by a Postgres-backed worker (app/jobs/), not
