@@ -202,14 +202,16 @@ class RoutedLLMProvider(LLMProvider):
         # The version component additionally means a rotated key cannot keep
         # being served by a client built before the rotation.
         self._clients: dict[tuple[str | None, str, str], OpenAICompatProvider] = {}
-        # Must be >= the admin probe's timeout (api/llm_model.PROBE_TIMEOUT), or
-        # a model that passed the test would then fail in chat — and chat sends a
-        # ~2.3k-token grounded prompt, far more than the probe's one line, so it
-        # is strictly slower. Kept env-tunable because these routes run in a
-        # shared threadpool: a tarpit endpoint holds a slot that every other
-        # tenant's chat also needs, and lowering this is the lever if that ever
-        # shows up.
-        self._custom_timeout = float(os.getenv("LLM_CUSTOM_TIMEOUT") or 60.0)
+        # Must stay ABOVE the admin probe's timeout (api/llm_model.PROBE_TIMEOUT,
+        # 30s), or a model that passed the test would then fail in chat: chat
+        # sends a ~2.3k-token grounded prompt against the probe's one line, so
+        # its prefill is strictly slower for the same generation. 45s is that
+        # 30s plus headroom, not a round number.
+        #
+        # Kept env-tunable because these routes run in a shared 40-thread pool:
+        # a tarpit endpoint holds a slot every other tenant's chat also needs,
+        # so lowering this is the lever if that ever shows up in production.
+        self._custom_timeout = float(os.getenv("LLM_CUSTOM_TIMEOUT") or 45.0)
 
     def configured_backends(self) -> set[str]:
         """Backends with credentials. Drives which models the picker offers."""

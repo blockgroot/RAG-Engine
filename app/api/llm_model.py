@@ -37,13 +37,19 @@ MAX_KEY_CHARS = 400
 #: history is the predicted failure (CLAUDE.md §5: 5 of 5 OpenRouter and 2 of 3
 #: Groq model ids guessed from documentation were dead on first probe).
 #:
-#: 45s, not the 10s this shipped with. The worry that produced 10s was a
-#: ~12-minute worst case, but that arithmetic was for FOUR sequential calls at a
-#: 60s timeout with the SDK's 2 retries. This is ONE call with ``max_retries=0``,
-#: so the wall clock is hard-bounded at this number — and 10s was simply below
-#: what a large model on a cold NIM/vLLM worker takes to answer at all, failing
-#: models that work perfectly well in chat.
-PROBE_TIMEOUT = 45.0
+#: Sized to one healthy generation at production's answer cap, nothing more.
+#: ONE call with ``max_retries=0``, so the wall clock is hard-bounded here.
+#:
+#: History worth keeping, because both previous values were set for the wrong
+#: reason: 10s came from fear of a ~12-minute worst case (that arithmetic was
+#: for FOUR sequential calls at 60s with the SDK's 2 retries — not this), then
+#: 45s came from misreading a HANG as a cold start. The hang was NVIDIA NIM
+#: reasoning models never returning without ``chat_template_kwargs``; no timeout
+#: value fixes that, and 45s just made the admin wait longer to learn nothing.
+#: RAG_MAX_ANSWER_TOKENS (700) at a realistic 30-60 tok/s is ~15-25s, so 30s
+#: covers a healthy answer with headroom while failing a broken one promptly —
+#: which matters more, since a timeout is feedback an admin is waiting on.
+PROBE_TIMEOUT = 30.0
 PROBE_PROMPT = "Reply with the single word: ready"
 
 
