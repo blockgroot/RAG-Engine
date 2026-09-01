@@ -3,8 +3,8 @@
 The problem this exists for
 --------------------------
 ``build_aux_llm_provider`` shares ``api_key`` and ``base_url`` with the main
-provider, so ingest contextualization and a member's question draw from the
-SAME rate limit. The free Gemini tier is **15 requests per minute**. Ingest
+provider *by default*, so ingest contextualization and a member's question draw
+from the SAME rate limit. The free Gemini tier is **15 requests per minute**. Ingest
 was previously only ever started by a human pressing Update, so the collision
 was rare and self-inflicted; now that connections sync unattended every few
 hours, a background enrichment run can be in flight at the exact moment
@@ -23,18 +23,26 @@ the last N requests of each minute, so that many are always available to a
 person. It is a reservation, not a prediction — nothing has to estimate
 demand.
 
+When this module does nothing at all
+-----------------------------------
+Setting ``LLM_AUX_BASE_URL`` **and** ``LLM_AUX_API_KEY`` moves ingest onto its
+own endpoint, and separate endpoints cannot contend — so the gate is skipped
+entirely. That is the structural fix; everything above is the managed
+approximation for deployments running on one key. Prefer the structural one:
+throttling background work against a limit it does not touch trades real
+quality (un-prefixed chunks) for nothing.
+
 Known ceiling
 -------------
 The window is **per process**. With ``INGEST_WORKER_IN_API=true`` (the deploy
 default) there is one process and the accounting is exact. Running
 ``scripts/run_worker.py`` separately gives each process its own window, so the
-effective background ceiling doubles. That is a deliberate ceiling rather than
-a bug: a shared counter would need Postgres round trips on the hot path of
-every LLM call, and the correct fix at that scale is a second API key for
-ingest, not a distributed lock.
+effective background ceiling doubles.
 
-ponytail: in-process window; move to a Postgres counter (or a separate ingest
-key) only if a multi-process worker actually starts tripping the quota.
+ponytail: in-process window. Do not reach for a Postgres counter — a shared
+count would cost a round trip on the hot path of every LLM call, and the
+cheaper answer to a multi-process worker tripping the quota is the separate
+aux endpoint above.
 """
 
 from __future__ import annotations
@@ -44,7 +52,7 @@ import threading
 import time
 from collections import deque
 
-from ..config.settings import LLMPacingSettings
+from ..config.settings import LLMPacingSettings, LLMSettings
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +76,14 @@ def record() -> None:
     Called from ``log_llm_call``, which every LLM call in the codebase already
     goes through — so there is no call site that can forget to report, and no
     new plumbing threaded through the pipeline.
+
+    Counts aux calls too, even when aux is on its own endpoint and they consume
+    no main quota. Harmless rather than wrong: interactive calls are never
+    gated, and the background gate is skipped entirely in that configuration —
+    so the only reader of an inflated count is a diagnostic. Teaching this
+    function which endpoint a provider used would mean threading that through
+    every call site, which is the plumbing the single choke point exists to
+    avoid.
     """
     now = time.monotonic()
     with _lock:
@@ -98,6 +114,14 @@ def wait_for_background_slot(settings: LLMPacingSettings | None = None) -> bool:
     """
     settings = settings or LLMPacingSettings.from_env()
     if not settings.enabled or settings.max_rpm <= 0:
+        return True
+
+    # Separate endpoints cannot contend, so there is nothing to yield to. This
+    # is the structural fix that this whole module only approximates: with
+    # LLM_AUX_BASE_URL + LLM_AUX_API_KEY set, ingest draws from its own rate
+    # limit and throttling it against the main window would cost quality
+    # (un-prefixed chunks) to protect a limit it never touches.
+    if LLMSettings.from_env().aux_has_own_endpoint:
         return True
 
     budget = max(1, settings.max_rpm - settings.reserve_rpm)

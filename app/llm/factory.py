@@ -36,12 +36,28 @@ def build_llm_provider(settings: LLMSettings | None = None) -> LLMProvider:
 
 
 def build_aux_llm_provider(settings: LLMSettings | None = None) -> LLMProvider:
-    """Build the auxiliary LLM for cheap classification-style stages (Phase 19)."""
+    """Build the auxiliary LLM for cheap classification-style stages (Phase 19).
+
+    Deliberately NOT wrapped for per-request model routing: that absence is
+    what makes ingest contextualization unroutable, so chunks authored by
+    different models are never ranked against each other inside one index
+    (CLAUDE.md §3). ``test_model_selection`` asserts it by reading this
+    function's source, so do not name the routing wrapper here even in prose.
+
+    Uses ``LLM_AUX_BASE_URL``/``LLM_AUX_API_KEY`` when BOTH are set, so
+    background work can draw from its own rate limit. Unset — the default —
+    falls back to the main endpoint, byte-identical to the behaviour before
+    those settings existed. Falling back per-field would be worse than not
+    supporting this at all: a foreign base_url with the main key 401s on every
+    contextualization and degrades *silently* to un-prefixed chunks, which is
+    exactly the class of failure this codebase keeps paying for.
+    """
     settings = settings or LLMSettings.from_env()
     model = settings.aux_model or settings.model
+    own_endpoint = settings.aux_has_own_endpoint
     return OpenAICompatProvider(
         model=model,
-        api_key=settings.api_key,
-        base_url=settings.base_url,
+        api_key=settings.aux_api_key if own_endpoint else settings.api_key,
+        base_url=settings.aux_base_url if own_endpoint else settings.base_url,
         timeout=settings.timeout,
     )

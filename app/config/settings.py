@@ -160,6 +160,26 @@ class LLMSettings:
     api_key: str | None
     base_url: str | None
     timeout: float = DEFAULT_TIMEOUT
+    #: Separate endpoint for the AUX (ingest contextualization) provider.
+    #: ``None`` — the default — means aux shares the main key and base_url,
+    #: which is the behaviour that existed before these fields and is
+    #: byte-identical today. Setting both moves background LLM work onto its
+    #: own quota, which is the structural version of what ``LLMPacingSettings``
+    #: can only approximate: separate endpoints cannot contend at all.
+    aux_base_url: str | None = None
+    aux_api_key: str | None = None
+
+    @property
+    def aux_has_own_endpoint(self) -> bool:
+        """True when background work draws from a different rate limit.
+
+        Requires BOTH a base_url and a key: a base_url with the main key would
+        send the wrong credential to the wrong host (a 401 on every
+        contextualization, degrading silently to un-prefixed chunks), and a key
+        with no base_url would send a foreign key to the main endpoint. Half-
+        configured therefore means "not configured", never "partly applied".
+        """
+        return bool(self.aux_base_url and self.aux_api_key)
 
     @classmethod
     def from_env(cls) -> "LLMSettings":
@@ -169,6 +189,8 @@ class LLMSettings:
             api_key=os.getenv("LLM_API_KEY"),
             base_url=os.getenv("LLM_BASE_URL"),
             timeout=float(os.getenv("LLM_TIMEOUT") or DEFAULT_TIMEOUT),
+            aux_base_url=os.getenv("LLM_AUX_BASE_URL") or None,
+            aux_api_key=os.getenv("LLM_AUX_API_KEY") or None,
         )
 
 

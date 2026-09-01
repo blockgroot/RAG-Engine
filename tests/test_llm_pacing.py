@@ -139,3 +139,91 @@ def test_contextualize_degrades_instead_of_spending_a_reserved_slot(monkeypatch)
 
     assert out == "chunk text", "must return the chunk unchanged"
     assert calls == [], "must not spend an LLM request it was refused"
+
+
+# --------------------------------------------------------------------------
+# The structural fix: a separate endpoint for background work
+# --------------------------------------------------------------------------
+
+
+def test_a_separate_aux_endpoint_skips_the_gate_entirely(monkeypatch):
+    """Separate endpoints cannot contend, so there is nothing to yield to.
+    Throttling here would cost real quality (un-prefixed chunks) to protect a
+    limit background work never touches."""
+    monkeypatch.setenv("LLM_AUX_BASE_URL", "https://integrate.api.example.com/v1")
+    monkeypatch.setenv("LLM_AUX_API_KEY", "aux-key")
+
+    for _ in range(50):  # far past any budget
+        pacing.record()
+
+    assert pacing.wait_for_background_slot(SETTINGS) is True
+
+
+def test_a_half_configured_aux_endpoint_still_paces(monkeypatch):
+    """base_url without a key would send the main credential to a foreign host
+    -- a 401 on every contextualization, degrading silently. Half-configured
+    must mean "not configured", so the gate stays on."""
+    monkeypatch.setenv("LLM_AUX_BASE_URL", "https://integrate.api.example.com/v1")
+    monkeypatch.delenv("LLM_AUX_API_KEY", raising=False)
+
+    for _ in range(10):
+        pacing.record()
+
+    assert pacing.wait_for_background_slot(SETTINGS) is False
+
+
+def test_a_key_without_a_base_url_still_paces(monkeypatch):
+    """The mirror case: a foreign key sent to the main endpoint."""
+    monkeypatch.delenv("LLM_AUX_BASE_URL", raising=False)
+    monkeypatch.setenv("LLM_AUX_API_KEY", "aux-key")
+
+    for _ in range(10):
+        pacing.record()
+
+    assert pacing.wait_for_background_slot(SETTINGS) is False
+
+
+def test_aux_provider_uses_its_own_endpoint_when_both_are_set(monkeypatch):
+    monkeypatch.setenv("LLM_MODEL", "main-model")
+    monkeypatch.setenv("LLM_API_KEY", "main-key")
+    monkeypatch.setenv("LLM_BASE_URL", "https://main.example.com/v1")
+    monkeypatch.setenv("LLM_AUX_BASE_URL", "https://aux.example.com/v1")
+    monkeypatch.setenv("LLM_AUX_API_KEY", "aux-key")
+
+    from app.llm.factory import build_aux_llm_provider
+
+    provider = build_aux_llm_provider()
+    assert provider.base_url == "https://aux.example.com/v1"
+    assert provider.api_key == "aux-key"
+
+
+def test_aux_provider_falls_back_to_the_main_endpoint_by_default(monkeypatch):
+    """Unset must be byte-identical to the behaviour before these settings
+    existed -- this is the configuration every current deploy runs."""
+    monkeypatch.setenv("LLM_MODEL", "main-model")
+    monkeypatch.setenv("LLM_API_KEY", "main-key")
+    monkeypatch.setenv("LLM_BASE_URL", "https://main.example.com/v1")
+    monkeypatch.delenv("LLM_AUX_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_AUX_API_KEY", raising=False)
+
+    from app.llm.factory import build_aux_llm_provider
+
+    provider = build_aux_llm_provider()
+    assert provider.base_url == "https://main.example.com/v1"
+    assert provider.api_key == "main-key"
+
+
+def test_a_half_configured_aux_provider_never_mixes_credentials(monkeypatch):
+    """The silent-401 case, asserted on the provider itself: a foreign
+    base_url must NOT be paired with the main key."""
+    monkeypatch.setenv("LLM_MODEL", "main-model")
+    monkeypatch.setenv("LLM_API_KEY", "main-key")
+    monkeypatch.setenv("LLM_BASE_URL", "https://main.example.com/v1")
+    monkeypatch.setenv("LLM_AUX_BASE_URL", "https://aux.example.com/v1")
+    monkeypatch.delenv("LLM_AUX_API_KEY", raising=False)
+
+    from app.llm.factory import build_aux_llm_provider
+
+    provider = build_aux_llm_provider()
+    assert provider.base_url == "https://main.example.com/v1"
+    assert provider.api_key == "main-key"
