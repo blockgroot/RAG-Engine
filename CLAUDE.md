@@ -88,6 +88,30 @@ source-agnostic on purpose.
   a bad arg, or any failure returns the fixed fallback.
 - **Routing is a deterministic LangGraph `StateGraph`** — one node per agent,
   a plain Python router. No LLM picks the agent. One tool round, never a loop.
+- **The agent is CHOSEN by measurement, not by the member** (`app/agent/
+  routing.py`). The per-source tabs used to *be* the router; now `choose_agent`
+  embeds the question once and takes the best cosine per provider in ONE
+  grouped query. "No LLM picks the agent" is kept, not amended — the corpus
+  answers "which source resembles this?" directly, and keyword routing fails
+  the central case ("what did we decide about pricing?" has no keyword).
+  Precedence: explicit `agent` → a named **authorized** repo → single embedded
+  source (no probe) → best score above the 0.35 gate → code intent → best score
+  anyway → the old workspace/policy default. **A misroute costs a REFUSAL, not
+  a wrong answer** — the routed agent still runs its own gate and strict prompt,
+  which is why a weak best match still goes to the closest source rather than a
+  default agent that never had the content.
+- **GitHub needs the two keyword rules because it embeds nothing** — with no
+  chunks it can never win a cosine race and would be permanently unreachable.
+  A named repo must beat the probe (a Notion page *about* a repo outscores the
+  repo itself); code intent comes last so a code word inside a document
+  question cannot hijack it. `_CODE_INTENT` is collision-free on purpose:
+  "issue"/"ticket" are Linear's, "page"/"doc" Notion's, "thread" Slack's.
+- The probe carries `org_id` **and** `workspace_id` — a routing decision must
+  never be informed by content the asker cannot read — and skips
+  `needs_reauth` rows. Every failure degrades to the old default; routing never
+  fails a question. The `done` SSE event returns `agent` + `routing_reason`,
+  and the pill names both, because with no tab a member cannot otherwise tell
+  a misroute from a source that genuinely lacked the answer.
 
 **Sources (`app/sources/`)** — one `SourceAdapter` per source; format
 conversion lives *inside* the adapter. Thin SDKs, never frameworks.
@@ -281,7 +305,7 @@ app/rag/      pipeline, prompts, retrieval, query_normalize, summary_fold, …
 app/memory/   org-scoped conversation history + last-retrieval
 app/sources/  SourceAdapter: notion, google_drive, slack, linear + factory
 app/githublive/ GitHub's whole data path — live reads, no vectors
-app/agent/    Agent + per-source agents + orchestration (LangGraph)
+app/agent/    Agent + per-source agents + orchestration (LangGraph) + routing
 app/security/ crypto, untrusted (scrub), rate_limit, client_ip
 app/auth/     OAuth providers, credentials, users, magic_link, session, email
 app/jobs/     ingestion queue + worker + scheduler_queue + autosync
