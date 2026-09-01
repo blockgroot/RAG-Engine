@@ -17,15 +17,27 @@ from ..db.connection import get_connection
 # Services with a real "activity since timestamp T" primitive, which is what
 # a recurring report needs: GitHub ``list_commits(since=)``, Slack
 # ``conversations.history(oldest=)``, Linear ``issues(filter: {updatedAt:
-# {gt: …}})``. Notion and Drive are still absent — their adapters can only
-# answer "what documents exist and are they stale", never "what happened
-# between T1 and T2", so a report on either would need genuinely new fetch
-# logic (Drive's Changes API, a Notion last_edited_time filter).
+# {gt: …}})``.
+#
+# Notion and Drive are now supported too, but NOT by a live API: all four
+# non-GitHub sources read what CHANGED from our own index
+# (``activity.py::fetch_indexed_activity``), keyed on
+# ``documents.source_last_modified``. That is only honest because syncing is
+# automatic (``app/jobs/autosync.py``) — before that the column only advanced
+# when a human pressed Update, so an unattended report would have summarised
+# whatever the last person happened to sync.
+#
+# GitHub stays live and is the exception: it embeds nothing, so there is no
+# index to read, and it has a real ``list_commits(since=)``.
+#
+# Drive's provider string is "google" — what the connect flow writes to
+# oauth_connections. "google_drive" here would list zero connections and let
+# no scheduler be created, silently.
 #
 # Keep this in step with ``app/schedulers/activity.py::_FETCHERS`` — a
 # provider listed here without a fetcher would create schedulers that fail
 # every cycle.
-SUPPORTED_PROVIDERS = ("github", "slack", "linear")
+SUPPORTED_PROVIDERS = ("github", "slack", "linear", "notion", "google")
 FREQUENCIES = ("weekly", "monthly")
 
 # Postgres interval per frequency — used both to seed ``next_run_at`` at
