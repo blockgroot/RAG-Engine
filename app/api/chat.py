@@ -44,6 +44,7 @@ from ..agent.orchestration import build_agent_graph, route_agent_key
 from ..agent.rag_pipeline_agent import RagPipelineAgent
 from ..core.exceptions import AuthError, LLMProviderError, ProviderError
 from ..llm import catalog
+from ..llm import org_model
 from ..llm.routed import answering_model, selected_model, use_model
 from ..db.connection import get_connection
 from ..security.rate_limit import check_rate_limit
@@ -70,6 +71,14 @@ from .suggestions import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+
+def _is_own_model(org_id: str, model: str | None) -> bool:
+    """True only for THIS org's configured model id."""
+    if not model:
+        return False
+    own = org_model.get_org_model_summary(org_id)
+    return bool(own and own["model"] == model)
 
 
 @router.get("/models")
@@ -101,10 +110,30 @@ def list_models(session: SessionClaims = Depends(get_session)):
     # byte-identical to pre-feature behaviour, so only the label moves.
     from ..config.settings import LLMSettings
 
+    models = catalog.as_dicts(backends)
+
+    # The org's own model, if an admin configured one. Appended rather than
+    # replacing the built-ins: their key WILL break eventually (quota, rotation,
+    # a retired model id), and leaving ours selectable is the member's way out
+    # without waiting for an admin.
+    own = org_model.get_org_model_summary(session.org_id)
+    if own:
+        models.append(
+            {
+                # Leads with the company, because `note` only renders as a hover
+                # title in the composer and hover does not exist on touch — the
+                # label has to carry the whole message on its own.
+                "id": own["model"],
+                "label": f"Your company's model — {own['model']}",
+                "note": f"Configured by your admin ({own.get('preset_label') or 'custom'}).",
+                "backend": "custom",
+            }
+        )
+
     return {
         "default": catalog.AUTO,
         "default_label": LLMSettings.from_env().model or "Auto",
-        "models": catalog.as_dicts(backends),
+        "models": models,
     }
 
 AGENT_GITHUB = "github"
@@ -394,7 +423,7 @@ def _stream_answer(
     # returned is not reliably the context this body executes in. Setting it
     # here also resets it per stream, so a pooled thread cannot leak one
     # request's model choice into the next.
-    use_model(model)
+    use_model(model, org_id=org_id)
     try:
         state = _agent_graph().invoke(
             {
@@ -468,7 +497,10 @@ def chat_stream(
     # A client-supplied model string is untrusted input like any other field —
     # it must never reach an outbound call or a cache key unchecked.
     model = body.get("model")
-    if not catalog.is_selectable(model):
+    if not catalog.is_selectable(model) and not _is_own_model(session.org_id, model):
+        # Fails CLOSED. Accepting an unknown id would fall through to the
+        # OpenRouter branch in RoutedLLMProvider and spend the deployment's own
+        # key — an account-wide 50/day quota shared by every tenant.
         raise HTTPException(status_code=400, detail="Unknown model")
 
     workspace_id = body.get("workspace_id")

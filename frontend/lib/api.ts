@@ -328,6 +328,22 @@ export interface SetupChatMessage {
   content: string;
 }
 
+export interface OrgModel {
+  model: string;
+  label: string;
+  preset: string | null;
+  preset_label: string | null;
+  key_tail: string | null;
+  checked_at: string | null;
+  saved_at: string | null;
+}
+
+export interface ModelPreset {
+  id: string;
+  label: string;
+  models_url: string;
+}
+
 export interface ModelChoice {
   id: string;
   label: string;
@@ -426,6 +442,17 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ channel_ids: channelIds }),
     }),
+  getOrgModel: () => request<{ model: OrgModel | null }>("/admin/llm-model"),
+  listModelPresets: () =>
+    request<{ presets: ModelPreset[] }>("/admin/llm-model/presets"),
+  saveOrgModel: (preset: string, model: string, apiKey: string) =>
+    request<{ model: OrgModel }>("/admin/llm-model", {
+      method: "PUT",
+      body: JSON.stringify({ preset, model, api_key: apiKey }),
+    }),
+  deleteOrgModel: () =>
+    request<void>("/admin/llm-model", { method: "DELETE" }),
+
   checkConnectionHealth: (connectionId: string) =>
     request<{ connection_id: string; provider: string; status: string; needs_reauth: boolean }>(
       `/admin/connections/${connectionId}/health`

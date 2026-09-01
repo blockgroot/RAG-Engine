@@ -84,6 +84,7 @@ class OpenAICompatProvider(LLMProvider):
         base_url: str | None = None,
         timeout: float = DEFAULT_TIMEOUT,
         extra_body: dict | None = None,
+        max_retries: int | None = None,
         default_headers: dict | None = None,
     ) -> None:
         if not model:
@@ -114,6 +115,10 @@ class OpenAICompatProvider(LLMProvider):
             base_url=base_url,
             timeout=timeout,
             default_headers=default_headers or None,
+            # The SDK retries twice by default, so `timeout` is really 3x that
+            # wall clock. These routes run in a shared threadpool, so an
+            # unresponsive endpoint must be allowed to fail fast.
+            **({} if max_retries is None else {"max_retries": max_retries}),
         )
 
     def _with_extras(self, kwargs: dict) -> dict:

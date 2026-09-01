@@ -427,6 +427,14 @@ def list_connections(
             "needs_reauth, reauth_reason "
             "FROM oauth_connections "
             "WHERE org_id = %s AND workspace_id IS NOT DISTINCT FROM %s "
+            # The org's own LLM credential lives in this table (no migration)
+            # but is NOT a data source, and every consumer of this list assumes
+            # it is: the admin Sources page calls checkConnectionChanges on each
+            # row (-> build_source_adapter('llm') -> 400, breaking the page),
+            # onboarding treats any row as "Connect done", and trigger_ingest
+            # would enqueue a job no worker can run. Filtered here rather than
+            # at each caller so a future caller cannot forget.
+            "AND provider <> 'llm' "
             "ORDER BY created_at DESC",
             (org_id, workspace_id),
         ).fetchall()
