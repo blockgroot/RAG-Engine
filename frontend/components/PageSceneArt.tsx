@@ -2,7 +2,7 @@
  * Decorative header scenes for admin/explore pages.
  * Soft UI + dimensional layering — SVG only, motion via CSS.
  */
-export type PageSceneVariant = "sources" | "spaces" | "people" | "reports";
+export type PageSceneVariant = "sources" | "spaces" | "people" | "reports" | "model";
 
 export function PageSceneArt({ variant }: { variant: PageSceneVariant }) {
   const label =
@@ -12,7 +12,9 @@ export function PageSceneArt({ variant }: { variant: PageSceneVariant }) {
         ? "Team rooms"
         : variant === "reports"
           ? "On a schedule"
-          : "Your people";
+          : variant === "model"
+            ? "Your own model"
+            : "Your people";
 
   return (
     <div className={`page-scene page-scene--${variant}`} aria-hidden>
@@ -160,6 +162,64 @@ export function PageSceneArt({ variant }: { variant: PageSceneVariant }) {
               strokeWidth="1.5"
               strokeDasharray="4 5"
               opacity="0.45"
+              fill="none"
+            />
+          </>
+        )}
+
+        {/* Model: what bringing your own model IS — your key on the left,
+            your model as a chip, and answers coming back. Shares the panel
+            gradient, soft shadow, float classes and the dashed-arc idiom with
+            the other scenes, but repeats none of their shapes: no stacked
+            cards (sources), no squares (spaces), no avatars (people), no bars
+            or envelope (reports). */}
+        {variant === "model" && (
+          <>
+            {/* The key the admin brings. */}
+            <g className="ps-float ps-float-1" filter={`url(#psSoft-${variant})`}>
+              <rect x="26" y="70" width="96" height="60" rx="14" fill={`url(#psPanel-${variant})`} stroke="#e4e7ec" />
+              <circle cx="54" cy="100" r="11" fill="none" stroke="#14b8a6" strokeWidth="3.5" />
+              <path d="M65 100h30M88 100v8M78 100v6" stroke="#0f766e" strokeWidth="3.5" strokeLinecap="round" opacity="0.75" />
+            </g>
+
+            {/* The model itself, as a chip with a node lattice. */}
+            <g className="ps-float ps-float-2" filter={`url(#psSoft-${variant})`}>
+              <rect x="158" y="34" width="124" height="92" rx="18" fill={`url(#psPanel-${variant})`} stroke="#e4e7ec" />
+              <rect x="182" y="58" width="76" height="44" rx="12" fill="#ecfdf5" stroke="#99f6e4" />
+              <circle cx="200" cy="72" r="5" fill="#14b8a6" />
+              <circle cx="220" cy="88" r="5" fill="#0f766e" opacity="0.7" />
+              <circle cx="240" cy="70" r="5" fill="#5eead4" />
+              <path d="M200 72l20 16 20-18" stroke="#14b8a6" strokeWidth="1.6" fill="none" opacity="0.6" />
+              {/* chip pins, the one shape no other scene uses */}
+              <path d="M182 48v10M206 44v14M234 44v14M258 48v10" stroke="#d0d5dd" strokeWidth="3" strokeLinecap="round" />
+              <path d="M182 102v10M206 102v14M234 102v14M258 102v10" stroke="#d0d5dd" strokeWidth="3" strokeLinecap="round" />
+            </g>
+
+            {/* The answer coming back to the team. */}
+            <g className="ps-float ps-float-3" filter={`url(#psSoft-${variant})`}>
+              <rect x="120" y="140" width="140" height="42" rx="16" fill={`url(#psPanel-${variant})`} stroke="#e4e7ec" />
+              <rect x="138" y="154" width="64" height="7" rx="3.5" fill="#98a2b3" />
+              <rect x="138" y="167" width="40" height="6" rx="3" fill="#d0d5dd" />
+              <rect x="214" y="152" width="30" height="12" rx="6" fill="#ccfbf1" />
+            </g>
+
+            {/* key -> model, and model -> answer. */}
+            <path
+              className="ps-arc"
+              d="M122 96C140 92 148 84 156 78"
+              stroke="#14b8a6"
+              strokeWidth="1.5"
+              strokeDasharray="4 5"
+              opacity="0.55"
+              fill="none"
+            />
+            <path
+              className="ps-arc ps-arc-delay"
+              d="M216 128C212 136 204 140 196 141"
+              stroke="#0f766e"
+              strokeWidth="1.5"
+              strokeDasharray="4 5"
+              opacity="0.4"
               fill="none"
             />
           </>

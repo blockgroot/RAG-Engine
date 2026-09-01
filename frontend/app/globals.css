@@ -5193,3 +5193,152 @@ a.people-card:hover { color: inherit; }
       rotate(calc(-1 * var(--sat-angle)));
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Company > Model — bring your own model.
+
+   The form was one narrow column in a full-width panel, so the right half sat
+   empty. It is now a two-column split whose right side carries a live preview
+   of the dropdown entry the team will actually see, which fills the space with
+   the one thing an admin cannot otherwise check before saving.
+
+   Inputs here tint toward the mint end of the accent ramp rather than sitting
+   on flat white — same tokens as the rest of the app, just used at a warmer
+   weight so a page that is mostly form does not read as a blank sheet.
+--------------------------------------------------------------------------- */
+
+.model-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .model-split { grid-template-columns: minmax(0, 1fr); }
+}
+
+.model-form { display: grid; gap: var(--space-3); }
+
+/* Mint-tinted fields. Focus still uses the shared --accent/--accent-glow ring,
+   so keyboard focus is identical to every other input in the product. */
+.model-form .input {
+  background: linear-gradient(180deg, #ffffff, color-mix(in srgb, var(--accent-soft) 34%, #ffffff));
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+}
+.model-form .input:hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border-strong));
+}
+.model-form select.input {
+  appearance: none;
+  padding-right: 2.5rem;
+  cursor: pointer;
+}
+.model-select-wrap { position: relative; display: block; }
+.model-select-wrap::after {
+  content: "";
+  position: absolute;
+  right: 1rem;
+  top: 50%;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-right: 2px solid var(--accent);
+  border-bottom: 2px solid var(--accent);
+  transform: translateY(-70%) rotate(45deg);
+  pointer-events: none;
+}
+
+/* Live preview of the member-facing dropdown entry. */
+.model-preview {
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border));
+  border-radius: var(--radius);
+  background: linear-gradient(160deg, color-mix(in srgb, var(--accent-soft) 45%, #ffffff), #ffffff);
+  padding: var(--space-3);
+  display: grid;
+  gap: var(--space-2);
+}
+.model-preview-label {
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+.model-preview-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.7rem 0.9rem;
+  border-radius: 999px;
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-soft);
+  font-weight: 600;
+  min-width: 0;
+}
+.model-preview-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-preview-dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 999px;
+  background: linear-gradient(145deg, #14b8a6, var(--accent-strong));
+  flex: none;
+}
+.model-preview-empty { color: var(--ink-muted); font-style: italic; }
+
+/* "What your key is used for" — four facts as cards, not a rule book.
+   Each carries a stance: yes / no / bill / fallback. */
+.model-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: var(--space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.model-fact {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.75rem;
+  padding: var(--space-3);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface-elevated);
+  transition: transform 0.28s var(--ease), box-shadow 0.28s var(--ease);
+}
+.model-fact:hover { transform: translateY(-2px); box-shadow: var(--shadow-lift); }
+.model-fact-mark {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: #ffffff;
+}
+.model-fact-yes  { background: linear-gradient(145deg, #14b8a6, var(--accent-strong)); }
+.model-fact-no   { background: linear-gradient(145deg, #98a2b3, #667085); }
+.model-fact-bill { background: linear-gradient(145deg, #f79009, #b54708); }
+.model-fact-back { background: linear-gradient(145deg, #5eead4, #0f766e); }
+.model-fact strong { display: block; margin-bottom: 0.15rem; }
+.model-fact p { margin: 0; color: var(--ink-muted); font-size: 0.9rem; }
+
+/* Saved-state summary row. */
+.model-current {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+.model-current-name {
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  padding: 0.3rem 0.6rem;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+@media (prefers-reduced-motion: reduce) {
+  .model-fact { transition: none; }
+  .model-fact:hover { transform: none; }
+}
