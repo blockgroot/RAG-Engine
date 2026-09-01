@@ -38,12 +38,17 @@ from ..db.connection import get_connection
 # provider listed here without a fetcher would create schedulers that fail
 # every cycle.
 SUPPORTED_PROVIDERS = ("github", "slack", "linear", "notion", "google")
-FREQUENCIES = ("weekly", "monthly")
+# "daily" only became viable once syncing was automatic
+# (``app/jobs/autosync.py``). A daily window is 24h and the index is at most
+# AUTO_SYNC_INTERVAL_HOURS (6h) behind, so a daily report reads content that
+# actually moved yesterday. Before that, a daily report would have re-summarised
+# the same stale index every morning until someone pressed Update.
+FREQUENCIES = ("daily", "weekly", "monthly")
 
 # Postgres interval per frequency — used both to seed ``next_run_at`` at
 # creation and to advance it after a successful run, so the two can never
 # drift apart.
-_FREQUENCY_INTERVAL = {"weekly": "7 days", "monthly": "1 month"}
+_FREQUENCY_INTERVAL = {"daily": "1 day", "weekly": "7 days", "monthly": "1 month"}
 
 
 class SchedulerError(Exception):

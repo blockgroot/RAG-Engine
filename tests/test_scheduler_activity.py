@@ -479,3 +479,31 @@ def test_the_char_budget_counts_the_joined_line_not_just_the_content():
 
     assert len(digest.text) <= activity.MAX_DIGEST_CHARS
     assert activity._TRUNCATION_MARKER in digest.notes
+
+
+def test_every_frequency_has_an_interval_and_a_first_window():
+    """Three tables must agree, or a cadence is creatable and then unrunnable.
+
+    Same class of invariant as SUPPORTED_PROVIDERS == _FETCHERS: FREQUENCIES
+    gates what the API accepts, _FREQUENCY_INTERVAL advances next_run_at, and
+    _FIRST_WINDOW sizes the very first report. A cadence missing from either
+    table silently falls back to a weekly window (or a KeyError at run time),
+    which is a bug you only see a day later in a delivered report.
+    """
+    from app.schedulers.runner import _FIRST_WINDOW
+    from app.schedulers.store import FREQUENCIES, _FREQUENCY_INTERVAL
+
+    assert set(FREQUENCIES) == set(_FREQUENCY_INTERVAL)
+    assert set(FREQUENCIES) == set(_FIRST_WINDOW)
+
+
+def test_the_setup_chat_tool_offers_every_frequency():
+    """The chat-driven setup path validates against FREQUENCIES, so a cadence
+    absent from the tool enum can be created by the form but never by chat."""
+    from app.schedulers.prompts import CREATE_SCHEDULER_TOOL
+    from app.schedulers.store import FREQUENCIES
+
+    enum = CREATE_SCHEDULER_TOOL["function"]["parameters"]["properties"]["frequency"][
+        "enum"
+    ]
+    assert set(enum) == set(FREQUENCIES)

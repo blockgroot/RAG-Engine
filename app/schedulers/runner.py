@@ -44,7 +44,11 @@ logger = logging.getLogger(__name__)
 # Window used for a scheduler's very first run, when there is no last_run_at
 # to measure from. Matched to the cadence so the first report is not oddly
 # thin (weekly) or unboundedly deep (monthly on a busy service).
-_FIRST_WINDOW = {"weekly": timedelta(days=7), "monthly": timedelta(days=30)}
+_FIRST_WINDOW = {
+    "daily": timedelta(days=1),
+    "weekly": timedelta(days=7),
+    "monthly": timedelta(days=30),
+}
 _DEFAULT_FIRST_WINDOW = timedelta(days=7)
 
 

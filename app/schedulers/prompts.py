@@ -162,7 +162,7 @@ CREATE_SCHEDULER_TOOL = {
                 },
                 "frequency": {
                     "type": "string",
-                    "enum": ["weekly", "monthly"],
+                    "enum": ["daily", "weekly", "monthly"],
                     "description": "How often the report should be generated and emailed.",
                 },
                 "prompt": {
@@ -193,7 +193,7 @@ def build_setup_system_prompt(connected_providers: list[str]) -> str:
     return (
         "You help someone set up a recurring emailed report about one of their "
         "organisation's connected services. You need exactly three things: the "
-        "service, the frequency (weekly or monthly), and what they want the "
+        "service, the frequency (daily, weekly or monthly), and what they want the "
         "report to cover.\n\n"
         f"CONNECTED SERVICES: {services}\n\n"
         "Rules:\n"

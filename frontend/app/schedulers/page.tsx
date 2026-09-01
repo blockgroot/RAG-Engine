@@ -14,6 +14,14 @@ import {
   SchedulerSpace,
 } from "@/lib/api";
 
+/** Cadence labels. A table because the two inline ternaries this replaces both
+ *  read "weekly or else monthly", which silently mislabelled daily. */
+const FREQUENCY_LABEL: Record<string, string> = {
+  daily: "Daily",
+  weekly: "Weekly",
+  monthly: "Monthly",
+};
+
 const PROVIDER_LABEL: Record<string, string> = {
   github: "GitHub",
   slack: "Slack",
@@ -335,7 +343,7 @@ export default function SchedulersPage() {
         <PageHeader
           eyebrow="Explore"
           title="Scheduled reports"
-          description="Set a task once — it runs weekly or monthly and covers only what changed since the last report. We email you when it's ready to read."
+          description="Set a task once — it runs daily, weekly or monthly and covers only what changed since the last report. We email you when it's ready to read."
           scene="reports"
           meta={
             <>
@@ -487,6 +495,7 @@ export default function SchedulersPage() {
                       aria-label="How often?"
                       disabled={creating}
                     >
+                      <option value="daily">Daily</option>
                       <option value="weekly">Weekly</option>
                       <option value="monthly">Monthly</option>
                     </select>
@@ -583,6 +592,7 @@ export default function SchedulersPage() {
                                   onChange={(e) => setDraftFrequency(e.target.value)}
                                   disabled={busyId === scheduler.id}
                                 >
+                                  <option value="daily">Daily</option>
                                   <option value="weekly">Weekly</option>
                                   <option value="monthly">Monthly</option>
                                 </select>
@@ -622,7 +632,7 @@ export default function SchedulersPage() {
                               say how often, and the line below it is where the
                               eye goes last. */}
                           <span className="studio-chip">
-                            {scheduler.frequency === "weekly" ? "weekly" : "monthly"}
+                            {scheduler.frequency}
                           </span>
                           <span
                             className={`studio-chip ${
@@ -716,7 +726,7 @@ export default function SchedulersPage() {
                       <span className="report-row-title">{latest.title}</span>
                       <span className="report-row-labels">
                         <span className="studio-chip">
-                          {latest.frequency === "weekly" ? "Weekly" : "Monthly"}
+                          {FREQUENCY_LABEL[latest.frequency] ?? latest.frequency}
                         </span>
                         <span className="studio-chip">
                           {PROVIDER_LABEL[latest.provider] ?? latest.provider}
