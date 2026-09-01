@@ -602,54 +602,6 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 /* Chat source selector ("Policies | Code"). Shown only when GitHub is
    connected -- it names which corpus answers rather than guessing, since an org
    commonly has both policies and GitHub connected at once. */
-.agent-tabs {
-  display: inline-flex;
-  align-self: flex-start;
-  gap: 0.25rem;
-  padding: 0.25rem;
-  margin-bottom: 1rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 100%;
-  /* As many services connect (Notion/Drive/Slack/Linear/Code/...), this strip
-     scrolls horizontally instead of wrapping or overflowing the topbar —
-     scales to any connector count with no layout change needed per source. */
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.agent-tabs::-webkit-scrollbar { display: none; }
-.agent-tab {
-  font-family: inherit;
-  font-size: 0.85rem;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  color: var(--ink-muted);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  padding: 0.4rem 1rem;
-  cursor: pointer;
-  flex: none;
-  white-space: nowrap;
-  transition: background 0.2s var(--ease), color 0.2s var(--ease),
-    border-color 0.2s var(--ease);
-}
-.agent-tab:hover:not(:disabled):not(.is-active) {
-  color: var(--ink);
-}
-.agent-tab.is-active {
-  color: var(--accent-strong);
-  background: var(--surface-elevated);
-  border-color: var(--border);
-  box-shadow: var(--shadow-soft);
-}
-.agent-tab:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
 
 .chat-composer {
   display: flex;
@@ -854,6 +806,16 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
   border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
 }
 .provenance-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+/* Which agent produced the answer, secondary to the source it came from: the
+   reader wants "Notion" first and "Notion agent" only as confirmation. Divider
+   is a border rather than a character so it never wraps to its own line. */
+.provenance-agent {
+  padding-left: 0.5rem;
+  margin-left: 0.15rem;
+  border-left: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+  font-weight: 550;
+  opacity: 0.8;
+}
 
 .org-chip {
   font-size: 0.82rem;
@@ -1484,27 +1446,6 @@ table .role-chip.role-admin,
   letter-spacing: -0.04em;
 }
 
-.agent-tabs {
-  align-self: auto;
-  margin-bottom: 0;
-  padding: 0.2rem;
-  background: rgba(255,255,255,0.75);
-  backdrop-filter: blur(10px);
-  border-radius: 999px;
-  box-shadow: var(--shadow-soft);
-  animation: rise-in 0.5s var(--ease) 0.05s both;
-}
-.agent-tab {
-  border-radius: 999px;
-  padding: 0.45rem 1.05rem;
-  font-weight: 650;
-}
-.agent-tab.is-active {
-  color: white;
-  background: linear-gradient(145deg, #14b8a6, var(--accent-strong));
-  border-color: transparent;
-  box-shadow: 0 8px 18px -10px rgba(15, 118, 110, 0.75);
-}
 
 .chat-empty {
   gap: 1.1rem;
