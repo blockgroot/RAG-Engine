@@ -609,33 +609,34 @@ export default function SchedulersPage() {
                                 {scheduler.prompt}
                               </strong>
 
-                              {/* Where it reads from. Its own line: it answers
-                                  a different question from "when does it run",
-                                  and two reports on the same service in
-                                  different spaces are otherwise identical. */}
-                              <span className="sched-scope">
-                                {label}
-                                <span className="sched-sep" aria-hidden>
-                                  ·
-                                </span>
-                                {scheduler.workspace_name || "Company-wide"}
-                              </span>
+                              {/* ONE meta line, so the row stays two lines
+                                    tall like it was — scope and next run share
+                                    it, separated by weight rather than by
+                                    another row. Splitting them made the card
+                                    50% taller for no extra information.
 
-                              {/* Next run is the only actionable fact here, so
-                                  it is emphasised and last-sent is demoted
-                                  rather than both sharing one dot-separated
-                                  run of four facts. Cadence is NOT repeated —
-                                  the chip already states it. */}
+                                  "Last sent" is deliberately absent: the
+                                    Delivered reports list below shows every
+                                    send with its timestamp, so repeating the
+                                    most recent one here was the same fact
+                                    twice on one screen. Only its EXCEPTION is
+                                    kept — a scheduler that has never run is
+                                    not represented in that list at all. */}
                               <span className="sched-when">
+                                <span className="sched-scope">
+                                  {label}
+                                  <span className="sched-sep" aria-hidden>
+                                    ·
+                                  </span>
+                                  {scheduler.workspace_name || "Company-wide"}
+                                </span>
                                 <span className="sched-next">
                                   Next{" "}
                                   <strong>{whenLabel(scheduler.next_run_at)}</strong>
                                 </span>
-                                <span className="sched-last">
-                                  {scheduler.last_run_at
-                                    ? `Last sent ${whenLabel(scheduler.last_run_at)}`
-                                    : "Not sent yet"}
-                                </span>
+                                {!scheduler.last_run_at && (
+                                  <span className="sched-last">Not sent yet</span>
+                                )}
                               </span>
 
                               {scheduler.last_error && (

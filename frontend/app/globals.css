@@ -2852,22 +2852,24 @@ table .role-chip.role-admin,
   line-height: 1.35;
 }
 .sched-scope {
-  font-size: 0.84rem;
   font-weight: 600;
   color: var(--ink-muted);
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  flex-wrap: wrap;
+  white-space: nowrap;
 }
 .sched-sep { opacity: 0.45; }
+/* One line holding scope + next run. Wraps only on a narrow viewport, so the
+   row is the same two lines tall it was before — the hierarchy comes from
+   weight and colour, not from extra rows. */
 .sched-when {
-  display: inline-flex;
+  display: flex;
   align-items: baseline;
-  gap: 0.5rem 0.9rem;
+  gap: 0.15rem 0.85rem;
   flex-wrap: wrap;
   font-size: 0.82rem;
-  margin-top: 0.15rem;
+  margin-top: 0.1rem;
 }
 /* Next run is the actionable fact, so it reads at full strength... */
 .sched-next { color: var(--ink-muted); }
