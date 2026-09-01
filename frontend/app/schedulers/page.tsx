@@ -600,23 +600,46 @@ export default function SchedulersPage() {
                             </>
                           ) : (
                             <>
-                              <strong>{scheduler.prompt}</strong>
-                              <span className="muted">
+                              {/* The prompt is the instruction, not a name, so
+                                  it wraps to two lines rather than being cut
+                                  mid-sentence by an ellipsis — the truncated
+                                  version made two similar schedules
+                                  indistinguishable. */}
+                              <strong className="sched-prompt" title={scheduler.prompt}>
+                                {scheduler.prompt}
+                              </strong>
+
+                              {/* Where it reads from. Its own line: it answers
+                                  a different question from "when does it run",
+                                  and two reports on the same service in
+                                  different spaces are otherwise identical. */}
+                              <span className="sched-scope">
                                 {label}
-                                {/* Which scope it reads: two reports on the
-                                    same service in different spaces are
-                                    otherwise indistinguishable. */}
-                                {scheduler.workspace_name
-                                  ? ` in ${scheduler.workspace_name}`
-                                  : " · company-wide"}{" "}
-                                · {scheduler.frequency} · next{" "}
-                                {whenLabel(scheduler.next_run_at)}
-                                {scheduler.last_run_at
-                                  ? ` · last sent ${whenLabel(scheduler.last_run_at)}`
-                                  : " · not sent yet"}
+                                <span className="sched-sep" aria-hidden>
+                                  ·
+                                </span>
+                                {scheduler.workspace_name || "Company-wide"}
                               </span>
+
+                              {/* Next run is the only actionable fact here, so
+                                  it is emphasised and last-sent is demoted
+                                  rather than both sharing one dot-separated
+                                  run of four facts. Cadence is NOT repeated —
+                                  the chip already states it. */}
+                              <span className="sched-when">
+                                <span className="sched-next">
+                                  Next{" "}
+                                  <strong>{whenLabel(scheduler.next_run_at)}</strong>
+                                </span>
+                                <span className="sched-last">
+                                  {scheduler.last_run_at
+                                    ? `Last sent ${whenLabel(scheduler.last_run_at)}`
+                                    : "Not sent yet"}
+                                </span>
+                              </span>
+
                               {scheduler.last_error && (
-                                <span className="muted">
+                                <span className="sched-error">
                                   {stopped
                                     ? "Stopped after repeated failures: "
                                     : "Last run failed, will retry: "}
@@ -628,19 +651,25 @@ export default function SchedulersPage() {
                         </div>
 
                         <div className="people-card-meta">
-                          {/* Cadence beside the status: "active" alone does not
-                              say how often, and the line below it is where the
-                              eye goes last. */}
+                          {/* Cadence is the one chip worth always showing: it
+                              is how the row is scanned. */}
                           <span className="studio-chip">
-                            {scheduler.frequency}
+                            {FREQUENCY_LABEL[scheduler.frequency] ??
+                              scheduler.frequency}
                           </span>
-                          <span
-                            className={`studio-chip ${
-                              stopped ? "studio-chip-warn" : "studio-chip-ok"
-                            }`}
-                          >
-                            {stopped ? "stopped" : "active"}
-                          </span>
+                          {/* Status ONLY when it is not the happy path. Every
+                              row reading "ACTIVE" was pure noise — it made the
+                              one row that actually needed attention look
+                              exactly like the four that did not. */}
+                          {(stopped || scheduler.last_error) && (
+                            <span
+                              className={`studio-chip ${
+                                stopped ? "studio-chip-warn" : "studio-chip-wait"
+                              }`}
+                            >
+                              {stopped ? "stopped" : "retrying"}
+                            </span>
+                          )}
                           <div className="people-card-actions">
                             {editing ? (
                               <>

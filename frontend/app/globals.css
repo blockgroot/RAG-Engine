@@ -2824,6 +2824,61 @@ table .role-chip.role-admin,
   background: #fffaeb;
   border-color: #fedf89;
 }
+/* A failing-but-retrying scheduler: distinct from "stopped", which is
+   terminal. Amber says look at me; blue says I am handling it. */
+.studio-chip-wait {
+  color: #175cd3;
+  background: #eff8ff;
+  border-color: #b2ddff;
+}
+
+/* ---- Scheduler row -------------------------------------------------------
+   The row used to be a title plus one dot-separated run of four facts
+   (source, space, cadence, next run, last sent), with the cadence ALSO in a
+   chip beside it. Nothing was scannable and the cadence was stated twice. Now
+   each line answers one question: what it asks, where it reads, when it runs.
+*/
+/* Overrides .people-card-copy strong, which sets white-space: nowrap +
+   ellipsis and has HIGHER specificity (0,1,1) than a single class — without
+   these three resets the clamp below does nothing and the prompt stays cut to
+   one line, which is the bug this rule exists to fix. */
+.people-card-copy strong.sched-prompt {
+  white-space: normal;
+  text-overflow: clip;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.35;
+}
+.sched-scope {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--ink-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+.sched-sep { opacity: 0.45; }
+.sched-when {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5rem 0.9rem;
+  flex-wrap: wrap;
+  font-size: 0.82rem;
+  margin-top: 0.15rem;
+}
+/* Next run is the actionable fact, so it reads at full strength... */
+.sched-next { color: var(--ink-muted); }
+.sched-next strong { color: var(--ink); font-weight: 650; }
+/* ...and last-sent is history, one step quieter, never competing with it. */
+.sched-last { color: var(--ink-muted); opacity: 0.72; }
+.sched-error {
+  font-size: 0.82rem;
+  color: #b54708;
+  margin-top: 0.2rem;
+}
 
 .page-scene {
   position: relative;
