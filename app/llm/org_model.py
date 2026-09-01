@@ -73,6 +73,12 @@ PRESETS: tuple[Preset, ...] = (
         models_url="https://openrouter.ai/models",
     ),
     Preset(
+        id="nvidia",
+        label="NVIDIA NIM",
+        base_url="https://integrate.api.nvidia.com/v1",
+        models_url="https://build.nvidia.com/models",
+    ),
+    Preset(
         id="groq",
         label="Groq",
         base_url="https://api.groq.com/openai/v1",
