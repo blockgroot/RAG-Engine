@@ -196,3 +196,25 @@ def signup_email_cleanup():
                 "DELETE FROM org_signup_requests WHERE email = ANY(%s::text[])",
                 (created,),
             )
+
+
+@pytest.fixture(autouse=True)
+def _reset_llm_pacing():
+    """Clear the LLM rate-limit window between tests.
+
+    ``app/llm/pacing.py`` keeps a 60-second window of LLM calls in
+    process-global state, and ``log_llm_call`` feeds it — so every test with a
+    fake LLM contributes. Without this reset, a test late in the session sees a
+    window already full of other tests' calls and gets its background slot
+    refused, which looks like a broken retry rather than pollution. (It did:
+    three test_ingest_progress cases passed alone and failed in a full run.)
+
+    Autouse and unconditional: the leak is invisible in isolation, which is
+    exactly the kind of state that must be reset by default rather than
+    remembered per file.
+    """
+    from app.llm import pacing
+
+    pacing.reset_for_tests()
+    yield
+    pacing.reset_for_tests()

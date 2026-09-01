@@ -1346,3 +1346,49 @@ class AutoSyncSettings:
             ),
             tick_secret=(os.getenv("INTERNAL_TICK_SECRET") or None),
         )
+
+
+# LLM request pacing. The aux (ingest) provider shares the main provider's key
+# and endpoint, so background contextualization and a member's live question
+# compete for ONE rate limit. Free Gemini is 15 rpm, and a 429 on the answer
+# path is a failed answer rather than a slow one.
+#
+# reserve_rpm is the guarantee: background work never consumes the last N
+# requests of a minute, so that many are always there for a person. Interactive
+# calls are never throttled — they only report themselves.
+#
+# Defaults assume the free Gemini tier. Raise max_rpm to match a paid tier;
+# set LLM_PACING_ENABLED=false only when the endpoint has no meaningful limit.
+DEFAULT_LLM_MAX_RPM = 15
+DEFAULT_LLM_RESERVE_RPM = 5
+DEFAULT_LLM_PACING_MAX_WAIT_SECONDS = 45.0
+
+
+@dataclass(frozen=True)
+class LLMPacingSettings:
+    """How much of the LLM rate limit background work may use."""
+
+    enabled: bool = True
+    max_rpm: int = DEFAULT_LLM_MAX_RPM
+    reserve_rpm: int = DEFAULT_LLM_RESERVE_RPM
+    #: How long one background call may wait for a slot before giving up and
+    #: degrading. Bounded because a wedged ingest job is worse than a chunk
+    #: without its context prefix.
+    max_wait_seconds: float = DEFAULT_LLM_PACING_MAX_WAIT_SECONDS
+
+    @classmethod
+    def from_env(cls) -> "LLMPacingSettings":
+        max_rpm = int(os.getenv("LLM_MAX_RPM") or DEFAULT_LLM_MAX_RPM)
+        reserve = int(os.getenv("LLM_RESERVE_RPM") or DEFAULT_LLM_RESERVE_RPM)
+        # A reserve at or above the limit would starve background work
+        # completely and silently; clamp so at least one slot remains.
+        reserve = max(0, min(reserve, max(0, max_rpm - 1)))
+        return cls(
+            enabled=env_bool("LLM_PACING_ENABLED", True),
+            max_rpm=max_rpm,
+            reserve_rpm=reserve,
+            max_wait_seconds=float(
+                os.getenv("LLM_PACING_MAX_WAIT_SECONDS")
+                or DEFAULT_LLM_PACING_MAX_WAIT_SECONDS
+            ),
+        )

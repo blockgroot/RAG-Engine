@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from ..core.exceptions import LLMProviderError, LLMRateLimitError
 from ..llm.base import LLMProvider
 from ..llm.metering import log_llm_call
+from ..llm.pacing import wait_for_background_slot
 from ..llm.stages import STAGE_INGEST_CONTEXT
 from ..security.untrusted import scrub_untrusted_text
 
@@ -128,6 +129,14 @@ def contextualize_chunk(
     """
     prompt = _build_prompt(document_text, chunk, hypothetical_questions=hypothetical_questions)
     for attempt in range(_MAX_ATTEMPTS):
+        # Yield to live traffic BEFORE spending a request. Ingest now runs
+        # unattended (app/jobs/autosync.py), so this enrichment can be in
+        # flight exactly when someone asks a question — and the two share one
+        # rate limit. A refused slot degrades this chunk, which the retry loop
+        # below already treats as acceptable; a 429 on the answer path does not
+        # degrade, it fails.
+        if not wait_for_background_slot():
+            return chunk
         try:
             raw = llm.generate(prompt).strip()
             log_llm_call(STAGE_INGEST_CONTEXT, llm, org_id=org_id)
