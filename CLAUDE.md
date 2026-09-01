@@ -106,6 +106,14 @@ source-agnostic on purpose.
   repo itself); code intent comes last so a code word inside a document
   question cannot hijack it. `_CODE_INTENT` is collision-free on purpose:
   "issue"/"ticket" are Linear's, "page"/"doc" Notion's, "thread" Slack's.
+- **Starter chips span EVERY connected source** (`GET /chat/suggestions` with
+  no `agent`; `build_combined_suggestions`). One provider's chips read as "this
+  box is for Notion" and hid every other source from someone who never asked —
+  the empty state is where most people learn what is connected. Interleaved,
+  never concatenated: with a cap, concatenation means the last provider never
+  appears. Provider-agnostic titles fill in **only** when no document provider
+  resolved (rows predating `source_provider` are otherwise invisible), since
+  they are a superset and adding both duplicates a doc's chip.
 - The probe carries `org_id` **and** `workspace_id` — a routing decision must
   never be informed by content the asker cannot read — and skips
   `needs_reauth` rows. Every failure degrades to the old default; routing never
@@ -130,10 +138,16 @@ conversion lives *inside* the adapter. Thin SDKs, never frameworks.
   "streaming" chunks an **already-decided** answer — recovery or the web path
   can still discard a gate-passing generation.
 - `frontend/` keeps the session only in the httpOnly cookie. No
-  Tailwind/UI-kit — plain CSS vars and global classes.
+  Tailwind/UI-kit — plain CSS vars and global classes. **A space member
+  opens on Ask, an owner on management** — the space page is invite/connect/
+  delete, all disabled for a member. Deliberately not a redirect: that
+  would make the people list unreachable and bounce any link back out.
 
 **Activity Scheduler (`app/schedulers/`)** — a member saves free-text intent
-+ a cadence; each run fetches that service's activity since the last run,
++ a cadence (**daily/weekly/monthly** — daily only became honest once syncing
+was automatic; before that it re-summarised the same stale index every morning.
+`FREQUENCIES`, `_FREQUENCY_INTERVAL` and `_FIRST_WINDOW` **must all agree** or a
+cadence is creatable and then silently gets a weekly window); each run fetches that service's activity since the last run,
 hands it plus the prompt to an LLM, and emails the result. **Reads live,
 embeds nothing** (the `app/githublive/` pattern).
 - **All five sources are schedulable, but only GitHub reads live.** Slack,
