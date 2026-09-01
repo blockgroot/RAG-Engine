@@ -5234,6 +5234,10 @@ a.people-card:hover { color: inherit; }
   cursor: pointer;
 }
 .model-select-wrap { position: relative; display: block; }
+/* .field is `flex-direction: column`, so this wrapper stretches to full width
+   while the select inside it would size to its content — leaving the chevron
+   pinned to the wrapper's edge, floating outside the visible field. */
+.model-select-wrap select.input { width: 100%; display: block; }
 .model-select-wrap::after {
   content: "";
   position: absolute;
@@ -5289,38 +5293,48 @@ a.people-card:hover { color: inherit; }
    Each carries a stance: yes / no / bill / fallback. */
 .model-facts {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
-  gap: var(--space-2);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem 1.25rem;
   list-style: none;
   margin: 0;
   padding: 0;
 }
+@media (max-width: 720px) {
+  .model-facts { grid-template-columns: minmax(0, 1fr); }
+}
+/* Rows, not cards. Four bordered boxes stacked two-up read as heavier than the
+   four short facts they carry; a hairline rule between rows is enough
+   separation and roughly halves the block's height. */
 .model-fact {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  gap: 0.75rem;
-  padding: var(--space-3);
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-  background: var(--surface-elevated);
-  transition: transform 0.28s var(--ease), box-shadow 0.28s var(--ease);
+  gap: 0.7rem;
+  align-items: start;
+  padding: 0.7rem 0;
+  border-top: 1px solid var(--border);
 }
-.model-fact:hover { transform: translateY(-2px); box-shadow: var(--shadow-lift); }
+.model-facts > .model-fact:first-child,
+.model-facts > .model-fact:nth-child(2) { border-top: 0; }
+@media (max-width: 720px) {
+  .model-facts > .model-fact:nth-child(2) { border-top: 1px solid var(--border); }
+}
 .model-fact-mark {
-  width: 2rem;
-  height: 2rem;
-  border-radius: 10px;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 7px;
   display: grid;
   place-items: center;
   flex: none;
   color: #ffffff;
+  margin-top: 0.1rem;
 }
+.model-fact-mark svg { width: 12px; height: 12px; }
 .model-fact-yes  { background: linear-gradient(145deg, #14b8a6, var(--accent-strong)); }
 .model-fact-no   { background: linear-gradient(145deg, #98a2b3, #667085); }
 .model-fact-bill { background: linear-gradient(145deg, #f79009, #b54708); }
 .model-fact-back { background: linear-gradient(145deg, #5eead4, #0f766e); }
-.model-fact strong { display: block; margin-bottom: 0.15rem; }
-.model-fact p { margin: 0; color: var(--ink-muted); font-size: 0.9rem; }
+.model-fact strong { display: block; font-size: 0.92rem; }
+.model-fact p { margin: 0.1rem 0 0; color: var(--ink-muted); font-size: 0.85rem; line-height: 1.45; }
 
 /* Saved-state summary row. */
 .model-current {
@@ -5337,8 +5351,4 @@ a.people-card:hover { color: inherit; }
   background: var(--accent-soft);
   color: var(--accent-strong);
   font-weight: 600;
-}
-@media (prefers-reduced-motion: reduce) {
-  .model-fact { transition: none; }
-  .model-fact:hover { transform: none; }
 }
