@@ -192,7 +192,7 @@ elapsed).
   window. An unset `INTERNAL_TICK_SECRET` **404s the route** — an
   unauthenticated tick is a free way to spend every tenant's provider quota.
 - **Background LLM work reserves headroom for people** (`pacing.py`).
-  `build_aux_llm_provider` shares the main key/endpoint, so ingest
+  `build_aux_llm_provider` shares the main key/endpoint *by default*, so ingest
   contextualization and a live question compete for ONE 15 rpm limit, and a 429
   on the answer path is a *failed* answer. `LLM_RESERVE_RPM=5` of
   `LLM_MAX_RPM=15` is never spendable by background work — a reservation, not a
@@ -200,6 +200,15 @@ elapsed).
   themselves, hooked into `log_llm_call` (the one function both call sites
   already route through, so no future call site can forget). A refused slot
   returns the bare chunk *without* spending a request.
+- **`LLM_AUX_BASE_URL` + `LLM_AUX_API_KEY` is the STRUCTURAL fix and is
+  preferred** — separate endpoints cannot contend, so `pacing` skips its gate
+  entirely and background work stops paying quality (un-prefixed chunks) to
+  protect a limit it never touches. **BOTH or neither**: a foreign `base_url`
+  with the main key 401s on every contextualization and degrades *silently*, so
+  half-configured means "not configured" (`aux_has_own_endpoint`). It changes
+  quota, **not policy** — contextualization sends tenant chunk text, so an
+  endpoint that trains on prompts is no more acceptable here than on the answer
+  path.
 
 **Multi-Model Selection (`app/llm/routed.py`, `catalog.py`)** — a member picks
 which model answers, on every prompt surface (chat composer, scheduler create,
@@ -329,9 +338,14 @@ frontend/ Next.js 15 portal · tests/ pytest
 - **~6 LLM calls per question** (rewrite, decompose, generate, audit,
   web-decision, tone) means **~1.6 questions/min saturates the background
   budget**, so under sustained chat load contextualization degrades rather than
-  waits. Visible only via `pacing`'s `logger.info`. The real fix at scale is
-  separate quota for ingest — and Gemini limits are **per project**, so a second
-  key in the same project shares the same 15 rpm; it needs a second project.
+  waits. Visible only via `pacing`'s `logger.info` — and the fix is
+  `LLM_AUX_BASE_URL`/`LLM_AUX_API_KEY`, not a bigger reserve. Note Gemini limits
+  are **per project**, so a second key in the same project shares the same
+  15 rpm; a separate aux endpoint means a different project or vendor.
+- **Do not name the routing wrapper class in `build_aux_llm_provider`'s
+  docstring** — `test_model_selection` asserts its absence by reading the
+  function's *source*, so even a prose mention fails the test. Cost: one
+  confusing red run.
 - The grounded prompt is ~2.3k tokens, 96% fixed prefix, already ordered for
   provider caching. **Never move CONTEXT/QUESTION earlier.**
 
