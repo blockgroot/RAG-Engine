@@ -108,3 +108,79 @@ def test_workspace_suggestions_sound_like_notes_not_hr_policy():
 def test_policy_suggestions_empty_without_titles():
     assert build_policy_suggestions([]) == []
     assert build_policy_suggestions(["  ", ""]) == []
+
+
+# --------------------------------------------------------------------------
+# Combined chips (Ask is one box now, so chips must span every source)
+# --------------------------------------------------------------------------
+
+
+def test_combined_chips_represent_every_connected_source():
+    """The empty state is where most people learn what is connected, so a
+    provider with content must not be absent from it."""
+    from app.api.suggestions import build_combined_suggestions
+
+    out = build_combined_suggestions(
+        {
+            "notion": ["N1", "N2", "N3", "N4"],
+            "slack": ["S1", "S2", "S3", "S4"],
+            "github": ["G1", "G2"],
+        }
+    )
+
+    assert {q[0] for q in out} == {"N", "S", "G"}
+
+
+def test_combined_chips_interleave_rather_than_concatenate():
+    """Concatenation means the last provider never appears once the cap bites:
+    a Notion+Slack tenant would show four Notion chips and no Slack."""
+    from app.api.suggestions import build_combined_suggestions
+
+    out = build_combined_suggestions(
+        {"notion": ["N1", "N2", "N3", "N4", "N5", "N6"], "slack": ["S1", "S2"]}
+    )
+
+    assert out[0].startswith("N")
+    assert out[1].startswith("S"), "the second chip must come from the second source"
+
+
+def test_combined_chips_are_bounded():
+    from app.api.suggestions import build_combined_suggestions, _MAX_COMBINED
+
+    out = build_combined_suggestions(
+        {p: [f"{p}-{i}" for i in range(10)] for p in ("notion", "slack", "linear")}
+    )
+
+    assert len(out) == _MAX_COMBINED
+
+
+def test_a_single_connected_source_still_fills_the_chips():
+    """With one source there is nothing to interleave, and showing only one or
+    two chips would look like the feature had half-loaded."""
+    from app.api.suggestions import build_combined_suggestions, _MAX_COMBINED
+
+    out = build_combined_suggestions({"notion": [f"N{i}" for i in range(8)]})
+
+    assert len(out) == _MAX_COMBINED
+    assert all(q.startswith("N") for q in out)
+
+
+def test_combined_chips_never_repeat_a_question():
+    """Two providers can produce the same generic question; a duplicated chip
+    reads as a rendering bug."""
+    from app.api.suggestions import build_combined_suggestions
+
+    out = build_combined_suggestions(
+        {"notion": ["Same question", "N2"], "google": ["Same question", "G2"]}
+    )
+
+    assert len(out) == len(set(out))
+
+
+def test_no_sources_yields_no_chips():
+    """Empty, not placeholder copy: a hardcoded suggestion would be the one
+    thing this module exists to avoid."""
+    from app.api.suggestions import build_combined_suggestions
+
+    assert build_combined_suggestions({}) == []
+    assert build_combined_suggestions({"notion": [], "slack": []}) == []

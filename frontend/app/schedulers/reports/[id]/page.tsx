@@ -8,6 +8,21 @@ import { PageHeader } from "@/components/PageHeader";
 import { useMe } from "@/lib/useMe";
 import { api, ReportDetail } from "@/lib/api";
 
+const FREQUENCY_LABEL: Record<string, string> = {
+  daily: "Daily",
+  weekly: "Weekly",
+  monthly: "Monthly",
+};
+
+/** How to name the window this report covers. "Week of 18 August" reads
+ *  naturally; "Week of" on a one-day window did not, which is what the old
+ *  weekly-or-else-Period ternary produced for a daily report. */
+const WINDOW_NOUN: Record<string, string> = {
+  daily: "",
+  weekly: "Week of",
+  monthly: "Period",
+};
+
 const PROVIDER_LABEL: Record<string, string> = {
   github: "GitHub",
   slack: "Slack",
@@ -114,7 +129,7 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
         <PageHeader
           eyebrow={`${report.frequency} report`}
           title={report.title}
-          description={`${report.frequency === "weekly" ? "Week of" : "Period"} ${windowLabel(
+          description={`${WINDOW_NOUN[report.frequency] ?? "Period"} ${windowLabel(
             report.window_start,
             report.window_end
           )} · generated ${sentLabel(report.created_at)}`}
@@ -124,7 +139,7 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
               <span className="studio-chip">{provider}</span>
               <span className="studio-chip">{report.space_name ?? "Company-wide"}</span>
               <span className="studio-chip">
-                {report.frequency === "weekly" ? "Weekly" : "Monthly"}
+                {FREQUENCY_LABEL[report.frequency] ?? report.frequency}
               </span>
               {report.item_count > 0 ? (
                 <span className="studio-chip">

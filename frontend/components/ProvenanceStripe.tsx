@@ -24,17 +24,48 @@ const COLORS: Record<string, string> = {
   none: "var(--provenance-none)",
 };
 
-/** Small color-coded pill so a reader can tell at a glance whether an answer
- * came from company policy, Slack, GitHub, a web search, or wasn't found at all. */
-export function ProvenanceStripe({ source }: { source: string }) {
-  const color = COLORS[source] || COLORS.none;
+/** Which agent answered, named. `agent` is the routed agent key; `source` is
+ * what the answer was grounded on. They differ in exactly one case that
+ * matters: the web fallback, where a source agent was asked but answered from
+ * an external search — so `source` wins there, or the pill would claim Notion
+ * grounded something Notion never saw.
+ *
+ * Colour is keyed on whichever identity is displayed, so the pill stays
+ * consistent with its own text. */
+const AGENT_NAMES: Record<string, string> = {
+  policy: "Docs agent",
+  workspace: "Workspace agent",
+  github: "GitHub agent",
+  slack: "Slack agent",
+  linear: "Linear agent",
+  notion: "Notion agent",
+  google: "Drive agent",
+};
+
+export function ProvenanceStripe({
+  source,
+  agent,
+}: {
+  source: string;
+  agent?: string;
+}) {
+  // A refusal ("none") names no source, and neither should the pill: the
+  // routed agent is a diagnostic, not a provenance claim, when nothing was
+  // grounded.
+  const grounded = source !== "none";
+  const identity = source === "web" || !grounded ? source : agent || source;
+  const color = COLORS[identity] || COLORS.none;
+  const label = LABELS[identity] || LABELS.none;
+  const agentName = grounded && source !== "web" ? AGENT_NAMES[agent || ""] : undefined;
+
   return (
     <span
       className="provenance-pill"
       style={{ color, background: `color-mix(in srgb, ${color} 14%, transparent)` }}
     >
       <span className="provenance-dot" style={{ background: color }} />
-      {LABELS[source] || LABELS.none}
+      {label}
+      {agentName && <span className="provenance-agent">{agentName}</span>}
     </span>
   );
 }

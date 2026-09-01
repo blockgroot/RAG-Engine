@@ -1,0 +1,84 @@
+# Background tick — keeps freshness running on a free-tier host.
+#
+# WHY THIS EXISTS
+# A free Render web service spins down after ~15 minutes with no INBOUND HTTP
+# request. Process activity does not count, so the in-process worker thread
+# (ingestion queue, auto-sync, activity scheduler) stops shortly after the last
+# user closes the tab. Every "syncs every 6 hours" guarantee is fiction without
+# something outside the box knocking on the door.
+#
+# WHY GITHUB ACTIONS RATHER THAN AN EXTERNAL CRON SERVICE
+# It lives in the repo, so it starts itself on push with no third-party signup
+# and nothing to forget when the service is redeployed. Scheduled workflows are
+# free and unlimited on a PUBLIC repository (this one). Two honest caveats:
+#
+#   * GitHub's scheduler is best-effort. A 10-minute cron can drift by 5-30+
+#     minutes under platform load. That is fine here -- the tick is idempotent
+#     and every deadline it feeds is hours wide, not minutes -- but it is NOT a
+#     punctual scheduler. If exact cadence ever matters, point cron-job.org at
+#     the same endpoint instead; nothing else changes.
+#   * GitHub DISABLES scheduled workflows after 60 days with no repo activity.
+#     A dormant repo silently stops ticking. The tick's own log line is how you
+#     would notice.
+#
+# SETUP (one time)
+#   Repo -> Settings -> Secrets and variables -> Actions:
+#     TICK_URL     https://<backend-host>/internal/tick
+#     TICK_SECRET  same value as the backend's INTERNAL_TICK_SECRET
+#   With either secret missing the job exits 0 without calling anything, so a
+#   fork or a fresh clone does not fail CI on someone else's infrastructure.
+
+name: background-tick
+
+on:
+  schedule:
+    # Every 10 minutes. The instance idles out at ~15, so this keeps it warm
+    # with margin for GitHub's scheduling drift.
+    - cron: "*/10 * * * *"
+  # Manual run, for verifying the wiring without waiting for the schedule.
+  workflow_dispatch:
+
+# Never queue ticks behind each other: a delayed run plus a fresh one would
+# both fire, and the older one carries no information the newer lacks.
+concurrency:
+  group: background-tick
+  cancel-in-progress: true
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Poke the backend
+        env:
+          TICK_URL: ${{ secrets.TICK_URL }}
+          TICK_SECRET: ${{ secrets.TICK_SECRET }}
+        run: |
+          if [ -z "$TICK_URL" ] || [ -z "$TICK_SECRET" ]; then
+            echo "TICK_URL/TICK_SECRET not configured — nothing to do."
+            exit 0
+          fi
+
+          # --max-time 120, not the default: the FIRST request after an idle
+          # period pays a cold start (30-60s). The tick itself only enqueues
+          # (the durable queue does the slow work), so a generous ceiling here
+          # never means holding a connection open through an ingest.
+          #
+          # -o/-w rather than -f: the body carries the per-step counts, and a
+          # tick that returns 200 while queueing nothing is exactly the silent
+          # failure worth seeing in the log.
+          body=$(mktemp)
+          code=$(curl -sS -X POST "$TICK_URL" \
+            -H "X-Tick-Secret: $TICK_SECRET" \
+            --max-time 120 --retry 2 --retry-connrefused \
+            -o "$body" -w "%{http_code}") || true
+
+          echo "HTTP $code"
+          cat "$body"; echo
+
+          # 404 means the backend has no INTERNAL_TICK_SECRET set — a real
+          # misconfiguration, not a transient error, so fail loudly.
+          if [ "$code" != "200" ]; then
+            echo "::error::Tick failed with HTTP $code"
+            exit 1
+          fi

@@ -482,15 +482,20 @@ export const api = {
       body: JSON.stringify(workspaceId ? { workspace_id: workspaceId } : {}),
     }),
 
-  chatSuggestions: (
-    agent: "policy" | "github" | "slack" | "linear" | "notion" | "google",
-    workspaceId?: string | null
-  ) => {
-    const params = new URLSearchParams({ agent });
+  /** Starter chips for the Ask empty state, spanning EVERY connected source.
+   *  No `agent` param: Ask is one box, so chips from a single provider would
+   *  read as "this box is for Notion" and would hide the other sources from
+   *  someone who has never asked about them. `sources` says which providers
+   *  actually contributed. */
+  chatSuggestions: (workspaceId?: string | null) => {
+    const params = new URLSearchParams();
     if (workspaceId) params.set("workspace_id", workspaceId);
-    return request<{ agent: string; questions: string[] }>(
-      `/chat/suggestions?${params.toString()}`
-    );
+    const query = params.toString();
+    return request<{
+      agent: string | null;
+      sources: string[];
+      questions: string[];
+    }>(`/chat/suggestions${query ? `?${query}` : ""}`);
   },
 
   chatModels: () =>

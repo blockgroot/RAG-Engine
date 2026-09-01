@@ -519,17 +519,36 @@ def test_creating_in_someone_elses_space_is_refused(client, member_org):
 
 
 @requires_db
-def test_a_space_with_only_unschedulable_sources_is_still_listed(client, member_org):
-    """"Meeting notes has Drive, which cannot be scheduled yet" is a fact the
-    user can act on; a missing space reads as a bug."""
+def test_a_drive_space_is_now_schedulable(client, member_org):
+    """Drive used to be listed with an empty ``providers`` (connected but not
+    schedulable). Reports read from the index now, which is what made Drive and
+    Notion schedulable at all — so it must appear in BOTH lists."""
     org_id, member, cookies = member_org
     _space_with_connection(org_id, member.id, provider="google", name="Docs space")
 
     spaces = {s["name"]: s for s in
               client.get("/schedulers/connections", cookies=cookies).json()["spaces"]}
 
-    assert spaces["Docs space"]["providers"] == []
+    assert spaces["Docs space"]["providers"] == ["google"]
     assert spaces["Docs space"]["connected"] == ["google"]
+
+
+@requires_db
+def test_a_space_with_no_connections_is_still_listed(client, member_org):
+    """The disclosure rule that outlived the change: "Meeting notes has nothing
+    connected" is a fact the user can act on, while a silently missing space
+    reads as a bug. Every provider is schedulable now, so an empty
+    ``providers`` means "nothing connected" rather than "nothing schedulable"."""
+    org_id, member, cookies = member_org
+    from app.workspaces.store import create_workspace
+
+    create_workspace(org_id, "Empty space", member.id)
+
+    spaces = {s["name"]: s for s in
+              client.get("/schedulers/connections", cookies=cookies).json()["spaces"]}
+
+    assert spaces["Empty space"]["providers"] == []
+    assert spaces["Empty space"]["connected"] == []
 
 
 @requires_db

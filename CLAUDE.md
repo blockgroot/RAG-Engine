@@ -88,6 +88,38 @@ source-agnostic on purpose.
   a bad arg, or any failure returns the fixed fallback.
 - **Routing is a deterministic LangGraph `StateGraph`** — one node per agent,
   a plain Python router. No LLM picks the agent. One tool round, never a loop.
+- **The agent is CHOSEN by measurement, not by the member** (`app/agent/
+  routing.py`). The per-source tabs used to *be* the router; now `choose_agent`
+  embeds the question once and takes the best cosine per provider in ONE
+  grouped query. "No LLM picks the agent" is kept, not amended — the corpus
+  answers "which source resembles this?" directly, and keyword routing fails
+  the central case ("what did we decide about pricing?" has no keyword).
+  Precedence: explicit `agent` → a named **authorized** repo → single embedded
+  source (no probe) → best score above the 0.35 gate → code intent → best score
+  anyway → the old workspace/policy default. **A misroute costs a REFUSAL, not
+  a wrong answer** — the routed agent still runs its own gate and strict prompt,
+  which is why a weak best match still goes to the closest source rather than a
+  default agent that never had the content.
+- **GitHub needs the two keyword rules because it embeds nothing** — with no
+  chunks it can never win a cosine race and would be permanently unreachable.
+  A named repo must beat the probe (a Notion page *about* a repo outscores the
+  repo itself); code intent comes last so a code word inside a document
+  question cannot hijack it. `_CODE_INTENT` is collision-free on purpose:
+  "issue"/"ticket" are Linear's, "page"/"doc" Notion's, "thread" Slack's.
+- **Starter chips span EVERY connected source** (`GET /chat/suggestions` with
+  no `agent`; `build_combined_suggestions`). One provider's chips read as "this
+  box is for Notion" and hid every other source from someone who never asked —
+  the empty state is where most people learn what is connected. Interleaved,
+  never concatenated: with a cap, concatenation means the last provider never
+  appears. Provider-agnostic titles fill in **only** when no document provider
+  resolved (rows predating `source_provider` are otherwise invisible), since
+  they are a superset and adding both duplicates a doc's chip.
+- The probe carries `org_id` **and** `workspace_id` — a routing decision must
+  never be informed by content the asker cannot read — and skips
+  `needs_reauth` rows. Every failure degrades to the old default; routing never
+  fails a question. The `done` SSE event returns `agent` + `routing_reason`,
+  and the pill names both, because with no tab a member cannot otherwise tell
+  a misroute from a source that genuinely lacked the answer.
 
 **Sources (`app/sources/`)** — one `SourceAdapter` per source; format
 conversion lives *inside* the adapter. Thin SDKs, never frameworks.
@@ -106,17 +138,42 @@ conversion lives *inside* the adapter. Thin SDKs, never frameworks.
   "streaming" chunks an **already-decided** answer — recovery or the web path
   can still discard a gate-passing generation.
 - `frontend/` keeps the session only in the httpOnly cookie. No
-  Tailwind/UI-kit — plain CSS vars and global classes.
+  Tailwind/UI-kit — plain CSS vars and global classes. **A space member
+  opens on Ask, an owner on management** — the space page is invite/connect/
+  delete, all disabled for a member. Deliberately not a redirect: that
+  would make the people list unreachable and bounce any link back out.
 
 **Activity Scheduler (`app/schedulers/`)** — a member saves free-text intent
-+ a cadence; each run fetches that service's activity since the last run,
++ a cadence (**daily/weekly/monthly** — daily only became honest once syncing
+was automatic; before that it re-summarised the same stale index every morning.
+`FREQUENCIES`, `_FREQUENCY_INTERVAL` and `_FIRST_WINDOW` **must all agree** or a
+cadence is creatable and then silently gets a weekly window); each run fetches that service's activity since the last run,
 hands it plus the prompt to an LLM, and emails the result. **Reads live,
 embeds nothing** (the `app/githublive/` pattern).
-- **Sources = only those with an "activity since T" primitive**: GitHub
-  (`list_commits(since=)`), Slack (`history(oldest=)`), Linear
-  (`filter:{updatedAt:{gt:…}}`). Notion/Drive are absent on purpose —
-  `SourceAdapter` answers "does this exist / is it stale", never "what
-  happened between T1 and T2". `SUPPORTED_PROVIDERS` **must equal** `_FETCHERS`.
+- **All five sources are schedulable, but only GitHub reads live.** Slack,
+  Linear, Notion and Drive read what CHANGED from **our own index**
+  (`activity.py::fetch_indexed_activity`, keyed on
+  `documents.source_last_modified`) — one query answers both "which changed"
+  and "what they say", so the four collapse to one function and Notion/Drive
+  become schedulable at all despite having no "activity since T" primitive.
+  Only honest because syncing is automatic (§ Automatic freshness); before
+  that, `source_last_modified` advanced only when a human pressed Update.
+  GitHub stays live — it embeds nothing, so there is no index, and it has a
+  real `list_commits(since=)`. `SUPPORTED_PROVIDERS` **must equal**
+  `_FETCHERS`; Drive's provider string is **`google`**, not `google_drive`.
+- **An indexed report describes CURRENT CONTENT, never a diff** — nothing
+  stores the previous version, so `prompts._NO_DIFF_RULE` (rule 9, indexed
+  providers only) forbids "added/removed/edited/changed". GitHub is excluded:
+  change *is* what it has. Every indexed digest also discloses **when the
+  source last synced**, including on a quiet run — that is what separates
+  "nothing happened" from "nothing was fetched".
+- **A missing connection must not look like a quiet week.** Reading the index
+  directly would make "this space has no Notion" indistinguishable from "no
+  activity", so `_connection_sync_state` still resolves the connection in scope
+  and **raises** — which is also what preserves "a space-scoped report never
+  falls back to the org connection". Scope is now a WHERE clause, so a missing
+  predicate *leaks* rather than fails; `tests/test_scheduler_indexed.py` pins
+  it in both directions.
 - **The email is a notification, not the report.** Each run **saves** a
   `scheduler_reports` row first, then mails a short "ready" note (plain +
   HTML) linking to `/schedulers/reports/{id}` on the FRONTEND origin (a
@@ -163,6 +220,52 @@ embeds nothing** (the `app/githublive/` pattern).
 - The setup-chat endpoint stays **org-wide only** (it has no space slot); the
   page now uses explicit space/service/cadence dropdowns, since which
   connection is read is not a thing to infer from prose.
+
+**Automatic freshness (`app/jobs/autosync.py`, `app/llm/pacing.py`)** — nothing
+in this codebase ever ingested unless a human pressed Check → Update, which
+made staleness a *user chore*. Two columns on `oauth_connections` carry the
+only two reasons to sync: `sync_requested_at` (a service TOLD us — stamped by
+a webhook handler, never by the sync module) and `last_sync_at` (the interval
+elapsed).
+- **The poll is the FLOOR, not the plan.** Slack/Linear/Notion can push;
+  **Drive can never** — Google requires the push receiver's domain to be
+  verified in Cloud Console, which `*.onrender.com` cannot be. A webhook
+  delivered while the free instance was cold-started is also simply lost. The
+  interval turns both into a delay instead of a permanent hole.
+- **`sync_requested_at` is a FLAG, not a queue** — a busy channel stamps it per
+  message and the tick reads-and-clears it, so fifty messages produce ONE job.
+  That read-and-clear IS the debounce; there is no timer and no counter. A
+  webhook handler must therefore never ingest inline (Slack wants a 3s ack).
+- **`last_sync_at` is stamped on ATTEMPT, not success** — deliberately. One
+  failed sync costs one interval of freshness, which is visible; a hot retry
+  loop against a provider's rate limit is not. `needs_reauth` rows are skipped
+  entirely: a dead token cannot be fixed by retrying it.
+- **`POST /internal/tick` exists because the free instance sleeps.** Render
+  free spins down after ~15 min with no *inbound* HTTP — process activity does
+  not count, so every in-process loop stops shortly after the last user leaves
+  and "syncs every 6 hours" becomes fiction. `.github/workflows/tick.yml`
+  drives it (in-repo, so deploying starts it; free and unlimited on a public
+  repo). Waking and working are the SAME request, so there is no ping-then-hope
+  window. An unset `INTERNAL_TICK_SECRET` **404s the route** — an
+  unauthenticated tick is a free way to spend every tenant's provider quota.
+- **Background LLM work reserves headroom for people** (`pacing.py`).
+  `build_aux_llm_provider` shares the main key/endpoint *by default*, so ingest
+  contextualization and a live question compete for ONE 15 rpm limit, and a 429
+  on the answer path is a *failed* answer. `LLM_RESERVE_RPM=5` of
+  `LLM_MAX_RPM=15` is never spendable by background work — a reservation, not a
+  prediction. **Interactive calls are never throttled**; they only record
+  themselves, hooked into `log_llm_call` (the one function both call sites
+  already route through, so no future call site can forget). A refused slot
+  returns the bare chunk *without* spending a request.
+- **`LLM_AUX_BASE_URL` + `LLM_AUX_API_KEY` is the STRUCTURAL fix and is
+  preferred** — separate endpoints cannot contend, so `pacing` skips its gate
+  entirely and background work stops paying quality (un-prefixed chunks) to
+  protect a limit it never touches. **BOTH or neither**: a foreign `base_url`
+  with the main key 401s on every contextualization and degrades *silently*, so
+  half-configured means "not configured" (`aux_has_own_endpoint`). It changes
+  quota, **not policy** — contextualization sends tenant chunk text, so an
+  endpoint that trains on prompts is no more acceptable here than on the answer
+  path.
 
 **Multi-Model Selection (`app/llm/routed.py`, `catalog.py`)** — a member picks
 which model answers, on every prompt surface (chat composer, scheduler create,
@@ -216,10 +319,11 @@ app/rag/      pipeline, prompts, retrieval, query_normalize, summary_fold, …
 app/memory/   org-scoped conversation history + last-retrieval
 app/sources/  SourceAdapter: notion, google_drive, slack, linear + factory
 app/githublive/ GitHub's whole data path — live reads, no vectors
-app/agent/    Agent + per-source agents + orchestration (LangGraph)
+app/agent/    Agent + per-source agents + orchestration (LangGraph) + routing
 app/security/ crypto, untrusted (scrub), rate_limit, client_ip
 app/auth/     OAuth providers, credentials, users, magic_link, session, email
-app/jobs/     ingestion queue + worker + scheduler_queue
+app/jobs/     ingestion queue + worker + scheduler_queue + autosync
+app/llm/      + pacing.py (rate-limit headroom for interactive calls)
 app/workspaces/ sub-workspace CRUD + membership (assert_member)
 app/schedulers/ store, activity (live "since T"), prompts, runner, worker
 app/api/      FastAPI — deps (session/org_id), auth, admin, chat, workspaces,
@@ -282,6 +386,23 @@ frontend/ Next.js 15 portal · tests/ pytest
 - **A 429 is a hard quota, not a blip.** The free Gemini tier is **15 rpm** —
   this explains most "flaky test" behaviour. `INGEST_CONTEXTUAL_CONCURRENCY=8`
   is wrong for it; set 1–2.
+- **The LLM rate-limit window is process-global state, and tests feed it.**
+  `log_llm_call` counts every call including a fake one, so a test late in a
+  run saw a window full of other tests' calls, got its background slot refused,
+  and looked like a broken retry — three `test_ingest_progress` cases passed
+  alone and failed in a full run. `conftest` resets it autouse; the leak is
+  invisible in isolation, which is why it resets by default.
+- **~6 LLM calls per question** (rewrite, decompose, generate, audit,
+  web-decision, tone) means **~1.6 questions/min saturates the background
+  budget**, so under sustained chat load contextualization degrades rather than
+  waits. Visible only via `pacing`'s `logger.info` — and the fix is
+  `LLM_AUX_BASE_URL`/`LLM_AUX_API_KEY`, not a bigger reserve. Note Gemini limits
+  are **per project**, so a second key in the same project shares the same
+  15 rpm; a separate aux endpoint means a different project or vendor.
+- **Do not name the routing wrapper class in `build_aux_llm_provider`'s
+  docstring** — `test_model_selection` asserts its absence by reading the
+  function's *source*, so even a prose mention fails the test. Cost: one
+  confusing red run.
 - The grounded prompt is ~2.3k tokens, 96% fixed prefix, already ordered for
   provider caching. **Never move CONTEXT/QUESTION earlier.**
 
@@ -375,7 +496,8 @@ frontend/ Next.js 15 portal · tests/ pytest
 source_external_id)`) · `chunks` (`vector(1024)` + generated `content_tsv`) ·
 `conversations` / `conversation_turns` / `conversation_last_retrieval` ·
 `users` · `oauth_connections` (encrypted tokens, `source_config` JSONB, two
-partial unique indexes: org-wide vs workspace) · `ingestion_jobs`
+partial unique indexes: org-wide vs workspace; `sync_requested_at` webhook flag
++ `last_sync_at` poll floor, see §3 Automatic freshness) · `ingestion_jobs`
 (+`phase`/`attempts`/`progress_at`) · `magic_link_tokens` · `oauth_states` ·
 `github_install_pending` · `query_answer_cache` · `api_rate_counters` ·
 `workspaces` / `workspace_members` · `org_signup_requests` · `schedulers`
@@ -403,14 +525,17 @@ per-source agents + LangGraph routing; golden-set eval in CI (+ nightly
 RAGAS); identity/OAuth/admin/ingestion queue/HTTP API/streaming chat; Next.js
 portal; Workspace-within-a-Workspace; signup-approval queue; injection,
 latency, security and eval hardening; the Activity Scheduler; Multi-Model
-Selection (OpenRouter, ~5 models, per-request routing).
+Selection (OpenRouter, ~5 models, per-request routing); automatic freshness (interval + webhook-flag sync, external tick, LLM pacing).
 
 **Pending / known gaps**
-- Scheduler: Notion/Drive fetchers (Drive takes
-  `modifiedTime > …`, Notion needs sort-desc + early stop; both report only
-  *that* a doc changed); **email delivery is unverified — `console` only** (a
-  failed send now costs only the notification: the report is stored and
-  readable in-app either way).
+- Scheduler: **email delivery is unverified — `console` only** (a failed send
+  now costs only the notification: the report is stored and readable in-app
+  either way).
+- Indexed reports inherit the ingest pipeline's filters and shape: content
+  dropped by `SLACK_MIN_THREAD_CHARS` can never appear in a report, Slack items
+  are threads (not per-message, so no author attribution), and Notion/Drive/
+  Linear chunk text carries its LLM context prefix — factual but verbose, and
+  it spends the char budget.
 - No live walkthrough against real Notion/Drive/GitHub OAuth apps; the GitHub
   one also settles **T3** (whether `state` survives the install redirect —
   assumed, not verified).
@@ -422,6 +547,23 @@ Selection (OpenRouter, ~5 models, per-request routing).
   that fails the MODE-tag check must be replaced, not shipped.
 - Validate the 0.35 gate and 0.72 reuse threshold against production
   `rag.query_signals` logs rather than hand-measured examples.
+- **Auto-sync is polling ONLY so far** — `request_sync()` and the flag column
+  exist, but **no webhook endpoint calls them yet**, so today's worst case is
+  the 6h interval rather than one tick. Slack/Linear/Notion handlers are the
+  next step; Drive can never have one.
+- The **Check button is still in the UI** on purpose: it is the manual override
+  until an unattended sync is observed working in prod. Remove it only after
+  that.
+- Auto-sync needs THREE things outside the repo: the migration, Render's
+  `INTERNAL_TICK_SECRET`, and GitHub repo secrets `TICK_URL`/`TICK_SECRET`.
+  Missing the last two means the schedule runs and calls nothing (exit 0 by
+  design, so a fork does not fail CI).
+- **GitHub disables scheduled workflows after 60 days of repo inactivity** — a
+  dormant repo silently stops ticking, and every freshness guarantee stops with
+  it. cron-job.org against the same endpoint is the punctual alternative.
+- Render free gives **750 instance-hours/month**; an always-warm service is
+  ~730, so this design consumes essentially the whole allowance for one
+  service.
 - **Deferred by decision:** structural citations + NLI (cost/latency);
   token-budget context assembly; Postgres RLS; HNSW tuning (both feared
   defects were measured and did *not* reproduce); PDF/DOCX extraction; the

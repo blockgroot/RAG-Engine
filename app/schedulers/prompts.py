@@ -32,7 +32,29 @@ _PROVIDER_LABEL = {
     "github": "GitHub commit activity",
     "slack": "Slack channel activity",
     "linear": "Linear issue activity",
+    "notion": "Notion pages that changed",
+    "google": "Google Drive files that changed",
 }
+
+#: Providers whose activity is read from OUR INDEX rather than a live API
+#: (``activity.py::fetch_indexed_activity``). Everything here supplies the
+#: CURRENT CONTENT of documents that changed in the window — never a diff,
+#: because nothing stores the previous version. Rule 9 below is what stops the
+#: model turning "this page says X" into "X was added", which is the one
+#: fabrication an indexed report invites and a reader cannot detect.
+#:
+#: GitHub is deliberately absent: it reads commits live, so change IS what it
+#: has, and forbidding change-language there would make its reports worse.
+_INDEXED_PROVIDERS = frozenset({"slack", "linear", "notion", "google"})
+
+_NO_DIFF_RULE = (
+    "9. This activity is the CURRENT CONTENT of items that changed in the "
+    "period — it is NOT a record of what changed inside them. Describe what "
+    "they say. Never write that something was added, removed, edited, "
+    "renamed, updated or changed, and never compare against an earlier "
+    "version: no earlier version is available to you, so any such statement "
+    "is a guess presented as history.\n"
+)
 
 
 def build_scheduler_report_prompt(
@@ -97,7 +119,9 @@ def build_scheduler_report_prompt(
         "sources to find out what happened.\n"
         "8. No preamble about being an AI, no restating the request back, no "
         "meta-language about 'the provided data', and no padding when the "
-        "period genuinely was quiet.\n\n"
+        "period genuinely was quiet.\n"
+        + (_NO_DIFF_RULE if provider in _INDEXED_PROVIDERS else "")
+        + "\n"
         f"THE READER'S STANDING REQUEST:\n{user_prompt.strip()}\n\n"
         + (f"COVERAGE (what was actually checked):\n{coverage}\n\n" if coverage else "")
         + f"{label.upper()} FOR THIS PERIOD:\n"
@@ -138,7 +162,7 @@ CREATE_SCHEDULER_TOOL = {
                 },
                 "frequency": {
                     "type": "string",
-                    "enum": ["weekly", "monthly"],
+                    "enum": ["daily", "weekly", "monthly"],
                     "description": "How often the report should be generated and emailed.",
                 },
                 "prompt": {
@@ -169,7 +193,7 @@ def build_setup_system_prompt(connected_providers: list[str]) -> str:
     return (
         "You help someone set up a recurring emailed report about one of their "
         "organisation's connected services. You need exactly three things: the "
-        "service, the frequency (weekly or monthly), and what they want the "
+        "service, the frequency (daily, weekly or monthly), and what they want the "
         "report to cover.\n\n"
         f"CONNECTED SERVICES: {services}\n\n"
         "Rules:\n"

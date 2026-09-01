@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { useParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { AskHeroArt } from "@/components/AskHeroArt";
@@ -30,7 +31,6 @@ function ChipIcon({ kind }: { kind: "policy" | "code" }) {
   );
 }
 
-type AgentTab = "policy" | "github" | "slack" | "linear" | "notion" | "google";
 
 export default function ChatPage() {
   const workspaceId = useParams<{ id?: string }>().id ?? null;
@@ -52,7 +52,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const [suggestedQuestions, setSuggestedQuestions] = useState<string[]>([]);
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
 
-  const [agentTab, setAgentTab] = useState<AgentTab>("policy");
   const [models, setModels] = useState<ModelChoice[]>([]);
   // The deployment's own model name, shown on the default option instead of
   // "Auto". Falls back until /chat/models answers.
@@ -77,7 +76,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const policiesReady = readyToAsk !== false;
   const policyReady = workspaceId ? workspacePolicyReady : Boolean(me?.policy_ready);
   const policyFallbackAvailable = !notionAvailable && !driveAvailable && policyReady;
-  const availableTabCount = [
+  const connectedSourceCount = [
     policyFallbackAvailable,
     codeAvailable,
     slackAvailable,
@@ -85,45 +84,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     notionAvailable,
     driveAvailable,
   ].filter(Boolean).length;
-  const anySourceAvailable = availableTabCount > 0;
-  const showAgentTabs = availableTabCount > 1;
-  const activeAgent: AgentTab =
-    agentTab === "github" && codeAvailable
-      ? "github"
-      : agentTab === "slack" && slackAvailable
-        ? "slack"
-        : agentTab === "linear" && linearAvailable
-          ? "linear"
-          : agentTab === "notion" && notionAvailable
-            ? "notion"
-            : agentTab === "google" && driveAvailable
-              ? "google"
-              : agentTab === "policy" && policyFallbackAvailable
-                ? "policy"
-                : notionAvailable
-                  ? "notion"
-                  : driveAvailable
-                    ? "google"
-                    : codeAvailable
-                      ? "github"
-                      : slackAvailable
-                        ? "slack"
-                        : linearAvailable
-                          ? "linear"
-                          : "policy";
-  const askingCode = activeAgent === "github";
-  const askingSlack = activeAgent === "slack";
-  const askingLinear = activeAgent === "linear";
-  const askingNotion = activeAgent === "notion";
-  const askingDrive = activeAgent === "google";
+  const anySourceAvailable = connectedSourceCount > 0;
 
-  function switchAgentTab(next: AgentTab) {
-    if (next === agentTab || busy) return;
-    setAgentTab(next);
-    setMessages([]);
-    setInput("");
-    conversationId.current = null;
-  }
 
   useEffect(() => {
     let cancelled = false;
@@ -146,33 +108,9 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   }, []);
 
   useEffect(() => {
-    if (agentTab === "policy" && policyFallbackAvailable) return;
-    if (agentTab === "notion" && notionAvailable) return;
-    if (agentTab === "google" && driveAvailable) return;
-    if (agentTab === "github" && codeAvailable) return;
-    if (agentTab === "slack" && slackAvailable) return;
-    if (agentTab === "linear" && linearAvailable) return;
-    if (notionAvailable) setAgentTab("notion");
-    else if (driveAvailable) setAgentTab("google");
-    else if (!policiesReady && codeAvailable) setAgentTab("github");
-    else if (!policiesReady && slackAvailable) setAgentTab("slack");
-    else if (!policiesReady && linearAvailable) setAgentTab("linear");
-  }, [
-    agentTab,
-    notionAvailable,
-    driveAvailable,
-    codeAvailable,
-    slackAvailable,
-    linearAvailable,
-    policyFallbackAvailable,
-    policiesReady,
-  ]);
-
-  useEffect(() => {
     if (!me) return;
     let cancelled = false;
-    const agent = activeAgent;
-    const cacheKey = suggestionsCacheKey(agent, workspaceId);
+    const cacheKey = suggestionsCacheKey(workspaceId);
     const cached = getCachedSuggestions(cacheKey);
     if (cached) {
       setSuggestedQuestions(cached);
@@ -181,7 +119,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       setSuggestionsLoading(true);
     }
     api
-      .chatSuggestions(agent, workspaceId)
+      .chatSuggestions(workspaceId)
       .then((res) => {
         const questions = res.questions || [];
         setCachedSuggestions(cacheKey, questions);
@@ -196,7 +134,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     return () => {
       cancelled = true;
     };
-  }, [me, activeAgent, workspaceId]);
+  }, [me, workspaceId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({
@@ -306,7 +244,11 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     setMessages((prev) => [...prev, { role: "user", text: question }]);
     setMessages((prev) => [...prev, { role: "assistant", text: "", streaming: true }]);
 
-    const convId = askingCode ? null : await ensureConversation();
+    // Always create a conversation now. Which agent answers is decided by the
+    // BACKEND, per question, so the client cannot know in advance whether this
+    // one goes to GitHub (which keeps no memory and simply ignores the id).
+    // Guessing wrong the other way would silently drop follow-up context.
+    const convId = await ensureConversation();
 
     await streamChat(
       question,
@@ -339,7 +281,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
         },
       },
       workspaceId,
-      activeAgent,
+      // No agent pinned: the backend measures which source fits the question.
+      undefined,
       model
     );
 
@@ -397,55 +340,29 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     );
   }
 
-  const emptyTitle = askingCode
-    ? workspaceId
-      ? "Ask this space’s code"
-      : "Ask your code"
-    : askingSlack
-      ? workspaceId
-        ? "Ask this space’s Slack"
-        : "Ask your Slack"
-      : askingLinear
-        ? workspaceId
-          ? "Ask this space’s Linear"
-          : "Ask your Linear"
-        : askingNotion
-          ? workspaceId
-            ? "Ask this space’s Notion"
-            : "Ask your Notion"
-          : askingDrive
-            ? workspaceId
-              ? "Ask this space’s Drive"
-              : "Ask your Drive"
-            : workspaceId
-              ? "Ask this space"
-              : "Ask your company";
-  const emptyCopy = askingCode
-    ? "Repository and commit answers are read live from GitHub — always current, never stale."
-    : askingSlack
-      ? "Responses are based on discussions in your connected channels, reflecting what was actually said rather than formal documentation."
-      : askingLinear
-        ? "Answers come from your tracked issues and their comments — ticket status, not documents."
-        : askingNotion
-          ? "Answers come only from your connected Notion pages — never blended with any other source."
-          : askingDrive
-            ? "Answers come only from your connected Google Drive documents — never blended with any other source."
-            : workspaceId
-              ? "Answers come only from the notes and docs connected to this space."
-              : "Leave, benefits, remote work, and more — grounded in your connected documents.";
-  const composerPlaceholder = askingCode
-    ? "Ask about a repository or a commit…"
-    : askingSlack
-      ? "Ask what was discussed in a channel…"
-      : askingLinear
-        ? "Ask about the status of an issue…"
-        : askingNotion
-          ? "Ask about something in your Notion pages…"
-          : askingDrive
-            ? "Ask about something in your Drive documents…"
-            : workspaceId
-              ? "Ask something about this space…"
-              : "Ask about leave, benefits, remote work…";
+  // One box, so one set of copy. Naming a single source here would be a lie:
+  // the question decides which source answers, and the answer says which one
+  // did (see ProvenanceStripe).
+  const connectedNames = [
+    notionAvailable && "Notion",
+    driveAvailable && "Drive",
+    slackAvailable && "Slack",
+    linearAvailable && "Linear",
+    codeAvailable && "GitHub",
+  ].filter(Boolean) as string[];
+
+  const emptyTitle = workspaceId ? "Ask this space" : "Ask your company";
+  const emptyCopy =
+    connectedNames.length > 1
+      ? `Just ask — the answer is found in ${connectedNames
+          .slice(0, -1)
+          .join(", ")} or ${connectedNames[connectedNames.length - 1]}, and each answer says which one it came from.`
+      : connectedNames.length === 1
+        ? `Answers come from your connected ${connectedNames[0]}, grounded in what is actually there.`
+        : workspaceId
+          ? "Answers come only from the notes and docs connected to this space."
+          : "Leave, benefits, remote work, and more — grounded in your connected documents.";
+  const composerPlaceholder = "Ask anything about your work…";
 
   return (
     <AppShell me={me} variant="app">
@@ -460,116 +377,31 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
 
         <div className="chat-topbar">
           <div className="chat-topbar-copy">
-            <p className="chat-kicker">{workspaceId ? workspaceName || "Space" : "Company-wide"}</p>
-            <h1>
-              {askingCode
-                ? "Code"
-                : askingSlack
-                  ? "Slack"
-                  : askingLinear
-                    ? "Linear"
-                    : askingNotion
-                      ? "Notion"
-                      : askingDrive
-                        ? "Drive"
-                        : "Ask"}
-            </h1>
+            {/* A link when scoped to a space: members now land HERE rather than
+                on the space page, so this is their only route to that space's
+                people and connections. Plain text company-wide, where there is
+                no such page to reach. */}
+            <p className="chat-kicker">
+              {workspaceId ? (
+                <Link href={`/workspaces/${workspaceId}`} className="chat-kicker-link">
+                  {workspaceName || "Space"}
+                </Link>
+              ) : (
+                "Company-wide"
+              )}
+            </p>
+            {/* One destination, so one title. Which source answered is stated
+                per ANSWER (see ChatMessageView) rather than per page: it is a
+                property of the reply, not of the box you typed into. */}
+            <h1>Ask</h1>
           </div>
-          {showAgentTabs && (
-            <div className="agent-tabs" role="tablist" aria-label="What to ask about">
-              {policyFallbackAvailable && (
-                <button
-                  type="button"
-                  role="tab"
-                  id="tab-policies"
-                  aria-controls="ask-panel"
-                  aria-selected={activeAgent === "policy"}
-                  className={`agent-tab${activeAgent === "policy" ? " is-active" : ""}`}
-                  onClick={() => switchAgentTab("policy")}
-                  disabled={busy}
-                >
-                  Docs
-                </button>
-              )}
-              {notionAvailable && (
-                <button
-                  type="button"
-                  role="tab"
-                  id="tab-notion"
-                  aria-controls="ask-panel"
-                  aria-selected={askingNotion}
-                  className={`agent-tab${askingNotion ? " is-active" : ""}`}
-                  onClick={() => switchAgentTab("notion")}
-                  disabled={busy}
-                >
-                  Notion
-                </button>
-              )}
-              {driveAvailable && (
-                <button
-                  type="button"
-                  role="tab"
-                  id="tab-drive"
-                  aria-controls="ask-panel"
-                  aria-selected={askingDrive}
-                  className={`agent-tab${askingDrive ? " is-active" : ""}`}
-                  onClick={() => switchAgentTab("google")}
-                  disabled={busy}
-                >
-                  Drive
-                </button>
-              )}
-              {codeAvailable && (
-                <button
-                  type="button"
-                  role="tab"
-                  id="tab-code"
-                  aria-controls="ask-panel"
-                  aria-selected={askingCode}
-                  className={`agent-tab${askingCode ? " is-active" : ""}`}
-                  onClick={() => switchAgentTab("github")}
-                  disabled={busy}
-                >
-                  Code
-                </button>
-              )}
-              {slackAvailable && (
-                <button
-                  type="button"
-                  role="tab"
-                  id="tab-slack"
-                  aria-controls="ask-panel"
-                  aria-selected={askingSlack}
-                  className={`agent-tab${askingSlack ? " is-active" : ""}`}
-                  onClick={() => switchAgentTab("slack")}
-                  disabled={busy}
-                >
-                  Slack
-                </button>
-              )}
-              {linearAvailable && (
-                <button
-                  type="button"
-                  role="tab"
-                  id="tab-linear"
-                  aria-controls="ask-panel"
-                  aria-selected={askingLinear}
-                  className={`agent-tab${askingLinear ? " is-active" : ""}`}
-                  onClick={() => switchAgentTab("linear")}
-                  disabled={busy}
-                >
-                  Linear
-                </button>
-              )}
-            </div>
-          )}
         </div>
 
         <div id="ask-panel" role="tabpanel" aria-label="Ask answers">
           {messages.length === 0 ? (
             <div className="chat-empty">
               <AskHeroArt
-                variant={workspaceId ? "space" : askingCode ? "code" : "policy"}
+                variant={workspaceId ? "space" : "policy"}
               />
               <div className="chat-empty-copy">
                 <h1>{emptyTitle}</h1>
@@ -586,7 +418,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                       className="suggested-chip suggested-chip-card"
                       onClick={() => ask(q)}
                     >
-                      <ChipIcon kind={askingCode ? "code" : "policy"} />
+                      <ChipIcon kind="policy" />
                       <span>{q}</span>
                     </button>
                   ))}

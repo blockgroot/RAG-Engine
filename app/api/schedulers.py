@@ -131,9 +131,11 @@ def _topics(provider: str, config) -> list[str]:
     same scope, and a workspace connection reaches this list only for members
     of that workspace (see the join in ``_connected_providers``).
 
-    Linear returns nothing on purpose: a Linear connection has no stored
-    subset to name — its scope is "whatever this token can see" — and
-    inventing team names here would be a guess.
+    Linear, Notion and Drive return nothing on purpose: none of them has a
+    stored subset to name — their scope is "whatever this token can see" — and
+    inventing team, page or folder names here would be a guess. Their reports
+    read from the index, so the honest source of suggestions would be document
+    titles, which is a query per connection this listing exists to avoid.
     """
     if isinstance(config, str):
         try:
@@ -167,11 +169,12 @@ def _topics(provider: str, config) -> list[str]:
 def _spaces(org_id: str, user_id: str) -> list[dict]:
     """Every space this member could scope a report to, schedulable or not.
 
-    A space with only a Notion or Drive connection appears with an empty
-    ``providers`` list rather than being dropped: "Meeting notes has nothing
-    schedulable yet" is a fact the user can act on, while a silently missing
-    space reads as a bug. Same disclosure instinct as the coverage notes in a
-    report.
+    Every provider this codebase supports is now schedulable, so an empty
+    ``providers`` list means the space has no connections at all rather than
+    "nothing schedulable yet". The space is still listed rather than dropped:
+    "Meeting notes has nothing connected" is a fact the user can act on, while
+    a silently missing space reads as a bug. Same disclosure instinct as the
+    coverage notes in a report.
     """
     from ..workspaces.store import list_my_workspaces
 

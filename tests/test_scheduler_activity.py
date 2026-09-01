@@ -101,57 +101,14 @@ def test_slack_fetch_budget_is_split_per_channel_and_truncation_disclosed():
     assert sorted(set(truncated)) == ["C1", "C2"]
 
 
-def test_slack_activity_digest_is_plain_text(monkeypatch):
-    adapter = _FakeSlack({"C1": [_message("1750000000.0", "deployed v2", reply_count=3)]})
-    _patch_slack_wiring(monkeypatch, adapter)
-
-    digest = activity.fetch_slack_activity("org-1", SINCE)
-
-    assert "deployed v2" in digest.text
-    assert "#C1" in digest.text
-    assert "3 replies" in digest.text
 
 
-def test_slack_activity_discloses_a_truncated_channel(monkeypatch):
-    """A capped channel must show up in the notes, not only in the logs."""
-    adapter = _FakeSlack(
-        {"C1": [_message(f"{i}.0", f"m{i}") for i in range(5)]}
-    )
-    monkeypatch.setattr(activity, "MAX_SLACK_MESSAGES", 2)
-    _patch_slack_wiring(monkeypatch, adapter)
-
-    digest = activity.fetch_slack_activity("org-1", SINCE)
-
-    assert len(digest.items) == 2
-    assert any("older activity" in note for note in digest.notes)
 
 
-def test_slack_activity_is_empty_when_nothing_happened(monkeypatch):
-    _patch_slack_wiring(monkeypatch, _FakeSlack({"C1": []}))
-
-    digest = activity.fetch_slack_activity("org-1", SINCE)
-    assert not digest  # falsy: no items
-    assert digest.text == ""
 
 
-def _patch_slack_wiring(monkeypatch, adapter):
-    """Stub the credential + adapter lookups so no DB or Slack token is needed."""
-    monkeypatch.setattr(
-        "app.auth.credentials.get_connection_config",
-        lambda *a, **k: {"channel_ids": ["C1"]},
-    )
-    monkeypatch.setattr(
-        "app.auth.credentials.get_live_connection_token", lambda *a, **k: "xoxb-fake"
-    )
-    monkeypatch.setattr("app.sources.build_source_adapter", lambda *a, **k: adapter)
 
 
-def test_slack_activity_fails_loudly_when_slack_is_not_connected(monkeypatch):
-    monkeypatch.setattr(
-        "app.auth.credentials.get_connection_config", lambda *a, **k: None
-    )
-    with pytest.raises(ConfigurationError):
-        activity.fetch_slack_activity("org-1", SINCE)
 
 
 # --------------------------------------------------------------------------
@@ -257,9 +214,14 @@ def test_dispatch_routes_to_the_right_fetcher(monkeypatch):
 
 
 def test_dispatch_raises_for_a_provider_with_no_fetcher():
-    """Silently returning empty would look like 'nothing happened' forever."""
+    """Silently returning empty would look like 'nothing happened' forever.
+
+    Uses a name that is not a real provider: every provider this codebase
+    integrates now HAS a fetcher (four indexed, GitHub live), so naming a real
+    one here would assert the opposite of what it reads as.
+    """
     with pytest.raises(ConfigurationError):
-        activity.fetch_activity("notion", "org-1", SINCE)
+        activity.fetch_activity("dropbox", "org-1", SINCE)
 
 
 # --------------------------------------------------------------------------
@@ -308,15 +270,6 @@ def test_a_normal_digest_is_never_truncated():
     assert digest.text.count("\n") == 7
 
 
-def test_slack_digest_applies_the_bounds(monkeypatch):
-    adapter = _FakeSlack(
-        {"C1": [_message(f"{i}.0", "z" * 5000) for i in range(50)]}
-    )
-    _patch_slack_wiring(monkeypatch, adapter)
-
-    digest = activity.fetch_slack_activity("org-1", SINCE)
-
-    assert len(digest.text) <= activity.MAX_DIGEST_CHARS
 
 
 def test_github_digest_applies_the_bounds(monkeypatch):
@@ -412,101 +365,16 @@ def test_linear_fetch_stops_when_there_is_no_next_page():
     assert len(adapter.calls) == 1  # did not keep paginating
 
 
-def test_linear_activity_digest_names_the_issue_state_and_owner(monkeypatch):
-    adapter = _FakeLinear([_page([_issue("ENG-42", "migrate payments", "Done", "completed", "Ada")])])
-    monkeypatch.setattr(
-        "app.auth.credentials.get_live_connection_token", lambda *a, **k: "lin_fake"
-    )
-    monkeypatch.setattr("app.auth.credentials.get_connection_config", lambda *a, **k: {})
-    monkeypatch.setattr("app.sources.build_source_adapter", lambda *a, **k: adapter)
-
-    digest = activity.fetch_linear_activity("org-1", SINCE)
-
-    assert "ENG-42" in digest.text
-    assert "migrate payments" in digest.text
-    assert "Done" in digest.text
-    assert "completed" in digest.text
-    assert "Ada" in digest.text
 
 
-def test_linear_activity_uses_the_oauth_credential_path(monkeypatch):
-    """A scheduler is created against an oauth_connections row, never an env key.
-
-    Passing `token=` is also what makes the adapter send `Bearer <token>` —
-    get this wrong and every request 401s while looking authenticated.
-    """
-    seen: dict = {}
-    monkeypatch.setattr(
-        "app.auth.credentials.get_live_connection_token", lambda *a, **k: "lin_oauth"
-    )
-    monkeypatch.setattr("app.auth.credentials.get_connection_config", lambda *a, **k: {})
-
-    def _build(source_type, **kwargs):
-        seen.update({"source_type": source_type, **kwargs})
-        return _FakeLinear([_page([])])
-
-    monkeypatch.setattr("app.sources.build_source_adapter", _build)
-
-    activity.fetch_linear_activity("org-1", SINCE)
-
-    assert seen["source_type"] == "linear"
-    assert seen["token"] == "lin_oauth"  # not a token_name env lookup
 
 
-def test_linear_activity_is_empty_when_nothing_moved(monkeypatch):
-    monkeypatch.setattr(
-        "app.auth.credentials.get_live_connection_token", lambda *a, **k: "lin_fake"
-    )
-    monkeypatch.setattr("app.auth.credentials.get_connection_config", lambda *a, **k: {})
-    monkeypatch.setattr(
-        "app.sources.build_source_adapter", lambda *a, **k: _FakeLinear([_page([])])
-    )
-
-    assert not activity.fetch_linear_activity("org-1", SINCE)
 
 
-def test_linear_digest_applies_the_size_bounds(monkeypatch):
-    adapter = _FakeLinear([_page([_issue(f"ENG-{i}", "q" * 5000) for i in range(60)])])
-    monkeypatch.setattr(
-        "app.auth.credentials.get_live_connection_token", lambda *a, **k: "lin_fake"
-    )
-    monkeypatch.setattr("app.auth.credentials.get_connection_config", lambda *a, **k: {})
-    monkeypatch.setattr("app.sources.build_source_adapter", lambda *a, **k: adapter)
-
-    digest = activity.fetch_linear_activity("org-1", SINCE)
-
-    assert len(digest.text) <= activity.MAX_DIGEST_CHARS
 
 
-def test_linear_activity_never_fetches_descriptions_or_comments():
-    """The char budget holds for Linear *because* a line is title-sized.
-
-    Measured: at 80-char titles a digest line is ~138 chars, so 300 issues is
-    ~40k and the char budget binds before MAX_LINEAR_ISSUES does. Adding
-    `description` or `comments` to this query would move the size axis from
-    titles to bodies — the same "count-based cap protects the wrong axis"
-    mistake Slack already cost us once (3 messages = 6,637 chars). Those
-    fields belong to _ISSUE_QUERY / fetch_document, the ingestion path.
-    """
-    from app.sources.linear import _RECENT_ISSUES_QUERY
-
-    assert "description" not in _RECENT_ISSUES_QUERY
-    assert "comments" not in _RECENT_ISSUES_QUERY
 
 
-def test_a_busy_monthly_linear_digest_truncates_on_chars_not_count():
-    """300 realistically-titled issues must stay inside the budget, disclosed."""
-    line = "[2026-08-02 09:30] ENG-1234 {} — In Review (started) · Priya"
-    items = [
-        ActivityItem(line.format("t" * 80)) for _ in range(activity.MAX_LINEAR_ISSUES)
-    ]
-
-    digest = activity._digest(items, ["Scope: all Linear issues visible."])
-
-    assert len(digest.text) <= activity.MAX_DIGEST_CHARS
-    # The char budget bites first — the item cap never gets to.
-    assert len(digest.items) < activity.MAX_LINEAR_ISSUES
-    assert activity._TRUNCATION_MARKER in digest.notes
 
 
 # --------------------------------------------------------------------------
@@ -528,19 +396,6 @@ def test_every_supported_provider_has_a_fetcher():
 # --------------------------------------------------------------------------
 
 
-def test_slack_items_carry_a_permalink_built_without_an_extra_api_call(monkeypatch):
-    """chat.getPermalink would cost one call PER message; channel_id + ts is
-    the same URL for free."""
-    adapter = _FakeSlack({"C1": [_message("1750000000.123456", "deployed v2")]})
-    _patch_slack_wiring(monkeypatch, adapter)
-
-    digest = activity.fetch_slack_activity("org-1", SINCE)
-
-    url = digest.items[0].url
-    assert url.startswith("https://slack.com/archives/C1/p")
-    assert "." not in url.rsplit("/p", 1)[1]  # ts flattened, as Slack expects
-    # Only conversations.history was called — no per-message permalink lookup.
-    assert {c["method"] for c in adapter.calls} == {"conversations.history"}
 
 
 def test_github_items_carry_the_commit_url(monkeypatch):
@@ -552,17 +407,6 @@ def test_github_items_carry_the_commit_url(monkeypatch):
     assert digest.items[0].url == "https://github.com/acme/api/commit/abc1234def"
 
 
-def test_linear_items_carry_the_issue_url(monkeypatch):
-    adapter = _FakeLinear([_page([_issue("ENG-42", "migrate payments")])])
-    monkeypatch.setattr(
-        "app.auth.credentials.get_live_connection_token", lambda *a, **k: "lin_fake"
-    )
-    monkeypatch.setattr("app.auth.credentials.get_connection_config", lambda *a, **k: {})
-    monkeypatch.setattr("app.sources.build_source_adapter", lambda *a, **k: adapter)
-
-    digest = activity.fetch_linear_activity("org-1", SINCE)
-
-    assert digest.items[0].url == "https://linear.app/acme/issue/ENG-42"
 
 
 def test_no_summary_contains_a_url():
@@ -578,25 +422,8 @@ def test_no_summary_contains_a_url():
 # --------------------------------------------------------------------------
 
 
-def test_slack_always_discloses_which_channels_it_read(monkeypatch):
-    """A Slack connection only sees channels an admin picked; silence about
-    that reads as whole-workspace coverage."""
-    adapter = _FakeSlack({"C1": [_message("1.0", "hi")]})
-    _patch_slack_wiring(monkeypatch, adapter)
-
-    digest = activity.fetch_slack_activity("org-1", SINCE)
-
-    assert any("Channels checked" in n and "#C1" in n for n in digest.notes)
 
 
-def test_slack_discloses_channels_even_when_nothing_was_posted(monkeypatch):
-    """A quiet week must still say what was checked."""
-    _patch_slack_wiring(monkeypatch, _FakeSlack({"C1": []}))
-
-    digest = activity.fetch_slack_activity("org-1", SINCE)
-
-    assert not digest  # no activity
-    assert any("Channels checked" in n for n in digest.notes)  # …but scope is stated
 
 
 def test_github_discloses_which_repositories_it_read(monkeypatch):
@@ -608,38 +435,21 @@ def test_github_discloses_which_repositories_it_read(monkeypatch):
     assert any("Repositories checked" in n and "acme/api" in n for n in digest.notes)
 
 
-def test_linear_states_its_scope(monkeypatch):
-    adapter = _FakeLinear([_page([_issue("ENG-1", "x")])])
-    monkeypatch.setattr(
-        "app.auth.credentials.get_live_connection_token", lambda *a, **k: "lin_fake"
-    )
-    monkeypatch.setattr("app.auth.credentials.get_connection_config", lambda *a, **k: {})
-    monkeypatch.setattr("app.sources.build_source_adapter", lambda *a, **k: adapter)
-
-    digest = activity.fetch_linear_activity("org-1", SINCE)
-
-    assert any("Scope" in n for n in digest.notes)
 
 
-def test_every_fetcher_discloses_coverage(monkeypatch):
-    """Pinned as a cross-provider rule, not per-connector goodwill: a new
-    fetcher that returns no notes would silently imply full coverage."""
+def test_github_the_only_live_fetcher_discloses_coverage(monkeypatch):
+    """Pinned as a rule, not per-connector goodwill: a fetcher that returns no
+    notes would silently imply full coverage.
+
+    Only GitHub is asserted here because it is now the only fetcher that calls
+    an API. The other four read the index and always disclose both the document
+    count and the last sync time — proved against a real database in
+    ``tests/test_scheduler_indexed.py``, which is where their coverage rules
+    can actually be exercised.
+    """
     reader = _FakeReader({"acme/api": [_commit("acme/api", "1", "x")]})
     _patch_github_wiring(monkeypatch, reader, ["acme/api"])
     assert activity.fetch_github_activity("org-1", SINCE).notes
-
-    _patch_slack_wiring(monkeypatch, _FakeSlack({"C1": [_message("1.0", "hi")]}))
-    assert activity.fetch_slack_activity("org-1", SINCE).notes
-
-    monkeypatch.setattr(
-        "app.sources.build_source_adapter",
-        lambda *a, **k: _FakeLinear([_page([_issue("E-1", "x")])]),
-    )
-    monkeypatch.setattr(
-        "app.auth.credentials.get_live_connection_token", lambda *a, **k: "t"
-    )
-    monkeypatch.setattr("app.auth.credentials.get_connection_config", lambda *a, **k: {})
-    assert activity.fetch_linear_activity("org-1", SINCE).notes
 
 
 # --------------------------------------------------------------------------
@@ -647,18 +457,6 @@ def test_every_fetcher_discloses_coverage(monkeypatch):
 # --------------------------------------------------------------------------
 
 
-def test_slack_item_separates_who_where_when_from_the_message(monkeypatch):
-    """As one string the page could only render a flat clamped line, where the
-    metadata competed with the message for the two lines available."""
-    adapter = _FakeSlack(
-        {"C1": [_message("1750000000.0", "deployed v2", reply_count=3)]}
-    )
-    _patch_slack_wiring(monkeypatch, adapter)
-
-    item = activity.fetch_slack_activity("org-1", SINCE).items[0]
-
-    assert item.summary == "deployed v2"
-    assert "#C1" in item.meta and "3 replies" in item.meta
 
 
 def test_the_prompt_still_sees_meta_and_content_as_one_line():
@@ -681,3 +479,31 @@ def test_the_char_budget_counts_the_joined_line_not_just_the_content():
 
     assert len(digest.text) <= activity.MAX_DIGEST_CHARS
     assert activity._TRUNCATION_MARKER in digest.notes
+
+
+def test_every_frequency_has_an_interval_and_a_first_window():
+    """Three tables must agree, or a cadence is creatable and then unrunnable.
+
+    Same class of invariant as SUPPORTED_PROVIDERS == _FETCHERS: FREQUENCIES
+    gates what the API accepts, _FREQUENCY_INTERVAL advances next_run_at, and
+    _FIRST_WINDOW sizes the very first report. A cadence missing from either
+    table silently falls back to a weekly window (or a KeyError at run time),
+    which is a bug you only see a day later in a delivered report.
+    """
+    from app.schedulers.runner import _FIRST_WINDOW
+    from app.schedulers.store import FREQUENCIES, _FREQUENCY_INTERVAL
+
+    assert set(FREQUENCIES) == set(_FREQUENCY_INTERVAL)
+    assert set(FREQUENCIES) == set(_FIRST_WINDOW)
+
+
+def test_the_setup_chat_tool_offers_every_frequency():
+    """The chat-driven setup path validates against FREQUENCIES, so a cadence
+    absent from the tool enum can be created by the form but never by chat."""
+    from app.schedulers.prompts import CREATE_SCHEDULER_TOOL
+    from app.schedulers.store import FREQUENCIES
+
+    enum = CREATE_SCHEDULER_TOOL["function"]["parameters"]["properties"]["frequency"][
+        "enum"
+    ]
+    assert set(enum) == set(FREQUENCIES)

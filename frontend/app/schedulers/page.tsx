@@ -14,10 +14,22 @@ import {
   SchedulerSpace,
 } from "@/lib/api";
 
+/** Cadence labels. A table because the two inline ternaries this replaces both
+ *  read "weekly or else monthly", which silently mislabelled daily. */
+const FREQUENCY_LABEL: Record<string, string> = {
+  daily: "Daily",
+  weekly: "Weekly",
+  monthly: "Monthly",
+};
+
 const PROVIDER_LABEL: Record<string, string> = {
   github: "GitHub",
   slack: "Slack",
   linear: "Linear",
+  notion: "Notion",
+  // Drive's provider string is "google" — what the connect flow stores. Keying
+  // this "google_drive" would render a raw "google" and match nothing.
+  google: "Google Drive",
 };
 
 /**
@@ -31,6 +43,8 @@ const PROVIDER_GLYPH: Record<string, BrandName> = {
   github: "github",
   slack: "slack",
   linear: "linear",
+  notion: "notion",
+  google: "drive",
 };
 
 /**
@@ -44,14 +58,13 @@ const SCHEDULABLE_LABELS = (() => {
 })();
 
 /**
- * Labels for the sources a space can have connected, schedulable or not —
- * this is what the chip after a space name shows ("Meeting notes · Drive"),
- * so it needs Notion and Drive too.
+ * Labels for the sources a space can have connected. Every provider is now
+ * schedulable, so this is just PROVIDER_LABEL — kept as its own name because
+ * it answers a different question (what a space HAS, in the chip after its
+ * name) and the two would diverge again the moment a non-schedulable source
+ * is added.
  */
-const SOURCE_LABEL: Record<string, string> = {
-  ...PROVIDER_LABEL,
-  notion: "Notion",
-};
+const SOURCE_LABEL: Record<string, string> = { ...PROVIDER_LABEL };
 
 /**
  * Report intents built from what a connection actually covers, so the prompt
@@ -330,7 +343,7 @@ export default function SchedulersPage() {
         <PageHeader
           eyebrow="Explore"
           title="Scheduled reports"
-          description="Set a task once — it runs weekly or monthly and covers only what changed since the last report. We email you when it's ready to read."
+          description="Set a task once — it runs daily, weekly or monthly and covers only what changed since the last report. We email you when it's ready to read."
           scene="reports"
           meta={
             <>
@@ -482,6 +495,7 @@ export default function SchedulersPage() {
                       aria-label="How often?"
                       disabled={creating}
                     >
+                      <option value="daily">Daily</option>
                       <option value="weekly">Weekly</option>
                       <option value="monthly">Monthly</option>
                     </select>
@@ -578,6 +592,7 @@ export default function SchedulersPage() {
                                   onChange={(e) => setDraftFrequency(e.target.value)}
                                   disabled={busyId === scheduler.id}
                                 >
+                                  <option value="daily">Daily</option>
                                   <option value="weekly">Weekly</option>
                                   <option value="monthly">Monthly</option>
                                 </select>
@@ -585,23 +600,47 @@ export default function SchedulersPage() {
                             </>
                           ) : (
                             <>
-                              <strong>{scheduler.prompt}</strong>
-                              <span className="muted">
-                                {label}
-                                {/* Which scope it reads: two reports on the
-                                    same service in different spaces are
-                                    otherwise indistinguishable. */}
-                                {scheduler.workspace_name
-                                  ? ` in ${scheduler.workspace_name}`
-                                  : " · company-wide"}{" "}
-                                · {scheduler.frequency} · next{" "}
-                                {whenLabel(scheduler.next_run_at)}
-                                {scheduler.last_run_at
-                                  ? ` · last sent ${whenLabel(scheduler.last_run_at)}`
-                                  : " · not sent yet"}
+                              {/* The prompt is the instruction, not a name, so
+                                  it wraps to two lines rather than being cut
+                                  mid-sentence by an ellipsis — the truncated
+                                  version made two similar schedules
+                                  indistinguishable. */}
+                              <strong className="sched-prompt" title={scheduler.prompt}>
+                                {scheduler.prompt}
+                              </strong>
+
+                              {/* ONE meta line, so the row stays two lines
+                                    tall like it was — scope and next run share
+                                    it, separated by weight rather than by
+                                    another row. Splitting them made the card
+                                    50% taller for no extra information.
+
+                                  "Last sent" is deliberately absent: the
+                                    Delivered reports list below shows every
+                                    send with its timestamp, so repeating the
+                                    most recent one here was the same fact
+                                    twice on one screen. Only its EXCEPTION is
+                                    kept — a scheduler that has never run is
+                                    not represented in that list at all. */}
+                              <span className="sched-when">
+                                <span className="sched-scope">
+                                  {label}
+                                  <span className="sched-sep" aria-hidden>
+                                    ·
+                                  </span>
+                                  {scheduler.workspace_name || "Company-wide"}
+                                </span>
+                                <span className="sched-next">
+                                  Next{" "}
+                                  <strong>{whenLabel(scheduler.next_run_at)}</strong>
+                                </span>
+                                {!scheduler.last_run_at && (
+                                  <span className="sched-last">Not sent yet</span>
+                                )}
                               </span>
+
                               {scheduler.last_error && (
-                                <span className="muted">
+                                <span className="sched-error">
                                   {stopped
                                     ? "Stopped after repeated failures: "
                                     : "Last run failed, will retry: "}
@@ -613,19 +652,25 @@ export default function SchedulersPage() {
                         </div>
 
                         <div className="people-card-meta">
-                          {/* Cadence beside the status: "active" alone does not
-                              say how often, and the line below it is where the
-                              eye goes last. */}
+                          {/* Cadence is the one chip worth always showing: it
+                              is how the row is scanned. */}
                           <span className="studio-chip">
-                            {scheduler.frequency === "weekly" ? "weekly" : "monthly"}
+                            {FREQUENCY_LABEL[scheduler.frequency] ??
+                              scheduler.frequency}
                           </span>
-                          <span
-                            className={`studio-chip ${
-                              stopped ? "studio-chip-warn" : "studio-chip-ok"
-                            }`}
-                          >
-                            {stopped ? "stopped" : "active"}
-                          </span>
+                          {/* Status ONLY when it is not the happy path. Every
+                              row reading "ACTIVE" was pure noise — it made the
+                              one row that actually needed attention look
+                              exactly like the four that did not. */}
+                          {(stopped || scheduler.last_error) && (
+                            <span
+                              className={`studio-chip ${
+                                stopped ? "studio-chip-warn" : "studio-chip-wait"
+                              }`}
+                            >
+                              {stopped ? "stopped" : "retrying"}
+                            </span>
+                          )}
                           <div className="people-card-actions">
                             {editing ? (
                               <>
@@ -711,7 +756,7 @@ export default function SchedulersPage() {
                       <span className="report-row-title">{latest.title}</span>
                       <span className="report-row-labels">
                         <span className="studio-chip">
-                          {latest.frequency === "weekly" ? "Weekly" : "Monthly"}
+                          {FREQUENCY_LABEL[latest.frequency] ?? latest.frequency}
                         </span>
                         <span className="studio-chip">
                           {PROVIDER_LABEL[latest.provider] ?? latest.provider}

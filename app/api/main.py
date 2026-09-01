@@ -34,6 +34,7 @@ from ..config.settings import ApiSettings, SchedulerSettings, env_bool
 from ..db import close_pool
 from ..rag import shutdown_summary_folds
 from . import admin as admin_router
+from . import internal as internal_router
 from . import llm_model as llm_model_router
 from . import auth as auth_router
 from . import chat as chat_router
@@ -206,6 +207,7 @@ def create_app() -> FastAPI:
     app.include_router(chat_router.router)
     app.include_router(workspaces_router.router)
     app.include_router(schedulers_router.router)
+    app.include_router(internal_router.router)
 
     @app.get("/health")
     def health():

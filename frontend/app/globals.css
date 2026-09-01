@@ -602,54 +602,6 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 /* Chat source selector ("Policies | Code"). Shown only when GitHub is
    connected -- it names which corpus answers rather than guessing, since an org
    commonly has both policies and GitHub connected at once. */
-.agent-tabs {
-  display: inline-flex;
-  align-self: flex-start;
-  gap: 0.25rem;
-  padding: 0.25rem;
-  margin-bottom: 1rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  flex: 0 1 auto;
-  min-width: 0;
-  max-width: 100%;
-  /* As many services connect (Notion/Drive/Slack/Linear/Code/...), this strip
-     scrolls horizontally instead of wrapping or overflowing the topbar —
-     scales to any connector count with no layout change needed per source. */
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.agent-tabs::-webkit-scrollbar { display: none; }
-.agent-tab {
-  font-family: inherit;
-  font-size: 0.85rem;
-  font-weight: 500;
-  letter-spacing: 0.01em;
-  color: var(--ink-muted);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  padding: 0.4rem 1rem;
-  cursor: pointer;
-  flex: none;
-  white-space: nowrap;
-  transition: background 0.2s var(--ease), color 0.2s var(--ease),
-    border-color 0.2s var(--ease);
-}
-.agent-tab:hover:not(:disabled):not(.is-active) {
-  color: var(--ink);
-}
-.agent-tab.is-active {
-  color: var(--accent-strong);
-  background: var(--surface-elevated);
-  border-color: var(--border);
-  box-shadow: var(--shadow-soft);
-}
-.agent-tab:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
 
 .chat-composer {
   display: flex;
@@ -854,6 +806,20 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
   border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
 }
 .provenance-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+/* The space name above Ask, when it leads somewhere. Underline only on
+   hover: a permanently underlined kicker competes with the H1 beneath it. */
+.chat-kicker-link { color: inherit; text-decoration: none; }
+.chat-kicker-link:hover { text-decoration: underline; }
+/* Which agent produced the answer, secondary to the source it came from: the
+   reader wants "Notion" first and "Notion agent" only as confirmation. Divider
+   is a border rather than a character so it never wraps to its own line. */
+.provenance-agent {
+  padding-left: 0.5rem;
+  margin-left: 0.15rem;
+  border-left: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+  font-weight: 550;
+  opacity: 0.8;
+}
 
 .org-chip {
   font-size: 0.82rem;
@@ -1484,27 +1450,6 @@ table .role-chip.role-admin,
   letter-spacing: -0.04em;
 }
 
-.agent-tabs {
-  align-self: auto;
-  margin-bottom: 0;
-  padding: 0.2rem;
-  background: rgba(255,255,255,0.75);
-  backdrop-filter: blur(10px);
-  border-radius: 999px;
-  box-shadow: var(--shadow-soft);
-  animation: rise-in 0.5s var(--ease) 0.05s both;
-}
-.agent-tab {
-  border-radius: 999px;
-  padding: 0.45rem 1.05rem;
-  font-weight: 650;
-}
-.agent-tab.is-active {
-  color: white;
-  background: linear-gradient(145deg, #14b8a6, var(--accent-strong));
-  border-color: transparent;
-  box-shadow: 0 8px 18px -10px rgba(15, 118, 110, 0.75);
-}
 
 .chat-empty {
   gap: 1.1rem;
@@ -2878,6 +2823,63 @@ table .role-chip.role-admin,
   color: #b54708;
   background: #fffaeb;
   border-color: #fedf89;
+}
+/* A failing-but-retrying scheduler: distinct from "stopped", which is
+   terminal. Amber says look at me; blue says I am handling it. */
+.studio-chip-wait {
+  color: #175cd3;
+  background: #eff8ff;
+  border-color: #b2ddff;
+}
+
+/* ---- Scheduler row -------------------------------------------------------
+   The row used to be a title plus one dot-separated run of four facts
+   (source, space, cadence, next run, last sent), with the cadence ALSO in a
+   chip beside it. Nothing was scannable and the cadence was stated twice. Now
+   each line answers one question: what it asks, where it reads, when it runs.
+*/
+/* Overrides .people-card-copy strong, which sets white-space: nowrap +
+   ellipsis and has HIGHER specificity (0,1,1) than a single class — without
+   these three resets the clamp below does nothing and the prompt stays cut to
+   one line, which is the bug this rule exists to fix. */
+.people-card-copy strong.sched-prompt {
+  white-space: normal;
+  text-overflow: clip;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.35;
+}
+.sched-scope {
+  font-weight: 600;
+  color: var(--ink-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+.sched-sep { opacity: 0.45; }
+/* One line holding scope + next run. Wraps only on a narrow viewport, so the
+   row is the same two lines tall it was before — the hierarchy comes from
+   weight and colour, not from extra rows. */
+.sched-when {
+  display: flex;
+  align-items: baseline;
+  gap: 0.15rem 0.85rem;
+  flex-wrap: wrap;
+  font-size: 0.82rem;
+  margin-top: 0.1rem;
+}
+/* Next run is the actionable fact, so it reads at full strength... */
+.sched-next { color: var(--ink-muted); }
+.sched-next strong { color: var(--ink); font-weight: 650; }
+/* ...and last-sent is history, one step quieter, never competing with it. */
+.sched-last { color: var(--ink-muted); opacity: 0.72; }
+.sched-error {
+  font-size: 0.82rem;
+  color: #b54708;
+  margin-top: 0.2rem;
 }
 
 .page-scene {

@@ -160,6 +160,26 @@ class LLMSettings:
     api_key: str | None
     base_url: str | None
     timeout: float = DEFAULT_TIMEOUT
+    #: Separate endpoint for the AUX (ingest contextualization) provider.
+    #: ``None`` — the default — means aux shares the main key and base_url,
+    #: which is the behaviour that existed before these fields and is
+    #: byte-identical today. Setting both moves background LLM work onto its
+    #: own quota, which is the structural version of what ``LLMPacingSettings``
+    #: can only approximate: separate endpoints cannot contend at all.
+    aux_base_url: str | None = None
+    aux_api_key: str | None = None
+
+    @property
+    def aux_has_own_endpoint(self) -> bool:
+        """True when background work draws from a different rate limit.
+
+        Requires BOTH a base_url and a key: a base_url with the main key would
+        send the wrong credential to the wrong host (a 401 on every
+        contextualization, degrading silently to un-prefixed chunks), and a key
+        with no base_url would send a foreign key to the main endpoint. Half-
+        configured therefore means "not configured", never "partly applied".
+        """
+        return bool(self.aux_base_url and self.aux_api_key)
 
     @classmethod
     def from_env(cls) -> "LLMSettings":
@@ -169,6 +189,8 @@ class LLMSettings:
             api_key=os.getenv("LLM_API_KEY"),
             base_url=os.getenv("LLM_BASE_URL"),
             timeout=float(os.getenv("LLM_TIMEOUT") or DEFAULT_TIMEOUT),
+            aux_base_url=os.getenv("LLM_AUX_BASE_URL") or None,
+            aux_api_key=os.getenv("LLM_AUX_API_KEY") or None,
         )
 
 
@@ -1295,5 +1317,100 @@ class SchedulerSettings:
             ),
             batch_size=int(
                 os.getenv("SCHEDULER_BATCH_SIZE") or DEFAULT_SCHEDULER_BATCH_SIZE
+            ),
+        )
+
+
+# Automatic sync. Freshness must not depend on anyone pressing a button, so
+# every connection is re-synced on an interval even when no webhook arrives.
+#
+# The interval is a FLOOR, not the plan: Slack/Linear/Notion push an event and
+# get synced within one tick, while Drive can only ever be polled (its push
+# notifications require a Google-verified domain, which a *.onrender.com host
+# cannot be). 6h keeps a free Gemini contextualization budget intact while
+# bounding worst-case staleness to a working day.
+#
+# batch_size bounds how many connections one tick may enqueue: a 40-connection
+# org must not turn a single tick into 40 simultaneous ingests on a 512MB box.
+DEFAULT_AUTO_SYNC_INTERVAL_HOURS = 6
+DEFAULT_AUTO_SYNC_BATCH_SIZE = 5
+
+
+@dataclass(frozen=True)
+class AutoSyncSettings:
+    """Configuration for background connection syncing."""
+
+    enabled: bool = True
+    interval_hours: int = DEFAULT_AUTO_SYNC_INTERVAL_HOURS
+    batch_size: int = DEFAULT_AUTO_SYNC_BATCH_SIZE
+    #: Shared secret for ``POST /internal/tick``. Unset disables the endpoint
+    #: entirely rather than leaving it open — an unauthenticated tick is a free
+    #: way for anyone to spend the org's provider quota.
+    tick_secret: str | None = None
+
+    @classmethod
+    def from_env(cls) -> "AutoSyncSettings":
+        return cls(
+            enabled=(os.getenv("AUTO_SYNC_ENABLED", "true").strip().lower()
+                     not in {"false", "0", "no"}),
+            interval_hours=max(
+                1,
+                int(
+                    os.getenv("AUTO_SYNC_INTERVAL_HOURS")
+                    or DEFAULT_AUTO_SYNC_INTERVAL_HOURS
+                ),
+            ),
+            batch_size=max(
+                1,
+                int(
+                    os.getenv("AUTO_SYNC_BATCH_SIZE") or DEFAULT_AUTO_SYNC_BATCH_SIZE
+                ),
+            ),
+            tick_secret=(os.getenv("INTERNAL_TICK_SECRET") or None),
+        )
+
+
+# LLM request pacing. The aux (ingest) provider shares the main provider's key
+# and endpoint, so background contextualization and a member's live question
+# compete for ONE rate limit. Free Gemini is 15 rpm, and a 429 on the answer
+# path is a failed answer rather than a slow one.
+#
+# reserve_rpm is the guarantee: background work never consumes the last N
+# requests of a minute, so that many are always there for a person. Interactive
+# calls are never throttled — they only report themselves.
+#
+# Defaults assume the free Gemini tier. Raise max_rpm to match a paid tier;
+# set LLM_PACING_ENABLED=false only when the endpoint has no meaningful limit.
+DEFAULT_LLM_MAX_RPM = 15
+DEFAULT_LLM_RESERVE_RPM = 5
+DEFAULT_LLM_PACING_MAX_WAIT_SECONDS = 45.0
+
+
+@dataclass(frozen=True)
+class LLMPacingSettings:
+    """How much of the LLM rate limit background work may use."""
+
+    enabled: bool = True
+    max_rpm: int = DEFAULT_LLM_MAX_RPM
+    reserve_rpm: int = DEFAULT_LLM_RESERVE_RPM
+    #: How long one background call may wait for a slot before giving up and
+    #: degrading. Bounded because a wedged ingest job is worse than a chunk
+    #: without its context prefix.
+    max_wait_seconds: float = DEFAULT_LLM_PACING_MAX_WAIT_SECONDS
+
+    @classmethod
+    def from_env(cls) -> "LLMPacingSettings":
+        max_rpm = int(os.getenv("LLM_MAX_RPM") or DEFAULT_LLM_MAX_RPM)
+        reserve = int(os.getenv("LLM_RESERVE_RPM") or DEFAULT_LLM_RESERVE_RPM)
+        # A reserve at or above the limit would starve background work
+        # completely and silently; clamp so at least one slot remains.
+        reserve = max(0, min(reserve, max(0, max_rpm - 1)))
+        return cls(
+            enabled=env_bool("LLM_PACING_ENABLED", True),
+            max_rpm=max_rpm,
+            reserve_rpm=reserve,
+            max_wait_seconds=float(
+                os.getenv("LLM_PACING_MAX_WAIT_SECONDS")
+                or DEFAULT_LLM_PACING_MAX_WAIT_SECONDS
             ),
         )

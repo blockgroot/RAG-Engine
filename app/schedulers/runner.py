@@ -44,7 +44,11 @@ logger = logging.getLogger(__name__)
 # Window used for a scheduler's very first run, when there is no last_run_at
 # to measure from. Matched to the cadence so the first report is not oddly
 # thin (weekly) or unboundedly deep (monthly on a busy service).
-_FIRST_WINDOW = {"weekly": timedelta(days=7), "monthly": timedelta(days=30)}
+_FIRST_WINDOW = {
+    "daily": timedelta(days=1),
+    "weekly": timedelta(days=7),
+    "monthly": timedelta(days=30),
+}
 _DEFAULT_FIRST_WINDOW = timedelta(days=7)
 
 
@@ -104,6 +108,21 @@ def run_scheduler_once(
     space_name = (
         get_workspace_name(scheduler.org_id, scope_id) if scope_id else None
     )
+    # An indexed report is only as current as the last sync, so ask for one
+    # before reading. Fire-and-forget on purpose: the ingest queue is durable
+    # and an ingest takes minutes, so WAITING for it would hold a claimed
+    # scheduler row open through a fetch+embed run and make the report's
+    # latency depend on the size of the corpus. This report reads what is
+    # indexed NOW and discloses when that was synced; the request is what keeps
+    # the *next* one current. GitHub reads live and needs nothing.
+    if scheduler.provider != "github":
+        try:
+            from ..jobs.autosync import request_sync
+
+            request_sync(scheduler.org_id, scheduler.provider, scope_id)
+        except Exception:  # noqa: BLE001 - a report must not fail over this
+            logger.debug("Could not request a pre-report sync", exc_info=True)
+
     # A scheduler created against a sub-workspace's connection must keep
     # reading that connection, never silently fall back to the org-wide one —
     # a space sees ONLY its own rows (CLAUDE.md §3).

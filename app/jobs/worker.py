@@ -229,6 +229,55 @@ def run_maintenance() -> None:
         logger.debug("Rate-counter prune failed", exc_info=True)
 
 
+def run_sync_tick() -> int:
+    """Enqueue any due connection syncs. Never raises. Returns how many.
+
+    Split from ``run_maintenance`` (hourly) because a webhook-flagged sync must
+    not wait up to an hour to be picked up — the whole point of push is that it
+    is faster than the poll floor.
+    """
+    try:
+        from .autosync import enqueue_due_syncs
+
+        return enqueue_due_syncs()
+    except Exception:  # noqa: BLE001 - must never break the shared worker loop
+        logger.exception("Auto-sync tick failed")
+        return 0
+
+
+def run_external_tick() -> dict[str, int]:
+    """One externally-driven pass: reap, sync, run due schedulers.
+
+    Exists because a free-tier Render web service spins down after ~15 minutes
+    with no INBOUND request — an in-process timer does not keep it alive, so
+    every background loop silently stops and freshness stops with it. A free
+    external cron (cron-job.org and friends) hitting ``POST /internal/tick``
+    both wakes the process and drives this, which is why waking and working are
+    the same request rather than a ping plus a hope.
+
+    Deliberately excludes ``run_maintenance``: pruning expired cache rows is
+    hourly housekeeping, and doing it on every external tick would spend writes
+    on nothing. Returns per-step counts so the caller (and the cron's own log)
+    can see the tick did something.
+    """
+    from ..config.settings import SchedulerSettings
+
+    reaped = 0
+    try:
+        reaped = queue.reap_stuck()
+    except Exception:  # noqa: BLE001
+        logger.exception("External tick: reap failed")
+
+    synced = run_sync_tick()
+
+    scheduler_settings = SchedulerSettings.from_env()
+    schedulers_ran = (
+        run_scheduler_tick(scheduler_settings) if scheduler_settings.enabled else 0
+    )
+
+    return {"reaped": reaped, "syncs_queued": synced, "schedulers_ran": schedulers_ran}
+
+
 def run_scheduler_tick(settings=None) -> int:
     """Run any due activity schedulers. Never raises. Returns how many ran.
 
@@ -254,6 +303,7 @@ def run_forever(
     poll_interval: float = 5.0,
     reap_interval: int = 60,
     maintenance_interval: int = 3600,
+    sync_interval: int = 300,
 ) -> None:
     """Poll for queued jobs forever, reaping stuck ``running`` jobs periodically.
 
@@ -289,6 +339,7 @@ def run_forever(
 
     last_reap = 0.0
     last_maintenance = 0.0
+    last_sync = 0.0
     last_scheduler = -float(scheduler_settings.poll_seconds)
     while True:
         now = time.monotonic()
@@ -298,6 +349,9 @@ def run_forever(
         if now - last_maintenance >= maintenance_interval:
             run_maintenance()
             last_maintenance = now
+        if now - last_sync >= sync_interval:
+            run_sync_tick()
+            last_sync = now
         if (
             scheduler_settings.enabled
             and now - last_scheduler >= scheduler_settings.poll_seconds

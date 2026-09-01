@@ -80,6 +80,13 @@ services:
         sync: false
       - key: EMBEDDING_BASE_URL
         sync: false
+      # Explicit, not the 60s default: the agent-routing probe and retrieval
+      # both embed on the critical path of a question, so an unset ceiling
+      # means a hanging embedder can stall a request for a minute. The probe
+      # additionally caps itself (AGENT_ROUTING_PROBE_TIMEOUT, default 5s)
+      # because it is a hint, not the answer.
+      - key: EMBEDDING_TIMEOUT
+        value: "20"
       - key: EMBEDDING_DIM
         value: "1024"
       # Batches embed() so one huge document can't build an unbounded request.
@@ -176,6 +183,54 @@ services:
         value: "true"
       - key: INGEST_MAX_RSS_MB
         value: "400"
+      # -- Automatic sync (freshness with nobody pressing Check) --
+      # Every connection re-syncs on this interval; a webhook-flagged one goes
+      # on the next tick. The interval is the FLOOR, not the plan: Drive can
+      # only ever be polled (its push notifications need a Google-verified
+      # domain, which *.onrender.com can never be) and a webhook delivered
+      # while this free instance was cold-started is simply lost.
+      - key: AUTO_SYNC_ENABLED
+        value: "true"
+      - key: AUTO_SYNC_INTERVAL_HOURS
+        value: "6"
+      # How many connections one tick may enqueue. Drop to 2 if the LLM
+      # endpoint starts returning 429s during unattended syncs.
+      - key: AUTO_SYNC_BATCH_SIZE
+        value: "5"
+      # Shared secret for POST /internal/tick, called by the repo's
+      # .github/workflows/tick.yml. UNSET DISABLES THE ROUTE (404) -- a free
+      # instance sleeps after ~15 min with no inbound request, so without this
+      # every background loop silently stops and freshness stops with it.
+      - key: INTERNAL_TICK_SECRET
+        sync: false
+
+      # -- LLM pacing --
+      # The aux (ingest) provider shares the main key and endpoint, so
+      # background contextualization and a member's live question compete for
+      # ONE rate limit. Free Gemini is 15 rpm, and a 429 on the answer path is
+      # a FAILED answer, not a slow one. reserve_rpm is the guarantee:
+      # background never spends the last N requests of a minute. Interactive
+      # calls are never throttled.
+      - key: LLM_MAX_RPM
+        value: "15"
+      - key: LLM_RESERVE_RPM
+        value: "5"
+      # THE STRUCTURAL FIX, preferred over the reserve above: point ingest
+      # contextualization at its own endpoint and the two lanes cannot contend
+      # at all (the pacing gate is then skipped entirely). BOTH must be set --
+      # half-configured means "not configured", because a foreign base_url with
+      # the main key 401s on every contextualization and degrades SILENTLY to
+      # un-prefixed chunks. Any OpenAI-compatible endpoint works.
+      #
+      # Note the privacy constraint is unchanged by this: contextualization
+      # sends tenant chunk text, so an endpoint that trains on prompts is no
+      # more acceptable here than on the answer path (see app/llm/catalog.py on
+      # why nvidia/* cannot be offered via OpenRouter).
+      - key: LLM_AUX_BASE_URL
+        sync: false
+      - key: LLM_AUX_API_KEY
+        sync: false
+
       # Bounded LRU for per-org SymSpell dictionaries (unbounded growth otherwise).
       - key: QUERY_NORM_CACHE_MAX_ORGS
         value: "50"
