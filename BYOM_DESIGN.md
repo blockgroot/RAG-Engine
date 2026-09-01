@@ -240,3 +240,72 @@ model (`pipeline.py:289` logs outside the `default_model_only()` block);
 pre-existing, but BYOM adds a DB read + Fernet decrypt behind those getters.
 `_clients` is also uncapped (`routed.py:149`) — one httpx pool per (org, model)
 per instance, forever. **Accepted as follow-ups, not blockers.**
+
+---
+
+# Phase 3 — Arbitration
+
+Constraint Guardian returned **2 BLOCKERS** (F1 redirects, F2 DNS rebinding) and
+9 constraints. Designer independently verified F1, F2's premise, F15, O1 and O4.
+
+## The ruling that removes both blockers
+
+**Free-text `base_url` is cut from v1.** The four confirmed presets — OpenAI,
+Anthropic, OpenRouter, Groq — have base URLs that are **constants in our code**.
+The admin supplies provider + model id + API key only.
+
+Both blockers are consequences of a capability that was never actually chosen:
+the "+ Custom" entry was the designer's own addition beyond the confirmed preset
+list. With no user-supplied URL there is no SSRF sink, so F1, F2, F3 and F4's
+scanning oracle all become non-applicable rather than mitigated.
+
+This is the honest trade, stated plainly: **v1 is "bring your own key", not
+"bring your own endpoint."** A self-hosted/internal endpoint is a v2 item that
+must carry the socket-level connect check F2 identifies — a validating
+`httpcore` network backend — because nothing above that layer can close the
+rebinding window. It does not get bolted on later without that work.
+
+## Objection dispositions
+
+| # | Objection | Ruling |
+|---|---|---|
+| O1 | Purpose false as scoped | **ACCEPTED — blocks framing.** Open product decision; §1 rewritten either way |
+| O2 | Tuple ContextVar breaks consumers | ACCEPTED — two separate ContextVars, `selected_model()` keeps returning a string |
+| O3 | Seven instances, no invalidation | ACCEPTED — see F12 |
+| O4 | `provider='llm'` not inert | ACCEPTED — see F15 |
+| O5 | One-shot probe admits intermittents | **PARTIALLY ACCEPTED.** 3 tool-call attempts, all must pass; verdict is dated, re-probe on demand. Full periodic re-probe deferred — cost is real and the failure is visible |
+| O6 | Probe blocks a PUT | ACCEPTED — see F9 |
+| O7 | `verified` reads as live | ACCEPTED — dated past-tense only, never a "Connected" badge |
+| O8 | Failure blames the product | ACCEPTED — distinct member copy + `needs_reauth` stamped on the row |
+| O9 | Tools-warned breaks GitHub invisibly | ACCEPTED — D5 amended |
+| O10 | SSRF unenforceable | **MOOT** under the ruling above |
+| O11 | `extra_body` unspecified | ACCEPTED — per-preset shape; OpenRouter preset keeps `_ROUTING_PREFS` |
+| O12 | `is_selectable` 400s the org's model | ACCEPTED — see F13 |
+| O13 | Engineer vocabulary | ACCEPTED — consequence language + raw provider error verbatim |
+| O14 | Naming/disclosure | ACCEPTED — tab is **Model**; spend consent at save |
+| O15 | Metering attribution, uncapped dict | Metering DEFERRED (pre-existing); cap ACCEPTED (F12) |
+| F1–F4 | SSRF family | **MOOT** — no user-supplied URL in v1 |
+| F5 | MultiFernet correct | No action |
+| F6 | `base_url` in logs | ACCEPTED — moot for userinfo; still pin the `openai` logger at INFO |
+| F7 | `response.model` echoed | ACCEPTED — truncate at the boundary |
+| F8 | `data_collection: deny` lapses | ACCEPTED — OpenRouter preset keeps it; others documented as the org's own contract. **CLAUDE.md §3 must be amended** |
+| F9 | 720s probe | ACCEPTED — 10s timeout, `max_retries=0`, hard wall-clock budget, out-of-request |
+| F10 | Threadpool DoS | ACCEPTED — `LLM_CUSTOM_TIMEOUT=25`, `max_retries=0` |
+| F11 | `_clients` global | Design confirmed correct |
+| F12 | No invalidation/bound | ACCEPTED — key includes a config version; LRU bound with `close()`; TTL, since eviction cannot reach other processes |
+| F13 | Gate must fail closed | ACCEPTED — a catalog miss with no matching verified org row is a 400, never a fallthrough to the deployment's key |
+| F14 | Cache-key stringification | ACCEPTED — moot once O2 keeps the string |
+| F15 | Breaks `list_connections` | ACCEPTED — `provider != 'llm'` filter at the store, not per-caller |
+
+## Rejected
+
+Nothing was rejected outright. O5 and O15 are partially deferred with rationale
+above; both are visible failures, not silent ones.
+
+## Disposition
+
+**REVISE** — the mechanism (§4 multi-tenancy) is sound and confirmed by two
+reviewers. The design proceeds to v2 with the ruling above. One item remains
+genuinely open and is the product owner's: whether §1 claims data isolation
+(requires routing aux + audit per-org, and a forced re-ingest on model change)
+or claims capacity + model choice only.
