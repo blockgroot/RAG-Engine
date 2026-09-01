@@ -66,6 +66,16 @@ function IconSources() {
   );
 }
 
+function IconModel() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 2v4M12 18v4M2 12h4M18 12h4" strokeLinecap="round" />
+      <path d="M5 5l2.5 2.5M16.5 16.5L19 19M19 5l-2.5 2.5M7.5 16.5L5 19" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function IconPeople() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -208,6 +218,20 @@ export function AppShell({
                   <span className="rail-link-copy">
                     <span className="rail-link-title">Sources</span>
                     <span className="rail-link-hint">Connect apps</span>
+                  </span>
+                </Link>
+                <Link
+                  href="/admin/model"
+                  className="rail-link"
+                  data-active={pathname.startsWith("/admin/model") ? "true" : "false"}
+                  aria-current={pathname.startsWith("/admin/model") ? "page" : undefined}
+                >
+                  <span className="rail-ico">
+                    <IconModel />
+                  </span>
+                  <span className="rail-link-copy">
+                    <span className="rail-link-title">Model</span>
+                    <span className="rail-link-hint">Use your own key</span>
                   </span>
                 </Link>
                 <Link

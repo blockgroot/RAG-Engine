@@ -15,6 +15,10 @@ def content_setup_status(org_id: str, workspace_id: str | None = None) -> dict:
                 SELECT 1 FROM oauth_connections
                 WHERE org_id = %(org)s
                   AND workspace_id IS NOT DISTINCT FROM %(ws)s
+                  -- Saving an LLM key is not connecting a source; without this
+                  -- the onboarding wizard marks "Connect" done for an org with
+                  -- no documents at all.
+                  AND provider <> 'llm'
               ) AS has_connection,
               EXISTS (
                 SELECT 1 FROM documents

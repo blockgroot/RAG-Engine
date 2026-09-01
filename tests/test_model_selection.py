@@ -494,13 +494,146 @@ def test_default_option_is_labelled_with_the_configured_model(monkeypatch):
     ``catalog.AUTO``, ``normalize`` no longer collapses it and the untouched
     dropdown starts splitting the answer cache and sending a bogus model id.
     """
+    from types import SimpleNamespace
+
+    import app.api.chat as chat_module
     from app.api.chat import list_models
 
     monkeypatch.setenv("LLM_MODEL", "gemini-3.1-flash-lite")
-    payload = list_models(session=None)  # session is unused by this route
+    # Stubbed: the route now also looks up the org's own model, and this test is
+    # about the DEFAULT option's label, not about storage.
+    monkeypatch.setattr(chat_module.org_model, "get_org_model_summary", lambda _org: None)
+    payload = list_models(session=SimpleNamespace(org_id="org-1"))
 
     assert payload["default"] == catalog.AUTO == "auto"
     assert payload["default_label"] == "gemini-3.1-flash-lite"
     # Not asserted here: the LLM_MODEL-unset case. ``build_llm_provider()``
     # raises ConfigurationError before this route can render a label, so the
     # ``or "Auto"`` fallback is unreachable belt-and-braces, not a branch.
+
+
+# --- Bring your own model -------------------------------------------------
+
+
+def _org_model(model, key, preset="openai", version="1"):
+    from app.llm.org_model import OrgModel
+
+    return OrgModel(
+        model=model,
+        api_key=key,
+        base_url="https://api.openai.com/v1",
+        preset=preset,
+        label=model,
+        version=version,
+    )
+
+
+def test_two_orgs_naming_the_same_model_do_not_share_a_client(monkeypatch):
+    """The leak this feature would otherwise ship.
+
+    ``_clients`` is process-global — one dict per agent singleton, reached by
+    every request from every tenant. Keyed by model id alone it was sound only
+    while every id was catalogued and credentials came from process env. Two
+    orgs both naming a model ``gpt-5`` would then have the second served the
+    first's cached client: its retrieved private chunks sent to the first org's
+    endpoint on the first org's key, with a perfectly good answer coming back.
+    """
+    import app.llm.org_model as om
+    from app.llm.routed import RoutedLLMProvider, use_model
+
+    keys = {"org-a": "sk-AAAA", "org-b": "sk-BBBB"}
+    monkeypatch.setattr(om, "get_org_model", lambda org: _org_model("gpt-5", keys[org]))
+
+    routed = RoutedLLMProvider(default=_Recording("default"))
+
+    use_model("gpt-5", org_id="org-a")
+    client_a = routed.active()
+    use_model("gpt-5", org_id="org-b")
+    client_b = routed.active()
+
+    assert client_a is not client_b
+    assert client_a.api_key == "sk-AAAA"
+    assert client_b.api_key == "sk-BBBB"
+
+
+def test_rotating_the_key_is_not_served_from_the_stale_client(monkeypatch):
+    """A rotated key must not keep being served by a client built before it."""
+    import app.llm.org_model as om
+    from app.llm.routed import RoutedLLMProvider, use_model
+
+    current = {"key": "sk-OLD", "version": "1"}
+    monkeypatch.setattr(
+        om,
+        "get_org_model",
+        lambda org: _org_model("gpt-5", current["key"], version=current["version"]),
+    )
+    routed = RoutedLLMProvider(default=_Recording("default"))
+
+    use_model("gpt-5", org_id="org-a")
+    assert routed.active().api_key == "sk-OLD"
+
+    current.update(key="sk-NEW", version="2")  # admin saves a new key
+    assert routed.active().api_key == "sk-NEW"
+
+
+def test_an_unknown_model_never_falls_back_to_the_deployment_key(monkeypatch):
+    """Fails CLOSED.
+
+    The catalogued path degrades to the default provider when a backend is
+    unconfigured, which is right there — the id is one we ship. Here the id
+    matched nothing we ship, so degrading would send an arbitrary client-supplied
+    model string on OUR OpenRouter key, burning an account-wide 50/day quota
+    shared by every tenant.
+    """
+    import app.llm.org_model as om
+    from app.core.exceptions import ConfigurationError
+    from app.llm.routed import RoutedLLMProvider, use_model
+
+    monkeypatch.setattr(om, "get_org_model", lambda org: None)
+    routed = RoutedLLMProvider(default=_Recording("default"))
+
+    use_model("some-model-nobody-configured", org_id="org-a")
+    with pytest.raises(ConfigurationError):
+        routed.active()
+
+    # Same for an org whose model exists but is a DIFFERENT id.
+    monkeypatch.setattr(om, "get_org_model", lambda org: _org_model("gpt-5", "sk-A"))
+    use_model("claude-opus-4", org_id="org-a")
+    with pytest.raises(ConfigurationError):
+        routed.active()
+
+
+def test_selected_model_stays_a_string_for_its_two_outside_readers():
+    """``org_id`` rides a SEPARATE ContextVar, not a tuple in ``_SELECTED``.
+
+    ``selected_model()`` is read outside routed.py in two places that both need
+    a plain string: api/chat.py puts it in the ``done`` SSE event (a tuple would
+    ship the org_id to the browser) and rag/query_cache.py folds it into the
+    answer-cache key (a tuple would reshape every key, catalogued models too).
+    """
+    from app.llm.routed import selected_model, selected_org, use_model
+
+    use_model("gpt-5", org_id="org-secret-uuid")
+    assert selected_model() == "gpt-5"
+    assert isinstance(selected_model(), str)
+    assert selected_org() == "org-secret-uuid"
+
+    # The cache key must still be computable and stable — a tuple in _SELECTED
+    # would reshape it for every model, catalogued ones included.
+    assert _question_hash("q") == _question_hash("q")
+    assert isinstance(_question_hash("q"), str)
+
+
+def test_org_llm_row_is_not_listed_as_a_data_source():
+    """`provider='llm'` shares oauth_connections but is not an ingestable source.
+
+    Every consumer of list_connections assumes "row implies source": the admin
+    Sources page calls checkConnectionChanges on each row (which 400s for 'llm'
+    and breaks the whole page), and onboarding treats any row as "Connect done".
+    """
+    import inspect
+
+    from app.auth import credentials
+
+    sql = inspect.getsource(credentials.list_connections)
+    assert "provider <> 'llm'" in sql

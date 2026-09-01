@@ -37,6 +37,7 @@ not a rule someone has to remember.
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 
@@ -56,6 +57,15 @@ _SELECTED: ContextVar[str | None] = ContextVar("llm_selected_model", default=Non
 #: are singletons built elsewhere — and rebuilding one to ask would return a
 #: fresh client that never made the call.
 _RESOLVED: ContextVar[str | None] = ContextVar("llm_resolved_model", default=None)
+#: Whose credentials answer, when the selection is the org's OWN model.
+#:
+#: A SEPARATE var rather than making ``_SELECTED`` an ``(org_id, model_id)``
+#: tuple, because ``selected_model()`` is read outside this module and both
+#: readers need it to stay a plain string: ``api/chat.py`` puts it in the
+#: ``done`` SSE event (a tuple would ship the org_id to the browser) and
+#: ``rag/query_cache.py`` folds it into the answer-cache key (a tuple would
+#: silently reshape every key, catalogued models included).
+_ORG: ContextVar[str | None] = ContextVar("llm_selected_org", default=None)
 
 # Routing preferences sent on EVERY OpenRouter request.
 #
@@ -83,15 +93,20 @@ _ROUTING_PREFS: dict = {
 }
 
 
-def use_model(model_id: str | None) -> None:
+def use_model(model_id: str | None, org_id: str | None = None) -> None:
     """Select the model for the remainder of this request.
 
     ``None`` / ``"auto"`` means no override: the configured default answers,
     byte-identical to the behaviour before this feature existed. Callers must
     validate against ``catalog.is_selectable`` first — this does not, because
     it is also the reset path.
+
+    ``org_id`` is what makes an org's OWN model resolvable, and it must come
+    from the signed session, never a request body (CLAUDE.md §3). Without it a
+    non-catalogued id cannot be resolved and the request fails closed.
     """
     _SELECTED.set(normalize(model_id))
+    _ORG.set(org_id)
     # Reset in step, so a pooled thread cannot report the previous request's
     # answering model for a stream that has not generated anything yet.
     _RESOLVED.set(None)
@@ -113,6 +128,11 @@ def default_model_only():
         yield
     finally:
         _SELECTED.reset(token)
+
+
+def selected_org() -> str | None:
+    """The org whose own model was selected, if one was."""
+    return _ORG.get()
 
 
 def selected_model() -> str | None:
@@ -146,7 +166,20 @@ class RoutedLLMProvider(LLMProvider):
         self._default = default
         self._settings = settings or OpenRouterSettings.from_env()
         self._groq = groq or GroqSettings.from_env()
-        self._clients: dict[str, OpenAICompatProvider] = {}
+        # Keyed by (org_id, model_id, config_version), NOT by model id alone.
+        #
+        # This dict is process-global: one `RoutedLLMProvider` per agent
+        # singleton (`api/deps.py`, `lru_cache(maxsize=1)`), each reached by
+        # every request from every tenant. Keying it by model id was sound only
+        # while every id was catalogued and its credentials came from process
+        # env — the id then FULLY determined the credentials. An org's own model
+        # breaks that: two orgs can both name a model `gpt-5`, and the second
+        # would be served the first org's cached client, sending its retrieved
+        # private chunks to the first org's endpoint on the first org's key.
+        # The version component additionally means a rotated key cannot keep
+        # being served by a client built before the rotation.
+        self._clients: dict[tuple[str | None, str, str], OpenAICompatProvider] = {}
+        self._custom_timeout = float(os.getenv("LLM_CUSTOM_TIMEOUT") or 25.0)
 
     def configured_backends(self) -> set[str]:
         """Backends with credentials. Drives which models the picker offers."""
@@ -167,12 +200,18 @@ class RoutedLLMProvider(LLMProvider):
         feature. The answer is still grounded and still labelled with the model
         that actually produced it, so nothing silently misreports.
         """
-        client = self._clients.get(model_id)
+        org_id = selected_org()
+        choice = catalog.get(model_id)
+
+        if choice is None:
+            return self._org_client(org_id, model_id)
+
+        cache_key = (None, model_id, "catalog")
+        client = self._clients.get(cache_key)
         if client is not None:
             return client
 
-        choice = catalog.get(model_id)
-        backend = choice.backend if choice else BACKEND_OPENROUTER
+        backend = choice.backend
 
         headers: dict[str, str] = {}
         if backend == BACKEND_GROQ:
@@ -215,7 +254,48 @@ class RoutedLLMProvider(LLMProvider):
             extra_body=extra_body,
             default_headers=headers or None,
         )
-        self._clients[model_id] = client
+        self._clients[cache_key] = client
+        return client
+
+    def _org_client(self, org_id: str | None, model_id: str) -> LLMProvider:
+        """The org's own model, or a hard failure — never the deployment's key.
+
+        Fails CLOSED. The catalogued path degrades to the default provider when
+        a backend is unconfigured, which is right there: the id is one we ship,
+        so the worst case is answering on the wrong model. Here the id came from
+        a client and matched nothing we ship, so degrading would send an
+        arbitrary member-supplied model string on OUR OpenRouter key — burning
+        an account-wide 50/day quota shared by every tenant (CLAUDE.md §5).
+        """
+        from .org_model import get_org_model
+
+        org = get_org_model(org_id) if org_id else None
+        if org is None or org.model != model_id:
+            raise ConfigurationError(
+                f"Model {model_id!r} is not available for this organization."
+            )
+
+        cache_key = (org_id, model_id, org.version)
+        client = self._clients.get(cache_key)
+        if client is not None:
+            return client
+
+        client = OpenAICompatProvider(
+            model=org.model,
+            api_key=org.api_key,
+            base_url=org.base_url,
+            # Deliberately shorter than LLM_TIMEOUT. FastAPI runs these sync
+            # routes in a shared 40-thread pool, so a slow tenant endpoint holds
+            # a slot that every OTHER tenant's chat also needs — one org's bad
+            # provider must not be able to stall the process.
+            timeout=self._custom_timeout,
+            # Only OpenRouter understands these, and only there do they matter:
+            # `data_collection: deny` keeps the tenant's retrieved content away
+            # from providers that train on prompts. A vendor's own first-party
+            # endpoint has nothing to route between, and would reject them.
+            extra_body=_ROUTING_PREFS if org.is_openrouter else None,
+        )
+        self._clients[cache_key] = client
         return client
 
     def active(self) -> LLMProvider:
