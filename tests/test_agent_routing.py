@@ -344,3 +344,97 @@ def test_a_named_repo_is_matched_against_authorized_repos_only(store, org_cleanu
     assert routing._named_repo("what about tensorflow/tensorflow?", org_id, None) is None
     # Substring inside a longer word is not a hit.
     assert routing._named_repo("chain-guarded routes", org_id, None) is None
+
+
+# --------------------------------------------------------------------------
+# The probe sits on the critical path, so its timeout must be bounded
+# --------------------------------------------------------------------------
+
+
+def test_the_probe_caps_a_remote_embedders_timeout(monkeypatch):
+    """EMBEDDING_TIMEOUT defaults to 60s. Unbounded, a hanging remote embedder
+    costs 60s BEFORE the pipeline starts (which then has its own 60s) — a
+    two-minute wait to be handed a refusal, since a timed-out probe degrades to
+    the default agent."""
+    routing.reset_probe_embedder_for_tests()
+    monkeypatch.setenv("EMBEDDING_BACKEND", "remote")
+    monkeypatch.setenv("EMBEDDING_TIMEOUT", "60")
+    monkeypatch.setenv("EMBEDDING_API_KEY", "k")
+    monkeypatch.setenv("EMBEDDING_BASE_URL", "https://embed.example.com/v1")
+
+    built = {}
+    monkeypatch.setattr(
+        "app.embeddings.build_embedding_provider",
+        lambda settings=None: built.setdefault("settings", settings),
+    )
+
+    routing._probe_embedder()
+
+    assert built["settings"].timeout == routing.DEFAULT_PROBE_TIMEOUT_SECONDS
+    routing.reset_probe_embedder_for_tests()
+
+
+def test_the_probe_never_raises_a_configured_timeout(monkeypatch):
+    """A deployment that deliberately set a SHORTER timeout must keep it."""
+    routing.reset_probe_embedder_for_tests()
+    monkeypatch.setenv("EMBEDDING_BACKEND", "remote")
+    monkeypatch.setenv("EMBEDDING_TIMEOUT", "2")
+    monkeypatch.setenv("EMBEDDING_API_KEY", "k")
+    monkeypatch.setenv("EMBEDDING_BASE_URL", "https://embed.example.com/v1")
+
+    built = {}
+    monkeypatch.setattr(
+        "app.embeddings.build_embedding_provider",
+        lambda settings=None: built.setdefault("settings", settings),
+    )
+
+    routing._probe_embedder()
+
+    assert built["settings"].timeout == 2.0
+    routing.reset_probe_embedder_for_tests()
+
+
+def test_the_probe_embedder_is_built_once(monkeypatch):
+    """RemoteEmbeddingProvider is uncached in the factory and builds a fresh
+    HTTP client each call — one per question would throw away connection reuse
+    on the critical path."""
+    routing.reset_probe_embedder_for_tests()
+    monkeypatch.setenv("EMBEDDING_BACKEND", "remote")
+    monkeypatch.setenv("EMBEDDING_API_KEY", "k")
+    monkeypatch.setenv("EMBEDDING_BASE_URL", "https://embed.example.com/v1")
+
+    builds = []
+    monkeypatch.setattr(
+        "app.embeddings.build_embedding_provider",
+        lambda settings=None: builds.append(1) or object(),
+    )
+
+    first = routing._probe_embedder()
+    second = routing._probe_embedder()
+
+    assert first is second
+    assert len(builds) == 1
+    routing.reset_probe_embedder_for_tests()
+
+
+def test_the_probe_uses_the_same_model_as_retrieval(monkeypatch):
+    """The probe's vector is compared against STORED chunk embeddings, so a
+    different model would make every cosine meaningless, not merely wrong."""
+    routing.reset_probe_embedder_for_tests()
+    monkeypatch.setenv("EMBEDDING_BACKEND", "remote")
+    monkeypatch.setenv("EMBEDDING_MODEL", "bge-m3")
+    monkeypatch.setenv("EMBEDDING_API_KEY", "k")
+    monkeypatch.setenv("EMBEDDING_BASE_URL", "https://embed.example.com/v1")
+
+    built = {}
+    monkeypatch.setattr(
+        "app.embeddings.build_embedding_provider",
+        lambda settings=None: built.setdefault("settings", settings),
+    )
+
+    routing._probe_embedder()
+
+    from app.config.settings import EmbeddingSettings
+
+    assert built["settings"].model == EmbeddingSettings.from_env().model
+    routing.reset_probe_embedder_for_tests()

@@ -40,13 +40,71 @@ refusal, never a wrong answer from the wrong source.
 from __future__ import annotations
 
 import logging
+import os
 import re
-from dataclasses import dataclass, field
+import threading
+from dataclasses import dataclass, field, replace
 
-from ..config.settings import RagSettings
+from ..config.settings import EmbeddingSettings, RagSettings
 from .orchestration import DIRECT_AGENT_KEYS, POLICY_KEY, WORKSPACE_KEY
 
 logger = logging.getLogger(__name__)
+
+# The probe is a HINT, not the answer, and it now sits on the critical path of
+# every question — so it gets a hard, short ceiling instead of the embedding
+# provider's general one (EMBEDDING_TIMEOUT, default 60s). Without this a
+# hanging remote embedder costs up to 60s BEFORE the pipeline starts, and the
+# pipeline then has its own 60s: a two-minute wait to be handed a refusal,
+# because a timed-out probe degrades to the default agent.
+#
+# 5s is generous for a single-string embed and still an order of magnitude
+# below the point where a person assumes the product is broken.
+DEFAULT_PROBE_TIMEOUT_SECONDS = 5.0
+
+_probe_provider = None
+_probe_lock = threading.Lock()
+
+
+def _probe_embedder():
+    """Cached embedder for the routing probe. Same MODEL, shorter timeout.
+
+    Same model matters more than it looks: the probe's vector is compared
+    against stored chunk embeddings, so a different model would make every
+    cosine meaningless rather than merely wrong.
+
+    Cached because ``RemoteEmbeddingProvider`` is deliberately uncached in the
+    factory (it holds no weights) and constructs a fresh HTTP client each call
+    — building one per question would throw away connection reuse on the
+    critical path. The local backend needs none of this: no network, so no hang
+    to bound, and its own singleton already prevents a second 500MB load.
+    """
+    global _probe_provider
+    if _probe_provider is not None:
+        return _probe_provider
+
+    from ..embeddings import build_embedding_provider
+
+    with _probe_lock:
+        if _probe_provider is None:
+            settings = EmbeddingSettings.from_env()
+            if settings.backend != "local":
+                ceiling = float(
+                    os.getenv("AGENT_ROUTING_PROBE_TIMEOUT")
+                    or DEFAULT_PROBE_TIMEOUT_SECONDS
+                )
+                settings = replace(
+                    settings, timeout=min(settings.timeout, ceiling)
+                )
+            _probe_provider = build_embedding_provider(settings)
+    return _probe_provider
+
+
+def reset_probe_embedder_for_tests() -> None:
+    """Drop the cached probe embedder (tests that change EMBEDDING_* env)."""
+    global _probe_provider
+    with _probe_lock:
+        _probe_provider = None
+
 
 #: Providers that have embedded content to score against. GitHub is absent by
 #: construction, not by omission.
@@ -156,10 +214,9 @@ def _probe_scores(
         return {}
 
     from ..db.connection import get_connection
-    from ..embeddings import build_embedding_provider
 
     try:
-        vector = build_embedding_provider().embed([question])[0]
+        vector = _probe_embedder().embed([question])[0]
     except Exception:  # noqa: BLE001 - fall through to the default agent
         logger.warning("Agent routing: could not embed the question", exc_info=True)
         return {}

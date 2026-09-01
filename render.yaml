@@ -80,6 +80,13 @@ services:
         sync: false
       - key: EMBEDDING_BASE_URL
         sync: false
+      # Explicit, not the 60s default: the agent-routing probe and retrieval
+      # both embed on the critical path of a question, so an unset ceiling
+      # means a hanging embedder can stall a request for a minute. The probe
+      # additionally caps itself (AGENT_ROUTING_PROBE_TIMEOUT, default 5s)
+      # because it is a hint, not the answer.
+      - key: EMBEDDING_TIMEOUT
+        value: "20"
       - key: EMBEDDING_DIM
         value: "1024"
       # Batches embed() so one huge document can't build an unbounded request.
