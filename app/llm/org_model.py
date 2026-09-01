@@ -108,16 +108,9 @@ class OrgModel:
     #: rotated key cannot keep being served from a client built before it.
     version: str
 
-    @property
-    def is_openrouter(self) -> bool:
-        """OpenRouter is the one preset taking our routing preferences.
-
-        ``provider.data_collection="deny"`` is meaningless to a vendor's own
-        first-party endpoint (there is nothing to route between), but on
-        OpenRouter it is what keeps the tenant's retrieved private content away
-        from providers that train on prompts — see ``routed._ROUTING_PREFS``.
-        """
-        return self.preset == "openrouter"
+    # No `is_openrouter` bool: request shape is per-preset DATA, looked up in
+    # `routed._PRESET_EXTRA_BODY`, because there are now two presets needing
+    # different non-standard fields and a boolean does not extend to a third.
 
 
 def get_org_model(org_id: str) -> OrgModel | None:

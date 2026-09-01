@@ -20,6 +20,7 @@ from ..config.settings import RagSettings
 from ..core.exceptions import LLMProviderError, LLMRateLimitError, ProviderError
 from ..llm import org_model
 from ..llm.openai_provider import OpenAICompatProvider
+from ..llm.routed import _PRESET_EXTRA_BODY
 from .deps import SessionClaims, require_admin
 from .validation import bounded
 
@@ -60,6 +61,11 @@ def _probe(preset: org_model.Preset, model: str, api_key: str) -> None:
         base_url=preset.base_url,
         timeout=PROBE_TIMEOUT,
         max_retries=0,
+        # The SAME per-preset request fields chat will send. Without this the
+        # probe tests a different request than production — and for NVIDIA NIM
+        # specifically it is the difference between a reply and a hang, since
+        # its reasoning models never return without `chat_template_kwargs`.
+        extra_body=_PRESET_EXTRA_BODY.get(preset.id),
     )
     # Production's own answer cap, NOT a token or two. CLAUDE.md §5 records the
     # exact trap: a reasoning model spends the whole budget on internal

@@ -93,6 +93,29 @@ _ROUTING_PREFS: dict = {
 }
 
 
+#: Non-standard request fields per BYO preset. A table, not branching: each
+#: vendor's OpenAI-compatible endpoint has its own idea of how to turn reasoning
+#: off, and this codebase needs it OFF on every preset — the pipeline parses
+#: ``MODE: A|B|C`` off the FRONT of a generation (``rag/pipeline.py``), and a
+#: leading ``<think>`` block makes that regex miss, which does not fail loudly:
+#: it leaves ``mode=None`` and silently skips the groundedness audit.
+_PRESET_EXTRA_BODY: dict[str, dict] = {
+    # OpenRouter: keeps the tenant's retrieved private content away from
+    # providers that train on prompts, and asserts tool support server-side.
+    "openrouter": _ROUTING_PREFS,
+    # NVIDIA NIM: its DeepSeek v4 reasoning models HANG indefinitely (not slow —
+    # never return) unless the request carries `chat_template_kwargs`, because
+    # the NIM template layer reads that to gate the reasoning contract. Absent
+    # it the model still reasons, with no budget and no streaming contract.
+    # `thinking: False` both fixes the hang and keeps the MODE tag parseable.
+    #
+    # ponytail: shape taken from NVIDIA's reasoning-model issue reports, NOT
+    # verified against a live key. If a NIM reasoning model still times out,
+    # this dict is the first thing to check.
+    "nvidia": {"chat_template_kwargs": {"thinking": False}},
+}
+
+
 def use_model(model_id: str | None, org_id: str | None = None) -> None:
     """Select the model for the remainder of this request.
 
@@ -296,11 +319,7 @@ class RoutedLLMProvider(LLMProvider):
             # a slot that every OTHER tenant's chat also needs — one org's bad
             # provider must not be able to stall the process.
             timeout=self._custom_timeout,
-            # Only OpenRouter understands these, and only there do they matter:
-            # `data_collection: deny` keeps the tenant's retrieved content away
-            # from providers that train on prompts. A vendor's own first-party
-            # endpoint has nothing to route between, and would reject them.
-            extra_body=_ROUTING_PREFS if org.is_openrouter else None,
+            extra_body=_PRESET_EXTRA_BODY.get(org.preset),
         )
         self._clients[cache_key] = client
         return client
