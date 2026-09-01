@@ -158,6 +158,161 @@ def _digest(items: list[ActivityItem], notes: list[str]) -> ActivityDigest:
     )
 
 
+# How many changed documents one report may read from the index. Bounded like
+# every other external walk in this codebase, and the content is bounded in SQL
+# too (``left(...)``) rather than after the fetch: a monthly Notion window can
+# be dozens of long pages, and pulling megabytes into Python to then throw most
+# of it away is the wrong place to discover a size limit.
+MAX_INDEXED_DOCS = 60
+MAX_INDEXED_DOC_CHARS = 3_000
+
+#: What one document IS, per provider — used in coverage notes so a reader
+#: knows what was counted. "12 threads" and "12 files" are different claims.
+_INDEXED_UNIT = {
+    "slack": ("thread", "threads"),
+    "notion": ("page", "pages"),
+    "linear": ("issue", "issues"),
+    "google": ("file", "files"),
+}
+
+
+def _connection_sync_state(
+    org_id: str, provider: str, workspace_id: str | None
+) -> datetime | None:
+    """Assert the connection exists IN THIS SCOPE and return its last sync time.
+
+    Two jobs in one query, both load-bearing:
+
+    * **Existence.** Reading the index directly would otherwise make "this
+      space has no Slack connection" indistinguishable from "nothing happened
+      this week" — a broken scheduler would report quiet periods forever. The
+      raise keeps a misconfiguration loud, and preserves the rule that a
+      space-scoped report must never fall back to the org connection.
+    * **Freshness.** An indexed report is only as current as the last sync, so
+      the coverage note has to state when that was. Anything else implies live
+      coverage it does not have.
+    """
+    from ..db.connection import get_connection
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT last_sync_at FROM oauth_connections "
+            "WHERE org_id = %s AND provider = %s "
+            "AND workspace_id IS NOT DISTINCT FROM %s",
+            (org_id, provider, workspace_id),
+        ).fetchone()
+    if row is None:
+        scope = "this space" if workspace_id else "this organization"
+        raise ConfigurationError(
+            f"{provider} is not connected for {scope}."
+        )
+    return row[0]
+
+
+def fetch_indexed_activity(
+    org_id: str,
+    since: datetime,
+    *,
+    provider: str,
+    workspace_id: str | None = None,
+) -> ActivityDigest:
+    """Documents that CHANGED since ``since``, read from our own index.
+
+    Why the index rather than the service's API
+    ------------------------------------------
+    Notion and Drive have no "what happened between T1 and T2" primitive at
+    all — their adapters answer "does this exist / is it stale", so a live
+    report on either could only ever list filenames. But we already store the
+    full text of every changed document, and ``documents.source_last_modified``
+    already records when the source last changed it. One indexed query answers
+    both "which changed" and "what they say", with no API call.
+
+    That makes all four non-GitHub sources ONE implementation instead of four,
+    and it is only honest because syncing is now automatic
+    (``app/jobs/autosync.py``): before that, ``source_last_modified`` only
+    advanced when a human pressed Update, so an unattended report would have
+    summarised whatever the last person happened to sync.
+
+    What this can and cannot say
+    ----------------------------
+    It reports the CURRENT CONTENT of documents that changed in the window —
+    never a diff. "The pricing page covers refunds" is supportable; "a refund
+    clause was added" is not, because nothing here stores the previous version.
+    The prompt profile enforces that; this function only supplies the facts.
+
+    Two disclosures the coverage notes always carry: how many documents were
+    read, and when the source was last synced. The second is the one that
+    matters — a reader must not mistake an indexed report for a live one.
+    """
+    if provider == "slack":
+        # Titles are "#channel: snippet", so a rename would otherwise show the
+        # old channel name in this report's snapshotted items forever. The
+        # refresh also relabels the stored titles (app/sources/slack_utils.py).
+        from ..sources.slack_utils import refresh_channel_names
+
+        refresh_channel_names(org_id, workspace_id)
+
+    last_sync = _connection_sync_state(org_id, provider, workspace_id)
+
+    from ..db.connection import get_connection
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT d.title,
+                   d.source_uri,
+                   d.source_last_modified,
+                   left(string_agg(c.content, E'\n\n' ORDER BY c.chunk_index),
+                        {MAX_INDEXED_DOC_CHARS})
+            FROM documents d
+            JOIN chunks c ON c.document_id = d.id
+            WHERE d.org_id = %s
+              AND c.org_id = %s
+              AND d.source_provider = %s
+              AND d.workspace_id IS NOT DISTINCT FROM %s
+              AND d.source_last_modified > %s
+            GROUP BY d.id, d.title, d.source_uri, d.source_last_modified
+            ORDER BY d.source_last_modified DESC
+            LIMIT {MAX_INDEXED_DOCS + 1}
+            """,
+            (org_id, org_id, provider, workspace_id, since),
+        ).fetchall()
+
+    # One extra row was requested purely to detect the cap without a second
+    # COUNT query — the same trick the source adapters use for paging.
+    capped = len(rows) > MAX_INDEXED_DOCS
+    rows = rows[:MAX_INDEXED_DOCS]
+
+    items = [
+        ActivityItem(
+            summary=(content or "").strip(),
+            meta=f"{(title or 'Untitled').strip()} · {_stamp(changed_at)}",
+            url=source_uri,
+        )
+        for title, source_uri, changed_at, content in rows
+    ]
+
+    singular, plural = _INDEXED_UNIT.get(provider, ("document", "documents"))
+    notes: list[str] = []
+    if items:
+        unit = singular if len(items) == 1 else plural
+        notes.append(f"{len(items)} {unit} changed in this period.")
+    if capped:
+        # Ordered newest-first, so the cap drops the oldest end of the window —
+        # the same truncation shape as every live fetcher here.
+        notes.append(
+            f"Only the {MAX_INDEXED_DOCS} most recently changed {plural} were "
+            "read — older changes in this window were left out."
+        )
+    notes.append(
+        "Read from indexed content, last synced "
+        + (_stamp(last_sync) if last_sync else "never")
+        + " — not a live read, and it describes what these "
+        + f"{plural} say now rather than what changed inside them."
+    )
+    return _digest(items, notes)
+
+
 def fetch_github_activity(
     org_id: str,
     since: datetime,
@@ -244,129 +399,58 @@ def fetch_github_activity(
     return _digest(items, notes)
 
 
-def fetch_slack_activity(
-    org_id: str,
-    since: datetime,
-    *,
-    workspace_id: str | None = None,
-) -> ActivityDigest:
-    """Messages posted in this connection's configured channels since ``since``.
+def _indexed_fetcher(provider: str):
+    """One fetcher per indexed provider, all the same function.
 
-    Always discloses which channels were read. A Slack connection only ever
-    sees the channels an admin picked and the bot was invited to, so a report
-    that stayed silent about scope would read as whole-workspace coverage it
-    never had — and the reader has no way to know otherwise.
+    Slack, Notion, Linear and Drive used to be four live-API implementations
+    (and Notion/Drive could not be implemented at all — see
+    ``fetch_indexed_activity``). Reading our own index makes them one, so the
+    per-provider surface that remains is exactly the part that genuinely
+    differs: what a "document" is called in a coverage note.
+
+    Built as a closure rather than four wrapper functions because there is
+    nothing left for a wrapper to do, and four identical bodies is four places
+    for them to drift.
     """
-    from ..auth.credentials import get_connection_config, get_live_connection_token
-    from ..sources import build_source_adapter
 
-    # Refresh the channel labels before reading, so this report's coverage
-    # note names the channel as it is called TODAY. The note is snapshotted
-    # into the report, so a stale label here is wrong forever — and a run is
-    # weekly or monthly, which makes one extra listing call free in practice.
-    from ..sources.slack_utils import refresh_channel_names
+    def fetch(
+        org_id: str,
+        since: datetime,
+        *,
+        workspace_id: str | None = None,
+    ) -> ActivityDigest:
+        return fetch_indexed_activity(
+            org_id, since, provider=provider, workspace_id=workspace_id
+        )
 
-    refresh_channel_names(org_id, workspace_id)
-
-    config = get_connection_config(org_id, "slack", workspace_id)
-    if not config:
-        raise ConfigurationError("Slack is not connected for this organization.")
-    token = get_live_connection_token(org_id, "slack", workspace_id)
-    adapter = build_source_adapter("slack", token=token, config=config)
-
-    messages, truncated = adapter.fetch_recent_messages(
-        since.timestamp(), max_messages=MAX_SLACK_MESSAGES
+    fetch.__name__ = f"fetch_{provider}_activity"
+    fetch.__doc__ = (
+        f"What changed in {provider} since ``since``, read from the index. "
+        "See ``fetch_indexed_activity`` for why this is not a live read."
     )
-
-    channels = adapter.channel_labels()
-    notes: list[str] = []
-    if channels:
-        notes.append(
-            "Channels checked: " + ", ".join(f"#{c}" for c in channels) + "."
-        )
-    if truncated:
-        # Hitting the message cap is disclosed, not just logged: the reader
-        # would otherwise read "Channels checked: #general" as complete.
-        notes.append(
-            "Only the most recent messages were read in "
-            + ", ".join(f"#{c}" for c in dict.fromkeys(truncated))
-            + " — older activity in this window was left out."
-        )
-
-    items: list[ActivityItem] = []
-    for message in messages:
-        when = _stamp(message["at"])
-        replies = message.get("reply_count") or 0
-        thread_note = f" · {replies} replies" if replies else ""
-        items.append(
-            ActivityItem(
-                summary=message["text"],
-                meta=(
-                    f"{message['user']} in #{message['channel']} · {when}{thread_note}"
-                ),
-                url=message.get("permalink"),
-            )
-        )
-    return _digest(items, notes)
+    return fetch
 
 
-def fetch_linear_activity(
-    org_id: str,
-    since: datetime,
-    *,
-    workspace_id: str | None = None,
-) -> ActivityDigest:
-    """Issues updated in this connection's Linear workspace since ``since``.
-
-    Unlike Slack and GitHub, Linear has **two** independent credential paths
-    (an OAuth connection, or a legacy per-org ``LINEAR_TOKEN_<NAME>`` env
-    key), and they are deliberately not linked by a fallback. A scheduler is
-    created against an ``oauth_connections`` row, so this takes the OAuth
-    path only — passing ``token=`` is also what tells the adapter to send
-    ``Bearer <token>`` rather than a raw personal key, which is the one place
-    the two paths cannot be symmetric.
-    """
-    from ..auth.credentials import get_connection_config, get_live_connection_token
-    from ..sources import build_source_adapter
-
-    token = get_live_connection_token(org_id, "linear", workspace_id)
-    config = get_connection_config(org_id, "linear", workspace_id)
-    adapter = build_source_adapter("linear", token=token, config=config)
-
-    issues = adapter.fetch_recent_issues(since, max_issues=MAX_LINEAR_ISSUES)
-    items: list[ActivityItem] = []
-    for issue in issues:
-        when = _stamp(issue["at"])
-        who = f" · {issue['assignee']}" if issue["assignee"] else " · unassigned"
-        # state_type is what makes "what shipped" answerable — a state *name*
-        # is workspace-specific ("Shipped", "Live", "QA"), while the type is a
-        # fixed Linear vocabulary the model can reason about.
-        state = issue["state"] or "unknown state"
-        kind = f" ({issue['state_type']})" if issue["state_type"] else ""
-        items.append(
-            ActivityItem(
-                summary=f"{issue['identifier']}: {issue['title']}",
-                meta=f"{state}{kind}{who} · {when}",
-                url=issue.get("url") or None,
-            )
-        )
-    # Linear grants no per-team subset here, so scope is "whatever this token
-    # can see" — stating that is more honest than listing nothing.
-    notes = ["Scope: all Linear issues visible to this connection."]
-    if len(issues) >= MAX_LINEAR_ISSUES:
-        # Ordered by updatedAt descending, so the cap drops the least recently
-        # updated issues — disclosed rather than silently dropped.
-        notes.append(
-            f"Only the {MAX_LINEAR_ISSUES} most recently updated issues were "
-            "read — older updates in this window were left out."
-        )
-    return _digest(items, notes)
+# GitHub stays LIVE and is the deliberate exception: it embeds nothing
+# (``app/githublive/``), so there is no index to read, and it already has a
+# real ``list_commits(since=)`` primitive. Its report is therefore the only one
+# that can describe change itself ("these commits landed") rather than current
+# content.
+fetch_slack_activity = _indexed_fetcher("slack")
+fetch_linear_activity = _indexed_fetcher("linear")
+fetch_notion_activity = _indexed_fetcher("notion")
+fetch_google_activity = _indexed_fetcher("google")
 
 
 _FETCHERS = {
     "github": fetch_github_activity,
     "slack": fetch_slack_activity,
     "linear": fetch_linear_activity,
+    "notion": fetch_notion_activity,
+    # Drive's provider string is "google" — what the connect flow writes to
+    # oauth_connections. Using "google_drive" here would list zero connections
+    # and let no scheduler be created, silently.
+    "google": fetch_google_activity,
 }
 
 
