@@ -3796,6 +3796,12 @@ a.people-card:hover { color: inherit; }
   display: block;
   object-fit: contain;
   flex: none;
+  /* Matches the rx="6" on a 24-unit viewBox that GithubMark and LinearMark
+     draw. The brand PNGs (slack, notion, drive) are opaque white squares with
+     no alpha, so inside the circular .people-avatar they read as white tiles
+     next to GitHub's and Linear's rounded ones. Clipping the element is enough
+     — each PNG is square and object-fit: contain fills it exactly. */
+  border-radius: 25%;
 }
 .landing-prompt.is-compact {
   width: 100%;
