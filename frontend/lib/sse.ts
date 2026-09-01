@@ -19,6 +19,20 @@ export interface ChatDonePayload {
   /** The model that actually answered, resolved by the endpoint. Null on the
    *  default path — there is nothing to disclose when nobody chose. */
   model?: string | null;
+  /** WHICH agent answered. The member no longer picks a source, so this is the
+   *  only way "where did this come from?" is answerable. */
+  agent?:
+    | "policy"
+    | "workspace"
+    | "github"
+    | "slack"
+    | "linear"
+    | "notion"
+    | "google";
+  /** Why that agent was picked — "best-match", "repo-named", "code-intent",
+   *  "only-source", "weak-best-match", "requested", "no-sources". Surfaced so
+   *  a misroute is distinguishable from a source genuinely lacking the answer. */
+  routing_reason?: string;
 }
 
 export interface ChatStreamHandlers {

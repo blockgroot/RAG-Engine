@@ -23,7 +23,9 @@ export function ChatMessageView({ message }: { message: Message }) {
 
   return (
     <div className="chat-bubble chat-bubble-assistant" data-thinking={thinking || undefined}>
-      {message.done && <ProvenanceStripe source={message.done.source} />}
+      {message.done && (
+        <ProvenanceStripe source={message.done.source} agent={message.done.agent} />
+      )}
       {thinking ? (
         <div className="chat-thinking" role="status" aria-live="polite">
           <span className="chat-thinking-dots" aria-hidden>

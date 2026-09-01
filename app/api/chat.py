@@ -41,6 +41,7 @@ def _word_chunks(text: str) -> Iterator[str]:
 
 from ..agent.github_agent import GitHubAgent
 from ..agent.orchestration import build_agent_graph, route_agent_key
+from ..agent.routing import choose_agent
 from ..agent.rag_pipeline_agent import RagPipelineAgent
 from ..core.exceptions import AuthError, LLMProviderError, ProviderError
 from ..llm import catalog
@@ -424,6 +425,24 @@ def _stream_answer(
     # here also resets it per stream, so a pooled thread cannot leak one
     # request's model choice into the next.
     use_model(model, org_id=org_id)
+
+    # Decide WHICH agent answers before invoking the graph. `choose_agent`
+    # honours an explicit `requested_agent` unchanged, so a caller that still
+    # pins a source is unaffected; with none, it measures which connected
+    # source's content resembles the question (app/agent/routing.py). Passing
+    # the decision back in as `requested_agent` needs no graph change: a direct
+    # key is honoured, and "workspace"/"policy" fall through to the same
+    # default `_route` already computed.
+    decision = choose_agent(
+        question, org_id, workspace_id=workspace_id, requested_agent=requested_agent
+    )
+    logger.info(
+        "Chat routing: agent=%s reason=%s scores=%s",
+        decision.agent_key,
+        decision.reason,
+        decision.scores,
+    )
+
     try:
         state = _agent_graph().invoke(
             {
@@ -431,7 +450,7 @@ def _stream_answer(
                 "org_id": org_id,
                 "conversation_id": conversation_id,
                 "workspace_id": workspace_id,
-                "requested_agent": requested_agent,
+                "requested_agent": decision.agent_key,
                 "stream": True,
             }
         )
@@ -462,6 +481,13 @@ def _stream_answer(
             ],
             "resolved_question": result.resolved_question,
             "latency_ms": result.latency_ms,
+            # WHICH agent answered, and why it was picked. The member no longer
+            # chooses a source, so "where did this come from?" has to be
+            # answerable from the response or the answer is unattributable.
+            # `reason` is exposed too: a misroute is otherwise indistinguishable
+            # from a source genuinely not having the answer.
+            "agent": decision.agent_key,
+            "routing_reason": decision.reason,
             # What actually answered, resolved — never the word "auto".
             # Under a router or a provider fallback the served model differs
             # from the requested one, and "which model wrote this?" has to be
