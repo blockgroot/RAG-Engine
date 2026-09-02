@@ -222,6 +222,71 @@ def _spaces(org_id: str, user_id: str) -> list[dict]:
     return spaces
 
 
+def _classify_provider(
+    prompt: str, org_id: str, user_id: str, workspace_id: str | None
+) -> str:
+    """Which service this report is about, read from the prompt itself.
+
+    Asking someone to pick the service was asking them to translate their own
+    intent into our data model. "Summarise what the team discussed" already
+    says Slack; making that a dropdown made it the user's job to know where
+    their content lives.
+
+    Reuses ``agent.routing.choose_agent`` rather than growing a second
+    classifier: it is the same question the chat box already answers ("which
+    source resembles this?"), it is a measurement against the tenant's own
+    embedded content rather than keywords, it carries the ``org_id`` +
+    ``workspace_id`` isolation this call needs anyway, and it already holds
+    GitHub's two structural rules (a named repo, then code intent last) for a
+    provider that embeds nothing and could otherwise never be chosen.
+
+    Deliberately NOT an LLM call: this runs on a member's create request, and
+    a classifier that can hallucinate a provider would put a standing wrong
+    report in the table — a recurring error, not a one-off bad answer.
+    """
+    available = [
+        c["provider"]
+        for c in _connected_providers(org_id, user_id)
+        if c["space_id"] == workspace_id
+    ]
+    if not available:
+        where = "that space" if workspace_id else "this organization"
+        raise HTTPException(
+            status_code=400,
+            detail=f"Nothing that supports scheduled reports is connected for {where}.",
+        )
+    # One source in scope is not a classification problem, and skipping the
+    # probe here saves an embedding on the overwhelmingly common tenant.
+    if len(available) == 1:
+        return available[0]
+
+    from ..agent.routing import choose_agent
+
+    decision = choose_agent(prompt, org_id, workspace_id=workspace_id)
+    if decision.agent_key in available:
+        logger.info(
+            "Scheduler provider classified as %s (%s) for org %s",
+            decision.agent_key,
+            decision.reason,
+            org_id,
+        )
+        return decision.agent_key
+
+    # ``choose_agent`` degrades to a default *agent* (not a provider) when it
+    # has nothing to measure — no chunks indexed yet, or the embedder failed.
+    # Guessing here would silently schedule the wrong source every week, so
+    # this asks for one word instead. Naming the options keeps it actionable.
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Could not tell which app this report is about. Mention it in the "
+            "prompt — for example "
+            + " or ".join(sorted(available))
+            + "."
+        ),
+    )
+
+
 def _resolve_connection(
     org_id: str, user_id: str, provider: str, workspace_id: str | None
 ) -> str:
@@ -281,7 +346,10 @@ def list_my_schedulers(session: SessionClaims = Depends(get_session)):
 
 
 class CreateSchedulerRequest(BaseModel):
-    provider: str
+    #: Optional: omitted means "read it off the prompt" (``_classify_provider``).
+    #: Still accepted so the setup-chat flow, and every test that pins a
+    #: source, keep working unchanged.
+    provider: str | None = None
     frequency: str
     prompt: str
     #: None = the org-wide connection; a workspace id = that space's own.
@@ -314,7 +382,7 @@ def _workspace_names(org_id: str, user_id: str) -> dict[str, str]:
 def _create_scheduler_checked(
     org_id: str,
     user_id: str,
-    provider: str,
+    provider: str | None,
     frequency: str,
     prompt: str,
     workspace_id: str | None = None,
@@ -332,6 +400,8 @@ def _create_scheduler_checked(
             status_code=400,
             detail=f"frequency must be one of {list(FREQUENCIES)}.",
         )
+    if not provider:
+        provider = _classify_provider(prompt, org_id, user_id, workspace_id)
     connection_id = _resolve_connection(org_id, user_id, provider, workspace_id)
     try:
         return sched_store.create_scheduler(

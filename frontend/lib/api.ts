@@ -612,8 +612,12 @@ export const api = {
     request<{ connections: SchedulableConnection[]; spaces: SchedulerSpace[] }>(
       "/schedulers/connections"
     ),
+  /**
+   * Create a schedule. No provider: the server classifies it from the prompt
+   * and the created record reports which one it landed on. Sending one would
+   * be the old dropdown, and there is nowhere left in the UI to pick it.
+   */
   createScheduler: (
-    provider: string,
     frequency: string,
     prompt: string,
     workspaceId: string | null = null
@@ -621,7 +625,6 @@ export const api = {
     request<SchedulerRecord>("/schedulers", {
       method: "POST",
       body: JSON.stringify({
-        provider,
         frequency,
         prompt,
         workspace_id: workspaceId,

@@ -720,3 +720,119 @@ def test_a_report_records_whether_the_email_actually_landed(client, member_org):
 def test_reports_require_a_session(client):
     assert client.get("/schedulers/reports").status_code == 401
     assert client.get(f"/schedulers/reports/{uuid.uuid4()}").status_code == 401
+
+
+# --------------------------------------------------------------------------
+# The service is classified, not asked
+# --------------------------------------------------------------------------
+
+
+@requires_db
+def test_a_single_connected_source_needs_no_probe(client, member_org):
+    """One source in scope is not a classification problem. Asserted separately
+    from the multi-source case because it must NOT spend an embedding: this is
+    the overwhelmingly common tenant."""
+    _, _, cookies = member_org
+
+    created = client.post(
+        "/schedulers",
+        json={"frequency": "weekly", "prompt": "What shipped?"},
+        cookies=cookies,
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["provider"] == "slack"
+
+
+@requires_db
+def test_the_prompt_decides_between_two_connected_sources(
+    client, store, org_cleanup, monkeypatch
+):
+    """The whole point of the change: two sources connected, no dropdown, and
+    the prompt picks.
+
+    Only the cosine probe is stubbed — it measures embedded chunks and this org
+    has none. ``_classify_provider`` itself runs for real, so this covers what
+    can actually break: that the route asks the router, and writes the provider
+    the router named.
+    """
+    org_id, member, cookies = _org_with_slack(store, org_cleanup)
+    save_connection(
+        org_id,
+        "linear",
+        OAuthTokens(
+            access_token="fake-token",
+            refresh_token=None,
+            expires_at=None,
+            external_workspace_id=f"ws-{uuid.uuid4().hex[:6]}",
+        ),
+    )
+
+    from app.agent import routing
+
+    asked: list[str] = []
+
+    def _scores(question, org, workspace_id, candidates):
+        asked.append(question)
+        return {"slack": 0.31, "linear": 0.68}
+
+    monkeypatch.setattr(routing, "_probe_scores", _scores)
+
+    created = client.post(
+        "/schedulers",
+        json={"frequency": "weekly", "prompt": "what tickets are stuck?"},
+        cookies=cookies,
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["provider"] == "linear"
+    assert asked == ["what tickets are stuck?"], "the prompt itself must be classified"
+
+
+@requires_db
+def test_an_unclassifiable_prompt_asks_instead_of_guessing(
+    client, store, org_cleanup, monkeypatch
+):
+    """With nothing to measure, ``choose_agent`` degrades to a default AGENT
+    key, which is not a provider. Guessing there would schedule the wrong
+    source every week — a standing error, not a one-off bad answer — so the
+    route asks for one word and names the options."""
+    org_id, member, cookies = _org_with_slack(store, org_cleanup)
+    save_connection(
+        org_id,
+        "linear",
+        OAuthTokens(
+            access_token="fake-token",
+            refresh_token=None,
+            expires_at=None,
+            external_workspace_id=f"ws-{uuid.uuid4().hex[:6]}",
+        ),
+    )
+
+    from app.agent import routing
+
+    # No chunks indexed for either source: the real degradation path.
+    monkeypatch.setattr(routing, "_probe_scores", lambda *a, **k: {})
+
+    created = client.post(
+        "/schedulers",
+        json={"frequency": "weekly", "prompt": "how are things going"},
+        cookies=cookies,
+    )
+    assert created.status_code == 400
+    detail = created.json()["detail"]
+    assert "slack" in detail and "linear" in detail
+
+
+@requires_db
+def test_an_explicit_provider_is_still_honoured(client, member_org):
+    """The setup-chat flow supplies one from an LLM tool call, and every test
+    that pins a source relies on it. Classification must be a fallback, not a
+    replacement."""
+    _, _, cookies = member_org
+
+    created = client.post(
+        "/schedulers",
+        json={"provider": "slack", "frequency": "daily", "prompt": "anything urgent?"},
+        cookies=cookies,
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["provider"] == "slack"

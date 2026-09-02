@@ -70,12 +70,21 @@ def request_sync(org_id: str, provider: str, workspace_id: str | None = None) ->
     return len(rows)
 
 
+#: Providers with an ``oauth_connections`` row but no ingestion path at all.
+#: GitHub deliberately embeds nothing (``app/githublive/``) — it has no
+#: ``SourceAdapter``, so queueing one costs a guaranteed "Unknown source type"
+#: failure on every single tick. Excluded here rather than at the worker
+#: because a job that can only ever fail should never reach the queue.
+UNSYNCABLE_PROVIDERS = ("github",)
+
+
 def _due_connections(settings: AutoSyncSettings) -> list[tuple[str, str, str, str]]:
     """Connections that should be synced now: ``(id, org_id, workspace_id, why)``.
 
-    ``needs_reauth`` rows are skipped — a dead token cannot be fixed by
-    retrying it, and hammering one is how an org gets rate-limited for a
-    problem only a reconnect solves.
+    Providers in ``UNSYNCABLE_PROVIDERS`` are skipped because they have no
+    ingestion path; ``needs_reauth`` rows are skipped because a dead token
+    cannot be fixed by retrying it, and hammering one is how an org gets
+    rate-limited for a problem only a reconnect solves.
 
     Ordered oldest-first so a starved connection cannot be permanently
     overtaken by a chattier one when ``batch_size`` truncates the list.
@@ -90,6 +99,7 @@ def _due_connections(settings: AutoSyncSettings) -> list[tuple[str, str, str, st
                         THEN 'webhook' ELSE 'interval' END
             FROM oauth_connections
             WHERE needs_reauth = false
+              AND provider <> ALL(%s)
               AND (
                     sync_requested_at IS NOT NULL
                  OR last_sync_at IS NULL
@@ -98,7 +108,7 @@ def _due_connections(settings: AutoSyncSettings) -> list[tuple[str, str, str, st
             ORDER BY coalesce(sync_requested_at, last_sync_at) NULLS FIRST
             LIMIT %s
             """,
-            (settings.interval_hours, settings.batch_size),
+            (list(UNSYNCABLE_PROVIDERS), settings.interval_hours, settings.batch_size),
         ).fetchall()
     return [(r[0], r[1], r[2], r[3]) for r in rows]
 
