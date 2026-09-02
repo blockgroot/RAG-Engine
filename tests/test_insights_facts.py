@@ -1,0 +1,164 @@
+"""Facts are derived from what ingest already stored, so a chart can never show
+something the index does not contain.
+
+The writer is one INSERT ... SELECT over `documents`: the rows are already in
+this database, so pulling them into Python to push them back would be slower
+and would invent a failure mode (a half-written batch) that SQL does not have.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from app.db import get_connection
+from app.insights import facts, store
+from .conftest import requires_db
+
+pytestmark = requires_db
+
+
+@pytest.fixture
+def org(org_cleanup):
+    with get_connection() as conn:
+        row = conn.execute(
+            "INSERT INTO organizations (name) VALUES (%s) RETURNING id",
+            (f"facts-{uuid.uuid4().hex[:8]}",),
+        ).fetchone()
+        conn.commit()
+    org_cleanup.append(str(row[0]))
+    return str(row[0])
+
+
+def _document(org_id, *, provider="notion", workspace_id=None, modified="now",
+              actor=None, title="A page"):
+    """One `documents` row, as ingest would have left it."""
+    when = (
+        datetime.now(timezone.utc) if modified == "now"
+        else None if modified is None
+        else modified
+    )
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO documents
+                (org_id, title, source_provider, source_external_id,
+                 source_last_modified, workspace_id)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (org_id, title, provider, uuid.uuid4().hex, when, workspace_id),
+        )
+        conn.commit()
+
+
+def _count(org_id, provider="notion") -> float:
+    rows = store.run_metric(
+        "docs_changed" if provider == "notion" else "drive_docs_changed",
+        org_id=org_id, workspace_id=None, period="month", days=365,
+    )
+    return sum(r.value for r in rows)
+
+
+def test_a_document_becomes_one_fact(org):
+    _document(org)
+    assert facts.record_document_facts(org, provider="notion", workspace_id=None) == 1
+    assert _count(org) == 1
+
+
+def test_re_recording_the_same_document_does_not_double_the_count(org):
+    """Every sync re-lists every document, so this runs constantly. The unique
+    index on external_id is the guard; this proves the writer relies on it
+    (ON CONFLICT) instead of inserting blindly."""
+    _document(org)
+    facts.record_document_facts(org, provider="notion", workspace_id=None)
+    facts.record_document_facts(org, provider="notion", workspace_id=None)
+    assert _count(org) == 1
+
+
+def test_an_edit_moves_the_fact_rather_than_adding_one(org):
+    """A page edited five times is one page. `source_last_modified` is the
+    latest edit we know of, so the fact's date follows it -- otherwise every
+    re-sync would either duplicate the page or freeze it on its first date."""
+    with get_connection() as conn:
+        external = uuid.uuid4().hex
+        old = datetime.now(timezone.utc) - timedelta(days=200)
+        conn.execute(
+            """
+            INSERT INTO documents (org_id, title, source_provider,
+                source_external_id, source_last_modified)
+            VALUES (%s, 'A page', 'notion', %s, %s)
+            """,
+            (org, external, old),
+        )
+        conn.commit()
+    facts.record_document_facts(org, provider="notion", workspace_id=None)
+
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE documents SET source_last_modified = now() WHERE source_external_id = %s",
+            (external,),
+        )
+        conn.commit()
+    facts.record_document_facts(org, provider="notion", workspace_id=None)
+
+    # Still one page, and it now sits inside a 30-day window.
+    assert _count(org) == 1
+    recent = store.run_metric("docs_changed", org_id=org, workspace_id=None,
+                              period="month", days=30)
+    assert sum(r.value for r in recent) == 1
+
+
+def test_a_document_with_no_last_modified_is_skipped_not_dated_now(org):
+    """Stamping now() would invent an edit that never happened, and would pile
+    every undated document onto today's bar."""
+    _document(org, modified=None)
+    assert facts.record_document_facts(org, provider="notion", workspace_id=None) == 0
+    assert _count(org) == 0
+
+
+def test_a_space_s_documents_stay_in_that_space(org):
+    """The fact inherits the document's workspace_id, so a space's chart counts
+    only its own pages -- the scope is carried by the data, not re-derived."""
+    with get_connection() as conn:
+        user = conn.execute(
+            "INSERT INTO users (email, org_id, role) VALUES (%s, %s, 'member') RETURNING id",
+            (f"{uuid.uuid4().hex[:8]}@example.com", org),
+        ).fetchone()
+        space = conn.execute(
+            "INSERT INTO workspaces (org_id, name, created_by) VALUES (%s, 'Notes', %s) RETURNING id",
+            (org, user[0]),
+        ).fetchone()
+        conn.commit()
+    space_id = str(space[0])
+
+    _document(org, workspace_id=None)
+    _document(org, workspace_id=space_id)
+    facts.record_document_facts(org, provider="notion", workspace_id=None)
+    facts.record_document_facts(org, provider="notion", workspace_id=space_id)
+
+    org_rows = store.run_metric("docs_changed", org_id=org, workspace_id=None,
+                                period="month", days=365)
+    space_rows = store.run_metric("docs_changed", org_id=org, workspace_id=space_id,
+                                  period="month", days=365)
+    assert sum(r.value for r in org_rows) == 1
+    assert sum(r.value for r in space_rows) == 1
+
+
+def test_another_providers_documents_are_not_recorded(org):
+    """The writer takes an explicit provider for the same reason every sync path
+    does: without it, the first Drive run would claim every Notion page."""
+    _document(org, provider="notion")
+    _document(org, provider="google")
+    assert facts.record_document_facts(org, provider="google", workspace_id=None) == 1
+    assert _count(org, provider="google") == 1
+    assert _count(org, provider="notion") == 0
+
+
+def test_github_is_never_recorded_from_documents(org):
+    """GitHub has no `documents` rows at all -- it embeds nothing. Reading them
+    for GitHub would silently return zero forever, which looks like "no
+    activity" rather than "wrong code path", so it raises instead."""
+    with pytest.raises(ValueError):
+        facts.record_document_facts(org, provider="github", workspace_id=None)
