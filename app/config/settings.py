@@ -779,6 +779,15 @@ class GitHubLiveSettings:
     patch_max_bytes: int = 4_000
     max_files_per_commit: int = 25
     max_commits: int = 20
+    # Charts read pull requests, and reviews cost ONE call per pull request --
+    # so the pull-request set is what actually bounds the API spend. 100 pull
+    # requests + their reviews is ~101 calls per repo per sync, against
+    # GitHub's 5,000/hour installation limit.
+    max_pull_requests: int = 100
+    # Reviews are fetched only for this many of them, newest first. A chart of
+    # who reviews is stable well before 100 samples, and this is the difference
+    # between ~30 calls and ~130.
+    max_reviewed_pull_requests: int = 30
     max_attempts: int = 3
 
     @classmethod
@@ -790,6 +799,10 @@ class GitHubLiveSettings:
             patch_max_bytes=int(os.getenv("GITHUB_PATCH_MAX_BYTES", "4000")),
             max_files_per_commit=int(os.getenv("GITHUB_MAX_FILES_PER_COMMIT", "25")),
             max_commits=int(os.getenv("GITHUB_MAX_COMMITS", "20")),
+            max_pull_requests=int(os.getenv("GITHUB_MAX_PULL_REQUESTS", "100")),
+            max_reviewed_pull_requests=int(
+                os.getenv("GITHUB_MAX_REVIEWED_PULL_REQUESTS", "30")
+            ),
             max_attempts=int(os.getenv("GITHUB_LIVE_MAX_ATTEMPTS", "3")),
         )
 

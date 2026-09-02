@@ -41,6 +41,17 @@ PANELS: dict[str, tuple[Panel, ...]] = {
         Panel("docs_changed", "Most active spaces", "bar", group_by="space"),
         Panel("docs_changed", "Top editors", "bar", group_by="actor"),
     ),
+    "github": (
+        Panel("prs_opened", "Pull requests raised", "line"),
+        Panel("prs_merged", "Pull requests merged", "line"),
+        # Not their own metrics: "who raises" is `prs_opened` grouped by actor
+        # and "who merges" is `prs_merged` grouped by actor. Two definitions of
+        # one count is two things to keep in agreement.
+        Panel("prs_opened", "Who raises them", "bar", group_by="actor"),
+        Panel("prs_merged", "Who merges them", "bar", group_by="actor"),
+        Panel("pr_reviewers", "Who reviews them", "bar", group_by="actor"),
+        Panel("pr_lead_time", "Days from raised to merged", "line"),
+    ),
     "google": (
         Panel("drive_docs_changed", "Files created or edited", "line"),
         Panel("drive_docs_changed", "Most active spaces", "bar", group_by="space"),

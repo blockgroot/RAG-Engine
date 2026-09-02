@@ -28,7 +28,10 @@ from .base import (
     CommitFile,
     CommitSummary,
     GitHubReader,
+    PullRequest,
+    PullRequestPage,
     RepoReadme,
+    Review,
 )
 from .factory import build_github_reader
 from .rest import RestGitHubReader
@@ -50,6 +53,9 @@ __all__ = [
     "CommitDetail",
     "CommitFile",
     "CommitSummary",
+    "PullRequest",
+    "PullRequestPage",
+    "Review",
     "RestGitHubReader",
     "build_github_reader",
 ]

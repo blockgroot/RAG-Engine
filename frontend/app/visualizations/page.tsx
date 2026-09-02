@@ -302,7 +302,10 @@ export default function VisualizationsPage() {
                       />
                     )}
 
-                    {panel.caveat && (
+                    {/* GitHub is read live into facts on a sync, not at page
+                      load - so its numbers are as fresh as the last sync, and
+                      the freshness panel above says when that was. */}
+                  {panel.caveat && (
                       <p className="muted viz-panel-caveat">{panel.caveat}</p>
                     )}
                   </article>

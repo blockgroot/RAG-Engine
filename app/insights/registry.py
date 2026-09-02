@@ -99,6 +99,70 @@ _add(Metric(
     unit="files",
 ))
 
+# ---------------------------------------------------------------------------
+# GitHub -- read live, recorded as facts (app/insights/github_facts.py).
+#
+# THREE people, three metrics. Never one "activity by person" count: who raised
+# a pull request, who merged it and who reviewed it are different claims, and
+# summing them produces "ada did 12 things", which is not a fact anyone asked
+# for. Every one of these discloses its cap, because a chart built from the
+# newest N while looking complete is the failure that matters.
+# ---------------------------------------------------------------------------
+
+_GITHUB_CAP = (
+    "Newest 100 pull requests per repo, last 180 days; reviews read for the "
+    "newest 30 of them."
+)
+
+_add(Metric(
+    key="prs_opened",
+    provider="github",
+    label="Pull requests raised",
+    chart="line",
+    kind="pr_opened",
+    dims=("actor", "subject", "state"),
+    unit="PRs",
+    caveat=_GITHUB_CAP,
+))
+_add(Metric(
+    key="prs_merged",
+    provider="github",
+    label="Pull requests merged",
+    chart="line",
+    kind="pr_merged",
+    dims=("actor", "subject"),
+    unit="PRs",
+    # Merged is OURS, not GitHub's: GitHub reports a merged pull request as
+    # "closed", so counting off its state would count abandoned branches.
+    caveat=_GITHUB_CAP,
+))
+_add(Metric(
+    key="pr_reviewers",
+    provider="github",
+    label="Who reviews",
+    chart="bar",
+    kind="pr_reviewed",
+    dims=("actor", "subject"),
+    unit="PRs reviewed",
+    caveat=(
+        "One count per reviewer per pull request, not per comment. "
+        + _GITHUB_CAP
+    ),
+))
+_add(Metric(
+    key="pr_lead_time",
+    provider="github",
+    label="Time from raised to merged",
+    chart="line",
+    kind="pr_merged",
+    # Median, not mean: one pull request left open over a holiday moves a mean
+    # by days and tells nobody anything about the normal case.
+    select="percentile_cont(0.5) WITHIN GROUP (ORDER BY value) / 86400.0",
+    dims=("subject",),
+    unit="days (median)",
+    caveat="Merged pull requests only - an open one has no lead time. " + _GITHUB_CAP,
+))
+
 # NOT here yet, deliberately:
 #
 # `doc_staleness` needs the LATEST fact per document (a page edited five times
@@ -107,6 +171,14 @@ _add(Metric(
 # second meaning for `run_metric`.
 #
 # `corpus_size` counts `documents`, not `activity_facts`. Same reason.
+#
+# `open_pr_age` is a histogram over `now() - occurred_at` for pull requests
+# still open, which needs the same DISTINCT-ON-shaped query as `doc_staleness`.
+#
+# The PR cycle-time BREAKDOWN (coding / waiting for review / in review /
+# waiting to merge) needs review timestamps per pull request AND the first
+# commit date -- two more calls each. It is the highest-value engineering chart
+# there is, and it is deliberately not paid for yet.
 
 
 def get(key: str) -> Metric:

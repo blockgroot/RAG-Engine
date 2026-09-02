@@ -273,6 +273,24 @@ def run_sync_tick() -> int:
         return 0
 
 
+def run_facts_tick() -> int:
+    """Record facts for any due facts-only connection. Never raises.
+
+    Separate from ``run_sync_tick`` because it is a different KIND of sync:
+    GitHub has no ingestion job to enqueue (it embeds nothing), so its
+    freshness comes from writing counters inline. Keeping the two apart is what
+    keeps ``UNSYNCABLE_PROVIDERS`` true -- nothing here can put a GitHub row in
+    ``ingestion_jobs``.
+    """
+    try:
+        from .autosync import record_due_facts
+
+        return record_due_facts()
+    except Exception:  # noqa: BLE001 - must never break the shared worker loop
+        logger.exception("Facts tick failed")
+        return 0
+
+
 def run_external_tick() -> dict[str, int]:
     """One externally-driven pass: reap, sync, run due schedulers.
 
@@ -297,13 +315,19 @@ def run_external_tick() -> dict[str, int]:
         logger.exception("External tick: reap failed")
 
     synced = run_sync_tick()
+    facts = run_facts_tick()
 
     scheduler_settings = SchedulerSettings.from_env()
     schedulers_ran = (
         run_scheduler_tick(scheduler_settings) if scheduler_settings.enabled else 0
     )
 
-    return {"reaped": reaped, "syncs_queued": synced, "schedulers_ran": schedulers_ran}
+    return {
+        "reaped": reaped,
+        "syncs_queued": synced,
+        "facts_recorded": facts,
+        "schedulers_ran": schedulers_ran,
+    }
 
 
 def run_scheduler_tick(settings=None) -> int:
@@ -379,6 +403,9 @@ def run_forever(
             last_maintenance = now
         if now - last_sync >= sync_interval:
             run_sync_tick()
+            # Same cadence: both answer "is this connector current?", and
+            # splitting their timers would mean two freshness stories.
+            run_facts_tick()
             last_sync = now
         if (
             scheduler_settings.enabled

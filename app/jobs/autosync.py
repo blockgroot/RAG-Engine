@@ -77,6 +77,16 @@ def request_sync(org_id: str, provider: str, workspace_id: str | None = None) ->
 #: because a job that can only ever fail should never reach the queue.
 UNSYNCABLE_PROVIDERS = ("github",)
 
+#: Providers that sync by recording COUNTABLE FACTS rather than by ingesting.
+#:
+#: GitHub only. It embeds nothing, so there is nothing to chunk -- but its pull
+#: requests are countable, and charts need them from a background sync rather
+#: than from a page load (see ``app/insights/github_facts.py``). This is a
+#: SEPARATE path on purpose: it never touches ``ingestion_jobs``, so the
+#: "Unknown source type: 'github'" failure that ``UNSYNCABLE_PROVIDERS``
+#: prevents stays impossible. Both constants name github, and both are right.
+FACTS_ONLY_PROVIDERS = ("github",)
+
 
 def _due_connections(settings: AutoSyncSettings) -> list[tuple[str, str, str, str]]:
     """Connections that should be synced now: ``(id, org_id, workspace_id, why)``.
@@ -111,6 +121,85 @@ def _due_connections(settings: AutoSyncSettings) -> list[tuple[str, str, str, st
             (list(UNSYNCABLE_PROVIDERS), settings.interval_hours, settings.batch_size),
         ).fetchall()
     return [(r[0], r[1], r[2], r[3]) for r in rows]
+
+
+def _due_facts_connections(
+    settings: AutoSyncSettings,
+) -> list[tuple[str, str, str, str]]:
+    """Facts-only connections due now: ``(id, org_id, workspace_id, why)``.
+
+    The same freshness predicate as ``_due_connections`` -- webhook flag, or
+    the interval elapsed -- against the opposite provider set. ``needs_reauth``
+    rows are skipped for the same reason: a dead token cannot be fixed by
+    retrying it.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id::text,
+                   org_id::text,
+                   workspace_id::text,
+                   CASE WHEN sync_requested_at IS NOT NULL
+                        THEN 'webhook' ELSE 'interval' END
+            FROM oauth_connections
+            WHERE needs_reauth = false
+              AND provider = ANY(%s)
+              AND (
+                    sync_requested_at IS NOT NULL
+                 OR last_sync_at IS NULL
+                 OR last_sync_at < now() - make_interval(hours => %s)
+              )
+            ORDER BY coalesce(sync_requested_at, last_sync_at) NULLS FIRST
+            LIMIT %s
+            """,
+            (list(FACTS_ONLY_PROVIDERS), settings.interval_hours, settings.batch_size),
+        ).fetchall()
+    return [(r[0], r[1], r[2], r[3]) for r in rows]
+
+
+def record_due_facts(settings: AutoSyncSettings | None = None) -> int:
+    """Record facts for every due facts-only connection. Returns how many ran.
+
+    Runs INLINE rather than through the queue, which is the whole point: there
+    is no ingestion job to enqueue, and inventing one would need a source
+    adapter that deliberately does not exist. Bounded by ``batch_size`` and by
+    the reader's own per-repo caps.
+
+    Never raises, like ``enqueue_due_syncs`` -- this shares the worker tick
+    with the ingestion queue and the activity scheduler.
+    """
+    settings = settings or AutoSyncSettings.from_env()
+    if not settings.enabled:
+        return 0
+
+    try:
+        due = _due_facts_connections(settings)
+    except Exception:  # noqa: BLE001 - housekeeping must never break the worker
+        logger.exception("Auto-sync: could not list due facts connections")
+        return 0
+
+    from ..insights.github_facts import record_github_facts
+
+    ran = 0
+    for connection_id, org_id, workspace_id, why in due:
+        try:
+            result = record_github_facts(org_id, workspace_id=workspace_id)
+            ran += 1
+            logger.info(
+                "Auto-sync: recorded %s GitHub facts for org %s (%s)",
+                result.written, org_id, why,
+            )
+        except Exception:  # noqa: BLE001 - the recorder is already broad
+            logger.exception("Auto-sync: could not record facts for %s", connection_id)
+        # Stamped even on failure, exactly like an ingest attempt: one failed
+        # sync costs one interval of freshness, which is visible, while a hot
+        # retry loop against a provider's rate limit is not.
+        try:
+            _stamp_attempted(connection_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("Auto-sync: could not stamp %s", connection_id)
+
+    return ran
 
 
 def _stamp_attempted(connection_id: str) -> None:
