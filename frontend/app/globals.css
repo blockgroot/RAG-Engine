@@ -903,28 +903,6 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 }
 .space-panel-close:hover { color: var(--ink); }
 
-.space-panel-tabs {
-  display: flex;
-  gap: 0.25rem;
-  padding: 0.6rem 1.25rem 0;
-  border-bottom: 1px solid var(--border);
-}
-.space-panel-tab {
-  appearance: none;
-  background: none;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  padding: 0.5rem 0.35rem 0.6rem;
-  font-size: 0.88rem;
-  font-weight: 600;
-  color: var(--ink-muted);
-  cursor: pointer;
-}
-.space-panel-tab.is-active {
-  color: var(--ink);
-  border-bottom-color: var(--accent);
-}
-
 .space-panel-body {
   flex: 1;
   overflow-y: auto;
@@ -977,8 +955,30 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 .space-panel-invite-row { display: flex; gap: 0.4rem; }
 .space-panel-invite-row .input { flex: 1; min-width: 0; }
 .space-panel-hint { font-size: 0.78rem; margin: 0; }
-.space-panel-about { display: grid; gap: 0.7rem; justify-items: start; font-size: 0.9rem; }
-.space-panel-about p { margin: 0; }
+/* Section label above the people list. The tab bar used to carry the count;
+   with no tabs it has to live somewhere, and "People · 3" answers the reader's
+   first question without a heading weight that competes with the space name. */
+.space-panel-count {
+  font-size: 0.76rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  margin: 0.15rem 0 -0.35rem;
+}
+/* The owner's route to the management page. A link at the foot, deliberately
+   not a button: it navigates away from the conversation, and a filled button
+   here would read as the panel's primary action when the people are. */
+.space-panel-settings {
+  margin-top: 0.35rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.85rem;
+  font-weight: 550;
+  color: var(--ink-muted);
+  text-decoration: none;
+}
+.space-panel-settings:hover { color: var(--ink); }
 
 /* Compact action buttons, for a row that holds two of them beside a name. */
 .button-sm {

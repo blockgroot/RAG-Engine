@@ -368,7 +368,7 @@ export default function SchedulersPage() {
               <p className="muted">
                 {nothingConnected
                   ? "Nothing schedulable is connected yet."
-                  : "Say what you want to know — we work out which app to read."}
+                  : "Say what you want to know — we work out which app to read. Reports are private to you."}
               </p>
             </div>
 
@@ -391,8 +391,13 @@ export default function SchedulersPage() {
                     <option value="">Choose…</option>
                     {/* Grouped, so the company option cannot read as "just
                         another space" — which is exactly how the old flat
-                        Organisation/Personal pair read to a first-time user. */}
-                    <optgroup label="Everyone in the company">
+                        Organisation/Personal pair read to a first-time user.
+                        Labelled by WHICH APPS get read, never by audience: an
+                        earlier "Everyone in the company" read as who receives
+                        the report, which is wrong — a scheduler is personal
+                        and only its creator is ever emailed
+                        (`schedulers/runner.py` resolves one recipient). */}
+                    <optgroup label="The company's apps">
                       <option value="org">
                         Company-wide{orgSpace?.providers.length
                           ? ` · ${orgSpace.providers
@@ -402,7 +407,7 @@ export default function SchedulersPage() {
                       </option>
                     </optgroup>
                     {mySpaces.length > 0 && (
-                      <optgroup label="Only the people in one space">
+                      <optgroup label="One space's apps">
                         {mySpaces.map((space) => (
                           <option key={space.id} value={space.id ?? ""}>
                             {spaceLabel(space)}
@@ -411,17 +416,19 @@ export default function SchedulersPage() {
                       </optgroup>
                     )}
                   </select>
-                  {/* The distinction stated once, in terms of who can see the
-                      apps being read — the thing a first-time reader is
-                      actually trying to work out. */}
+                  {/* Two things stated once: which apps get read, and who
+                      gets the report. The second is not decoration — the
+                      scope names an organisation or a shared space, so
+                      without it a reader reasonably assumes their colleagues
+                      are about to be emailed a report they did not ask for. */}
                   <p className="muted sched-hint">
                     {!scope
                       ? mySpaces.length
-                        ? "Company-wide reads the apps connected for the whole organisation. A space reads only that space's own apps."
-                        : "Company-wide reads the apps connected for the whole organisation."
+                        ? "Choose which apps this report reads: the ones connected for the whole organisation, or one space's own. Either way the report is private to you."
+                        : "Reads the apps connected for the whole organisation. The report is private to you."
                       : scope === "org"
-                        ? "Reads the apps connected for the whole organisation."
-                        : `Reads only ${selectedSpace?.name ?? "this space"}'s own apps — never the company's.`}
+                        ? "Reads the apps connected for the whole organisation. Only you receive it — schedules are personal, and nobody else can see this one."
+                        : `Reads only ${selectedSpace?.name ?? "this space"}'s own apps, never the company's. Only you receive it — other members of the space are not emailed.`}
                   </p>
                   {/* Disclosed, not hidden: a space whose only sources have no
                       "what happened since T" feed would otherwise look broken. */}

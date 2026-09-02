@@ -177,6 +177,11 @@ def test_run_generates_from_activity_and_emails_the_owner(monkeypatch, wiring):
     assert report == "Team shipped the billing fix."
     assert len(llm.prompts) == 1
     assert "alice: shipped billing" in llm.prompts[0]
+    # ONE send, to the owner. Asserted as a count because the UI now tells
+    # members "only you receive it" — a scope named after an organisation or a
+    # shared space otherwise reads as a broadcast, and a second recipient
+    # appearing here would make that copy a lie.
+    assert len(wiring) == 1
     assert wiring[0]["to"] == "me@example.com"
     assert wiring.saved[0]["report_text"] == report
     assert wiring[0]["frequency"] == "weekly"

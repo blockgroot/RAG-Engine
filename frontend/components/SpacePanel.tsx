@@ -4,8 +4,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api, WorkspaceMemberRecord } from "@/lib/api";
 
-type Tab = "members" | "about";
-
 /**
  * Space details, opened from the Ask header — the Slack pattern.
  *
@@ -14,14 +12,15 @@ type Tab = "members" | "about";
  * settings live, one click away, exactly as a Slack channel's details sit
  * behind its name rather than in front of the conversation.
  *
- * Tabbed rather than one long column: membership and configuration are
- * different jobs, and stacking every owner control into a single scroll is the
- * clutter this replaces. Owner-only actions stay INSIDE the tab they belong to
- * — promoting someone is a membership action, deleting the space is not.
+ * One list, no tabs. It started with a People tab and an About tab, but About
+ * only ever held two sentences of explanation and a link — a tab the reader had
+ * to visit to find out it held nothing for them. Tabs earn their cost when both
+ * sides have substance; here the honest shape is the people, with the owner's
+ * way through to settings at the foot of it.
  *
  * Deliberately does NOT re-implement the management page. Connections, sync and
- * delete already work at `/workspaces/[id]`; the About tab links there for
- * owners instead of growing a second copy that can drift.
+ * delete already work at `/workspaces/[id]`; this links there for owners
+ * instead of growing a second copy that can drift.
  */
 export function SpacePanel({
   workspaceId,
@@ -36,7 +35,6 @@ export function SpacePanel({
   currentUserEmail?: string | null;
   onClose: () => void;
 }) {
-  const [tab, setTab] = useState<Tab>("members");
   const [members, setMembers] = useState<WorkspaceMemberRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -159,27 +157,6 @@ export function SpacePanel({
           </button>
         </header>
 
-        <div className="space-panel-tabs" role="tablist" aria-label="Space details">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "members"}
-            className={`space-panel-tab${tab === "members" ? " is-active" : ""}`}
-            onClick={() => setTab("members")}
-          >
-            People{members ? ` (${members.length})` : ""}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "about"}
-            className={`space-panel-tab${tab === "about" ? " is-active" : ""}`}
-            onClick={() => setTab("about")}
-          >
-            About
-          </button>
-        </div>
-
         <div className="space-panel-body">
           {error && (
             <div className="banner banner-warn" role="alert">
@@ -192,119 +169,105 @@ export function SpacePanel({
             </div>
           )}
 
-          {tab === "members" ? (
-            <>
-              {members === null ? (
-                <p className="muted">Loading…</p>
-              ) : (
-                <ul className="space-panel-list">
-                  {members.map((m) => {
-                    const isSelf = Boolean(
-                      currentUserEmail && m.email === currentUserEmail
-                    );
-                    // The sole owner cannot be removed — the API refuses it, and
-                    // offering a button that always errors is worse than not
-                    // offering one.
-                    const removable =
-                      isOwner && !(m.role === "owner" && owners <= 1);
-                    return (
-                      <li key={m.user_id} className="space-panel-person">
-                        <span className="space-panel-avatar" aria-hidden>
-                          {m.email.trim().charAt(0).toUpperCase()}
-                        </span>
-                        <span className="space-panel-person-copy">
-                          <strong title={m.email}>{m.email}</strong>
-                          <span className="muted">
-                            {m.role === "owner" ? "Owner" : "Member"}
-                            {isSelf ? " · you" : ""}
-                          </span>
-                        </span>
-                        {isOwner && (
-                          <span className="space-panel-person-actions">
-                            {m.role === "member" && (
-                              <button
-                                type="button"
-                                className="button button-secondary button-sm"
-                                disabled={busy === m.user_id}
-                                onClick={() => promote(m)}
-                              >
-                                Make owner
-                              </button>
-                            )}
-                            {removable && !isSelf && (
-                              <button
-                                type="button"
-                                className="button button-secondary button-sm"
-                                disabled={busy === m.user_id}
-                                onClick={() => remove(m)}
-                              >
-                                Remove
-                              </button>
-                            )}
-                          </span>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-
-              {isOwner ? (
-                <form className="space-panel-invite" onSubmit={invite}>
-                  <label htmlFor="space-panel-invite-email">Add someone</label>
-                  <div className="space-panel-invite-row">
-                    <input
-                      id="space-panel-invite-email"
-                      className="input"
-                      type="email"
-                      placeholder="colleague@company.com"
-                      value={inviteEmail}
-                      onChange={(e) => setInviteEmail(e.target.value)}
-                      disabled={busy === "invite"}
-                    />
-                    <button
-                      type="submit"
-                      className="button"
-                      disabled={busy === "invite" || !inviteEmail.trim()}
-                    >
-                      {busy === "invite" ? "…" : "Add"}
-                    </button>
-                  </div>
-                  <p className="muted space-panel-hint">
-                    They must already have a company account.
-                  </p>
-                </form>
-              ) : (
-                <p className="muted space-panel-hint">
-                  Only an owner of this space can add or remove people.
-                </p>
-              )}
-            </>
+          {members === null ? (
+            <p className="muted">Loading…</p>
           ) : (
-            <div className="space-panel-about">
-              <p>
-                Answers in this space are drawn only from the sources connected
-                to it — never from company-wide documents.
+            <>
+              <p className="space-panel-count">
+                People · {members.length}
               </p>
-              {isOwner ? (
-                <>
-                  <p className="muted">
-                    Connected apps, syncing and deleting this space are managed
-                    on its settings page.
-                  </p>
-                  <Link
-                    href={`/workspaces/${workspaceId}`}
-                    className="button button-secondary"
-                  >
-                    Space settings
-                  </Link>
-                </>
-              ) : (
-                <p className="muted">
-                  An owner of this space manages which apps it can read.
-                </p>
-              )}
-            </div>
+              <ul className="space-panel-list">
+              {members.map((m) => {
+                const isSelf = Boolean(
+                  currentUserEmail && m.email === currentUserEmail
+                );
+                // The sole owner cannot be removed — the API refuses it, and
+                // offering a button that always errors is worse than not
+                // offering one.
+                const removable = isOwner && !(m.role === "owner" && owners <= 1);
+                return (
+                  <li key={m.user_id} className="space-panel-person">
+                    <span className="space-panel-avatar" aria-hidden>
+                      {m.email.trim().charAt(0).toUpperCase()}
+                    </span>
+                    <span className="space-panel-person-copy">
+                      <strong title={m.email}>{m.email}</strong>
+                      <span className="muted">
+                        {m.role === "owner" ? "Owner" : "Member"}
+                        {isSelf ? " · you" : ""}
+                      </span>
+                    </span>
+                    {isOwner && (
+                      <span className="space-panel-person-actions">
+                        {m.role === "member" && (
+                          <button
+                            type="button"
+                            className="button button-secondary button-sm"
+                            disabled={busy === m.user_id}
+                            onClick={() => promote(m)}
+                          >
+                            Make owner
+                          </button>
+                        )}
+                        {removable && !isSelf && (
+                          <button
+                            type="button"
+                            className="button button-secondary button-sm"
+                            disabled={busy === m.user_id}
+                            onClick={() => remove(m)}
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </span>
+                    )}
+                  </li>
+                );
+                })}
+              </ul>
+            </>
+          )}
+
+          {isOwner ? (
+            <form className="space-panel-invite" onSubmit={invite}>
+              <label htmlFor="space-panel-invite-email">Add someone</label>
+              <div className="space-panel-invite-row">
+                <input
+                  id="space-panel-invite-email"
+                  className="input"
+                  type="email"
+                  placeholder="colleague@company.com"
+                  value={inviteEmail}
+                  onChange={(e) => setInviteEmail(e.target.value)}
+                  disabled={busy === "invite"}
+                />
+                <button
+                  type="submit"
+                  className="button"
+                  disabled={busy === "invite" || !inviteEmail.trim()}
+                >
+                  {busy === "invite" ? "…" : "Add"}
+                </button>
+              </div>
+              <p className="muted space-panel-hint">
+                They must already have a company account.
+              </p>
+            </form>
+          ) : (
+            <p className="muted space-panel-hint">
+              Only an owner of this space can add or remove people.
+            </p>
+          )}
+
+          {/* The owner's way through to the real management page. A quiet
+              footer link, not a tab: connections, syncing and deleting all
+              already live at /workspaces/[id], and duplicating any of it here
+              would be a second copy free to drift. A member sees nothing —
+              they have no settings to reach. */}
+          {isOwner && (
+            <Link href={`/workspaces/${workspaceId}`} className="space-panel-settings">
+              Connected apps &amp; space settings →
+            </Link>
           )}
         </div>
       </aside>
