@@ -2852,7 +2852,9 @@ table .role-chip.role-admin,
   line-height: 1.35;
 }
 .sched-scope {
-  font-weight: 600;
+  /* 500, not 600: the row already carries a bold title and an uppercase
+     cadence chip, and a third weight made the list read as dense. */
+  font-weight: 500;
   color: var(--ink-muted);
   display: inline-flex;
   align-items: center;
@@ -2871,10 +2873,12 @@ table .role-chip.role-admin,
   font-size: 0.82rem;
   margin-top: 0.1rem;
 }
-/* Next run is the actionable fact, so it reads at full strength... */
-.sched-next { color: var(--ink-muted); }
-.sched-next strong { color: var(--ink); font-weight: 650; }
-/* ...and last-sent is history, one step quieter, never competing with it. */
+/* The date is distinguished from the scope beside it by TONE ALONE — no bold.
+   At --ink/650 it was the darkest text in the row after the title, which made
+   a page of schedules read as a wall of timestamps rather than a calm list.
+   A date is reference information; it should be findable, not loud. */
+.sched-next { color: color-mix(in srgb, var(--ink) 62%, var(--ink-muted)); }
+/* "Not sent yet" only — one step quieter again, since it is the exception. */
 .sched-last { color: var(--ink-muted); opacity: 0.72; }
 .sched-error {
   font-size: 0.82rem;

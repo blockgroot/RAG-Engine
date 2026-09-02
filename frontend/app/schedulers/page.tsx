@@ -631,8 +631,7 @@ export default function SchedulersPage() {
                                   {scheduler.workspace_name || "Company-wide"}
                                 </span>
                                 <span className="sched-next">
-                                  Next{" "}
-                                  <strong>{whenLabel(scheduler.next_run_at)}</strong>
+                                  Next {whenLabel(scheduler.next_run_at)}
                                 </span>
                                 {!scheduler.last_run_at && (
                                   <span className="sched-last">Not sent yet</span>
