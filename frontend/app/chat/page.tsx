@@ -32,6 +32,13 @@ function ChipIcon({ kind }: { kind: "policy" | "code" }) {
 }
 
 
+/** "Notion", "Notion and Slack", "Notion, Slack and GitHub" — a readable list
+ *  rather than a template that only ever handled one or two names. */
+function listCopy(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
 export default function ChatPage() {
   const workspaceId = useParams<{ id?: string }>().id ?? null;
   return <ChatPageInner workspaceId={workspaceId} />;
@@ -340,9 +347,10 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     );
   }
 
-  // One box, so one set of copy. Naming a single source here would be a lie:
-  // the question decides which source answers, and the answer says which one
-  // did (see ProvenanceStripe).
+  // One box, so one set of copy. It says what the reader gets, not how the
+  // product works: which source answered is shown on the answer itself, and
+  // explaining the routing here read like release notes rather than an
+  // invitation to type.
   const connectedNames = [
     notionAvailable && "Notion",
     driveAvailable && "Drive",
@@ -353,15 +361,11 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
 
   const emptyTitle = workspaceId ? "Ask this space" : "Ask your company";
   const emptyCopy =
-    connectedNames.length > 1
-      ? `Just ask — the answer is found in ${connectedNames
-          .slice(0, -1)
-          .join(", ")} or ${connectedNames[connectedNames.length - 1]}, and each answer says which one it came from.`
-      : connectedNames.length === 1
-        ? `Answers come from your connected ${connectedNames[0]}, grounded in what is actually there.`
-        : workspaceId
-          ? "Answers come only from the notes and docs connected to this space."
-          : "Leave, benefits, remote work, and more — grounded in your connected documents.";
+    connectedNames.length > 0
+      ? `Answers are drawn from ${listCopy(connectedNames)}.`
+      : workspaceId
+        ? "Answers are drawn from the documents connected to this space."
+        : "Leave, benefits, remote work and more — answered from your connected documents.";
   const composerPlaceholder = "Ask anything about your work…";
 
   return (
