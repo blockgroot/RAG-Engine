@@ -138,17 +138,17 @@ export default function SchedulersPage() {
   const [draftFrequency, setDraftFrequency] = useState("weekly");
   const clearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // New-report form. Explicit slots (scope, space, service, cadence) plus the
-  // free-text intent. Deterministic on purpose: those slots decide which
-  // connection is read, and that is not a thing to infer from prose.
+  // New-report form: WHERE to read from, WHAT to cover, HOW OFTEN. The
+  // service is no longer asked — it is classified from the prompt server-side
+  // (`_classify_provider`), because "which app holds this?" is our data model
+  // showing through, not a question the reader has.
   //
-  // Scope and space are two steps rather than one flat list: "company or one
-  // of my spaces" is the question the user actually answers first, and a
-  // single mixed dropdown made the company option look like just another
-  // space. "" = nothing picked yet.
-  const [scope, setScope] = useState<"" | "org" | "personal">("");
-  const [spaceId, setSpaceId] = useState("");
-  const [provider, setProvider] = useState("");
+  // One picker, not the old scope-then-which-one pair. Two steps made the
+  // distinction *worse*: "Organisation" and "Personal space" were abstract
+  // category names, and the real one ("Company" vs a space you can name) only
+  // appeared after a second choice. An <optgroup> states both at once.
+  // "" = nothing picked yet, "org" = company-wide, otherwise a workspace id.
+  const [scope, setScope] = useState("");
   const [frequency, setFrequency] = useState("weekly");
   const [prompt, setPrompt] = useState("");
   const [creating, setCreating] = useState(false);
@@ -157,12 +157,12 @@ export default function SchedulersPage() {
   const orgSpace = useMemo(() => spaces.find((s) => s.scope === "org") ?? null, [spaces]);
   const mySpaces = useMemo(() => spaces.filter((s) => s.scope === "workspace"), [spaces]);
 
-  /** The scope a report will actually be created in, once fully chosen. */
+  /** The scope a report will be created in. "org" is the company connection. */
   const selectedSpace = useMemo(() => {
     if (scope === "org") return orgSpace;
-    if (scope === "personal") return mySpaces.find((s) => s.id === spaceId) ?? null;
-    return null;
-  }, [scope, spaceId, orgSpace, mySpaces]);
+    if (!scope) return null;
+    return mySpaces.find((s) => s.id === scope) ?? null;
+  }, [scope, orgSpace, mySpaces]);
 
   function refresh() {
     // Reports are refreshed alongside the schedules: creating or deleting one
@@ -202,18 +202,6 @@ export default function SchedulersPage() {
     };
   }, [me]);
 
-  // Changing the scope or the space invalidates everything downstream: a
-  // space sees only its own connections, so carrying an old pick over could
-  // submit a provider this space never connected.
-  useEffect(() => {
-    setSpaceId("");
-    setProvider("");
-  }, [scope]);
-
-  useEffect(() => {
-    setProvider("");
-  }, [spaceId]);
-
   /**
    * Reports grouped by the schedule that produced them, newest group first.
    *
@@ -238,43 +226,60 @@ export default function SchedulersPage() {
     return [...groups.values()];
   }, [reports]);
 
-  /** Suggestions for the exact connection the two pickers landed on. */
+  /**
+   * Suggestions across EVERY source in the chosen scope.
+   *
+   * They used to be filtered to the picked service; with no service picked
+   * they have to span the scope, which is also the honest shape — the point
+   * of a suggestion here is to show what this scope can report on. Round-robin
+   * rather than concatenated, for the same reason the chat chips are
+   * (`build_combined_suggestions`): with a cap, concatenation means the last
+   * source never appears.
+   */
   const suggestions = useMemo(() => {
-    if (!selectedSpace || !provider) return [];
-    const connection = connections.find(
-      (c) => c.provider === provider && c.space_id === (selectedSpace.id ?? null)
-    );
-    return promptSuggestions(provider, connection?.topics ?? []);
-  }, [connections, selectedSpace, provider]);
+    if (!selectedSpace) return [];
+    const perProvider = selectedSpace.providers.map((name) => {
+      const connection = connections.find(
+        (c) => c.provider === name && c.space_id === (selectedSpace.id ?? null)
+      );
+      return promptSuggestions(name, connection?.topics ?? []);
+    });
+    const interleaved: string[] = [];
+    for (let i = 0; interleaved.length < 6; i += 1) {
+      const round = perProvider.map((list) => list[i]).filter(Boolean);
+      if (!round.length) break;
+      interleaved.push(...round);
+    }
+    return interleaved.slice(0, 6);
+  }, [connections, selectedSpace]);
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
-    if (creating || !selectedSpace || !provider || !prompt.trim()) return;
+    if (creating || !selectedSpace || !prompt.trim()) return;
     setCreating(true);
     setFormError(null);
     try {
+      // No provider: the server reads it off the prompt and tells us which
+      // one it landed on, which is what the confirmation below names.
       const created = await api.createScheduler(
-        provider,
         frequency,
         prompt.trim(),
         selectedSpace.id
       );
       // Reset every slot, not just the prompt: the form is the "add another"
       // surface, and a half-filled one reads as "this is still being edited"
-      // right after the thing was created. Scope last — its effect clears the
-      // space and service, so an explicit reset here is belt-and-braces
-      // rather than load-bearing.
+      // right after the thing was created.
       setPrompt("");
       setFrequency("weekly");
-      setProvider("");
-      setSpaceId("");
       setScope("");
+      // Naming the detected service is not a nicety: with no dropdown, this
+      // confirmation and the chip on the row below are the ONLY places a
+      // member can see which source was chosen, and therefore the only way
+      // they can catch a misclassification.
       flash(
-        `Scheduled a ${created.frequency} ${
-          PROVIDER_LABEL[created.provider] ?? created.provider
-        } report${
-          created.workspace_name ? ` for ${created.workspace_name}` : ""
-        } — first one arrives ${whenLabel(created.next_run_at)}.`
+        `Reading ${PROVIDER_LABEL[created.provider] ?? created.provider}${
+          created.workspace_name ? ` in ${created.workspace_name}` : " company-wide"
+        } — ${FREQUENCY_LABEL[created.frequency]?.toLowerCase() ?? created.frequency}, first one ${whenLabel(created.next_run_at)}.`
       );
       refresh();
     } catch (err) {
@@ -363,7 +368,7 @@ export default function SchedulersPage() {
               <p className="muted">
                 {nothingConnected
                   ? "Nothing schedulable is connected yet."
-                  : "Pick where to read from, then say what you want to know."}
+                  : "Say what you want to know — we work out which app to read."}
               </p>
             </div>
 
@@ -375,75 +380,53 @@ export default function SchedulersPage() {
             ) : (
               <form onSubmit={create} className="stack">
                 <div className="field">
-                  <label htmlFor="scope">1 · Which space?</label>
+                  <label htmlFor="scope">1 · Where should this read from?</label>
                   <select
                     id="scope"
                     className="input"
                     value={scope}
-                    onChange={(e) => setScope(e.target.value as "" | "org" | "personal")}
+                    onChange={(e) => setScope(e.target.value)}
                     disabled={creating}
                   >
-                    <option value="">Select a space…</option>
-                    <option value="org">Organisation</option>
-                    <option value="personal" disabled={!mySpaces.length}>
-                      {mySpaces.length
-                        ? "Personal space"
-                        : "Personal space (you have none yet)"}
-                    </option>
-                  </select>
-                </div>
-
-                {/* Only asked when it is a real question — the company scope
-                    has exactly one connection set, so there is nothing to
-                    choose between. */}
-                {scope === "personal" && (
-                  <div className="field">
-                    <label htmlFor="space">2 · Which one?</label>
-                    <select
-                      id="space"
-                      className="input"
-                      value={spaceId}
-                      onChange={(e) => setSpaceId(e.target.value)}
-                      disabled={creating}
-                    >
-                      <option value="">Select a space…</option>
-                      {mySpaces.map((space) => (
-                        <option key={space.id} value={space.id ?? ""}>
-                          {spaceLabel(space)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-
-                <div className="field">
-                  <label htmlFor="provider">
-                    {scope === "personal" ? "3" : "2"} · Which service?
-                  </label>
-                  <select
-                    id="provider"
-                    className="input"
-                    value={provider}
-                    onChange={(e) => setProvider(e.target.value)}
-                    disabled={creating || !selectedSpace || !selectedSpace.providers.length}
-                  >
-                    <option value="">
-                      {!scope
-                        ? "Pick a space first"
-                        : scope === "personal" && !spaceId
-                          ? "Pick which space first"
-                          : "Select a service…"}
-                    </option>
-                    {(selectedSpace?.providers ?? []).map((name) => (
-                      <option key={name} value={name}>
-                        {PROVIDER_LABEL[name] ?? name}
+                    <option value="">Choose…</option>
+                    {/* Grouped, so the company option cannot read as "just
+                        another space" — which is exactly how the old flat
+                        Organisation/Personal pair read to a first-time user. */}
+                    <optgroup label="Everyone in the company">
+                      <option value="org">
+                        Company-wide{orgSpace?.providers.length
+                          ? ` · ${orgSpace.providers
+                              .map((p) => SOURCE_LABEL[p] ?? p)
+                              .join(", ")}`
+                          : ""}
                       </option>
-                    ))}
+                    </optgroup>
+                    {mySpaces.length > 0 && (
+                      <optgroup label="Only the people in one space">
+                        {mySpaces.map((space) => (
+                          <option key={space.id} value={space.id ?? ""}>
+                            {spaceLabel(space)}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
                   </select>
+                  {/* The distinction stated once, in terms of who can see the
+                      apps being read — the thing a first-time reader is
+                      actually trying to work out. */}
+                  <p className="muted sched-hint">
+                    {!scope
+                      ? mySpaces.length
+                        ? "Company-wide reads the apps connected for the whole organisation. A space reads only that space's own apps."
+                        : "Company-wide reads the apps connected for the whole organisation."
+                      : scope === "org"
+                        ? "Reads the apps connected for the whole organisation."
+                        : `Reads only ${selectedSpace?.name ?? "this space"}'s own apps — never the company's.`}
+                  </p>
                   {/* Disclosed, not hidden: a space whose only sources have no
                       "what happened since T" feed would otherwise look broken. */}
                   {selectedSpace && !selectedSpace.providers.length && (
-                    <p className="muted" style={{ fontSize: "0.8rem" }}>
+                    <p className="muted sched-hint">
                       {selectedSpace.connected.length
                         ? `${selectedSpace.name} has ${selectedSpace.connected
                             .map((c) => SOURCE_LABEL[c] ?? c)
@@ -454,9 +437,7 @@ export default function SchedulersPage() {
                 </div>
 
                 <div className="field">
-                  <label htmlFor="prompt">
-                    {scope === "personal" ? "4" : "3"} · What should the report cover?
-                  </label>
+                  <label htmlFor="prompt">2 · What should the report cover?</label>
                   {/* Built from what the chosen connection actually covers —
                       the picked channels, the authorized repos — so the field
                       starts from a real topic instead of a blank box. Writing
@@ -471,7 +452,7 @@ export default function SchedulersPage() {
                       disabled={creating}
                       style={{ marginBottom: "0.5rem" }}
                     >
-                      <option value="">Suggestions for this source…</option>
+                      <option value="">Start from an example…</option>
                       {suggestions.map((text) => (
                         <option key={text} value={text}>
                           {text}
@@ -502,7 +483,7 @@ export default function SchedulersPage() {
                     <button
                       className="button"
                       type="submit"
-                      disabled={creating || !selectedSpace || !provider || !prompt.trim()}
+                      disabled={creating || !selectedSpace || !prompt.trim()}
                     >
                       {creating ? "Creating…" : "Create"}
                     </button>

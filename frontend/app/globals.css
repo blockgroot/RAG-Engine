@@ -2876,6 +2876,14 @@ table .role-chip.role-admin,
 .sched-next strong { color: var(--ink); font-weight: 650; }
 /* ...and last-sent is history, one step quieter, never competing with it. */
 .sched-last { color: var(--ink-muted); opacity: 0.72; }
+/* Explanatory line under a form control. Small and quiet: it is there for the
+   first-time reader working out company-vs-space, and must not compete with
+   the label it explains. */
+.sched-hint {
+  font-size: 0.8rem;
+  margin-top: 0.35rem;
+  line-height: 1.45;
+}
 .sched-error {
   font-size: 0.82rem;
   color: #b54708;
