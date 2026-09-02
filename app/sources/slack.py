@@ -240,13 +240,14 @@ class SlackAdapter(SourceAdapter):
                             title=self._thread_title(channel_id, text),
                             last_modified=_ts_to_dt(last_ts),
                             source_uri=_thread_uri(channel_id, ts),
-                            # Whoever started the thread. `_display_name`
-                            # caches, so a busy channel costs one lookup per
-                            # DISTINCT person, not one per message -- and this
-                            # name is already fetched for the thread body,
-                            # just discarded on the listing path until now.
-                            last_editor=self._display_name(message.get("user"))
-                            or None,
+                            # No `last_editor` here on purpose. Resolving a
+                            # name costs a `users.info` call, and this listing
+                            # is also the CHANGE DETECTION path -- which made
+                            # no user lookups at all before charts existed, and
+                            # must stay that way. `fetch_document` already
+                            # resolves every name for the thread body, and the
+                            # pipeline prefers `doc.last_editor`, so the
+                            # attribution lands without paying for it twice.
                         )
                     )
                     if len(refs) >= self._settings.max_documents_per_sync:
@@ -393,6 +394,11 @@ class SlackAdapter(SourceAdapter):
             content=content,
             source_uri=_thread_uri(channel_id, thread_ts),
             last_modified=last_modified,
+            # Whoever STARTED the thread, not everyone who replied -- the index
+            # stores a thread as one document, so there is no honest way to
+            # attribute a reply. Free here: `_display_name` already resolved
+            # (and cached) this name while building the body above.
+            last_editor=self._display_name(messages[0].get("user")) or None,
         )
 
     def get_last_modified(self, external_id: str) -> datetime | None:

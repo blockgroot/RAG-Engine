@@ -156,13 +156,24 @@ def test_every_slack_metric_discloses_the_undercount():
         assert "floor" in text or "not indexed" in text
 
 
-def test_the_adapter_captures_the_thread_starter():
-    """If this stops being set, every Slack "who starts them" chart goes
-    silently empty -- the sync still succeeds, so nothing else notices."""
+def test_the_thread_starter_is_captured_on_the_fetch_path_not_the_listing():
+    """Both halves matter.
+
+    On `fetch_document`, the name is already resolved for the thread body, so
+    the attribution is free. On the LISTING it would not be: that path is also
+    change detection, it made no `users.info` calls before charts existed, and
+    adding one per distinct author would make every "Check" more expensive. An
+    existing Slack test catches the regression by rejecting the unexpected
+    call; this states the rule."""
     import inspect
 
     from app.sources import slack
 
-    source = inspect.getsource(slack.SlackAdapter._list_documents_from_slack)
-    assert "last_editor" in source
-    assert "_display_name" in source
+    fetch = inspect.getsource(slack.SlackAdapter.fetch_document)
+    assert "last_editor" in fetch
+    assert "_display_name" in fetch
+
+    listing = inspect.getsource(slack.SlackAdapter._list_documents_from_slack)
+    assert "_display_name" not in listing, (
+        "the listing is change detection -- it must make no user lookups"
+    )
