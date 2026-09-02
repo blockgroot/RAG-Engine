@@ -159,16 +159,11 @@ function WorkspacesPageInner() {
                 {workspaces.map((w, i) => (
                   <li key={w.id}>
                     <Link
-                      // A member lands on Ask; an owner lands on management.
-                      // The space page is invitations, connections and delete —
-                      // things a member cannot do — so opening it for them
-                      // buries the one thing they came for behind a list of
-                      // controls that are all disabled.
-                      href={
-                        w.role === "owner"
-                          ? `/workspaces/${w.id}`
-                          : `/workspaces/${w.id}/ask`
-                      }
+                      // EVERYONE lands on Ask, owners included: asking is what
+                      // a space is for, and its people and settings now sit one
+                      // click behind the space name (the Slack pattern) rather
+                      // than in front of the conversation.
+                      href={`/workspaces/${w.id}/ask`}
                       className="people-card space-row"
                       style={{ animationDelay: `${0.08 + i * 0.05}s` }}
                     >
@@ -182,9 +177,7 @@ function WorkspacesPageInner() {
                         </span>
                       </div>
                       <span className="badge">{w.role === "owner" ? "Owner" : "Member"}</span>
-                      <span className="space-row-cta">
-                        {w.role === "owner" ? "Manage" : "Ask"}
-                      </span>
+                      <span className="space-row-cta">Open</span>
                     </Link>
                   </li>
                 ))}

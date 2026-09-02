@@ -806,10 +806,185 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
   border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
 }
 .provenance-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
-/* The space name above Ask, when it leads somewhere. Underline only on
-   hover: a permanently underlined kicker competes with the H1 beneath it. */
-.chat-kicker-link { color: inherit; text-decoration: none; }
+/* The space name above Ask. Now a BUTTON (it opens the details panel), so it
+   needs the button reset — without it the browser's default background, border
+   and font-size would make the kicker look like a form control. Underline on
+   hover only: a permanently underlined kicker competes with the H1 beneath. */
+.chat-kicker-link {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
 .chat-kicker-link:hover { text-decoration: underline; }
+
+/* ---- People button in the Ask header ---- */
+.chat-people-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: none;
+  padding: 0.45rem 0.8rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ink-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: color 0.15s var(--ease), border-color 0.15s var(--ease);
+}
+.chat-people-button:hover {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+/* ---- Space details panel (the Slack channel-details pattern) ---- */
+@keyframes scrim-in { from { opacity: 0; } to { opacity: 1; } }
+.space-panel-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: color-mix(in srgb, #101828 38%, transparent);
+  display: flex;
+  justify-content: flex-end;
+  animation: scrim-in 0.18s var(--ease) both;
+}
+.space-panel {
+  width: min(26rem, 100%);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  box-shadow: -18px 0 48px -24px rgba(16, 24, 40, 0.35);
+  animation: slide-in-right 0.22s var(--ease) both;
+  outline: none;
+}
+@keyframes slide-in-right {
+  from { transform: translateX(1.5rem); opacity: 0.6; }
+  to { transform: translateX(0); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .space-panel, .space-panel-scrim { animation: none; }
+}
+.space-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.1rem 1.25rem 0.85rem;
+  border-bottom: 1px solid var(--border);
+}
+.space-panel-head h2 { margin: 0; font-size: 1.05rem; }
+.space-panel-eyebrow {
+  margin: 0 0 0.15rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+.space-panel-close {
+  appearance: none;
+  background: none;
+  border: 0;
+  font-size: 1.5rem;
+  line-height: 1;
+  color: var(--ink-muted);
+  cursor: pointer;
+  padding: 0 0.15rem;
+}
+.space-panel-close:hover { color: var(--ink); }
+
+.space-panel-tabs {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.6rem 1.25rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.space-panel-tab {
+  appearance: none;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 0.5rem 0.35rem 0.6rem;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+.space-panel-tab.is-active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+
+.space-panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem 1.25rem 1.5rem;
+  display: grid;
+  gap: 0.9rem;
+  align-content: start;
+}
+.space-panel-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
+.space-panel-person {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: 0;
+}
+.space-panel-avatar {
+  flex: none;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+.space-panel-person-copy { min-width: 0; display: grid; gap: 0.05rem; flex: 1; }
+.space-panel-person-copy strong {
+  font-size: 0.88rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.space-panel-person-copy .muted { font-size: 0.76rem; }
+.space-panel-person-actions { display: flex; gap: 0.3rem; flex: none; }
+
+.space-panel-invite {
+  display: grid;
+  gap: 0.4rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--border);
+}
+.space-panel-invite label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ink-muted);
+}
+.space-panel-invite-row { display: flex; gap: 0.4rem; }
+.space-panel-invite-row .input { flex: 1; min-width: 0; }
+.space-panel-hint { font-size: 0.78rem; margin: 0; }
+.space-panel-about { display: grid; gap: 0.7rem; justify-items: start; font-size: 0.9rem; }
+.space-panel-about p { margin: 0; }
+
+/* Compact action buttons, for a row that holds two of them beside a name. */
+.button-sm {
+  padding: 0.32rem 0.6rem;
+  font-size: 0.78rem;
+}
 /* Which agent produced the answer, secondary to the source it came from: the
    reader wants "Notion" first and "Notion agent" only as confirmation. Divider
    is a border rather than a character so it never wraps to its own line. */

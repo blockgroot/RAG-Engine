@@ -224,7 +224,7 @@ export interface WorkspaceMemberRecord {
 export interface SchedulerRecord {
   id: string;
   provider: string;
-  frequency: "weekly" | "monthly";
+  frequency: "daily" | "weekly" | "monthly";
   /** The user's own standing instruction, re-applied on every run. */
   prompt: string;
   /** "active" while scheduled; "failed" once it gave up after repeated errors. */
@@ -245,7 +245,7 @@ export interface ReportRow {
   id: string;
   scheduler_id: string | null;
   provider: string;
-  frequency: "weekly" | "monthly";
+  frequency: "daily" | "weekly" | "monthly";
   /** The standing request the report answers — used as its title. */
   title: string;
   /** The space it read, or null for company-wide. */

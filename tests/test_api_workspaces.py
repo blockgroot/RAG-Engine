@@ -558,3 +558,99 @@ def test_foreign_org_cannot_delete_workspace(client, owner_org, store, org_clean
     refused = client.delete(f"/workspaces/{workspace_id}", cookies=stranger_cookies)
     assert refused.status_code == 403
     assert client.get(f"/workspaces/{workspace_id}", cookies=cookies).status_code == 200
+
+
+# --------------------------------------------------------------------------
+# The permission contract the space panel relies on
+# --------------------------------------------------------------------------
+
+
+@requires_db
+def test_a_member_can_read_the_people_list_but_not_change_it(
+    client, store, org_cleanup
+):
+    """Everyone now lands on Ask when they open a space, with people and
+    settings one click behind the space name (the Slack pattern). That panel
+    shows the people list to EVERY member, so a non-owner member must be able
+    to read it — and must be refused every action it only offers to owners.
+
+    Both halves matter: if the read 403s the panel is broken for exactly the
+    person it exists for, and if the writes succeed a member can quietly
+    promote themselves.
+    """
+    org_id = store.create_organization(f"Space Panel Org {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+    owner = create_admin(f"owner-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    colleague = invite_org_member(f"mate-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    owner_cookies = {"session": create_session_token(owner)}
+    member_cookies = {"session": create_session_token(colleague)}
+
+    workspace_id = client.post(
+        "/workspaces", json={"name": "Meeting notes"}, cookies=owner_cookies
+    ).json()["id"]
+    added = client.post(
+        f"/workspaces/{workspace_id}/members",
+        json={"email": colleague.email},
+        cookies=owner_cookies,
+    )
+    assert added.status_code == 200, added.text
+
+    # The read the panel opens with.
+    listing = client.get(f"/workspaces/{workspace_id}/members", cookies=member_cookies)
+    assert listing.status_code == 200, listing.text
+    people = listing.json()
+    by_email = {p["email"]: p["role"] for p in people}
+    assert by_email[owner.email] == "owner"
+    assert by_email[colleague.email] == "member"
+
+    # The actions the panel hides from a member must ALSO be refused server
+    # side — a hidden button is not an access control.
+    assert (
+        client.post(
+            f"/workspaces/{workspace_id}/members",
+            json={"email": owner.email},
+            cookies=member_cookies,
+        ).status_code
+        == 403
+    )
+    assert (
+        client.post(
+            f"/workspaces/{workspace_id}/members/{colleague.id}/make-owner",
+            cookies=member_cookies,
+        ).status_code
+        == 403
+    )
+    assert (
+        client.delete(
+            f"/workspaces/{workspace_id}/members/{owner.id}",
+            cookies=member_cookies,
+        ).status_code
+        == 403
+    )
+
+
+@requires_db
+def test_the_space_listing_tells_a_member_their_role(client, store, org_cleanup):
+    """The panel decides what to offer from this role, so it has to be right:
+    an owner mislabelled as a member loses every control they should have."""
+    org_id = store.create_organization(f"Space Role Org {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+    owner = create_admin(f"owner-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    colleague = invite_org_member(f"mate-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    owner_cookies = {"session": create_session_token(owner)}
+    member_cookies = {"session": create_session_token(colleague)}
+
+    workspace_id = client.post(
+        "/workspaces", json={"name": "Meeting notes"}, cookies=owner_cookies
+    ).json()["id"]
+    client.post(
+        f"/workspaces/{workspace_id}/members",
+        json={"email": colleague.email},
+        cookies=owner_cookies,
+    )
+
+    as_owner = client.get(f"/workspaces/{workspace_id}", cookies=owner_cookies)
+    as_member = client.get(f"/workspaces/{workspace_id}", cookies=member_cookies)
+
+    assert as_owner.json()["role"] == "owner"
+    assert as_member.json()["role"] == "member"
