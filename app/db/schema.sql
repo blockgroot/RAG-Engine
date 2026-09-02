@@ -589,3 +589,60 @@ CREATE TABLE IF NOT EXISTS scheduler_reports (
 -- Every read is "this person's reports, newest first".
 CREATE INDEX IF NOT EXISTS idx_scheduler_reports_owner
     ON scheduler_reports (org_id, user_id, created_at DESC);
+
+-- One countable event from a connected source. The ONLY numeric substrate for
+-- the visualizations section: every chart in the product is a GROUP BY over
+-- this table, so no chart can ever contain a number an LLM invented. A prose
+-- answer that is wrong hedges and cites; a bar chart that is wrong reads as a
+-- measurement, and neither the confidence gate nor the strict prompt can check
+-- arithmetic.
+--
+-- Deliberately narrow and denormalized. A wide per-provider table (pr_author,
+-- issue_assignee, message_channel) makes every cross-provider chart a join
+-- somebody has to write; one actor/subject/state triple makes it a WHERE
+-- clause. `value` carries the one number a fact may have (a lead time in
+-- seconds, a sentiment score) and is NULL for pure count facts.
+--
+-- Scoped like every other tenant table: org_id always, workspace_id nested
+-- inside it (NULL = org-wide).
+--
+-- GitHub DOES write rows here, and that is not a break with "GitHub embeds
+-- nothing": that rule is about vectors -- no documents, no chunks, no
+-- embeddings, no SourceAdapter -- and a counter is not a chunk. Facts are
+-- written by a facts-only sync path that never enqueues an ingestion job, so
+-- "Unknown source type: 'github'" stays impossible.
+CREATE TABLE IF NOT EXISTS activity_facts (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE,
+    provider     TEXT NOT NULL,          -- notion | google | linear | slack | github | forms
+    kind         TEXT NOT NULL,          -- doc_changed | pr_opened | issue_completed | ...
+    actor        TEXT,                   -- the person, when the source tells us
+    subject      TEXT,                   -- repo | channel | team | doc title
+    state        TEXT,                   -- issue state, sentiment label
+    occurred_at  TIMESTAMPTZ NOT NULL,
+    value        NUMERIC,                -- lead-time seconds, score; NULL = count-only
+    url          TEXT,
+    external_id  TEXT,                   -- for idempotent re-ingest, see below
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Every read is "this scope, this provider, this window" -- the indexes mirror
+-- that exactly rather than being general-purpose.
+CREATE INDEX IF NOT EXISTS idx_activity_facts_scope
+    ON activity_facts (org_id, provider, occurred_at DESC);
+CREATE INDEX IF NOT EXISTS idx_activity_facts_space
+    ON activity_facts (org_id, workspace_id, provider, occurred_at DESC);
+
+-- Re-syncing the same document or pull request must not double every count.
+-- Partial unique indexes because NULL workspace_id means "org-wide" and
+-- Postgres treats NULLs as distinct in a plain UNIQUE -- the same trap
+-- oauth_connections already hit. A NULL external_id is exempt: a fact the
+-- source gave us no stable id for cannot be deduplicated, and pretending
+-- otherwise would collapse every such fact onto one row.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_activity_facts_org
+    ON activity_facts (org_id, provider, kind, external_id)
+    WHERE workspace_id IS NULL AND external_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_activity_facts_space
+    ON activity_facts (org_id, workspace_id, provider, kind, external_id)
+    WHERE workspace_id IS NOT NULL AND external_id IS NOT NULL;
