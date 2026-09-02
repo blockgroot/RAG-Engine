@@ -103,6 +103,7 @@ the smallest possible diff.
 |---|---|---|---|
 | `prs_opened` | line | `repo`, `actor` | **new** `GET /repos/{r}/pulls?state=all` |
 | `prs_merged` | line | `repo`, `actor` | same call, `merged_at` non-null |
+| `pr_mergers` | bar | `actor` | **`merged_by.login`** — who merged is a different person from who authored, and gatekeeping concentration is the thing worth seeing |
 | `pr_authors` | bar (leaderboard) | `actor` | same call |
 | `pr_reviewers` | bar — **bus-factor read** | `actor` | **new** `GET /repos/{r}/pulls/{n}/reviews` |
 | `pr_lead_time` | box/percentile bars (p50/p75/p90) | `repo` | `merged_at - created_at` |
@@ -111,6 +112,12 @@ the smallest possible diff.
 
 `app/githublive/base.py` currently declares only `list_repos`, `get_readme`,
 `get_commit`, `list_commits`. PRs and reviews are genuinely new surface.
+
+The `PullRequest` dataclass must carry **three distinct people** —
+`user.login` (raised it), `merged_by.login` (merged it) and the reviewers from
+the reviews call. Collapsing any two of them loses the reading that matters: on
+most teams one person merges most PRs, and that is invisible if `actor` means
+"author" everywhere.
 
 **PR cycle time broken into stages** (coding -> waiting for review -> in review
 -> waiting to merge) is the highest-value engineering chart per the DORA
