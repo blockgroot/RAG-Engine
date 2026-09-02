@@ -6,6 +6,7 @@ import { useParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { AskHeroArt } from "@/components/AskHeroArt";
 import { ChatMessageView, Message } from "@/components/ChatMessage";
+import { SpacePanel } from "@/components/SpacePanel";
 import { useMe } from "@/lib/useMe";
 import { streamChat } from "@/lib/sse";
 import { api, ModelChoice } from "@/lib/api";
@@ -15,6 +16,28 @@ import {
   setCachedSuggestions,
   suggestionsCacheKey,
 } from "@/lib/suggestionsCache";
+
+/** Two overlapping heads — the same shorthand Slack uses for a channel's
+ *  member list, so the button needs no explaining. */
+function PeopleIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <circle cx="9" cy="8" r="3.25" stroke="currentColor" strokeWidth="1.6" />
+      <path
+        d="M3.5 19c0-2.9 2.46-5 5.5-5s5.5 2.1 5.5 5"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+      <path
+        d="M16 6.2a3 3 0 0 1 0 5.6M17.5 14.4c1.9.6 3 2.3 3 4.6"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
 
 function ChipIcon({ kind }: { kind: "policy" | "code" }) {
   if (kind === "code") {
@@ -31,6 +54,13 @@ function ChipIcon({ kind }: { kind: "policy" | "code" }) {
   );
 }
 
+
+/** "Notion", "Notion and Slack", "Notion, Slack and GitHub" — a readable list
+ *  rather than a template that only ever handled one or two names. */
+function listCopy(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
 
 export default function ChatPage() {
   const workspaceId = useParams<{ id?: string }>().id ?? null;
@@ -68,6 +98,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const [workspaceDrive, setWorkspaceDrive] = useState(false);
   const [workspacePolicyReady, setWorkspacePolicyReady] = useState(false);
   const [workspaceName, setWorkspaceName] = useState<string | null>(null);
+  const [workspaceRole, setWorkspaceRole] = useState<string | null>(null);
+  const [panelOpen, setPanelOpen] = useState(false);
   const codeAvailable = workspaceId ? workspaceGithub : Boolean(me?.github_connected);
   const slackAvailable = workspaceId ? workspaceSlack : Boolean(me?.slack_ready);
   const linearAvailable = workspaceId ? workspaceLinear : Boolean(me?.linear_ready);
@@ -163,6 +195,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
         setWorkspaceDrive(Boolean(ws.drive_ready));
         setWorkspacePolicyReady(Boolean(ws.policy_ready));
         setWorkspaceName(ws.name);
+        setWorkspaceRole(ws.role);
       })
       .catch(() => {
         if (!cancelled) setReadyToAsk(false);
@@ -340,9 +373,10 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     );
   }
 
-  // One box, so one set of copy. Naming a single source here would be a lie:
-  // the question decides which source answers, and the answer says which one
-  // did (see ProvenanceStripe).
+  // One box, so one set of copy. It says what the reader gets, not how the
+  // product works: which source answered is shown on the answer itself, and
+  // explaining the routing here read like release notes rather than an
+  // invitation to type.
   const connectedNames = [
     notionAvailable && "Notion",
     driveAvailable && "Drive",
@@ -353,15 +387,11 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
 
   const emptyTitle = workspaceId ? "Ask this space" : "Ask your company";
   const emptyCopy =
-    connectedNames.length > 1
-      ? `Just ask — the answer is found in ${connectedNames
-          .slice(0, -1)
-          .join(", ")} or ${connectedNames[connectedNames.length - 1]}, and each answer says which one it came from.`
-      : connectedNames.length === 1
-        ? `Answers come from your connected ${connectedNames[0]}, grounded in what is actually there.`
-        : workspaceId
-          ? "Answers come only from the notes and docs connected to this space."
-          : "Leave, benefits, remote work, and more — grounded in your connected documents.";
+    connectedNames.length > 0
+      ? `Answers are drawn from ${listCopy(connectedNames)}.`
+      : workspaceId
+        ? "Answers are drawn from the documents connected to this space."
+        : "Leave, benefits, remote work and more — answered from your connected documents.";
   const composerPlaceholder = "Ask anything about your work…";
 
   return (
@@ -377,15 +407,19 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
 
         <div className="chat-topbar">
           <div className="chat-topbar-copy">
-            {/* A link when scoped to a space: members now land HERE rather than
-                on the space page, so this is their only route to that space's
-                people and connections. Plain text company-wide, where there is
-                no such page to reach. */}
+            {/* The space name OPENS the details panel rather than navigating
+                away — the Slack pattern, where a channel's people and settings
+                sit behind its name and the conversation stays put. Plain text
+                company-wide, which has no such panel. */}
             <p className="chat-kicker">
               {workspaceId ? (
-                <Link href={`/workspaces/${workspaceId}`} className="chat-kicker-link">
+                <button
+                  type="button"
+                  className="chat-kicker-link"
+                  onClick={() => setPanelOpen(true)}
+                >
                   {workspaceName || "Space"}
-                </Link>
+                </button>
               ) : (
                 "Company-wide"
               )}
@@ -395,7 +429,29 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                 property of the reply, not of the box you typed into. */}
             <h1>Ask</h1>
           </div>
+          {workspaceId && (
+            <button
+              type="button"
+              className="chat-people-button"
+              onClick={() => setPanelOpen(true)}
+              aria-label="People in this space"
+              title="People in this space"
+            >
+              <PeopleIcon />
+              <span>People</span>
+            </button>
+          )}
         </div>
+
+        {panelOpen && workspaceId && (
+          <SpacePanel
+            workspaceId={workspaceId}
+            spaceName={workspaceName}
+            isOwner={workspaceRole === "owner"}
+            currentUserEmail={me?.email}
+            onClose={() => setPanelOpen(false)}
+          />
+        )}
 
         <div id="ask-panel" role="tabpanel" aria-label="Ask answers">
           {messages.length === 0 ? (
