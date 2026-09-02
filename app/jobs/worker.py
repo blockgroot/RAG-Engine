@@ -15,6 +15,7 @@ from ..auth.credentials import (
 from ..config.settings import ContextualSettings, IngestWorkerSettings, env_bool
 from ..core.exceptions import OAuthReauthRequiredError
 from ..ingestion.pipeline import enrich_source_contextual, ingest_source
+from ..insights.facts import DOCUMENT_PROVIDERS, record_document_facts
 from ..sources import build_source_adapter
 from . import queue
 
@@ -36,6 +37,31 @@ def _clear_answer_cache(org_id: str, job_id: str) -> None:
             logger.info("Job %s: cleared %s cached answer(s)", job_id, dropped)
     except Exception as exc:  # noqa: BLE001 - a cache miss beats a failed ingest
         logger.warning("Job %s: could not clear the answer cache: %s", job_id, exc)
+
+
+def _record_insight_facts(org_id: str, provider: str, workspace_id: str | None) -> None:
+    """Turn what we just indexed into countable facts. Best-effort, always.
+
+    Runs unconditionally on a successful job rather than only when documents
+    changed, which is what makes it self-backfilling: the first sync after this
+    feature deployed records a fact for every document already in the index,
+    with no separate backfill script to remember to run.
+
+    Its own try/except because the failure is not the ingest's. A chart going
+    stale is a chart going stale; failing a job that already succeeded would
+    turn it into a retry loop over work that is done.
+    """
+    if provider not in DOCUMENT_PROVIDERS:
+        # GitHub reaches here with nothing to count -- it embeds nothing. Its
+        # facts come from its own live reads, not from `documents`.
+        return
+    try:
+        record_document_facts(org_id, provider=provider, workspace_id=workspace_id)
+    except Exception:  # noqa: BLE001 - breadth is the point, see docstring
+        logger.warning(
+            "insights: could not record %s facts for org %s", provider, org_id,
+            exc_info=True,
+        )
 
 
 def _contextual_settings_for(provider: str | None) -> ContextualSettings:
@@ -136,6 +162,8 @@ def run_once() -> queue.IngestionJob | None:
         # nothing".
         if result.documents_ingested or result.documents_removed:
             _clear_answer_cache(job.org_id, job.id)
+
+        _record_insight_facts(job.org_id, provider, job.workspace_id)
 
         if (
             contextual.enabled

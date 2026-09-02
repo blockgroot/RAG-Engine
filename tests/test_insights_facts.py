@@ -162,3 +162,43 @@ def test_github_is_never_recorded_from_documents(org):
     activity" rather than "wrong code path", so it raises instead."""
     with pytest.raises(ValueError):
         facts.record_document_facts(org, provider="github", workspace_id=None)
+
+
+# ---------------------------------------------------------------------------
+# The worker hook. Facts are recorded where a successful ingest is already
+# known to have happened -- next to the answer-cache clear, for the same reason.
+# ---------------------------------------------------------------------------
+
+
+def test_the_worker_hook_records_facts_for_a_document_provider(org):
+    from app.jobs.worker import _record_insight_facts
+
+    _document(org)
+    _record_insight_facts(org, "notion", None)
+    assert _count(org) == 1
+
+
+def test_the_worker_hook_skips_github_without_raising(org):
+    """GitHub reaches this hook on every successful job it can have, and has
+    nothing to count. It must return quietly -- raising here would fail an
+    ingest that already succeeded."""
+    from app.jobs.worker import _record_insight_facts
+
+    _record_insight_facts(org, "github", None)  # must not raise
+
+
+def test_a_failing_facts_write_never_fails_the_job(org, monkeypatch, caplog):
+    """The whole reason it has its own try/except: a stale chart is a stale
+    chart, but failing a finished job turns it into a retry loop over work that
+    is already done."""
+    from app.jobs import worker
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("postgres went away")
+
+    monkeypatch.setattr(worker, "record_document_facts", _boom)
+
+    with caplog.at_level("WARNING"):
+        worker._record_insight_facts(org, "notion", None)  # must not raise
+
+    assert any("could not record" in r.message for r in caplog.records)
