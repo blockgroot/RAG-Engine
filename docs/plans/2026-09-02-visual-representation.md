@@ -65,15 +65,64 @@ report is about". A refusal, not a wrong chart.
 
 | # | Decision | Blocks | Default if unanswered |
 |---|---|---|---|
-| D1 | Google Forms: are responses in a **Form** or a **Sheet**? Neither has a connector today — `app/sources/google_drive.py:23` requests only `id,name,mimeType,modifiedTime,trashed,parents` and `_export_markdown` exports Docs to markdown. | Phase 5 | Phase 5 not started |
-| D2 | Sentiment gating: owners-only + suppress any bucket under 5 responses? | Phase 5 | Assume yes; it is the safe default |
+| D1 | ~~Form or Sheet?~~ **RESOLVED: Google Forms.** Responses come from the **Forms API** (`forms.googleapis.com/v1/forms/{id}/responses`), which the Drive adapter cannot reach — it needs its own OAuth scope (`forms.responses.readonly`, plus `drive.metadata.readonly` to *find* the forms by `mimeType=application/vnd.google-apps.form`). A new scope means **every tenant re-consents**, so this is a connector change, not a chart change. | Phase 5 | — |
+| D2 | ~~Sentiment gating?~~ **RESOLVED: owners-only, minimum 5 responses per bucket.** Rationale is not policy preference, it is arithmetic: on a 6-person team, "3 of 4 responses in Engineering are negative" identifies people. A suppression floor is the only thing that makes an anonymous survey actually anonymous, and it must be a test rather than a convention. | Phase 5 | — |
 | D3 | Slack volume source: live `conversations.history` (accurate, slow, rate-limited) or the index (fast, but `SLACK_MIN_THREAD_CHARS=15` drops short threads and ingest stores **threads not messages**, so counts undercount and carry no author)? | Phase 4 | Index + a visible coverage note |
 | D4 | Chart rendering: hand-rolled SVG or a library? | Phase 0 Task 8 | **Hand-rolled SVG.** `frontend/` has no Tailwind and no UI kit (plain CSS vars + global classes); bar/line/stacked-bar is ~60 lines each. Revisit only if Phase 3 lets the LLM choose chart *shapes* freely, at which point Vega-Lite becomes the right answer. |
 
-**Non-blocking but must be stated in the UI:** Phase 0 ships Notion/Drive
-metrics that need **zero adapter change**. "Top editors" is **not** one of
-them — `documents` has no author column and the Drive/Notion adapters do not
-request `lastModifyingUser` / `last_edited_by`. It moves to Task 8b.
+### D5: index the author at sync time, never at view time — **RESOLVED: yes**
+
+Every "by whom" chart in this plan reads a name out of `activity_facts`, which
+means the name is fetched **once, during a sync we already run**, and never
+during a page load. Audited per adapter — the cost is close to zero because
+every source already hands us the author in a request we already make:
+
+| Connector | Where the name comes from | Extra API calls |
+|---|---|---|
+| Slack | already fetched and cached — `_display_name` (`app/sources/slack.py:183`), used at line 319 | **none.** We fetch it today and discard it |
+| Linear | `assignee { name }` already selected (`app/sources/linear.py:78`); add `creator { name }` for who filed it | **none** |
+| Drive | add `lastModifyingUser(displayName)` to `_LIST_FIELDS` (`app/sources/google_drive.py:23`) | **none** — same request, more fields |
+| Notion | `search` already returns `last_edited_by`, but only the **id** | one `GET /users/{id}` per *distinct* person, cached exactly as Slack caches |
+| GitHub | `user.login`, `merged_by.login`, review authors | see D6 |
+
+**Two consequences that must be visible in the UI, not just true in the code:**
+
+1. **No history before the change.** Facts exist from the first sync after
+   deploy. A "top editors" bar chart that silently begins on re-ingest day
+   looks like the team started working that week. Every chart therefore
+   reports `first_fact_at` for its scope, and the frontend renders
+   "Measured since 12 Sep" rather than an axis starting from nowhere. A
+   backfill is possible for `docs_changed` (from `source_last_modified`, which
+   we already store) but **not** for authors — that data was never captured
+   and cannot be invented.
+2. **This stores per-person activity.** A leaderboard of named colleagues is
+   exactly what was asked for, and it is also a different kind of data from a
+   page count. It stays inside the existing scope rules (`org_id` +
+   `workspace_id` + `assert_member`, so a space's charts never name people
+   from outside it), and sentiment keeps the stricter D2 floor on top.
+
+### D6: GitHub writes facts too — **RESOLVED: yes, facts-only sync**
+
+This follows directly from D5 and it *replaces* the live-read design this plan
+originally carried for GitHub. Reading GitHub at view time meant paying its
+rate limit on every page load, a cold-start-plus-N-API-calls latency, and no
+history at all beyond what one cheap call returns.
+
+**It does not break "GitHub embeds nothing."** That guarantee is about vectors:
+no `documents` rows, no `chunks`, no embeddings, no `SourceAdapter`. An
+`activity_facts` row is a counter, not a chunk — and Phase 1 keeps the
+assertion that `chunks` and `documents` stay empty for GitHub, which is where
+the guarantee actually lives.
+
+What it changes concretely: GitHub is currently excluded from the sync tick by
+`UNSYNCABLE_PROVIDERS = ("github",)` in `app/jobs/autosync.py`, added because a
+GitHub ingest job can only ever fail with "Unknown source type". It gets
+re-admitted on a **separate facts-only path** — never the ingestion queue —
+so that failure mode stays impossible.
+
+**The cost, stated plainly:** GitHub charts become as fresh as the last sync
+(≤6h) instead of live. For "PRs merged per week" that is invisible; the
+freshness panel discloses it regardless.
 
 ---
 
@@ -91,13 +140,18 @@ the ask box) may group by. Every chart accepts the global period filter
 | `doc_staleness` | histogram (buckets: <7d, 7–30d, 30–90d, >90d) | `provider` | `now() - source_last_modified` |
 | `docs_by_space` | bar | `space` | `documents.workspace_id` |
 | `corpus_size` | single stat + sparkline | `provider` | `count(documents)` |
-| `top_editors` **(Task 8b)** | bar | `actor` | needs `lastModifyingUser` / `last_edited_by` added to the adapters |
+| `top_editors` | bar | `actor` | `lastModifyingUser(displayName)` added to Drive's existing `files.list`; Notion's cached `GET /users/{id}` (D5) |
 
-**Why this first:** it is the only group needing no new API call, so it proves
-the table, the registry, the endpoint, the scoping and the chart component in
-the smallest possible diff.
+**Why this first:** it needs no new API *call* — only extra fields on requests
+we already make (D5) — so it proves the table, the registry, the endpoint, the
+scoping and the chart component in the smallest possible diff.
 
-### GitHub — Phase 1 (live, embeds nothing)
+`docs_changed`, `doc_staleness`, `docs_by_space` and `corpus_size` can be
+**backfilled** from `documents.source_last_modified`, which is already stored.
+`top_editors` cannot: no author was ever captured, so it starts at the first
+sync after deploy and says so on the chart.
+
+### GitHub — Phase 1 (facts-only sync; still no vectors, D6)
 
 | Metric key | Chart | Dims | Needs |
 |---|---|---|---|
@@ -218,9 +272,13 @@ Append to `app/db/schema.sql`:
 -- seconds, a sentiment score) and is NULL for pure count facts.
 --
 -- Scoped like every other tenant table: org_id always, workspace_id nested
--- inside it (NULL = org-wide). GitHub writes NO rows here at all -- it embeds
--- nothing and reads live, and that absence is what proves "embed nothing"
--- still holds.
+-- inside it (NULL = org-wide).
+--
+-- GitHub DOES write rows here, and that is not a break with "GitHub embeds
+-- nothing": that rule is about vectors -- no documents, no chunks, no
+-- embeddings, no SourceAdapter -- and a counter is not a chunk. Facts are
+-- written by a facts-only sync path that never touches the ingestion queue,
+-- so "Unknown source type: github" stays impossible.
 CREATE TABLE IF NOT EXISTS activity_facts (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
@@ -940,31 +998,61 @@ a coverage note when the cap bites, exactly as the scheduler's fetchers do.
 
 **Commit:** `feat(githublive): bounded pull-request and review reads`
 
-## Task 10: GitHub metrics without facts
+## Task 10: GitHub facts, on a facts-only sync path
 
 **Files:**
-- Create: `app/insights/github_metrics.py`
-- Modify: `app/insights/registry.py` (7 entries from the catalogue above)
-- Modify: `app/api/insights.py` (dispatch: provider `github` -> live path)
+- Create: `app/insights/github_facts.py`
+- Modify: `app/jobs/autosync.py` (`UNSYNCABLE_PROVIDERS` — see below)
+- Modify: `app/insights/registry.py` (8 entries from the catalogue above)
 - Test: `tests/test_insights_github.py`
 
-Aggregate in Python into the **same `Point` shape** `store.run_metric`
-returns, so the endpoint and the frontend cannot tell the two paths apart.
-Store nothing.
+Three distinct `kind` values so the three different people stay separate:
+`pr_opened` (actor = `user.login`), `pr_merged` (actor = `merged_by.login`),
+`pr_reviewed` (actor = the review author). `subject` = repo. `value` = lead
+time in seconds on `pr_merged`.
 
-**Test the invariant directly:** after fetching every GitHub metric,
-`SELECT count(*) FROM activity_facts WHERE provider='github'` is still 0.
-That absence is the "embed nothing" guarantee, and it deserves an assertion
-rather than a comment.
+**The autosync change is the delicate part.** `UNSYNCABLE_PROVIDERS =
+("github",)` exists because a GitHub *ingestion* job can only fail with
+"Unknown source type" — that stays true and the constant stays. GitHub gets a
+**second, separate** branch in the tick that calls `record_github_facts()`
+directly and never enqueues an `ingestion_jobs` row.
 
-**Commit:** `feat(insights): GitHub charts from live reads, storing nothing`
+**Step: write these tests first — they are the guarantee, not a formality**
+
+```python
+def test_github_still_never_reaches_the_ingestion_queue(db, org_a):
+    """The reason UNSYNCABLE_PROVIDERS exists. A facts path must not quietly
+    re-open the door that produced 'Unknown source type: github' in prod."""
+    autosync.run_tick()
+    jobs = _jobs_for(org_a, provider="github")
+    assert jobs == []
+
+
+def test_github_writes_facts_but_no_documents_and_no_chunks(db, org_a):
+    """'GitHub embeds nothing' is about VECTORS. Facts are counters. This test
+    is where that distinction is enforced, so nobody has to remember it."""
+    record_github_facts(org_a, workspace_id=None)
+    assert _count("activity_facts", org_a, provider="github") > 0
+    assert _count("documents", org_a, source_provider="github") == 0
+    assert _count_chunks(org_a, provider="github") == 0
+
+
+def test_a_failing_github_read_does_not_fail_the_tick(db, org_a):
+    """One dead installation must not stop every other tenant's sync."""
+    # patch the reader to raise; assert run_tick() returns normally and the
+    # other providers were still queued.
+```
+
+**Commit:** `feat(insights): GitHub facts on a facts-only sync path, no vectors`
 
 ## Task 11: The GitHub panel
 
-Frontend panel + a visible "read live, not indexed" note. Every GitHub chart
-must disclose its window and any cap.
+Frontend panel. Every GitHub chart discloses **when it was last synced** and
+any cap that bit — the same discipline as the scheduler's coverage notes. The
+three people (raised / merged / reviewed) are three separate charts, never one
+"activity by person" bar that silently sums them.
 
-**Commit:** `feat(visualizations): GitHub panel with live-read disclosure`
+**Commit:** `feat(visualizations): GitHub panel, three distinct roles`
 
 ---
 
@@ -1059,7 +1147,9 @@ Ordered, because each step is worthless without the one before:
 | **A dashboard is silently stale.** | `connector_freshness` ships in Phase 0, before any other chart, and empty states distinguish not-connected / never-synced / no-activity. |
 | **6 charts = 6 requests = 6 cold starts** on Render free. | One `/insights/dashboard` round trip. |
 | **A big org's `GROUP BY` is slow.** | Two covering indexes matching the query exactly; the window is capped at 90 days by default. Count round trips, don't time them. |
-| **GitHub review calls blow the rate limit.** | PR set capped before reviews are fetched; truncation marked; the existing `_request` backoff reused. |
+| **GitHub review calls blow the rate limit.** | Moved off the page load entirely (D6): reviews are fetched during a sync that runs at most every 6h, the PR set is capped before reviews are fetched, truncation is marked, and the existing `_request` backoff is reused. |
+| **A "by whom" chart starts on deploy day** and reads as if nobody worked before. | Every chart reports `first_fact_at` and renders "Measured since <date>". Counts backfill from `source_last_modified`; authors cannot and must not be invented (D5). |
+| **Re-admitting GitHub to the tick re-opens "Unknown source type".** | It gets a separate facts-only branch; `UNSYNCABLE_PROVIDERS` stays, and a test asserts GitHub never produces an `ingestion_jobs` row. |
 | **No frontend test infra exists.** | `tsc --noEmit` plus a written manual pass per frontend task (org member vs space member). Do **not** introduce a React test stack as a side effect of this feature — that is its own decision. |
 | **The registry rots** as sources change. | It is small and admitted, like `app/llm/catalog.py`. Phase 1 adds a test that every registry entry's `provider` is one a connector actually supports. |
 
@@ -1072,6 +1162,8 @@ Ordered, because each step is worthless without the one before:
 - A second chat surface. One section with a constrained ask box.
 - A `base.py` for `app/insights/` — one implementation, no second backend.
 - Vega-Lite, until Phase 3 lets the model choose chart shapes freely.
+- Backfilling author names. The data was never captured; a chart may start
+  late, but it may not contain a guess.
 
 ## On completion
 
