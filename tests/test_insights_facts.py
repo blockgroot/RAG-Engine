@@ -33,7 +33,7 @@ def org(org_cleanup):
 
 
 def _document(org_id, *, provider="notion", workspace_id=None, modified="now",
-              actor=None, title="A page"):
+              editor=None, title="A page"):
     """One `documents` row, as ingest would have left it."""
     when = (
         datetime.now(timezone.utc) if modified == "now"
@@ -45,10 +45,10 @@ def _document(org_id, *, provider="notion", workspace_id=None, modified="now",
             """
             INSERT INTO documents
                 (org_id, title, source_provider, source_external_id,
-                 source_last_modified, workspace_id)
-            VALUES (%s, %s, %s, %s, %s, %s)
+                 source_last_modified, workspace_id, source_last_editor)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
-            (org_id, title, provider, uuid.uuid4().hex, when, workspace_id),
+            (org_id, title, provider, uuid.uuid4().hex, when, workspace_id, editor),
         )
         conn.commit()
 
@@ -202,3 +202,63 @@ def test_a_failing_facts_write_never_fails_the_job(org, monkeypatch, caplog):
         worker._record_insight_facts(org, "notion", None)  # must not raise
 
     assert any("could not record" in r.message for r in caplog.records)
+
+
+def test_the_editor_is_carried_into_the_fact_so_a_leaderboard_is_a_group_by(org):
+    """"Top editors" only works because the name was captured at sync time.
+    Fetching it per page load would be an API call per chart render."""
+    _document(org, editor="Ada Lovelace")
+    _document(org, editor="Ada Lovelace")
+    _document(org, editor="Grace Hopper")
+    facts.record_document_facts(org, provider="notion", workspace_id=None)
+
+    rows = store.run_metric("docs_changed", org_id=org, workspace_id=None,
+                            period="month", days=365, group_by="actor")
+    by_editor = {}
+    for row in rows:
+        by_editor[row.group] = by_editor.get(row.group, 0) + row.value
+    assert by_editor == {"Ada Lovelace": 2.0, "Grace Hopper": 1.0}
+
+
+def test_a_document_with_no_known_editor_still_counts(org):
+    """Drive omits `lastModifyingUser` for some files and Notion's lookup can
+    fail. The page is still real, so it must appear in the count -- just not in
+    the editor breakdown, where a guessed name would be worse than a gap."""
+    _document(org, editor=None)
+    facts.record_document_facts(org, provider="notion", workspace_id=None)
+
+    assert _count(org) == 1
+    rows = store.run_metric("docs_changed", org_id=org, workspace_id=None,
+                            period="month", days=365, group_by="actor")
+    assert [r.group for r in rows] == [None]
+
+
+# ---------------------------------------------------------------------------
+# The adapters. Both capture the editor from a request they ALREADY make, which
+# is the whole reason "top editors" costs no extra API call.
+# ---------------------------------------------------------------------------
+
+
+def test_drive_asks_for_the_editor_in_the_listing_it_already_makes():
+    """If this field ever leaves `_LIST_FIELDS`, every Drive editor chart goes
+    silently empty -- the sync still succeeds, so nothing else would notice."""
+    from app.sources import google_drive
+
+    assert "lastModifyingUser(displayName)" in google_drive._LIST_FIELDS
+
+
+def test_drive_reads_the_editor_name_off_a_file():
+    from app.sources.google_drive import _editor_name
+
+    assert _editor_name({"lastModifyingUser": {"displayName": "Ada"}}) == "Ada"
+
+
+def test_drive_returns_none_rather_than_attributing_an_unknown_editor():
+    """Drive omits the field for service-account edits, deleted accounts and
+    some shared drives. None keeps the row out of the chart; a placeholder
+    would credit the work to a person who did not do it."""
+    from app.sources.google_drive import _editor_name
+
+    assert _editor_name({}) is None
+    assert _editor_name({"lastModifyingUser": {}}) is None
+    assert _editor_name({"lastModifyingUser": {"displayName": "  "}}) is None

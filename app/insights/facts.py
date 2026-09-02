@@ -73,9 +73,10 @@ def record_document_facts(
 
     sql = f"""
         INSERT INTO activity_facts
-            (org_id, workspace_id, provider, kind, subject, occurred_at,
+            (org_id, workspace_id, provider, kind, actor, subject, occurred_at,
              url, external_id)
-        SELECT d.org_id, d.workspace_id, d.source_provider, %(kind)s, d.title,
+        SELECT d.org_id, d.workspace_id, d.source_provider, %(kind)s,
+               d.source_last_editor, d.title,
                d.source_last_modified, d.source_uri, d.source_external_id
           FROM documents d
          WHERE d.org_id = %(org_id)s
@@ -86,7 +87,8 @@ def record_document_facts(
         {conflict}
         DO UPDATE SET occurred_at = EXCLUDED.occurred_at,
                       subject     = EXCLUDED.subject,
-                      url         = EXCLUDED.url
+                      url         = EXCLUDED.url,
+                      actor       = EXCLUDED.actor
     """
 
     params = {

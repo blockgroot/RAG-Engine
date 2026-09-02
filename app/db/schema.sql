@@ -56,6 +56,17 @@ DROP INDEX IF EXISTS idx_documents_org_provider_external;
 -- document from an unfiltered query, matching every other optional filter
 -- in this schema.
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS tags TEXT[];
+
+-- Who last edited the source document, as the source names them. Captured at
+-- ingest so a "top editors" chart is a GROUP BY rather than an API call per
+-- page load -- Drive returns it in the `files.list` we already make, and Notion
+-- needs one cached `GET /users/{id}` per distinct person.
+--
+-- NOT backfillable: it was never captured before, so a chart grouped by editor
+-- necessarily starts at the first sync after this shipped (which is why
+-- `insights.store.first_fact_at` exists). Inventing a name would be worse than
+-- starting late.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_last_editor TEXT;
 CREATE INDEX IF NOT EXISTS idx_documents_tags ON documents USING gin (tags);
 
 

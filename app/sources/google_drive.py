@@ -20,8 +20,26 @@ _DOC_MIME = "application/vnd.google-apps.document"
 _PDF_MIME = "application/pdf"
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _SUPPORTED_MIMES = {_DOC_MIME, _PDF_MIME, _DOCX_MIME}
-_LIST_FIELDS = "nextPageToken,files(id,name,mimeType,modifiedTime,trashed,parents)"
+# `lastModifyingUser` costs nothing here: it rides along in the files.list
+# request we already make, which is why "top editors" needs no extra call.
+_LIST_FIELDS = (
+    "nextPageToken,files(id,name,mimeType,modifiedTime,trashed,parents,"
+    "lastModifyingUser(displayName))"
+)
 _MAX_WALK_DEPTH = 20  # guard against pathological trees; Drive's own limit is ~100.
+
+
+def _editor_name(file: dict) -> str | None:
+    """Display name of whoever last modified the file, if Drive told us.
+
+    Drive omits `lastModifyingUser` for some files (a service account edit, a
+    deleted account, a shared drive with restricted metadata). None is the
+    honest answer -- those rows simply do not appear in an editor chart, which
+    is better than attributing them to someone.
+    """
+    user = file.get("lastModifyingUser") or {}
+    name = (user.get("displayName") or "").strip()
+    return name or None
 
 
 def _extract_pdf_text(data: bytes) -> str:
@@ -101,13 +119,17 @@ class GoogleDriveAdapter(SourceAdapter):
                 title=file.get("name", "Untitled"),
                 last_modified=_parse_dt(file.get("modifiedTime")),
                 source_uri=_file_uri(file["id"], file.get("mimeType", "")),
+                last_editor=_editor_name(file),
             )
             for file in files
         ]
 
     def fetch_document(self, external_id: str) -> SourceDocument:
         try:
-            meta = self._get_file_metadata(external_id, fields="name,mimeType,modifiedTime")
+            meta = self._get_file_metadata(
+                external_id,
+                fields="name,mimeType,modifiedTime,lastModifyingUser(displayName)",
+            )
             mime = meta.get("mimeType")
             if mime == _DOC_MIME:
                 content = self._export_markdown(external_id)
@@ -130,6 +152,7 @@ class GoogleDriveAdapter(SourceAdapter):
             content=content,
             source_uri=_file_uri(external_id, mime or ""),
             last_modified=_parse_dt(meta.get("modifiedTime")),
+            last_editor=_editor_name(meta),
         )
 
     def get_last_modified(self, external_id: str) -> datetime | None:

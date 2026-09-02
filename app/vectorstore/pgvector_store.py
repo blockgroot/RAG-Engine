@@ -352,6 +352,7 @@ class PgVectorStore(VectorStore):
         last_modified: datetime | None = None,
         workspace_id: str | None = None,
         tags: list[str] | None = None,
+        last_editor: str | None = None,
     ) -> str:
         if len(chunks) != len(embeddings):
             raise ProviderError(
@@ -394,9 +395,9 @@ class PgVectorStore(VectorStore):
                 """
                 INSERT INTO documents (
                     org_id, title, source_uri, source_provider, source_external_id,
-                    source_last_modified, workspace_id, tags
+                    source_last_modified, workspace_id, tags, source_last_editor
                 )
-                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid, %s)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -408,6 +409,7 @@ class PgVectorStore(VectorStore):
                     last_modified,
                     workspace_id,
                     tags,
+                    last_editor,
                 ),
             ).fetchone()
             document_id = doc_row[0]
@@ -444,6 +446,7 @@ class PgVectorStore(VectorStore):
         last_modified: datetime | None = None,
         workspace_id: str | None = None,
         tags: list[str] | None = None,
+        last_editor: str | None = None,
     ) -> str:
         """Upsert metadata-only row so empty pages are not forever "new"."""
         if not external_id:
@@ -478,9 +481,9 @@ class PgVectorStore(VectorStore):
                 """
                 INSERT INTO documents (
                     org_id, title, source_uri, source_provider, source_external_id,
-                    source_last_modified, workspace_id, tags
+                    source_last_modified, workspace_id, tags, source_last_editor
                 )
-                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid, %s)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -492,6 +495,7 @@ class PgVectorStore(VectorStore):
                     last_modified,
                     workspace_id,
                     tags,
+                    last_editor,
                 ),
             ).fetchone()
         return str(row[0])
