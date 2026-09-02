@@ -52,6 +52,14 @@ PANELS: dict[str, tuple[Panel, ...]] = {
         Panel("pr_reviewers", "Who reviews them", "bar", group_by="actor"),
         Panel("pr_lead_time", "Days from raised to merged", "line"),
     ),
+    "linear": (
+        Panel("issues_completed", "Tasks completed", "line"),
+        # The request this feature started from.
+        Panel("issues_completed", "Completed by team", "bar", group_by="subject"),
+        Panel("issues_completed", "Completed by person", "bar", group_by="actor"),
+        Panel("issue_states", "Where the work sits", "stacked_bar", group_by="state"),
+        Panel("issue_cycle_time", "Days from filed to done", "line"),
+    ),
     "google": (
         Panel("drive_docs_changed", "Files created or edited", "line"),
         Panel("drive_docs_changed", "Most active spaces", "bar", group_by="space"),

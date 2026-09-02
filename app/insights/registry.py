@@ -163,6 +163,51 @@ _add(Metric(
     caveat="Merged pull requests only - an open one has no lead time. " + _GITHUB_CAP,
 ))
 
+# ---------------------------------------------------------------------------
+# Linear -- from the adapter's structured issue feed, recorded on the ingest
+# job (app/insights/linear_facts.py).
+#
+# `subject` is the TEAM, so grouping by subject IS "by team" -- the slot repos
+# occupy for GitHub. That is what answers the request this whole feature
+# started from: task completion, aggregated by team.
+# ---------------------------------------------------------------------------
+
+_LINEAR_CAP = "Issues that moved in the last 180 days."
+
+_add(Metric(
+    key="issues_completed",
+    provider="linear",
+    label="Tasks completed",
+    chart="line",
+    kind="issue_completed",
+    dims=("actor", "subject", "state"),
+    unit="tasks",
+    caveat=_LINEAR_CAP,
+))
+_add(Metric(
+    key="issue_states",
+    provider="linear",
+    label="Where the work sits",
+    chart="stacked_bar",
+    kind="issue_state",
+    dims=("state", "subject", "actor"),
+    unit="issues",
+    caveat=_LINEAR_CAP,
+))
+_add(Metric(
+    key="issue_cycle_time",
+    provider="linear",
+    label="Time from filed to done",
+    chart="line",
+    kind="issue_completed",
+    # Median, not mean: one issue left open over a holiday moves a mean by days
+    # and says nothing about the normal case.
+    select="percentile_cont(0.5) WITHIN GROUP (ORDER BY value) / 86400.0",
+    dims=("subject", "actor"),
+    unit="days (median)",
+    caveat="Completed issues with both dates known. " + _LINEAR_CAP,
+))
+
 # NOT here yet, deliberately:
 #
 # `doc_staleness` needs the LATEST fact per document (a page edited five times

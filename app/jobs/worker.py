@@ -39,7 +39,9 @@ def _clear_answer_cache(org_id: str, job_id: str) -> None:
         logger.warning("Job %s: could not clear the answer cache: %s", job_id, exc)
 
 
-def _record_insight_facts(org_id: str, provider: str, workspace_id: str | None) -> None:
+def _record_insight_facts(
+    org_id: str, provider: str, workspace_id: str | None, adapter=None
+) -> None:
     """Turn what we just indexed into countable facts. Best-effort, always.
 
     Runs unconditionally on a successful job rather than only when documents
@@ -47,21 +49,42 @@ def _record_insight_facts(org_id: str, provider: str, workspace_id: str | None) 
     feature deployed records a fact for every document already in the index,
     with no separate backfill script to remember to run.
 
+    Two kinds of fact, and the split is not arbitrary:
+
+    - ``doc_changed`` for every indexed provider, derived from `documents`.
+    - Linear's issue facts, which CANNOT come from the index (state, assignee
+      and team live inside chunk prose, not in a column). Recorded here rather
+      than on the sync tick because Linear also ingests: on the tick, the
+      ingest path's ``_stamp_attempted`` would already have made the connection
+      not-due, so they would silently never run. Here, the adapter also already
+      exists, so it costs no extra authentication.
+
+    GitHub reaches neither branch -- it embeds nothing, so it has no job and no
+    documents; its facts come from ``run_facts_tick``.
+
     Its own try/except because the failure is not the ingest's. A chart going
     stale is a chart going stale; failing a job that already succeeded would
     turn it into a retry loop over work that is done.
     """
-    if provider not in DOCUMENT_PROVIDERS:
-        # GitHub reaches here with nothing to count -- it embeds nothing. Its
-        # facts come from its own live reads, not from `documents`.
-        return
-    try:
-        record_document_facts(org_id, provider=provider, workspace_id=workspace_id)
-    except Exception:  # noqa: BLE001 - breadth is the point, see docstring
-        logger.warning(
-            "insights: could not record %s facts for org %s", provider, org_id,
-            exc_info=True,
-        )
+    if provider in DOCUMENT_PROVIDERS:
+        try:
+            record_document_facts(org_id, provider=provider, workspace_id=workspace_id)
+        except Exception:  # noqa: BLE001 - breadth is the point, see docstring
+            logger.warning(
+                "insights: could not record %s facts for org %s", provider, org_id,
+                exc_info=True,
+            )
+
+    if provider == "linear" and adapter is not None:
+        try:
+            from ..insights.linear_facts import record_linear_facts
+
+            record_linear_facts(org_id, workspace_id=workspace_id, adapter=adapter)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "insights: could not record Linear issue facts for org %s", org_id,
+                exc_info=True,
+            )
 
 
 def _contextual_settings_for(provider: str | None) -> ContextualSettings:
@@ -163,7 +186,7 @@ def run_once() -> queue.IngestionJob | None:
         if result.documents_ingested or result.documents_removed:
             _clear_answer_cache(job.org_id, job.id)
 
-        _record_insight_facts(job.org_id, provider, job.workspace_id)
+        _record_insight_facts(job.org_id, provider, job.workspace_id, adapter)
 
         if (
             contextual.enabled
