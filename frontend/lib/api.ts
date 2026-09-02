@@ -350,6 +350,52 @@ export interface ModelChoice {
   note: string;
 }
 
+// ---------------------------------------------------------------------------
+// Insights (the Visualizations section)
+// ---------------------------------------------------------------------------
+
+export type InsightScope = {
+  /** null is the company, mirroring `workspace_id IS NULL` server-side. */
+  id: string | null;
+  name: string;
+  providers: string[];
+  /** Which of those we can actually chart yet. Reported separately so
+   *  "Slack is connected but has no charts" is visible instead of looking
+   *  like an empty dashboard. */
+  chartable: string[];
+};
+
+export type InsightPanel = {
+  id: string;
+  provider: string;
+  title: string;
+  chart: string;
+  group_by: string | null;
+  unit: string;
+  caveat: string;
+  /** null means the panel failed; [] means it ran and there is nothing to
+   *  show. Those need different copy, so they are different values. */
+  points: { bucket: string; group: string | null; value: number }[] | null;
+  /** Facts only exist from the first sync after this shipped, so a chart
+   *  whose axis starts on deploy day would read as if nobody worked before. */
+  measured_since: string | null;
+};
+
+export type InsightDashboard = {
+  scope: string | null;
+  scope_name: string;
+  period: string;
+  window_days: number;
+  panels: InsightPanel[];
+};
+
+export type ConnectorFreshness = {
+  provider: string;
+  last_sync_at: string | null;
+  needs_reauth: boolean;
+  chartable: boolean;
+};
+
 export const api = {
   signup: (email: string, companyName: string) =>
     request<SignupResponse>("/auth/signup", {
@@ -650,6 +696,21 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ messages }),
     }),
+  // Charts. Member-level like schedulers: a chart aggregates rows the caller
+  // can already retrieve in prose. `scope` is a workspace id, or omitted for
+  // the company - a space the caller is not in returns 403, never an empty
+  // chart, because empty reads as "nothing happened there".
+  listInsightScopes: () =>
+    request<{ scopes: InsightScope[] }>("/insights/scopes").then((r) => r.scopes),
+  getInsightDashboard: (scope: string | null, period: string) =>
+    request<InsightDashboard>(
+      `/insights/dashboard?period=${encodeURIComponent(period)}` +
+        (scope ? `&scope=${encodeURIComponent(scope)}` : "")
+    ),
+  getConnectorFreshness: (scope: string | null) =>
+    request<{ connectors: ConnectorFreshness[] }>(
+      `/insights/freshness${scope ? `?scope=${encodeURIComponent(scope)}` : ""}`
+    ).then((r) => r.connectors),
 };
 
 export { API_BASE_URL };

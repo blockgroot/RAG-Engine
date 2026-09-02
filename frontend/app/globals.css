@@ -5541,3 +5541,193 @@ a.people-card:hover { color: inherit; }
   color: var(--accent-strong);
   font-weight: 600;
 }
+
+/* ---------------------------------------------------------------------------
+   Visualizations
+
+   Charts are plain SVG (see components/Chart.tsx) - no chart library, because
+   this stylesheet is the design system and a framework would bring its own.
+   The series palette is defined here rather than in the component so a chart
+   stays recognisably part of the product.
+   --------------------------------------------------------------------------- */
+
+:root {
+  --chart-1: #0f766e;
+  --chart-2: #2563eb;
+  --chart-3: #b45309;
+  --chart-4: #7c3aed;
+  --chart-5: #be123c;
+  --chart-6: #0e7490;
+  --chart-grid: #e4e7ec;
+}
+
+.viz-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+  align-items: flex-start;
+  margin-bottom: 1.25rem;
+}
+.viz-controls .field {
+  min-width: 16rem;
+}
+.viz-hint {
+  font-size: 0.8125rem;
+  margin: 0.375rem 0 0;
+}
+.viz-period {
+  display: flex;
+  gap: 0.375rem;
+}
+.viz-period .button[data-active="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.viz-section-title {
+  font-size: 0.8125rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  margin: 0 0 0.75rem;
+}
+
+.viz-freshness {
+  margin-bottom: 1.5rem;
+}
+.viz-fresh-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+}
+.viz-fresh-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  font-size: 0.875rem;
+}
+.viz-fresh-bad {
+  color: var(--danger, #b42318);
+  font-size: 0.875rem;
+}
+
+.viz-provider {
+  margin-bottom: 2rem;
+}
+.viz-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+  gap: 1rem;
+}
+.viz-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+.viz-panel-head h3 {
+  font-size: 1rem;
+  margin: 0;
+}
+.viz-panel-since,
+.viz-panel-caveat {
+  font-size: 0.75rem;
+  margin: 0.25rem 0 0;
+}
+.viz-panel-empty {
+  font-size: 0.875rem;
+  margin: 0;
+  padding: 2rem 0;
+  text-align: center;
+}
+.viz-empty {
+  text-align: center;
+  padding: 2.5rem 1.5rem;
+}
+.viz-empty .button {
+  margin-top: 1rem;
+}
+
+/* Wide charts scroll inside their own panel - the page body must never scroll
+   horizontally. */
+.chart-scroll {
+  overflow-x: auto;
+  min-width: 0;
+}
+.chart-svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+.chart-grid {
+  stroke: var(--chart-grid);
+  stroke-width: 1;
+}
+.chart-axis {
+  font-size: 10px;
+  fill: var(--ink-muted);
+}
+.chart-legend {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.875rem;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  font-size: 0.75rem;
+  color: var(--ink-muted);
+}
+.chart-legend li {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+.chart-swatch {
+  width: 0.625rem;
+  height: 0.625rem;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+/* A grouped bar chart is a leaderboard, so it renders as ranked rows rather
+   than one bar per person per bucket - which nobody can read. */
+.chart-rank {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.chart-rank-row {
+  display: grid;
+  grid-template-columns: minmax(5rem, 9rem) 1fr auto;
+  gap: 0.625rem;
+  align-items: center;
+  font-size: 0.875rem;
+}
+.chart-rank-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chart-rank-track {
+  background: var(--surface-muted);
+  border-radius: 3px;
+  height: 0.75rem;
+  overflow: hidden;
+}
+.chart-rank-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  min-width: 2px;
+}
+.chart-rank-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-muted);
+}
