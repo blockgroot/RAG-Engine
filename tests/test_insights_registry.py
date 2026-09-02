@@ -84,3 +84,40 @@ def test_github_may_appear_here_but_only_as_facts():
     known = {"notion", "google", "slack", "linear", "github", "forms"}
     for key, metric in registry.METRICS.items():
         assert metric.provider in known, f"{key} names unknown provider {metric.provider!r}"
+
+
+# ---------------------------------------------------------------------------
+# Panels: a metric is a definition, a panel is a view of one. The registry
+# stayed small because "top editors" is `docs_changed` grouped by actor rather
+# than a second definition -- which only works if every panel is checked
+# against the metric it claims.
+# ---------------------------------------------------------------------------
+
+
+def test_every_panel_names_a_real_metric_dimension_and_chart():
+    from app.insights import panels
+
+    panels.validate()  # raises with the offending panel named
+
+
+def test_a_panel_may_not_group_by_a_dimension_its_metric_forbids():
+    """The check has to be real, not decorative -- so break one on purpose."""
+    from dataclasses import replace
+
+    from app.insights import panels
+
+    original = panels.PANELS["notion"]
+    bad = replace(original[0], group_by="state")  # docs_changed allows space/actor
+    panels.PANELS["notion"] = (bad,)
+    try:
+        with pytest.raises(ValueError, match="does not allow"):
+            panels.validate()
+    finally:
+        panels.PANELS["notion"] = original
+
+
+def test_every_provider_with_panels_has_metrics_for_them():
+    from app.insights import panels
+
+    for provider in panels.PANELS:
+        assert registry.for_provider(provider), f"{provider} has panels but no metrics"
