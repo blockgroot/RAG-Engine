@@ -19,7 +19,9 @@ from dataclasses import dataclass
 #: Chart shapes the frontend can actually draw. A metric may not name one we
 #: cannot render -- a registry entry that resolves to a blank panel is worse
 #: than one that does not exist.
-CHART_TYPES = ("line", "bar", "stacked_bar", "histogram", "stat", "table")
+CHART_TYPES = (
+    "line", "bar", "stacked_bar", "diverging_bar", "histogram", "stat", "table",
+)
 
 #: The ONLY groupings any metric may accept. A ``group_by`` becomes a SQL
 #: identifier, so it can never originate in user text -- only here. Values are
@@ -63,6 +65,25 @@ class Metric:
     #: upstream filter, an item cap), say so here -- a partial chart that looks
     #: complete is the failure that matters.
     caveat: str = ""
+    #: Suppress any group with fewer than this many facts. Not a display
+    #: nicety -- it is what makes an anonymous survey actually anonymous. On a
+    #: six-person team, "3 of 4 responses in Engineering are negative"
+    #: identifies people, and anyone who knows the team can work out which.
+    #: Applied in SQL (a HAVING clause), never in the frontend, so no future
+    #: call site can render the suppressed rows by accident.
+    min_group_count: int = 0
+    #: A SECOND grouping, for charts that genuinely need two dimensions: a
+    #: diverging bar is topic (the row) BY sentiment label (the segment), and
+    #: one grouping cannot express that. Whitelisted through ``DIMENSIONS``
+    #: exactly like ``dims``, so it is still never caller text. Fixed per
+    #: metric rather than requestable -- a chart that needs two dimensions
+    #: needs those two.
+    series_by: str = ""
+    #: Restrict to org admins and space owners. Only for metrics that read
+    #: individual people's expressed opinions -- a page count is not sensitive
+    #: because everyone can already retrieve those pages, but a morale reading
+    #: is a different kind of claim about colleagues.
+    owners_only: bool = False
 
 
 METRICS: dict[str, Metric] = {}
@@ -238,6 +259,51 @@ _add(Metric(
     dims=("subject", "actor", "space"),
     unit="conversations",
     caveat=_SLACK_CAP,
+))
+
+# ---------------------------------------------------------------------------
+# Google Forms -- sentiment. The ONE metric whose numbers begin with an LLM.
+#
+# Every other metric counts rows a source handed us. Nothing in a form response
+# says "morale", so each response is classified ONCE, in the background, and
+# the LABEL is then counted like any other fact -- the chart is still a
+# GROUP BY, and no model ever sees the total.
+#
+# Two protections, both structural rather than conventions:
+#   - `min_group_count=5` suppresses small buckets IN SQL. Without it, "3 of 4
+#     responses in Engineering are negative" identifies people.
+#   - `owners_only` keeps it away from the whole company. A page count is not
+#     sensitive; a reading of colleagues' opinions is a different claim.
+#
+# There is deliberately NO single company-wide sentiment score. One number
+# invites a target, a target invites managing the number, and the number is an
+# LLM's reading of a small sample.
+# ---------------------------------------------------------------------------
+
+#: Below this, a bucket can identify individuals. Five is not tuned -- it is
+#: the conventional floor for reporting survey data, and it is a floor rather
+#: than a default because raising it is safe and lowering it is not.
+SENTIMENT_MIN_RESPONSES = 5
+
+_add(Metric(
+    key="sentiment_by_theme",
+    provider="forms",
+    label="How people feel, by topic",
+    # Diverging stacked bar: neutral centred, positive right, negative left,
+    # so the lean is readable across many topics at once. The standard for
+    # Likert data, and the only shape where every topic shares a baseline.
+    chart="diverging_bar",
+    kind="sentiment",
+    dims=("subject",),
+    series_by="state",
+    unit="responses",
+    min_group_count=SENTIMENT_MIN_RESPONSES,
+    owners_only=True,
+    caveat=(
+        f"Topics with fewer than {SENTIMENT_MIN_RESPONSES} responses are "
+        "hidden so nobody can be identified. Each response is classified by a "
+        "model, so read the shape, not the exact counts."
+    ),
 ))
 
 # NOT here yet, deliberately:

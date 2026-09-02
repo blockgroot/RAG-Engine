@@ -65,6 +65,11 @@ PANELS: dict[str, tuple[Panel, ...]] = {
         Panel("slack_threads", "Busiest channels", "bar", group_by="subject"),
         Panel("slack_threads", "Who starts them", "bar", group_by="actor"),
     ),
+    # Owners only, and small topics suppressed in SQL -- see the metric.
+    "forms": (
+        Panel("sentiment_by_theme", "How people feel, by topic",
+              "diverging_bar", group_by="subject"),
+    ),
     "google": (
         Panel("drive_docs_changed", "Files created or edited", "line"),
         Panel("drive_docs_changed", "Most active spaces", "bar", group_by="space"),

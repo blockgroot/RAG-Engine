@@ -57,6 +57,29 @@ def _scope(session: SessionClaims, scope: str | None) -> str | None:
     return scope
 
 
+def _may_see(metric, session: SessionClaims, workspace_id: str | None) -> bool:
+    """Whether this caller may see an ``owners_only`` metric.
+
+    Only sentiment is gated, and not because counting is privileged: everything
+    else aggregates rows the asker can already retrieve in prose. A reading of
+    colleagues' expressed opinions is a different kind of claim, so it stays
+    with the people already accountable for the space or the org.
+
+    An org admin qualifies everywhere; a space owner qualifies in their own
+    space. Membership itself was already checked by ``_scope``.
+    """
+    if not metric.owners_only:
+        return True
+    if session.role == "admin":
+        return True
+    if workspace_id is None:
+        return False
+    try:
+        return assert_member(workspace_id, session.org_id, session.user_id) == "owner"
+    except AuthError:
+        return False
+
+
 def _period(period: str) -> str:
     if period not in registry.PERIODS:
         raise HTTPException(
@@ -118,6 +141,11 @@ def dashboard(
     out = []
     for provider in found.providers:
         for panel in panel_defs.for_provider(provider):
+            # Omitted entirely rather than returned empty: an empty sentiment
+            # chart would still announce that sentiment is being measured, to
+            # exactly the people it is being measured on.
+            if not _may_see(registry.get(panel.metric), session, workspace_id):
+                continue
             try:
                 points = insight_store.run_metric(
                     panel.metric,
@@ -162,7 +190,11 @@ def _panel_payload(provider, panel, points, begun):
         # None means the panel failed; [] means it ran and there is nothing to
         # show. The frontend must say different things for those.
         "points": None if points is None
-        else [{"bucket": p.bucket, "group": p.group, "value": p.value} for p in points],
+        else [
+            {"bucket": p.bucket, "group": p.group, "series": p.series,
+             "value": p.value}
+            for p in points
+        ],
         # Facts only exist from the first sync after this shipped, and author
         # names cannot be backfilled at all. Without this the axis silently
         # starts on deploy day and reads as if nobody worked before it.
@@ -210,6 +242,15 @@ def ask(
         # and the frontend renders it as guidance rather than an error banner.
         return {"charted": False, "message": str(exc)}
 
+    if not _may_see(registry.get(spec.metric), session, workspace_id):
+        # Phrased as unavailable rather than forbidden. "You are not allowed to
+        # see the sentiment chart" confirms it exists and is being collected,
+        # which is the thing the gate is protecting.
+        return {
+            "charted": False,
+            "message": "I can't chart that here.",
+        }
+
     days = _WINDOW_DAYS[spec.period]
     try:
         points = insight_store.run_metric(
@@ -244,7 +285,8 @@ def ask(
             "unit": metric.unit,
             "caveat": metric.caveat,
             "points": [
-                {"bucket": p.bucket, "group": p.group, "value": p.value}
+                {"bucket": p.bucket, "group": p.group, "series": p.series,
+                 "value": p.value}
                 for p in points
             ],
             "measured_since": begun.isoformat() if begun else None,
@@ -301,6 +343,11 @@ def create_pin(body: PinRequest, session: SessionClaims = Depends(get_session)):
         raise HTTPException(status_code=400, detail="Unknown period.")
     if body.group_by is not None and body.group_by not in metric.dims:
         raise HTTPException(status_code=400, detail="That chart cannot be grouped that way.")
+    if not _may_see(metric, session, workspace_id):
+        # A pin outlives the role that created it, so this is checked here AND
+        # on every read -- a member demoted from owner must not keep a pinned
+        # sentiment chart working.
+        raise HTTPException(status_code=403, detail="Not available in this scope.")
 
     pin_id = pins.create_pin(
         session.org_id, session.user_id,

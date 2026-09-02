@@ -375,7 +375,16 @@ export type InsightPanel = {
   caveat: string;
   /** null means the panel failed; [] means it ran and there is nothing to
    *  show. Those need different copy, so they are different values. */
-  points: { bucket: string; group: string | null; value: number }[] | null;
+  points:
+    | {
+        bucket: string;
+        group: string | null;
+        /** A second dimension, only for charts that need two (a
+         *  diverging bar is topic BY sentiment label). */
+        series?: string | null;
+        value: number;
+      }[]
+    | null;
   /** Facts only exist from the first sync after this shipped, so a chart
    *  whose axis starts on deploy day would read as if nobody worked before. */
   measured_since: string | null;

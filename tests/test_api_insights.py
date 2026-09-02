@@ -415,3 +415,92 @@ def test_deleting_someone_elses_pin_is_a_404(client, org):
                          cookies=other_cookies).status_code == 404
     assert client.delete(f"/insights/pins/{pin_id}",
                          cookies=cookies).status_code == 204
+
+
+# --------------------------------------------------------------------------
+# The sentiment gate. Only metric in the product restricted by role, because
+# it is the only one reading individual people's expressed opinions.
+# --------------------------------------------------------------------------
+
+
+def _sentiment_facts(org_id, *, workspace_id=None, n=6, theme="How supported?"):
+    with get_connection() as conn:
+        for i in range(n):
+            conn.execute(
+                """
+                INSERT INTO activity_facts
+                    (org_id, workspace_id, provider, kind, subject, state,
+                     occurred_at, external_id)
+                VALUES (%s, %s, 'forms', 'sentiment', %s, %s, now(), %s)
+                """,
+                (org_id, workspace_id, theme,
+                 "positive" if i % 2 else "negative", uuid.uuid4().hex),
+            )
+        conn.commit()
+
+
+@requires_db
+def test_a_plain_member_never_sees_the_sentiment_panel(client, store, org_cleanup):
+    """Omitted entirely, not returned empty. An empty sentiment chart would
+    still announce that sentiment is being measured -- to exactly the people it
+    is being measured on."""
+    org_id, member, cookies = _org(store, org_cleanup, provider="forms")
+    _sentiment_facts(org_id)
+
+    body = client.get("/insights/dashboard", cookies=cookies).json()
+    assert all(p["provider"] != "forms" for p in body["panels"])
+
+
+@requires_db
+def test_an_org_admin_sees_the_sentiment_panel(client, store, org_cleanup):
+    org_id, _, _ = _org(store, org_cleanup, provider="forms")
+    admin_email = f"boss-{uuid.uuid4().hex[:8]}@example.com"
+    admin = create_admin(admin_email, org_id)
+    _sentiment_facts(org_id)
+
+    cookies = {"session": create_session_token(admin)}
+    body = client.get("/insights/dashboard", cookies=cookies).json()
+    forms = [p for p in body["panels"] if p["provider"] == "forms"]
+    assert forms, "an admin must be able to read it"
+    assert forms[0]["chart"] == "diverging_bar"
+
+
+@requires_db
+def test_a_member_asking_for_sentiment_is_told_it_is_unavailable_not_forbidden(
+    client, store, org_cleanup, monkeypatch
+):
+    """Phrasing matters. "You are not allowed to see the sentiment chart"
+    confirms it exists and is being collected, which is what the gate protects."""
+    from app.insights import resolve
+
+    org_id, _, cookies = _org(store, org_cleanup, provider="forms")
+    _sentiment_facts(org_id)
+    monkeypatch.setattr(
+        resolve, "resolve_question",
+        lambda q, *, providers, llm=None: resolve.ChartSpec(
+            metric="sentiment_by_theme", group_by="subject", period="month",
+            chart="diverging_bar",
+        ),
+    )
+
+    body = client.post("/insights/ask", json={"question": "team morale"},
+                       cookies=cookies).json()
+    assert body["charted"] is False
+    assert "allow" not in body["message"].lower()
+    assert "permission" not in body["message"].lower()
+
+
+@requires_db
+def test_a_member_cannot_pin_a_sentiment_chart(client, store, org_cleanup):
+    """A pin outlives the role that made it, so the gate is checked on write
+    AND on every read -- a member demoted from owner must not keep a working
+    pinned sentiment chart."""
+    org_id, _, cookies = _org(store, org_cleanup, provider="forms")
+
+    response = client.post(
+        "/insights/pins",
+        json={"metric": "sentiment_by_theme", "group_by": "subject",
+              "period": "month"},
+        cookies=cookies,
+    )
+    assert response.status_code == 403

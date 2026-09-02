@@ -36,6 +36,7 @@ const SOURCE_LABEL: Record<string, string> = {
   slack: "Slack",
   linear: "Linear",
   github: "GitHub",
+  forms: "Google Forms",
 };
 
 const PERIODS = [

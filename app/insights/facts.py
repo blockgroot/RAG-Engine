@@ -36,6 +36,43 @@ DOCUMENT_PROVIDERS = ("notion", "google", "slack", "linear")
 _KIND = "doc_changed"
 
 
+def record_form_facts_if_enabled(
+    org_id: str, *, workspace_id: str | None, token: str | None = None
+) -> int:
+    """Classify new form responses, if Forms reading is switched on.
+
+    Rides the GOOGLE ingest job rather than the sync tick, for the same reason
+    Linear's issue facts do: Google also ingests, so on the tick the ingest
+    path's stamp would already have made the connection not-due. Returns 0
+    silently when disabled -- the flag being off is a configuration state, not
+    an error.
+    """
+    from ..config.settings import GoogleSettings
+
+    if not GoogleSettings.from_env().forms_enabled:
+        return 0
+
+    try:
+        from ..auth.credentials import get_live_connection_token
+        from ..sources.google_forms import GoogleFormsReader
+
+        from .sentiment import record_form_sentiment
+
+        resolved = token or get_live_connection_token(
+            org_id, "google", workspace_id
+        )
+        return record_form_sentiment(
+            org_id, workspace_id=workspace_id,
+            reader=GoogleFormsReader(resolved),
+        )
+    except Exception:  # noqa: BLE001 - a missing chart, never a failed job
+        logger.warning(
+            "insights: could not classify form responses for org %s", org_id,
+            exc_info=True,
+        )
+        return 0
+
+
 def record_document_facts(
     org_id: str, *, provider: str, workspace_id: str | None
 ) -> int:

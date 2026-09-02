@@ -28,6 +28,9 @@ class Point:
     bucket: str
     group: str | None
     value: float
+    #: The second dimension, when the metric declares one (``series_by``).
+    #: A diverging bar is topic BY label, and one grouping cannot say that.
+    series: str | None = None
 
 
 def _scoped(sql_where: str, workspace_id: str | None) -> str:
@@ -42,6 +45,40 @@ def _scoped(sql_where: str, workspace_id: str | None) -> str:
         " AND workspace_id IS NULL" if workspace_id is None
         else " AND workspace_id = %(workspace_id)s"
     )
+
+
+def _floored(inner: str, metric, *, has_series: bool) -> str:
+    """Wrap a grouped query in the suppression floor, when the metric has one.
+
+    In SQL rather than applied afterwards, because a small bucket must never
+    leave the database: on a six-person team, "3 of 4 responses in Engineering
+    are negative" identifies people, and a filter in the frontend is one
+    forgotten call site away from rendering them.
+
+    The subtlety is WHAT gets counted. A plain ``HAVING count(*) >= n`` counts
+    each output row, which is right with one dimension and wrong with two: a
+    diverging bar splits each topic across five sentiment labels, so a topic
+    with twenty responses has four per label and would vanish entirely. The
+    floor is a property of the TOPIC, so it is summed across the series with a
+    window function -- which cannot appear in HAVING, hence the subquery.
+    """
+    if metric.min_group_count <= 0:
+        return inner
+
+    floor = int(metric.min_group_count)
+    if not has_series:
+        return f"SELECT * FROM ({inner}) f WHERE f.value >= {floor}"
+
+    # `value` here is a per-(topic, label) count; the partition re-totals it
+    # per topic so the floor applies to the whole bar.
+    return f"""
+        SELECT bucket, "group", series, value FROM (
+            SELECT bucket, "group", series, value,
+                   sum(value) OVER (PARTITION BY bucket, "group") AS group_total
+              FROM ({inner}) f
+        ) g
+        WHERE g.group_total >= {floor}
+    """
 
 
 def run_metric(
@@ -70,8 +107,26 @@ def run_metric(
 
     # Both are looked-up constants by this point, never caller text.
     column = registry.DIMENSIONS[group_by] if group_by else None
-    selected = f", {column}::text" if column else ", NULL::text"
+    # Aliased because the suppression floor wraps this query and has to name
+    # the columns. "group" is quoted -- it is a reserved word.
+    selected = (
+        f', {column}::text AS "group"' if column
+        else ', NULL::text AS "group"'
+    )
     grouped = f", {column}" if column else ""
+
+    # The metric's own second dimension. Fixed in the registry, not requested,
+    # and looked up in the same whitelist.
+    series_column = (
+        registry.DIMENSIONS[metric.series_by] if metric.series_by else None
+    )
+    if metric.series_by and series_column is None:
+        raise ValueError(f"{key} declares unknown series {metric.series_by!r}")
+    selected += (
+        f", {series_column}::text AS series" if series_column
+        else ", NULL::text AS series"
+    )
+    grouped += f", {series_column}" if series_column else ""
 
     where = _scoped(
         """
@@ -83,14 +138,15 @@ def run_metric(
         workspace_id,
     )
 
-    sql = f"""
+    inner = f"""
         SELECT date_trunc('{period}', occurred_at) AS bucket{selected},
                {metric.select} AS value
           FROM activity_facts
           {where}
          GROUP BY bucket{grouped}
-         ORDER BY bucket
     """
+
+    sql = _floored(inner, metric, has_series=series_column is not None) + " ORDER BY bucket"
 
     params = {
         "org_id": org_id,
@@ -107,7 +163,12 @@ def run_metric(
         raise ProviderError(f"insights: metric {key} failed", cause=exc) from exc
 
     return [
-        Point(bucket=row[0].isoformat(), group=row[1], value=float(row[2] or 0))
+        Point(
+            bucket=row[0].isoformat(),
+            group=row[1],
+            series=row[2],
+            value=float(row[3] or 0),
+        )
         for row in rows
     ]
 

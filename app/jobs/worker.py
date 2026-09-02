@@ -75,6 +75,21 @@ def _record_insight_facts(
                 exc_info=True,
             )
 
+    if provider == "google":
+        # Form responses are NOT ingested -- putting a survey answer in the
+        # searchable corpus would make "what did Ada say about management?"
+        # answerable, which is the opposite of what a survey promises. They are
+        # classified into a sentiment label and the text is discarded.
+        try:
+            from ..insights.facts import record_form_facts_if_enabled
+
+            record_form_facts_if_enabled(org_id, workspace_id=workspace_id)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "insights: could not classify form responses for org %s", org_id,
+                exc_info=True,
+            )
+
     if provider == "linear" and adapter is not None:
         try:
             from ..insights.linear_facts import record_linear_facts

@@ -16,7 +16,15 @@ import { useMemo } from "react";
  * there is no second place a total can be wrong.
  */
 
-export type Point = { bucket: string; group: string | null; value: number };
+export type Point = {
+  bucket: string;
+  group: string | null;
+  /** A second dimension, only where a chart genuinely needs two: a
+   *  diverging bar is topic (the row) BY sentiment label (the
+   *  segment), which one grouping cannot express. */
+  series?: string | null;
+  value: number;
+};
 
 /** Distinct enough to tell series apart, muted enough to sit in the page. */
 const SERIES_COLORS = [
@@ -104,6 +112,8 @@ export function Chart({
   }, [leaderboard, series, buckets, at]);
 
   if (points.length === 0) return null;
+
+  if (chart === "diverging_bar") return <DivergingBar points={points} />;
 
   if (leaderboard) {
     const max = Math.max(...ranked.map((r) => r.value), 1);
@@ -281,6 +291,111 @@ export function Chart({
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+/** Sentiment order, negative to positive. Fixed here so the segments always
+ *  stack in the same direction regardless of what order the rows arrive in. */
+const SENTIMENT_ORDER = [
+  "very negative",
+  "negative",
+  "neutral",
+  "positive",
+  "very positive",
+];
+
+const SENTIMENT_COLORS: Record<string, string> = {
+  "very negative": "#b42318",
+  negative: "#f04438",
+  neutral: "#98a2b3",
+  positive: "#45b26b",
+  "very positive": "#0f766e",
+};
+
+/**
+ * Diverging stacked bar: neutral centred, negative left, positive right.
+ *
+ * The standard shape for Likert data, and the only one where every topic
+ * shares a baseline - which is what lets someone read the lean across twenty
+ * questions at a glance instead of comparing middle segments that start at
+ * different places. Half of neutral goes each side, which is what centres it.
+ *
+ * Rows are sorted by favourability, so "which topics went worst" is the top or
+ * bottom of the list rather than something to hunt for.
+ */
+function DivergingBar({ points }: { points: Point[] }) {
+  const topics = new Map<string, Map<string, number>>();
+  for (const point of points) {
+    const topic = point.group ?? "Overall";
+    const label = (point.series ?? "neutral").toLowerCase();
+    const row = topics.get(topic) ?? new Map<string, number>();
+    row.set(label, (row.get(label) ?? 0) + point.value);
+    topics.set(topic, row);
+  }
+
+  const rows = [...topics.entries()].map(([topic, counts]) => {
+    const total = [...counts.values()].reduce((a, b) => a + b, 0) || 1;
+    const share = (label: string) => ((counts.get(label) ?? 0) / total) * 100;
+    const neutralHalf = share("neutral") / 2;
+    // Everything left of centre, in stacking order outward.
+    const left = share("very negative") + share("negative") + neutralHalf;
+    const favourable = share("positive") + share("very positive");
+    return { topic, counts, total, share, left, favourable };
+  });
+  rows.sort((a, b) => b.favourable - a.favourable);
+
+  return (
+    <div className="chart-diverge">
+      {rows.map((row) => (
+        <div key={row.topic} className="chart-diverge-row">
+          <span className="chart-diverge-label" title={row.topic}>
+            {row.topic}
+          </span>
+          <span className="chart-diverge-track">
+            {/* Offset so each row's neutral midpoint lands on the same axis. */}
+            <span
+              className="chart-diverge-bar"
+              style={{ marginLeft: `${50 - row.left}%` }}
+            >
+              {SENTIMENT_ORDER.map((label) => {
+                const width = row.share(label);
+                if (width <= 0) return null;
+                return (
+                  <span
+                    key={label}
+                    className="chart-diverge-seg"
+                    style={{
+                      width: `${width}%`,
+                      background: SENTIMENT_COLORS[label],
+                    }}
+                    title={`${row.topic} - ${label}: ${Math.round(
+                      row.counts.get(label) ?? 0,
+                    )} of ${row.total}`}
+                  />
+                );
+              })}
+            </span>
+          </span>
+          <span className="chart-diverge-value">
+            {Math.round(row.favourable)}%
+          </span>
+        </div>
+      ))}
+      <ul className="chart-legend">
+        {SENTIMENT_ORDER.map((label) => (
+          <li key={label}>
+            <span
+              className="chart-swatch"
+              style={{ background: SENTIMENT_COLORS[label] }}
+            />
+            {label}
+          </li>
+        ))}
+      </ul>
+      <p className="chart-note">
+        Share of responses. Percentage shown is positive or very positive.
+      </p>
     </div>
   );
 }

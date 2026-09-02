@@ -186,3 +186,61 @@ def test_first_fact_at_reports_when_measurement_began(org):
     began = store.first_fact_at("notion", org_id=org, workspace_id=None)
     assert began is not None
     assert abs((began - when).total_seconds()) < 5
+
+
+# ---------------------------------------------------------------------------
+# The suppression floor. Not a display nicety -- it is what makes an anonymous
+# survey anonymous, so it lives in SQL where no call site can skip it.
+# ---------------------------------------------------------------------------
+
+
+def _sentiment(org_id, *, theme, label, n):
+    for _ in range(n):
+        _fact(org_id, provider="forms", kind="sentiment", subject=theme,
+              external_id=uuid.uuid4().hex)
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE activity_facts SET state = %s "
+                " WHERE org_id = %s AND state IS NULL AND provider = 'forms'",
+                (label, org_id),
+            )
+            conn.commit()
+
+
+def test_a_group_below_the_floor_never_leaves_the_database(org):
+    """On a six-person team, "3 of 4 responses in Engineering are negative"
+    identifies people. Anyone who knows the team can work out which."""
+    _sentiment(org, theme="Engineering", label="negative", n=4)
+
+    rows = store.run_metric("sentiment_by_theme", org_id=org, workspace_id=None,
+                            period="month", days=365, group_by="subject")
+    assert rows == [], "four responses must be suppressed, not rounded"
+
+
+def test_a_group_at_the_floor_is_shown(org):
+    """The floor is >=, not >. Five is the conventional reporting minimum, and
+    an off-by-one here silently hides real data."""
+    _sentiment(org, theme="Engineering", label="positive", n=5)
+
+    rows = store.run_metric("sentiment_by_theme", org_id=org, workspace_id=None,
+                            period="month", days=365, group_by="subject")
+    assert sum(r.value for r in rows) == 5
+
+
+def test_the_floor_applies_per_group_not_to_the_total(org):
+    """The whole point: a big theme must not carry a small one over the line."""
+    _sentiment(org, theme="Engineering", label="positive", n=6)
+    _sentiment(org, theme="Design", label="negative", n=2)
+
+    rows = store.run_metric("sentiment_by_theme", org_id=org, workspace_id=None,
+                            period="month", days=365, group_by="subject")
+    assert {r.group for r in rows} == {"Engineering"}
+
+
+def test_metrics_without_a_floor_are_unaffected(org):
+    """A page count is not sensitive -- everyone can already retrieve those
+    pages -- so a floor there would hide real data for no reason."""
+    _fact(org)
+    rows = store.run_metric("docs_changed", org_id=org, workspace_id=None,
+                            period="month", days=365)
+    assert sum(r.value for r in rows) == 1

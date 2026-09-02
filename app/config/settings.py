@@ -603,6 +603,16 @@ DEFAULT_GOOGLE_OAUTH_SCOPES = (
     "https://www.googleapis.com/auth/drive.readonly "
     "https://www.googleapis.com/auth/documents.readonly"
 )
+# Reading Google Forms RESPONSES needs its own scope, and it is deliberately
+# NOT in the default above: adding a scope invalidates nothing technically, but
+# an existing token does not have it, so every already-connected tenant would
+# have to reconnect before Drive worked again the next time consent was
+# re-checked. Opt in with GOOGLE_FORMS_ENABLED=true, which appends it here --
+# the one place scopes are assembled -- and then reconnect Google once.
+#
+# `drive.readonly` already covers FINDING the forms (the Forms API has no
+# listing endpoint), so this is the only addition needed.
+GOOGLE_FORMS_SCOPE = "https://www.googleapis.com/auth/forms.responses.readonly"
 # Ceilings on the Drive folder crawl (see GoogleSettings). 500 folders is far
 # more than a policy folder needs while still bounding the number of sequential
 # Google API calls a single request can issue; 2000 native Docs likewise. Both
@@ -637,14 +647,26 @@ class GoogleSettings:
     # walk itself, don't just cap what it produces.
     max_walk_folders: int = DEFAULT_GOOGLE_MAX_WALK_FOLDERS
     max_documents: int = DEFAULT_GOOGLE_MAX_DOCUMENTS
+    #: Whether form-response reading (sentiment charts) is enabled. Off by
+    #: default because turning it on requires every tenant to reconnect
+    #: Google, which is a deploy decision rather than a code one.
+    forms_enabled: bool = False
 
     @classmethod
     def from_env(cls) -> "GoogleSettings":
+        forms_enabled = env_bool("GOOGLE_FORMS_ENABLED", False)
+        scopes = os.getenv("GOOGLE_OAUTH_SCOPES", DEFAULT_GOOGLE_OAUTH_SCOPES)
+        # Appended rather than replacing the default, and only when asked, so
+        # an explicit GOOGLE_OAUTH_SCOPES override still gets Forms access if
+        # the flag is on -- otherwise the two settings would silently disagree.
+        if forms_enabled and GOOGLE_FORMS_SCOPE not in scopes:
+            scopes = f"{scopes} {GOOGLE_FORMS_SCOPE}"
         return cls(
             client_id=os.getenv("GOOGLE_CLIENT_ID"),
             client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
             redirect_uri=os.getenv("GOOGLE_REDIRECT_URI"),
-            scopes=os.getenv("GOOGLE_OAUTH_SCOPES", DEFAULT_GOOGLE_OAUTH_SCOPES),
+            scopes=scopes,
+            forms_enabled=forms_enabled,
             max_walk_folders=int(
                 os.getenv("GOOGLE_MAX_WALK_FOLDERS") or DEFAULT_GOOGLE_MAX_WALK_FOLDERS
             ),
