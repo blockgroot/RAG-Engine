@@ -5731,3 +5731,52 @@ a.people-card:hover { color: inherit; }
   font-variant-numeric: tabular-nums;
   color: var(--ink-muted);
 }
+
+/* The ask box. Inside the section, not a second chat surface. */
+.viz-ask {
+  margin-bottom: 1.5rem;
+}
+.viz-ask-row {
+  display: flex;
+  gap: 0.5rem;
+}
+.viz-ask-row .input {
+  flex: 1;
+}
+.viz-ask-message {
+  margin: 0.75rem 0 0;
+  padding: 0.625rem 0.75rem;
+  border-radius: 6px;
+  background: var(--surface-muted);
+  font-size: 0.875rem;
+}
+.viz-ask-result {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+.viz-panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.viz-pins {
+  margin-bottom: 1.5rem;
+}
+.viz-pin-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+.viz-pin {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 0.75rem;
+  align-items: center;
+  font-size: 0.875rem;
+}

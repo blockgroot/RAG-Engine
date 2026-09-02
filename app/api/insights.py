@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 
 from ..core.exceptions import AuthError, ProviderError
 from ..insights import panels as panel_defs
-from ..insights import registry, scopes
+from ..insights import pins, registry, resolve, scopes
 from ..insights import store as insight_store
+from ..security.rate_limit import check_rate_limit
 from ..workspaces.store import assert_member
 from .deps import SessionClaims, get_session
 
@@ -32,6 +34,10 @@ router = APIRouter(prefix="/insights", tags=["insights"])
 #: How far back a dashboard looks, per period. Not the same as the bucket size:
 #: a weekly view of one week is a single bar, which tells nobody anything.
 _WINDOW_DAYS = {"week": 84, "month": 365, "quarter": 730}
+
+#: A question, not an essay. Long enough for a real multi-clause request, short
+#: enough that it cannot bloat the resolution prompt.
+MAX_QUESTION_CHARS = 400
 
 
 def _scope(session: SessionClaims, scope: str | None) -> str | None:
@@ -162,6 +168,155 @@ def _panel_payload(provider, panel, points, begun):
         # starts on deploy day and reads as if nobody worked before it.
         "measured_since": begun.isoformat() if begun else None,
     }
+
+
+class AskRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
+    scope: str | None = None
+
+
+@router.post("/ask")
+def ask(
+    body: AskRequest,
+    request: Request,
+    session: SessionClaims = Depends(get_session),
+):
+    """Turn a question into ONE chart, or refuse and say what is available.
+
+    Not a chat endpoint: one turn, no history, no conversation id. The model
+    only selects a registry key -- it never writes SQL and never emits a
+    number, so the worst case is a refusal rather than a wrong chart.
+
+    Rate-limited per org like every other LLM-backed route: this is the only
+    place in the section that spends a model request.
+    """
+    check_rate_limit(f"insights-ask:{session.org_id}")
+
+    workspace_id = _scope(session, body.scope)
+    found = next(
+        (s for s in scopes.member_scopes(session.org_id, session.user_id)
+         if s.id == workspace_id),
+        None,
+    )
+    if found is None:
+        raise HTTPException(status_code=404, detail="No such scope.")
+
+    try:
+        spec = resolve.resolve_question(
+            body.question, providers=list(found.providers)
+        )
+    except resolve.CannotChart as exc:
+        # 200, not 4xx: "I can't chart that, here is what I can" is an ANSWER,
+        # and the frontend renders it as guidance rather than an error banner.
+        return {"charted": False, "message": str(exc)}
+
+    days = _WINDOW_DAYS[spec.period]
+    try:
+        points = insight_store.run_metric(
+            spec.metric,
+            org_id=session.org_id,
+            workspace_id=workspace_id,
+            period=spec.period,
+            days=days,
+            group_by=spec.group_by,
+        )
+    except ProviderError:
+        logger.warning("insights: ask ran %s and failed", spec.metric, exc_info=True)
+        raise HTTPException(status_code=502, detail="Could not run that chart.")
+
+    metric = registry.get(spec.metric)
+    begun = insight_store.first_fact_at(
+        metric.provider, org_id=session.org_id, workspace_id=workspace_id
+    )
+    return {
+        "charted": True,
+        "spec": {
+            "metric": spec.metric,
+            "group_by": spec.group_by,
+            "period": spec.period,
+        },
+        "panel": {
+            "id": f"ask:{spec.metric}:{spec.group_by or 'time'}",
+            "provider": metric.provider,
+            "title": _ask_title(metric, spec.group_by),
+            "chart": spec.chart,
+            "group_by": spec.group_by,
+            "unit": metric.unit,
+            "caveat": metric.caveat,
+            "points": [
+                {"bucket": p.bucket, "group": p.group, "value": p.value}
+                for p in points
+            ],
+            "measured_since": begun.isoformat() if begun else None,
+        },
+    }
+
+
+def _ask_title(metric, group_by: str | None) -> str:
+    """A title the member can recognise as their own question's answer.
+
+    Built from the registry rather than echoing the question back: a question
+    is untrusted text, and putting it in a heading is how a heading becomes an
+    injection surface for whoever reads the page next.
+    """
+    if not group_by:
+        return metric.label
+    by = {"actor": "person", "subject": "team or repo", "state": "state",
+          "space": "space", "provider": "app"}.get(group_by, group_by)
+    return f"{metric.label} by {by}"
+
+
+# --------------------------------------------------------------------------
+# Pins. Personal, like a scheduler -- never published to anyone.
+# --------------------------------------------------------------------------
+
+
+class PinRequest(BaseModel):
+    metric: str = Field(min_length=1, max_length=64)
+    group_by: str | None = None
+    period: str = "month"
+    scope: str | None = None
+
+
+@router.get("/pins")
+def list_pins(session: SessionClaims = Depends(get_session)):
+    return {"pins": pins.list_pins(session.org_id, session.user_id)}
+
+
+@router.post("/pins", status_code=201)
+def create_pin(body: PinRequest, session: SessionClaims = Depends(get_session)):
+    """Keep a chart. Validated against the registry, not trusted from the body.
+
+    A pin is re-run on every page load, so an unvalidated one would be a
+    stored request to `run_metric` with caller-controlled identifiers -- the
+    one place in this feature where a bad value would persist rather than fail
+    once.
+    """
+    workspace_id = _scope(session, body.scope)
+    try:
+        metric = registry.get(body.metric)
+    except KeyError:
+        raise HTTPException(status_code=400, detail="No such chart.")
+    if body.period not in registry.PERIODS:
+        raise HTTPException(status_code=400, detail="Unknown period.")
+    if body.group_by is not None and body.group_by not in metric.dims:
+        raise HTTPException(status_code=400, detail="That chart cannot be grouped that way.")
+
+    pin_id = pins.create_pin(
+        session.org_id, session.user_id,
+        workspace_id=workspace_id,
+        metric=body.metric,
+        group_by=body.group_by,
+        period=body.period,
+        title=_ask_title(metric, body.group_by),
+    )
+    return {"id": pin_id}
+
+
+@router.delete("/pins/{pin_id}", status_code=204)
+def delete_pin(pin_id: str, session: SessionClaims = Depends(get_session)):
+    if not pins.delete_pin(session.org_id, session.user_id, pin_id):
+        raise HTTPException(status_code=404, detail="No such pin.")
 
 
 @router.get("/freshness")

@@ -389,6 +389,25 @@ export type InsightDashboard = {
   panels: InsightPanel[];
 };
 
+export type InsightAskResult =
+  /** "I can't chart that, here is what I can" is an ANSWER, not an error -
+   *  which is why the failure case is a 200 with a message. */
+  | { charted: false; message: string }
+  | {
+      charted: true;
+      spec: { metric: string; group_by: string | null; period: string };
+      panel: InsightPanel;
+    };
+
+export type InsightPin = {
+  id: string;
+  scope: string | null;
+  metric: string;
+  group_by: string | null;
+  period: string;
+  title: string;
+};
+
 export type ConnectorFreshness = {
   provider: string;
   last_sync_at: string | null;
@@ -707,6 +726,28 @@ export const api = {
       `/insights/dashboard?period=${encodeURIComponent(period)}` +
         (scope ? `&scope=${encodeURIComponent(scope)}` : "")
     ),
+  // One turn, no conversation. The model only SELECTS a pre-defined chart -
+  // it never writes SQL and never emits a number, so the worst case is a
+  // refusal that names what is available.
+  askForChart: (question: string, scope: string | null) =>
+    request<InsightAskResult>("/insights/ask", {
+      method: "POST",
+      body: JSON.stringify({ question, scope }),
+    }),
+  listInsightPins: () =>
+    request<{ pins: InsightPin[] }>("/insights/pins").then((r) => r.pins),
+  pinChart: (
+    metric: string,
+    groupBy: string | null,
+    period: string,
+    scope: string | null
+  ) =>
+    request<{ id: string | null }>("/insights/pins", {
+      method: "POST",
+      body: JSON.stringify({ metric, group_by: groupBy, period, scope }),
+    }),
+  unpinChart: (pinId: string) =>
+    request<void>(`/insights/pins/${pinId}`, { method: "DELETE" }),
   getConnectorFreshness: (scope: string | null) =>
     request<{ connectors: ConnectorFreshness[] }>(
       `/insights/freshness${scope ? `?scope=${encodeURIComponent(scope)}` : ""}`

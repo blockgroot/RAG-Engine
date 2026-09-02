@@ -246,3 +246,154 @@ def test_freshness_reports_a_dead_token_rather_than_only_an_old_date(client, org
 
     body = client.get("/insights/freshness", cookies=cookies).json()
     assert body["connectors"][0]["needs_reauth"] is True
+
+
+# --------------------------------------------------------------------------
+# The ask box and pins
+# --------------------------------------------------------------------------
+
+
+@requires_db
+def test_ask_requires_a_session(client):
+    assert client.post("/insights/ask", json={"question": "x"}).status_code == 401
+    assert client.get("/insights/pins").status_code == 401
+
+
+@requires_db
+def test_ask_returns_a_chart_for_a_resolvable_question(client, org, monkeypatch):
+    """The model only ever selects a registry key, so this stubs the selection
+    and asserts the real SQL path ran."""
+    from app.insights import resolve
+
+    _, _, cookies = org
+    _fact(org[0], actor="ada")
+    monkeypatch.setattr(
+        resolve, "resolve_question",
+        lambda q, *, providers, llm=None: resolve.ChartSpec(
+            metric="docs_changed", group_by="actor", period="month", chart="bar"
+        ),
+    )
+
+    body = client.post("/insights/ask", json={"question": "top editors"},
+                       cookies=cookies).json()
+    assert body["charted"] is True
+    assert body["panel"]["group_by"] == "actor"
+    assert body["panel"]["points"][0]["group"] == "ada"
+
+
+@requires_db
+def test_an_unchartable_question_answers_with_guidance_not_an_error(
+    client, org, monkeypatch
+):
+    """200 with `charted: false`. "I can't chart that, here is what I can" is
+    an ANSWER -- rendering it as an error banner would read as a fault."""
+    from app.insights import resolve
+
+    _, _, cookies = org
+    monkeypatch.setattr(
+        resolve, "resolve_question",
+        lambda q, *, providers, llm=None: (_ for _ in ()).throw(
+            resolve.CannotChart("I can't chart that. What I can show: pages.")
+        ),
+    )
+
+    response = client.post("/insights/ask", json={"question": "team morale"},
+                           cookies=cookies)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["charted"] is False
+    assert "pages" in body["message"], "a refusal must say what IS available"
+
+
+@requires_db
+def test_ask_on_a_space_the_member_is_not_in_is_refused(client, org):
+    org_id, _, _ = org
+    outsider = invite_member(f"out-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    owner = invite_member(f"own-{uuid.uuid4().hex[:8]}@example.com", org_id)
+
+    from app.workspaces.store import create_workspace
+
+    space = create_workspace(org_id, "Private", owner.id)
+    cookies = {"session": create_session_token(outsider)}
+
+    response = client.post(
+        "/insights/ask", json={"question": "anything", "scope": space}, cookies=cookies
+    )
+    assert response.status_code == 403
+
+
+@requires_db
+def test_an_over_long_question_is_rejected_by_validation(client, org):
+    _, _, cookies = org
+    response = client.post("/insights/ask", json={"question": "x" * 5000},
+                           cookies=cookies)
+    assert response.status_code == 422
+
+
+@requires_db
+def test_a_pin_round_trips_and_is_personal(client, org):
+    """`(org_id, user_id)` scoping, like a scheduler: a pin is one person's
+    shortcut and is never visible to anyone else."""
+    org_id, _, cookies = org
+    other = invite_member(f"other-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    other_cookies = {"session": create_session_token(other)}
+
+    created = client.post(
+        "/insights/pins",
+        json={"metric": "docs_changed", "group_by": "actor", "period": "month"},
+        cookies=cookies,
+    )
+    assert created.status_code == 201
+
+    mine = client.get("/insights/pins", cookies=cookies).json()["pins"]
+    theirs = client.get("/insights/pins", cookies=other_cookies).json()["pins"]
+    assert len(mine) == 1
+    assert theirs == [], "a pin must never leak to another member of the same org"
+
+
+@requires_db
+def test_pinning_the_same_chart_twice_is_not_a_duplicate(client, org):
+    _, _, cookies = org
+    payload = {"metric": "docs_changed", "group_by": "actor", "period": "month"}
+    client.post("/insights/pins", json=payload, cookies=cookies)
+    client.post("/insights/pins", json=payload, cookies=cookies)
+
+    assert len(client.get("/insights/pins", cookies=cookies).json()["pins"]) == 1
+
+
+@requires_db
+def test_a_pin_is_validated_against_the_registry_not_trusted(client, org):
+    """A pin is re-run on every page load, so an unvalidated one would be a
+    STORED request to run_metric with caller-controlled identifiers -- the one
+    place in this feature where a bad value would persist rather than fail
+    once."""
+    _, _, cookies = org
+
+    assert client.post("/insights/pins", json={
+        "metric": "'; DROP TABLE activity_facts; --", "period": "month",
+    }, cookies=cookies).status_code == 400
+
+    assert client.post("/insights/pins", json={
+        "metric": "docs_changed", "period": "fortnight",
+    }, cookies=cookies).status_code == 400
+
+    assert client.post("/insights/pins", json={
+        "metric": "docs_changed", "group_by": "provider", "period": "month",
+    }, cookies=cookies).status_code == 400
+
+
+@requires_db
+def test_deleting_someone_elses_pin_is_a_404(client, org):
+    org_id, _, cookies = org
+    other = invite_member(f"o-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    other_cookies = {"session": create_session_token(other)}
+
+    pin_id = client.post(
+        "/insights/pins", json={"metric": "docs_changed", "period": "month"},
+        cookies=cookies,
+    ).json()["id"]
+
+    assert client.delete(f"/insights/pins/{pin_id}",
+                         cookies=other_cookies).status_code == 404
+    assert client.delete(f"/insights/pins/{pin_id}",
+                         cookies=cookies).status_code == 204

@@ -657,3 +657,38 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_activity_facts_org
 CREATE UNIQUE INDEX IF NOT EXISTS uq_activity_facts_space
     ON activity_facts (org_id, workspace_id, provider, kind, external_id)
     WHERE workspace_id IS NOT NULL AND external_id IS NOT NULL;
+
+-- A chart a member asked for and kept. Personal, scoped `(org_id, user_id)`
+-- like `schedulers` and unlike every other tenant table -- a pin is one
+-- person's shortcut, never published to anyone, which is why this feature has
+-- no sharing model and no approval step.
+--
+-- Stores the SPEC, not the numbers: re-running it is one GROUP BY, and
+-- snapshotting counts would freeze a chart that is supposed to stay current
+-- (the opposite of `scheduler_reports`, which snapshots precisely because a
+-- report is a record of one moment).
+CREATE TABLE IF NOT EXISTS insight_pins (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    user_id      UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE,
+    metric       TEXT NOT NULL,
+    group_by     TEXT,
+    period       TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_insight_pins_owner
+    ON insight_pins (org_id, user_id, created_at DESC);
+
+-- Pinning the same chart twice is a no-op, not a duplicate. Partial indexes
+-- because NULL workspace_id means "the company" and Postgres treats NULLs as
+-- distinct in a plain UNIQUE.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_insight_pins_org
+    ON insight_pins (org_id, user_id, metric, period, coalesce(group_by, ''))
+    WHERE workspace_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_insight_pins_space
+    ON insight_pins (org_id, user_id, workspace_id, metric, period,
+                     coalesce(group_by, ''))
+    WHERE workspace_id IS NOT NULL;

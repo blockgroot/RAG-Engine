@@ -10,6 +10,8 @@ import {
   api,
   ConnectorFreshness,
   InsightDashboard,
+  InsightPanel,
+  InsightPin,
   InsightScope,
 } from "@/lib/api";
 
@@ -79,6 +81,21 @@ export default function VisualizationsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // The ask box. One turn, no history: `asked` is the last question's result,
+  // replaced rather than appended, because this is a chart request and not a
+  // conversation.
+  const [question, setQuestion] = useState("");
+  const [asking, setAsking] = useState(false);
+  const [asked, setAsked] = useState<InsightPanel | null>(null);
+  const [askedSpec, setAskedSpec] = useState<{
+    metric: string;
+    group_by: string | null;
+    period: string;
+  } | null>(null);
+  const [askMessage, setAskMessage] = useState<string | null>(null);
+  const [pins, setPins] = useState<InsightPin[]>([]);
+  const [pinnedPanels, setPinnedPanels] = useState<InsightPanel[]>([]);
+
   useEffect(() => {
     api
       .listInsightScopes()
@@ -93,10 +110,12 @@ export default function VisualizationsPage() {
     Promise.all([
       api.getInsightDashboard(id, period),
       api.getConnectorFreshness(id),
+      api.listInsightPins(),
     ])
-      .then(([board, fresh]) => {
+      .then(([board, fresh, pinned]) => {
         setDashboard(board);
         setFreshness(fresh);
+        setPins(pinned);
       })
       .catch((err) =>
         setError(
@@ -107,6 +126,68 @@ export default function VisualizationsPage() {
   }, [scope, period]);
 
   useEffect(load, [load]);
+
+  async function ask(e: React.FormEvent) {
+    e.preventDefault();
+    const text = question.trim();
+    if (!text || asking) return;
+    setAsking(true);
+    setAskMessage(null);
+    try {
+      const result = await api.askForChart(text, scope || null);
+      if (result.charted) {
+        setAsked(result.panel);
+        setAskedSpec(result.spec);
+      } else {
+        // Not an error banner: a refusal that names what IS available is
+        // guidance, and styling it as a fault would read as broken.
+        setAsked(null);
+        setAskedSpec(null);
+        setAskMessage(result.message);
+      }
+    } catch (err) {
+      setAskMessage(
+        err instanceof Error ? err.message : "Could not work that out.",
+      );
+    } finally {
+      setAsking(false);
+    }
+  }
+
+  async function pin() {
+    if (!askedSpec) return;
+    try {
+      await api.pinChart(
+        askedSpec.metric,
+        askedSpec.group_by,
+        askedSpec.period,
+        scope || null,
+      );
+      setPins(await api.listInsightPins());
+    } catch (err) {
+      setAskMessage(err instanceof Error ? err.message : "Could not pin that.");
+    }
+  }
+
+  async function unpin(pinId: string) {
+    try {
+      await api.unpinChart(pinId);
+      setPins(await api.listInsightPins());
+    } catch {
+      /* A failed unpin leaves the pin visible, which is the honest state. */
+    }
+  }
+
+  const alreadyPinned = Boolean(
+    askedSpec &&
+    pins.some(
+      (p) =>
+        p.metric === askedSpec.metric &&
+        p.period === askedSpec.period &&
+        (p.group_by ?? null) === askedSpec.group_by &&
+        (p.scope ?? null) === (scope || null),
+    ),
+  );
 
   const current = useMemo(
     () => (scopes || []).find((s) => (s.id ?? "") === scope) ?? null,
@@ -210,6 +291,95 @@ export default function VisualizationsPage() {
           </div>
         </div>
 
+        {/* The ask box lives INSIDE the section rather than being a second
+            chat surface. A separate box would make people guess which one a
+            question belongs in, and would split their history. It resolves to
+            one of the charts below - the model selects, it never computes. */}
+        <form className="card viz-ask" onSubmit={ask}>
+          <label htmlFor="viz-ask-input">Ask for a chart</label>
+          <div className="viz-ask-row">
+            <input
+              id="viz-ask-input"
+              className="input"
+              placeholder="task completion by team"
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              maxLength={400}
+              disabled={asking}
+            />
+            <button
+              type="submit"
+              className="button"
+              disabled={asking || !question.trim()}
+            >
+              {asking ? "…" : "Show"}
+            </button>
+          </div>
+          <p className="muted viz-hint">
+            Picks one of the charts below and applies your filters. It never
+            invents a number.
+          </p>
+
+          {askMessage && (
+            <p className="viz-ask-message" role="status">
+              {askMessage}
+            </p>
+          )}
+
+          {asked && (
+            <article className="viz-panel viz-ask-result">
+              <header className="viz-panel-head">
+                <h3>{asked.title}</h3>
+                <button
+                  type="button"
+                  className="button button-secondary button-sm"
+                  onClick={pin}
+                  disabled={alreadyPinned}
+                >
+                  {alreadyPinned ? "Pinned" : "Pin"}
+                </button>
+              </header>
+              {asked.points && asked.points.length > 0 ? (
+                <Chart
+                  chart={asked.chart}
+                  points={asked.points}
+                  period={askedSpec?.period || period}
+                  unit={asked.unit}
+                />
+              ) : (
+                <p className="muted viz-panel-empty">
+                  Nothing recorded for that yet.
+                </p>
+              )}
+              {asked.caveat && (
+                <p className="muted viz-panel-caveat">{asked.caveat}</p>
+              )}
+            </article>
+          )}
+        </form>
+
+        {pins.length > 0 && (
+          <section className="card viz-pins">
+            <h2 className="viz-section-title">Pinned</h2>
+            <ul className="viz-pin-list">
+              {pins.map((p) => (
+                <li key={p.id} className="viz-pin">
+                  <span>{p.title}</span>
+                  <span className="muted">{p.period}</span>
+                  <button
+                    type="button"
+                    className="button button-secondary button-sm"
+                    onClick={() => unpin(p.id)}
+                  >
+                    Remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <p className="muted viz-hint">Only you can see these.</p>
+          </section>
+        )}
+
         {error && (
           <div className="banner banner-warn" role="alert">
             {error}
@@ -305,7 +475,7 @@ export default function VisualizationsPage() {
                     {/* GitHub is read live into facts on a sync, not at page
                       load - so its numbers are as fresh as the last sync, and
                       the freshness panel above says when that was. */}
-                  {panel.caveat && (
+                    {panel.caveat && (
                       <p className="muted viz-panel-caveat">{panel.caveat}</p>
                     )}
                   </article>
