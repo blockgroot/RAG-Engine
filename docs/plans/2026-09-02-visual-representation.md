@@ -320,8 +320,12 @@ break a fresh one, so this is not optional.
 
 Run:
 ```bash
-createdb handbook_schema_check 2>/dev/null || true
-DATABASE_URL=postgresql://localhost/handbook_schema_check python -m app.db.migrate
+brew install pgvector && brew services start postgresql@17   # once
+createdb handbook_schema_check
+# NOTE: `python -m app.db.migrate` does NOTHING -- migrate.py has no
+# __main__ block, so it imports and exits silently. Call the function.
+DATABASE_URL=postgresql://localhost/handbook_schema_check python -c \
+  "from app.db.migrate import apply_schema; apply_schema()"
 psql handbook_schema_check -c "\d activity_facts"
 ```
 Expected: the table plus four indexes, no errors.
