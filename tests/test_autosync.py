@@ -247,3 +247,47 @@ def test_batch_size_bounds_one_tick(store, org_cleanup):
 
     capped = AutoSyncSettings(enabled=True, interval_hours=6, batch_size=2)
     assert autosync.enqueue_due_syncs(capped) == 2
+
+
+@requires_db
+def test_github_is_never_queued(store, org_cleanup):
+    """GitHub has an ``oauth_connections`` row but embeds nothing, so it has no
+    SourceAdapter — a queued GitHub job fails instantly with "Unknown source
+    type" and would do so on every tick, forever. Observed in production on the
+    first unattended sync."""
+    org_id = store.create_organization(f"AutoSync GH {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+    save_connection(
+        org_id,
+        "github",
+        OAuthTokens(
+            access_token="ghs-fake",
+            refresh_token=None,
+            expires_at=None,
+            external_workspace_id=f"I{uuid.uuid4().hex[:8]}",
+        ),
+    )
+
+    assert autosync.enqueue_due_syncs(SETTINGS) == 0
+
+
+@requires_db
+def test_a_syncable_provider_is_still_queued_alongside_github(store, org_cleanup):
+    """The mirror direction: the exclusion must drop GitHub only. A predicate
+    that quietly matched everything would make auto-sync a no-op and look
+    exactly like "nothing has changed"."""
+    org_id = store.create_organization(f"AutoSync Mix {uuid.uuid4().hex[:8]}")
+    org_cleanup.append(org_id)
+    for provider in ("github", "notion"):
+        save_connection(
+            org_id,
+            provider,
+            OAuthTokens(
+                access_token=f"tok-{provider}",
+                refresh_token=None,
+                expires_at=None,
+                external_workspace_id=f"X{uuid.uuid4().hex[:8]}",
+            ),
+        )
+
+    assert autosync.enqueue_due_syncs(SETTINGS) == 1
