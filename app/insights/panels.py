@@ -60,6 +60,11 @@ PANELS: dict[str, tuple[Panel, ...]] = {
         Panel("issue_states", "Where the work sits", "stacked_bar", group_by="state"),
         Panel("issue_cycle_time", "Days from filed to done", "line"),
     ),
+    "slack": (
+        Panel("slack_threads", "Conversations", "line"),
+        Panel("slack_threads", "Busiest channels", "bar", group_by="subject"),
+        Panel("slack_threads", "Who starts them", "bar", group_by="actor"),
+    ),
     "google": (
         Panel("drive_docs_changed", "Files created or edited", "line"),
         Panel("drive_docs_changed", "Most active spaces", "bar", group_by="space"),

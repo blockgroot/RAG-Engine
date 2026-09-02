@@ -240,6 +240,13 @@ class SlackAdapter(SourceAdapter):
                             title=self._thread_title(channel_id, text),
                             last_modified=_ts_to_dt(last_ts),
                             source_uri=_thread_uri(channel_id, ts),
+                            # Whoever started the thread. `_display_name`
+                            # caches, so a busy channel costs one lookup per
+                            # DISTINCT person, not one per message -- and this
+                            # name is already fetched for the thread body,
+                            # just discarded on the listing path until now.
+                            last_editor=self._display_name(message.get("user"))
+                            or None,
                         )
                     )
                     if len(refs) >= self._settings.max_documents_per_sync:

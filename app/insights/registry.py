@@ -208,6 +208,38 @@ _add(Metric(
     caveat="Completed issues with both dates known. " + _LINEAR_CAP,
 ))
 
+# ---------------------------------------------------------------------------
+# Slack -- from the index, with the undercount said out loud.
+#
+# Ingest stores THREADS, not messages, and `SLACK_MIN_THREAD_CHARS` drops short
+# ones -- so these counts are conversations, not message volume, and they are a
+# floor rather than a total. Every Slack metric states that, because a chart
+# that looks complete while undercounting is the failure that matters. Reading
+# `conversations.history` live at chart time would be accurate, but it costs a
+# rate-limited call per channel per page load; the honest cheap answer is the
+# index plus disclosure.
+#
+# `subject` is the channel (see facts.py) and `actor` is whoever started the
+# thread -- not who replied, which the index does not keep.
+# ---------------------------------------------------------------------------
+
+_SLACK_CAP = (
+    "Counts conversations, not messages. Threads shorter than the ingest "
+    "minimum are not indexed, so this is a floor. Credited to whoever started "
+    "each thread, not to everyone who replied."
+)
+
+_add(Metric(
+    key="slack_threads",
+    provider="slack",
+    label="Conversations",
+    chart="line",
+    kind="doc_changed",
+    dims=("subject", "actor", "space"),
+    unit="conversations",
+    caveat=_SLACK_CAP,
+))
+
 # NOT here yet, deliberately:
 #
 # `doc_staleness` needs the LATEST fact per document (a page edited five times
@@ -216,6 +248,11 @@ _add(Metric(
 # second meaning for `run_metric`.
 #
 # `corpus_size` counts `documents`, not `activity_facts`. Same reason.
+#
+# Slack's `active_hours` heatmap needs a chart shape `Chart.tsx` does not draw
+# (day x hour), so it waits for that rather than shipping as a table nobody
+# reads. `thread_response_time` needs per-message timestamps the index does not
+# keep -- it stores a thread, not its replies.
 #
 # `open_pr_age` is a histogram over `now() - occurred_at` for pull requests
 # still open, which needs the same DISTINCT-ON-shaped query as `doc_staleness`.

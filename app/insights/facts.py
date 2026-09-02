@@ -71,12 +71,22 @@ def record_document_facts(
         """
         scope = "AND d.workspace_id = %(workspace_id)s"
 
+    # `subject` is what a chart groups by, so it carries the most useful
+    # dimension per provider: the page or file title for Notion/Drive, and the
+    # CHANNEL for Slack. A Slack document is a thread titled "#general:
+    # snippet…", and grouping by that truncated snippet would give one bar per
+    # thread -- useless. The channel is already in the title, so extracting it
+    # needs no second column and no second query.
+    subject = (
+        "split_part(d.title, ':', 1)" if provider == "slack" else "d.title"
+    )
+
     sql = f"""
         INSERT INTO activity_facts
             (org_id, workspace_id, provider, kind, actor, subject, occurred_at,
              url, external_id)
         SELECT d.org_id, d.workspace_id, d.source_provider, %(kind)s,
-               d.source_last_editor, d.title,
+               d.source_last_editor, {subject},
                d.source_last_modified, d.source_uri, d.source_external_id
           FROM documents d
          WHERE d.org_id = %(org_id)s
