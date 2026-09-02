@@ -183,16 +183,34 @@ def test_the_company_scope_is_offered_even_with_nothing_connected(
 
 @requires_db
 def test_a_connected_provider_with_no_panels_is_reported_separately(
-    client, store, org_cleanup
+    client, store, org_cleanup, monkeypatch
 ):
-    """"Slack is connected but has no charts yet" must not look like an empty
-    dashboard -- the two need different copy, so they are different fields."""
+    """"Connected but no charts yet" must not look like an empty dashboard --
+    the two need different copy, so they are different fields.
+
+    Every shipped provider now HAS panels, so the mechanism is exercised by
+    removing them rather than by naming a provider that happens to lack them.
+    Forms will be exactly this case when its connector lands before its
+    charts."""
+    from app.insights import panels
+
     org_id, _, cookies = _org(store, org_cleanup, provider="slack")
+    monkeypatch.setitem(panels.PANELS, "slack", ())
 
     body = client.get("/insights/scopes", cookies=cookies).json()
     scope = body["scopes"][0]
     assert scope["providers"] == ["slack"]
-    assert scope["chartable"] == [], "Slack has no panels in Phase 0"
+    assert scope["chartable"] == []
+
+
+@requires_db
+def test_every_shipped_provider_is_chartable(client, store, org_cleanup):
+    """The mirror: a connector with charts must report itself as chartable, or
+    the page hides working charts behind a "nothing built yet" message."""
+    from app.insights import panels
+
+    for provider in ("notion", "google", "slack", "linear", "github"):
+        assert panels.for_provider(provider), f"{provider} has no panels"
 
 
 @requires_db
