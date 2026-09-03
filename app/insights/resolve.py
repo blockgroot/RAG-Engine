@@ -126,9 +126,13 @@ def _prompt(question: str, metrics: list[registry.Metric]) -> str:
         "Decide whether this question needs a COUNTED chart or a document "
         "answer.\n\n"
         "intent=qa: they want an explanation, a policy, what someone said, "
-        "or anything that lives in prose. Do not force a chart.\n"
-        "intent=chart: they want a count, trend, ranking, share, comparison, "
-        "breakdown, or visual of activity from a connected app.\n\n"
+        "or anything that lives in prose. Do not force a chart. "
+        "\"Where is the org chart?\" is qa — they mean a document, not a plot.\n"
+        "intent=chart: they asked to plot, count, rank, share, or break down "
+        "activity from a connected app (including \"make a pie/bar/line\").\n"
+        "A pie of topics/themes inside a document is NOT countable here — "
+        "that is intent=chart with metric null, never qa. Reading the file "
+        "cannot produce a chart.\n\n"
         "Available countable things (the connector is the tag in brackets):\n"
         f"{_catalogue(metrics)}\n\n"
         f"Periods: {', '.join(registry.PERIODS)}\n"
@@ -221,7 +225,24 @@ def classify_question(
             "I couldn't work that out just now. The charts below still work."
         ) from exc
 
-    return _parse_intent(reply, metrics, fail_open=fail_open)
+    intent = _parse_intent(reply, metrics, fail_open=fail_open)
+    # A model that treats "make a pie chart of this doc" as qa will retrieve
+    # the file and invent slices (or say the docs don't contain a pie tool).
+    # An explicit shape with no metric is a refusal, not RAG.
+    if intent.kind == "qa" and _asked_for_a_plot(question):
+        return AskIntent("refuse", message=_refusal(metrics))
+    return intent
+
+
+#: Named plot, not the word "chart" alone ("org chart" is a document).
+_PLOT_ASK = re.compile(
+    r"\b(pie chart|bar chart|line chart|stacked bar)\b",
+    re.I,
+)
+
+
+def _asked_for_a_plot(question: str) -> bool:
+    return bool(_PLOT_ASK.search(question or ""))
 
 
 def resolve_question(question: str, *, providers: list[str], llm=None) -> ChartSpec:

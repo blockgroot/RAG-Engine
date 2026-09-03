@@ -236,6 +236,33 @@ def test_a_document_question_classifies_as_qa():
     assert intent.spec is None
 
 
+def test_a_pie_of_document_topics_is_refused_not_sent_to_rag():
+    """Topics in a Drive file are not activity_facts. RAG would either invent
+    slices or (as happened live) claim the docs don't contain a pie tool."""
+    llm = FakeLLM(_spec(intent="qa", metric=None))
+    intent = resolve.classify_question(
+        "Prepare a pie chart on all the topics addressed in the doc "
+        "for artificial intelligence",
+        providers=["google"],
+        llm=llm,
+        fail_open=True,
+    )
+    assert intent.kind == "refuse"
+    assert intent.spec is None
+    assert "file" in (intent.message or "").lower()
+
+
+def test_org_chart_is_still_a_document_question():
+    llm = FakeLLM(_spec(intent="qa", metric=None))
+    intent = resolve.classify_question(
+        "Where is the org chart?",
+        providers=["google"],
+        llm=llm,
+        fail_open=True,
+    )
+    assert intent.kind == "qa"
+
+
 def test_a_chart_intent_resolves_to_the_metric_and_requested_shape():
     llm = FakeLLM(
         _spec(
