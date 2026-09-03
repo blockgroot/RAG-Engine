@@ -109,10 +109,14 @@ def _catalogue(metrics: list[registry.Metric]) -> str:
 
 
 def _refusal(metrics: list[registry.Metric]) -> str:
-    labels = ", ".join(sorted(m.label.lower() for m in metrics))
+    labels = ", ".join(sorted(m.label.lower() for m in metrics)) or "nothing yet"
     return (
-        "I can't chart that from your connected apps. What I can show: "
-        f"{labels}."
+        "I can't chart that. Charts count activity from your connected apps "
+        "(edits, pull requests, tasks, conversations) — not topics or themes "
+        "inside a document.\n\n"
+        f"What I can show: {labels}.\n\n"
+        "If you want what's in a file, ask as a normal question without "
+        "asking for a pie, bar, or line chart."
     )
 
 

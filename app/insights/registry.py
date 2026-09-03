@@ -183,6 +183,18 @@ _add(Metric(
     unit="days (median)",
     caveat="Merged pull requests only - an open one has no lead time. " + _GITHUB_CAP,
 ))
+_add(Metric(
+    key="commits_by_author",
+    provider="github",
+    label="Commits",
+    chart="bar",
+    kind="commit",
+    dims=("actor", "subject"),
+    unit="commits",
+    caveat=(
+        "Newest commits per repo, a small recent slice — not the full history."
+    ),
+))
 
 # ---------------------------------------------------------------------------
 # Linear -- from the adapter's structured issue feed, recorded on the ingest

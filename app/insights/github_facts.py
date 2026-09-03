@@ -42,6 +42,7 @@ WINDOW_DAYS = 180
 KIND_OPENED = "pr_opened"
 KIND_MERGED = "pr_merged"
 KIND_REVIEWED = "pr_reviewed"
+KIND_COMMIT = "commit"
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,21 @@ def record_github_facts(
                 continue
             rows.extend(_review_rows(org_id, workspace_id, pull, reviews))
 
+        try:
+            commits = reader.list_commits(
+                repo.full_name,
+                since=since.isoformat(),
+                limit=settings.max_commits,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "insights: could not read commits of %s", repo.full_name,
+                exc_info=True,
+            )
+            commits = []
+        for commit in commits or []:
+            rows.extend(_commit_rows(org_id, workspace_id, commit))
+
     written = _write(rows, workspace_id)
     logger.info(
         "insights: recorded %s GitHub facts across %s repos for org %s%s",
@@ -176,6 +192,19 @@ def _review_rows(org_id, workspace_id, pull, reviews) -> list[tuple]:
             f"{pull.repo}#{pull.number}:{review.reviewer}",
         ))
     return rows
+
+
+def _commit_rows(org_id, workspace_id, commit) -> list[tuple]:
+    """One row per commit. Skipped when GitHub gave no date — stamping now()
+    would pile undated commits onto today's bar."""
+    if not getattr(commit, "date", None) or not getattr(commit, "sha", None):
+        return []
+    return [(
+        org_id, workspace_id, PROVIDER, KIND_COMMIT,
+        commit.author, commit.repo, None,
+        commit.date, None, commit.url,
+        f"{commit.repo}:{commit.sha}",
+    )]
 
 
 def _write(rows: list[tuple], workspace_id: str | None) -> int:

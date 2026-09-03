@@ -45,7 +45,11 @@ class InsightsAgent(Agent):
         parsed = _as_spec(spec)
         if parsed is None:
             return AgentResponse(
-                answer="I can't chart that.",
+                answer=(
+                    "I can't chart that. Charts count activity from your "
+                    "connected apps, not topics inside a document. Ask as a "
+                    "normal question if you want the file's contents."
+                ),
                 grounded=False,
                 source=SOURCE_NONE,
                 chart=None,

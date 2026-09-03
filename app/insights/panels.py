@@ -51,6 +51,7 @@ PANELS: dict[str, tuple[Panel, ...]] = {
         Panel("prs_merged", "Who merges them", "bar", group_by="actor"),
         Panel("pr_reviewers", "Who reviews them", "bar", group_by="actor"),
         Panel("pr_lead_time", "Days from raised to merged", "line"),
+        Panel("commits_by_author", "Commits by author", "bar", group_by="actor"),
     ),
     "linear": (
         Panel("issues_completed", "Tasks completed", "line"),

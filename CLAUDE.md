@@ -320,6 +320,8 @@ facts, a space's Ask reads that space only — no separate company dashboard.
 - **`InsightsAgent` is a LangGraph node like GitHub** — no RAG; SQL via
   `store.run_metric`. `choose_agent` routes it *before* the cosine probe. A
   visual we cannot count still goes here so retrieval cannot invent a number.
+  An explicit pie/bar/line of something we don't store is a refusal that names
+  what IS countable and tells them to re-ask without a chart for the file.
 - **The invariant: numbers come from SQL over `activity_facts`; the LLM never
   produces a number, an axis or a date.** A prose answer that is wrong hedges
   and cites; a bar chart that is wrong reads as a *measurement*, and neither
@@ -394,6 +396,8 @@ facts, a space's Ask reads that space only — no separate company dashboard.
   is OURS — GitHub reports a merged PR as *closed*, so counting off its state
   counts abandoned branches. Reviews cost ONE call per PR, so the PR set is
   capped first and only the newest `max_reviewed_pull_requests` are reviewed.
+  Commits are the same facts-only path (`commits_by_author`, newest
+  `max_commits` per repo) — still no vectors.
 - **Linear's `subject` is the TEAM**, so grouping by subject *is* "by team" —
   which is what answers the request this feature came from. Completion is
   decided by `state_type == "completed"` (Linear's own lifecycle category), not
@@ -721,7 +725,7 @@ Selection (OpenRouter, ~5 models, per-request routing); automatic freshness (int
 Visual Representation, **all five phases** — `activity_facts`, metric registry
 + panels, charts **in Ask** (no Visualizations tab; `/visualizations` redirects
 to `/chat`; `InsightsAgent` + `classify_question` rather than a keyword regex), editor capture at sync time, GitHub PR/merge/review facts on a
-facts-only sync branch, Linear completion-by-team on the ingest job, Slack
+facts-only sync branch (PRs plus commits), Linear completion-by-team on the ingest job, Slack
 conversations from the index, the constrained resolver + personal pins API, and
 Forms sentiment (never indexed, owners-only, 5-response floor).
 

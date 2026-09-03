@@ -59,11 +59,13 @@ def _pr(number, *, author="ada", merged_by=None, created_days=10,
 class FakeReader:
     """Only what github_facts actually calls."""
 
-    def __init__(self, pulls, reviews=None, truncated=False):
+    def __init__(self, pulls, reviews=None, truncated=False, commits=None):
         self._page = PullRequestPage(items=tuple(pulls), truncated=truncated)
         self._reviews = reviews or {}
+        self._commits = commits or []
         self.repos_listed = 0
         self.review_calls: list[int] = []
+        self.commit_calls: list[str] = []
 
     def list_repos(self):
         from app.githublive.repos import RepoRef
@@ -77,6 +79,10 @@ class FakeReader:
     def list_reviews(self, repo, pull_number):
         self.review_calls.append(pull_number)
         return self._reviews.get(pull_number, [])
+
+    def list_commits(self, repo, *, path=None, since=None, limit=10):
+        self.commit_calls.append(repo)
+        return list(self._commits)
 
 
 def _total(key, org_id, **kw):
@@ -169,6 +175,68 @@ def test_an_unmerged_pull_request_is_never_counted_as_merged(org):
 
     assert _total("prs_opened", org) == 1
     assert _total("prs_merged", org) == 0
+
+
+def test_commits_are_counted_by_author_and_never_create_documents(org):
+    from app.githublive.base import CommitSummary
+
+    when = datetime.now(timezone.utc) - timedelta(days=2)
+    reader = FakeReader(
+        [_pr(1, merged_days=None)],
+        commits=[
+            CommitSummary(
+                repo="acme/api",
+                sha="aaa111",
+                message="fix login",
+                author="ada",
+                date=when,
+                url="https://github.com/acme/api/commit/aaa111",
+            ),
+            CommitSummary(
+                repo="acme/api",
+                sha="bbb222",
+                message="tweak copy",
+                author="ada",
+                date=when,
+                url="https://github.com/acme/api/commit/bbb222",
+            ),
+        ],
+    )
+    github_facts.record_github_facts(org, workspace_id=None, reader=reader)
+
+    assert reader.commit_calls == ["acme/api"]
+    rows = store.run_metric(
+        "commits_by_author", org_id=org, workspace_id=None,
+        period="month", days=365, group_by="actor",
+    )
+    assert {r.group: r.value for r in rows} == {"ada": 2.0}
+
+    with get_connection() as conn:
+        docs = conn.execute(
+            "SELECT count(*) FROM documents WHERE org_id = %s AND source_provider = 'github'",
+            (org,),
+        ).fetchone()[0]
+    assert docs == 0
+
+
+def test_a_commit_without_a_date_is_not_stamped_today(org):
+    from app.githublive.base import CommitSummary
+
+    reader = FakeReader(
+        [],
+        commits=[
+            CommitSummary(
+                repo="acme/api",
+                sha="no-date",
+                message="mystery",
+                author="ada",
+                date=None,
+                url="https://github.com/acme/api/commit/no-date",
+            ),
+        ],
+    )
+    github_facts.record_github_facts(org, workspace_id=None, reader=reader)
+    assert _total("commits_by_author", org) == 0
 
 
 def test_a_merge_with_no_named_merger_still_counts_the_merge(org):
