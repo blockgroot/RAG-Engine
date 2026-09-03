@@ -603,6 +603,16 @@ DEFAULT_GOOGLE_OAUTH_SCOPES = (
     "https://www.googleapis.com/auth/drive.readonly "
     "https://www.googleapis.com/auth/documents.readonly"
 )
+# Reading Google Forms RESPONSES needs its own scope, and it is deliberately
+# NOT in the default above: adding a scope invalidates nothing technically, but
+# an existing token does not have it, so every already-connected tenant would
+# have to reconnect before Drive worked again the next time consent was
+# re-checked. Opt in with GOOGLE_FORMS_ENABLED=true, which appends it here --
+# the one place scopes are assembled -- and then reconnect Google once.
+#
+# `drive.readonly` already covers FINDING the forms (the Forms API has no
+# listing endpoint), so this is the only addition needed.
+GOOGLE_FORMS_SCOPE = "https://www.googleapis.com/auth/forms.responses.readonly"
 # Ceilings on the Drive folder crawl (see GoogleSettings). 500 folders is far
 # more than a policy folder needs while still bounding the number of sequential
 # Google API calls a single request can issue; 2000 native Docs likewise. Both
@@ -637,14 +647,26 @@ class GoogleSettings:
     # walk itself, don't just cap what it produces.
     max_walk_folders: int = DEFAULT_GOOGLE_MAX_WALK_FOLDERS
     max_documents: int = DEFAULT_GOOGLE_MAX_DOCUMENTS
+    #: Whether form-response reading (sentiment charts) is enabled. Off by
+    #: default because turning it on requires every tenant to reconnect
+    #: Google, which is a deploy decision rather than a code one.
+    forms_enabled: bool = False
 
     @classmethod
     def from_env(cls) -> "GoogleSettings":
+        forms_enabled = env_bool("GOOGLE_FORMS_ENABLED", False)
+        scopes = os.getenv("GOOGLE_OAUTH_SCOPES", DEFAULT_GOOGLE_OAUTH_SCOPES)
+        # Appended rather than replacing the default, and only when asked, so
+        # an explicit GOOGLE_OAUTH_SCOPES override still gets Forms access if
+        # the flag is on -- otherwise the two settings would silently disagree.
+        if forms_enabled and GOOGLE_FORMS_SCOPE not in scopes:
+            scopes = f"{scopes} {GOOGLE_FORMS_SCOPE}"
         return cls(
             client_id=os.getenv("GOOGLE_CLIENT_ID"),
             client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
             redirect_uri=os.getenv("GOOGLE_REDIRECT_URI"),
-            scopes=os.getenv("GOOGLE_OAUTH_SCOPES", DEFAULT_GOOGLE_OAUTH_SCOPES),
+            scopes=scopes,
+            forms_enabled=forms_enabled,
             max_walk_folders=int(
                 os.getenv("GOOGLE_MAX_WALK_FOLDERS") or DEFAULT_GOOGLE_MAX_WALK_FOLDERS
             ),
@@ -779,6 +801,15 @@ class GitHubLiveSettings:
     patch_max_bytes: int = 4_000
     max_files_per_commit: int = 25
     max_commits: int = 20
+    # Charts read pull requests, and reviews cost ONE call per pull request --
+    # so the pull-request set is what actually bounds the API spend. 100 pull
+    # requests + their reviews is ~101 calls per repo per sync, against
+    # GitHub's 5,000/hour installation limit.
+    max_pull_requests: int = 100
+    # Reviews are fetched only for this many of them, newest first. A chart of
+    # who reviews is stable well before 100 samples, and this is the difference
+    # between ~30 calls and ~130.
+    max_reviewed_pull_requests: int = 30
     max_attempts: int = 3
 
     @classmethod
@@ -790,6 +821,10 @@ class GitHubLiveSettings:
             patch_max_bytes=int(os.getenv("GITHUB_PATCH_MAX_BYTES", "4000")),
             max_files_per_commit=int(os.getenv("GITHUB_MAX_FILES_PER_COMMIT", "25")),
             max_commits=int(os.getenv("GITHUB_MAX_COMMITS", "20")),
+            max_pull_requests=int(os.getenv("GITHUB_MAX_PULL_REQUESTS", "100")),
+            max_reviewed_pull_requests=int(
+                os.getenv("GITHUB_MAX_REVIEWED_PULL_REQUESTS", "30")
+            ),
             max_attempts=int(os.getenv("GITHUB_LIVE_MAX_ATTEMPTS", "3")),
         )
 

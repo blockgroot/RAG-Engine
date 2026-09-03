@@ -31,6 +31,11 @@ class SourceRef:
     title: str
     last_modified: datetime | None = None
     source_uri: str | None = None  # link back to the original (e.g. Notion URL)
+    # Who last edited it, as the source names them. Optional because not every
+    # source exposes one, and a listing must stay cheap -- an adapter that
+    # would need an extra request per document should leave this None rather
+    # than turning one listing into N calls.
+    last_editor: str | None = None
 
 
 @dataclass(frozen=True)
@@ -42,6 +47,7 @@ class SourceDocument:
     content: str
     source_uri: str | None = None
     last_modified: datetime | None = None
+    last_editor: str | None = None
 
 
 class SourceAdapter(ABC):

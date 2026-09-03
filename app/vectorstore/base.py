@@ -257,6 +257,7 @@ class VectorStore(ABC):
         last_modified: "datetime | None" = None,
         workspace_id: str | None = None,
         tags: list[str] | None = None,
+        last_editor: str | None = None,
     ) -> str:
         """Replace any prior copy of this source page, then store the new chunks.
 
@@ -278,6 +279,7 @@ class VectorStore(ABC):
         last_modified: "datetime | None" = None,
         workspace_id: str | None = None,
         tags: list[str] | None = None,
+        last_editor: str | None = None,
     ) -> str:
         """Record a source page with no chunks (empty / index-only after fetch).
 

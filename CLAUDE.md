@@ -306,6 +306,142 @@ dropdown is byte-identical to pre-feature behaviour.
   fact. `null` on the default path: naming the deployment's model to every
   member is noise, not provenance.
 
+**Visual Representation (`app/insights/`, `frontend/app/visualizations/`)** — a
+member sees curated charts per connected source, scoped to the company or ONE
+space, filtered weekly/monthly/quarterly.
+- **The invariant: numbers come from SQL over `activity_facts`; the LLM never
+  produces a number, an axis or a date.** A prose answer that is wrong hedges
+  and cites; a bar chart that is wrong reads as a *measurement*, and neither
+  the gate nor the strict prompt can check arithmetic. So there is **no image
+  generation and no charting agent** — a PNG of numbers cannot be filtered,
+  re-scoped or clicked through, which is the entire point of the section.
+- **`registry.py` is the semantic layer** — 2 hardcoded `Metric`s so far (Notion + Drive), each a
+  FIXED aggregate fragment plus whitelisted `dims`. Same discipline as
+  `llm/catalog.py`. `tests/test_insights_registry.py` forbids `{`, `%` or `;`
+  in any fragment and requires every `DIMENSIONS` value to be a bare
+  identifier: `period` and `group_by` are grammatically identifiers, so they
+  cannot be bound as `%s` and are spliced — that whitelist is the only thing
+  between them and an injection. `PERIODS` is closed at week/month/quarter.
+- **A `Metric` is a definition, a `Panel` (`panels.py`) is a VIEW of one.**
+  "Top editors" is `docs_changed` grouped by `actor`, not a second metric —
+  otherwise every grouping is a duplicate definition to keep in agreement.
+  `panels.validate()` (test-time, not import-time) checks each panel against
+  the metric it claims.
+- **Facts are derived from the index, not from a second API call**
+  (`facts.py`, one `INSERT ... SELECT` over `documents`). Idempotent via the
+  two PARTIAL unique indexes; an edit **moves** the fact (`DO UPDATE`) because
+  a page edited five times is one page. Hooked at `worker.py`'s
+  `_record_insight_facts` next to the answer-cache clear, running
+  unconditionally on success — which is what makes it **self-backfilling**,
+  with no separate backfill script. Its own `try/except`: a stale chart is a
+  stale chart, but failing a finished job turns it into a retry loop.
+- **The author is captured at SYNC time, never at view time**
+  (`documents.source_last_editor`). Free where the source already tells us —
+  Drive's `lastModifyingUser(displayName)` rides along in the `files.list` we
+  already make; Notion's `last_edited_by` is an **id**, so one cached
+  `GET /users/{id}` per DISTINCT person (the `slack.py::_display_name` trick).
+  An unknown editor is `None`, never a placeholder: the page still counts, it
+  just leaves the editor breakdown, because crediting the wrong person is worse
+  than a gap. **Authors are NOT backfillable** — never captured — so every
+  panel reports `first_fact_at` and the UI renders "Measured since <date>";
+  without it an axis silently starts on deploy day and reads as if nobody
+  worked before.
+- **`points: null` means the panel FAILED, `[]` means it ran with nothing to
+  show** — and the UI says three different things ("nothing connected",
+  "waiting for the first sync", "no activity in this window"). Collapsing
+  those is what makes a dashboard untrustworthy. One broken panel reports
+  itself rather than blanking the page.
+- **`/insights/dashboard` is ONE round trip** for every panel: six panels
+  firing six requests is six cold starts on a free instance, and a dashboard
+  arriving in pieces reads as broken rather than slow.
+- Member-level like `/schedulers` — a chart aggregates rows the asker can
+  already retrieve in prose, so `require_admin` would be theatre. A space
+  scope goes through `assert_member` and a non-member gets **403, never an
+  empty chart**: empty is a claim about content they may not have.
+  `scopes.py` is deliberately NOT `_connected_providers` — that one omits
+  `last_sync_at`/`needs_reauth` on purpose, and freshness needs exactly those.
+- **Freshness renders FIRST**, and `needs_reauth` is separate from an old date:
+  auto-sync skips a dead token entirely, so "last synced 6 days ago" invites
+  someone to wait for a sync that can never happen.
+- **Charts are hand-rolled SVG** (`frontend/components/Chart.tsx`) — no chart
+  library. This frontend has no UI kit; a 325MB dependency already cost a
+  deploy once. A grouped bar chart renders as a **ranked leaderboard**, not one
+  bar per person per bucket. One bucket is a dot, not a divide-by-zero.
+- **Where each provider's facts are written is NOT arbitrary.** Indexed
+  providers derive `doc_changed` from `documents` (`facts.py`). GitHub uses a
+  **facts-only sync branch** (`autosync.record_due_facts` →
+  `github_facts.py`): it has no ingestion job, so `UNSYNCABLE_PROVIDERS` stays
+  true and `FACTS_ONLY_PROVIDERS` names it too — both are right. Linear and
+  Forms ride the **ingest job's** success hook, because they *also* ingest: on
+  the tick the ingest path's `_stamp_attempted` would already have made the
+  connection not-due, so their facts would silently never run. Linear also
+  needs the built adapter, which only the job has.
+- **GitHub keeps three people apart** — `pr_opened` (author), `pr_merged`
+  (`merged_by`), `pr_reviewed` (reviewer), never one "activity by person"
+  count: "ada did 12 things" is not a fact anyone asked for. `state="merged"`
+  is OURS — GitHub reports a merged PR as *closed*, so counting off its state
+  counts abandoned branches. Reviews cost ONE call per PR, so the PR set is
+  capped first and only the newest `max_reviewed_pull_requests` are reviewed.
+- **Linear's `subject` is the TEAM**, so grouping by subject *is* "by team" —
+  which is what answers the request this feature came from. Completion is
+  decided by `state_type == "completed"` (Linear's own lifecycle category), not
+  the state NAME, which breaks when a team renames "Done"; `canceled` is
+  terminal but is never a completion.
+- **Slack charts come from the index and say so.** Ingest stores *threads* and
+  `SLACK_MIN_THREAD_CHARS` drops short ones, so the counts are conversations
+  and a FLOOR — every Slack metric's `caveat` states both. `subject` is the
+  channel, extracted in SQL from the `#channel: snippet` title (per-provider,
+  so a Notion page called "Q3: goals" keeps its whole title), which also means
+  a renamed channel corrects itself on the next sync. Attribution rides
+  `fetch_document`, **never the listing**: the listing is also change detection
+  and made zero `users.info` calls before charts existed.
+- **Forms sentiment is the ONE metric whose numbers begin with an LLM**, and it
+  is fenced hard. Responses are **never indexed** (`app/sources/google_forms.py`
+  is not a `SourceAdapter`) — embedding a survey answer would make "what did
+  Ada say about management?" answerable, the opposite of what a survey
+  promises. Each response is classified ONCE to one label from a fixed set, on
+  the **aux** endpoint, and **the response text is discarded**: only the label,
+  the score and the question survive, with no respondent handle at all. A
+  failed classification is *missing data*, never "neutral" — neutral would drag
+  every chart to the middle and make a broken endpoint look like a calm
+  workforce. `DO NOTHING` on conflict, so a label never drifts as models
+  change. There is deliberately **no single company sentiment score**.
+- **Two structural protections on sentiment**, not conventions:
+  `min_group_count=5` suppresses small buckets **in SQL**, and `owners_only`
+  keeps it to org admins and space owners. The floor counts the **TOPIC**, not
+  each label — a diverging bar splits a topic across five labels, so a plain
+  `HAVING count(*)` hid topics with plenty of responses (caught by a test, not
+  in review); it is summed with a window function, hence the subquery. A gated
+  panel is **omitted**, not returned empty, and the ask box says "can't chart
+  that here" rather than "not allowed" — the latter confirms sentiment is being
+  collected to exactly the people it is collected on.
+- **The Forms OAuth scope is opt-in** (`GOOGLE_FORMS_ENABLED` appends
+  `forms.responses.readonly` in `GoogleSettings.from_env`). Not in the default:
+  an already-connected tenant does not have it, so defaulting it on would force
+  every tenant to reconnect. A 401/403 from the Forms API says **"reconnect"**,
+  because that is the overwhelmingly likely cause and "403" sends someone
+  hunting a permissions bug that is not there.
+- **`Metric.series_by` is a SECOND fixed grouping**, whitelisted through
+  `DIMENSIONS` like `dims`. Only for charts that genuinely need two dimensions
+  (a diverging bar is topic BY label); fixed per metric rather than requestable.
+- **The ask box (`resolve.py`) is a question-to-spec resolver, not a chatbot.**
+  The model SELECTS a registry key and nothing else — never SQL, never a
+  column, never a number — and everything it returns is validated, so a
+  hallucination costs a refusal that names what IS available. Only metrics in
+  the caller's scope are offered, because offering an unreachable one invites
+  the model to pick it. **Validation is the gate, not the prompt** — a test
+  assumes the prompt LOST and asserts the outcome is still a refusal. A missing
+  `period` defaults; an unknown one falls back, because `period` is spliced
+  into `date_trunc` and this layer must never hand `run_metric` one. A refusal
+  is a **200** with `charted: false`: "here is what I can show" is an answer,
+  not an error. A follow-up uses `patch_spec`, which cannot change the metric.
+- **Pins are personal** (`insight_pins`, scoped `(org_id, user_id)` like
+  `schedulers`) and store the SPEC, never the numbers — re-running is one
+  `GROUP BY`, and snapshotting would freeze a chart meant to stay current (the
+  opposite of `scheduler_reports`, which snapshots *because* a report is a
+  record of one moment). Validated against the registry on write: a pin is the
+  one place a bad value would PERSIST rather than fail once.
+
 ## 4. Layout
 
 ```
@@ -318,12 +454,15 @@ app/ingestion/ preprocess, chunk, contextualize, pipeline  (orchestrator)
 app/rag/      pipeline, prompts, retrieval, query_normalize, summary_fold, …
 app/memory/   org-scoped conversation history + last-retrieval
 app/sources/  SourceAdapter: notion, google_drive, slack, linear + factory
+              + google_forms.py (live reads, NOT an adapter — never indexed)
 app/githublive/ GitHub's whole data path — live reads, no vectors
 app/agent/    Agent + per-source agents + orchestration (LangGraph) + routing
 app/security/ crypto, untrusted (scrub), rate_limit, client_ip
 app/auth/     OAuth providers, credentials, users, magic_link, session, email
 app/jobs/     ingestion queue + worker + scheduler_queue + autosync
 app/llm/      + pacing.py (rate-limit headroom for interactive calls)
+app/insights/  registry + panels + store (SQL) + facts + github_facts +
+              linear_facts + sentiment + scopes + resolve (ask box) + pins
 app/workspaces/ sub-workspace CRUD + membership (assert_member)
 app/schedulers/ store, activity (live "since T"), prompts, runner, worker
 app/api/      FastAPI — deps (session/org_id), auth, admin, chat, workspaces,
@@ -405,6 +544,45 @@ frontend/ Next.js 15 portal · tests/ pytest
   confusing red run.
 - The grounded prompt is ~2.3k tokens, 96% fixed prefix, already ordered for
   provider caching. **Never move CONTEXT/QUESTION earlier.**
+
+**Charts**
+- **`python -m app.db.migrate` does NOTHING** — `migrate.py` has no `__main__`
+  block, so it imports the module and exits silently. Call `apply_schema()`.
+  Cost: one "why is the table missing" detour.
+- **A fresh local Postgres makes the suite fast.** `brew install pgvector` +
+  `brew services start postgresql@17`, then `createdb handbook_dev` and
+  `apply_schema()`; `DATABASE_URL=postgresql://localhost/handbook_dev pytest …`
+  wins because `conftest`'s `load_dotenv()` does not override the environment.
+  The insights suite is 0.1s local vs minutes against remote Supabase.
+- **`doc_staleness` and `corpus_size` are deliberately NOT registry metrics.**
+  Staleness needs the LATEST fact per document (a page edited five times is one
+  page) — a `DISTINCT ON`, not a `GROUP BY` over a window — and `corpus_size`
+  counts `documents`, not `activity_facts`. Forcing either into `run_metric`
+  makes one function mean two things.
+- **A `documents` INSERT needs `external_workspace_id`** (NOT NULL) — test
+  fixtures inserting `oauth_connections` rows directly must supply it.
+- `invite_member` returns a **`User`**, not an id; `create_workspace` wants
+  `.id`. Passing the object raises "cannot adapt type 'User'".
+- **A suppression floor over TWO dimensions is not `HAVING count(*)`.** A
+  diverging bar splits each topic across five sentiment labels, so a per-row
+  floor hid topics that had plenty of responses. It must sum across the series
+  (`sum(value) OVER (PARTITION BY bucket, "group")`), and a window cannot
+  appear in HAVING — hence `store._floored`'s subquery. `"group"` is a
+  reserved word and must be quoted.
+- **Adding an author to a LISTING is not free even when the name is cached.**
+  Slack's `list_documents` is also the change-detection path and made zero
+  `users.info` calls; attributing there added one per distinct author to every
+  "Check". `fetch_document` already resolves the name, and the pipeline prefers
+  `doc.last_editor`, so the attribution lands for nothing. An existing Slack
+  test caught it by rejecting the unexpected call.
+- **`panels.validate()` catches a panel naming a metric that does not exist.**
+  It caught `pr_authors`/`pr_mergers` being written as metrics when they are
+  `prs_opened`/`prs_merged` grouped by `actor`. Keep panels and metrics
+  distinct or every grouping becomes a duplicate definition.
+- **A scrubbed-to-empty survey response is dropped, not classified.** That is
+  `untrusted.py` failing closed, and it means the response most certainly an
+  attack produces no data point. Correct, and worth knowing before diagnosing
+  "why is this response missing".
 
 **Memory / performance**
 - **The BGE-M3 tokenizer was 325MB — 64% of a 512MB box.** Chunking uses a
@@ -502,7 +680,9 @@ partial unique indexes: org-wide vs workspace; `sync_requested_at` webhook flag
 `github_install_pending` · `query_answer_cache` · `api_rate_counters` ·
 `workspaces` / `workspace_members` · `org_signup_requests` · `schedulers`
 (scoped by `org_id` **and** `user_id`, unlike every other tenant table; `model` NULL = the configured default) ·
-`scheduler_reports` (same `(org_id, user_id)` scoping; snapshots its labels
+`activity_facts` (the ONLY numeric substrate for charts; two partial unique
+indexes on `external_id`, org-wide vs workspace) · `insight_pins` (personal,
+`(org_id, user_id)`; stores the spec, never the numbers) · `scheduler_reports` (same `(org_id, user_id)` scoping; snapshots its labels
 rather than joining, so an archived report survives a rename or a deleted
 space — it cascades only from the scheduler, org and user).
 
@@ -525,9 +705,38 @@ per-source agents + LangGraph routing; golden-set eval in CI (+ nightly
 RAGAS); identity/OAuth/admin/ingestion queue/HTTP API/streaming chat; Next.js
 portal; Workspace-within-a-Workspace; signup-approval queue; injection,
 latency, security and eval hardening; the Activity Scheduler; Multi-Model
-Selection (OpenRouter, ~5 models, per-request routing); automatic freshness (interval + webhook-flag sync, external tick, LLM pacing).
+Selection (OpenRouter, ~5 models, per-request routing); automatic freshness (interval + webhook-flag sync, external tick, LLM pacing);
+Visual Representation, **all five phases** — `activity_facts`, metric registry
++ panels, member-scoped dashboard API, `/visualizations` with hand-rolled SVG
+charts, editor capture at sync time, GitHub PR/merge/review facts on a
+facts-only sync branch, Linear completion-by-team on the ingest job, Slack
+conversations from the index, the constrained ask box + personal pins, and
+Forms sentiment (never indexed, owners-only, 5-response floor).
 
 **Pending / known gaps**
+- Charts: **the Google Forms path has never run against a real form.** The
+  Forms API calls, the `mimeType` listing and the scope behaviour are written
+  from the documented shapes and tested against a fake reader only. Enabling
+  `GOOGLE_FORMS_ENABLED` also requires every tenant to reconnect Google, so
+  this is the one part of the feature that must be walked through live before
+  it is trusted. Plan: `docs/plans/2026-09-02-visual-representation.md`.
+- Charts: **no frontend test infrastructure** — `Chart.tsx` (including the
+  diverging bar) and `/visualizations` are covered by `tsc --noEmit` only,
+  never a rendered assertion. Do not add a React test stack as a side effect
+  of a chart.
+- Charts: **no browser click-through yet** — the org-member vs space-member
+  difference and the sentiment gate are asserted at the API, not in a real
+  page load.
+- Charts still deferred, each with the reason in the code: `doc_staleness` and
+  `open_pr_age` (need `DISTINCT ON`, a different query shape from
+  `run_metric`); the PR **cycle-time breakdown** (coding → waiting → in review
+  → merge, the highest-value engineering chart, needs review timestamps *and*
+  first-commit dates: two more calls per PR); Slack `active_hours` (needs a
+  day×hour heatmap `Chart.tsx` cannot draw) and `thread_response_time` (the
+  index stores a thread, not its replies).
+- Charts: **`first_fact_at` starts on deploy day for authorship.** Counts
+  backfill from `source_last_modified`; author names cannot — never captured.
+  The UI says "Measured since <date>", which is the honest floor, not a fix.
 - Scheduler: **email delivery is unverified — `console` only** (a failed send
   now costs only the notification: the report is stored and readable in-app
   either way).

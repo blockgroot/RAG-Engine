@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from ..config.settings import IngestSanitizeSettings, NotionSettings
 from ..core.exceptions import ConfigurationError, SourceError
 from .base import SourceAdapter, SourceDocument, SourceRef
+
+logger = logging.getLogger(__name__)
 
 _INDENTING = {"bulleted_list_item", "numbered_list_item", "to_do", "toggle"}
 
@@ -79,6 +82,11 @@ class NotionAdapter(SourceAdapter):
         self._settings = settings
         self._token = resolved
         self._client = Client(auth=resolved)
+        # Notion's page objects carry `last_edited_by` as an ID only, so a name
+        # costs one `GET /users/{id}` per DISTINCT person -- cached for the life
+        # of the adapter, the same trick `slack.py::_display_name` uses. A
+        # workspace of 500 pages edited by 8 people is 8 calls, not 500.
+        self._editor_names: dict[str, str] = {}
 
     def list_documents(self) -> list[SourceRef]:
         from notion_client.helpers import iterate_paginated_api
@@ -96,6 +104,7 @@ class NotionAdapter(SourceAdapter):
                     title=_page_title(page),
                     last_modified=_parse_dt(page.get("last_edited_time")),
                     source_uri=page.get("url"),
+                    last_editor=self._editor_name(page),
                 )
                 for page in _exclude_index_parents(results)
             ]
@@ -119,7 +128,34 @@ class NotionAdapter(SourceAdapter):
             content=content,
             source_uri=page.get("url"),
             last_modified=_parse_dt(page.get("last_edited_time")),
+            last_editor=self._editor_name(page),
         )
+
+    def _editor_name(self, page: dict) -> str | None:
+        """Who last edited the page, resolved from its `last_edited_by` id.
+
+        Best-effort and cached: a failed lookup returns None rather than
+        failing the whole sync, because a missing editor name costs one row in
+        one chart while a raised error costs the entire ingest. A bot edit
+        resolves to the integration's own name, which is the truth.
+        """
+        editor = page.get("last_edited_by") or {}
+        user_id = editor.get("id")
+        if not user_id:
+            return None
+        if user_id in self._editor_names:
+            return self._editor_names[user_id] or None
+
+        try:
+            user = self._client.users.retrieve(user_id=user_id)
+            name = (user.get("name") or "").strip()
+        except Exception:  # noqa: BLE001 - see docstring
+            logger.debug("Notion users.retrieve(%s) failed", user_id, exc_info=True)
+            name = ""
+        # Cached even when empty, so a permanently unresolvable id is looked up
+        # once per sync rather than once per page.
+        self._editor_names[user_id] = name
+        return name or None
 
     def get_last_modified(self, external_id: str) -> datetime | None:
         try:

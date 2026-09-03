@@ -15,6 +15,7 @@ from ..auth.credentials import (
 from ..config.settings import ContextualSettings, IngestWorkerSettings, env_bool
 from ..core.exceptions import OAuthReauthRequiredError
 from ..ingestion.pipeline import enrich_source_contextual, ingest_source
+from ..insights.facts import DOCUMENT_PROVIDERS, record_document_facts
 from ..sources import build_source_adapter
 from . import queue
 
@@ -36,6 +37,69 @@ def _clear_answer_cache(org_id: str, job_id: str) -> None:
             logger.info("Job %s: cleared %s cached answer(s)", job_id, dropped)
     except Exception as exc:  # noqa: BLE001 - a cache miss beats a failed ingest
         logger.warning("Job %s: could not clear the answer cache: %s", job_id, exc)
+
+
+def _record_insight_facts(
+    org_id: str, provider: str, workspace_id: str | None, adapter=None
+) -> None:
+    """Turn what we just indexed into countable facts. Best-effort, always.
+
+    Runs unconditionally on a successful job rather than only when documents
+    changed, which is what makes it self-backfilling: the first sync after this
+    feature deployed records a fact for every document already in the index,
+    with no separate backfill script to remember to run.
+
+    Two kinds of fact, and the split is not arbitrary:
+
+    - ``doc_changed`` for every indexed provider, derived from `documents`.
+    - Linear's issue facts, which CANNOT come from the index (state, assignee
+      and team live inside chunk prose, not in a column). Recorded here rather
+      than on the sync tick because Linear also ingests: on the tick, the
+      ingest path's ``_stamp_attempted`` would already have made the connection
+      not-due, so they would silently never run. Here, the adapter also already
+      exists, so it costs no extra authentication.
+
+    GitHub reaches neither branch -- it embeds nothing, so it has no job and no
+    documents; its facts come from ``run_facts_tick``.
+
+    Its own try/except because the failure is not the ingest's. A chart going
+    stale is a chart going stale; failing a job that already succeeded would
+    turn it into a retry loop over work that is done.
+    """
+    if provider in DOCUMENT_PROVIDERS:
+        try:
+            record_document_facts(org_id, provider=provider, workspace_id=workspace_id)
+        except Exception:  # noqa: BLE001 - breadth is the point, see docstring
+            logger.warning(
+                "insights: could not record %s facts for org %s", provider, org_id,
+                exc_info=True,
+            )
+
+    if provider == "google":
+        # Form responses are NOT ingested -- putting a survey answer in the
+        # searchable corpus would make "what did Ada say about management?"
+        # answerable, which is the opposite of what a survey promises. They are
+        # classified into a sentiment label and the text is discarded.
+        try:
+            from ..insights.facts import record_form_facts_if_enabled
+
+            record_form_facts_if_enabled(org_id, workspace_id=workspace_id)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "insights: could not classify form responses for org %s", org_id,
+                exc_info=True,
+            )
+
+    if provider == "linear" and adapter is not None:
+        try:
+            from ..insights.linear_facts import record_linear_facts
+
+            record_linear_facts(org_id, workspace_id=workspace_id, adapter=adapter)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "insights: could not record Linear issue facts for org %s", org_id,
+                exc_info=True,
+            )
 
 
 def _contextual_settings_for(provider: str | None) -> ContextualSettings:
@@ -136,6 +200,8 @@ def run_once() -> queue.IngestionJob | None:
         # nothing".
         if result.documents_ingested or result.documents_removed:
             _clear_answer_cache(job.org_id, job.id)
+
+        _record_insight_facts(job.org_id, provider, job.workspace_id, adapter)
 
         if (
             contextual.enabled
@@ -245,6 +311,24 @@ def run_sync_tick() -> int:
         return 0
 
 
+def run_facts_tick() -> int:
+    """Record facts for any due facts-only connection. Never raises.
+
+    Separate from ``run_sync_tick`` because it is a different KIND of sync:
+    GitHub has no ingestion job to enqueue (it embeds nothing), so its
+    freshness comes from writing counters inline. Keeping the two apart is what
+    keeps ``UNSYNCABLE_PROVIDERS`` true -- nothing here can put a GitHub row in
+    ``ingestion_jobs``.
+    """
+    try:
+        from .autosync import record_due_facts
+
+        return record_due_facts()
+    except Exception:  # noqa: BLE001 - must never break the shared worker loop
+        logger.exception("Facts tick failed")
+        return 0
+
+
 def run_external_tick() -> dict[str, int]:
     """One externally-driven pass: reap, sync, run due schedulers.
 
@@ -269,13 +353,19 @@ def run_external_tick() -> dict[str, int]:
         logger.exception("External tick: reap failed")
 
     synced = run_sync_tick()
+    facts = run_facts_tick()
 
     scheduler_settings = SchedulerSettings.from_env()
     schedulers_ran = (
         run_scheduler_tick(scheduler_settings) if scheduler_settings.enabled else 0
     )
 
-    return {"reaped": reaped, "syncs_queued": synced, "schedulers_ran": schedulers_ran}
+    return {
+        "reaped": reaped,
+        "syncs_queued": synced,
+        "facts_recorded": facts,
+        "schedulers_ran": schedulers_ran,
+    }
 
 
 def run_scheduler_tick(settings=None) -> int:
@@ -351,6 +441,9 @@ def run_forever(
             last_maintenance = now
         if now - last_sync >= sync_interval:
             run_sync_tick()
+            # Same cadence: both answer "is this connector current?", and
+            # splitting their timers would mean two freshness stories.
+            run_facts_tick()
             last_sync = now
         if (
             scheduler_settings.enabled

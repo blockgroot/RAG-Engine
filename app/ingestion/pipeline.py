@@ -378,6 +378,7 @@ def ingest_source(
                 last_modified=doc.last_modified or ref.last_modified,
                 workspace_id=workspace_id,
                 tags=tags,
+                last_editor=doc.last_editor or ref.last_editor,
             )
             skipped += 1
             report("indexing", done, total_work)
@@ -422,6 +423,7 @@ def ingest_source(
             last_modified=doc.last_modified or ref.last_modified,
             workspace_id=workspace_id,
             tags=tags,
+            last_editor=doc.last_editor or ref.last_editor,
         )
         doc_ids.append(document_id)
         ingested_external_ids.append(doc.external_id)

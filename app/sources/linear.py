@@ -74,8 +74,11 @@ query RecentIssues($after: String, $filter: IssueFilter) {
       title
       url
       updatedAt
+      createdAt
+      completedAt
       state { name type }
       assignee { name }
+      team { name }
     }
     pageInfo { hasNextPage endCursor }
   }
@@ -196,6 +199,14 @@ class LinearAdapter(SourceAdapter):
                         # backlog | unstarted | started | completed | canceled
                         "state_type": state.get("type") or "",
                         "assignee": assignee.get("name") or "",
+                        # Team and the two lifecycle dates are what turn
+                        # this feed into countable facts: "completed per
+                        # week by team" and cycle time are impossible
+                        # without them, and they ride along in a query we
+                        # already make.
+                        "team": (node.get("team") or {}).get("name") or "",
+                        "created_at": _parse_dt(node.get("createdAt")),
+                        "completed_at": _parse_dt(node.get("completedAt")),
                         "at": _parse_dt(node.get("updatedAt")),
                     }
                 )

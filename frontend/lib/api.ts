@@ -350,6 +350,80 @@ export interface ModelChoice {
   note: string;
 }
 
+// ---------------------------------------------------------------------------
+// Insights (the Visualizations section)
+// ---------------------------------------------------------------------------
+
+export type InsightScope = {
+  /** null is the company, mirroring `workspace_id IS NULL` server-side. */
+  id: string | null;
+  name: string;
+  providers: string[];
+  /** Which of those we can actually chart yet. Reported separately so
+   *  "Slack is connected but has no charts" is visible instead of looking
+   *  like an empty dashboard. */
+  chartable: string[];
+};
+
+export type InsightPanel = {
+  id: string;
+  provider: string;
+  title: string;
+  chart: string;
+  group_by: string | null;
+  unit: string;
+  caveat: string;
+  /** null means the panel failed; [] means it ran and there is nothing to
+   *  show. Those need different copy, so they are different values. */
+  points:
+    | {
+        bucket: string;
+        group: string | null;
+        /** A second dimension, only for charts that need two (a
+         *  diverging bar is topic BY sentiment label). */
+        series?: string | null;
+        value: number;
+      }[]
+    | null;
+  /** Facts only exist from the first sync after this shipped, so a chart
+   *  whose axis starts on deploy day would read as if nobody worked before. */
+  measured_since: string | null;
+};
+
+export type InsightDashboard = {
+  scope: string | null;
+  scope_name: string;
+  period: string;
+  window_days: number;
+  panels: InsightPanel[];
+};
+
+export type InsightAskResult =
+  /** "I can't chart that, here is what I can" is an ANSWER, not an error -
+   *  which is why the failure case is a 200 with a message. */
+  | { charted: false; message: string }
+  | {
+      charted: true;
+      spec: { metric: string; group_by: string | null; period: string };
+      panel: InsightPanel;
+    };
+
+export type InsightPin = {
+  id: string;
+  scope: string | null;
+  metric: string;
+  group_by: string | null;
+  period: string;
+  title: string;
+};
+
+export type ConnectorFreshness = {
+  provider: string;
+  last_sync_at: string | null;
+  needs_reauth: boolean;
+  chartable: boolean;
+};
+
 export const api = {
   signup: (email: string, companyName: string) =>
     request<SignupResponse>("/auth/signup", {
@@ -650,6 +724,43 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ messages }),
     }),
+  // Charts. Member-level like schedulers: a chart aggregates rows the caller
+  // can already retrieve in prose. `scope` is a workspace id, or omitted for
+  // the company - a space the caller is not in returns 403, never an empty
+  // chart, because empty reads as "nothing happened there".
+  listInsightScopes: () =>
+    request<{ scopes: InsightScope[] }>("/insights/scopes").then((r) => r.scopes),
+  getInsightDashboard: (scope: string | null, period: string) =>
+    request<InsightDashboard>(
+      `/insights/dashboard?period=${encodeURIComponent(period)}` +
+        (scope ? `&scope=${encodeURIComponent(scope)}` : "")
+    ),
+  // One turn, no conversation. The model only SELECTS a pre-defined chart -
+  // it never writes SQL and never emits a number, so the worst case is a
+  // refusal that names what is available.
+  askForChart: (question: string, scope: string | null) =>
+    request<InsightAskResult>("/insights/ask", {
+      method: "POST",
+      body: JSON.stringify({ question, scope }),
+    }),
+  listInsightPins: () =>
+    request<{ pins: InsightPin[] }>("/insights/pins").then((r) => r.pins),
+  pinChart: (
+    metric: string,
+    groupBy: string | null,
+    period: string,
+    scope: string | null
+  ) =>
+    request<{ id: string | null }>("/insights/pins", {
+      method: "POST",
+      body: JSON.stringify({ metric, group_by: groupBy, period, scope }),
+    }),
+  unpinChart: (pinId: string) =>
+    request<void>(`/insights/pins/${pinId}`, { method: "DELETE" }),
+  getConnectorFreshness: (scope: string | null) =>
+    request<{ connectors: ConnectorFreshness[] }>(
+      `/insights/freshness${scope ? `?scope=${encodeURIComponent(scope)}` : ""}`
+    ).then((r) => r.connectors),
 };
 
 export { API_BASE_URL };

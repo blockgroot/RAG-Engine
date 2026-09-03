@@ -32,7 +32,16 @@ import httpx
 from ..auth.github_app import GITHUB_API_BASE, github_headers
 from ..config.settings import GitHubLiveSettings
 from ..core.exceptions import SourceError
-from .base import CommitDetail, CommitFile, CommitSummary, GitHubReader, RepoReadme
+from .base import (
+    CommitDetail,
+    CommitFile,
+    CommitSummary,
+    GitHubReader,
+    PullRequest,
+    PullRequestPage,
+    RepoReadme,
+    Review,
+)
 from .repos import InstallationScope, RepoRef, resolve_repo
 
 _RAW_ACCEPT = "application/vnd.github.raw"
@@ -61,6 +70,31 @@ def _truncate(text: str, max_bytes: int) -> tuple[str, bool]:
         return text, False
     encoded = text.encode("utf-8", errors="ignore")[:max_bytes]
     return encoded.decode("utf-8", errors="ignore") + _TRUNCATION_MARKER, True
+
+
+def _pull_request(full_name: str, item: dict) -> PullRequest:
+    """One API object to our shape, keeping the three people distinct.
+
+    ``state`` is OURS, not GitHub's: GitHub reports a merged pull request as
+    "closed", so counting merges off its state would count every abandoned
+    branch as a merge.
+    """
+    user = item.get("user") or {}
+    merger = item.get("merged_by") or {}
+    merged_at = _parse_dt(item.get("merged_at"))
+    number = int(item.get("number") or 0)
+    return PullRequest(
+        repo=full_name,
+        number=number,
+        title=(item.get("title") or "").strip(),
+        author=user.get("login"),
+        merged_by=merger.get("login"),
+        state="merged" if merged_at else str(item.get("state") or "open"),
+        created_at=_parse_dt(item.get("created_at")),
+        merged_at=merged_at,
+        closed_at=_parse_dt(item.get("closed_at")),
+        url=item.get("html_url") or f"https://github.com/{full_name}/pull/{number}",
+    )
 
 
 def _is_safe_sha(sha: str) -> bool:
@@ -201,6 +235,84 @@ class RestGitHubReader(GitHubReader):
                 )
             )
         return summaries
+
+    def list_pull_requests(
+        self,
+        repo: str,
+        *,
+        since: datetime | None = None,
+        limit: int = 100,
+    ) -> PullRequestPage:
+        full_name = resolve_repo(self._scope, repo)
+        cap = max(1, min(int(limit or 100), self._settings.max_pull_requests))
+
+        items: list[PullRequest] = []
+        truncated = False
+        page = 1
+        # Sorted by `updated` descending: GitHub cannot sort on merged_at, and
+        # this is the only ordering that lets a `since` window stop early. It
+        # also means a cap drops the OLDEST end, never a random subset.
+        while len(items) < cap:
+            payload = self._request(
+                f"{GITHUB_API_BASE}/repos/{full_name}/pulls",
+                accept=_JSON_ACCEPT,
+                params={
+                    "state": "all",
+                    "sort": "updated",
+                    "direction": "desc",
+                    "per_page": min(100, cap - len(items)),
+                    "page": page,
+                },
+                what=f"pull requests of {full_name}",
+            ).json() or []
+
+            if not payload:
+                break
+
+            stop = False
+            for item in payload:
+                updated = _parse_dt(item.get("updated_at"))
+                if since and updated and updated < since:
+                    # The listing is newest-first, so everything after this is
+                    # older too -- stop rather than page through history.
+                    stop = True
+                    break
+                items.append(_pull_request(full_name, item))
+
+            if stop or len(payload) < 100:
+                break
+            page += 1
+
+        if len(items) >= cap:
+            # We filled the cap, so there may be more we did not look at. Said
+            # out loud rather than inferred, because a chart built from the
+            # first N while believing it complete is the failure that matters.
+            truncated = True
+
+        return PullRequestPage(items=tuple(items[:cap]), truncated=truncated)
+
+    def list_reviews(self, repo: str, pull_number: int) -> list[Review]:
+        full_name = resolve_repo(self._scope, repo)
+        payload = self._request(
+            f"{GITHUB_API_BASE}/repos/{full_name}/pulls/{int(pull_number)}/reviews",
+            accept=_JSON_ACCEPT,
+            params={"per_page": 100},
+            what=f"reviews on {full_name}#{pull_number}",
+        ).json() or []
+
+        reviews: list[Review] = []
+        for item in payload:
+            user = item.get("user") or {}
+            reviews.append(
+                Review(
+                    repo=full_name,
+                    pull_number=int(pull_number),
+                    reviewer=user.get("login"),
+                    state=str(item.get("state") or ""),
+                    submitted_at=_parse_dt(item.get("submitted_at")),
+                )
+            )
+        return reviews
 
     # -- HTTP --------------------------------------------------------------
 
