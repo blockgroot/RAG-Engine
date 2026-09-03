@@ -1,5 +1,8 @@
+"use client";
+
 import { ChatDonePayload } from "@/lib/sse";
 import { AnswerText } from "./AnswerText";
+import { Chart } from "./Chart";
 import { ProvenanceStripe } from "./ProvenanceStripe";
 
 export interface Message {
@@ -13,6 +16,9 @@ export interface Message {
  * Chat bubble for Ask. Shows the answer plus a small provenance pill
  * (policy vs web vs GitHub) when the stream finishes, and — when the member
  * picked a model — which model actually answered.
+ *
+ * A chart-shaped question is answered from counted facts, not RAG: the SVG
+ * is the measurement; the caption is only the registry title.
  */
 export function ChatMessageView({ message }: { message: Message }) {
   if (message.role === "user") {
@@ -20,6 +26,8 @@ export function ChatMessageView({ message }: { message: Message }) {
   }
 
   const thinking = Boolean(message.streaming && !message.text.trim());
+  const chart = message.done?.chart;
+  const points = chart?.points;
 
   return (
     <div className="chat-bubble chat-bubble-assistant" data-thinking={thinking || undefined}>
@@ -38,10 +46,30 @@ export function ChatMessageView({ message }: { message: Message }) {
       ) : (
         <>
           <AnswerText text={message.text} />
+          {points && points.length > 0 && chart && (
+            <div className="chat-chart">
+              <Chart
+                chart={chart.chart}
+                points={points}
+                period={message.done?.chart_period || "month"}
+                unit={chart.unit}
+              />
+              {chart.caveat && (
+                <p className="muted viz-panel-caveat">{chart.caveat}</p>
+              )}
+              {chart.measured_since && (
+                <p className="muted viz-panel-since">
+                  Measured since{" "}
+                  {new Date(chart.measured_since).toLocaleDateString(undefined, {
+                    day: "numeric",
+                    month: "short",
+                    year: "numeric",
+                  })}
+                </p>
+              )}
+            </div>
+          )}
           {message.streaming && <span className="chat-stream-caret" aria-hidden />}
-          {/* Only when a model was actually selected. On the default path the
-              backend sends null, and naming the deployment's model to every
-              member would be noise, not provenance. */}
           {message.done?.model && (
             <span className="chat-model-tag">Answered by {message.done.model}</span>
           )}

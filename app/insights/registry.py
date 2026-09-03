@@ -20,7 +20,7 @@ from dataclasses import dataclass
 #: cannot render -- a registry entry that resolves to a blank panel is worse
 #: than one that does not exist.
 CHART_TYPES = (
-    "line", "bar", "stacked_bar", "diverging_bar", "histogram", "stat", "table",
+    "line", "bar", "pie", "stacked_bar", "diverging_bar", "histogram", "stat", "table",
 )
 
 #: The ONLY groupings any metric may accept. A ``group_by`` becomes a SQL

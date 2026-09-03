@@ -388,11 +388,11 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const emptyTitle = workspaceId ? "Ask this space" : "Ask your company";
   const emptyCopy =
     connectedNames.length > 0
-      ? `Answers are drawn from ${listCopy(connectedNames)}.`
+      ? `Answers are drawn from ${listCopy(connectedNames)}. Ask for a chart when you want a count — for example, task completion by team.`
       : workspaceId
-        ? "Answers are drawn from the documents connected to this space."
-        : "Leave, benefits, remote work and more — answered from your connected documents.";
-  const composerPlaceholder = "Ask anything about your work…";
+        ? "Answers are drawn from the documents connected to this space. You can also ask for a chart of what this space has recorded."
+        : "Leave, benefits, remote work and more — answered from your connected documents. Ask for a chart when you want a count.";
+  const composerPlaceholder = "Ask a question, or ask for a chart…";
 
   return (
     <AppShell me={me} variant="app">

@@ -53,8 +53,8 @@ def test_a_question_resolves_to_a_registry_metric():
 
 
 def test_the_resolved_spec_carries_the_chart_shape_from_the_registry():
-    """The model does not choose the shape. A grouped count is a leaderboard
-    and an ungrouped one is a line, and that is a property of the data."""
+    """Default shape is a property of the grain: grouped is a leaderboard,
+    ungrouped is a line. The model may pick pie/bar/line when they fit."""
     llm = FakeLLM(_spec(metric="issues_completed", group_by="actor", period="month"))
     spec = resolve.resolve_question("who finished the most?", providers=["linear"], llm=llm)
     assert spec.chart == "bar"
@@ -216,3 +216,76 @@ def test_a_follow_up_cannot_patch_in_an_unknown_dimension():
     )
     with pytest.raises(resolve.CannotChart):
         resolve.patch_spec(previous, group_by="; DROP TABLE activity_facts")
+
+
+# --------------------------------------------------------------------------
+# Ask chat: classifier, not keywords
+# --------------------------------------------------------------------------
+
+
+def test_a_document_question_classifies_as_qa():
+    """Leave policy and 'org chart' must not become a Linear count."""
+    llm = FakeLLM(_spec(intent="qa", metric=None))
+    intent = resolve.classify_question(
+        "How many annual leave days do I get?",
+        providers=["linear"],
+        llm=llm,
+        fail_open=True,
+    )
+    assert intent.kind == "qa"
+    assert intent.spec is None
+
+
+def test_a_chart_intent_resolves_to_the_metric_and_requested_shape():
+    llm = FakeLLM(
+        _spec(
+            intent="chart",
+            metric="issues_completed",
+            group_by="subject",
+            period="month",
+            chart="pie",
+        )
+    )
+    intent = resolve.classify_question(
+        "share of completed tasks by team as a pie",
+        providers=["linear"],
+        llm=llm,
+    )
+    assert intent.kind == "chart"
+    assert intent.spec is not None
+    assert intent.spec.metric == "issues_completed"
+    assert intent.spec.group_by == "subject"
+    assert intent.spec.chart == "pie"
+
+
+def test_pie_without_a_breakdown_falls_back_to_the_default_shape():
+    """A pie of one unnamed slice is not a share of a whole."""
+    llm = FakeLLM(
+        _spec(
+            intent="chart",
+            metric="issues_completed",
+            group_by=None,
+            period="month",
+            chart="pie",
+        )
+    )
+    spec = resolve.resolve_question("tasks over time as a pie", providers=["linear"], llm=llm)
+    assert spec.chart == "line"
+
+
+def test_chat_classifier_fail_open_is_qa_not_a_refusal():
+    """A dead OpenRouter must not block 'how many leave days?'."""
+    class Broken:
+        model = "x"
+        last_usage = None
+
+        def generate(self, prompt, *, max_tokens=None):
+            raise RuntimeError("429")
+
+    intent = resolve.classify_question(
+        "How many annual leave days do I get?",
+        providers=["linear"],
+        llm=Broken(),
+        fail_open=True,
+    )
+    assert intent.kind == "qa"

@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 
 /**
- * Line, bar and stacked-bar charts as plain SVG.
+ * Line, bar, pie and stacked-bar charts as plain SVG.
  *
  * No chart library on purpose. This app has no UI kit and no Tailwind - plain
  * CSS variables and global classes - so a charting framework would become the
@@ -99,9 +99,10 @@ export function Chart({
   // A grouped bar chart is a leaderboard, not a time series: collapse the
   // buckets and rank the series. Without this, "top editors" renders one bar
   // per person per week, which nobody can read.
-  const leaderboard = chart === "bar" && series.length > 0 && series[0] !== "";
+  const grouped = series.length > 0 && series[0] !== "";
+  const leaderboard = chart === "bar" && grouped;
   const ranked = useMemo(() => {
-    if (!leaderboard) return [];
+    if (!grouped) return [];
     return series
       .map((name) => ({
         name,
@@ -109,11 +110,21 @@ export function Chart({
       }))
       .sort((a, b) => b.value - a.value)
       .slice(0, 12);
-  }, [leaderboard, series, buckets, at]);
+  }, [grouped, series, buckets, at]);
 
   if (points.length === 0) return null;
 
   if (chart === "diverging_bar") return <DivergingBar points={points} />;
+
+  if (chart === "pie") {
+    const rows = ranked.length
+      ? ranked
+      : buckets.map((b) => ({
+          name: formatBucket(b, period),
+          value: at(b, series[0] ?? ""),
+        }));
+    return <Pie rows={rows} unit={unit} />;
+  }
 
   if (leaderboard) {
     const max = Math.max(...ranked.map((r) => r.value), 1);
@@ -396,6 +407,68 @@ function DivergingBar({ points }: { points: Point[] }) {
       <p className="chart-note">
         Share of responses. Percentage shown is positive or very positive.
       </p>
+    </div>
+  );
+}
+
+function Pie({
+  rows,
+  unit,
+}: {
+  rows: { name: string; value: number }[];
+  unit?: string;
+}) {
+  const total = rows.reduce((sum, row) => sum + row.value, 0);
+  if (total <= 0) return null;
+  const size = 200;
+  const cx = 100;
+  const cy = 92;
+  const r = 72;
+  let angle = -Math.PI / 2;
+  const slices = rows.map((row, i) => {
+    const sweep = (row.value / total) * Math.PI * 2;
+    const start = angle;
+    angle += sweep;
+    const x1 = cx + r * Math.cos(start);
+    const y1 = cy + r * Math.sin(start);
+    const x2 = cx + r * Math.cos(angle);
+    const y2 = cy + r * Math.sin(angle);
+    const large = sweep > Math.PI ? 1 : 0;
+    const full = sweep >= Math.PI * 2 - 1e-6;
+    return {
+      ...row,
+      color: SERIES_COLORS[i % SERIES_COLORS.length],
+      d: full
+        ? `M ${cx} ${cy - r} A ${r} ${r} 0 1 1 ${cx} ${cy + r} A ${r} ${r} 0 1 1 ${cx} ${cy - r} Z`
+        : `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2} Z`,
+    };
+  });
+  return (
+    <div className="chart-pie">
+      <svg
+        className="chart-svg"
+        viewBox={`0 0 ${size} ${size}`}
+        width={size}
+        height={size}
+        role="img"
+        aria-label="pie chart"
+      >
+        {slices.map((slice) => (
+          <path key={slice.name} d={slice.d} fill={slice.color}>
+            <title>
+              {`${slice.name}: ${slice.value.toLocaleString()}${unit ? ` ${unit}` : ""}`}
+            </title>
+          </path>
+        ))}
+      </svg>
+      <ul className="chart-legend">
+        {slices.map((slice) => (
+          <li key={slice.name}>
+            <span className="chart-swatch" style={{ background: slice.color }} />
+            {slice.name} ({Math.round((slice.value / total) * 100)}%)
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

@@ -746,6 +746,14 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
   box-shadow: var(--shadow-soft);
 }
 .chat-answer { line-height: 1.65; }
+.chat-chart {
+  margin-top: 0.85rem;
+  overflow-x: auto;
+}
+.chat-chart .viz-panel-caveat,
+.chat-chart .viz-panel-since {
+  margin: 0.4rem 0 0;
+}
 .chat-bubble-assistant[data-thinking] {
   background: linear-gradient(135deg, color-mix(in srgb, var(--surface) 88%, var(--accent-soft)), var(--surface));
   border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
@@ -5691,6 +5699,13 @@ a.people-card:hover { color: inherit; }
   height: 0.625rem;
   border-radius: 2px;
   display: inline-block;
+}
+
+.chart-pie {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
 }
 
 /* A grouped bar chart is a leaderboard, so it renders as ranked rows rather

@@ -87,19 +87,19 @@ source-agnostic on purpose.
   *structural*: answers are composed only from tool output, and no tool call,
   a bad arg, or any failure returns the fixed fallback.
 - **Routing is a deterministic LangGraph `StateGraph`** — one node per agent,
-  a plain Python router. No LLM picks the agent. One tool round, never a loop.
+  a plain Python router. No LLM picks the RAG source. One tool round, never a loop.
 - **The agent is CHOSEN by measurement, not by the member** (`app/agent/
   routing.py`). The per-source tabs used to *be* the router; now `choose_agent`
   embeds the question once and takes the best cosine per provider in ONE
-  grouped query. "No LLM picks the agent" is kept, not amended — the corpus
-  answers "which source resembles this?" directly, and keyword routing fails
-  the central case ("what did we decide about pricing?" has no keyword).
-  Precedence: explicit `agent` → a named **authorized** repo → single embedded
-  source (no probe) → best score above the 0.35 gate → code intent → best score
-  anyway → the old workspace/policy default. **A misroute costs a REFUSAL, not
-  a wrong answer** — the routed agent still runs its own gate and strict prompt,
-  which is why a weak best match still goes to the closest source rather than a
-  default agent that never had the content.
+  grouped query. "No LLM picks the *source*" is kept — the corpus answers
+  "which source resembles this?" directly. Chart vs Q&A is the exception:
+  `classify_question` selects a registry metric (connector = `metric.provider`)
+  or falls through to cosine; keywords are not the router. Precedence: explicit
+  `agent` → chart/refuse (`InsightsAgent`) → a named **authorized** repo →
+  single embedded source (no probe) → best score above the 0.35 gate → code
+  intent → best score anyway → the old workspace/policy default. **A misroute
+  costs a REFUSAL, not a wrong answer** — the routed RAG agent still runs its
+  own gate and strict prompt; InsightsAgent's numbers come from SQL.
 - **GitHub needs the two keyword rules because it embeds nothing** — with no
   chunks it can never win a cosine race and would be permanently unreachable.
   A named repo must beat the probe (a Notion page *about* a repo outscores the
@@ -306,15 +306,26 @@ dropdown is byte-identical to pre-feature behaviour.
   fact. `null` on the default path: naming the deployment's model to every
   member is noise, not provenance.
 
-**Visual Representation (`app/insights/`, `frontend/app/visualizations/`)** — a
-member sees curated charts per connected source, scoped to the company or ONE
-space, filtered weekly/monthly/quarterly.
+**Visual Representation (`app/insights/`, Ask chat)** — charts are asked for in
+the same box as grounded Q&A. There is no Visualizations tab; `/visualizations`
+redirects to `/chat`. Scope is the conversation's: company Ask reads org-wide
+facts, a space's Ask reads that space only — no separate company dashboard.
+- **Chart vs Q&A is classified, not regexed.** `classify_question`
+  (`app/insights/resolve.py`) returns `qa` | `chart` | `refuse` against the
+  registry. Chat uses `fail_open=True` so a dead/unparseable classifier is a
+  document question, never a blocked leave-policy; `POST /insights/ask` uses
+  `fail_open=False` and still refuses. Connector is `metric.provider`, not
+  cosine over chunks. Requested shape is validated (`pie` needs `group_by`;
+  `line`+group becomes `bar`; sentiment stays `diverging_bar`).
+- **`InsightsAgent` is a LangGraph node like GitHub** — no RAG; SQL via
+  `store.run_metric`. `choose_agent` routes it *before* the cosine probe. A
+  visual we cannot count still goes here so retrieval cannot invent a number.
 - **The invariant: numbers come from SQL over `activity_facts`; the LLM never
   produces a number, an axis or a date.** A prose answer that is wrong hedges
   and cites; a bar chart that is wrong reads as a *measurement*, and neither
   the gate nor the strict prompt can check arithmetic. So there is **no image
-  generation and no charting agent** — a PNG of numbers cannot be filtered,
-  re-scoped or clicked through, which is the entire point of the section.
+  generation** — a PNG of numbers cannot be filtered, re-scoped or clicked
+  through, which is the entire point of the section.
 - **`registry.py` is the semantic layer** — 2 hardcoded `Metric`s so far (Notion + Drive), each a
   FIXED aggregate fragment plus whitelisted `dims`. Same discipline as
   `llm/catalog.py`. `tests/test_insights_registry.py` forbids `{`, `%` or `;`
@@ -365,8 +376,9 @@ space, filtered weekly/monthly/quarterly.
   someone to wait for a sync that can never happen.
 - **Charts are hand-rolled SVG** (`frontend/components/Chart.tsx`) — no chart
   library. This frontend has no UI kit; a 325MB dependency already cost a
-  deploy once. A grouped bar chart renders as a **ranked leaderboard**, not one
-  bar per person per bucket. One bucket is a dot, not a divide-by-zero.
+  deploy once. A grouped bar chart renders as a **ranked leaderboard**, a pie
+  as shares of the same groups, not one bar per person per bucket. One bucket
+  is a dot, not a divide-by-zero.
 - **Where each provider's facts are written is NOT arbitrary.** Indexed
   providers derive `doc_changed` from `documents` (`facts.py`). GitHub uses a
   **facts-only sync branch** (`autosync.record_due_facts` →
@@ -701,16 +713,16 @@ space — it cascades only from the scheduler, org and user).
 **Built:** provider abstractions; pgvector store + isolation; the RAG path
 (two-layer gate, hybrid retrieval, rerank, decomposition, memory, reuse,
 bounded recovery); Notion/Drive/Slack/Linear ingestion; GitHub live reads;
-per-source agents + LangGraph routing; golden-set eval in CI (+ nightly
+per-source agents + LangGraph routing (including `InsightsAgent`); golden-set eval in CI (+ nightly
 RAGAS); identity/OAuth/admin/ingestion queue/HTTP API/streaming chat; Next.js
 portal; Workspace-within-a-Workspace; signup-approval queue; injection,
 latency, security and eval hardening; the Activity Scheduler; Multi-Model
 Selection (OpenRouter, ~5 models, per-request routing); automatic freshness (interval + webhook-flag sync, external tick, LLM pacing);
 Visual Representation, **all five phases** — `activity_facts`, metric registry
-+ panels, member-scoped dashboard API, `/visualizations` with hand-rolled SVG
-charts, editor capture at sync time, GitHub PR/merge/review facts on a
++ panels, charts **in Ask** (no Visualizations tab; `/visualizations` redirects
+to `/chat`; `InsightsAgent` + `classify_question` rather than a keyword regex), editor capture at sync time, GitHub PR/merge/review facts on a
 facts-only sync branch, Linear completion-by-team on the ingest job, Slack
-conversations from the index, the constrained ask box + personal pins, and
+conversations from the index, the constrained resolver + personal pins API, and
 Forms sentiment (never indexed, owners-only, 5-response floor).
 
 **Pending / known gaps**
@@ -721,7 +733,7 @@ Forms sentiment (never indexed, owners-only, 5-response floor).
   this is the one part of the feature that must be walked through live before
   it is trusted. Plan: `docs/plans/2026-09-02-visual-representation.md`.
 - Charts: **no frontend test infrastructure** — `Chart.tsx` (including the
-  diverging bar) and `/visualizations` are covered by `tsc --noEmit` only,
+  diverging bar) and inline Ask charts are covered by `tsc --noEmit` only,
   never a rendered assertion. Do not add a React test stack as a side effect
   of a chart.
 - Charts: **no browser click-through yet** — the org-member vs space-member

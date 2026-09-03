@@ -1,4 +1,4 @@
-import { API_BASE_URL } from "./api";
+import { API_BASE_URL, type InsightPanel } from "./api";
 
 export interface ChatDonePayload {
   answer: string;
@@ -12,10 +12,14 @@ export interface ChatDonePayload {
     | "linear"
     | "notion"
     | "google"
+    | "forms"
     | "none";
   citations?: { content: string; reference: string; score: number | null }[];
   resolved_question: string | null;
   latency_ms: number | null;
+  /** Present when Ask answered from activity_facts instead of RAG. */
+  chart?: InsightPanel | null;
+  chart_period?: string;
   /** The model that actually answered, resolved by the endpoint. Null on the
    *  default path — there is nothing to disclose when nobody chose. */
   model?: string | null;
@@ -28,7 +32,8 @@ export interface ChatDonePayload {
     | "slack"
     | "linear"
     | "notion"
-    | "google";
+    | "google"
+    | "forms";
   /** Why that agent was picked — "best-match", "repo-named", "code-intent",
    *  "only-source", "weak-best-match", "requested", "no-sources". Surfaced so
    *  a misroute is distinguishable from a source genuinely lacking the answer. */

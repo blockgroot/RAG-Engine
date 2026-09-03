@@ -99,6 +99,7 @@ def client_and_session(store, org_cleanup, monkeypatch):
     # tests never construct the real embedding/reranker singletons.
     monkeypatch.setattr("app.api.chat.get_policy_agent", lambda: policy)
     monkeypatch.setattr("app.api.chat.get_workspace_agent", lambda: workspace)
+    monkeypatch.setattr("app.agent.routing._try_insights_route", lambda *a, **k: None)
 
     client = TestClient(app)
     return client, {"session": token}, org_id, memory
@@ -493,3 +494,115 @@ def test_word_chunks_keeps_trailing_whitespace():
     assert list(_word_chunks("Hello world. ")) == ["Hello ", "world. "]
     assert list(_word_chunks("")) == []
     assert "".join(_word_chunks("a  b\nc")) == "a  b\nc"
+
+
+@requires_db
+def test_a_visual_question_streams_a_chart_not_rag(client_and_session, monkeypatch):
+    """The member asks in Ask. Numbers still come from activity_facts; RAG
+    must not run, or it would invent a total from chunk text."""
+    from app.agent.base import AgentResponse
+    from app.agent.routing import RoutingDecision
+    from app.insights.resolve import ChartSpec
+
+    client, cookies, org_id, _ = client_and_session
+    spec = ChartSpec(
+        metric="issues_completed",
+        group_by="subject",
+        period="month",
+        chart="pie",
+    )
+    panel = {
+        "id": "ask:issues_completed:subject",
+        "provider": "linear",
+        "title": "Tasks completed by team",
+        "chart": "pie",
+        "group_by": "subject",
+        "unit": "tasks",
+        "caveat": "",
+        "points": [
+            {
+                "bucket": "2026-01-01T00:00:00+00:00",
+                "group": "Engineering",
+                "series": None,
+                "value": 2,
+            }
+        ],
+        "measured_since": None,
+    }
+    monkeypatch.setattr(
+        "app.api.chat.choose_agent",
+        lambda *a, **k: RoutingDecision("insights", "chart", chart_spec=spec),
+    )
+
+    class _FakeInsights:
+        def answer_stream(self, *args, **kwargs):
+            response = AgentResponse(
+                answer="Tasks completed by team",
+                grounded=True,
+                source="linear",
+                chart=panel,
+                chart_period="month",
+            )
+            return iter([response.answer]), response
+
+        def answer(self, *args, **kwargs):
+            chunks, response = self.answer_stream(*args, **kwargs)
+            list(chunks)
+            return response
+
+    monkeypatch.setattr("app.api.chat.get_insights_agent", lambda: _FakeInsights())
+
+    response = client.post(
+        "/chat/stream",
+        json={
+            "question": (
+                "create a visual representation of task completion "
+                "in team aggregated by team"
+            )
+        },
+        cookies=cookies,
+    )
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    done = json.loads([data for event, data in events if event == "done"][0])
+    assert done["routing_reason"] == "chart"
+    assert done["agent"] == "insights"
+    assert done["source"] == "linear"
+    assert done["chart"]["title"] == "Tasks completed by team"
+    assert done["chart"]["chart"] == "pie"
+    assert done["chart"]["points"][0]["group"] == "Engineering"
+
+
+@requires_db
+def test_a_chart_intent_that_cannot_chart_does_not_fall_through_to_rag(
+    client_and_session, monkeypatch
+):
+    """A refusal must list what is countable. RAG would invent a number."""
+    from app.agent.insights_agent import InsightsAgent
+    from app.agent.routing import RoutingDecision
+
+    client, cookies, org_id, _ = client_and_session
+    monkeypatch.setattr(
+        "app.api.chat.choose_agent",
+        lambda *a, **k: RoutingDecision(
+            "insights",
+            "chart-refuse",
+            chart_refusal=(
+                "I can't chart that from your connected apps. "
+                "What I can show: tasks completed."
+            ),
+        ),
+    )
+    monkeypatch.setattr("app.api.chat.get_insights_agent", InsightsAgent)
+
+    response = client.post(
+        "/chat/stream",
+        json={"question": "show me a chart of team happiness"},
+        cookies=cookies,
+    )
+    assert response.status_code == 200
+    events = _parse_sse(response.text)
+    done = json.loads([data for event, data in events if event == "done"][0])
+    assert done["grounded"] is False
+    assert done["chart"] is None
+    assert "tasks completed" in done["answer"].lower()

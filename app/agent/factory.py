@@ -40,6 +40,7 @@ from .linear_agent import LinearAgent
 from .notion_agent import NotionAgent
 from .policy_agent import PolicyAgent
 from .slack_agent import SlackAgent
+from .insights_agent import InsightsAgent
 from .workspace_agent import WorkspaceAgent
 
 
@@ -209,3 +210,8 @@ def build_github_agent(
         fallback_response=resolved.fallback_response,
         settings=resolved,
     )
+
+
+def build_insights_agent() -> InsightsAgent:
+    """No pipeline — charts are SQL, like GitHub is live reads."""
+    return InsightsAgent()

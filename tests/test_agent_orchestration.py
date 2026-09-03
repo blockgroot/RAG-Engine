@@ -17,18 +17,19 @@ class _FakeAgent:
         self.name = name
         self.calls = []
 
-    def answer(self, question, org_id, *, conversation_id=None, workspace_id=None):
-        self.calls.append(("answer", question, org_id, conversation_id, workspace_id))
+    def answer(self, question, org_id, *, conversation_id=None, workspace_id=None, **kwargs):
+        self.calls.append(("answer", question, org_id, conversation_id, workspace_id, kwargs))
         return AgentResponse(answer=f"{self.name}:{question}", grounded=True, source=self.name)
 
-    def answer_stream(self, question, org_id, *, conversation_id=None, workspace_id=None):
-        self.calls.append(("stream", question, org_id, conversation_id, workspace_id))
+    def answer_stream(self, question, org_id, *, conversation_id=None, workspace_id=None, **kwargs):
+        self.calls.append(("stream", question, org_id, conversation_id, workspace_id, kwargs))
         response = AgentResponse(answer=f"{self.name}:{question}", grounded=True, source=self.name)
         return iter([response.answer]), response
 
 
 def _graph_and_agents():
-    agents = {key: _FakeAgent(key) for key in ("github", "slack", "linear", "notion", "google", "workspace", "policy")}
+    keys = ("github", "slack", "linear", "notion", "google", "workspace", "policy", "insights")
+    agents = {key: _FakeAgent(key) for key in keys}
     graph = build_agent_graph({key: (lambda a=a: a) for key, a in agents.items()})
     return graph, agents
 
@@ -55,7 +56,7 @@ def test_graph_dispatches_to_the_requested_agent():
         {"question": "q", "org_id": "org-1", "requested_agent": "notion", "stream": False}
     )
     assert state["response"].source == "notion"
-    assert agents["notion"].calls == [("answer", "q", "org-1", None, None)]
+    assert agents["notion"].calls == [("answer", "q", "org-1", None, None, {})]
     assert agents["google"].calls == []  # never touched — no cross-agent leakage
 
 
@@ -71,7 +72,7 @@ def test_graph_dispatches_to_workspace_agent_when_no_direct_request():
         }
     )
     assert state["response"].source == "workspace"
-    assert agents["workspace"].calls == [("answer", "q", "org-1", None, "ws-1")]
+    assert agents["workspace"].calls == [("answer", "q", "org-1", None, "ws-1", {})]
 
 
 def test_graph_streaming_path_calls_answer_stream():
@@ -99,3 +100,35 @@ def test_only_the_routed_agent_is_ever_constructed():
     graph = build_agent_graph({k: make_getter(k) for k in ("policy", "notion", "google")})
     graph.invoke({"question": "q", "org_id": "org-1", "requested_agent": "notion", "stream": False})
     assert built == ["notion"]
+
+
+def test_route_agent_key_insights_is_direct():
+    assert route_agent_key("ws-1", "insights") == "insights"
+    assert route_agent_key(None, "insights") == "insights"
+
+
+def test_graph_dispatches_insights_with_the_validated_spec():
+    graph, agents = _graph_and_agents()
+    spec = {
+        "metric": "issues_completed",
+        "group_by": "subject",
+        "period": "month",
+        "chart": "pie",
+    }
+    state = graph.invoke(
+        {
+            "question": "q",
+            "org_id": "org-1",
+            "requested_agent": "insights",
+            "stream": False,
+            "chart_spec": spec,
+            "user_id": "u1",
+            "role": "admin",
+        }
+    )
+    assert state["response"].source == "insights"
+    kwargs = agents["insights"].calls[0][5]
+    assert kwargs["spec"] == spec
+    assert kwargs["user_id"] == "u1"
+    assert kwargs["role"] == "admin"
+    assert agents["linear"].calls == []

@@ -54,6 +54,7 @@ from .deps import (
     SessionClaims,
     get_drive_agent,
     get_github_agent,
+    get_insights_agent,
     get_linear_agent,
     get_notion_agent,
     get_policy_agent,
@@ -165,6 +166,7 @@ def _agent_getters() -> dict[str, RagPipelineAgent | GitHubAgent]:
         AGENT_LINEAR: get_linear_agent,
         AGENT_NOTION: get_notion_agent,
         AGENT_GOOGLE: get_drive_agent,
+        "insights": get_insights_agent,
         "workspace": get_workspace_agent,
         AGENT_POLICY: get_policy_agent,
     }
@@ -504,6 +506,7 @@ def _stream_answer(
     workspace_id: str | None = None,
     requested_agent: str | None = None,
     model: str | None = None,
+    session: SessionClaims | None = None,
 ) -> Iterator[str]:
     # Set inside the generator, NOT in the route that returns the
     # StreamingResponse: Starlette runs a sync generator via
@@ -530,6 +533,16 @@ def _stream_answer(
         decision.scores,
     )
 
+    spec = getattr(decision, "chart_spec", None)
+    chart_spec = None
+    if spec is not None:
+        chart_spec = {
+            "metric": spec.metric,
+            "group_by": spec.group_by,
+            "period": spec.period,
+            "chart": spec.chart,
+        }
+
     try:
         state = _agent_graph().invoke(
             {
@@ -539,6 +552,10 @@ def _stream_answer(
                 "workspace_id": workspace_id,
                 "requested_agent": decision.agent_key,
                 "stream": True,
+                "chart_spec": chart_spec,
+                "chart_refusal": getattr(decision, "chart_refusal", None),
+                "user_id": session.user_id if session else None,
+                "role": session.role if session else None,
             }
         )
         result = state["response"]
@@ -580,6 +597,8 @@ def _stream_answer(
             # from the requested one, and "which model wrote this?" has to be
             # answerable or the picker is unfalsifiable.
             "model": _answering_model(),
+            "chart": getattr(result, "chart", None),
+            "chart_period": getattr(result, "chart_period", None),
         },
     )
 
@@ -637,6 +656,7 @@ def chat_stream(
             workspace_id=workspace_id,
             requested_agent=requested_agent,
             model=model,
+            session=session,
         ),
         media_type="text/event-stream",
     )

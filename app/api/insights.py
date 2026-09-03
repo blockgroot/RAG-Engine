@@ -68,16 +68,13 @@ def _may_see(metric, session: SessionClaims, workspace_id: str | None) -> bool:
     An org admin qualifies everywhere; a space owner qualifies in their own
     space. Membership itself was already checked by ``_scope``.
     """
-    if not metric.owners_only:
-        return True
-    if session.role == "admin":
-        return True
-    if workspace_id is None:
-        return False
-    try:
-        return assert_member(workspace_id, session.org_id, session.user_id) == "owner"
-    except AuthError:
-        return False
+    return scopes.may_see_metric(
+        metric,
+        role=session.role,
+        workspace_id=workspace_id,
+        org_id=session.org_id,
+        user_id=session.user_id,
+    )
 
 
 def _period(period: str) -> str:
@@ -207,24 +204,17 @@ class AskRequest(BaseModel):
     scope: str | None = None
 
 
-@router.post("/ask")
-def ask(
-    body: AskRequest,
-    request: Request,
-    session: SessionClaims = Depends(get_session),
-):
-    """Turn a question into ONE chart, or refuse and say what is available.
+def answer_chart_question(
+    question: str,
+    *,
+    session: SessionClaims,
+    workspace_id: str | None,
+) -> dict:
+    """Turn a question into ONE chart, or a refusal naming what is available.
 
-    Not a chat endpoint: one turn, no history, no conversation id. The model
-    only selects a registry key -- it never writes SQL and never emits a
-    number, so the worst case is a refusal rather than a wrong chart.
-
-    Rate-limited per org like every other LLM-backed route: this is the only
-    place in the section that spends a model request.
+    Shared by ``POST /insights/ask`` and Ask chat. The model only selects a
+    registry key -- it never writes SQL and never emits a number.
     """
-    check_rate_limit(f"insights-ask:{session.org_id}")
-
-    workspace_id = _scope(session, body.scope)
     found = next(
         (s for s in scopes.member_scopes(session.org_id, session.user_id)
          if s.id == workspace_id),
@@ -235,11 +225,10 @@ def ask(
 
     try:
         spec = resolve.resolve_question(
-            body.question, providers=list(found.providers)
+            question, providers=list(found.providers)
         )
     except resolve.CannotChart as exc:
-        # 200, not 4xx: "I can't chart that, here is what I can" is an ANSWER,
-        # and the frontend renders it as guidance rather than an error banner.
+        # "I can't chart that, here is what I can" is an ANSWER, not an error.
         return {"charted": False, "message": str(exc)}
 
     if not _may_see(registry.get(spec.metric), session, workspace_id):
@@ -292,6 +281,25 @@ def ask(
             "measured_since": begun.isoformat() if begun else None,
         },
     }
+
+
+@router.post("/ask")
+def ask(
+    body: AskRequest,
+    request: Request,
+    session: SessionClaims = Depends(get_session),
+):
+    """Turn a question into ONE chart, or refuse and say what is available.
+
+    Rate-limited per org like every other LLM-backed route: this is the only
+    dedicated insights path that spends a model request. Ask chat has its own
+    limiter and calls ``answer_chart_question`` directly.
+    """
+    check_rate_limit(f"insights-ask:{session.org_id}")
+    workspace_id = _scope(session, body.scope)
+    return answer_chart_question(
+        body.question, session=session, workspace_id=workspace_id
+    )
 
 
 def _ask_title(metric, group_by: str | None) -> str:

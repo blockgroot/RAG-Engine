@@ -7,6 +7,7 @@ const LABELS: Record<string, string> = {
   linear: "Linear",
   notion: "Notion",
   google: "Google Drive",
+  forms: "Google Forms",
   none: "No answer found",
 };
 
@@ -21,6 +22,7 @@ const COLORS: Record<string, string> = {
   linear: "var(--provenance-linear, var(--provenance-policy))",
   notion: "var(--provenance-notion, var(--provenance-policy))",
   google: "var(--provenance-google, var(--provenance-policy))",
+  forms: "var(--provenance-forms, var(--provenance-policy))",
   none: "var(--provenance-none)",
 };
 
@@ -40,6 +42,7 @@ const AGENT_NAMES: Record<string, string> = {
   linear: "Linear agent",
   notion: "Notion agent",
   google: "Drive agent",
+  forms: "Forms",
 };
 
 export function ProvenanceStripe({

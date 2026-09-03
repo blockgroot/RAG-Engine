@@ -95,6 +95,9 @@ class AgentResponse:
     response_mode: str | None = None
     tone_retry_used: bool = False
     question_tone: str | None = None
+    #: Set only by InsightsAgent. SQL points + shape; never model-drawn SVG.
+    chart: dict | None = None
+    chart_period: str | None = None
 
 
 class Agent(ABC):

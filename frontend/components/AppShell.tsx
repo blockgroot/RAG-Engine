@@ -29,18 +29,6 @@ function IconSpaces() {
   );
 }
 
-function IconCharts() {
-  // Axes with two bars and a rising line: the section is measurement over
-  // time, not a document. Monochrome `currentColor` like every other rail icon.
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path d="M4 4v16h16" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
-      <rect x="7.5" y="12" width="3" height="5" rx="1" stroke="currentColor" strokeWidth="1.6" />
-      <rect x="13" y="8.5" width="3" height="8.5" rx="1" stroke="currentColor" strokeWidth="1.6" />
-    </svg>
-  );
-}
-
 function IconReports() {
   // Calendar + clock: what the section is (something that runs on a cadence),
   // not a generic document. Monochrome `currentColor` like every other rail
@@ -201,20 +189,6 @@ export function AppShell({
               <span className="rail-link-copy">
                 <span className="rail-link-title">Spaces</span>
                 <span className="rail-link-hint">Private, invite-only</span>
-              </span>
-            </Link>
-            <Link
-              href="/visualizations"
-              className="rail-link"
-              data-active={pathname.startsWith("/visualizations") ? "true" : "false"}
-              aria-current={pathname.startsWith("/visualizations") ? "page" : undefined}
-            >
-              <span className="rail-ico">
-                <IconCharts />
-              </span>
-              <span className="rail-link-copy">
-                <span className="rail-link-title">Visualizations</span>
-                <span className="rail-link-hint">Counted from your data</span>
               </span>
             </Link>
             <Link

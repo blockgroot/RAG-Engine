@@ -33,9 +33,11 @@ from .policy_agent import PolicyAgent
 from .rag_pipeline_agent import RagPipelineAgent
 from .slack_agent import SlackAgent
 from .workspace_agent import WorkspaceAgent
+from .insights_agent import InsightsAgent
 from .factory import (
     build_drive_agent,
     build_github_agent,
+    build_insights_agent,
     build_linear_agent,
     build_notion_agent,
     build_policy_agent,
@@ -49,6 +51,7 @@ __all__ = [
     "Citation",
     "DriveAgent",
     "GitHubAgent",
+    "InsightsAgent",
     "LinearAgent",
     "NotionAgent",
     "PolicyAgent",
@@ -57,6 +60,7 @@ __all__ = [
     "WorkspaceAgent",
     "build_drive_agent",
     "build_github_agent",
+    "build_insights_agent",
     "build_linear_agent",
     "build_notion_agent",
     "build_policy_agent",

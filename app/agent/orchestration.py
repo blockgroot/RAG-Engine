@@ -7,13 +7,10 @@ runs it — it replaces the hand-rolled if/elif chain that used to live in
 registering one more getter + one more node here, not growing an if/elif
 chain across ``factory.py``/``deps.py``/``chat.py``.
 
-Routing stays entirely deterministic — no LLM ever classifies a question to
-pick an agent. That was a deliberate call made when GitHub was added (a
-non-deterministic step in front of a tenant-scoped path is exactly what the
-confidence gate's design philosophy avoids), and it does not change just
-because the dispatch mechanism is now a graph: ``_route`` is a plain Python
-function keyed on the caller-supplied ``requested_agent`` field, the same
-signal ``_select_agent`` always used. LangGraph is used here purely as a
+Routing stays entirely deterministic inside the graph — `_route` is a plain
+Python function keyed on ``requested_agent``. Chart vs document is decided
+*before* the graph (`choose_agent` → `classify_question`); the graph never
+asks an LLM which node to run. LangGraph is used here purely as a
 declarative execution graph (``langgraph.graph.StateGraph``), never its
 LLM-driven tool-calling/ReAct machinery (``langgraph.prebuilt`` is
 deliberately unused and unimported).
@@ -40,6 +37,7 @@ from .base import AgentResponse
 # a tuple, not re-derived from the getters dict, so a caller can't silently
 # make an internal-only key (e.g. "workspace") directly selectable from the
 # client-facing ``agent`` field.
+INSIGHTS_KEY = "insights"
 DIRECT_AGENT_KEYS = ("github", "slack", "linear", "notion", "google")
 
 WORKSPACE_KEY = "workspace"
@@ -55,6 +53,10 @@ class AgentState(TypedDict, total=False):
     stream: bool
     response: AgentResponse
     chunks: Iterator[str]
+    chart_spec: dict | None
+    chart_refusal: str | None
+    user_id: str | None
+    role: str | None
 
 
 def route_agent_key(workspace_id: str | None, requested_agent: str | None) -> str:
@@ -68,7 +70,7 @@ def route_agent_key(workspace_id: str | None, requested_agent: str | None) -> st
     is the legacy combined ``PolicyAgent`` (kept for back-compat callers that
     never adopted the per-source tabs — see chat.py's module docstring).
     """
-    if requested_agent in DIRECT_AGENT_KEYS:
+    if requested_agent in DIRECT_AGENT_KEYS or requested_agent == INSIGHTS_KEY:
         return requested_agent
     if workspace_id is not None:
         return WORKSPACE_KEY
@@ -108,6 +110,30 @@ def _agent_node(getter: Callable[[], Any]) -> Callable[[AgentState], dict]:
     return run
 
 
+def _insights_node(getter: Callable[[], Any]) -> Callable[[AgentState], dict]:
+    """Insights is not RAG: it needs the already-validated spec, not a retrieve."""
+
+    def run(state: AgentState) -> dict:
+        agent = getter()
+        kwargs = {
+            "conversation_id": state.get("conversation_id"),
+            "workspace_id": state.get("workspace_id"),
+            "spec": state.get("chart_spec"),
+            "refusal": state.get("chart_refusal"),
+            "user_id": state.get("user_id"),
+            "role": state.get("role"),
+        }
+        if state.get("stream"):
+            chunks, response = agent.answer_stream(
+                state["question"], state["org_id"], **kwargs
+            )
+            return {"chunks": chunks, "response": response}
+        response = agent.answer(state["question"], state["org_id"], **kwargs)
+        return {"response": response}
+
+    return run
+
+
 def build_agent_graph(getters: dict[str, Callable[[], Any]]):
     """Compile the routing graph from ``{key: zero-arg agent getter}``.
 
@@ -120,7 +146,8 @@ def build_agent_graph(getters: dict[str, Callable[[], Any]]):
     """
     graph = StateGraph(AgentState)
     for key, getter in getters.items():
-        graph.add_node(key, _agent_node(getter))
+        node = _insights_node(getter) if key == INSIGHTS_KEY else _agent_node(getter)
+        graph.add_node(key, node)
         graph.add_edge(key, END)
     graph.add_conditional_edges(START, _route, {key: key for key in getters})
     return graph.compile()

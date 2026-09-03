@@ -16,6 +16,7 @@ from fastapi import Depends, HTTPException, Request
 from ..agent import (
     build_drive_agent,
     build_github_agent,
+    build_insights_agent,
     build_linear_agent,
     build_notion_agent,
     build_policy_agent,
@@ -24,6 +25,7 @@ from ..agent import (
 )
 from ..agent.drive_agent import DriveAgent
 from ..agent.github_agent import GitHubAgent
+from ..agent.insights_agent import InsightsAgent
 from ..agent.linear_agent import LinearAgent
 from ..agent.notion_agent import NotionAgent
 from ..agent.policy_agent import PolicyAgent
@@ -126,6 +128,12 @@ def get_github_agent() -> GitHubAgent:
     ``app/agent/github_agent.py`` on why ``reader_builder`` is a builder.
     """
     return build_github_agent()
+
+
+@lru_cache(maxsize=1)
+def get_insights_agent() -> InsightsAgent:
+    """Process-wide singleton. Holds no tenant state and no model weights."""
+    return build_insights_agent()
 
 
 def get_session(request: Request) -> SessionClaims:

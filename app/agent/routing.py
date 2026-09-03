@@ -5,15 +5,16 @@ Before this, ``orchestration.route_agent_key`` only honoured an explicit
 someone to know whether an answer lives in Notion or Slack before they ask is
 asking them to already have the answer.
 
-Why not an LLM
---------------
-CLAUDE.md §3 commits to a deterministic router, and that commitment is kept
-here rather than amended, because a better signal is already sitting in the
-database: **which provider's content actually resembles the question**. One
-embedding of the question, one grouped vector query, and the answer is a
-measurement rather than a guess. An LLM classifier would add a call, a quota
-draw (15 rpm — see ``app/llm/pacing.py``), a latency floor, and a new failure
-mode, to decide something the corpus can answer directly.
+Why not an LLM for the source
+-----------------------------
+CLAUDE.md §3 commits to a deterministic router for *which corpus answers*,
+and that commitment is kept here rather than amended, because a better
+signal is already sitting in the database: **which provider's content
+actually resembles the question**. One embedding of the question, one
+grouped vector query, and the answer is a measurement rather than a guess.
+
+Chart vs document is the one classifier: it selects a registry metric (or
+qa), never a source by name. The metric's ``provider`` IS the connector.
 
 Keyword routing was rejected for the same reason. "What did we decide about
 pricing?" carries no keyword at all, and the whole point is that it routes to
@@ -46,7 +47,7 @@ import threading
 from dataclasses import dataclass, field, replace
 
 from ..config.settings import EmbeddingSettings, RagSettings
-from .orchestration import DIRECT_AGENT_KEYS, POLICY_KEY, WORKSPACE_KEY
+from .orchestration import DIRECT_AGENT_KEYS, INSIGHTS_KEY, POLICY_KEY, WORKSPACE_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,8 @@ class RoutingDecision:
     #: routing quality is not observable without it, and CLAUDE.md's standing
     #: advice on the 0.35 gate is to validate against real logged scores.
     scores: dict[str, float] = field(default_factory=dict)
+    chart_spec: object | None = None
+    chart_refusal: str | None = None
 
 
 def _connected_providers(org_id: str, workspace_id: str | None) -> set[str]:
@@ -238,6 +241,40 @@ def _probe_scores(
     return {row[0]: float(row[1]) for row in rows if row[1] is not None}
 
 
+def _try_insights_route(question: str, connected: set[str]) -> RoutingDecision | None:
+    """Chart vs document, decided by the registry classifier — not keywords.
+
+    Returns None when this is ordinary Q&A so the cosine router still runs.
+    Never raises: a dead classifier is a document question, not a failed Ask.
+    """
+    from ..insights import panels as panel_defs
+    from ..insights.resolve import classify_question
+
+    providers = [p for p in sorted(connected) if panel_defs.for_provider(p)]
+    if not providers:
+        return None
+    try:
+        intent = classify_question(question, providers=providers, fail_open=True)
+    except Exception:  # noqa: BLE001
+        logger.warning("Agent routing: chart classifier failed", exc_info=True)
+        return None
+    if intent.kind == "qa":
+        return None
+    if intent.kind == "chart" and intent.spec is not None:
+        return RoutingDecision(
+            INSIGHTS_KEY,
+            "chart",
+            chart_spec=intent.spec,
+        )
+    if intent.kind == "refuse":
+        return RoutingDecision(
+            INSIGHTS_KEY,
+            "chart-refuse",
+            chart_refusal=intent.message,
+        )
+    return None
+
+
 def choose_agent(
     question: str,
     org_id: str,
@@ -251,24 +288,28 @@ def choose_agent(
 
     1. **An explicit request wins.** The API still accepts ``agent``, so an
        existing caller (and every test that pins a source) keeps working.
-    2. **A named repository wins.** Nothing else in the org is called that, so
+    2. **A countable visual**, when the classifier (not a keyword list) says
+       this is a chart and names a registry metric. The metric's provider IS
+       the connector — InsightsAgent never blends corpora. A visual we cannot
+       count is still routed here so RAG cannot invent a number.
+    3. **A named repository wins.** Nothing else in the org is called that, so
        it is the least ambiguous signal available — and it must beat the vector
        probe, because a Notion page *about* a repo would otherwise outscore the
        repo itself.
-    3. **One embedded source ⇒ no probe.** Saves an embedding and a query in
+    4. **One embedded source ⇒ no probe.** Saves an embedding and a query in
        the common single-source tenant.
-    4. **Otherwise, the best-scoring provider**, if it clears the confidence
+    5. **Otherwise, the best-scoring provider**, if it clears the confidence
        gate. Same threshold retrieval already uses, for the same reason: below
        it, nothing here resembles the question.
-    5. **Code intent, when nothing embedded cleared the gate.** Last, and only
+    6. **Code intent, when nothing embedded cleared the gate.** Last, and only
        then, so a code word inside a document question cannot hijack it.
-    6. **The best score anyway**, even below the gate — the routed agent's own
+    7. **The best score anyway**, even below the gate — the routed agent's own
        gate will refuse honestly, which is a better outcome than routing to a
        default agent that never had the content.
-    7. **The pre-existing default** (workspace agent inside a space, else the
+    8. **The pre-existing default** (workspace agent inside a space, else the
        legacy policy agent) when there is nothing to route to at all.
     """
-    if requested_agent in DIRECT_AGENT_KEYS:
+    if requested_agent in DIRECT_AGENT_KEYS or requested_agent == INSIGHTS_KEY:
         return RoutingDecision(requested_agent, "requested")
 
     default_key = WORKSPACE_KEY if workspace_id is not None else POLICY_KEY
@@ -281,6 +322,10 @@ def choose_agent(
 
     if not connected:
         return RoutingDecision(default_key, "no-sources")
+
+    visual = _try_insights_route(question, connected)
+    if visual is not None:
+        return visual
 
     if "github" in connected:
         named = _named_repo(question, org_id, workspace_id)

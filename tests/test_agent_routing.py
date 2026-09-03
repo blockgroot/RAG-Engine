@@ -19,7 +19,8 @@ import uuid
 import pytest
 
 from app.agent import routing
-from app.agent.orchestration import POLICY_KEY, WORKSPACE_KEY
+from app.agent.orchestration import INSIGHTS_KEY, POLICY_KEY, WORKSPACE_KEY
+from app.insights.resolve import ChartSpec
 from app.auth import OAuthTokens, save_connection
 from app.auth.credentials import set_connection_config
 from app.auth.users import invite_member
@@ -35,6 +36,8 @@ def _encryption_key(monkeypatch):
     from cryptography.fernet import Fernet
 
     monkeypatch.setenv("AUTH_ENCRYPTION_KEYS", Fernet.generate_key().decode())
+    # Cosine-routing tests must not spend a live classifier call.
+    monkeypatch.setattr(routing, "_try_insights_route", lambda *a, **k: None)
 
 
 def _stub(monkeypatch, *, connected: set[str], scores: dict | None = None, repos=None):
@@ -438,3 +441,46 @@ def test_the_probe_uses_the_same_model_as_retrieval(monkeypatch):
 
     assert built["settings"].model == EmbeddingSettings.from_env().model
     routing.reset_probe_embedder_for_tests()
+
+
+def test_a_chart_intent_beats_the_only_connected_source(monkeypatch):
+    """The metric's provider is the connector. Cosine would send this to Linear
+    RAG, which would invent a total from issue text."""
+    _stub(monkeypatch, connected={"linear"})
+    spec = ChartSpec(
+        metric="issues_completed",
+        group_by="subject",
+        period="month",
+        chart="pie",
+    )
+    monkeypatch.setattr(
+        routing,
+        "_try_insights_route",
+        lambda q, c: routing.RoutingDecision(INSIGHTS_KEY, "chart", chart_spec=spec),
+    )
+
+    decision = routing.choose_agent("share of completed work by team", ORG)
+
+    assert decision.agent_key == INSIGHTS_KEY
+    assert decision.reason == "chart"
+    assert decision.chart_spec == spec
+
+
+def test_an_uncountable_visual_still_routes_to_insights(monkeypatch):
+    """RAG must not invent a number when the classifier wanted a chart."""
+    _stub(monkeypatch, connected={"linear", "notion"})
+    monkeypatch.setattr(
+        routing,
+        "_try_insights_route",
+        lambda q, c: routing.RoutingDecision(
+            INSIGHTS_KEY,
+            "chart-refuse",
+            chart_refusal="I can't chart that from your connected apps.",
+        ),
+    )
+
+    decision = routing.choose_agent("chart of team happiness", ORG)
+
+    assert decision.agent_key == INSIGHTS_KEY
+    assert decision.reason == "chart-refuse"
+    assert decision.chart_refusal is not None

@@ -17,9 +17,31 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from ..core.exceptions import ProviderError
+from ..core.exceptions import AuthError, ProviderError
 from ..db.connection import get_connection
 from ..workspaces.store import assert_member
+
+#: How far back a dashboard / Ask chart looks, per period. Not the same as
+#: the bucket size: a weekly view of one week is a single bar.
+WINDOW_DAYS = {"week": 84, "month": 365, "quarter": 730}
+
+
+def may_see_metric(metric, *, role: str, workspace_id: str | None, org_id: str, user_id: str) -> bool:
+    """Whether this caller may see an ``owners_only`` metric.
+
+    Only sentiment is gated. An org admin qualifies everywhere; a space owner
+    qualifies in their own space. Membership itself is checked by the caller.
+    """
+    if not metric.owners_only:
+        return True
+    if role == "admin":
+        return True
+    if workspace_id is None:
+        return False
+    try:
+        return assert_member(workspace_id, org_id, user_id) == "owner"
+    except AuthError:
+        return False
 
 
 @dataclass(frozen=True)
