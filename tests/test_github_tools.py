@@ -91,11 +91,13 @@ def test_a_merge_with_no_named_merger_names_nobody_at_all():
     "merged by unknown" would appear on nearly every merged pull request and
     read as a claim about the merger rather than as a gap in what we read.
     """
-    page = PullRequestPage(items=(_pr(3, merged_by=None, merged=True),))
-    text, _ = GitHubAgent._format_pull_requests(page)
-    assert "merged 2026-09-03" in text
+    pull = _pr(3, merged_by=None, merged=True)
+    text, _ = GitHubAgent._format_pull_requests(PullRequestPage(items=(pull,)))
+    merged = f"merged {pull.merged_at.date().isoformat()}"
+
+    assert merged in text
     assert "unknown" not in text.lower()
-    assert " by " in text.split("merged 2026-09-03")[0]  # the AUTHOR still shows
+    assert " by " in text.split(merged)[0]  # the AUTHOR still shows
 
 
 def test_the_state_filter_narrows_without_a_second_api_call():
@@ -322,3 +324,65 @@ def test_two_equally_good_titles_resolve_to_nothing():
 def test_no_number_and_no_query_is_a_fallback_not_a_guess():
     reader = _ReviewReader([_pr(11, title="Harden auth")])
     assert _resolve(reader, {}) is None
+
+
+# --------------------------------------------------------------------------
+# The merger budget is on CALLS, not on list size
+# --------------------------------------------------------------------------
+
+
+class _DetailReader:
+    def __init__(self, merger="grace"):
+        self.calls: list[int] = []
+        self._merger = merger
+
+    def get_pull_request(self, repo, number):
+        self.calls.append(number)
+        return _pr(number, merged_by=self._merger, merged=True)
+
+
+def test_the_default_browse_of_twenty_still_names_recent_mergers():
+    """Bounding by LIST SIZE meant a default list of 20 was skipped whole, so
+    Ask could never name a merger -- the one question the field is for."""
+    from app.agent.github_agent import _MERGER_DETAIL_CALLS, _with_mergers
+
+    page = PullRequestPage(
+        items=tuple(_pr(n, merged_by=None, merged=True) for n in range(20))
+    )
+    reader = _DetailReader()
+    filled = _with_mergers(reader, page)
+
+    assert len(reader.calls) == _MERGER_DETAIL_CALLS
+    # Newest-first, so the budget lands on the most recent merges.
+    assert [p.merged_by for p in filled.items[:_MERGER_DETAIL_CALLS]] == (
+        ["grace"] * _MERGER_DETAIL_CALLS
+    )
+    assert filled.items[_MERGER_DETAIL_CALLS].merged_by is None
+
+
+def test_open_pull_requests_cost_no_detail_calls():
+    from app.agent.github_agent import _with_mergers
+
+    reader = _DetailReader()
+    _with_mergers(reader, PullRequestPage(items=(_pr(1), _pr(2))))
+    assert reader.calls == []
+
+
+def test_a_failed_detail_call_spends_its_budget_and_keeps_the_row():
+    """A retry loop against a rate limit is worse than an omitted name."""
+    from app.agent.github_agent import _with_mergers
+
+    class _Broken(_DetailReader):
+        def get_pull_request(self, repo, number):
+            self.calls.append(number)
+            raise ValueError("502")
+
+    reader = _Broken()
+    page = PullRequestPage(
+        items=tuple(_pr(n, merged_by=None, merged=True) for n in range(10))
+    )
+    filled = _with_mergers(reader, page)
+
+    assert len(reader.calls) == 5
+    assert len(filled.items) == 10
+    assert all(p.merged_by is None for p in filled.items)

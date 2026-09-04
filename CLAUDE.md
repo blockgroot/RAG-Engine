@@ -108,6 +108,14 @@ source-agnostic on purpose.
   — the newest 20 are usually all merged — and the agent then says "no open
   pull requests" while several are open. `merged` has no GitHub equivalent:
   ask `state=closed` and drop anything without `merged_at`.
+- **A page must be requested in FULL whenever rows are dropped after the
+  fetch**, and the short-page break compared against `per_page`, never a
+  literal 100. `per_page = cap - len(items)` with `if len(payload) < 100` is a
+  ONE-page fetch (20 asked, 20 returned, "short", stop) — so `state="merged"`
+  silently meant "however many merges sat in the newest 20 closed", the same
+  bug the request-side filter fixed, moved onto `closed`. `MAX_PULL_REQUEST_PAGES=5`
+  bounds the walk and sets `truncated` when it is the reason we stopped:
+  a repo can hold hundreds of abandoned branches that never fill the cap.
 - **Review dedup keeps each person's VERDICT, not their first event**
   (`githublive/base.py::dedupe_reviews`, shared by the agent and
   `github_facts`). GitHub returns reviews **oldest-first**, so "commented,
@@ -119,7 +127,9 @@ source-agnostic on purpose.
   Facts fill it with one detail call per merged PR **inside the slice reviews
   already pay for** (without it the "who merges them" chart is empty on every
   tenant, which reads as "nobody merges"); the interactive path enriches a
-  list of ≤5 and otherwise **omits** the merger — "merged by unknown" on
+  list with a budget of 5 CALLS (a budget on *list size* skipped the default
+  browse of 20 whole, so Ask could never name a merger at all) and otherwise
+  **omits** the merger — "merged by unknown" on
   nearly every PR is a claim about the merger, not a disclosed gap.
 - **`list_reviews` takes `pull_query` as well as `pull_number`**, resolving a
   PR by title in the same tool call. The agent runs ONE tool round and never

@@ -73,6 +73,12 @@ def _truncate(text: str, max_bytes: int) -> tuple[str, bool]:
     return encoded.decode("utf-8", errors="ignore") + _TRUNCATION_MARKER, True
 
 
+#: How many listing pages one call may walk. Only ever reached when rows are
+#: being dropped after the fetch (state="merged" past a wall of abandoned
+#: branches) -- otherwise the cap is filled by the first page or two.
+MAX_PULL_REQUEST_PAGES = 5
+
+
 def _pull_request(full_name: str, item: dict) -> PullRequest:
     """One API object to our shape, keeping the three people distinct.
 
@@ -263,10 +269,18 @@ class RestGitHubReader(GitHubReader):
         items: list[PullRequest] = []
         truncated = False
         page = 1
+        # A page must be asked for in FULL when rows can be dropped after the
+        # fetch, because the cap then no longer predicts how many rows we need.
+        # Asking for `cap` rows and stopping when fewer than a full page comes
+        # back is a single-page fetch (20 requested, 20 returned, "short page",
+        # stop) -- so "merged pull requests" silently became "however many
+        # merges sat in the newest 20 closed ones", which is the very bug the
+        # request-side filter was added to fix, moved from `all` onto `closed`.
+        per_page = 100 if wanted == "merged" else min(100, cap)
         # Sorted by `updated` descending: GitHub cannot sort on merged_at, and
         # this is the only ordering that lets a `since` window stop early. It
         # also means a cap drops the OLDEST end, never a random subset.
-        while len(items) < cap:
+        while len(items) < cap and page <= MAX_PULL_REQUEST_PAGES:
             payload = self._request(
                 f"{GITHUB_API_BASE}/repos/{full_name}/pulls",
                 accept=_JSON_ACCEPT,
@@ -274,7 +288,7 @@ class RestGitHubReader(GitHubReader):
                     "state": requested,
                     "sort": "updated",
                     "direction": "desc",
-                    "per_page": min(100, cap - len(items)),
+                    "per_page": per_page,
                     "page": page,
                 },
                 what=f"pull requests of {full_name}",
@@ -298,9 +312,20 @@ class RestGitHubReader(GitHubReader):
                     continue
                 items.append(pull)
 
-            if stop or len(payload) < 100:
+            # Against `per_page`, NOT a literal 100: a short page is the only
+            # signal that history ran out, and comparing it to the wrong number
+            # ends the walk after one request.
+            if stop or len(payload) < per_page:
                 break
             page += 1
+
+        if page > MAX_PULL_REQUEST_PAGES and len(items) < cap:
+            # We stopped on the page ceiling rather than on the end of history,
+            # so there may be more merges further back. A repo can hold
+            # hundreds of abandoned branches, none of which fill the cap, and
+            # an unbounded walk to find `cap` merges is how one question turns
+            # into fifty requests against a rate limit.
+            truncated = True
 
         if len(items) >= cap:
             # We filled the cap, so there may be more we did not look at. Said

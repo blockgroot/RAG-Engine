@@ -651,32 +651,32 @@ class GitHubAgent(Agent):
         return "\n".join(lines), citations
 
 
-#: How many pull requests are worth one detail call each to learn who merged
-#: them. A targeted question ("who merged the auth PR?") narrows the list, so
-#: this lands where it is asked for; a browse of 20 is not made to pay 20 round
-#: trips on an interactive path. Charts fill the merger properly on the
-#: background sync instead (``insights/github_facts.py``).
-_MERGER_DETAIL_LIMIT = 5
+#: A ceiling on detail CALLS, not on the size of the list. Bounding by list
+#: size instead meant the default browse of 20 was skipped entirely, so Ask
+#: could never name a merger -- the one question the field exists for. The
+#: listing is newest-first, so the budget is spent on the most recent merges,
+#: which is where a question about "who merged this" almost always points.
+_MERGER_DETAIL_CALLS = 5
 
 
 def _with_mergers(reader, page):
-    """Fill ``merged_by`` on a SHORT list of merged pull requests.
+    """Fill ``merged_by`` on the newest merged pull requests in a list.
 
     GitHub returns ``merged_by`` only from the single-pull-request endpoint, so
     a listing can never say who merged anything. Rather than answer "merged by
-    unknown", a narrow result set is enriched one call at a time.
+    unknown", the first few are enriched one call at a time and the rest simply
+    omit the merger -- an interactive path must not pay twenty round trips.
     """
     items = list(getattr(page, "items", ()) or ())
-    need = [p for p in items if p.merged_at and not p.merged_by]
-    if not need or len(items) > _MERGER_DETAIL_LIMIT:
-        return page
     detail = getattr(reader, "get_pull_request", None)
-    if detail is None:
+    if detail is None or not any(p.merged_at and not p.merged_by for p in items):
         return page
 
+    budget = _MERGER_DETAIL_CALLS
     filled = []
     for pull in items:
-        if pull in need:
+        if budget and pull.merged_at and not pull.merged_by:
+            budget -= 1
             try:
                 full = detail(pull.repo, pull.number)
             except (SourceError, ProviderError, ValueError, TypeError):

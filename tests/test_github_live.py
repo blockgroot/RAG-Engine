@@ -417,3 +417,51 @@ def test_get_pull_request_reads_the_merger_the_listing_omits(monkeypatch):
     assert pull.merged_by == "grace"
     assert pull.state == "merged"
     assert calls[0]["url"].endswith("/repos/acme-inc/handbook/pulls/42")
+
+
+def test_merged_keeps_paging_past_a_wall_of_abandoned_branches(monkeypatch):
+    """The bug: `per_page` was `cap - len(items)`, so a cap of 20 asked for 20
+    rows, got 20, saw a "short page" against a literal 100 and stopped. Rows
+    dropped after the fetch then made "merged pull requests" mean "however
+    many merges sat in the newest 20 closed" -- the original bug moved from
+    `all` onto `closed`, with truncated=False."""
+    abandoned = [_pull_payload(n, closed=True) for n in range(100, 0, -1)]
+    reader, calls = _reader(
+        monkeypatch,
+        [
+            {"status": 200, "json": abandoned},                    # zero merges
+            {"status": 200, "json": [_pull_payload(1, merged=True)]},
+        ],
+    )
+    page = reader.list_pull_requests("handbook", limit=20, state="merged")
+
+    assert [c["params"]["per_page"] for c in calls] == [100, 100]
+    assert [c["params"]["page"] for c in calls] == [1, 2]
+    assert [p.number for p in page.items] == [1]
+
+
+def test_a_short_page_is_measured_against_what_was_requested(monkeypatch):
+    """One page, because history ran out -- not because 20 < 100."""
+    reader, calls = _reader(
+        monkeypatch,
+        [{"status": 200, "json": [_pull_payload(n) for n in range(5)]}],
+    )
+    reader.list_pull_requests("handbook", limit=20, state="open")
+
+    assert len(calls) == 1
+    assert calls[0]["params"]["per_page"] == 20
+
+
+def test_the_page_walk_is_bounded_and_says_so(monkeypatch):
+    """A repo can hold hundreds of abandoned branches, none of which fill the
+    cap. An unbounded walk turns one question into fifty requests."""
+    from app.githublive.rest import MAX_PULL_REQUEST_PAGES
+
+    abandoned = [{"status": 200, "json": [_pull_payload(n, closed=True)
+                                          for n in range(100)]}] * 20
+    reader, calls = _reader(monkeypatch, abandoned)
+    page = reader.list_pull_requests("handbook", limit=20, state="merged")
+
+    assert len(calls) == MAX_PULL_REQUEST_PAGES
+    assert page.items == ()
+    assert page.truncated is True  # there may be merges further back
