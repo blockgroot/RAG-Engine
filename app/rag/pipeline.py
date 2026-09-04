@@ -55,7 +55,7 @@ from ..vectorstore.base import DateRange, RetrievedChunk, VectorStore
 from ..websearch.base import SearchResult, WebSearchProvider
 from .audit import parse_audit_verdict
 from .retrieval import HybridRetriever, RetrievalResult
-from .context_assemble import assemble_context_texts
+from .context_assemble import assemble_context_texts, describe_hit
 from .decompose import looks_compound, parse_sub_questions
 from .query_cache import QueryAnswerCache
 from .request_budget import RequestBudget
@@ -868,10 +868,10 @@ class RagPipeline:
         user_question: str | None = None,
     ) -> RagResult:
         contexts = assemble_context_texts(
-            [
-                f"(From: {h.document_title}) {h.content}" if h.document_title else h.content
-                for h in hits
-            ],
+            # Title AND provenance: the provider, who last edited it and when.
+            # All of it was already on the JOINed document row and was being
+            # dropped, so "who wrote this?" refused against data we had.
+            [describe_hit(h) for h in hits],
             self._settings.max_context_chars,
         )
         tone_source = user_question or question

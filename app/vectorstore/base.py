@@ -46,6 +46,15 @@ class RetrievedChunk:
     # Slack recap: map ``"{channel_id}:{thread_ts}"`` back to a channel name
     # when the stored title was ingested before titles carried a ``#channel:`` prefix.
     source_external_id: str | None = None
+    # Provenance, for the retrieved-context header the grounded prompt builds.
+    # "Who wrote this?", "when was it last updated?" and "which app is this
+    # from?" are among the most common things anyone asks about a document, and
+    # every answer is already sitting on the `documents` row this hit JOINed --
+    # it was simply dropped before reaching the model. All optional so fakes,
+    # the reuse path and legacy rows stay lightweight.
+    source_provider: str | None = None
+    last_editor: str | None = None
+    last_modified: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -254,7 +263,7 @@ class VectorStore(ABC):
         chunks: list[str],
         embeddings: list[list[float]],
         source_uri: str | None = None,
-        last_modified: "datetime | None" = None,
+        last_modified: datetime | None = None,
         workspace_id: str | None = None,
         tags: list[str] | None = None,
         last_editor: str | None = None,
@@ -276,7 +285,7 @@ class VectorStore(ABC):
         external_id: str,
         title: str,
         source_uri: str | None = None,
-        last_modified: "datetime | None" = None,
+        last_modified: datetime | None = None,
         workspace_id: str | None = None,
         tags: list[str] | None = None,
         last_editor: str | None = None,

@@ -122,7 +122,10 @@ class PgVectorStore(VectorStore):
                        c.document_id::text,
                        c.chunk_index,
                        c.org_id::text,
-                       d.title
+                       d.title,
+                       d.source_provider,
+                       d.source_last_editor,
+                       d.source_last_modified
                 FROM chunks c
                 LEFT JOIN documents d ON d.id = c.document_id
                 WHERE c.org_id = %s::uuid
@@ -159,6 +162,9 @@ class PgVectorStore(VectorStore):
                 chunk_index=row[3],
                 org_id=row[4],
                 document_title=(str(row[5]).strip() if row[5] else None),
+                source_provider=row[6],
+                last_editor=(str(row[7]).strip() if row[7] else None),
+                last_modified=row[8],
             )
             for row in rows
         ]
@@ -223,7 +229,10 @@ class PgVectorStore(VectorStore):
                        m.chunk_index,
                        m.org_id::text,
                        1 - (m.embedding <=> %s) AS score,
-                       d.title
+                       d.title,
+                       d.source_provider,
+                       d.source_last_editor,
+                       d.source_last_modified
                 FROM matched m
                 LEFT JOIN documents d ON d.id = m.document_id
                 """,
@@ -257,6 +266,9 @@ class PgVectorStore(VectorStore):
                     chunk_index=row[2],
                     org_id=row[3],
                     document_title=(str(row[5]).strip() if row[5] else None),
+                    source_provider=row[6],
+                    last_editor=(str(row[7]).strip() if row[7] else None),
+                    last_modified=row[8],
                 )
             )
         return out
