@@ -805,6 +805,9 @@ class GitHubLiveSettings:
     # so the pull-request set is what actually bounds the API spend. 100 pull
     # requests + their reviews is ~101 calls per repo per sync, against
     # GitHub's 5,000/hour installation limit.
+    #: A long-lived repo accumulates stale branches; a prompt full of dead
+    #: names answers nothing.
+    max_branches: int = 50
     max_pull_requests: int = 100
     # Reviews are fetched only for this many of them, newest first. A chart of
     # who reviews is stable well before 100 samples, and this is the difference
@@ -821,6 +824,7 @@ class GitHubLiveSettings:
             patch_max_bytes=int(os.getenv("GITHUB_PATCH_MAX_BYTES", "4000")),
             max_files_per_commit=int(os.getenv("GITHUB_MAX_FILES_PER_COMMIT", "25")),
             max_commits=int(os.getenv("GITHUB_MAX_COMMITS", "20")),
+            max_branches=int(os.getenv("GITHUB_MAX_BRANCHES", "50")),
             max_pull_requests=int(os.getenv("GITHUB_MAX_PULL_REQUESTS", "100")),
             max_reviewed_pull_requests=int(
                 os.getenv("GITHUB_MAX_REVIEWED_PULL_REQUESTS", "30")

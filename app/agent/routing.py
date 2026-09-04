@@ -122,6 +122,12 @@ _CODE_INTENT = re.compile(
     r"|commit|commits|committed"
     r"|pull request|pull requests|\bPRs?\b"
     r"|branch|branches|merged?"
+    # Review vocabulary. Safe to add despite "review" appearing in documents
+    # ("under review", "performance review") because code-intent is checked
+    # AFTER the cosine probe: a document question that scores above the gate
+    # already won. `reviewer`/`approved` are code-shaped enough to be worth the
+    # remaining risk, and a misroute costs a refusal, not a wrong answer.
+    r"|reviewer|reviewers|code review|approved this|who approved"
     r"|codebase|source code"
     r"|changelog|release notes"
     r")\b",

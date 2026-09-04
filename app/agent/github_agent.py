@@ -368,6 +368,30 @@ class GitHubAgent(Agent):
                         limit=int(limit) if isinstance(limit, (int, float)) else 10,
                     )
                 )
+            if name == "list_pull_requests":
+                limit = arguments.get("limit")
+                page = reader.list_pull_requests(
+                    repo,
+                    limit=int(limit) if isinstance(limit, (int, float)) else 20,
+                )
+                return self._format_pull_requests(
+                    page, state=arguments.get("state")
+                )
+            if name == "list_reviews":
+                number = arguments.get("pull_number")
+                if not isinstance(number, (int, float)):
+                    return None
+                return self._format_reviews(
+                    repo, int(number), reader.list_reviews(repo, int(number))
+                )
+            if name == "list_branches":
+                limit = arguments.get("limit")
+                return self._format_branches(
+                    reader.list_branches(
+                        repo,
+                        limit=int(limit) if isinstance(limit, (int, float)) else 50,
+                    )
+                )
         except (SourceError, ProviderError, ValueError, TypeError):
             if name == "get_readme":
                 meta = self._format_repo_metadata(repo, known_repos or [])
@@ -485,6 +509,104 @@ class GitHubAgent(Agent):
             Citation(
                 content=commit.message[:500],
                 reference=f"{commit.repo}@{commit.sha}",
+            )
+        ]
+
+    @staticmethod
+    def _format_pull_requests(
+        page, *, state: str | None = None
+    ) -> tuple[str, list[Citation]] | None:
+        """Render pull requests, keeping the three people distinct.
+
+        Who raised it, who merged it and who reviewed it are different claims,
+        so they are separate fields here for the same reason they are separate
+        `activity_facts` kinds -- the model must not be able to collapse them
+        into "ada did 12 things".
+        """
+        items = list(getattr(page, "items", ()) or ())
+        wanted = (state or "all").lower()
+        if wanted == "open":
+            items = [p for p in items if p.state == "open"]
+        elif wanted == "merged":
+            items = [p for p in items if p.state == "merged"]
+        if not items:
+            # Genuinely no evidence. Falling back beats asking the model to
+            # narrate an empty list.
+            return None
+
+        repo = items[0].repo
+        lines = [f"Pull requests in {repo}:"]
+        for pull in items:
+            raised = pull.created_at.date().isoformat() if pull.created_at else "unknown date"
+            bits = [f"raised {raised} by {pull.author or 'unknown'}"]
+            if pull.state == "merged":
+                merged = pull.merged_at.date().isoformat() if pull.merged_at else "unknown date"
+                # `merged_by` is genuinely absent for some merges (a deleted
+                # account, an automation). Said as unknown, never guessed.
+                bits.append(f"merged {merged} by {pull.merged_by or 'unknown'}")
+            else:
+                bits.append(pull.state)
+            lines.append(f"- #{pull.number} {pull.title} ({'; '.join(bits)})")
+
+        if getattr(page, "truncated", False):
+            # A list built from the newest N while looking complete is the
+            # failure that matters, so the model is told rather than trusted to
+            # hedge.
+            lines.append(
+                "(Only the most recent pull requests were read; there may be more.)"
+            )
+
+        citations = [
+            Citation(content=p.title[:200], reference=f"{p.repo}#{p.number}")
+            for p in items[:5]
+        ]
+        return "\n".join(lines), citations
+
+    @staticmethod
+    def _format_reviews(
+        repo: str, pull_number: int, reviews: list
+    ) -> tuple[str, list[Citation]] | None:
+        """Who reviewed one pull request, deduplicated per person.
+
+        Someone who comments four times reviewed one pull request; listing
+        every event would make a chatty reviewer look like four.
+        """
+        if not reviews:
+            # An unreviewed pull request is a real, useful answer -- unlike an
+            # empty commit list, "nobody has reviewed it" is the information
+            # someone asking was after, so this does NOT fall back.
+            return (
+                f"Pull request #{pull_number} in {repo} has no reviews yet.",
+                [Citation(content="no reviews", reference=f"{repo}#{pull_number}")],
+            )
+
+        seen: dict[str, str] = {}
+        for review in reviews:
+            who = getattr(review, "reviewer", None)
+            if who and who not in seen:
+                seen[who] = getattr(review, "state", "") or "reviewed"
+
+        lines = [f"Reviews on #{pull_number} in {repo}:"]
+        for who, verdict in seen.items():
+            lines.append(f"- {who}: {verdict.replace('_', ' ').lower()}")
+        return "\n".join(lines), [
+            Citation(content=", ".join(seen), reference=f"{repo}#{pull_number}")
+        ]
+
+    @staticmethod
+    def _format_branches(branches: list) -> tuple[str, list[Citation]] | None:
+        if not branches:
+            return None
+        repo = branches[0].repo
+        lines = [f"Branches in {repo}:"]
+        for branch in branches:
+            lines.append(
+                f"- {branch.name}" + (" (protected)" if branch.protected else "")
+            )
+        return "\n".join(lines), [
+            Citation(
+                content=", ".join(b.name for b in branches[:20]),
+                reference=f"{repo} branches",
             )
         ]
 

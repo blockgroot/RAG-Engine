@@ -125,6 +125,20 @@ class Review:
 
 
 @dataclass(frozen=True)
+class Branch:
+    """One branch. Enough to answer "what are we working on?" without a clone."""
+
+    repo: str
+    name: str
+    #: True when GitHub reports branch protection. Reported rather than
+    #: inferred: "is main protected?" is a real question and a guess is worse
+    #: than silence.
+    protected: bool = False
+    #: The tip commit's own SHA, so a follow-up can fetch it.
+    sha: str | None = None
+
+
+@dataclass(frozen=True)
 class PullRequestPage:
     """Pull requests plus whether we saw all of them.
 
@@ -193,6 +207,16 @@ class GitHubReader(ABC):
         GitHub can sort on -- so a very old pull request touched yesterday is
         included, which is correct for "what moved recently" and is why the
         caller, not this method, decides which date a chart buckets on.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_branches(self, repo: str, *, limit: int = 50) -> list[Branch]:
+        """Branches in ``repo``, bounded.
+
+        A long-lived repo can have hundreds of stale branches, so this is
+        capped like every other walk here -- a prompt full of dead branch names
+        answers nothing.
         """
         raise NotImplementedError
 

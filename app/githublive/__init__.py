@@ -24,6 +24,7 @@ from .repos import (
     scope_to_config,
 )
 from .base import (
+    Branch,
     CommitDetail,
     CommitFile,
     CommitSummary,
@@ -52,6 +53,7 @@ __all__ = [
     "RepoReadme",
     "CommitDetail",
     "CommitFile",
+    "Branch",
     "CommitSummary",
     "PullRequest",
     "PullRequestPage",

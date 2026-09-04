@@ -431,7 +431,116 @@ LIST_COMMITS_TOOL = {
     },
 }
 
-GITHUB_TOOLS = [GET_README_TOOL, GET_COMMIT_TOOL, LIST_COMMITS_TOOL]
+LIST_PULL_REQUESTS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "list_pull_requests",
+        "description": (
+            "List pull requests in a repository, newest first, with who raised "
+            "each one, who merged it, its state and its dates. Call this for "
+            "any question about pull requests, PRs, merges, who is shipping, "
+            "or what is waiting to be merged."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "repo": {
+                    "type": "string",
+                    "description": (
+                        "Repository as 'owner/name' or just 'name', from the "
+                        "AVAILABLE REPOSITORIES list."
+                    ),
+                },
+                "state": {
+                    "type": "string",
+                    "enum": ["all", "open", "merged"],
+                    "description": (
+                        "Narrow to open or merged pull requests. Default 'all'."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "How many to return (default 20).",
+                },
+            },
+            "required": ["repo"],
+        },
+    },
+}
+
+LIST_REVIEWS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "list_reviews",
+        "description": (
+            "List the reviews on ONE pull request: who reviewed it and whether "
+            "they approved or requested changes. Call this for questions about "
+            "who reviewed, who approved, or whether a specific pull request has "
+            "been reviewed. Needs the pull request number."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "repo": {
+                    "type": "string",
+                    "description": (
+                        "Repository as 'owner/name' or just 'name', from the "
+                        "AVAILABLE REPOSITORIES list."
+                    ),
+                },
+                "pull_number": {
+                    "type": "integer",
+                    "description": "The pull request number, e.g. 142.",
+                },
+            },
+            "required": ["repo", "pull_number"],
+        },
+    },
+}
+
+LIST_BRANCHES_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "list_branches",
+        "description": (
+            "List the branches in a repository and whether each is protected. "
+            "Call this for questions about branches, what is being worked on, "
+            "release branches, or whether a branch exists."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "repo": {
+                    "type": "string",
+                    "description": (
+                        "Repository as 'owner/name' or just 'name', from the "
+                        "AVAILABLE REPOSITORIES list."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "How many branches to return (default 50).",
+                },
+            },
+            "required": ["repo"],
+        },
+    },
+}
+
+# Every tool the GitHub agent may call. All five are LIVE reads -- GitHub
+# stores no chunks, so this list is the whole surface it can answer from, and a
+# question needing something absent here degrades to the fixed fallback. The
+# pull-request and review tools existed on the reader for charts long before
+# they were offered here, which made "who reviewed the auth PR?" unanswerable
+# against data that was one call away.
+GITHUB_TOOLS = [
+    GET_README_TOOL,
+    GET_COMMIT_TOOL,
+    LIST_COMMITS_TOOL,
+    LIST_PULL_REQUESTS_TOOL,
+    LIST_REVIEWS_TOOL,
+    LIST_BRANCHES_TOOL,
+]
 
 
 def format_repo_catalog(repos) -> str:

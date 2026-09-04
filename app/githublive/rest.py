@@ -33,6 +33,7 @@ from ..auth.github_app import GITHUB_API_BASE, github_headers
 from ..config.settings import GitHubLiveSettings
 from ..core.exceptions import SourceError
 from .base import (
+    Branch,
     CommitDetail,
     CommitFile,
     CommitSummary,
@@ -290,6 +291,27 @@ class RestGitHubReader(GitHubReader):
             truncated = True
 
         return PullRequestPage(items=tuple(items[:cap]), truncated=truncated)
+
+    def list_branches(self, repo: str, *, limit: int = 50) -> list[Branch]:
+        full_name = resolve_repo(self._scope, repo)
+        cap = max(1, min(int(limit or 50), self._settings.max_branches))
+        payload = self._request(
+            f"{GITHUB_API_BASE}/repos/{full_name}/branches",
+            accept=_JSON_ACCEPT,
+            params={"per_page": min(100, cap)},
+            what=f"branches of {full_name}",
+        ).json() or []
+
+        return [
+            Branch(
+                repo=full_name,
+                name=str(item.get("name") or ""),
+                protected=bool(item.get("protected")),
+                sha=((item.get("commit") or {}).get("sha")),
+            )
+            for item in payload[:cap]
+            if item.get("name")
+        ]
 
     def list_reviews(self, repo: str, pull_number: int) -> list[Review]:
         full_name = resolve_repo(self._scope, repo)
