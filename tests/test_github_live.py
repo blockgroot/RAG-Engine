@@ -349,3 +349,71 @@ def test_list_repos_comes_from_stored_scope_without_any_http_call(monkeypatch):
 
     assert {r.full_name for r in repos} == {"acme-inc/handbook", "acme-inc/payments-svc"}
     assert calls == []
+
+
+# -- state is applied to the REQUEST, never to the result ------------------
+
+
+def _pull_payload(number, *, merged=False, closed=False, title="Harden auth"):
+    return {
+        "number": number,
+        "title": title,
+        "user": {"login": "ada"},
+        "state": "closed" if (merged or closed) else "open",
+        "created_at": "2026-08-01T10:00:00Z",
+        "updated_at": "2026-09-01T10:00:00Z",
+        "merged_at": "2026-09-02T10:00:00Z" if merged else None,
+        "closed_at": "2026-09-02T10:00:00Z" if (merged or closed) else None,
+        "html_url": f"https://github.com/acme-inc/handbook/pull/{number}",
+    }
+
+
+def test_open_pull_requests_are_filtered_by_the_request_not_the_result(monkeypatch):
+    """The bug this pins: filtering a newest-first window of 20 for `open`
+    returns NOTHING on a busy repo, because the newest 20 are usually all
+    merged -- and the agent then reports "no open pull requests" while several
+    are open. GitHub can filter this server-side, so it must."""
+    reader, calls = _reader(
+        monkeypatch,
+        [{"status": 200, "json": [_pull_payload(9)]}],
+    )
+    page = reader.list_pull_requests("handbook", limit=20, state="open")
+
+    assert calls[0]["params"]["state"] == "open"
+    assert [p.number for p in page.items] == [9]
+
+
+def test_merged_asks_for_closed_and_drops_the_abandoned_ones(monkeypatch):
+    """"merged" is not a GitHub state -- a merged pull request is `closed`, so
+    counting off the request alone would count every abandoned branch."""
+    reader, calls = _reader(
+        monkeypatch,
+        [{"status": 200, "json": [
+            _pull_payload(1, merged=True),
+            _pull_payload(2, closed=True),  # closed without merging
+        ]}],
+    )
+    page = reader.list_pull_requests("handbook", limit=20, state="merged")
+
+    assert calls[0]["params"]["state"] == "closed"
+    assert [p.number for p in page.items] == [1]
+    assert page.items[0].state == "merged"
+
+
+def test_an_unrecognised_state_falls_back_to_all(monkeypatch):
+    reader, calls = _reader(monkeypatch, [{"status": 200, "json": []}])
+    reader.list_pull_requests("handbook", state="whatever")
+    assert calls[0]["params"]["state"] == "all"
+
+
+def test_get_pull_request_reads_the_merger_the_listing_omits(monkeypatch):
+    """GitHub returns `merged_by` ONLY from the single-pull-request endpoint,
+    which is why a chart of mergers cannot be built from a listing."""
+    payload = _pull_payload(42, merged=True) | {"merged_by": {"login": "grace"}}
+    reader, calls = _reader(monkeypatch, [{"status": 200, "json": payload}])
+
+    pull = reader.get_pull_request("handbook", 42)
+
+    assert pull.merged_by == "grace"
+    assert pull.state == "merged"
+    assert calls[0]["url"].endswith("/repos/acme-inc/handbook/pulls/42")

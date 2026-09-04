@@ -79,3 +79,36 @@ def test_the_listing_query_asks_for_the_identifier():
     from app.sources.linear import _ISSUES_QUERY
 
     assert "identifier" in _ISSUES_QUERY
+
+
+# --------------------------------------------------------------------------
+# Provenance: whose issue is this
+# --------------------------------------------------------------------------
+
+
+def _fetch(issue):
+    """``fetch_document`` with the GraphQL call stubbed out."""
+    from app.sources.linear import LinearAdapter
+
+    adapter = object.__new__(LinearAdapter)
+    payload = dict(issue)
+    payload.setdefault("description", "Login bounces to /login.")
+    payload.setdefault("comments", {"nodes": []})
+    payload.setdefault("url", "https://linear.app/acme/issue/ENG-142")
+    payload.setdefault("updatedAt", "2026-09-01T10:00:00.000Z")
+    adapter._query = lambda *_a, **_kw: {"issue": payload}
+    return adapter.fetch_document("uuid-1")
+
+
+def test_the_assignee_becomes_the_documents_editor():
+    """Linear has no "last edited by" on an issue, so the assignee is the
+    nearest true statement -- and it is what makes the provenance line able to
+    say whose ticket it is, not just what the preamble prose says."""
+    assert _fetch(ISSUE).last_editor == "Priya"
+
+
+def test_an_unassigned_issue_carries_no_editor_at_all():
+    """None, never "unassigned": an unknown editor must not reach the prompt as
+    a placeholder, or the model answers "who wrote this?" with it."""
+    issue = {k: v for k, v in ISSUE.items() if k != "assignee"}
+    assert _fetch(issue).last_editor is None

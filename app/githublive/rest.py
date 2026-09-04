@@ -243,9 +243,22 @@ class RestGitHubReader(GitHubReader):
         *,
         since: datetime | None = None,
         limit: int = 100,
+        state: str = "all",
     ) -> PullRequestPage:
         full_name = resolve_repo(self._scope, repo)
         cap = max(1, min(int(limit or 100), self._settings.max_pull_requests))
+
+        # The filter goes on the REQUEST. Asking for `all` and keeping the open
+        # ones out of a newest-first window of 20 returns nothing on a busy
+        # repo, because the newest 20 are usually all merged -- and the caller
+        # then says "no open pull requests" while several are open.
+        wanted = (state or "all").lower()
+        # "merged" is not a GitHub state: a merged pull request is `closed`, so
+        # ask for closed and drop the ones that were abandoned rather than
+        # merged. Same reason `_pull_request` derives our own `state`.
+        requested = "closed" if wanted == "merged" else (
+            wanted if wanted in ("open", "closed") else "all"
+        )
 
         items: list[PullRequest] = []
         truncated = False
@@ -258,7 +271,7 @@ class RestGitHubReader(GitHubReader):
                 f"{GITHUB_API_BASE}/repos/{full_name}/pulls",
                 accept=_JSON_ACCEPT,
                 params={
-                    "state": "all",
+                    "state": requested,
                     "sort": "updated",
                     "direction": "desc",
                     "per_page": min(100, cap - len(items)),
@@ -278,7 +291,12 @@ class RestGitHubReader(GitHubReader):
                     # older too -- stop rather than page through history.
                     stop = True
                     break
-                items.append(_pull_request(full_name, item))
+                pull = _pull_request(full_name, item)
+                if wanted == "merged" and not pull.merged_at:
+                    # Closed without merging. Counted against neither the cap
+                    # nor the answer -- an abandoned branch is not a merge.
+                    continue
+                items.append(pull)
 
             if stop or len(payload) < 100:
                 break
@@ -291,6 +309,23 @@ class RestGitHubReader(GitHubReader):
             truncated = True
 
         return PullRequestPage(items=tuple(items[:cap]), truncated=truncated)
+
+    def get_pull_request(self, repo: str, pull_number: int) -> PullRequest | None:
+        """One pull request in full, for ``merged_by``.
+
+        GitHub omits ``merged_by`` from the pulls LIST payload and returns it
+        only here, so a merger can never be read off a listing. One call per
+        pull request: the caller bounds the set.
+        """
+        full_name = resolve_repo(self._scope, repo)
+        payload = self._request(
+            f"{GITHUB_API_BASE}/repos/{full_name}/pulls/{int(pull_number)}",
+            accept=_JSON_ACCEPT,
+            what=f"pull request {full_name}#{pull_number}",
+        ).json() or {}
+        if not payload:
+            return None
+        return _pull_request(full_name, payload)
 
     def list_branches(self, repo: str, *, limit: int = 50) -> list[Branch]:
         full_name = resolve_repo(self._scope, repo)

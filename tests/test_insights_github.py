@@ -59,13 +59,18 @@ def _pr(number, *, author="ada", merged_by=None, created_days=10,
 class FakeReader:
     """Only what github_facts actually calls."""
 
-    def __init__(self, pulls, reviews=None, truncated=False, commits=None):
+    def __init__(self, pulls, reviews=None, truncated=False, commits=None,
+                 details=None):
         self._page = PullRequestPage(items=tuple(pulls), truncated=truncated)
         self._reviews = reviews or {}
         self._commits = commits or []
+        #: {number: PullRequest} as the SINGLE-pull-request endpoint returns
+        #: it -- the only place GitHub reports `merged_by`.
+        self._details = details or {}
         self.repos_listed = 0
         self.review_calls: list[int] = []
         self.commit_calls: list[str] = []
+        self.detail_calls: list[int] = []
 
     def list_repos(self):
         from app.githublive.repos import RepoRef
@@ -73,8 +78,12 @@ class FakeReader:
         self.repos_listed += 1
         return [RepoRef(full_name="acme/api", description=None, topics=())]
 
-    def list_pull_requests(self, repo, *, since=None, limit=100):
+    def list_pull_requests(self, repo, *, since=None, limit=100, state="all"):
         return self._page
+
+    def get_pull_request(self, repo, pull_number):
+        self.detail_calls.append(pull_number)
+        return self._details.get(pull_number)
 
     def list_reviews(self, repo, pull_number):
         self.review_calls.append(pull_number)
@@ -419,3 +428,77 @@ def test_the_external_tick_reports_facts_separately_from_queued_syncs():
     assert "facts_recorded" in result
     assert "facts_backfilled" in result
     assert "syncs_queued" in result
+
+
+# --------------------------------------------------------------------------
+# The verdict, not the first event
+# --------------------------------------------------------------------------
+
+
+def test_a_reviewer_who_commented_then_approved_is_recorded_as_approving(org):
+    """GitHub returns reviews OLDEST-first, so keeping the first event stored
+    COMMENTED on the most ordinary sequence there is. `state` is what a chart
+    of approvals reads, so the wrong one is a wrong chart."""
+    now = datetime.now(timezone.utc)
+    reader = FakeReader(
+        [_pr(7, merged_days=1)],
+        reviews={7: [
+            Review("acme/api", 7, "grace", "COMMENTED", now - timedelta(hours=2)),
+            Review("acme/api", 7, "grace", "APPROVED", now - timedelta(minutes=5)),
+        ]},
+    )
+    github_facts.record_github_facts(org, workspace_id=None, reader=reader)
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT actor, state FROM activity_facts "
+            " WHERE org_id = %s AND kind = 'pr_reviewed'",
+            (org,),
+        ).fetchall()
+
+    assert rows == [("grace", "APPROVED")]  # one row, and the right verdict
+
+
+# --------------------------------------------------------------------------
+# The merger the listing never carries
+# --------------------------------------------------------------------------
+
+
+def test_the_merger_is_read_from_the_detail_endpoint(org):
+    """`merged_by` is absent from the pulls LIST payload, so without a detail
+    call the "who merges them" chart is empty on every tenant -- which reads as
+    "nobody merges" rather than as a gap in what we read."""
+    reader = FakeReader(
+        [_pr(4, merged_days=1, merged_by=None)],
+        details={4: _pr(4, merged_days=1, merged_by="grace")},
+    )
+    github_facts.record_github_facts(org, workspace_id=None, reader=reader)
+
+    assert reader.detail_calls == [4]
+    rows = store.run_metric("prs_merged", org_id=org, workspace_id=None,
+                            period="month", days=365, group_by="actor")
+    assert [(r.group, r.value) for r in rows] == [("grace", 1.0)]
+
+
+def test_an_open_pull_request_costs_no_detail_call(org):
+    """The detail call exists for one field, so it is only worth paying where
+    that field can exist."""
+    reader = FakeReader([_pr(5)])
+    github_facts.record_github_facts(org, workspace_id=None, reader=reader)
+    assert reader.detail_calls == []
+
+
+def test_a_failed_detail_read_still_counts_the_merge(org):
+    """The merge happened. It just leaves the per-person breakdown, exactly as
+    a merge with no `merged_by` at all already did."""
+
+    class _Broken(FakeReader):
+        def get_pull_request(self, repo, pull_number):
+            self.detail_calls.append(pull_number)
+            raise RuntimeError("502")
+
+    reader = _Broken([_pr(6, merged_days=1)])
+    github_facts.record_github_facts(org, workspace_id=None, reader=reader)
+
+    assert reader.detail_calls == [6]
+    assert _total("prs_merged", org) == 1.0

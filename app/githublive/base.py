@@ -124,6 +124,40 @@ class Review:
     submitted_at: datetime | None
 
 
+#: A review event that states a position on the change, as opposed to one that
+#: merely leaves a comment. Used to pick which of a person's events represents
+#: their review.
+VERDICT_STATES = ("APPROVED", "CHANGES_REQUESTED")
+
+
+def dedupe_reviews(reviews) -> list[Review]:
+    """One review per person, keeping the event that is their actual verdict.
+
+    GitHub returns reviews OLDEST-first, so keeping the first event stores the
+    wrong one on the most ordinary sequence there is: comment, then approve
+    would be recorded as COMMENTED, and "who approved #7?" would miss the
+    person who did. A verdict therefore beats a comment, and between two
+    events of equal weight the later one wins.
+
+    Deduplicated at all because someone who comments four times on one pull
+    request reviewed one pull request -- counting events would make a chatty
+    reviewer outrank a thorough one.
+    """
+    best: dict[str, Review] = {}
+    for review in reviews or ():
+        who = getattr(review, "reviewer", None)
+        if not who:
+            continue
+        current = best.get(who)
+        if current is None or _review_weight(review) >= _review_weight(current):
+            best[who] = review
+    return list(best.values())
+
+
+def _review_weight(review) -> int:
+    return 2 if str(getattr(review, "state", "") or "").upper() in VERDICT_STATES else 1
+
+
 @dataclass(frozen=True)
 class Branch:
     """One branch. Enough to answer "what are we working on?" without a clone."""
@@ -200,6 +234,7 @@ class GitHubReader(ABC):
         *,
         since: datetime | None = None,
         limit: int = 100,
+        state: str = "all",
     ) -> PullRequestPage:
         """List pull requests, newest first, bounded and marking truncation.
 
@@ -207,6 +242,24 @@ class GitHubReader(ABC):
         GitHub can sort on -- so a very old pull request touched yesterday is
         included, which is correct for "what moved recently" and is why the
         caller, not this method, decides which date a chart buckets on.
+
+        ``state`` MUST be applied to the REQUEST, never by filtering the
+        result. Filtering a newest-first window of 20 for ``open`` returns an
+        empty list on any busy repo -- the newest 20 are usually all merged --
+        and the caller then reports "no open pull requests" while several are
+        open. ``"merged"`` has no GitHub equivalent: ask for ``closed`` and
+        drop anything without a ``merged_at``.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_pull_request(self, repo: str, pull_number: int) -> PullRequest | None:
+        """One pull request in full.
+
+        Exists for exactly one field: ``merged_by`` is absent from the LIST
+        payload, so the listing alone cannot answer "who merged it" and a
+        chart of mergers built from it is empty. One call per pull request, so
+        callers must bound the set first.
         """
         raise NotImplementedError
 

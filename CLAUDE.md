@@ -103,6 +103,30 @@ source-agnostic on purpose.
   so that cannot recur silently. An **unreviewed PR answers** ("nobody has
   reviewed it" is what the asker wanted); an empty commit or branch list falls
   back, because narrating nothing is worse than the fixed reply.
+- **`state` goes on the REQUEST, never on the result.** Filtering a
+  newest-first window of 20 for `open` returns an empty list on any busy repo
+  — the newest 20 are usually all merged — and the agent then says "no open
+  pull requests" while several are open. `merged` has no GitHub equivalent:
+  ask `state=closed` and drop anything without `merged_at`.
+- **Review dedup keeps each person's VERDICT, not their first event**
+  (`githublive/base.py::dedupe_reviews`, shared by the agent and
+  `github_facts`). GitHub returns reviews **oldest-first**, so "commented,
+  then approved" stored as `COMMENTED` made "who approved #7?" miss the
+  approver. APPROVED/CHANGES_REQUESTED beat COMMENTED; equal weight, later
+  wins.
+- **`merged_by` is absent from the pulls LIST payload** — GitHub returns it
+  only from `GET /pulls/{n}`, so a merger can never be read off a listing.
+  Facts fill it with one detail call per merged PR **inside the slice reviews
+  already pay for** (without it the "who merges them" chart is empty on every
+  tenant, which reads as "nobody merges"); the interactive path enriches a
+  list of ≤5 and otherwise **omits** the merger — "merged by unknown" on
+  nearly every PR is a claim about the merger, not a disclosed gap.
+- **`list_reviews` takes `pull_query` as well as `pull_number`**, resolving a
+  PR by title in the same tool call. The agent runs ONE tool round and never
+  loops, so a tool requiring a number the question does not contain exists and
+  is *unreachable* — "who reviewed the auth PR?" could never fetch reviews.
+  Two equally good title matches resolve to **neither**: the wrong PR is worse
+  than the fallback.
 - **Routing is a deterministic LangGraph `StateGraph`** — one node per agent,
   a plain Python router. No LLM picks the RAG source. One tool round, never a loop.
 - **The agent is CHOSEN by measurement, not by the member** (`app/agent/
@@ -132,6 +156,16 @@ source-agnostic on purpose.
   reads live, so a fresh installation with no facts can still answer, and
   gating on facts would blank a real answer for a whole sync interval. A wrong
   pick costs GitHubAgent's fixed fallback, the standard the router already sets.
+- **`github_live` runs BEFORE the cosine probe, and that is a known
+  reachability cost**, not an oversight: an architecture doc that would have
+  scored 0.8 on "who owns the auth code?" is never asked once the classifier
+  says GitHub. Accepted because the outcome matches the rule the router
+  already sets (a misroute costs GitHubAgent's fallback, never a wrong answer
+  from the wrong source) and because ordering it after the probe would restore
+  exactly the failure it exists to fix — a Notion page *about* auth outscoring
+  the code. `_CODE_INTENT` stays LAST for the opposite reason: it cannot tell
+  "auth code" from "code of conduct", so it must not pre-empt a document
+  question that scores.
 - **The two keyword rules STAY as the floor** — `classify_question` runs
   `fail_open=True`, so a dead or rate-limited classifier silently un-routes
   GitHub. `github_live` is strictly additive and must never become the only
@@ -705,6 +739,10 @@ frontend/ Next.js 15 portal · tests/ pytest
   the activity feed and never for the document, so "what's the status of
   ENG-142?" refused one field away. An unset assignee is omitted, never
   "unassigned".
+- **Linear's `last_editor` is the ASSIGNEE** — the API has no "last edited by"
+  on an issue, so it is the nearest true statement, and it is what lets the
+  provenance line say whose ticket it is rather than only the preamble prose.
+  Unset ⇒ `None`, never "unassigned".
 - **Linear auth differs per credential**: personal key RAW, OAuth as
   `Bearer` — wrong = silent 401. Pass `updatedAt` as one `IssueFilter`
   variable; Linear renamed the inner scalar.

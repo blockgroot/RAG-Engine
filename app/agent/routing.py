@@ -341,21 +341,28 @@ def choose_agent(
        this is a chart and names a registry metric. The metric's provider IS
        the connector — InsightsAgent never blends corpora. A visual we cannot
        count is still routed here so RAG cannot invent a number.
-    3. **A named repository wins.** Nothing else in the org is called that, so
+    3. **A classified live-code question**, when the classifier says the answer
+       is in the code itself rather than in a document. The one place a model
+       picks a non-chart destination, and only ever GitHub — which has no
+       corpus, so the cosine probe cannot reach it. Offered only when GitHub is
+       connected, and a resolvable metric (step 2) still wins.
+    4. **A named repository wins.** Nothing else in the org is called that, so
        it is the least ambiguous signal available — and it must beat the vector
        probe, because a Notion page *about* a repo would otherwise outscore the
        repo itself.
-    4. **One embedded source ⇒ no probe.** Saves an embedding and a query in
+    5. **One embedded source ⇒ no probe.** Saves an embedding and a query in
        the common single-source tenant.
-    5. **Otherwise, the best-scoring provider**, if it clears the confidence
+    6. **Otherwise, the best-scoring provider**, if it clears the confidence
        gate. Same threshold retrieval already uses, for the same reason: below
        it, nothing here resembles the question.
-    6. **Code intent, when nothing embedded cleared the gate.** Last, and only
-       then, so a code word inside a document question cannot hijack it.
-    7. **The best score anyway**, even below the gate — the routed agent's own
+    7. **Code intent (the keyword floor), when nothing embedded cleared the
+       gate.** Kept below the probe so a code word inside a document question
+       cannot hijack it, and kept at all because step 3 fails OPEN — a dead
+       classifier must not make GitHub unreachable.
+    8. **The best score anyway**, even below the gate — the routed agent's own
        gate will refuse honestly, which is a better outcome than routing to a
        default agent that never had the content.
-    8. **The pre-existing default** (workspace agent inside a space, else the
+    9. **The pre-existing default** (workspace agent inside a space, else the
        legacy policy agent) when there is nothing to route to at all.
     """
     if requested_agent in DIRECT_AGENT_KEYS or requested_agent == INSIGHTS_KEY:

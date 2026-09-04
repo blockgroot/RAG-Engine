@@ -476,7 +476,9 @@ LIST_REVIEWS_TOOL = {
             "List the reviews on ONE pull request: who reviewed it and whether "
             "they approved or requested changes. Call this for questions about "
             "who reviewed, who approved, or whether a specific pull request has "
-            "been reviewed. Needs the pull request number."
+            "been reviewed. Give 'pull_number' when the question names one "
+            "(e.g. #142), otherwise put what the pull request is ABOUT in "
+            "'pull_query' (e.g. 'auth') and it will be looked up by title."
         ),
         "parameters": {
             "type": "object",
@@ -492,8 +494,18 @@ LIST_REVIEWS_TOOL = {
                     "type": "integer",
                     "description": "The pull request number, e.g. 142.",
                 },
+                "pull_query": {
+                    "type": "string",
+                    "description": (
+                        "What the pull request is about, when its number is "
+                        "unknown. Matched against pull request titles."
+                    ),
+                },
             },
-            "required": ["repo", "pull_number"],
+            # `pull_number` is NOT required: the agent runs one tool round and
+            # never loops, so a model that had to know the number first could
+            # never reach this tool for "who reviewed the auth PR?".
+            "required": ["repo"],
         },
     },
 }

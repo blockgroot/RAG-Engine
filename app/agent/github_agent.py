@@ -48,7 +48,13 @@ from ..core.answer_sources import (
 from ..core.exceptions import ConfigurationError, LLMProviderError, ProviderError, SourceError
 from ..llm.routed import default_model_only
 from ..core.streaming import chunk_answer
-from ..githublive.base import CommitDetail, CommitSummary, GitHubReader, RepoReadme
+from ..githublive.base import (
+    CommitDetail,
+    CommitSummary,
+    GitHubReader,
+    RepoReadme,
+    dedupe_reviews,
+)
 from ..llm.base import LLMProvider
 from ..rag.prompts import (
     GITHUB_TOOLS,
@@ -370,19 +376,23 @@ class GitHubAgent(Agent):
                 )
             if name == "list_pull_requests":
                 limit = arguments.get("limit")
+                state = arguments.get("state")
                 page = reader.list_pull_requests(
                     repo,
                     limit=int(limit) if isinstance(limit, (int, float)) else 20,
+                    # On the request. Filtering a newest-first window here
+                    # returns nothing on a busy repo.
+                    state=state if isinstance(state, str) and state else "all",
                 )
                 return self._format_pull_requests(
-                    page, state=arguments.get("state")
+                    _with_mergers(reader, page), state=state
                 )
             if name == "list_reviews":
-                number = arguments.get("pull_number")
-                if not isinstance(number, (int, float)):
+                number = _resolve_pull_number(reader, repo, arguments)
+                if number is None:
                     return None
                 return self._format_reviews(
-                    repo, int(number), reader.list_reviews(repo, int(number))
+                    repo, number, reader.list_reviews(repo, number)
                 )
             if name == "list_branches":
                 limit = arguments.get("limit")
@@ -541,9 +551,15 @@ class GitHubAgent(Agent):
             bits = [f"raised {raised} by {pull.author or 'unknown'}"]
             if pull.state == "merged":
                 merged = pull.merged_at.date().isoformat() if pull.merged_at else "unknown date"
-                # `merged_by` is genuinely absent for some merges (a deleted
-                # account, an automation). Said as unknown, never guessed.
-                bits.append(f"merged {merged} by {pull.merged_by or 'unknown'}")
+                # The merger is OMITTED when we do not have it, never rendered
+                # as "unknown". GitHub leaves `merged_by` out of the LIST
+                # payload entirely, so "by unknown" would appear on almost
+                # every merged pull request and read as a claim about the
+                # merger rather than a gap in what we read.
+                bits.append(
+                    f"merged {merged} by {pull.merged_by}" if pull.merged_by
+                    else f"merged {merged}"
+                )
             else:
                 bits.append(pull.state)
             lines.append(f"- #{pull.number} {pull.title} ({'; '.join(bits)})")
@@ -580,11 +596,13 @@ class GitHubAgent(Agent):
                 [Citation(content="no reviews", reference=f"{repo}#{pull_number}")],
             )
 
-        seen: dict[str, str] = {}
-        for review in reviews:
-            who = getattr(review, "reviewer", None)
-            if who and who not in seen:
-                seen[who] = getattr(review, "state", "") or "reviewed"
+        # Keeps each person's VERDICT, not their first event: GitHub returns
+        # reviews oldest-first, so "commented, then approved" stored as
+        # COMMENTED would make "who approved this?" miss the approver.
+        seen: dict[str, str] = {
+            review.reviewer: (getattr(review, "state", "") or "reviewed")
+            for review in dedupe_reviews(reviews)
+        }
 
         lines = [f"Reviews on #{pull_number} in {repo}:"]
         for who, verdict in seen.items():
@@ -631,3 +649,86 @@ class GitHubAgent(Agent):
             for c in commits[:5]
         ]
         return "\n".join(lines), citations
+
+
+#: How many pull requests are worth one detail call each to learn who merged
+#: them. A targeted question ("who merged the auth PR?") narrows the list, so
+#: this lands where it is asked for; a browse of 20 is not made to pay 20 round
+#: trips on an interactive path. Charts fill the merger properly on the
+#: background sync instead (``insights/github_facts.py``).
+_MERGER_DETAIL_LIMIT = 5
+
+
+def _with_mergers(reader, page):
+    """Fill ``merged_by`` on a SHORT list of merged pull requests.
+
+    GitHub returns ``merged_by`` only from the single-pull-request endpoint, so
+    a listing can never say who merged anything. Rather than answer "merged by
+    unknown", a narrow result set is enriched one call at a time.
+    """
+    items = list(getattr(page, "items", ()) or ())
+    need = [p for p in items if p.merged_at and not p.merged_by]
+    if not need or len(items) > _MERGER_DETAIL_LIMIT:
+        return page
+    detail = getattr(reader, "get_pull_request", None)
+    if detail is None:
+        return page
+
+    filled = []
+    for pull in items:
+        if pull in need:
+            try:
+                full = detail(pull.repo, pull.number)
+            except (SourceError, ProviderError, ValueError, TypeError):
+                # One missing merger is a gap in one line, not a failed answer.
+                full = None
+            if full is not None:
+                pull = full
+        filled.append(pull)
+    return type(page)(items=tuple(filled), truncated=getattr(page, "truncated", False))
+
+
+#: The window a title match searches. Newest-first, so a question about a
+#: recent pull request resolves and an ancient one falls back rather than
+#: paging through a repo's history.
+_PULL_MATCH_LIMIT = 30
+
+
+def _resolve_pull_number(reader, repo: str, arguments: dict) -> int | None:
+    """The pull request a review question is about, by number or by name.
+
+    Reviews need a number, but a question rarely has one -- "who reviewed the
+    auth PR?" does not. Without this the tool exists and is unreachable,
+    because the agent runs exactly ONE tool round and never loops, so the model
+    cannot list pull requests and then ask about one. Resolving the name here
+    keeps that single round: two bounded reads inside one tool call.
+    """
+    number = arguments.get("pull_number")
+    if isinstance(number, (int, float)) and int(number) > 0:
+        return int(number)
+
+    query = arguments.get("pull_query")
+    if not isinstance(query, str) or not query.strip():
+        return None
+
+    try:
+        page = reader.list_pull_requests(repo, limit=_PULL_MATCH_LIMIT)
+    except (SourceError, ProviderError, ValueError, TypeError):
+        return None
+
+    words = {w for w in re.findall(r"[a-z0-9]+", query.lower()) if len(w) > 2}
+    if not words:
+        return None
+
+    best, best_score = None, 0
+    for pull in getattr(page, "items", ()) or ():
+        title = set(re.findall(r"[a-z0-9]+", (pull.title or "").lower()))
+        score = len(words & title)
+        # Strictly greater, so two equally good titles resolve to NEITHER --
+        # answering about the wrong pull request is worse than falling back.
+        if score > best_score:
+            best, best_score = pull, score
+        elif score == best_score and score > 0 and pull is not best:
+            best = None
+    return best.number if best is not None else None
+

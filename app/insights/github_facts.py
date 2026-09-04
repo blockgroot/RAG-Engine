@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from ..config.settings import GitHubLiveSettings
+from ..githublive.base import dedupe_reviews
 from ..db.connection import get_connection
 
 logger = logging.getLogger(__name__)
@@ -107,8 +108,17 @@ def record_github_facts(
         seen_repos += 1
         truncated = truncated or page.truncated
 
+        # `merged_by` is absent from the LIST payload, so a merger can only be
+        # read one pull request at a time. Bounded to the same slice reviews
+        # already pay for -- without it the "who merges them" chart is empty on
+        # every tenant, which reads as "nobody merges" rather than as a gap.
+        mergers = _fill_mergers(
+            reader, page.items[: settings.max_reviewed_pull_requests]
+        )
         for pull in page.items:
-            rows.extend(_pull_rows(org_id, workspace_id, pull))
+            rows.extend(
+                _pull_rows(org_id, workspace_id, mergers.get(pull.number, pull))
+            )
 
         # Reviews are one call PER pull request, so the pull-request set is
         # bounded FIRST and only the newest slice is reviewed. A chart of who
@@ -175,16 +185,13 @@ def _pull_rows(org_id, workspace_id, pull) -> list[tuple]:
 def _review_rows(org_id, workspace_id, pull, reviews) -> list[tuple]:
     """One row per reviewer per pull request, not per review event.
 
-    Deduplicated on purpose: someone who comments four times on one pull
-    request reviewed one pull request, and counting events would make a chatty
-    reviewer outrank a thorough one.
+    Deduplication keeps each person's VERDICT rather than their first event --
+    see ``githublive.base.dedupe_reviews``. Storing the first would record
+    "commented, then approved" as COMMENTED, and the state is what a chart of
+    approvals reads.
     """
     rows = []
-    seen: set[str] = set()
-    for review in reviews:
-        if not review.reviewer or review.reviewer in seen:
-            continue
-        seen.add(review.reviewer)
+    for review in dedupe_reviews(reviews):
         rows.append((
             org_id, workspace_id, PROVIDER, KIND_REVIEWED,
             review.reviewer, pull.repo, review.state,
@@ -249,3 +256,32 @@ def _write(rows: list[tuple], workspace_id: str | None) -> int:
         logger.warning("insights: could not write GitHub facts", exc_info=True)
         return 0
     return len(rows)
+
+
+def _fill_mergers(reader, pulls) -> dict[int, object]:
+    """``{number: detailed pull}`` for the merged ones we can enrich.
+
+    One call each, so the caller passes an already-bounded slice. A failure is
+    skipped rather than raised: the pull request still counts as merged, it
+    just leaves the per-person breakdown -- the same choice ``_pull_rows``
+    makes for a merge with no `merged_by` at all.
+    """
+    detail = getattr(reader, "get_pull_request", None)
+    if detail is None:
+        return {}
+
+    out: dict[int, object] = {}
+    for pull in pulls:
+        if not pull.merged_at or pull.merged_by:
+            continue
+        try:
+            full = detail(pull.repo, pull.number)
+        except Exception:  # noqa: BLE001 - a gap in one chart, never a failed sync
+            logger.debug(
+                "insights: could not read %s#%s for its merger",
+                pull.repo, pull.number, exc_info=True,
+            )
+            continue
+        if full is not None:
+            out[pull.number] = full
+    return out

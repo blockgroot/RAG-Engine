@@ -295,6 +295,13 @@ class LinearAdapter(SourceAdapter):
             content=content,
             source_uri=issue["url"],
             last_modified=_parse_dt(issue["updatedAt"]),
+            # The assignee, which is who the issue BELONGS to -- Linear's API
+            # has no "last edited by" on an issue at all. It is the nearest
+            # true statement, and provenance renders it as the editor line, so
+            # "whose ticket is this?" is answerable from the context. Omitted
+            # when unset, never "unassigned": an unknown editor must not reach
+            # the prompt as a placeholder.
+            last_editor=(issue.get("assignee") or {}).get("name") or None,
         )
 
     def get_last_modified(self, external_id: str) -> datetime | None:

@@ -84,10 +84,18 @@ def test_an_unmerged_pull_request_is_not_described_as_merged():
     assert "open" in text
 
 
-def test_a_merge_with_no_named_merger_says_unknown_rather_than_guessing():
+def test_a_merge_with_no_named_merger_names_nobody_at_all():
+    """Absent is OMITTED, not "unknown".
+
+    GitHub leaves `merged_by` out of the pulls LIST payload entirely, so
+    "merged by unknown" would appear on nearly every merged pull request and
+    read as a claim about the merger rather than as a gap in what we read.
+    """
     page = PullRequestPage(items=(_pr(3, merged_by=None, merged=True),))
     text, _ = GitHubAgent._format_pull_requests(page)
-    assert "unknown" in text.lower()
+    assert "merged 2026-09-03" in text
+    assert "unknown" not in text.lower()
+    assert " by " in text.split("merged 2026-09-03")[0]  # the AUTHOR still shows
 
 
 def test_the_state_filter_narrows_without_a_second_api_call():
@@ -204,3 +212,113 @@ def test_ordinary_document_questions_do_not_look_like_code(question):
     from app.agent.routing import _CODE_INTENT
 
     assert not _CODE_INTENT.search(question), question
+
+
+# --------------------------------------------------------------------------
+# Review order: the verdict, not the first event
+# --------------------------------------------------------------------------
+
+
+def _review(who, state, *, minutes_ago):
+    return Review(
+        repo="acme/api",
+        pull_number=7,
+        reviewer=who,
+        state=state,
+        submitted_at=datetime.now(timezone.utc) - timedelta(minutes=minutes_ago),
+    )
+
+
+def test_a_comment_then_an_approval_is_reported_as_the_approval():
+    """GitHub returns reviews OLDEST-first.
+
+    "Commented, then approved" is the most ordinary review sequence there is.
+    Keeping the first event stored COMMENTED, so "who approved #7?" missed the
+    person who actually approved it.
+    """
+    reviews = [
+        _review("grace", "COMMENTED", minutes_ago=90),
+        _review("grace", "APPROVED", minutes_ago=10),
+    ]
+    text, _ = GitHubAgent._format_reviews("acme/api", 7, reviews)
+
+    assert text.count("grace") == 1  # still one person, not two events
+    assert "approved" in text
+    assert "commented" not in text
+
+
+def test_an_approval_survives_later_chatter():
+    """A verdict outranks a comment even when the comment came last -- a
+    follow-up remark does not withdraw an approval."""
+    reviews = [
+        _review("grace", "APPROVED", minutes_ago=90),
+        _review("grace", "COMMENTED", minutes_ago=10),
+    ]
+    text, _ = GitHubAgent._format_reviews("acme/api", 7, reviews)
+    assert "approved" in text
+    assert "commented" not in text
+
+
+def test_changes_requested_is_a_verdict_too():
+    reviews = [
+        _review("ada", "COMMENTED", minutes_ago=60),
+        _review("ada", "CHANGES_REQUESTED", minutes_ago=5),
+    ]
+    text, _ = GitHubAgent._format_reviews("acme/api", 7, reviews)
+    assert "changes requested" in text
+
+
+# --------------------------------------------------------------------------
+# "who reviewed the auth PR?" -- reachable in ONE tool round
+# --------------------------------------------------------------------------
+
+
+class _ReviewReader:
+    """Enough reader to exercise the number resolution, and nothing else."""
+
+    def __init__(self, pulls):
+        self._pulls = pulls
+        self.reviewed: list[int] = []
+
+    def list_pull_requests(self, repo, *, since=None, limit=100, state="all"):
+        return PullRequestPage(items=tuple(self._pulls))
+
+    def list_reviews(self, repo, pull_number):
+        self.reviewed.append(pull_number)
+        return [_review("grace", "APPROVED", minutes_ago=5)]
+
+
+def _resolve(reader, arguments):
+    from app.agent.github_agent import _resolve_pull_number
+
+    return _resolve_pull_number(reader, "acme/api", arguments)
+
+
+def test_a_review_question_resolves_the_pull_request_by_title():
+    """The agent runs ONE tool round and never loops, so a model that had to
+    know the number first could never reach reviews for "who reviewed the auth
+    PR?" -- the tool would exist and be unreachable."""
+    reader = _ReviewReader([
+        _pr(11, title="Bump dependencies"),
+        _pr(12, title="Harden auth token refresh"),
+    ])
+    assert _resolve(reader, {"pull_query": "auth"}) == 12
+
+
+def test_an_explicit_number_is_used_without_a_lookup():
+    reader = _ReviewReader([_pr(11, title="Bump dependencies")])
+    assert _resolve(reader, {"pull_number": 142}) == 142
+
+
+def test_two_equally_good_titles_resolve_to_nothing():
+    """Answering about the WRONG pull request is worse than falling back."""
+    reader = _ReviewReader([
+        _pr(11, title="Auth rewrite"),
+        _pr(12, title="Auth cleanup"),
+    ])
+    assert _resolve(reader, {"pull_query": "auth"}) is None
+
+
+def test_no_number_and_no_query_is_a_fallback_not_a_guess():
+    reader = _ReviewReader([_pr(11, title="Harden auth")])
+    assert _resolve(reader, {}) is None
