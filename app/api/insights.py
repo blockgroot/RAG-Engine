@@ -312,7 +312,7 @@ def _ask_title(metric, group_by: str | None) -> str:
     if not group_by:
         return metric.label
     by = {"actor": "person", "subject": "team or repo", "state": "state",
-          "space": "space", "provider": "app"}.get(group_by, group_by)
+          "provider": "app"}.get(group_by, group_by)
     return f"{metric.label} by {by}"
 
 

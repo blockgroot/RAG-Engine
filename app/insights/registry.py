@@ -31,7 +31,14 @@ DIMENSIONS = {
     "subject": "subject",
     "state": "state",
     "provider": "provider",
-    "space": "workspace_id",
+    # NO "space" dimension, and it is not an omission. Isolation scopes every
+    # query to ONE workspace_id (org-wide means `IS NULL`, a space means that
+    # space -- never both), so grouping by it can only ever return a single
+    # bucket: at org scope "Company-wide", inside a space the space you are
+    # already in. It shipped as "Most active spaces" and rendered one bar
+    # labelled with a raw UUID. A cross-space breakdown would require reading
+    # rows the asker's scope excludes, which is the one thing this product
+    # must never do -- so the chart is gone rather than made to work.
 }
 
 #: ``date_trunc``'s unit. A closed set because it reaches SQL as a literal and
@@ -107,7 +114,7 @@ _add(Metric(
     label="Pages created or edited",
     chart="line",
     kind="doc_changed",
-    dims=("space", "actor"),
+    dims=("actor",),
     unit="pages",
 ))
 _add(Metric(
@@ -116,7 +123,7 @@ _add(Metric(
     label="Files created or edited",
     chart="line",
     kind="doc_changed",
-    dims=("space", "actor"),
+    dims=("actor",),
     unit="files",
 ))
 
@@ -268,7 +275,7 @@ _add(Metric(
     label="Conversations",
     chart="line",
     kind="doc_changed",
-    dims=("subject", "actor", "space"),
+    dims=("subject", "actor"),
     unit="conversations",
     caveat=_SLACK_CAP,
 ))

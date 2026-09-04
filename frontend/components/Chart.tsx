@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 /**
  * Line, bar, pie and stacked-bar charts as plain SVG.
@@ -36,8 +36,50 @@ const SERIES_COLORS = [
   "var(--chart-6)",
 ];
 
-const PAD = { top: 12, right: 12, bottom: 28, left: 40 };
-const HEIGHT = 200;
+const PAD = { top: 16, right: 16, bottom: 30, left: 44 };
+const HEIGHT = 240;
+
+/** Widest a chart grows to. Past this a 4-point line is a lot of white space
+ *  with a stripe across it, and the eye has to travel to compare two bars. */
+const MAX_PLOT_WIDTH = 720;
+
+/**
+ * The rendered width of the card this chart is in.
+ *
+ * Without it the SVG was a FIXED 320px inside a card that is often three
+ * times that, so a chart with few buckets sat in the left third of an empty
+ * frame and read as a rendering bug. The measurement also keeps the crowded
+ * case working: a wide chart still overflows into `.chart-scroll` rather than
+ * squashing thirty buckets into a smear.
+ */
+function useMeasuredWidth(fallback = 560) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(fallback);
+
+  useEffect(() => {
+    const node = ref.current;
+    // No ResizeObserver on the server, and none in older browsers: the
+    // fallback width renders a correct chart, just not a fitted one.
+    if (!node || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const measured = Math.round(entries[0]?.contentRect.width ?? 0);
+      if (measured > 0) setWidth(measured);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  return [ref, Math.min(width, MAX_PLOT_WIDTH)] as const;
+}
+
+/** "1 issue", not "1 issues" -- a legend row saying "1 issues" looks like the
+ *  number is being generated rather than read. */
+function withUnit(value: number, unit?: string): string {
+    const shown = value.toLocaleString();
+  if (!unit) return shown;
+  const singular = value === 1 && unit.endsWith("s") ? unit.slice(0, -1) : unit;
+  return `${shown} ${singular}`;
+}
 /** Bars get their own width so a 30-bucket chart scrolls instead of squashing. */
 const MIN_BAR_SLOT = 28;
 
@@ -106,6 +148,9 @@ export function Chart({
   // filled circle, because series[0] === "".
   const grouped = Boolean(groupBy) || series.some((s) => s !== "");
   const leaderboard = chart === "bar" && grouped;
+  // Above every early return: hooks must run in the same order on every
+  // render, and the pie and leaderboard branches return before the plot.
+  const [ref, measured] = useMeasuredWidth();
   const ranked = useMemo(() => {
     if (!grouped) return [];
     return series
@@ -150,7 +195,7 @@ export function Chart({
               />
             </span>
             <span className="chart-rank-value">
-              {row.value.toLocaleString()}
+              {withUnit(row.value, unit)}
             </span>
           </li>
         ))}
@@ -167,7 +212,7 @@ export function Chart({
   const max = niceMax(Math.max(...totals, 0));
 
   const width = Math.max(
-    320,
+    measured,
     PAD.left + PAD.right + buckets.length * MIN_BAR_SLOT,
   );
   const plotW = width - PAD.left - PAD.right;
@@ -183,7 +228,7 @@ export function Chart({
   const gridlines = [0, 0.5, 1].map((f) => ({ value: max * f, y: y(max * f) }));
 
   return (
-    <div className="chart-scroll">
+    <div className="chart-scroll" ref={ref}>
       <svg
         className="chart-svg"
         viewBox={`0 0 ${width} ${HEIGHT}`}
@@ -214,28 +259,58 @@ export function Chart({
                   (b, i) => `${i === 0 ? "M" : "L"} ${x(i)} ${y(at(b, name))}`,
                 )
                 .join(" ");
+              const color = SERIES_COLORS[si % SERIES_COLORS.length];
               return (
                 <g key={name || "all"}>
+                  {/* A filled area under a single series. Three points and a
+                      thin stroke read as a fragment of a chart; the fill
+                      gives the same numbers a shape. Only for one series,
+                      because overlapping fills hide each other. */}
+                  {series.length === 1 && buckets.length > 1 && (
+                    <path
+                      d={`${path} L ${x(buckets.length - 1)} ${PAD.top + plotH} L ${x(0)} ${PAD.top + plotH} Z`}
+                      fill={color}
+                      opacity={0.1}
+                      stroke="none"
+                    />
+                  )}
                   <path
                     d={path}
                     fill="none"
-                    stroke={SERIES_COLORS[si % SERIES_COLORS.length]}
+                    stroke={color}
                     strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
                   />
                   {buckets.map((b, i) => (
-                    <circle
-                      key={b}
-                      cx={x(i)}
-                      cy={y(at(b, name))}
-                      r={3}
-                      fill={SERIES_COLORS[si % SERIES_COLORS.length]}
-                    >
-                      <title>
-                        {`${formatBucket(b, period)}: ${at(b, name).toLocaleString()}${
-                          unit ? ` ${unit}` : ""
-                        }`}
-                      </title>
-                    </circle>
+                    <g key={b}>
+                      <circle
+                        cx={x(i)}
+                        cy={y(at(b, name))}
+                        r={4}
+                        fill="var(--surface)"
+                        stroke={color}
+                        strokeWidth={2}
+                      >
+                        <title>
+                          {`${formatBucket(b, period)}: ${withUnit(at(b, name), unit)}`}
+                        </title>
+                      </circle>
+                      {/* The value itself, while the points are far enough
+                          apart to read. A chart of four numbers should not
+                          need a hover to tell you the four numbers. */}
+                      {series.length === 1 && buckets.length <= 8 && (
+                        <text
+                          x={x(i)}
+                          y={y(at(b, name)) - 12}
+                          textAnchor="middle"
+                          className="chart-value"
+                          pointerEvents="none"
+                        >
+                          {at(b, name).toLocaleString()}
+                        </text>
+                      )}
+                    </g>
                   ))}
                 </g>
               );
@@ -263,13 +338,22 @@ export function Chart({
                         rx={2}
                       >
                         <title>
-                          {`${formatBucket(b, period)}${name ? ` - ${name}` : ""}: ${value.toLocaleString()}${
-                            unit ? ` ${unit}` : ""
-                          }`}
+                          {`${formatBucket(b, period)}${name ? ` - ${name}` : ""}: ${withUnit(value, unit)}`}
                         </title>
                       </rect>
                     );
                   })}
+                  {series.length === 1 && buckets.length <= 12 && at(b, series[0]) > 0 && (
+                    <text
+                      x={cx + barW / 2}
+                      y={y(at(b, series[0])) - 6}
+                      textAnchor="middle"
+                      className="chart-value"
+                      pointerEvents="none"
+                    >
+                      {at(b, series[0]).toLocaleString()}
+                    </text>
+                  )}
                 </g>
               );
             })}
@@ -424,12 +508,15 @@ function Pie({
   unit?: string;
 }) {
   const [hovered, setHovered] = useState<number | null>(null);
+  const [ref, measured] = useMeasuredWidth(320);
   const total = rows.reduce((sum, row) => sum + row.value, 0);
   if (total <= 0) return null;
-  const size = 220;
-  const cx = 110;
-  const cy = 100;
-  const r = 72;
+  // Scaled to the card. A 220px circle in a 1100px panel is not a small
+  // chart, it is a chart that looks unfinished.
+  const size = Math.max(240, Math.min(measured, 360));
+  const cx = size / 2;
+  const cy = size / 2;
+  const r = size * 0.36;
   let angle = -Math.PI / 2;
   const slices = rows.map((row, i) => {
     const sweep = (row.value / total) * Math.PI * 2;
@@ -443,7 +530,7 @@ function Pie({
     const large = sweep > Math.PI ? 1 : 0;
     const full = sweep >= Math.PI * 2 - 1e-6;
     const pct = (row.value / total) * 100;
-    const labelR = r * (pct >= 12 ? 0.62 : 1.22);
+    const labelR = r * 0.62;
     return {
       ...row,
       i,
@@ -451,7 +538,11 @@ function Pie({
       color: SERIES_COLORS[i % SERIES_COLORS.length],
       labelX: cx + labelR * Math.cos(mid),
       labelY: cy + labelR * Math.sin(mid),
-      showOnSlice: pct >= 8,
+      // Inside the slice or not at all. At 1.22r a small slice's label floated
+      // OUTSIDE the circle with no leader line, which read as a stray number
+      // above the chart rather than as a label. The legend already names every
+      // slice with its exact count.
+      showOnSlice: pct >= 12,
       d: full
         ? `M ${cx} ${cy - r} A ${r} ${r} 0 1 1 ${cx} ${cy + r} A ${r} ${r} 0 1 1 ${cx} ${cy - r} Z`
         : `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2} Z`,
@@ -459,7 +550,7 @@ function Pie({
   });
   const active = hovered != null ? slices[hovered] : null;
   return (
-    <div className="chart-pie">
+    <div className="chart-pie" ref={ref}>
       <svg
         className="chart-svg"
         viewBox={`0 0 ${size} ${size}`}
@@ -479,7 +570,7 @@ function Pie({
             onMouseLeave={() => setHovered(null)}
           >
             <title>
-              {`${slice.name}: ${slice.value.toLocaleString()}${unit ? ` ${unit}` : ""} (${Math.round(slice.pct)}%)`}
+              {`${slice.name}: ${withUnit(slice.value, unit)} (${Math.round(slice.pct)}%)`}
             </title>
           </path>
         ))}
@@ -501,8 +592,7 @@ function Pie({
       </svg>
       {active && (
         <p className="chart-pie-hover" role="status">
-          {active.name}: {active.value.toLocaleString()}
-          {unit ? ` ${unit}` : ""} ({Math.round(active.pct)}%)
+          {active.name}: {withUnit(active.value, unit)} ({Math.round(active.pct)}%)
         </p>
       )}
       <ul className="chart-legend">
@@ -516,8 +606,7 @@ function Pie({
             <span className="chart-swatch" style={{ background: slice.color }} />
             <span className="chart-legend-name">{slice.name}</span>
             <span className="chart-legend-value">
-              {slice.value.toLocaleString()}
-              {unit ? ` ${unit}` : ""} ({Math.round(slice.pct)}%)
+              {withUnit(slice.value, unit)} ({Math.round(slice.pct)}%)
             </span>
           </li>
         ))}

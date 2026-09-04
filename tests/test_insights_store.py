@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.db import get_connection
-from app.insights import store
+from app.insights import registry, store
 from .conftest import requires_db
 
 pytestmark = requires_db
@@ -244,3 +244,43 @@ def test_metrics_without_a_floor_are_unaffected(org):
     rows = store.run_metric("docs_changed", org_id=org, workspace_id=None,
                             period="month", days=365)
     assert sum(r.value for r in rows) == 1
+
+
+# --------------------------------------------------------------------------
+# There is no `space` dimension, and that is structural
+# --------------------------------------------------------------------------
+
+
+def test_space_is_not_a_dimension():
+    """It shipped, rendered one bar labelled with a raw workspace UUID, and
+    could never have rendered anything else: isolation scopes every query to
+    ONE workspace_id, so grouping by it returns a single bucket. A real
+    cross-space breakdown would have to read rows the asker's scope excludes.
+    """
+    assert "space" not in registry.DIMENSIONS
+    assert all("space" not in m.dims for m in registry.METRICS.values())
+    assert all(m.series_by != "space" for m in registry.METRICS.values())
+
+
+def test_no_panel_groups_by_space():
+    from app.insights import panels
+
+    assert all(
+        p.group_by != "space"
+        for group in panels.PANELS.values()
+        for p in group
+    )
+    panels.validate()
+
+
+def test_asking_for_a_space_breakdown_is_refused_not_drawn(org):
+    """A dimension that is gone must raise rather than silently ungroup: a
+    chart quietly answering a different question than the one asked is the
+    failure this whole package is arranged against."""
+    _fact(org, provider="slack", kind="doc_changed")
+
+    with pytest.raises(ValueError):
+        store.run_metric(
+            "slack_threads", org_id=org, workspace_id=None,
+            period="month", days=90, group_by="space",
+        )

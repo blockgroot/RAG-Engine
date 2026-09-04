@@ -359,9 +359,6 @@ def _fallback_spec(
     elif re.search(r"\b(team|repo|channel|repositor(?:y|ies))\b", q):
         if "subject" in metric.dims:
             group_by = "subject"
-    elif re.search(r"\b(space|workspace)\b", q):
-        if "space" in metric.dims:
-            group_by = "space"
 
     requested = None
     if re.search(r"\bpie\b", q):

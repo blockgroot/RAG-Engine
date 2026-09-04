@@ -522,6 +522,31 @@ facts, a space's Ask reads that space only — no separate company dashboard.
   every tenant to reconnect. A 401/403 from the Forms API says **"reconnect"**,
   because that is the overwhelmingly likely cause and "403" sends someone
   hunting a permissions bug that is not there.
+- **There is NO `space` dimension, and its absence is structural.** It shipped
+  as "Most active spaces" and rendered a single bar labelled with a raw
+  workspace UUID — and it could never have rendered anything else: `_scoped`
+  pins every query to ONE `workspace_id` (org-wide = `IS NULL`, a space = that
+  space, never both), so grouping by it returns one bucket by construction. A
+  real cross-space breakdown would have to read rows the asker's scope
+  excludes. Removed rather than made to work; `tests/test_insights_store.py`
+  pins that a request for it still RAISES, because a chart that silently
+  answers a different question than the one asked is the failure this package
+  is arranged against.
+- **A chart must fill the card it is in** (`Chart.tsx::useMeasuredWidth`). The
+  SVG was a fixed 320px inside a card three times that, so any chart with few
+  buckets sat stranded in the left third and read as a rendering bug rather
+  than as three data points. Measured with a `ResizeObserver`, capped at
+  `MAX_PLOT_WIDTH`, and still overflowing into `.chart-scroll` when buckets
+  are crowded. The hook sits ABOVE every early return — the pie and
+  leaderboard branches return before the plot, and a conditional hook is a
+  render-order crash.
+- **A pie label goes inside its slice or nowhere.** At `1.22r` a small slice's
+  label floated outside the circle with no leader line, reading as a stray
+  number above the chart; the legend already names every slice with its exact
+  count. Values are printed on points and bars under ~10 buckets: a chart of
+  four numbers should not need a hover to read four numbers. `withUnit` says
+  "1 issue", never "1 issues" — a legend that mis-pluralises reads as
+  generated rather than counted.
 - **`Metric.series_by` is a SECOND fixed grouping**, whitelisted through
   `DIMENSIONS` like `dims`. Only for charts that genuinely need two dimensions
   (a diverging bar is topic BY label); fixed per metric rather than requestable.

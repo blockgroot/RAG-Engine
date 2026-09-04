@@ -202,7 +202,6 @@ def _ask_title(metric, group_by: str | None) -> str:
         "actor": "person",
         "subject": "team or repo",
         "state": "state",
-        "space": "space",
         "provider": "app",
     }.get(group_by, group_by)
     return f"{metric.label} by {by}"
@@ -227,23 +226,29 @@ def _run_spec(
         raise CannotChart("I can't chart that here.")
 
     days = scopes.WINDOW_DAYS.get(spec.period, scopes.WINDOW_DAYS["month"])
+    group_by = spec.group_by
+    chart = spec.chart
+    if chart == "pie" and group_by is None:
+        # A pie needs groups to be shares OF something. Without one it is a
+        # single full circle, which states nothing.
+        chart = "line"
     points = store.run_metric(
         spec.metric,
         org_id=org_id,
         workspace_id=workspace_id,
         period=spec.period,
         days=days,
-        group_by=spec.group_by,
+        group_by=group_by,
     )
     begun = store.first_fact_at(
         metric.provider, org_id=org_id, workspace_id=workspace_id
     )
     panel = {
-        "id": f"ask:{spec.metric}:{spec.group_by or 'time'}",
+        "id": f"ask:{spec.metric}:{group_by or 'time'}",
         "provider": metric.provider,
-        "title": _ask_title(metric, spec.group_by),
-        "chart": spec.chart,
-        "group_by": spec.group_by,
+        "title": _ask_title(metric, group_by),
+        "chart": chart,
+        "group_by": group_by,
         "unit": metric.unit,
         "caveat": metric.caveat,
         "points": [
