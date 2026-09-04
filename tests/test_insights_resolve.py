@@ -359,3 +359,32 @@ def test_a_dead_llm_still_charts_an_obvious_plot_ask():
     assert intent.spec is not None
     assert intent.spec.metric == "drive_docs_changed"
     assert intent.spec.chart == "pie"
+
+
+def test_a_graph_of_commits_is_a_chart_without_saying_pie_or_bar():
+    """Shape words are optional. 'generate a graph of commits…' must not
+    fall through to RAG just because it never said pie."""
+    llm = FakeLLM(_spec(intent="qa", metric=None))
+    intent = resolve.classify_question(
+        "generate a graph based on all the commits done on the develop "
+        "branch by sana in the chain guard repository",
+        providers=["github"],
+        llm=llm,
+        fail_open=True,
+    )
+    assert intent.kind == "chart"
+    assert intent.spec is not None
+    assert intent.spec.metric == "commits_by_author"
+    assert intent.spec.chart in ("bar", "line", "pie")
+
+
+def test_org_chart_is_still_a_document_question_when_graph_is_a_plot_word():
+    """'graph' as a plot word must not steal 'org chart'."""
+    llm = FakeLLM(_spec(intent="qa", metric=None))
+    intent = resolve.classify_question(
+        "Where is the org chart?",
+        providers=["google", "github"],
+        llm=llm,
+        fail_open=True,
+    )
+    assert intent.kind == "qa"
