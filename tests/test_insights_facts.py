@@ -233,6 +233,39 @@ def test_a_document_with_no_known_editor_still_counts(org):
     assert [r.group for r in rows] == [None]
 
 
+def test_backfill_copies_existing_documents_without_an_ingest(org):
+    """Tenants that connected before charts shipped have documents and no
+    activity_facts. Waiting for the next ingest is how Ask said I don't know."""
+    _document(org, provider="google", editor="Ada")
+    assert _count(org, provider="google") == 0
+    written = facts.backfill_all_document_facts()
+    assert written >= 1
+    assert _count(org, provider="google") == 1
+
+
+def test_insights_agent_backfills_from_the_index_when_facts_are_empty(org):
+    """The first chart ask must not wait for a tick. documents is already there."""
+    from app.agent.insights_agent import InsightsAgent
+    from app.insights.resolve import ChartSpec
+
+    _document(org, provider="google", editor="Ada")
+    response = InsightsAgent().answer(
+        "Show a pie of files created or edited, grouped by person",
+        org,
+        spec=ChartSpec(
+            metric="drive_docs_changed",
+            group_by="actor",
+            period="month",
+            chart="pie",
+        ),
+        user_id="x",
+        role="member",
+    )
+    assert response.chart is not None
+    groups = [p["group"] for p in response.chart["points"]]
+    assert "Ada" in groups
+
+
 # ---------------------------------------------------------------------------
 # The adapters. Both capture the editor from a request they ALREADY make, which
 # is the whole reason "top editors" costs no extra API call.

@@ -320,3 +320,42 @@ def test_chat_classifier_fail_open_is_qa_not_a_refusal():
         fail_open=True,
     )
     assert intent.kind == "qa"
+
+
+def test_a_pie_of_files_by_person_recovers_when_the_model_says_qa():
+    """'Show a pie of …' is not 'pie chart', so the old regex missed it and
+    fail_open sent the question to RAG, which said I don't know."""
+    llm = FakeLLM(_spec(intent="qa", metric=None))
+    intent = resolve.classify_question(
+        "Show a pie of files created or edited, grouped by person.",
+        providers=["google"],
+        llm=llm,
+        fail_open=True,
+    )
+    assert intent.kind == "chart"
+    assert intent.spec is not None
+    assert intent.spec.metric == "drive_docs_changed"
+    assert intent.spec.group_by == "actor"
+    assert intent.spec.chart == "pie"
+
+
+def test_a_dead_llm_still_charts_an_obvious_plot_ask():
+    """fail_open is for leave-policy questions. A plot that names a registry
+    label must not become RAG just because OpenRouter 429'd."""
+    class Broken:
+        model = "x"
+        last_usage = None
+
+        def generate(self, prompt, *, max_tokens=None):
+            raise RuntimeError("429")
+
+    intent = resolve.classify_question(
+        "Show a pie of files created or edited, grouped by person",
+        providers=["google"],
+        llm=Broken(),
+        fail_open=True,
+    )
+    assert intent.kind == "chart"
+    assert intent.spec is not None
+    assert intent.spec.metric == "drive_docs_changed"
+    assert intent.spec.chart == "pie"

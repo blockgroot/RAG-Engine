@@ -417,4 +417,5 @@ def test_the_external_tick_reports_facts_separately_from_queued_syncs():
 
     result = run_external_tick()
     assert "facts_recorded" in result
+    assert "facts_backfilled" in result
     assert "syncs_queued" in result

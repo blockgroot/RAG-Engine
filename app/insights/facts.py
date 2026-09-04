@@ -159,3 +159,65 @@ def record_document_facts(
         written, provider, org_id, workspace_id,
     )
     return written
+
+
+#: Bound so a tick cannot walk every tenant in one request if this table
+#: ever grows. 200 scopes is far above today's org count; raise it if a
+#: tick log shows we hit the cap.
+_BACKFILL_SCOPE_CAP = 200
+
+
+def backfill_all_document_facts() -> int:
+    """Copy existing documents into ``activity_facts`` without waiting for a sync.
+
+    The ingest hook is self-backfilling only on the *next* successful job.
+    Tenants that connected before charts shipped — or whose tick has been
+    503ing — have a full ``documents`` table and an empty ``activity_facts``
+    table, which in Ask looks like "I don't know". This is the same
+    ``INSERT ... SELECT``, run for every distinct (org, provider, space)
+    that already has dated documents.
+
+    Idempotent. Authors stay NULL where they were never captured; we do
+    not invent them.
+    """
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT d.org_id::text, d.source_provider, d.workspace_id::text
+                  FROM documents d
+                 WHERE d.source_provider = ANY(%s)
+                   AND d.source_last_modified IS NOT NULL
+                   AND d.source_external_id IS NOT NULL
+                   AND NOT EXISTS (
+                       SELECT 1 FROM activity_facts f
+                        WHERE f.org_id = d.org_id
+                          AND f.provider = d.source_provider
+                          AND f.kind = 'doc_changed'
+                          AND f.workspace_id IS NOT DISTINCT FROM d.workspace_id
+                   )
+                 LIMIT %s
+                """,
+                (list(DOCUMENT_PROVIDERS), _BACKFILL_SCOPE_CAP),
+            ).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        raise ProviderError(
+            "insights: listing document scopes for fact backfill failed",
+            cause=exc,
+        ) from exc
+
+    written = 0
+    for org_id, provider, workspace_id in rows:
+        try:
+            written += record_document_facts(
+                org_id, provider=provider, workspace_id=workspace_id,
+            )
+        except Exception:  # noqa: BLE001 - one org must not abort the rest
+            logger.warning(
+                "insights: backfill of %s facts for org %s failed",
+                provider, org_id, exc_info=True,
+            )
+    if written:
+        logger.info("insights: backfilled %s document facts across %s scopes",
+                    written, len(rows))
+    return written

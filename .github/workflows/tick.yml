@@ -21,6 +21,13 @@
 #     A dormant repo silently stops ticking. The tick's own log line is how you
 #     would notice.
 #
+# COLD START
+# The first request after idle hits Render's proxy while the box is still
+# booting and comes back 503. curl --retry 2 with a 1s then 2s delay is not
+# enough (boot is 30-60s), so a "failed" tick never actually woke the
+# instance, and 15 minutes later it is asleep again. Wake GET /health until
+# 200, THEN POST the tick. Same workflow run — not ping-then-hope.
+#
 # SETUP (one time)
 #   Repo -> Settings -> Secrets and variables -> Actions:
 #     TICK_URL     https://<backend-host>/internal/tick
@@ -47,7 +54,7 @@ concurrency:
 jobs:
   tick:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - name: Poke the backend
         env:
@@ -59,18 +66,33 @@ jobs:
             exit 0
           fi
 
-          # --max-time 120, not the default: the FIRST request after an idle
-          # period pays a cold start (30-60s). The tick itself only enqueues
-          # (the durable queue does the slow work), so a generous ceiling here
-          # never means holding a connection open through an ingest.
-          #
-          # -o/-w rather than -f: the body carries the per-step counts, and a
-          # tick that returns 200 while queueing nothing is exactly the silent
-          # failure worth seeing in the log.
+          origin="${TICK_URL%/}"
+          origin="${origin%/internal/tick}"
+          health="${origin}/health"
+
+          echo "Waking $health"
+          awake=0
+          for i in 1 2 3 4 5 6 7 8; do
+            code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 60 "$health" || echo 000)
+            echo "health attempt $i -> HTTP $code"
+            if [ "$code" = "200" ]; then
+              awake=1
+              break
+            fi
+            sleep 10
+          done
+          if [ "$awake" != "1" ]; then
+            echo "::error::Instance never became healthy (still spinning up or down)"
+            exit 1
+          fi
+
+          # --max-time 120: the tick itself only enqueues, but a just-woken
+          # box can still be slow to compile the first request.
+          # --retry-all-errors: a 503 after /health 200 is still a blip.
           body=$(mktemp)
           code=$(curl -sS -X POST "$TICK_URL" \
             -H "X-Tick-Secret: $TICK_SECRET" \
-            --max-time 120 --retry 2 --retry-connrefused \
+            --max-time 120 --retry 6 --retry-delay 10 --retry-all-errors \
             -o "$body" -w "%{http_code}") || true
 
           echo "HTTP $code"

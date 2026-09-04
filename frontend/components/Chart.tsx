@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 /**
  * Line, bar, pie and stacked-bar charts as plain SVG.
@@ -88,24 +88,29 @@ export function Chart({
   points,
   period,
   unit,
+  groupBy,
 }: {
   chart: string;
   points: Point[];
   period: string;
   unit?: string;
+  groupBy?: string | null;
 }) {
   const { buckets, series, at } = useMemo(() => pivot(points), [points]);
 
   // A grouped bar chart is a leaderboard, not a time series: collapse the
   // buckets and rank the series. Without this, "top editors" renders one bar
   // per person per week, which nobody can read.
-  const grouped = series.length > 0 && series[0] !== "";
+  // `groupBy` from the spec wins over "did any point have a name": a pie of
+  // files by person with every editor NULL used to look like one unnamed
+  // filled circle, because series[0] === "".
+  const grouped = Boolean(groupBy) || series.some((s) => s !== "");
   const leaderboard = chart === "bar" && grouped;
   const ranked = useMemo(() => {
     if (!grouped) return [];
     return series
       .map((name) => ({
-        name,
+        name: name.trim() || "Unknown",
         value: buckets.reduce((sum, b) => sum + at(b, name), 0),
       }))
       .sort((a, b) => b.value - a.value)
@@ -418,16 +423,18 @@ function Pie({
   rows: { name: string; value: number }[];
   unit?: string;
 }) {
+  const [hovered, setHovered] = useState<number | null>(null);
   const total = rows.reduce((sum, row) => sum + row.value, 0);
   if (total <= 0) return null;
-  const size = 200;
-  const cx = 100;
-  const cy = 92;
+  const size = 220;
+  const cx = 110;
+  const cy = 100;
   const r = 72;
   let angle = -Math.PI / 2;
   const slices = rows.map((row, i) => {
     const sweep = (row.value / total) * Math.PI * 2;
     const start = angle;
+    const mid = start + sweep / 2;
     angle += sweep;
     const x1 = cx + r * Math.cos(start);
     const y1 = cy + r * Math.sin(start);
@@ -435,14 +442,22 @@ function Pie({
     const y2 = cy + r * Math.sin(angle);
     const large = sweep > Math.PI ? 1 : 0;
     const full = sweep >= Math.PI * 2 - 1e-6;
+    const pct = (row.value / total) * 100;
+    const labelR = r * (pct >= 12 ? 0.62 : 1.22);
     return {
       ...row,
+      i,
+      pct,
       color: SERIES_COLORS[i % SERIES_COLORS.length],
+      labelX: cx + labelR * Math.cos(mid),
+      labelY: cy + labelR * Math.sin(mid),
+      showOnSlice: pct >= 8,
       d: full
         ? `M ${cx} ${cy - r} A ${r} ${r} 0 1 1 ${cx} ${cy + r} A ${r} ${r} 0 1 1 ${cx} ${cy - r} Z`
         : `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2} Z`,
     };
   });
+  const active = hovered != null ? slices[hovered] : null;
   return (
     <div className="chart-pie">
       <svg
@@ -454,18 +469,56 @@ function Pie({
         aria-label="pie chart"
       >
         {slices.map((slice) => (
-          <path key={slice.name} d={slice.d} fill={slice.color}>
+          <path
+            key={slice.name}
+            d={slice.d}
+            fill={slice.color}
+            className="chart-pie-slice"
+            opacity={hovered == null || hovered === slice.i ? 1 : 0.45}
+            onMouseEnter={() => setHovered(slice.i)}
+            onMouseLeave={() => setHovered(null)}
+          >
             <title>
-              {`${slice.name}: ${slice.value.toLocaleString()}${unit ? ` ${unit}` : ""}`}
+              {`${slice.name}: ${slice.value.toLocaleString()}${unit ? ` ${unit}` : ""} (${Math.round(slice.pct)}%)`}
             </title>
           </path>
         ))}
+        {slices.map((slice) =>
+          slice.showOnSlice ? (
+            <text
+              key={`label-${slice.name}`}
+              x={slice.labelX}
+              y={slice.labelY}
+              textAnchor="middle"
+              dominantBaseline="middle"
+              className="chart-pie-label"
+              pointerEvents="none"
+            >
+              {`${Math.round(slice.pct)}%`}
+            </text>
+          ) : null,
+        )}
       </svg>
+      {active && (
+        <p className="chart-pie-hover" role="status">
+          {active.name}: {active.value.toLocaleString()}
+          {unit ? ` ${unit}` : ""} ({Math.round(active.pct)}%)
+        </p>
+      )}
       <ul className="chart-legend">
         {slices.map((slice) => (
-          <li key={slice.name}>
+          <li
+            key={slice.name}
+            data-active={hovered === slice.i || undefined}
+            onMouseEnter={() => setHovered(slice.i)}
+            onMouseLeave={() => setHovered(null)}
+          >
             <span className="chart-swatch" style={{ background: slice.color }} />
-            {slice.name} ({Math.round((slice.value / total) * 100)}%)
+            <span className="chart-legend-name">{slice.name}</span>
+            <span className="chart-legend-value">
+              {slice.value.toLocaleString()}
+              {unit ? ` ${unit}` : ""} ({Math.round(slice.pct)}%)
+            </span>
           </li>
         ))}
       </ul>

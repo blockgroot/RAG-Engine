@@ -15,7 +15,7 @@ from ..auth.credentials import (
 from ..config.settings import ContextualSettings, IngestWorkerSettings, env_bool
 from ..core.exceptions import OAuthReauthRequiredError
 from ..ingestion.pipeline import enrich_source_contextual, ingest_source
-from ..insights.facts import DOCUMENT_PROVIDERS, record_document_facts
+from ..insights.facts import DOCUMENT_PROVIDERS, backfill_all_document_facts, record_document_facts
 from ..sources import build_source_adapter
 from . import queue
 
@@ -355,6 +355,14 @@ def run_external_tick() -> dict[str, int]:
     synced = run_sync_tick()
     facts = run_facts_tick()
 
+    # Indexed facts for tenants that have not ingested since charts shipped.
+    # GitHub still needs the facts-only path above (it has no documents).
+    backfilled = 0
+    try:
+        backfilled = backfill_all_document_facts()
+    except Exception:  # noqa: BLE001 - a missing chart, never a failed tick
+        logger.exception("External tick: document-fact backfill failed")
+
     scheduler_settings = SchedulerSettings.from_env()
     schedulers_ran = (
         run_scheduler_tick(scheduler_settings) if scheduler_settings.enabled else 0
@@ -364,6 +372,7 @@ def run_external_tick() -> dict[str, int]:
         "reaped": reaped,
         "syncs_queued": synced,
         "facts_recorded": facts,
+        "facts_backfilled": backfilled,
         "schedulers_ran": schedulers_ran,
     }
 

@@ -245,9 +245,11 @@ elapsed).
   not count, so every in-process loop stops shortly after the last user leaves
   and "syncs every 6 hours" becomes fiction. `.github/workflows/tick.yml`
   drives it (in-repo, so deploying starts it; free and unlimited on a public
-  repo). Waking and working are the SAME request, so there is no ping-then-hope
-  window. An unset `INTERNAL_TICK_SECRET` **404s the route** — an
-  unauthenticated tick is a free way to spend every tenant's provider quota.
+  repo). The workflow **GET `/health` until 200, then POST `/internal/tick`**
+  — a 503 from Render's proxy during cold start used to fail the job in ~3s
+  (`--retry 2`) and never wake the box. An unset `INTERNAL_TICK_SECRET`
+  **404s the route** — an unauthenticated tick is a free way to spend every
+  tenant's provider quota.
 - **Background LLM work reserves headroom for people** (`pacing.py`).
   `build_aux_llm_provider` shares the main key/endpoint *by default*, so ingest
   contextualization and a live question compete for ONE 15 rpm limit, and a 429
@@ -345,9 +347,12 @@ facts, a space's Ask reads that space only — no separate company dashboard.
   two PARTIAL unique indexes; an edit **moves** the fact (`DO UPDATE`) because
   a page edited five times is one page. Hooked at `worker.py`'s
   `_record_insight_facts` next to the answer-cache clear, running
-  unconditionally on success — which is what makes it **self-backfilling**,
-  with no separate backfill script. Its own `try/except`: a stale chart is a
-  stale chart, but failing a finished job turns it into a retry loop.
+  unconditionally on success — which is what makes a *new* ingest self-backfilling.
+  Tenants that connected *before* charts shipped still have an empty
+  `activity_facts` until `backfill_all_document_facts` runs (on the tick, and
+  lazily inside InsightsAgent on an empty chart). Authors stay NULL where they
+  were never captured; we do not invent them. Its own `try/except`: a stale
+  chart is a stale chart, but failing a finished job turns it into a retry loop.
 - **The author is captured at SYNC time, never at view time**
   (`documents.source_last_editor`). Free where the source already tells us —
   Drive's `lastModifyingUser(displayName)` rides along in the `files.list` we
@@ -562,6 +567,16 @@ frontend/ Next.js 15 portal · tests/ pytest
   provider caching. **Never move CONTEXT/QUESTION earlier.**
 
 **Charts**
+- **"Show a pie of files" is not "pie chart".** `_asked_for_a_plot` used to
+  require the word "chart" after pie/bar/line, so a vague plot ask fail_opened
+  to RAG and the member saw "I don't know". Bare `pie`, plus `_fallback_spec`
+  (match the registry *label* in the question) recover a spec when the model
+  says qa; two equally good matches still refuse.
+- **A pie of NULL actors is one unnamed filled circle.** `Chart.tsx` treated
+  `series[0] === ""` as ungrouped and sliced by month; the Insights pill used
+  `agent` as identity, and `"insights"` was missing from LABELS, so a real
+  Drive pie said "No answer found". Pass `groupBy`; empty names render
+  "Unknown"; the pill names the connector + "Charts".
 - **`python -m app.db.migrate` does NOTHING** — `migrate.py` has no `__main__`
   block, so it imports the module and exits silently. Call `apply_schema()`.
   Cost: one "why is the table missing" detour.
@@ -727,7 +742,10 @@ Visual Representation, **all five phases** — `activity_facts`, metric registry
 to `/chat`; `InsightsAgent` + `classify_question` rather than a keyword regex), editor capture at sync time, GitHub PR/merge/review facts on a
 facts-only sync branch (PRs plus commits), Linear completion-by-team on the ingest job, Slack
 conversations from the index, the constrained resolver + personal pins API, and
-Forms sentiment (never indexed, owners-only, 5-response floor).
+Forms sentiment (never indexed, owners-only, 5-response floor). Indexed
+tenants that predate charts get `activity_facts` from `backfill_all_document_facts`
+(tick + lazy on an empty Ask chart). "Show a pie of files…" recovers a spec
+when the model says qa.
 
 **Pending / known gaps**
 - Charts: **the Google Forms path has never run against a real form.** The
@@ -735,7 +753,11 @@ Forms sentiment (never indexed, owners-only, 5-response floor).
   from the documented shapes and tested against a fake reader only. Enabling
   `GOOGLE_FORMS_ENABLED` also requires every tenant to reconnect Google, so
   this is the one part of the feature that must be walked through live before
-  it is trusted. Plan: `docs/plans/2026-09-02-visual-representation.md`.
+  it is trusted. **Do not chart a Sheet by embedding it** — numbers from
+  retrieved chunk text are unfalsifiable; Drive still skips
+  `application/vnd.google-apps.spreadsheet`. A form export in a connected
+  folder is Q&A fodder only if we add that MIME later, never a pie. Plan:
+  `docs/plans/2026-09-02-visual-representation.md`.
 - Charts: **no frontend test infrastructure** — `Chart.tsx` (including the
   diverging bar) and inline Ask charts are covered by `tsc --noEmit` only,
   never a rendered assertion. Do not add a React test stack as a side effect

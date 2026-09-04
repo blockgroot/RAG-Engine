@@ -33,7 +33,8 @@ export interface ChatDonePayload {
     | "linear"
     | "notion"
     | "google"
-    | "forms";
+    | "forms"
+    | "insights";
   /** Why that agent was picked — "best-match", "repo-named", "code-intent",
    *  "only-source", "weak-best-match", "requested", "no-sources". Surfaced so
    *  a misroute is distinguishable from a source genuinely lacking the answer. */

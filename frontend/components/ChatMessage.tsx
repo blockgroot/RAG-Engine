@@ -53,6 +53,7 @@ export function ChatMessageView({ message }: { message: Message }) {
                 points={points}
                 period={message.done?.chart_period || "month"}
                 unit={chart.unit}
+                groupBy={chart.group_by}
               />
               {chart.caveat && (
                 <p className="muted viz-panel-caveat">{chart.caveat}</p>

@@ -5707,6 +5707,34 @@ a.people-card:hover { color: inherit; }
   align-items: center;
   gap: 0.75rem;
 }
+.chart-pie-slice {
+  cursor: pointer;
+  transition: opacity 0.12s ease;
+}
+.chart-pie-label {
+  font-size: 11px;
+  font-weight: 600;
+  fill: #fff;
+  paint-order: stroke;
+  stroke: rgba(0, 0, 0, 0.35);
+  stroke-width: 2px;
+}
+.chart-pie-hover {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  min-height: 1.25em;
+}
+.chart-legend li[data-active="true"] {
+  color: var(--ink);
+  font-weight: 600;
+}
+.chart-legend-name {
+  font-weight: 500;
+}
+.chart-legend-value {
+  color: var(--ink-muted);
+}
 
 /* A grouped bar chart is a leaderboard, so it renders as ranked rows rather
    than one bar per person per bucket - which nobody can read. */

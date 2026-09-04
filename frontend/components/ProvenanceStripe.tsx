@@ -8,6 +8,7 @@ const LABELS: Record<string, string> = {
   notion: "Notion",
   google: "Google Drive",
   forms: "Google Forms",
+  insights: "Activity",
   none: "No answer found",
 };
 
@@ -23,6 +24,7 @@ const COLORS: Record<string, string> = {
   notion: "var(--provenance-notion, var(--provenance-policy))",
   google: "var(--provenance-google, var(--provenance-policy))",
   forms: "var(--provenance-forms, var(--provenance-policy))",
+  insights: "var(--provenance-insights, var(--chart-1))",
   none: "var(--provenance-none)",
 };
 
@@ -43,6 +45,7 @@ const AGENT_NAMES: Record<string, string> = {
   notion: "Notion agent",
   google: "Drive agent",
   forms: "Forms",
+  insights: "Charts",
 };
 
 export function ProvenanceStripe({
@@ -55,11 +58,24 @@ export function ProvenanceStripe({
   // A refusal ("none") names no source, and neither should the pill: the
   // routed agent is a diagnostic, not a provenance claim, when nothing was
   // grounded.
+  // Insights is the exception the other way: `agent` is "insights" and
+  // `source` is the connector the SQL ran against. Naming the agent as the
+  // identity made the pill say "No answer found" on a real Drive pie.
   const grounded = source !== "none";
-  const identity = source === "web" || !grounded ? source : agent || source;
+  const identity =
+    source === "web" || !grounded
+      ? source
+      : agent === "insights"
+        ? source
+        : agent || source;
   const color = COLORS[identity] || COLORS.none;
   const label = LABELS[identity] || LABELS.none;
-  const agentName = grounded && source !== "web" ? AGENT_NAMES[agent || ""] : undefined;
+  const agentName =
+    grounded && source !== "web"
+      ? agent === "insights"
+        ? "Charts"
+        : AGENT_NAMES[agent || ""]
+      : undefined;
 
   return (
     <span

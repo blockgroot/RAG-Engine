@@ -142,6 +142,12 @@ def _prompt(question: str, metrics: list[registry.Metric]) -> str:
         f"Periods: {', '.join(registry.PERIODS)}\n"
         "Shapes: line = over time; bar = ranking; pie = share of a whole "
         "(needs group_by); stacked_bar = mix of states.\n\n"
+        "Examples of intent=chart:\n"
+        '- "Show a pie of files created or edited, grouped by person" → '
+        "drive_docs_changed, group_by=actor, chart=pie\n"
+        '- "commits by author as a bar" → commits_by_author, group_by=actor, '
+        "chart=bar\n"
+        '- "Where is the org chart?" → intent=qa (a document, not a plot)\n\n'
         "Reply with ONLY a JSON object:\n"
         '{"intent": "qa"|"chart", "metric": "<key or null>", '
         '"group_by": "<option or null>", "period": "<period>", '
@@ -223,6 +229,11 @@ def classify_question(
         reply = llm.generate(_prompt(question, metrics), max_tokens=MAX_TOKENS)
     except Exception as exc:  # noqa: BLE001
         logger.warning("insights: chart resolution failed", exc_info=True)
+        if _asked_for_a_plot(question):
+            recovered = _fallback_spec(question, metrics)
+            if recovered is not None:
+                return AskIntent("chart", spec=recovered)
+            return AskIntent("refuse", message=_refusal(metrics))
         if fail_open:
             return AskIntent("qa")
         raise CannotChart(
@@ -232,21 +243,96 @@ def classify_question(
     intent = _parse_intent(reply, metrics, fail_open=fail_open)
     # A model that treats "make a pie chart of this doc" as qa will retrieve
     # the file and invent slices (or say the docs don't contain a pie tool).
-    # An explicit shape with no metric is a refusal, not RAG.
+    # An explicit shape with no metric is a refusal, not RAG — unless the
+    # question names a registry label, in which we recover the spec instead
+    # of sending "show a pie of files…" to the leave-policy path.
     if intent.kind == "qa" and _asked_for_a_plot(question):
+        recovered = _fallback_spec(question, metrics)
+        if recovered is not None:
+            return AskIntent("chart", spec=recovered)
         return AskIntent("refuse", message=_refusal(metrics))
+    if intent.kind == "refuse" and _asked_for_a_plot(question):
+        recovered = _fallback_spec(question, metrics)
+        if recovered is not None:
+            return AskIntent("chart", spec=recovered)
     return intent
 
 
 #: Named plot, not the word "chart" alone ("org chart" is a document).
+#: "Show a pie of files" must count: requiring the word "chart" after pie
+#: sent that question to RAG, which answered "I don't know".
 _PLOT_ASK = re.compile(
-    r"\b(pie chart|bar chart|line chart|stacked bar)\b",
+    r"\b("
+    r"pie(?:\s+chart)?s?"
+    r"|bar\s+charts?"
+    r"|line\s+charts?"
+    r"|stacked\s+bars?"
+    r"|visuali[sz]ations?"
+    r"|visual\s+(?:reports?|representations?)"
+    r")\b",
     re.I,
 )
 
 
 def _asked_for_a_plot(question: str) -> bool:
     return bool(_PLOT_ASK.search(question or ""))
+
+
+#: Dropped when matching a metric label against a question. Without this,
+#: "or" in "created or edited" is not distinctive.
+_LABEL_STOP = frozenset({"a", "an", "the", "of", "or", "and", "by", "to", "in", "on"})
+
+
+def _fallback_spec(
+    question: str, metrics: list[registry.Metric]
+) -> ChartSpec | None:
+    """Recover a spec when the model said qa but the question names a metric.
+
+    Not the router: only runs after they asked for a plot AND the model
+    missed. Two equally good matches refuse rather than guess.
+    """
+    q = (question or "").lower()
+    hits: list[tuple[int, registry.Metric]] = []
+    for metric in metrics:
+        label = metric.label.lower()
+        if label and label in q:
+            hits.append((len(label), metric))
+            continue
+        tokens = [t for t in re.findall(r"[a-z]+", label) if t not in _LABEL_STOP]
+        if tokens and all(t in q for t in tokens):
+            hits.append((sum(len(t) for t in tokens), metric))
+    if not hits:
+        return None
+    hits.sort(key=lambda h: h[0], reverse=True)
+    best_n, metric = hits[0]
+    if any(n == best_n for n, other in hits[1:] if other.key != metric.key):
+        return None
+
+    group_by = None
+    if re.search(r"\b(person|people|who|editor|author|by whom)\b", q):
+        if "actor" in metric.dims:
+            group_by = "actor"
+    elif re.search(r"\b(team|repo|channel|repositor(?:y|ies))\b", q):
+        if "subject" in metric.dims:
+            group_by = "subject"
+    elif re.search(r"\b(space|workspace)\b", q):
+        if "space" in metric.dims:
+            group_by = "space"
+
+    requested = None
+    if re.search(r"\bpie\b", q):
+        requested = "pie"
+    elif re.search(r"\bbar\b", q):
+        requested = "bar"
+    elif re.search(r"\bline\b", q):
+        requested = "line"
+
+    return ChartSpec(
+        metric=metric.key,
+        group_by=group_by,
+        period=DEFAULT_PERIOD,
+        chart=_pick_chart(metric, group_by, requested),
+    )
 
 
 def resolve_question(question: str, *, providers: list[str], llm=None) -> ChartSpec:

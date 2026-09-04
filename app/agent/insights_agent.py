@@ -12,14 +12,18 @@ number from chunk text.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 
 from ..core.answer_sources import SOURCE_NONE
 from ..core.exceptions import ProviderError
 from ..core.streaming import chunk_answer
 from ..insights import registry, scopes, store
+from ..insights.facts import DOCUMENT_PROVIDERS, record_document_facts
 from ..insights.resolve import ChartSpec, CannotChart
 from .base import Agent, AgentResponse
+
+logger = logging.getLogger(__name__)
 
 
 class InsightsAgent(Agent):
@@ -75,9 +79,15 @@ class InsightsAgent(Agent):
             )
 
         points = panel.get("points") or []
-        caption = panel["title"]
         if not points:
-            caption = f"{caption}. Nothing recorded for that yet."
+            panel, period = _backfill_and_retry(
+                parsed, panel, period,
+                org_id=org_id, workspace_id=workspace_id,
+                user_id=user_id or "", role=role or "member",
+            )
+            points = panel.get("points") or []
+
+        caption = _caption(parsed, panel, points)
         return AgentResponse(
             answer=caption,
             grounded=True,
@@ -125,6 +135,64 @@ def _as_spec(spec: ChartSpec | dict | None) -> ChartSpec | None:
         )
     except (KeyError, TypeError):
         return None
+
+
+def _backfill_and_retry(
+    spec: ChartSpec,
+    panel: dict,
+    period: str,
+    *,
+    org_id: str,
+    workspace_id: str | None,
+    user_id: str,
+    role: str,
+) -> tuple[dict, str]:
+    """Fill facts from the index for this scope, then re-run the metric.
+
+    Ask must not wait for the next ingest (or a healthy tick) to notice
+    that ``documents`` already has rows. GitHub has no documents, so this
+    is a no-op for those metrics.
+    """
+    try:
+        metric = registry.get(spec.metric)
+    except KeyError:
+        return panel, period
+    if metric.provider not in DOCUMENT_PROVIDERS:
+        return panel, period
+    try:
+        record_document_facts(
+            org_id, provider=metric.provider, workspace_id=workspace_id,
+        )
+    except Exception:  # noqa: BLE001 - empty chart beats a failed answer
+        logger.warning(
+            "insights: lazy fact backfill failed for %s org %s",
+            metric.provider, org_id, exc_info=True,
+        )
+        return panel, period
+    try:
+        return _run_spec(
+            spec, org_id=org_id, workspace_id=workspace_id,
+            user_id=user_id, role=role,
+        )
+    except (CannotChart, ProviderError):
+        return panel, period
+
+
+def _caption(spec: ChartSpec, panel: dict, points: list) -> str:
+    title = panel["title"]
+    if not points:
+        return (
+            f"{title}. Nothing recorded for that yet. If this app was "
+            "connected before charts existed, the next sync will start "
+            "counting — or ask again in a moment after facts backfill."
+        )
+    if spec.group_by == "actor" and all(not p.get("group") for p in points):
+        return (
+            f"{title}. Editor names were not stored when these were first "
+            "indexed, so this is a total rather than a breakdown by person. "
+            "The next sync will start capturing who edited."
+        )
+    return title
 
 
 def _ask_title(metric, group_by: str | None) -> str:
