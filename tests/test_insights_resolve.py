@@ -388,3 +388,98 @@ def test_org_chart_is_still_a_document_question_when_graph_is_a_plot_word():
         fail_open=True,
     )
     assert intent.kind == "qa"
+
+
+# ---------------------------------------------------------------------------
+# The `github_live` intent.
+#
+# GitHub embeds nothing, so it can never win the cosine probe -- it was
+# reachable only by two keyword rules, and `_CODE_INTENT` deliberately cannot
+# be extended to close the gap: no regex distinguishes "auth code" from "code
+# of conduct", and a code of conduct is a Notion document. A classifier can.
+#
+# This bends CLAUDE.md's "No LLM picks the source", and the amendment is
+# narrow and deliberate: the rule's own rationale is "the corpus answers which
+# source resembles this" -- GitHub has no corpus, so the reasoning never
+# covered it. `GitHubAgent` is structurally grounded, so a wrong pick costs the
+# fixed fallback, which is the standard the whole router already sets.
+# ---------------------------------------------------------------------------
+
+
+def test_a_code_question_routes_to_live_github():
+    llm = FakeLLM(_spec(intent="github_live"))
+    intent = resolve.classify_question(
+        "who owns the auth code?", providers=["github", "notion"], llm=llm
+    )
+    assert intent.kind == "github_live"
+    assert intent.spec is None
+
+
+def test_github_live_is_not_offered_when_github_is_not_connected():
+    """The prompt must not name an outcome the tenant cannot reach -- offering
+    it invites the model to pick it, which turns an answerable document
+    question into a dead end."""
+    llm = FakeLLM(_spec(intent="qa"))
+    resolve.classify_question("who owns the auth code?", providers=["notion"], llm=llm)
+    assert "github_live" not in llm.prompts[0]
+
+
+def test_a_github_live_reply_is_refused_when_github_is_not_connected():
+    """Validation, not the prompt, is the gate -- assume the prompt LOST."""
+    llm = FakeLLM(_spec(intent="github_live"))
+    intent = resolve.classify_question(
+        "who owns the auth code?", providers=["notion"], llm=llm
+    )
+    assert intent.kind == "qa", "must degrade to a document question, not route"
+
+
+def test_a_countable_question_stays_a_chart_even_if_the_model_says_github():
+    """Ordering: a resolvable metric always wins. SQL beats a live read --
+    "who's been shipping the most lately?" is `commits_by_author`, and a
+    counted chart is a better answer than prose about commits."""
+    llm = FakeLLM(_spec(intent="github_live", metric="commits_by_author",
+                        group_by="actor"))
+    intent = resolve.classify_question(
+        "who has committed the most?", providers=["github"], llm=llm
+    )
+    assert intent.kind == "chart"
+    assert intent.spec is not None
+    assert intent.spec.metric == "commits_by_author"
+
+
+def test_a_document_question_is_unaffected_by_the_new_outcome():
+    """The regression risk of a third outcome: plain document questions must
+    not start drifting to GitHub."""
+    llm = FakeLLM(_spec(intent="qa"))
+    intent = resolve.classify_question(
+        "what is our parental leave policy?", providers=["github", "notion"], llm=llm
+    )
+    assert intent.kind == "qa"
+
+
+def test_a_dead_classifier_still_fails_open_to_a_document_question():
+    """`fail_open` means a dead classifier un-routes GitHub silently, which is
+    exactly why `_CODE_INTENT` must stay as the floor rather than be replaced."""
+    class Broken:
+        model = "x"
+        last_usage = None
+
+        def generate(self, prompt, *, max_tokens=None):
+            raise RuntimeError("429")
+
+    intent = resolve.classify_question(
+        "who owns the auth code?", providers=["github", "notion"], llm=Broken()
+    )
+    assert intent.kind == "qa"
+
+
+def test_github_live_never_carries_a_chart_spec():
+    """It is a routing decision, not a chart. A spec here would mean two
+    different agents could both claim the turn."""
+    llm = FakeLLM(_spec(intent="github_live"))
+    intent = resolve.classify_question(
+        "what does the auth module do?", providers=["github"], llm=llm
+    )
+    assert intent.kind == "github_live"
+    assert intent.spec is None
+    assert intent.message is None

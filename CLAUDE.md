@@ -112,11 +112,30 @@ source-agnostic on purpose.
   "which source resembles this?" directly. Chart vs Q&A is the exception:
   `classify_question` selects a registry metric (connector = `metric.provider`)
   or falls through to cosine; keywords are not the router. Precedence: explicit
-  `agent` → chart/refuse (`InsightsAgent`) → a named **authorized** repo →
+  `agent` → chart/refuse (`InsightsAgent`) → **classified code question**
+  (`github_live`) → a named **authorized** repo →
   single embedded source (no probe) → best score above the 0.35 gate → code
   intent → best score anyway → the old workspace/policy default. **A misroute
   costs a REFUSAL, not a wrong answer** — the routed RAG agent still runs its
   own gate and strict prompt; InsightsAgent's numbers come from SQL.
+- **`github_live` is the ONE place a model picks a non-chart destination**, and
+  the amendment to "No LLM picks the *source*" is deliberate and narrow: that
+  rule's stated rationale is "the corpus answers which source resembles this",
+  and GitHub has **no corpus**, so the reasoning never covered it. It exists
+  because `_CODE_INTENT` *cannot* be widened to close the gap — no regex
+  separates "auth code" from "code of conduct", and a code of conduct is a
+  Notion page (measured 7/7 on the live model, `dress code` included). Four
+  structural guards: the outcome is offered **only when GitHub is connected**;
+  a `github_live` reply is dropped when it was not offered (validation, not the
+  prompt); **a resolvable metric always wins**, because SQL beats a live read;
+  and it is gated on **authorized repos, never `activity_facts`** — GitHubAgent
+  reads live, so a fresh installation with no facts can still answer, and
+  gating on facts would blank a real answer for a whole sync interval. A wrong
+  pick costs GitHubAgent's fixed fallback, the standard the router already sets.
+- **The two keyword rules STAY as the floor** — `classify_question` runs
+  `fail_open=True`, so a dead or rate-limited classifier silently un-routes
+  GitHub. `github_live` is strictly additive and must never become the only
+  door in.
 - **GitHub needs the two keyword rules because it embeds nothing** — with no
   chunks it can never win a cosine race and would be permanently unreachable.
   A named repo must beat the probe (a Notion page *about* a repo outscores the

@@ -30,6 +30,10 @@ from .conftest import requires_db
 
 ORG = "11111111-1111-1111-1111-111111111111"
 
+#: Captured at import, because the autouse fixture below stubs the route
+#: off for every cosine test. The github_live tests need the real one.
+_real_insights_route = routing._try_insights_route
+
 
 @pytest.fixture(autouse=True)
 def _encryption_key(monkeypatch):
@@ -456,7 +460,7 @@ def test_a_chart_intent_beats_the_only_connected_source(monkeypatch):
     monkeypatch.setattr(
         routing,
         "_try_insights_route",
-        lambda q, c: routing.RoutingDecision(INSIGHTS_KEY, "chart", chart_spec=spec),
+        lambda q, c, o, w: routing.RoutingDecision(INSIGHTS_KEY, "chart", chart_spec=spec),
     )
 
     decision = routing.choose_agent("share of completed work by team", ORG)
@@ -472,7 +476,7 @@ def test_an_uncountable_visual_still_routes_to_insights(monkeypatch):
     monkeypatch.setattr(
         routing,
         "_try_insights_route",
-        lambda q, c: routing.RoutingDecision(
+        lambda q, c, o, w: routing.RoutingDecision(
             INSIGHTS_KEY,
             "chart-refuse",
             chart_refusal="I can't chart that from your connected apps.",
@@ -484,3 +488,94 @@ def test_an_uncountable_visual_still_routes_to_insights(monkeypatch):
     assert decision.agent_key == INSIGHTS_KEY
     assert decision.reason == "chart-refuse"
     assert decision.chart_refusal is not None
+
+
+# ---------------------------------------------------------------------------
+# `github_live`: the classifier reaching GitHubAgent.
+#
+# GitHub embeds nothing, so it can never win the cosine probe, and
+# `_CODE_INTENT` cannot be widened to close the gap -- no regex separates
+# "auth code" from "code of conduct", and a code of conduct is a document.
+# So the classifier gets one extra outcome, and the keyword rules STAY as the
+# floor beneath it because the classifier fails open.
+# ---------------------------------------------------------------------------
+
+
+def test_a_classified_code_question_routes_to_github(monkeypatch):
+    from app.insights.resolve import AskIntent
+
+    _stub(monkeypatch, connected={"github", "notion"}, scores={"notion": 0.8})
+    # The autouse fixture stubs the whole route off; restore the real one so
+    # the new branch is actually exercised.
+    monkeypatch.setattr(routing, "_try_insights_route", _real_insights_route)
+    monkeypatch.setattr(
+        "app.insights.resolve.classify_question",
+        lambda q, **k: AskIntent("github_live"),
+    )
+    monkeypatch.setattr(routing, "_has_authorized_repos", lambda *a, **k: True)
+
+    decision = routing.choose_agent("who owns the auth code?", ORG)
+    assert decision.agent_key == "github"
+    assert decision.reason == "classified-code-question"
+
+
+def test_a_code_question_with_no_authorized_repos_falls_through(monkeypatch):
+    """An installation authorizing zero repos has nothing to say, and routing
+    there produces a fallback that reads as the product being broken."""
+    from app.insights.resolve import AskIntent
+
+    _stub(monkeypatch, connected={"github", "notion"}, scores={"notion": 0.8})
+    monkeypatch.setattr(routing, "_try_insights_route", _real_insights_route)
+    monkeypatch.setattr(
+        "app.insights.resolve.classify_question",
+        lambda q, **k: AskIntent("github_live"),
+    )
+    monkeypatch.setattr(routing, "_has_authorized_repos", lambda *a, **k: False)
+
+    decision = routing.choose_agent("who owns the auth code?", ORG)
+    assert decision.agent_key == "notion", "must fall through, not route to github"
+
+
+def test_the_repo_check_reads_authorized_repos_not_activity_facts(monkeypatch):
+    """GitHubAgent reads LIVE, so a freshly connected installation with no
+    recorded facts can still answer. Gating on facts would block a real answer
+    for up to a whole sync interval."""
+    monkeypatch.setattr(
+        "app.auth.credentials.get_connection_config",
+        lambda *a, **k: {"repos": [{"full_name": "acme/api"}]},
+    )
+    assert routing._has_authorized_repos("org-1", None) is True
+
+    monkeypatch.setattr(
+        "app.auth.credentials.get_connection_config", lambda *a, **k: {"repos": []}
+    )
+    assert routing._has_authorized_repos("org-1", None) is False
+
+
+def test_the_repo_check_never_raises(monkeypatch):
+    """Routing must never fail a question."""
+    def _boom(*a, **k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("app.auth.credentials.get_connection_config", _boom)
+    assert routing._has_authorized_repos("org-1", None) is False
+
+
+def test_code_intent_still_routes_when_the_classifier_says_qa(monkeypatch):
+    """The floor. `classify_question` fails open, so a dead or rate-limited
+    classifier silently un-routes GitHub -- the keyword rules must remain."""
+    _stub(monkeypatch, connected={"github", "notion"}, scores={"notion": 0.20})
+
+    decision = routing.choose_agent("what changed in the pull requests?", ORG)
+    assert decision.agent_key == "github"
+    assert decision.reason == "code-intent"
+
+
+def test_a_document_question_is_not_pulled_to_github(monkeypatch):
+    """The regression risk of a third outcome: a plain policy question must
+    still reach the document corpus that can answer it."""
+    _stub(monkeypatch, connected={"github", "notion"}, scores={"notion": 0.62})
+
+    decision = routing.choose_agent("what is our parental leave policy?", ORG)
+    assert decision.agent_key == "notion"
+    assert decision.reason == "best-match"

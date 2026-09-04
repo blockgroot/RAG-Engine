@@ -247,8 +247,33 @@ def _probe_scores(
     return {row[0]: float(row[1]) for row in rows if row[1] is not None}
 
 
-def _try_insights_route(question: str, connected: set[str]) -> RoutingDecision | None:
-    """Chart vs document, decided by the registry classifier — not keywords.
+def _has_authorized_repos(org_id: str, workspace_id: str | None) -> bool:
+    """Whether GitHub has anything to read in this scope.
+
+    Deliberately checks AUTHORIZED REPOS, not ``activity_facts``: GitHubAgent
+    reads live, so a freshly connected installation with no recorded facts can
+    still answer perfectly well. Gating a live route on facts would block a
+    real answer for up to a sync interval.
+
+    An installation authorizing zero repos genuinely has nothing to say, and
+    routing there produces a fallback that reads as the product being broken.
+    """
+    from ..auth.credentials import get_connection_config
+
+    try:
+        config = get_connection_config(org_id, "github", workspace_id) or {}
+    except Exception:  # noqa: BLE001 - routing must never fail a question
+        return False
+    return bool(config.get("repos"))
+
+
+def _try_insights_route(
+    question: str,
+    connected: set[str],
+    org_id: str,
+    workspace_id: str | None,
+) -> RoutingDecision | None:
+    """Chart vs document vs live GitHub, decided by the classifier.
 
     Returns None when this is ordinary Q&A so the cosine router still runs.
     Never raises: a dead classifier is a document question, not a failed Ask.
@@ -266,6 +291,24 @@ def _try_insights_route(question: str, connected: set[str]) -> RoutingDecision |
         return None
     if intent.kind == "qa":
         return None
+    if intent.kind == "github_live":
+        # The one place a model picks a non-chart destination. GitHub embeds
+        # nothing, so it can never win the cosine probe, and `_CODE_INTENT`
+        # cannot be widened to cover the rest: no regex separates "auth code"
+        # from "code of conduct". `_CODE_INTENT` STAYS as the floor below --
+        # this classifier fails open, so it must be additive, never the only
+        # door in.
+        if not _has_authorized_repos(org_id, workspace_id):
+            logger.info(
+                "Agent routing: classified code question but no authorized "
+                "repos for org %s", org_id,
+            )
+            return None
+        logger.info(
+            "Agent routing: %r classified as a live GitHub question",
+            question[:60],
+        )
+        return RoutingDecision("github", "classified-code-question")
     if intent.kind == "chart" and intent.spec is not None:
         return RoutingDecision(
             INSIGHTS_KEY,
@@ -329,7 +372,7 @@ def choose_agent(
     if not connected:
         return RoutingDecision(default_key, "no-sources")
 
-    visual = _try_insights_route(question, connected)
+    visual = _try_insights_route(question, connected, org_id, workspace_id)
     if visual is not None:
         return visual
 
