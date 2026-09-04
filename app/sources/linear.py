@@ -35,16 +35,26 @@ _PAGE_SIZE = 100
 _ISSUES_QUERY = """
 query Issues($after: String) {
   issues(first: %d, after: $after, orderBy: updatedAt) {
-    nodes { id title url updatedAt }
+    nodes { id identifier title url updatedAt }
     pageInfo { hasNextPage endCursor }
   }
 }
 """ % _PAGE_SIZE
 
+# Asks for the fields that answer the questions people actually ask about an
+# issue. The description and comments alone cannot answer "what's the status of
+# ENG-142?", "who's it assigned to?" or "is it done?" -- the identifier, state
+# and assignee were fetched for the ACTIVITY feed and never for the indexed
+# document, so those questions refused against data one field away.
 _ISSUE_QUERY = """
 query Issue($id: String!) {
   issue(id: $id) {
-    id title url updatedAt description
+    id identifier title url updatedAt description
+    state { name type }
+    assignee { name }
+    team { name }
+    priorityLabel
+    labels { nodes { name } }
     comments {
       nodes { body user { name } createdAt }
     }
@@ -84,6 +94,47 @@ query RecentIssues($after: String, $filter: IssueFilter) {
   }
 }
 """ % _PAGE_SIZE
+
+
+def _issue_title(node: dict) -> str:
+    """``ENG-142 — Fix login``, falling back to the bare title.
+
+    The identifier is how humans refer to an issue; without it in the title,
+    "what's the status of ENG-142?" has nothing to match on.
+    """
+    title = (node.get("title") or "Untitled issue").strip()
+    identifier = (node.get("identifier") or "").strip()
+    return f"{identifier} - {title}" if identifier else title
+
+
+def _issue_preamble(issue: dict) -> str:
+    """One prose line of issue metadata, for the top of the document.
+
+    Only states what Linear told us -- an unset assignee is omitted rather than
+    described as "unassigned", because retrieval would then happily answer
+    "who is this assigned to?" with a word we invented.
+    """
+    state = (issue.get("state") or {}).get("name") or ""
+    assignee = (issue.get("assignee") or {}).get("name") or ""
+    team = (issue.get("team") or {}).get("name") or ""
+    priority = issue.get("priorityLabel") or ""
+    labels = [
+        (node.get("name") or "").strip()
+        for node in ((issue.get("labels") or {}).get("nodes") or [])
+    ]
+
+    bits = [f"Linear issue {(issue.get('identifier') or '').strip()}".strip()]
+    if state:
+        bits.append(f"status {state}")
+    if assignee:
+        bits.append(f"assigned to {assignee}")
+    if team:
+        bits.append(f"team {team}")
+    if priority:
+        bits.append(f"priority {priority}")
+    if [label for label in labels if label]:
+        bits.append("labels " + ", ".join(label for label in labels if label))
+    return ". ".join(bits) + "."
 
 
 def _parse_dt(value: str | None) -> datetime | None:
@@ -151,7 +202,12 @@ class LinearAdapter(SourceAdapter):
                 refs.append(
                     SourceRef(
                         external_id=node["id"],
-                        title=node["title"],
+                        # "ENG-142 — Fix login" rather than "Fix login": the
+                        # identifier is how people refer to an issue, and it is
+                        # what makes "what's the status of ENG-142?" retrievable
+                        # at all. Retrieval sees the title via the context
+                        # header, so this is the cheapest place to put it.
+                        title=_issue_title(node),
                         last_modified=_parse_dt(node["updatedAt"]),
                         source_uri=node["url"],
                     )
@@ -223,7 +279,11 @@ class LinearAdapter(SourceAdapter):
         if issue is None:
             raise SourceError(f"Linear issue {external_id} not found or not accessible")
 
-        parts = [issue.get("description") or ""]
+        # A metadata preamble, first, so it survives chunking: chunk 1 of a
+        # long issue is the one retrieval usually returns, and status/assignee
+        # are what gets asked about. Written as prose rather than a table
+        # because the embedder scores prose.
+        parts = [_issue_preamble(issue), issue.get("description") or ""]
         for comment in issue["comments"]["nodes"]:
             author = (comment.get("user") or {}).get("name", "someone")
             parts.append(f"{author} commented: {comment['body']}")
@@ -231,7 +291,7 @@ class LinearAdapter(SourceAdapter):
 
         return SourceDocument(
             external_id=issue["id"],
-            title=issue["title"],
+            title=_issue_title(issue),
             content=content,
             source_uri=issue["url"],
             last_modified=_parse_dt(issue["updatedAt"]),

@@ -50,6 +50,14 @@ hook, and every process boundary must `close_pool()`.
   meeting-notes space blending in HR policy makes membership meaningless.
   `workspaces/store.py::assert_member` is the one place it's validated.
 
+**Retrieved context carries its provenance** (`rag/context_assemble.py::describe_hit`)
+— every chunk reaches the prompt behind one line naming the document, the app,
+who last edited it and when. All of it was already on the `documents` row each
+hit JOINs and was being dropped, so "who wrote this?", "when was it updated?"
+and "which app is this from?" refused against data we had. An unknown editor is
+**omitted, never rendered as "Unknown"** — a placeholder in the context invites
+the model to answer "who wrote this?" with it.
+
 **RAG query path (`app/rag/`)** — normalize → embed → retrieve → gate →
 grounded generate → `RagResult`.
 - **Two independent grounding layers:** a confidence gate
@@ -86,6 +94,15 @@ source-agnostic on purpose.
 - **`GitHubAgent` is not RAG** — nothing is embedded, so grounding is
   *structural*: answers are composed only from tool output, and no tool call,
   a bad arg, or any failure returns the fixed fallback.
+- **The GitHub tool list IS the set of answerable questions.** Six tools:
+  `get_readme`, `get_commit`, `list_commits`, `list_pull_requests`,
+  `list_reviews`, `list_branches`. The PR and review readers existed for
+  *charts* long before they were offered as tools, so "who reviewed the auth
+  PR?" was unanswerable against data one call away —
+  `tests/test_github_tools.py` now pins reader capability against tool surface
+  so that cannot recur silently. An **unreviewed PR answers** ("nobody has
+  reviewed it" is what the asker wanted); an empty commit or branch list falls
+  back, because narrating nothing is worse than the fixed reply.
 - **Routing is a deterministic LangGraph `StateGraph`** — one node per agent,
   a plain Python router. No LLM picks the RAG source. One tool round, never a loop.
 - **The agent is CHOSEN by measurement, not by the member** (`app/agent/
@@ -661,6 +678,14 @@ frontend/ Next.js 15 portal · tests/ pytest
   page must also be explicitly *shared* with the integration. Its block walk
   needs a **shared char budget** — unbounded nesting built an unbounded
   string *and* unbounded API calls before any size check ran.
+- **An indexed Linear issue must carry what people ask about it** — the
+  identifier is in the *title* (`ENG-142 - Fix login`, since nobody asks about
+  the bare title) and status/assignee/team/priority/labels are a prose
+  **preamble first in the content**, so they survive chunking (chunk 1 is what
+  retrieval usually returns). The adapter was already fetching those fields for
+  the activity feed and never for the document, so "what's the status of
+  ENG-142?" refused one field away. An unset assignee is omitted, never
+  "unassigned".
 - **Linear auth differs per credential**: personal key RAW, OAuth as
   `Bearer` — wrong = silent 401. Pass `updatedAt` as one `IssueFilter`
   variable; Linear renamed the inner scalar.
