@@ -47,14 +47,12 @@
 #     "field region not found in type file.Spec", which reads as a rejected
 #     VALUE rather than a misplaced key. Only services/databases/envVarGroups/
 #     previews/version live at the top level.
-#   * `region:` on the service either, while THIS service exists. Render fixes
-#     a service's region at creation and cannot move it in place, so declaring
-#     one the running service does not already have fails the deploy on every
-#     sync forever. This service is in Render's default region; DATABASE_URL is
-#     ap-south-1 (Mumbai), so it pays ~250ms/query, and the ONLY way to change
-#     that is a new service from a fresh Blueprint deploy plus repointing
-#     Vercel's API_PROXY_TARGET. Put `region: singapore` back only in that
-#     migration, never as an edit to this file.
+#   * `region:` on the service either, once the service exists. Render fixes a
+#     service's region at creation and cannot move it in place, so a region the
+#     service does not already have fails the deploy. Moot in practice: both
+#     services are ALREADY in Singapore, which is the right neighbour for an
+#     ap-south-1 (Mumbai) database — so there is nothing to pin and nothing to
+#     gain. Declare it only when creating a service from scratch.
 #   * `previews:` in any form — "Preview Environments are not available for
 #     Hobby workspaces". Restore snippet is below the services block.
 #

@@ -1217,16 +1217,14 @@ when the model says qa.
   value. The backstop is the CODE default (`settings.py`, now 1h), which any
   successful prod deploy picks up — so verify a config change against
   `oauth_connections.last_sync_at` spacing, never against the yaml.
-- **`render.yaml` declares NO region, and must not.** Render fixes a service's
-  region at creation and cannot move it in place, so a `region:` the running
-  service does not already have fails the DEPLOY on every sync, forever — and
-  the field cannot take effect anyway. (Top-level it is worse: not a Blueprint
-  key at all, so the sync itself fails with "field region not found in type
-  file.Spec".) DATABASE_URL is ap-south-1, the service is in Render's default
-  region, and the ~250ms/query that costs is only fixable by creating a NEW
-  service from a fresh Blueprint deploy and repointing Vercel's
-  API_PROXY_TARGET. The file's header lists this and `previews:` as
-  do-not-add, with the reason each cost a failed sync.
+- **The region question is CLOSED: both services already run in Singapore**,
+  the right neighbour for the ap-south-1 (Mumbai) database — so the standing
+  "pays ~250ms/query until a new service is created" note was simply wrong and
+  is deleted. `render.yaml` declares no region and should not: Render fixes it
+  at creation and cannot move it in place, so declaring one a service does not
+  already have fails the deploy, and top-level it is not a Blueprint key at all
+  (the sync fails with "field region not found in type file.Spec"). The file's
+  header lists that and `previews:` as do-not-add, with the failure each caused.
 - **Three failure surfaces, one consequence.** A failed blueprint SYNC applies
   no env var from the file; a failed DEPLOY leaves the previous container
   serving with the previous env. So a change like `AUTO_SYNC_INTERVAL_HOURS`
