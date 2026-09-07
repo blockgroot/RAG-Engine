@@ -13,6 +13,8 @@
  * which would un-hover it and make the chart flicker.
  */
 
+import { useEffect, useRef, useState } from "react";
+
 export type TipRow = {
   subject?: string | null;
   actor?: string | null;
@@ -51,9 +53,24 @@ export default function ChartTip({
   const shown = rows.slice(0, MAX_ROWS);
   const more = rows.length - shown.length;
 
+  // Flip to the cursor's left near the right edge. Measured off our own
+  // offsetParent rather than taking a width prop, because the four chart
+  // shapes know their width in four different ways (a measured plot, a pie's
+  // diameter, a bare list) and none of them should have to care. It matters
+  // most on a phone, where the tip is nearly as wide as the card.
+  const ref = useRef<HTMLDivElement>(null);
+  const [flip, setFlip] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    const parent = el?.offsetParent as HTMLElement | null;
+    if (!el || !parent) return;
+    setFlip(x + el.offsetWidth + 16 > parent.clientWidth);
+  }, [x, y, title]);
+
   return (
     <div
-      className="chart-tip"
+      ref={ref}
+      className={`chart-tip${flip ? " is-flipped" : ""}`}
       style={{ left: x, top: y }}
       role="tooltip"
       aria-hidden

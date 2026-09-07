@@ -374,11 +374,17 @@ export function Chart({
     return (
       <ul
         className="chart-rank"
-        onMouseMove={(event) => {
+        onPointerMove={(event) => {
           const box = event.currentTarget.getBoundingClientRect();
           setCursor({ x: event.clientX - box.left, y: event.clientY - box.top });
         }}
-        onMouseLeave={() => {
+        onPointerLeave={(event) => {
+          // A touch fires `pointerleave` the moment the finger lifts, so
+          // honouring it would make a tap show the tip and hide it in the same
+          // gesture -- the metadata would be unreachable on a phone. On touch
+          // the tip stays until the next tap moves it, which is what "tap to
+          // inspect" means.
+          if (event.pointerType === "touch") return;
           setCursor(null);
           setNear(null);
         }}
@@ -387,7 +393,7 @@ export function Chart({
           <li
             key={row.name}
             className="chart-rank-row"
-            onMouseEnter={() => setNear(i)}
+            onPointerEnter={() => setNear(i)}
           >
             <span className="chart-rank-label" title={row.name}>
               {/* The position, because a ranking read top-to-bottom still
@@ -469,11 +475,12 @@ export function Chart({
         height={HEIGHT}
         role="img"
         aria-label={`${chart} chart, ${buckets.length} buckets`}
-        onMouseLeave={() => {
+        onPointerLeave={(event) => {
+          if (event.pointerType === "touch") return;  // see CategoryBars
           setNear(null);
           setCursor(null);
         }}
-        onMouseMove={(event) => {
+        onPointerMove={(event) => {
           const box = event.currentTarget.getBoundingClientRect();
           if (!box.width) return;
           setCursor({
@@ -863,11 +870,12 @@ function CategoryBars({
         height={height}
         role="img"
         aria-label={`bar chart, ${rows.length} categories`}
-        onMouseLeave={() => {
+        onPointerLeave={(event) => {
+          if (event.pointerType === "touch") return;  // see CategoryBars
           setNear(null);
           setCursor(null);
         }}
-        onMouseMove={(event) => {
+        onPointerMove={(event) => {
           const box = event.currentTarget.getBoundingClientRect();
           setCursor({ x: event.clientX - box.left, y: event.clientY - box.top });
         }}
@@ -906,7 +914,7 @@ function CategoryBars({
           return (
             <g
               key={row.name}
-              onMouseEnter={() => setNear(i)}
+              onPointerEnter={() => setNear(i)}
               className="chart-bar-group"
             >
               {/* A full-height hit area, so hovering does not require landing
@@ -1133,11 +1141,14 @@ function Pie({
     <div
       className="chart-pie"
       ref={ref}
-      onMouseMove={(event) => {
+      onPointerMove={(event) => {
         const box = event.currentTarget.getBoundingClientRect();
         setCursor({ x: event.clientX - box.left, y: event.clientY - box.top });
       }}
-      onMouseLeave={() => setCursor(null)}
+      onPointerLeave={(event) => {
+        if (event.pointerType === "touch") return;  // see CategoryBars
+        setCursor(null);
+      }}
     >
       <svg
         className="chart-svg"
@@ -1161,8 +1172,11 @@ function Pie({
             // no geometry, so it cannot move the slice under the cursor.
             strokeWidth={hovered === slice.i ? 3 : 2}
             opacity={hovered == null || hovered === slice.i ? 1 : 0.32}
-            onMouseEnter={() => setHovered(slice.i)}
-            onMouseLeave={() => setHovered(null)}
+            onPointerEnter={() => setHovered(slice.i)}
+            onPointerLeave={(event) => {
+              if (event.pointerType === "touch") return;
+              setHovered(null);
+            }}
           >
             <title>
               {`${slice.name}: ${withUnit(slice.value, unit)} (${Math.round(slice.pct)}%)`}
@@ -1227,8 +1241,11 @@ function Pie({
           <li
             key={slice.name}
             data-active={hovered === slice.i || undefined}
-            onMouseEnter={() => setHovered(slice.i)}
-            onMouseLeave={() => setHovered(null)}
+            onPointerEnter={() => setHovered(slice.i)}
+            onPointerLeave={(event) => {
+              if (event.pointerType === "touch") return;
+              setHovered(null);
+            }}
           >
             <span className="chart-swatch" style={{ background: slice.color }} />
             <span className="chart-legend-name">{slice.name}</span>

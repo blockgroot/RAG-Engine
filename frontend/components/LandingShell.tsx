@@ -33,9 +33,14 @@ export function LandingShell({
             >
               Product
             </Link>
+            {/* Stays visible on a phone, unlike "Product" above. That one is
+                an anchor into the page it sits on, so hiding it costs a reader
+                nothing; this is the only OTHER page on the marketing site, and
+                hiding it left a mobile visitor with sign-in and sign-up as the
+                entire navigation. */}
             <Link
               href="/how-it-works"
-              className={`landing-nav-link landing-nav-link-hide-sm${active === "how" ? " is-active" : ""}`}
+              className={`landing-nav-link${active === "how" ? " is-active" : ""}`}
             >
               How it works
             </Link>

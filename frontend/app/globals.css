@@ -6141,3 +6141,43 @@ a.people-card:hover { color: inherit; }
 @media (max-width: 700px) {
   .landing-feature-grid-3 { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ---------------------------------------------------------------------------
+   Phone pass. Everything above already collapses its columns; these are the
+   places where the LAYOUT was fine and the content still did not fit.
+--------------------------------------------------------------------------- */
+
+@media (max-width: 640px) {
+  /* Four items in a row at 360px, one of them a filled CTA. Tightening the
+     type and spacing is what keeps "How it works" on screen now that it is no
+     longer hidden. */
+  .landing-topnav-actions { gap: 0.5rem; }
+  .landing-nav-link { font-size: 0.86rem; }
+  .landing-cta-secondary { padding-inline: 0.85rem; font-size: 0.86rem; }
+}
+
+@media (max-width: 600px) {
+  /* The composer is input + model picker + send on one line. At 11rem the
+     picker took half a phone's width and the question you were typing scrolled
+     out of its own field. */
+  .chat-composer { padding-left: 0.8rem; gap: 0.4rem; }
+  .composer-model { max-width: 6.5rem; font-size: 0.74rem; padding-left: 0.65rem; }
+  .chat-composer-input { font-size: 0.98rem; }
+}
+
+@media (max-width: 560px) {
+  /* A ranked row is label | bar | value. Below ~560px the 5rem label floor and
+     the bar were fighting for the same pixels, so the bar -- the part that
+     carries the comparison -- was the one that lost. */
+  .chart-rank-row { grid-template-columns: minmax(4rem, 6.5rem) 1fr auto; }
+}
+
+/* Flipped to the cursor's left when the tip would run past the card's right
+   edge (ChartTip measures that itself). Same 12px gap, mirrored. */
+.chart-tip.is-flipped { transform: translate(calc(-100% - 12px), -50%); }
+
+@media (max-width: 560px) {
+  /* On a phone the card is narrower than the tip's desktop cap, so it would
+     be clipped whichever side it sat on. */
+  .chart-tip { max-width: min(20rem, calc(100vw - 4rem)); font-size: 0.72rem; }
+}
