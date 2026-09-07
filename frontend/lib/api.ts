@@ -105,6 +105,9 @@ export interface ConnectionSourceConfig {
   repos?: GitHubRepoRef[];
   channel_ids?: string[];
   channel_names?: Record<string, string>;
+  /** Google Forms allow-list for survey sentiment. Empty = read nothing. */
+  form_ids?: string[];
+  form_titles?: Record<string, string>;
 }
 
 export interface SlackChannel {
@@ -141,6 +144,18 @@ export interface ConnectionRecord {
   reauth_reason?: string | null;
   /** When the background sync last looked at this connection. */
   last_sync_at?: string | null;
+}
+
+export interface GoogleForm {
+  id: string;
+  title: string;
+}
+
+export interface FormsSelection {
+  /** GOOGLE_FORMS_ENABLED on the server. False = nothing to pick yet. */
+  enabled: boolean;
+  forms: GoogleForm[];
+  selected: string[];
 }
 
 export interface ConnectionConfigResponse {
@@ -527,6 +542,29 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ channel_ids: channelIds }),
     }),
+  // Google Forms survey sentiment. `enabled` is the deployment flag
+  // (GOOGLE_FORMS_ENABLED), reported rather than 404'd so the picker can say
+  // "your deployment has not switched this on" instead of looking broken.
+  listConnectionForms: (connectionId: string) =>
+    request<FormsSelection>(`/admin/connections/${connectionId}/forms`),
+  setConnectionForms: (connectionId: string, formIds: string[]) =>
+    request<{ selected: string[] }>(`/admin/connections/${connectionId}/forms`, {
+      method: "PUT",
+      body: JSON.stringify({ form_ids: formIds }),
+    }),
+  listWorkspaceConnectionForms: (workspaceId: string, connectionId: string) =>
+    request<FormsSelection>(
+      `/workspaces/${workspaceId}/connections/${connectionId}/forms`
+    ),
+  setWorkspaceConnectionForms: (
+    workspaceId: string,
+    connectionId: string,
+    formIds: string[]
+  ) =>
+    request<{ selected: string[] }>(
+      `/workspaces/${workspaceId}/connections/${connectionId}/forms`,
+      { method: "PUT", body: JSON.stringify({ form_ids: formIds }) }
+    ),
   getOrgModel: () => request<{ model: OrgModel | null }>("/admin/llm-model"),
   listModelPresets: () =>
     request<{ presets: ModelPreset[] }>("/admin/llm-model/presets"),

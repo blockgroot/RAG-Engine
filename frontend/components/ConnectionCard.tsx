@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, ApiError, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
 import { syncPagesDetail, syncPercent, syncPhaseHeadline } from "@/lib/syncProgress";
 import { DriveFolderPicker } from "./DriveFolderPicker";
+import { FormsPicker } from "./FormsPicker";
 import { SlackChannelPicker } from "./SlackChannelPicker";
 import { SlackMemberInvitePicker } from "./SlackMemberInvitePicker";
 import { JobStatusBadge } from "./JobStatusBadge";
@@ -174,12 +175,17 @@ export function ConnectionCard({
   const channelsConfigured = channelIds.length > 0;
   const needsChannels = provider === "slack" && connection && !channelsConfigured;
   const [changingFolder, setChangingFolder] = useState(false);
+  // Surveys are a SECOND scope decision on the same connection, not part of
+  // the folder one: a form lives outside the ingested folder and is never
+  // indexed at all, so it cannot ride the Drive picker.
+  const [pickingForms, setPickingForms] = useState(false);
   const [changingChannels, setChangingChannels] = useState(false);
   const [invitingMembers, setInvitingMembers] = useState(false);
   const [folderHint, setFolderHint] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
   const [disconnectError, setDisconnectError] = useState<string | null>(null);
 
+  const formsSelected = (connection?.source_config?.form_ids ?? []).length;
   const repoSelection = connection?.source_config?.repository_selection;
   const repos = connection?.source_config?.repos ?? [];
   const installationId = connection?.source_config?.installation_id;
@@ -350,6 +356,20 @@ export function ConnectionCard({
                 Change folder
               </button>
             )}
+          {provider === "google" && connection && !changingFolder && (
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={() => {
+                setPickingForms((open) => !open);
+                setFolderHint(null);
+                setConfigError(null);
+              }}
+              title="Choose which Google Forms surveys feed the sentiment charts"
+            >
+              {pickingForms ? "Hide surveys" : formsSelected > 0 ? `Surveys (${formsSelected})` : "Surveys"}
+            </button>
+          )}
           {provider === "slack" &&
             connection &&
             channelsConfigured &&
@@ -468,6 +488,23 @@ export function ConnectionCard({
             onError={(message) => setConfigError(message || null)}
           />
           {configError && <div className="banner banner-warn">{configError}</div>}
+        </div>
+      )}
+
+      {provider === "google" && connection && pickingForms && (
+        <div className="stack" style={{ marginTop: "0.9rem" }}>
+          <FormsPicker
+            connectionId={connection.id}
+            workspaceId={workspaceId}
+            onSaved={(selected) => {
+              setConfigError(null);
+              onConfigSaved?.({
+                ...connection,
+                source_config: { ...connection.source_config, form_ids: selected },
+              });
+            }}
+            onError={(message) => setConfigError(message || null)}
+          />
         </div>
       )}
 

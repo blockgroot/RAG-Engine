@@ -182,3 +182,92 @@ def note_live_success(
 ) -> None:
     """Clear sticky reauth after a successful live provider call."""
     clear_needs_reauth(org_id, provider, workspace_id=workspace_id)
+
+
+# -- Google Forms: the surveys an admin has opted into ----------------------
+#
+# Forms are the one source where reading is NOT implied by connecting. A Drive
+# token can see every form in the account, and `sentiment.py` classified all of
+# them -- so switching the feature on would have read an admin's unrelated
+# personal surveys and turned them into charts nobody asked for. The stored
+# list is therefore an ALLOW-LIST, and no list means no reading (see
+# `record_form_sentiment`), not "all of them".
+#
+# Stored under `source_config.form_ids` alongside Drive's folder_id, so it
+# lives on the connection whose scope it belongs to -- org-wide Sources or one
+# space -- and inherits the same org-delete cascade.
+
+#: A generous cap on the allow-list. It exists because the whole config is one
+#: JSONB column shared with Drive's folder, not because 25 surveys is a limit
+#: anyone will reach.
+MAX_FORM_IDS = 25
+
+
+def list_google_forms(org_id: str, *, workspace_id: str | None = None) -> list[dict]:
+    """Forms this connection's token can see, for the picker.
+
+    Listed through DRIVE, which `drive.readonly` already covers -- the Forms
+    API has no listing endpoint. So the picker works even before the tenant
+    reconnects for the responses scope, which matters: picking the surveys is
+    step one, and being told to reconnect is step two.
+    """
+    from ..auth.credentials import get_live_connection_token
+    from ..sources.google_forms import GoogleFormsReader
+
+    token = get_live_connection_token(org_id, "google", workspace_id)
+    return [
+        {"id": form.form_id, "title": form.title}
+        for form in GoogleFormsReader(token).list_forms()
+    ]
+
+
+def set_google_form_ids(
+    org_id: str,
+    form_ids: list[str],
+    *,
+    workspace_id: str | None = None,
+) -> dict:
+    """Store the allow-list, MERGED into the existing config. Returns it.
+
+    Merged rather than replaced because `set_connection_config` overwrites the
+    whole JSONB column and Drive's `folder_id` lives in it: writing a bare
+    ``{"form_ids": [...]}`` would silently un-scope Drive ingestion, which
+    would then read the entire account.
+
+    Ids are validated against what the token can actually see. An id we cannot
+    see would sit in the config forever, failing every classification run with
+    a 404 that reads as a broken feature rather than a stale selection.
+    """
+    from ..auth.credentials import set_connection_config
+
+    if not isinstance(form_ids, list) or not all(isinstance(f, str) for f in form_ids):
+        raise ConfigurationError("form_ids must be a list of form id strings")
+    if len(form_ids) > MAX_FORM_IDS:
+        raise ConfigurationError(
+            f"At most {MAX_FORM_IDS} forms can be selected at once."
+        )
+
+    wanted = [f.strip() for f in form_ids if f.strip()]
+    if wanted:
+        visible = {f["id"]: f for f in list_google_forms(org_id, workspace_id=workspace_id)}
+        unknown = [f for f in wanted if f not in visible]
+        if unknown:
+            raise ConfigurationError(
+                "These forms are not visible to this Google connection: "
+                + ", ".join(unknown)
+            )
+        titles = {f: visible[f]["title"] for f in wanted}
+    else:
+        titles = {}
+
+    existing = get_connection_config(org_id, "google", workspace_id=workspace_id) or {}
+    config = {
+        **existing,
+        "form_ids": wanted,
+        # Snapshotted like Slack's channel_names, for the same reason: the UI
+        # names the selection without a round trip to Google, and a renamed
+        # form keeps a name we once knew rather than showing a bare id.
+        "form_titles": titles,
+    }
+    set_connection_config(org_id, "google", config, workspace_id=workspace_id)
+    return config

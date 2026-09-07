@@ -94,8 +94,19 @@ def record_form_sentiment(
     workspace_id: str | None,
     reader,
     llm=None,
+    form_ids: list[str] | None = None,
 ) -> int:
     """Classify this tenant's unclassified form answers. Returns rows written.
+
+    ``form_ids`` is the admin's ALLOW-LIST, and it is a filter rather than a
+    fetch plan because the Forms API has no listing endpoint -- the ids come
+    back through Drive either way, so the cheap thing is to list once and drop
+    what was not selected.
+
+    ``None`` reads every visible form and exists only for tests and for the
+    direct-call path; the product always passes a list, because a Drive token
+    can see every form in the account and classifying an admin's unrelated
+    personal survey is not something connecting Google consented to.
 
     Never raises: it runs on the shared worker tick.
     """
@@ -115,6 +126,16 @@ def record_form_sentiment(
             "insights: could not list forms for org %s", org_id, exc_info=True
         )
         return 0
+
+    if form_ids is not None:
+        allowed = set(form_ids)
+        skipped = [f for f in forms if f.form_id not in allowed]
+        forms = [f for f in forms if f.form_id in allowed]
+        if skipped:
+            logger.info(
+                "insights: skipping %d form(s) not selected for org %s",
+                len(skipped), org_id,
+            )
 
     already = _already_classified(org_id, workspace_id)
     rows: list[tuple] = []

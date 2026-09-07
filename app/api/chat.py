@@ -65,6 +65,7 @@ from .deps import (
 
 from .suggestions import (
     build_combined_suggestions,
+    build_forms_suggestions,
     build_github_suggestions,
     build_linear_suggestions,
     build_policy_suggestions,
@@ -206,7 +207,43 @@ def _user_facing_llm_error(exc: BaseException) -> str:
     return "I couldn't reach the answer service just now. Please try again shortly."
 
 
-def _combined_suggestions(org_id: str, workspace_id: str | None) -> dict:
+def _may_chart_sentiment(
+    org_id: str, workspace_id: str | None, session: SessionClaims
+) -> bool:
+    """Whether to offer survey-sentiment chips at all.
+
+    Three conditions, all necessary: the deployment has Forms reading on, an
+    admin has actually selected surveys in this scope (an allow-list, so an
+    empty one means nothing is read), and this person may see the metric --
+    the same `may_see_metric` the chart route uses, so a chip can never lead
+    to a refusal that reveals sentiment is being collected.
+    """
+    try:
+        from ..auth import get_connection_config
+        from ..config.settings import GoogleSettings
+        from ..insights import registry
+        from ..insights.scopes import may_see_metric
+
+        if not GoogleSettings.from_env().forms_enabled:
+            return False
+        config = get_connection_config(org_id, "google", workspace_id=workspace_id) or {}
+        if not (config.get("form_ids") or []):
+            return False
+        return may_see_metric(
+            registry.get("sentiment_by_theme"),
+            role=session.role,
+            workspace_id=workspace_id,
+            org_id=org_id,
+            user_id=session.user_id,
+        )
+    except Exception:  # noqa: BLE001 - chips are a convenience, never a 500
+        logger.debug("Suggestions: sentiment gate check failed", exc_info=True)
+        return False
+
+
+def _combined_suggestions(
+    org_id: str, workspace_id: str | None, session: SessionClaims
+) -> dict:
     """Chips from every source connected in this scope.
 
     Each provider's own builder is reused unchanged, so the chips a member sees
@@ -276,6 +313,12 @@ def _combined_suggestions(org_id: str, workspace_id: str | None) -> dict:
             ),
         )
 
+    # Survey sentiment, only for someone allowed to SEE it. A chip that leads
+    # to "you can't chart that here" would tell a member sentiment is being
+    # collected on them, which is the one thing the gate exists to avoid.
+    if _may_chart_sentiment(org_id, workspace_id, session):
+        _try("forms", build_forms_suggestions)
+
     questions = build_combined_suggestions(per_provider, workspace=in_space)
 
     # No single agent produced these, and saying "policy" would be a lie the
@@ -310,7 +353,7 @@ def list_suggestions(
             raise HTTPException(status_code=403, detail=str(exc)) from exc
 
     if not agent:
-        return _combined_suggestions(session.org_id, workspace_id)
+        return _combined_suggestions(session.org_id, workspace_id, session)
 
     requested = agent.strip().lower()
     if requested == AGENT_GITHUB:

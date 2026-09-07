@@ -58,12 +58,25 @@ def record_form_facts_if_enabled(
 
         from .sentiment import record_form_sentiment
 
+        # The ALLOW-LIST an admin picked (`connection_ops.set_google_form_ids`).
+        # Empty means read nothing, never "read everything": a Drive token can
+        # see every form in the account, including an admin's unrelated
+        # personal surveys, and turning those into company charts is not a
+        # thing anyone opted into.
+        from ..auth import get_connection_config
+
+        config = get_connection_config(org_id, "google", workspace_id=workspace_id) or {}
+        form_ids = list(config.get("form_ids") or [])
+        if not form_ids:
+            return 0
+
         resolved = token or get_live_connection_token(
             org_id, "google", workspace_id
         )
         return record_form_sentiment(
             org_id, workspace_id=workspace_id,
             reader=GoogleFormsReader(resolved),
+            form_ids=form_ids,
         )
     except Exception:  # noqa: BLE001 - a missing chart, never a failed job
         logger.warning(

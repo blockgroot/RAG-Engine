@@ -340,3 +340,67 @@ def test_a_thinly_spread_topic_under_the_floor_is_still_suppressed(org):
     rows = store.run_metric("sentiment_by_theme", org_id=org, workspace_id=None,
                             period="month", days=365, group_by="subject")
     assert rows == []
+
+
+# --------------------------------------------------------------------------
+# The allow-list: connecting Google is not consent to read every survey in it
+# --------------------------------------------------------------------------
+
+
+class TwoFormReader:
+    """A token that can see the company survey AND something personal.
+
+    Which is the real situation, not a contrived one: `list_forms` goes through
+    Drive and returns every form in the connected account.
+    """
+
+    def __init__(self):
+        self.company = FormRef(form_id="company", title="Engagement survey")
+        self.personal = FormRef(form_id="personal", title="Wedding RSVP")
+        self.read: list[str] = []
+
+    def list_forms(self):
+        return [self.company, self.personal]
+
+    def fetch_responses(self, form):
+        self.read.append(form.form_id)
+        return FormResponses(
+            form=form, answers=(_answer("great", qid=f"q-{form.form_id}"),),
+            truncated=False,
+        )
+
+
+@requires_db
+def test_only_the_selected_forms_are_ever_read(org):
+    """The chosen surveys, and nothing else.
+
+    Without this, switching the feature on would read an admin's unrelated
+    personal forms and turn them into company charts -- data nobody submitted
+    to us, classified by an LLM, on our bill.
+    """
+    reader = TwoFormReader()
+    written = sentiment.record_form_sentiment(
+        org, workspace_id=None, reader=reader,
+        llm=FakeLLM(["positive"]),
+        form_ids=["company"],
+    )
+
+    assert written == 1
+    assert reader.read == ["company"], "an unselected form was read"
+
+
+@requires_db
+def test_an_empty_allow_list_reads_nothing_rather_than_everything(org):
+    """The direction of the default is the whole protection.
+
+    An empty selection has to mean "read nothing". Reading everything would be
+    the failure the picker exists to prevent, and it is exactly what a
+    falsy-means-unset shortcut would do.
+    """
+    reader = TwoFormReader()
+    written = sentiment.record_form_sentiment(
+        org, workspace_id=None, reader=reader, llm=FakeLLM([]), form_ids=[],
+    )
+
+    assert written == 0
+    assert reader.read == []

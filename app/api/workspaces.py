@@ -27,7 +27,7 @@ from ..auth import (
     send_workspace_invite_email_safe,
     set_connection_config,
 )
-from ..config.settings import ApiSettings
+from ..config.settings import ApiSettings, GoogleSettings
 from ..core.exceptions import (
     AuthError,
     ConfigurationError,
@@ -62,10 +62,12 @@ from .connection_ops import (
     disconnect_connection,
     find_slack_channel_conflict,
     folder_id_changed,
+    list_google_forms,
     note_live_success,
     purge_provider_documents,
     raise_token_http,
     refresh_slack_channel_names,
+    set_google_form_ids,
     slack_channels_changed,
 )
 from .deps import SessionClaims, get_session, get_workspace_role, require_workspace_owner
@@ -392,6 +394,86 @@ def search_connection_drive_folders(
             workspace_id=workspace_id,
         )
     return {"folders": folders}
+
+
+# -- Google Forms survey sentiment, scoped to this space --------------------
+#
+# The same two routes as `/admin/connections/{id}/forms`, resolved against this
+# space's own Google connection. Owner-only, like every other scope decision
+# here: which surveys feed a sentiment chart is exactly the kind of choice a
+# member should not be able to widen.
+
+
+def _workspace_google_connection(org_id: str, workspace_id: str, connection_id: str):
+    conn = _owned_workspace_connection(org_id, workspace_id, connection_id)
+    if conn.provider != "google":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Survey reading is only supported for Google "
+                f"(this connection is {conn.provider!r})."
+            ),
+        )
+    return conn
+
+
+@router.get("/{workspace_id}/connections/{connection_id}/forms")
+def list_workspace_connection_forms(
+    workspace_id: str,
+    connection_id: str,
+    session: SessionClaims = Depends(get_session),
+    _role: str = Depends(require_workspace_owner),
+):
+    _workspace_google_connection(session.org_id, workspace_id, connection_id)
+    settings = GoogleSettings.from_env()
+    config = get_connection_config(session.org_id, "google", workspace_id=workspace_id) or {}
+    payload = {
+        "enabled": settings.forms_enabled,
+        "selected": list(config.get("form_ids") or []),
+        "forms": [],
+    }
+    if not settings.forms_enabled:
+        return payload
+    try:
+        payload["forms"] = list_google_forms(session.org_id, workspace_id=workspace_id)
+        note_live_success(session.org_id, "google", workspace_id=workspace_id)
+    except (SourceError, ConfigurationError, OAuthReauthRequiredError) as exc:
+        raise_token_http(
+            exc, org_id=session.org_id, provider="google", workspace_id=workspace_id
+        )
+    return payload
+
+
+@router.put("/{workspace_id}/connections/{connection_id}/forms")
+def put_workspace_connection_forms(
+    workspace_id: str,
+    connection_id: str,
+    body: dict,
+    session: SessionClaims = Depends(get_session),
+    _role: str = Depends(require_workspace_owner),
+):
+    _workspace_google_connection(session.org_id, workspace_id, connection_id)
+    if not GoogleSettings.from_env().forms_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Survey reading is not switched on for this deployment "
+                "(GOOGLE_FORMS_ENABLED)."
+            ),
+        )
+    try:
+        config = set_google_form_ids(
+            session.org_id, body.get("form_ids") or [], workspace_id=workspace_id
+        )
+    except (SourceError, ConfigurationError, OAuthReauthRequiredError) as exc:
+        raise_token_http(
+            exc, org_id=session.org_id, provider="google", workspace_id=workspace_id
+        )
+    return {
+        "connection_id": connection_id,
+        "provider": "google",
+        "selected": config.get("form_ids") or [],
+    }
 
 
 @router.get("/{workspace_id}/connections/{connection_id}/slack-channels")

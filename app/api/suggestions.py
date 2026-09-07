@@ -17,7 +17,7 @@ _MAX_COMBINED = 6
 # Fixed order so chips do not reshuffle between renders. Documents first
 # because they answer the questions people actually arrive with; GitHub last
 # because its answers are live reads and the least likely starting point.
-_COMBINED_ORDER = ("notion", "google", "policy", "slack", "linear", "github")
+_COMBINED_ORDER = ("notion", "google", "policy", "slack", "linear", "github", "forms")
 
 _GITHUB_TEMPLATES = (
     "What does the {name} repository do?",
@@ -232,6 +232,30 @@ def build_policy_suggestions(
         title = cleaned[i % len(cleaned)]
         questions.append(template.format(title=_display_title(title)))
     return questions
+
+
+#: Survey-sentiment chips. Fixed questions, not templated from content: the
+#: whole point of the Forms path is that no response text is stored, so there
+#: are no titles to build a chip from -- and the question text is what the
+#: chart resolver classifies, so these have to read like the charts we can
+#: actually draw.
+#:
+#: They exist because a feature nobody can find is not shipped. The picker
+#: grants access to a survey; this is the only place a person learns that
+#: having done so, they can ask for the chart. Shown ONLY to the people
+#: allowed to see the metric (`insights.scopes.may_see_metric`) -- a chip
+#: offering a chart that then refuses would confirm sentiment is being
+#: collected to exactly the people it is collected on.
+_FORMS_SUGGESTIONS = (
+    "Chart how people feel by topic from our survey responses.",
+    "Show survey sentiment for the last quarter.",
+    "Which survey topics lean most negative?",
+)
+
+
+def build_forms_suggestions() -> list[str]:
+    """Chips for survey sentiment. Callers gate on scope and role."""
+    return list(_FORMS_SUGGESTIONS)
 
 
 def build_combined_suggestions(

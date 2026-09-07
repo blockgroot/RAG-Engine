@@ -6080,3 +6080,51 @@ a.people-card:hover { color: inherit; }
   color: var(--ink-muted);
   margin: 0.5rem 0 0;
 }
+
+/* ---------------------------------------------------------------------------
+   Google Forms survey picker (components/FormsPicker.tsx)
+
+   An allow-list, so it is styled as a list of decisions rather than a form
+   field: one row per survey, checkbox first, with the consequence spelled out
+   above and the two structural protections (owners-only, five-response floor)
+   below. Both notes are in the component because they are the reason someone
+   is willing to switch this on at all.
+--------------------------------------------------------------------------- */
+
+.forms-picker { gap: var(--space-3); }
+
+.forms-list {
+  display: grid;
+  gap: 0.35rem;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.forms-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: calc(var(--radius) - 4px);
+  cursor: pointer;
+}
+.forms-row:hover { background: var(--surface-elevated); }
+.forms-row-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.forms-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.forms-foot { margin: 0; font-size: 0.85rem; }

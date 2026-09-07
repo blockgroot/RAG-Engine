@@ -24,7 +24,7 @@ from ..auth import (
     send_magic_link_email_safe,
     set_connection_config,
 )
-from ..config.settings import ApiSettings, EmailSettings
+from ..config.settings import ApiSettings, EmailSettings, GoogleSettings
 from ..core.exceptions import AuthError, ConfigurationError, OAuthReauthRequiredError, SourceError
 from ..githublive import refresh_installation_scope
 from ..ingestion import detect_source_changes
@@ -44,9 +44,11 @@ from .connection_ops import (
     disconnect_connection,
     find_slack_channel_conflict,
     folder_id_changed,
+    list_google_forms,
     note_live_success,
     purge_provider_documents,
     raise_token_http,
+    set_google_form_ids,
     slack_channels_changed,
 )
 from .deps import SessionClaims, require_admin
@@ -276,6 +278,80 @@ def list_connection_slack_channels(
     except (SourceError, ConfigurationError, OAuthReauthRequiredError) as exc:
         raise_token_http(exc, org_id=session.org_id, provider=conn.provider)
     return {"channels": channels}
+
+
+# -- Google Forms survey sentiment ------------------------------------------
+#
+# Two routes, GET and PUT, because a form is the one thing connecting Google
+# does NOT grant: the token can see every form in the account, so reading them
+# has to be an explicit choice. See `connection_ops.set_google_form_ids`.
+#
+# `enabled` is reported rather than 400ing when GOOGLE_FORMS_ENABLED is off:
+# "your deployment has not switched this on" is a different fact from "this is
+# not supported", and the picker can say so.
+
+
+def _google_connection(org_id: str, connection_id: str):
+    conn = _owned_connection(org_id, connection_id)
+    if conn.provider != "google":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Survey reading is only supported for Google "
+                f"(this connection is {conn.provider!r})."
+            ),
+        )
+    return conn
+
+
+@router.get("/connections/{connection_id}/forms")
+def list_connection_forms(
+    connection_id: str, session: SessionClaims = Depends(require_admin)
+):
+    """The forms this connection can see, plus which are already selected."""
+    _google_connection(session.org_id, connection_id)
+    settings = GoogleSettings.from_env()
+    config = get_connection_config(session.org_id, "google") or {}
+    payload = {
+        "enabled": settings.forms_enabled,
+        "selected": list(config.get("form_ids") or []),
+        "forms": [],
+    }
+    if not settings.forms_enabled:
+        return payload
+    try:
+        payload["forms"] = list_google_forms(session.org_id)
+        note_live_success(session.org_id, "google")
+    except (SourceError, ConfigurationError, OAuthReauthRequiredError) as exc:
+        raise_token_http(exc, org_id=session.org_id, provider="google")
+    return payload
+
+
+@router.put("/connections/{connection_id}/forms")
+def put_connection_forms(
+    connection_id: str,
+    body: dict,
+    session: SessionClaims = Depends(require_admin),
+):
+    """Set which surveys may be read. An empty list switches reading off."""
+    _google_connection(session.org_id, connection_id)
+    if not GoogleSettings.from_env().forms_enabled:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Survey reading is not switched on for this deployment "
+                "(GOOGLE_FORMS_ENABLED)."
+            ),
+        )
+    try:
+        config = set_google_form_ids(session.org_id, body.get("form_ids") or [])
+    except (SourceError, ConfigurationError, OAuthReauthRequiredError) as exc:
+        raise_token_http(exc, org_id=session.org_id, provider="google")
+    return {
+        "connection_id": connection_id,
+        "provider": "google",
+        "selected": config.get("form_ids") or [],
+    }
 
 
 @router.put("/connections/{connection_id}/config")
