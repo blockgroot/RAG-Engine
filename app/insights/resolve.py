@@ -356,7 +356,10 @@ def _fallback_spec(
     if re.search(r"\b(person|people|who|editor|author|by whom)\b", q):
         if "actor" in metric.dims:
             group_by = "actor"
-    elif re.search(r"\b(team|repo|channel|repositor(?:y|ies))\b", q):
+    elif re.search(
+        r"\b(team|repo|channel|repositor(?:y|ies)|page|pages|file|files|"
+        r"document|documents|topic|topics)\b", q
+    ):
         if "subject" in metric.dims:
             group_by = "subject"
 

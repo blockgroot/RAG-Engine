@@ -200,7 +200,7 @@ def _ask_title(metric, group_by: str | None) -> str:
         return metric.label
     by = {
         "actor": "person",
-        "subject": "team or repo",
+        "subject": registry.subject_label(metric.provider),
         "state": "state",
         "provider": "app",
     }.get(group_by, group_by)

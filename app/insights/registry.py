@@ -100,12 +100,34 @@ def _add(metric: Metric) -> None:
     METRICS[metric.key] = metric
 
 
+#: What the `subject` column holds, per provider. One slot, a different thing
+#: in each connector -- so a title saying "by team or repo" over a chart of
+#: Notion pages describes the wrong chart. Kept here rather than in the two
+#: title builders, which had drifted into naming only GitHub's and Linear's.
+SUBJECT_LABELS = {
+    "notion": "page",
+    "google": "file",
+    "slack": "channel",
+    "linear": "team",
+    "github": "repository",
+    "forms": "topic",
+}
+
+
+def subject_label(provider: str) -> str:
+    return SUBJECT_LABELS.get(provider, "subject")
+
+
 # ---------------------------------------------------------------------------
 # Notion & Drive -- countable from data ingest already stores.
 #
-# `space` and `actor` are dimensions rather than separate metrics: "pages per
-# space" and "top editors" are the SAME count grouped differently, and giving
-# each its own entry would mean two definitions to keep in agreement.
+# `actor` and `subject` are dimensions rather than separate metrics: "top
+# editors" and "most edited pages" are the SAME count grouped differently, and
+# giving each its own entry would mean two definitions to keep in agreement.
+#
+# `subject` is the page or file TITLE. `facts.py` has always written it; it
+# simply was not offered as a dimension, so "which pages change most?" refused
+# against a column that was already populated for every document.
 # ---------------------------------------------------------------------------
 
 _add(Metric(
@@ -114,7 +136,7 @@ _add(Metric(
     label="Pages created or edited",
     chart="line",
     kind="doc_changed",
-    dims=("actor",),
+    dims=("actor", "subject"),
     unit="pages",
 ))
 _add(Metric(
@@ -123,7 +145,7 @@ _add(Metric(
     label="Files created or edited",
     chart="line",
     kind="doc_changed",
-    dims=("actor",),
+    dims=("actor", "subject"),
     unit="files",
 ))
 

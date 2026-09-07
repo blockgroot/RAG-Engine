@@ -492,6 +492,19 @@ facts, a space's Ask reads that space only — no separate company dashboard.
   GitHub rows while the chart said "nothing recorded yet". `seen_repos` counts
   a repo we read *something* from, so the log separates "no access" from "no
   activity".
+- **A commit's author is the LOGIN, not the git name** (`rest.py::_commit_author`).
+  Every commit payload carries both: `commit.author.name` is whatever git
+  config wrote ("Sana Asiwal") and `author.login` is the account GitHub
+  resolved it to ("18-sana"). PRs and reviews only ever carry the login, so
+  preferring the git name made the same person TWO people across charts —
+  "who ships most" could not be compared with "who raises PRs". Falls back to
+  the git name: a commit from an unmatched email still happened.
+- **`subject` means a different thing per connector, and `registry.SUBJECT_LABELS`
+  is the one place that says so** — page / file / channel / team / repository /
+  topic. Both title builders had drifted into naming only GitHub's and
+  Linear's, so a Notion chart read "by team or repo". `facts.py` had always
+  written the page and file title into `subject`; it simply was not in `dims`,
+  so "which pages change most?" refused against a populated column.
 - **Linear's `subject` is the TEAM**, so grouping by subject *is* "by team" —
   which is what answers the request this feature came from. Completion is
   decided by `state_type == "completed"` (Linear's own lifecycle category), not
@@ -930,7 +943,12 @@ when the model says qa.
 - Auto-sync needs THREE things outside the repo: the migration, Render's
   `INTERNAL_TICK_SECRET`, and GitHub repo secrets `TICK_URL`/`TICK_SECRET`.
   Missing the last two means the schedule runs and calls nothing (exit 0 by
-  design, so a fork does not fail CI).
+  design, so a fork does not fail CI). **All three are now provisioned and the
+  tick is OBSERVED running in prod** — Syvora's `last_sync_at` values advance
+  on a ~20-minute stagger (notion 01:40, github 01:50, slack 02:00 on
+  2026-09-07). Diagnose an empty chart as a recorder bug before suspecting the
+  tick; `last_sync_at` is stamped on ATTEMPT, so a synced-looking connection
+  can still have written nothing.
 - **GitHub disables scheduled workflows after 60 days of repo inactivity** — a
   dormant repo silently stops ticking, and every freshness guarantee stops with
   it. cron-job.org against the same endpoint is the punctual alternative.

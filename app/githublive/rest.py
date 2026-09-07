@@ -79,6 +79,24 @@ def _truncate(text: str, max_bytes: int) -> tuple[str, bool]:
 MAX_PULL_REQUEST_PAGES = 5
 
 
+def _commit_author(item: dict, commit: dict) -> str | None:
+    """The commit's author as a GitHub LOGIN where GitHub knows one.
+
+    Two names exist on every commit payload and they are not the same thing:
+    ``commit.author.name`` is whatever git config wrote ("Sana Asiwal") and
+    ``author.login`` is the GitHub account it resolved to ("18-sana"). Pull
+    requests and reviews only ever carry the login, so preferring the git name
+    made the SAME person two different people across charts -- "who ships the
+    most" could not be compared with "who raises pull requests".
+
+    Falls back to the git name: a commit by an email GitHub cannot match to an
+    account (a bot, a since-deleted user, an unlinked address) still happened
+    and still counts. A gap in the identity is better than dropping the commit.
+    """
+    login = ((item.get("author") or {}) or {}).get("login")
+    return login or (commit.get("author") or {}).get("name")
+
+
 def _pull_request(full_name: str, item: dict) -> PullRequest:
     """One API object to our shape, keeping the three people distinct.
 
@@ -186,7 +204,7 @@ class RestGitHubReader(GitHubReader):
             repo=full_name,
             sha=str(payload.get("sha") or sha),
             message=commit.get("message", ""),
-            author=author.get("name"),
+            author=_commit_author(payload, commit),
             date=_parse_dt(author.get("date")),
             url=payload.get("html_url") or f"https://github.com/{full_name}/commit/{sha}",
             files=files,
@@ -235,7 +253,7 @@ class RestGitHubReader(GitHubReader):
                     repo=full_name,
                     sha=sha,
                     message=subject,
-                    author=author.get("name"),
+                    author=_commit_author(item, commit),
                     date=_parse_dt(author.get("date")),
                     url=item.get("html_url")
                     or f"https://github.com/{full_name}/commit/{sha}",

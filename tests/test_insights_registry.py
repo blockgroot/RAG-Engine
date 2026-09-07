@@ -121,3 +121,28 @@ def test_every_provider_with_panels_has_metrics_for_them():
 
     for provider in panels.PANELS:
         assert registry.for_provider(provider), f"{provider} has panels but no metrics"
+
+
+# --------------------------------------------------------------------------
+# `subject` means a different thing per connector
+# --------------------------------------------------------------------------
+
+
+def test_every_provider_that_offers_subject_names_what_it_holds():
+    """One column, a different thing in each connector. A title reading "by
+    team or repo" over a chart of Notion pages describes the wrong chart, and
+    both title builders had drifted into naming only GitHub's and Linear's."""
+    offering = {
+        m.provider for m in registry.METRICS.values() if "subject" in m.dims
+    }
+    for provider in offering:
+        assert provider in registry.SUBJECT_LABELS, provider
+        assert registry.subject_label(provider) != "subject"
+
+
+def test_the_indexed_document_metrics_can_group_by_title():
+    """`facts.py` has always written the page/file title into `subject`; it
+    just was not offered, so "which pages change most?" refused against a
+    populated column."""
+    for key in ("docs_changed", "drive_docs_changed"):
+        assert "subject" in registry.get(key).dims

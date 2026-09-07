@@ -39,6 +39,7 @@ PANELS: dict[str, tuple[Panel, ...]] = {
     "notion": (
         Panel("docs_changed", "Pages created or edited", "line"),
         Panel("docs_changed", "Top editors", "bar", group_by="actor"),
+        Panel("docs_changed", "Most edited pages", "bar", group_by="subject"),
     ),
     "github": (
         Panel("prs_opened", "Pull requests raised", "line"),
@@ -73,6 +74,7 @@ PANELS: dict[str, tuple[Panel, ...]] = {
     "google": (
         Panel("drive_docs_changed", "Files created or edited", "line"),
         Panel("drive_docs_changed", "Top editors", "bar", group_by="actor"),
+        Panel("drive_docs_changed", "Most edited files", "bar", group_by="subject"),
     ),
 }
 
