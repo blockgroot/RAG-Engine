@@ -17,6 +17,14 @@ export const metadata: Metadata = {
   description:
     "Ask your company’s documents, conversations, and code. Handbook answers only from the Notion, Drive, Slack, and GitHub you connected — or says so honestly when it can’t.",
   applicationName: "Handbook",
+  icons: {
+    icon: [
+      { url: "/icon.svg?v=4", type: "image/svg+xml" },
+      { url: "/icon.svg?v=4", sizes: "any", type: "image/svg+xml" },
+    ],
+    shortcut: "/icon.svg?v=4",
+    apple: "/apple-icon.svg?v=4",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
