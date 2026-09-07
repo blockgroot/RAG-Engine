@@ -1118,6 +1118,14 @@ when the model says qa.
   token-budget context assembly; Postgres RLS; HNSW tuning (both feared
   defects were measured and did *not* reproduce); PDF/DOCX extraction; the
   self-hosted image.
+- **A failed Blueprint sync applies NOTHING from `render.yaml`**, so a block
+  the plan does not support strands every unrelated change in the file. Two hit
+  in a row: a top-level `region:` (see below) and `previews:`, which fails on a
+  Hobby/free workspace with "Preview Environments are not available for Hobby
+  workspaces". Previews are now DELETED rather than commented-out-in-place,
+  with the restore snippet in the file — they were never active anyway (they
+  also needed a paid-only dashboard toggle), and every preview would have
+  shared prod's external `DATABASE_URL`, writing real org data.
 - `render.yaml` pins `region: singapore` **on the service, never top-level** —
   a top-level `region:` fails the entire Blueprint sync with "field region not
   found in type file.Spec" (the only valid top-level keys are `services`,

@@ -12,16 +12,21 @@
 #
 # Plan `free`: cold-starts after ~15 min idle. Bump to `starter` for always-on.
 #
-# PR previews: one throwaway instance per open PR, auto torn down on
-# merge/close, URL commented on the PR by Render itself (no Action needed).
-# ponytail: also needs a one-time manual toggle in Render dashboard (Blueprint
-# -> Settings -> Enable Preview Environments) before this takes effect.
-# ponytail: every preview shares the SAME external DATABASE_URL as prod (no
-# per-preview DB since it's not Render-managed) — reads/writes real org data.
-# Fine for now; override DATABASE_URL per-preview with a second free
-# Supabase/Neon project if that becomes a real problem.
-previews:
-  generation: automatic
+# PR previews are DELETED, not disabled: `previews:` in any form fails the
+# whole sync on a Hobby (free) workspace with "Preview Environments are not
+# available for Hobby workspaces", and a failed sync applies NOTHING else in
+# this file — so an aspirational block costs every env var here. It was never
+# active anyway: it also needed a paid-only dashboard toggle.
+#
+# If the workspace is ever upgraded, restore:
+#
+#   previews:
+#     generation: automatic
+#
+# and note the reason it was only ever half-wired: every preview would share
+# the SAME external DATABASE_URL as prod (no per-preview DB, since Postgres is
+# not Render-managed here), so a preview reads and WRITES real org data. That
+# needs a second free Supabase/Neon project overridden per-preview first.
 
 services:
   - type: web
