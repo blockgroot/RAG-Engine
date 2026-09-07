@@ -92,47 +92,58 @@ def record_github_facts(
     seen_repos = 0
 
     for repo in repos:
+        # Pull requests and commits are read INDEPENDENTLY. They are separate
+        # GitHub permissions, and an installation routinely has one without
+        # the other -- so a `continue` here silently discarded every commit in
+        # a repo whose pull requests 403'd, which is how a tenant with four
+        # readable commits ended up with an empty `activity_facts` and a
+        # "nothing recorded yet" chart. One unreadable capability must never
+        # cost a readable one.
+        page = None
+        read_something = False
         try:
             page = reader.list_pull_requests(
                 repo.full_name, since=since, limit=settings.max_pull_requests
             )
         except Exception:  # noqa: BLE001
             # One inaccessible repo must not cost the others. GitHub 404s what
-            # a token cannot see, and that is not retryable.
+            # a token cannot see and 403s what the installation may not read;
+            # neither is retryable.
             logger.warning(
                 "insights: could not read pull requests of %s", repo.full_name,
                 exc_info=True,
             )
-            continue
 
-        seen_repos += 1
-        truncated = truncated or page.truncated
+        if page is not None:
+            read_something = True
+            truncated = truncated or page.truncated
 
-        # `merged_by` is absent from the LIST payload, so a merger can only be
-        # read one pull request at a time. Bounded to the same slice reviews
-        # already pay for -- without it the "who merges them" chart is empty on
-        # every tenant, which reads as "nobody merges" rather than as a gap.
-        mergers = _fill_mergers(
-            reader, page.items[: settings.max_reviewed_pull_requests]
-        )
-        for pull in page.items:
-            rows.extend(
-                _pull_rows(org_id, workspace_id, mergers.get(pull.number, pull))
+            # `merged_by` is absent from the LIST payload, so a merger can only
+            # be read one pull request at a time. Bounded to the same slice
+            # reviews already pay for -- without it the "who merges them" chart
+            # is empty on every tenant, which reads as "nobody merges" rather
+            # than as a gap.
+            mergers = _fill_mergers(
+                reader, page.items[: settings.max_reviewed_pull_requests]
             )
-
-        # Reviews are one call PER pull request, so the pull-request set is
-        # bounded FIRST and only the newest slice is reviewed. A chart of who
-        # reviews is stable well before 100 samples.
-        for pull in page.items[: settings.max_reviewed_pull_requests]:
-            try:
-                reviews = reader.list_reviews(repo.full_name, pull.number)
-            except Exception:  # noqa: BLE001
-                logger.debug(
-                    "insights: could not read reviews on %s#%s",
-                    repo.full_name, pull.number, exc_info=True,
+            for pull in page.items:
+                rows.extend(
+                    _pull_rows(org_id, workspace_id, mergers.get(pull.number, pull))
                 )
-                continue
-            rows.extend(_review_rows(org_id, workspace_id, pull, reviews))
+
+            # Reviews are one call PER pull request, so the pull-request set is
+            # bounded FIRST and only the newest slice is reviewed. A chart of
+            # who reviews is stable well before 100 samples.
+            for pull in page.items[: settings.max_reviewed_pull_requests]:
+                try:
+                    reviews = reader.list_reviews(repo.full_name, pull.number)
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "insights: could not read reviews on %s#%s",
+                        repo.full_name, pull.number, exc_info=True,
+                    )
+                    continue
+                rows.extend(_review_rows(org_id, workspace_id, pull, reviews))
 
         try:
             commits = reader.list_commits(
@@ -140,6 +151,7 @@ def record_github_facts(
                 since=since.isoformat(),
                 limit=settings.max_commits,
             )
+            read_something = True
         except Exception:  # noqa: BLE001
             logger.warning(
                 "insights: could not read commits of %s", repo.full_name,
@@ -148,6 +160,11 @@ def record_github_facts(
             commits = []
         for commit in commits or []:
             rows.extend(_commit_rows(org_id, workspace_id, commit))
+
+        # Counts a repo we could read SOMETHING from, so the log distinguishes
+        # "no activity" from "no access".
+        if read_something:
+            seen_repos += 1
 
     written = _write(rows, workspace_id)
     logger.info(

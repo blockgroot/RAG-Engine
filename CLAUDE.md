@@ -483,6 +483,15 @@ facts, a space's Ask reads that space only — no separate company dashboard.
   capped first and only the newest `max_reviewed_pull_requests` are reviewed.
   Commits are the same facts-only path (`commits_by_author`, newest
   `max_commits` per repo) — still no vectors.
+- **Pull requests and commits are read INDEPENDENTLY per repo** — they are
+  separate GitHub App permissions and an installation routinely has one
+  without the other. A `continue` on the pull-request failure discarded every
+  commit in that repo: measured against Syvora's real installation, all three
+  repos 403'd on `/pulls` (`Pull requests: Read` not granted), so four
+  readable Chain-Guard commits were thrown away and `activity_facts` held ZERO
+  GitHub rows while the chart said "nothing recorded yet". `seen_repos` counts
+  a repo we read *something* from, so the log separates "no access" from "no
+  activity".
 - **Linear's `subject` is the TEAM**, so grouping by subject *is* "by team" —
   which is what answers the request this feature came from. Completion is
   decided by `state_type == "completed"` (Linear's own lifecycle category), not

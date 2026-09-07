@@ -15,10 +15,12 @@ the kind that decay silently:
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from app.core.exceptions import SourceError
 from app.db import get_connection
 from app.githublive.base import PullRequest, PullRequestPage, Review
 from app.insights import github_facts, store
@@ -502,3 +504,54 @@ def test_a_failed_detail_read_still_counts_the_merge(org):
 
     assert reader.detail_calls == [6]
     assert _total("prs_merged", org) == 1.0
+
+
+# --------------------------------------------------------------------------
+# Pull requests and commits are separate PERMISSIONS
+# --------------------------------------------------------------------------
+
+
+def test_unreadable_pull_requests_do_not_discard_readable_commits(org):
+    """Measured against a real installation: `Pull requests: Read` was not
+    granted, every repo 403'd on /pulls, and the `continue` threw away four
+    perfectly readable commits -- so `activity_facts` was EMPTY and the chart
+    said "nothing recorded yet" while the commits sat one call away."""
+
+    class _NoPullAccess(FakeReader):
+        def list_pull_requests(self, repo, *, since=None, limit=100, state="all"):
+            raise SourceError("forbidden")
+
+    commit = SimpleNamespace(
+        sha="c352b4fb", author="Sana Asiwal", repo="acme/api",
+        date=datetime.now(timezone.utc) - timedelta(days=3),
+        url="https://github.com/acme/api/commit/c352b4fb",
+    )
+    reader = _NoPullAccess([_pr(1, merged_days=1)], commits=[commit])
+
+    result = github_facts.record_github_facts(org, workspace_id=None, reader=reader)
+
+    assert result.written == 1
+    # The repo counts as seen: we read SOMETHING from it. Counting only fully
+    # readable repos makes the log say "no access" when it means "no PRs".
+    assert result.repos == 1
+    rows = store.run_metric("commits_by_author", org_id=org, workspace_id=None,
+                            period="month", days=365, group_by="actor")
+    assert [(r.group, r.value) for r in rows] == [("Sana Asiwal", 1.0)]
+
+
+def test_a_repo_we_cannot_read_at_all_is_not_counted_as_seen(org):
+    """The other direction: both reads failing must not look like a repo with
+    no activity."""
+
+    class _NoAccess(FakeReader):
+        def list_pull_requests(self, repo, *, since=None, limit=100, state="all"):
+            raise SourceError("forbidden")
+
+        def list_commits(self, repo, *, path=None, since=None, limit=10):
+            raise SourceError("forbidden")
+
+    result = github_facts.record_github_facts(
+        org, workspace_id=None, reader=_NoAccess([_pr(1)])
+    )
+    assert result.written == 0
+    assert result.repos == 0
