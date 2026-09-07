@@ -6181,3 +6181,335 @@ a.people-card:hover { color: inherit; }
      be clipped whichever side it sat on. */
   .chart-tip { max-width: min(20rem, calc(100vw - 4rem)); font-size: 0.72rem; }
 }
+
+/* ===========================================================================
+   Marketing composition + motion (app/page.tsx, app/how-it-works/page.tsx)
+
+   These pages were grids of one bordered card repeated, which reads as filler
+   however good the copy is. The vocabulary here is deliberately NOT another
+   card: hairline-separated rows, one tinted band to break the white, a flow
+   with a drawn connector, and wash tiles whose edge is a gradient rather than
+   a border. Same tokens throughout — nothing new in the palette.
+=========================================================================== */
+
+/* -- scroll-in motion -------------------------------------------------------
+   Scoped to `.has-reveal`, which components/Reveal.tsx adds to <html>. With
+   JS off the page is simply visible: motion may never be able to hide content.
+   `--i` staggers siblings without a per-element delay in the markup. */
+.has-reveal [data-reveal] {
+  opacity: 0;
+  transform: translate3d(0, 20px, 0);
+  transition:
+    opacity 0.7s var(--ease) calc(var(--i, 0) * 90ms),
+    transform 0.7s var(--ease) calc(var(--i, 0) * 90ms);
+  will-change: opacity, transform;
+}
+.has-reveal [data-reveal].is-in {
+  opacity: 1;
+  transform: none;
+  will-change: auto;
+}
+@media (prefers-reduced-motion: reduce) {
+  .has-reveal [data-reveal] {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}
+
+/* -- hero spotlight ---------------------------------------------------------
+   A soft highlight following the cursor. Behind the content and
+   `pointer-events: none`, so it can never intercept a click on the CTA, and it
+   fades in only on hover so a still page is not permanently lit. */
+.has-spotlight { position: relative; }
+.has-spotlight::before {
+  content: "";
+  position: absolute;
+  inset: -10% -6%;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0;
+  transition: opacity 0.5s var(--ease);
+  background: radial-gradient(
+    38rem 26rem at var(--mx, 50%) var(--my, 40%),
+    color-mix(in srgb, var(--accent) 14%, transparent),
+    transparent 70%
+  );
+}
+.has-spotlight:hover::before { opacity: 1; }
+.has-spotlight > * { position: relative; z-index: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .has-spotlight::before { display: none; }
+}
+@media (hover: none) {
+  .has-spotlight::before { display: none; }
+}
+
+/* Accent half of a headline. A gradient rather than a flat colour, so the
+   emphasis reads as design and not as a link. */
+.landing-title-accent,
+.show-title-accent {
+  background: linear-gradient(96deg, var(--accent-strong), #14b8a6 55%, var(--accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* -- bands ------------------------------------------------------------------ */
+.show-band {
+  padding: clamp(3.5rem, 7vw, 6.5rem) 0;
+  position: relative;
+}
+/* A hairline between bands, instead of a border around every child. */
+.show-band + .show-band::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent) 26%, var(--border)) 22%,
+    color-mix(in srgb, var(--accent) 26%, var(--border)) 78%,
+    transparent
+  );
+}
+/* One tinted band, so three white sections do not read as one long page. */
+.show-band-tint {
+  background:
+    radial-gradient(60rem 30rem at 82% -10%, color-mix(in srgb, var(--accent-soft) 60%, transparent), transparent 65%),
+    linear-gradient(180deg, color-mix(in srgb, var(--accent-soft) 26%, var(--bg)), var(--bg));
+}
+
+.show-head { max-width: 46rem; }
+.show-title {
+  font-family: var(--font-display);
+  font-size: clamp(1.9rem, 4vw, 2.9rem);
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  margin: 0.5rem 0 0;
+}
+.show-lead {
+  margin: 1rem 0 0;
+  font-size: 1.06rem;
+  line-height: 1.65;
+  color: var(--ink-muted);
+  max-width: 40rem;
+}
+
+/* -- the ask demo ---------------------------------------------------------- */
+.show-demo {
+  position: relative;
+  margin: clamp(1.75rem, 4vw, 2.75rem) 0 0;
+  padding: clamp(1.5rem, 3vw, 2.25rem);
+  border-radius: 24px;
+  background: linear-gradient(160deg, var(--surface-elevated), color-mix(in srgb, var(--accent-soft) 30%, #ffffff));
+  box-shadow: var(--shadow-lift);
+  overflow: hidden;
+}
+.show-demo-glow {
+  position: absolute;
+  inset: -40% -10% auto;
+  height: 22rem;
+  background: radial-gradient(50% 50% at 50% 50%, var(--accent-glow), transparent 70%);
+  animation: show-drift 14s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+@keyframes show-drift {
+  from { transform: translate3d(-6%, 0, 0) scale(1); }
+  to { transform: translate3d(6%, 8%, 0) scale(1.12); }
+}
+.show-demo-foot {
+  position: relative;
+  margin: 1.1rem 0 0;
+  color: var(--ink-muted);
+  font-size: 0.94rem;
+}
+
+/* -- hairline list --------------------------------------------------------- */
+.show-list {
+  list-style: none;
+  margin: clamp(2rem, 4vw, 3rem) 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0;
+}
+.show-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 1.1rem;
+  align-items: start;
+  padding: 1.5rem 0;
+  border-top: 1px solid var(--border);
+  transition: transform 0.3s var(--ease);
+}
+.show-item:last-child { border-bottom: 1px solid var(--border); }
+.show-item:hover { transform: translateX(4px); }
+.show-item h3 {
+  margin: 0.1rem 0 0.35rem;
+  font-size: 1.12rem;
+  letter-spacing: -0.01em;
+}
+.show-item p {
+  margin: 0;
+  color: var(--ink-muted);
+  line-height: 1.6;
+  max-width: 44rem;
+}
+.show-item-mark,
+.show-step-mark,
+.show-tile-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 3rem;
+  height: 3rem;
+  flex: none;
+  border-radius: 16px;
+  background: linear-gradient(150deg, #ffffff, color-mix(in srgb, var(--accent-soft) 55%, #ffffff));
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06), inset 0 0 0 1px color-mix(in srgb, var(--accent) 14%, transparent);
+  transition: transform 0.35s var(--ease), box-shadow 0.35s var(--ease);
+}
+.show-item:hover .show-item-mark,
+.show-step:hover .show-step-mark,
+.show-tile:hover .show-tile-mark {
+  transform: translateY(-3px) rotate(-3deg);
+  box-shadow: var(--shadow-lift), inset 0 0 0 1px color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+/* -- flow with a drawn connector ------------------------------------------- */
+.show-flow {
+  list-style: none;
+  margin: clamp(2rem, 4vw, 3rem) 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: clamp(1.25rem, 3vw, 2.5rem);
+  counter-reset: show-step;
+}
+.show-step { position: relative; counter-increment: show-step; }
+/* The connector is decoration, so it is dropped rather than redrawn when the
+   flow wraps to two columns. */
+.show-step:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  top: 1.5rem;
+  left: 3.6rem;
+  right: calc(-1 * clamp(1.25rem, 3vw, 2.5rem) - 0.6rem);
+  height: 1px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 40%, transparent), transparent);
+}
+.show-step h3 {
+  margin: 1rem 0 0.4rem;
+  font-size: 1.1rem;
+  letter-spacing: -0.01em;
+}
+.show-step h3::before {
+  content: "0" counter(show-step);
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.12em;
+  color: var(--accent-strong);
+  margin-bottom: 0.35rem;
+}
+.show-step p { margin: 0; color: var(--ink-muted); line-height: 1.6; }
+
+/* -- wash tiles ------------------------------------------------------------
+   No border: the edge is a gradient, and a sheen sweeps across once on hover.
+   Enough motion to feel alive, not enough to compete with four lines of copy. */
+.show-tiles {
+  margin: clamp(2rem, 4vw, 3rem) 0 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: clamp(1rem, 2vw, 1.5rem);
+}
+.show-tile {
+  position: relative;
+  overflow: hidden;
+  padding: clamp(1.4rem, 2.5vw, 1.9rem);
+  border-radius: 22px;
+  background:
+    radial-gradient(24rem 12rem at 100% 0%, color-mix(in srgb, var(--accent-soft) 55%, transparent), transparent 70%),
+    var(--surface-elevated);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 18px 40px -30px rgba(16, 24, 40, 0.35);
+  transition: transform 0.4s var(--ease), box-shadow 0.4s var(--ease);
+}
+.show-tile::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(115deg, transparent 35%, rgba(255, 255, 255, 0.55) 50%, transparent 65%);
+  transform: translateX(-120%);
+  transition: transform 0.9s var(--ease);
+  pointer-events: none;
+}
+.show-tile:hover { transform: translateY(-6px); box-shadow: var(--shadow-lift); }
+.show-tile:hover::after { transform: translateX(120%); }
+.show-tile h3 {
+  margin: 1rem 0 0.45rem;
+  font-size: 1.14rem;
+  letter-spacing: -0.01em;
+}
+.show-tile p { margin: 0; color: var(--ink-muted); line-height: 1.62; }
+
+/* -- how-it-works closing panel --------------------------------------------
+   The only boxed thing on that page, which is what makes it read as the end
+   rather than as one more section. Shares the hero's cursor highlight. */
+.how-close { padding: clamp(3rem, 6vw, 5rem) 0 clamp(4rem, 8vw, 7rem); }
+.how-close-panel {
+  position: relative;
+  overflow: hidden;
+  padding: clamp(2rem, 4vw, 3.25rem);
+  border-radius: 28px;
+  text-align: center;
+  background:
+    radial-gradient(40rem 20rem at 50% -20%, color-mix(in srgb, var(--accent-soft) 70%, transparent), transparent 70%),
+    linear-gradient(180deg, var(--surface-elevated), color-mix(in srgb, var(--accent-soft) 22%, #ffffff));
+  box-shadow: var(--shadow-lift);
+}
+.how-close-panel h2 {
+  margin: 0.5rem 0 0;
+  font-family: var(--font-display);
+  font-size: clamp(1.6rem, 3.4vw, 2.3rem);
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+.how-close-lead {
+  margin: 0.9rem auto 0;
+  max-width: 34rem;
+  color: var(--ink-muted);
+  line-height: 1.65;
+}
+.how-close-actions {
+  margin-top: 1.6rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .show-demo-glow { animation: none; }
+  .show-item:hover,
+  .show-tile:hover { transform: none; }
+  .show-tile::after { display: none; }
+  .show-item:hover .show-item-mark,
+  .show-step:hover .show-step-mark,
+  .show-tile:hover .show-tile-mark { transform: none; }
+}
+
+@media (max-width: 900px) {
+  .show-flow,
+  .show-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .show-step:not(:last-child)::after { display: none; }
+}
+@media (max-width: 620px) {
+  .show-flow,
+  .show-tiles { grid-template-columns: minmax(0, 1fr); }
+  .show-item { grid-template-columns: minmax(0, 1fr); gap: 0.75rem; }
+  .show-item-mark { width: 2.6rem; height: 2.6rem; }
+}

@@ -223,14 +223,32 @@ conversion lives *inside* the adapter. Thin SDKs, never frameworks.
   delete, all disabled for a member. Deliberately not a redirect: that
   would make the people list unreachable and bounce any link back out.
 
-**Marketing pages** — `app/page.tsx` is THREE feature bands, not one grid.
-The grid had five cards, the honest edit was eight, and eight is a wall to
-scan; they are grouped by the question a reader is asking at that point in the
-scroll (what can I ask it / what does it do without me / what do I control).
-`how-it-works` carries a reasoned section per capability. Both pages must be
-re-read when a capability ships: they had gone stale claiming per-source tabs
-(there is one box, routed by measurement) and "weekly or monthly" (daily
-exists, across five schedulable sources).
+**Marketing pages** — written for a VISITOR, not a maintainer, and the
+distinction is the standing rule: what they can ask, what arrives on its own,
+what they set up, what happens to their content. The mechanics are real and
+belong in this file; naming them on `/how-it-works` ("grounded", "org-scoped",
+"confidence gate", "refusal") made the page read as a design doc, and it went
+from 611 lines to 288 saying more. Keep example questions in the reader's
+vocabulary ("chart commits by author") — that is theirs, not ours.
+- **Composition varies per band, because repetition reads as filler.** Both
+  pages were grids of one bordered card; now: a hero with a cursor-tracked
+  highlight, a demo panel, hairline-separated rows (`show-item`), one TINTED
+  band so three white sections do not read as one page, a numbered flow with a
+  drawn connector, and borderless wash tiles whose edge is a gradient. Only the
+  closing panel is boxed, which is what makes it read as the end.
+- **Motion is opt-in per element and can never hide content**
+  (`components/Reveal.tsx`). One IntersectionObserver per page watches
+  `[data-reveal]`; `--i` staggers siblings; the hidden state is scoped to a
+  `.has-reveal` class the component adds to `<html>`, so with JS off the page is
+  simply visible. Reveals are one-way — re-hiding on scroll-up makes a page
+  feel unstable. `prefers-reduced-motion` is handled in CSS, not JS, so a
+  mid-session change is respected.
+- **Do NOT script-delete dead CSS from `globals.css`.** A brace-walker that
+  drops rules by selector ate a comment containing `{` and orphaned the
+  `@keyframes` bodies, and "braces balanced" still reported true. ~19KB of
+  rules from the old how-it-works composition (`how-paths`, `how-promise`,
+  `how-boundary`, `how-included`, `how-craft`, `how-constellation`, `how-why`)
+  are dead and can be removed BY HAND, block by block, verified by eye.
 
 **Activity Scheduler (`app/schedulers/`)** — a member saves free-text intent
 + a cadence (**daily/weekly/monthly** — daily only became honest once syncing
