@@ -12,40 +12,30 @@
 #
 # Plan `free`: cold-starts after ~15 min idle. Bump to `starter` for always-on.
 #
-# PR previews are DELETED, not disabled: `previews:` in any form fails the
-# whole sync on a Hobby (free) workspace with "Preview Environments are not
-# available for Hobby workspaces", and a failed sync applies NOTHING else in
-# this file — so an aspirational block costs every env var here. It was never
-# active anyway: it also needed a paid-only dashboard toggle.
+# DO NOT ADD, each learned from a failed sync or deploy (a failure applies
+# NOTHING from this file, so one bad key strands every env var in it):
 #
-# If the workspace is ever upgraded, restore:
+#   * A top-level `region:` — not a Blueprint key at all. Fails the sync with
+#     "field region not found in type file.Spec", which reads as a rejected
+#     VALUE rather than a misplaced key. Only services/databases/envVarGroups/
+#     previews/version live at the top level.
+#   * `region:` on the service either, while THIS service exists. Render fixes
+#     a service's region at creation and cannot move it in place, so declaring
+#     one the running service does not already have fails the deploy on every
+#     sync forever. This service is in Render's default region; DATABASE_URL is
+#     ap-south-1 (Mumbai), so it pays ~250ms/query, and the ONLY way to change
+#     that is a new service from a fresh Blueprint deploy plus repointing
+#     Vercel's API_PROXY_TARGET. Put `region: singapore` back only in that
+#     migration, never as an edit to this file.
+#   * `previews:` in any form — "Preview Environments are not available for
+#     Hobby workspaces". Restore snippet is below the services block.
 #
-#   previews:
-#     generation: automatic
-#
-# and note the reason it was only ever half-wired: every preview would share
-# the SAME external DATABASE_URL as prod (no per-preview DB, since Postgres is
-# not Render-managed here), so a preview reads and WRITES real org data. That
-# needs a second free Supabase/Neon project overridden per-preview first.
-
 services:
   - type: web
     name: rag-backend
     runtime: docker
     dockerfilePath: ./Dockerfile
     plan: free
-    # PER-SERVICE, never top-level: a top-level `region:` fails the whole sync
-    # with "field region not found in type file.Spec", which reads as a bad
-    # value rather than a misplaced key.
-    #
-    # Must match DATABASE_URL's region (ap-south-1 Mumbai -> singapore,
-    # us-east-1 -> virginia, us-west-* -> oregon, eu-* -> frankfurt) —
-    # cross-region adds ~250ms/query, multiplied by this API's query count.
-    # Render cannot move an existing service's region in place, so this only
-    # takes effect on a service created by a fresh Blueprint deploy; moving the
-    # current one means a new service plus repointing Vercel's
-    # API_PROXY_TARGET.
-    region: singapore
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
@@ -263,3 +253,16 @@ services:
       # Render's own router — same for every user otherwise).
       - key: CLIENT_IP_HEADER
         value: x-vercel-forwarded-for
+
+# ---------------------------------------------------------------------------
+# If this workspace is ever upgraded off Hobby, PR previews restore as:
+#
+#   previews:
+#     generation: automatic
+#
+# It also needs a one-time dashboard toggle (Blueprint -> Settings -> Enable
+# Preview Environments). Note why it was only ever half-wired: every preview
+# would share the SAME external DATABASE_URL as prod (no per-preview DB, since
+# Postgres is not Render-managed here), so a preview would read and WRITE real
+# org data. Point it at a second free Supabase/Neon project first.
+# ---------------------------------------------------------------------------

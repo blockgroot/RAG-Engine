@@ -1199,12 +1199,22 @@ when the model says qa.
   with the restore snippet in the file — they were never active anyway (they
   also needed a paid-only dashboard toggle), and every preview would have
   shared prod's external `DATABASE_URL`, writing real org data.
-- `render.yaml` pins `region: singapore` **on the service, never top-level** —
-  a top-level `region:` fails the entire Blueprint sync with "field region not
-  found in type file.Spec" (the only valid top-level keys are `services`,
-  `databases`, `envVarGroups`, `previews`, `version`), and a failed sync means
-  NO env var in the file reaches the service, so it silently strands unrelated
-  changes. Region is still fixed at service creation — only a new Blueprint
-  deploy applies it; until then the old service pays ~250ms/query.
+- **`render.yaml` declares NO region, and must not.** Render fixes a service's
+  region at creation and cannot move it in place, so a `region:` the running
+  service does not already have fails the DEPLOY on every sync, forever — and
+  the field cannot take effect anyway. (Top-level it is worse: not a Blueprint
+  key at all, so the sync itself fails with "field region not found in type
+  file.Spec".) DATABASE_URL is ap-south-1, the service is in Render's default
+  region, and the ~250ms/query that costs is only fixable by creating a NEW
+  service from a fresh Blueprint deploy and repointing Vercel's
+  API_PROXY_TARGET. The file's header lists this and `previews:` as
+  do-not-add, with the reason each cost a failed sync.
+- **Three failure surfaces, one consequence.** A failed blueprint SYNC applies
+  no env var from the file; a failed DEPLOY leaves the previous container
+  serving with the previous env. So a change like `AUTO_SYNC_INTERVAL_HOURS`
+  can be committed, merged and still not live — diagnose "the setting did not
+  take" by checking the last successful deploy, not the code. The code default
+  is the backstop: it is now 1h, so any successful deploy gives hourly syncing
+  even if the blueprint never applies, unless the dashboard pins another value.
 
 _End of a phase: update §3/§5/§6/§7 — one dense line, not a narrative._
