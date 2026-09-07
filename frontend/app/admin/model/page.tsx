@@ -160,99 +160,79 @@ export default function AdminModelPage() {
             </p>
           </div>
 
-          <div className="model-split">
-            <form onSubmit={save} className="model-form">
-              <div className="field">
-                <label htmlFor="preset">Provider</label>
-                <span className="model-select-wrap">
-                  <select
-                    id="preset"
-                    className="input"
-                    value={preset}
-                    onChange={(e) => setPreset(e.target.value)}
-                    disabled={busy}
-                  >
-                    {presets.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.label}
-                      </option>
-                    ))}
-                  </select>
-                </span>
-              </div>
-
-              <div className="field">
-                <label htmlFor="model">Model name</label>
-                <input
-                  id="model"
+          <form onSubmit={save} className="model-form">
+            <div className="field">
+              <label htmlFor="preset">Provider</label>
+              <span className="model-select-wrap">
+                <select
+                  id="preset"
                   className="input"
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  placeholder="gpt-5"
+                  value={preset}
+                  onChange={(e) => setPreset(e.target.value)}
                   disabled={busy}
-                  required
-                />
-                <p className="muted">
-                  Must match the provider&rsquo;s exact id.{" "}
-                  {activePreset && (
-                    <a href={activePreset.models_url} target="_blank" rel="noreferrer">
-                      See {activePreset.label}&rsquo;s model list
-                    </a>
-                  )}
-                </p>
-              </div>
-
-              <div className="field">
-                <label htmlFor="apiKey">API key</label>
-                <input
-                  id="apiKey"
-                  className="input"
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="sk-…"
-                  disabled={busy}
-                  required
-                  autoComplete="off"
-                />
-                <p className="muted">
-                  Stored encrypted. You&rsquo;ll only ever see the last 4 characters
-                  again &mdash; to change it, paste the whole key.
-                </p>
-              </div>
-
-              <div>
-                <button
-                  className="button"
-                  type="submit"
-                  disabled={busy || !model.trim() || !apiKey.trim()}
                 >
-                  {busy ? "Checking…" : "Test and save"}
-                </button>
-              </div>
-            </form>
+                  {presets.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+              </span>
+            </div>
 
-            {/* Fills what was dead space with the one thing an admin cannot
-                otherwise check before saving: the entry their team will see. */}
-            <aside className="model-preview">
-              <span className="model-preview-label">Your team will see</span>
-              <div className="model-preview-chip">
-                <span className="model-preview-dot" aria-hidden />
-                <span>
-                  {model.trim()
-                    ? `Your company's model — ${model.trim()}`
-                    : saved
-                      ? `Your company's model — ${saved.model}`
-                      : "Your company's model — …"}
-                </span>
-              </div>
+            <div className="field">
+              <label htmlFor="model">Model name</label>
+              <input
+                id="model"
+                className="input"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder="gpt-5"
+                disabled={busy}
+                required
+              />
               <p className="muted">
-                {model.trim() || saved
-                  ? "In the model dropdown, next to the built-in models."
-                  : "Type a model name to see how it will appear."}
+                Must match the provider&rsquo;s exact id.{" "}
+                {activePreset && (
+                  <a href={activePreset.models_url} target="_blank" rel="noreferrer">
+                    See {activePreset.label}&rsquo;s model list
+                  </a>
+                )}
               </p>
-            </aside>
-          </div>
+            </div>
+
+            <div className="field field-wide">
+              <label htmlFor="apiKey">API key</label>
+              <input
+                id="apiKey"
+                className="input"
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="sk-…"
+                disabled={busy}
+                required
+                autoComplete="off"
+              />
+              <p className="muted">
+                Stored encrypted. You&rsquo;ll only ever see the last 4 characters
+                again &mdash; to change it, paste the whole key.
+              </p>
+            </div>
+
+            <div className="model-form-actions">
+              <button
+                className="button"
+                type="submit"
+                disabled={busy || !model.trim() || !apiKey.trim()}
+              >
+                {busy ? "Checking…" : "Test and save"}
+              </button>
+              <span className="muted">
+                One short test message, on your key. Nothing is saved if it fails.
+              </span>
+            </div>
+          </form>
         </section>
 
         <section className="studio-panel" aria-labelledby="usage-title">

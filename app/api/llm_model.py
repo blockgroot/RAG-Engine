@@ -20,7 +20,7 @@ from ..config.settings import RagSettings
 from ..core.exceptions import LLMProviderError, LLMRateLimitError, ProviderError
 from ..llm import org_model
 from ..llm.openai_provider import OpenAICompatProvider
-from ..llm.routed import _PRESET_EXTRA_BODY
+from ..llm.routed import preset_extra_body
 from .deps import SessionClaims, require_admin
 from .validation import bounded
 
@@ -61,17 +61,21 @@ def _probe(preset: org_model.Preset, model: str, api_key: str) -> None:
     key) from 404 (wrong model id) from a connection failure — three different
     next actions that a generic "couldn't connect" collapses into one dead end.
     """
+    # The SAME per-preset request fields chat will send, including whether they
+    # may be dropped on a 400. Without both halves the probe tests a different
+    # request than production: for NVIDIA NIM `chat_template_kwargs` is the
+    # difference between a reply and a hang on its reasoning models, AND the
+    # reason every other NIM model answered "Test and save" with a 400 about a
+    # field the admin never typed.
+    extra_body, extra_optional = preset_extra_body(preset.id)
     client = OpenAICompatProvider(
         model=model,
         api_key=api_key,
         base_url=preset.base_url,
         timeout=PROBE_TIMEOUT,
         max_retries=0,
-        # The SAME per-preset request fields chat will send. Without this the
-        # probe tests a different request than production — and for NVIDIA NIM
-        # specifically it is the difference between a reply and a hang, since
-        # its reasoning models never return without `chat_template_kwargs`.
-        extra_body=_PRESET_EXTRA_BODY.get(preset.id),
+        extra_body=extra_body,
+        extra_body_optional=extra_optional,
     )
     # Production's own answer cap, NOT a token or two. CLAUDE.md §5 records the
     # exact trap: a reasoning model spends the whole budget on internal

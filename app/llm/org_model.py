@@ -53,6 +53,22 @@ class Preset:
     models_url: str
 
 
+# Every vendor here serves an OpenAI-COMPATIBLE ``/chat/completions``, which is
+# the only reason a single client class can talk to all of them. Two famous
+# providers are deliberately absent, and neither is an oversight:
+#
+#   * **Azure OpenAI** — its URL embeds the customer's resource name and
+#     deployment (``https://<resource>.openai.azure.com/openai/deployments/
+#     <deployment>``), so it cannot be a constant here. Supporting it means
+#     accepting a customer-supplied host, i.e. exactly the SSRF surface this
+#     module's docstring refuses.
+#   * **A self-hosted / Ollama endpoint** — same reason, plus it is usually a
+#     private address, which is the specific thing a validating connect hook
+#     would have to block.
+#
+# AWS Bedrock and Google Vertex are absent too: both use SigV4/GCP
+# service-account signing rather than a bearer key, so "paste an API key" is
+# not the shape of their credential at all.
 PRESETS: tuple[Preset, ...] = (
     Preset(
         id="openai",
@@ -83,6 +99,64 @@ PRESETS: tuple[Preset, ...] = (
         label="Groq",
         base_url="https://api.groq.com/openai/v1",
         models_url="https://console.groq.com/docs/models",
+    ),
+    # Gemini's OpenAI-compatibility layer. The path really does end in
+    # `/openai/` — the native endpoint at `/v1beta` is a different protocol,
+    # and pointing an OpenAI client at it 404s every request.
+    Preset(
+        id="google",
+        label="Google Gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        models_url="https://ai.google.dev/gemini-api/docs/models",
+    ),
+    Preset(
+        id="mistral",
+        label="Mistral AI",
+        base_url="https://api.mistral.ai/v1",
+        models_url="https://docs.mistral.ai/getting-started/models/models_overview/",
+    ),
+    Preset(
+        id="deepseek",
+        label="DeepSeek",
+        base_url="https://api.deepseek.com/v1",
+        models_url="https://api-docs.deepseek.com/quick_start/pricing",
+    ),
+    Preset(
+        id="xai",
+        label="xAI (Grok)",
+        base_url="https://api.x.ai/v1",
+        models_url="https://docs.x.ai/docs/models",
+    ),
+    Preset(
+        id="together",
+        label="Together AI",
+        base_url="https://api.together.xyz/v1",
+        models_url="https://docs.together.ai/docs/serverless-models",
+    ),
+    Preset(
+        id="fireworks",
+        label="Fireworks AI",
+        base_url="https://api.fireworks.ai/inference/v1",
+        models_url="https://fireworks.ai/models",
+    ),
+    Preset(
+        id="cerebras",
+        label="Cerebras",
+        base_url="https://api.cerebras.ai/v1",
+        models_url="https://inference-docs.cerebras.ai/models/overview",
+    ),
+    Preset(
+        id="perplexity",
+        label="Perplexity",
+        # No `/v1`: Perplexity serves `/chat/completions` at the domain root.
+        base_url="https://api.perplexity.ai",
+        models_url="https://docs.perplexity.ai/getting-started/models",
+    ),
+    Preset(
+        id="cohere",
+        label="Cohere",
+        base_url="https://api.cohere.ai/compatibility/v1",
+        models_url="https://docs.cohere.com/docs/models",
     ),
 )
 

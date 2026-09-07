@@ -5404,17 +5404,26 @@ a.people-card:hover { color: inherit; }
    weight so a page that is mostly form does not read as a blank sheet.
 --------------------------------------------------------------------------- */
 
-.model-split {
-  display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
-  gap: var(--space-4);
-  align-items: start;
-}
-@media (max-width: 900px) {
-  .model-split { grid-template-columns: minmax(0, 1fr); }
-}
-
+/* Two columns from 760px up. The panel is full-width now that the "your team
+   will see" preview is gone, and three stacked fields in a wide card read as
+   an unfinished page — but the key and the submit row must span, since a
+   40-character credential in a half-width box is unreadable. */
 .model-form { display: grid; gap: var(--space-3); }
+@media (min-width: 760px) {
+  .model-form {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+    column-gap: var(--space-4);
+  }
+  .model-form > .field-wide,
+  .model-form > .model-form-actions { grid-column: 1 / -1; }
+}
+.model-form-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
 
 /* Mint-tinted fields. Focus still uses the shared --accent/--accent-glow ring,
    so keyboard focus is identical to every other input in the product. */
@@ -5447,44 +5456,6 @@ a.people-card:hover { color: inherit; }
   transform: translateY(-70%) rotate(45deg);
   pointer-events: none;
 }
-
-/* Live preview of the member-facing dropdown entry. */
-.model-preview {
-  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border));
-  border-radius: var(--radius);
-  background: linear-gradient(160deg, color-mix(in srgb, var(--accent-soft) 45%, #ffffff), #ffffff);
-  padding: var(--space-3);
-  display: grid;
-  gap: var(--space-2);
-}
-.model-preview-label {
-  font-size: 0.75rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--accent-strong);
-  font-weight: 700;
-}
-.model-preview-chip {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.7rem 0.9rem;
-  border-radius: 999px;
-  background: var(--surface-elevated);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow-soft);
-  font-weight: 600;
-  min-width: 0;
-}
-.model-preview-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.model-preview-dot {
-  width: 0.6rem;
-  height: 0.6rem;
-  border-radius: 999px;
-  background: linear-gradient(145deg, #14b8a6, var(--accent-strong));
-  flex: none;
-}
-.model-preview-empty { color: var(--ink-muted); font-style: italic; }
 
 /* "What your key is used for" — four facts as cards, not a rule book.
    Each carries a stance: yes / no / bill / fallback. */

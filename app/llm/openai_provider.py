@@ -17,6 +17,7 @@ same ``LLMProvider`` interface — nothing downstream changes.
 
 from __future__ import annotations
 
+import logging
 import re
 
 from openai import (
@@ -24,6 +25,7 @@ from openai import (
     APIError,
     APITimeoutError,
     APIConnectionError,
+    BadRequestError,
     RateLimitError,
 )
 
@@ -35,7 +37,10 @@ from ..core.exceptions import (
 from .base import ChatResult, LLMProvider, ToolCall
 from .usage import TokenUsage
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_TIMEOUT = 60.0
+
 
 # Providers advertise the wait differently. Gemini's OpenAI-compatible endpoint
 # does not set Retry-After; it puts the delay in the body ("retryDelay": "41s",
@@ -84,6 +89,7 @@ class OpenAICompatProvider(LLMProvider):
         base_url: str | None = None,
         timeout: float = DEFAULT_TIMEOUT,
         extra_body: dict | None = None,
+        extra_body_optional: bool = False,
         max_retries: int | None = None,
         default_headers: dict | None = None,
     ) -> None:
@@ -104,6 +110,21 @@ class OpenAICompatProvider(LLMProvider):
         #: than an account-level setting, so a training provider can never be
         #: routed to for one tenant's content.
         self._extra_body = dict(extra_body) if extra_body else None
+        #: May ``extra_body`` be DROPPED if the endpoint rejects the request?
+        #:
+        #: True only where the extras are a per-vendor WORKAROUND. NVIDIA NIM
+        #: is why this exists: we send ``chat_template_kwargs`` because its
+        #: DeepSeek-v4 reasoning models hang without it, and NIM answers that
+        #: field with a 400 for every model family that does not read it — so
+        #: a fix for one model made every other NVIDIA model unusable, and the
+        #: admin's "Test and save" failed with the provider's words about a
+        #: field they never typed.
+        #:
+        #: False for OpenRouter, and that is load-bearing: its extras carry
+        #: ``data_collection: "deny"``. Retrying without them would send the
+        #: tenant's retrieved private content to a provider that may train on
+        #: it — the request must FAIL instead (CLAUDE.md §3).
+        self._extra_body_optional = bool(extra_body_optional)
         #: The model the endpoint said actually answered. With a router or a
         #: provider fallback this differs from ``model``, and it is the only
         #: honest thing to show a reader — "auto" is not an answer to "which
@@ -122,10 +143,47 @@ class OpenAICompatProvider(LLMProvider):
         )
 
     def _with_extras(self, kwargs: dict) -> dict:
-        """Merge the per-provider ``extra_body`` into one request's kwargs."""
-        if self._extra_body:
-            kwargs["extra_body"] = {**self._extra_body, **kwargs.get("extra_body", {})}
-        return kwargs
+        """One request's kwargs plus the per-provider ``extra_body``.
+
+        Returns a NEW dict rather than mutating the caller's: the retry in
+        ``_create`` re-sends the original kwargs without extras, and a mutating
+        merge left ``extra_body`` on them — so the "retry without it" resent
+        exactly the request that had just been rejected.
+        """
+        if not self._extra_body:
+            return kwargs
+        return {
+            **kwargs,
+            "extra_body": {**self._extra_body, **kwargs.get("extra_body", {})},
+        }
+
+    def _create(self, kwargs: dict):
+        """One request, retried WITHOUT optional extras if the endpoint 400s.
+
+        Both call sites go through here rather than each handling it, because
+        the failure is per-endpoint, not per-call: an endpoint that rejects our
+        extra fields rejects them on the probe, on chat and on a tool call
+        alike, and fixing it in one place is the only version that cannot drift.
+
+        The drop is STICKY (``self._extra_body = None``) so one 400 buys the
+        knowledge for the life of this client instead of paying a rejected
+        request on every question. Logged at warning, because a silently
+        modified request is how a provider quirk becomes folklore.
+        """
+        try:
+            return self._client.chat.completions.create(**self._with_extras(kwargs))
+        except BadRequestError as exc:
+            if not (self._extra_body and self._extra_body_optional):
+                raise
+            logger.warning(
+                "%s rejected our optional request fields (%s): %s — retrying "
+                "without them, and not sending them again for this model.",
+                self.base_url or "the endpoint",
+                ", ".join(sorted(self._extra_body)),
+                exc,
+            )
+            self._extra_body = None
+            return self._client.chat.completions.create(**kwargs)
 
     def generate(self, prompt: str, *, max_tokens: int | None = None) -> str:
         kwargs: dict = {
@@ -135,7 +193,7 @@ class OpenAICompatProvider(LLMProvider):
         if max_tokens is not None and max_tokens > 0:
             kwargs["max_tokens"] = max_tokens
         try:
-            response = self._client.chat.completions.create(**self._with_extras(kwargs))
+            response = self._create(kwargs)
         except APITimeoutError as exc:
             raise LLMProviderError(
                 f"LLM request timed out after {self.timeout}s", cause=exc
@@ -209,7 +267,7 @@ class OpenAICompatProvider(LLMProvider):
             kwargs["timeout"] = timeout
 
         try:
-            response = self._client.chat.completions.create(**self._with_extras(kwargs))
+            response = self._create(kwargs)
         except APITimeoutError as exc:
             raise LLMProviderError(
                 f"LLM tool request timed out after {timeout or self.timeout}s", cause=exc

@@ -7,6 +7,8 @@ selection between requests — rather than that the wiring exists.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from app.config.settings import OpenRouterSettings
@@ -637,3 +639,107 @@ def test_org_llm_row_is_not_listed_as_a_data_source():
 
     sql = inspect.getsource(credentials.list_connections)
     assert "provider <> 'llm'" in sql
+
+
+# --- A provider that rejects our workaround fields ------------------------
+
+
+class _Rejecting:
+    """Fake ``chat.completions`` that 400s while a given field is present.
+
+    Models NVIDIA NIM: one endpoint serving many model families, where
+    ``chat_template_kwargs`` is read by exactly one of them and answered with a
+    400 by the rest.
+    """
+
+    def __init__(self, forbidden: str) -> None:
+        self.forbidden = forbidden
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        from openai import BadRequestError
+
+        self.calls.append(kwargs)
+        if self.forbidden in (kwargs.get("extra_body") or {}):
+            raise BadRequestError(
+                message="Extra inputs are not permitted",
+                response=SimpleNamespace(status_code=400, headers={}, request=None),
+                body=None,
+            )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ready"), finish_reason="stop")],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+            model="nvidia/some-model",
+        )
+
+
+def _provider_with(fake, **kwargs):
+    from app.llm.openai_provider import OpenAICompatProvider
+
+    provider = OpenAICompatProvider(
+        model="nvidia/some-model",
+        api_key="nvapi-x",
+        base_url="https://integrate.api.nvidia.com/v1",
+        **kwargs,
+    )
+    provider._client = SimpleNamespace(chat=SimpleNamespace(completions=fake))
+    return provider
+
+
+def test_an_optional_extra_field_is_dropped_and_the_request_retried():
+    """The NVIDIA fix. `chat_template_kwargs` exists for NIM's DeepSeek-v4
+    reasoning models, which HANG without it — but NIM answers it with a 400 for
+    every family that does not read it, so sending it unconditionally made
+    every other NVIDIA model impossible to save. One retry without it turns a
+    dead provider into a working one."""
+    fake = _Rejecting("chat_template_kwargs")
+    provider = _provider_with(
+        fake,
+        extra_body={"chat_template_kwargs": {"thinking": False}},
+        extra_body_optional=True,
+    )
+
+    assert provider.generate("hi", max_tokens=700) == "ready"
+    assert len(fake.calls) == 2, "expected one rejected call and one retry"
+    assert "extra_body" not in fake.calls[1]
+
+    # And the drop is STICKY: the knowledge cost one 400, not one per question.
+    assert provider.generate("again", max_tokens=700) == "ready"
+    assert len(fake.calls) == 3
+
+
+def test_openrouters_privacy_extras_are_never_dropped_to_get_an_answer():
+    """The one case that must fail instead of retrying.
+
+    OpenRouter's extras carry ``data_collection: "deny"``. A retry without them
+    would put the tenant's retrieved private chunks in front of a provider that
+    may train on them — so a rejection has to stay a rejection. Asserted on the
+    real routing dict, not a copy, so a future edit to it lands here.
+    """
+    from app.core.exceptions import LLMProviderError
+    from app.llm.routed import _ROUTING_PREFS, preset_extra_body
+
+    body, optional = preset_extra_body("openrouter")
+    assert body is _ROUTING_PREFS
+    assert optional is False, "dropping data_collection=deny is never acceptable"
+
+    fake = _Rejecting("provider")
+    provider = _provider_with(fake, extra_body=body, extra_body_optional=optional)
+
+    with pytest.raises(LLMProviderError):
+        provider.generate("hi", max_tokens=700)
+    assert len(fake.calls) == 1, "must not retry without the privacy preference"
+
+
+def test_every_preset_base_url_is_one_we_fixed_and_https():
+    """A preset's base URL is the whole SSRF mitigation: an admin supplies a
+    provider, a model id and a key — never a host. Azure and self-hosted
+    endpoints are absent for exactly this reason, so a new preset arriving with
+    a templated or plaintext host is the failure to catch here."""
+    from app.llm.org_model import PRESETS
+
+    assert len({p.id for p in PRESETS}) == len(PRESETS), "duplicate preset id"
+    for preset in PRESETS:
+        assert preset.base_url.startswith("https://"), preset.id
+        assert "{" not in preset.base_url, f"{preset.id} needs a per-customer host"
+        assert preset.label and preset.models_url.startswith("https://"), preset.id

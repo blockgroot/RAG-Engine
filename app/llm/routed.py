@@ -115,6 +115,32 @@ _PRESET_EXTRA_BODY: dict[str, dict] = {
     "nvidia": {"chat_template_kwargs": {"thinking": False}},
 }
 
+#: Presets whose ``extra_body`` may be DROPPED when the endpoint rejects it.
+#:
+#: NVIDIA NIM only, and it is why `_extra_body_optional` exists: NIM serves
+#: many model families behind one endpoint, `chat_template_kwargs` is read by
+#: exactly one of them (the DeepSeek-v4 reasoning models that hang without it),
+#: and the rest answer it with a 400. Sending it unconditionally therefore made
+#: every OTHER NVIDIA model impossible to save — the admin saw NVIDIA rejecting
+#: a field they never typed, on a page whose whole job is to tell a wrong key
+#: from a wrong model id.
+#:
+#: OpenRouter is deliberately ABSENT: its extras carry
+#: ``data_collection: "deny"``, and a retry without them would put the tenant's
+#: retrieved private chunks in front of a provider that may train on them. That
+#: request must fail.
+_PRESET_EXTRA_OPTIONAL = frozenset({"nvidia"})
+
+
+def preset_extra_body(preset_id: str) -> tuple[dict | None, bool]:
+    """``(extra_body, may_be_dropped)`` for one BYO preset.
+
+    One function so the admin probe and chat cannot disagree about what we send
+    a provider — a probe that tests a different request than production is how
+    "it tested fine and then failed in chat" happens.
+    """
+    return _PRESET_EXTRA_BODY.get(preset_id), preset_id in _PRESET_EXTRA_OPTIONAL
+
 
 def use_model(model_id: str | None, org_id: str | None = None) -> None:
     """Select the model for the remainder of this request.
@@ -312,6 +338,7 @@ class RoutedLLMProvider(LLMProvider):
         if client is not None:
             return client
 
+        extra_body, extra_optional = preset_extra_body(org.preset)
         client = OpenAICompatProvider(
             model=org.model,
             api_key=org.api_key,
@@ -321,7 +348,8 @@ class RoutedLLMProvider(LLMProvider):
             # a slot that every OTHER tenant's chat also needs — one org's bad
             # provider must not be able to stall the process.
             timeout=self._custom_timeout,
-            extra_body=_PRESET_EXTRA_BODY.get(org.preset),
+            extra_body=extra_body,
+            extra_body_optional=extra_optional,
         )
         self._clients[cache_key] = client
         return client
