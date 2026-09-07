@@ -12,13 +12,6 @@
 #
 # Plan `free`: cold-starts after ~15 min idle. Bump to `starter` for always-on.
 #
-# Region must match DATABASE_URL's region (ap-south-1 Mumbai -> singapore,
-# us-east-1 -> virginia, us-west-* -> oregon, eu-* -> frankfurt) — cross-region
-# adds ~250ms/query, multiplied by the chatty API's query count. Render can't
-# change an existing service's region in place; redeploy a new service and
-# repoint Vercel's API_PROXY_TARGET.
-region: singapore
-
 # PR previews: one throwaway instance per open PR, auto torn down on
 # merge/close, URL commented on the PR by Render itself (no Action needed).
 # ponytail: also needs a one-time manual toggle in Render dashboard (Blueprint
@@ -36,6 +29,18 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     plan: free
+    # PER-SERVICE, never top-level: a top-level `region:` fails the whole sync
+    # with "field region not found in type file.Spec", which reads as a bad
+    # value rather than a misplaced key.
+    #
+    # Must match DATABASE_URL's region (ap-south-1 Mumbai -> singapore,
+    # us-east-1 -> virginia, us-west-* -> oregon, eu-* -> frankfurt) —
+    # cross-region adds ~250ms/query, multiplied by this API's query count.
+    # Render cannot move an existing service's region in place, so this only
+    # takes effect on a service created by a fresh Blueprint deploy; moving the
+    # current one means a new service plus repointing Vercel's
+    # API_PROXY_TARGET.
+    region: singapore
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL

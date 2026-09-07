@@ -1118,8 +1118,12 @@ when the model says qa.
   token-budget context assembly; Postgres RLS; HNSW tuning (both feared
   defects were measured and did *not* reproduce); PDF/DOCX extraction; the
   self-hosted image.
-- `render.yaml` pins `region: singapore`, but **region is fixed at service
-  creation** — only a new Blueprint deploy applies it; until then the old
-  service pays ~250ms/query.
+- `render.yaml` pins `region: singapore` **on the service, never top-level** —
+  a top-level `region:` fails the entire Blueprint sync with "field region not
+  found in type file.Spec" (the only valid top-level keys are `services`,
+  `databases`, `envVarGroups`, `previews`, `version`), and a failed sync means
+  NO env var in the file reaches the service, so it silently strands unrelated
+  changes. Region is still fixed at service creation — only a new Blueprint
+  deploy applies it; until then the old service pays ~250ms/query.
 
 _End of a phase: update §3/§5/§6/§7 — one dense line, not a narrative._
