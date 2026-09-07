@@ -42,14 +42,37 @@ from .store import Scheduler
 logger = logging.getLogger(__name__)
 
 # Window used for a scheduler's very first run, when there is no last_run_at
-# to measure from. Matched to the cadence so the first report is not oddly
-# thin (weekly) or unboundedly deep (monthly on a busy service).
-_FIRST_WINDOW = {
-    "daily": timedelta(days=1),
-    "weekly": timedelta(days=7),
-    "monthly": timedelta(days=30),
-}
-_DEFAULT_FIRST_WINDOW = timedelta(days=7)
+# to measure from.
+#
+# It is deliberately NOT the cadence. A cadence-sized first window made the
+# first report -- the only one anybody judges the feature by -- describe a
+# period that happened before the scheduler existed: a weekly GitHub report
+# created on a Tuesday reported on the previous Tuesday-to-Tuesday, found four
+# commits from July outside it, and said "nothing happened" about a repository
+# with plenty in it. Correct by its own definition, and useless.
+#
+# So the first run is a CATCH-UP: look back far enough to describe what is
+# actually there, then tile normally from that run onwards. Every subsequent
+# report still starts exactly at the previous one's end, so nothing is ever
+# reported twice.
+#
+# 90 days, one number for every cadence, because the cadence describes how
+# often someone wants to hear from us and says nothing about how far back the
+# interesting content sits. It is bounded in the direction that matters:
+# every fetcher caps its item count and pages newest-first (GitHub's
+# max_commits per repo, Slack's per-channel split, the indexed providers'
+# LIMIT), so a wider window returns the newest N of a bigger set rather than an
+# unbounded read. The reader is told which run this is, because "3 months" on
+# a weekly report is otherwise indistinguishable from a bug.
+FIRST_RUN_LOOKBACK = timedelta(days=90)
+
+#: Appended to the first report's coverage notes. The window is in the report
+#: header either way; this says WHY it is wider than the cadence, which is the
+#: part a reader cannot infer.
+FIRST_RUN_NOTE = (
+    "First report for this schedule, so it covers the last 90 days rather than "
+    "one period. The next one starts where this one ends."
+)
 
 
 def window_start(scheduler: Scheduler) -> datetime:
@@ -63,8 +86,7 @@ def window_start(scheduler: Scheduler) -> datetime:
     """
     if scheduler.last_run_at:
         return scheduler.last_run_at
-    window = _FIRST_WINDOW.get(scheduler.frequency, _DEFAULT_FIRST_WINDOW)
-    return datetime.now(timezone.utc) - window
+    return datetime.now(timezone.utc) - FIRST_RUN_LOOKBACK
 
 
 def report_link(report_id: str, settings: ApiSettings | None = None) -> str:
@@ -129,6 +151,9 @@ def run_scheduler_once(
     digest = fetch_activity(
         scheduler.provider, scheduler.org_id, since, workspace_id=scope_id
     )
+    notes = list(digest.notes)
+    if scheduler.last_run_at is None:
+        notes.append(FIRST_RUN_NOTE)
 
     if not digest:
         # Skip the LLM entirely — there is nothing to summarise, and a model
@@ -173,7 +198,10 @@ def run_scheduler_once(
             {"summary": i.summary, "url": i.url, "meta": i.meta}
             for i in digest.items
         ],
-        notes=list(digest.notes),
+        # The first run's note goes on the REPORT, not into the prompt: it is a
+        # fact about the window, and the coverage strip is where facts about
+        # the window already live. A model asked to mention it might not.
+        notes=notes,
         window_start=since,
         window_end=window_end,
     )

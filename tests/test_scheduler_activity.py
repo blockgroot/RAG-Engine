@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from types import SimpleNamespace
+
 import pytest
 
 from app.core.exceptions import ConfigurationError, SourceError
@@ -481,20 +483,54 @@ def test_the_char_budget_counts_the_joined_line_not_just_the_content():
     assert activity._TRUNCATION_MARKER in digest.notes
 
 
-def test_every_frequency_has_an_interval_and_a_first_window():
-    """Three tables must agree, or a cadence is creatable and then unrunnable.
+def test_every_frequency_has_an_interval():
+    """Two tables must agree, or a cadence is creatable and then unrunnable.
 
     Same class of invariant as SUPPORTED_PROVIDERS == _FETCHERS: FREQUENCIES
-    gates what the API accepts, _FREQUENCY_INTERVAL advances next_run_at, and
-    _FIRST_WINDOW sizes the very first report. A cadence missing from either
-    table silently falls back to a weekly window (or a KeyError at run time),
-    which is a bug you only see a day later in a delivered report.
+    gates what the API accepts and _FREQUENCY_INTERVAL advances next_run_at. A
+    cadence missing from the second is a bug you only see a day later in a
+    delivered report.
+
+    There is deliberately no third table for the first window any more --
+    `FIRST_RUN_LOOKBACK` is one value for every cadence, which is one fewer
+    table that can disagree.
     """
-    from app.schedulers.runner import _FIRST_WINDOW
     from app.schedulers.store import FREQUENCIES, _FREQUENCY_INTERVAL
 
     assert set(FREQUENCIES) == set(_FREQUENCY_INTERVAL)
-    assert set(FREQUENCIES) == set(_FIRST_WINDOW)
+
+
+def test_the_first_run_looks_back_further_than_its_cadence():
+    """The first report is the only one anybody judges the feature by.
+
+    A cadence-sized first window described a period that happened before the
+    scheduler existed: a weekly GitHub report created on a Tuesday reported
+    Tuesday-to-Tuesday, missed four commits sitting just outside it, and said
+    "nothing happened" about a repository with plenty in it. Correct by its own
+    definition and useless, which is the worst kind of correct.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from app.schedulers.runner import FIRST_RUN_LOOKBACK, window_start
+    from app.schedulers.store import FREQUENCIES, _FREQUENCY_INTERVAL
+
+    assert FIRST_RUN_LOOKBACK >= timedelta(days=30), (
+        "a catch-up shorter than the longest cadence is not a catch-up"
+    )
+
+    now = datetime.now(timezone.utc)
+    for frequency in FREQUENCIES:
+        first = SimpleNamespace(last_run_at=None, frequency=frequency)
+        elapsed = (now - window_start(first)).total_seconds()
+        assert elapsed == pytest.approx(
+            FIRST_RUN_LOOKBACK.total_seconds(), abs=5
+        ), f"{frequency} first run is not the catch-up window"
+        assert _FREQUENCY_INTERVAL[frequency]  # cadence still governs the NEXT run
+
+    # And only the first: once a report has been delivered, the window tiles
+    # from it exactly, so nothing is ever reported twice.
+    ran = SimpleNamespace(last_run_at=now - timedelta(days=3), frequency="weekly")
+    assert window_start(ran) == ran.last_run_at
 
 
 def test_the_setup_chat_tool_offers_every_frequency():
