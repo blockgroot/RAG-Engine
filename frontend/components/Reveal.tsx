@@ -85,3 +85,47 @@ export function useSpotlight<T extends HTMLElement>(ref: React.RefObject<T | nul
     };
   }, [ref]);
 }
+
+
+/**
+ * A thin accent line down the left edge that fills as you scroll.
+ *
+ * The one piece of motion that is not triggered by an element: it tells you
+ * where you are on a long page, which is the honest job of decoration here.
+ * Writes a 0-1 progress value to a CSS variable and lets the stylesheet decide
+ * what to draw, so it can be restyled or dropped per breakpoint without
+ * touching this. Passive scroll listener, one write per frame.
+ */
+export function ScrollRail() {
+  useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+    const rail = document.createElement("div");
+    rail.className = "scroll-rail";
+    rail.setAttribute("aria-hidden", "true");
+    document.body.appendChild(rail);
+
+    let frame = 0;
+    function onScroll() {
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        const max = document.documentElement.scrollHeight - window.innerHeight;
+        const progress = max > 0 ? Math.min(1, window.scrollY / max) : 0;
+        rail.style.setProperty("--progress", String(progress));
+      });
+    }
+
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+      if (frame) window.cancelAnimationFrame(frame);
+      rail.remove();
+    };
+  }, []);
+
+  return null;
+}

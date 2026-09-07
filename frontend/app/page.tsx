@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { BrandGlyph } from "@/components/BrandGlyph";
-import { FeatureEmoji } from "@/components/FeatureEmoji";
+import { FeatureIcon } from "@/components/FeatureIcon";
 import { LandingProductArt } from "@/components/LandingProductArt";
 import { LandingPromptCycle } from "@/components/LandingPromptCycle";
 import { RevealOnScroll, useSpotlight } from "@/components/Reveal";
@@ -124,7 +124,7 @@ export default function RootPage() {
         <ul className="show-list">
           <li className="show-item" data-reveal style={{ ["--i" as string]: "0" }}>
             <span className="show-item-mark">
-              <FeatureEmoji name="document" />
+              <FeatureIcon name="document" />
             </span>
             <div>
               <h3>Answers from your documents</h3>
@@ -150,7 +150,7 @@ export default function RootPage() {
           </li>
           <li className="show-item" data-reveal style={{ ["--i" as string]: "2" }}>
             <span className="show-item-mark">
-              <FeatureEmoji name="chart" />
+              <FeatureIcon name="chart" />
             </span>
             <div>
               <h3>Charts, when a number says it better</h3>
@@ -190,7 +190,7 @@ export default function RootPage() {
             </li>
             <li className="show-step" data-reveal style={{ ["--i" as string]: "1" }}>
               <span className="show-step-mark">
-                <FeatureEmoji name="schedule" />
+                <FeatureIcon name="schedule" />
               </span>
               <h3>A summary in your inbox</h3>
               <p>
@@ -201,7 +201,7 @@ export default function RootPage() {
             </li>
             <li className="show-step" data-reveal style={{ ["--i" as string]: "2" }}>
               <span className="show-step-mark">
-                <FeatureEmoji name="sentiment" />
+                <FeatureIcon name="sentiment" />
               </span>
               <h3>A read on how the team feels</h3>
               <p>
@@ -229,7 +229,7 @@ export default function RootPage() {
         <div className="show-tiles">
           <article className="show-tile" data-reveal style={{ ["--i" as string]: "0" }}>
             <span className="show-tile-mark">
-              <FeatureEmoji name="model" />
+              <FeatureIcon name="model" />
             </span>
             <h3>Use the AI you prefer</h3>
             <p>
@@ -240,7 +240,7 @@ export default function RootPage() {
           </article>
           <article className="show-tile" data-reveal style={{ ["--i" as string]: "1" }}>
             <span className="show-tile-mark">
-              <FeatureEmoji name="workspace" />
+              <FeatureIcon name="workspace" />
             </span>
             <h3>A space for each team</h3>
             <p>
@@ -250,7 +250,7 @@ export default function RootPage() {
           </article>
           <article className="show-tile" data-reveal style={{ ["--i" as string]: "2" }}>
             <span className="show-tile-mark">
-              <FeatureEmoji name="secure" />
+              <FeatureIcon name="secure" />
             </span>
             <h3>Private, by default</h3>
             <p>
@@ -310,7 +310,7 @@ export default function RootPage() {
               </li>
               <li className="landing-close-step" style={{ ["--step" as string]: "2" }}>
                 <span className="landing-close-step-mark" aria-hidden>
-                  <FeatureEmoji name="secure" />
+                  <FeatureIcon name="secure" />
                 </span>
                 <span className="landing-close-step-body">
                   <strong>Ask</strong>

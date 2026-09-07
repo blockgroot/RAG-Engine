@@ -245,6 +245,27 @@ vocabulary ("chart commits by author") — that is theirs, not ours.
   band so three white sections do not read as one page, a numbered flow with a
   drawn connector, and borderless wash tiles whose edge is a gradient. Only the
   closing panel is boxed, which is what makes it read as the end.
+- **A box was doing every job on `/how-it-works`, and that was the whole
+  problem** — a step in a journey, a kind of answer, and a guarantee all drawn
+  as the same container. Each is now its own shape: `HowJourney.tsx` puts the
+  four steps as points ON one line with a pulse travelling it (a step is a
+  point on a line, which four cards say the opposite of); the three kinds of
+  answer are alternating `feat` rows whose art swaps sides so the eye zig-zags;
+  the guarantees are one hairline-divided `vow` statement, because three cards
+  read as three more things to scan.
+- **What can be SHOWN is shown** (`HowAnswerArt.tsx`): an answer landing with
+  its source chip, six bars growing, a schedule ticking. Three sentences about
+  a chart is not a chart, and that page had no artwork at all. Drawn in CSS,
+  not shipped as images — they recolour with the tokens and would otherwise be
+  the only asset step in this frontend.
+- **Every animated start-state is scoped to `.has-reveal`.** `opacity: 0` and
+  `scaleY(0)` written unscoped meant a JS-less visitor got an invisible reply
+  bubble and six zero-height bars — a mock that looks broken, rather than one
+  that simply does not animate.
+- **`ScrollRail`** is the one piece of motion not tied to an element: a 2px
+  accent line filling down the left edge, because on a long page "how much is
+  left" is a real question. Never created at all under
+  `prefers-reduced-motion`, so there is nothing to switch off.
 - **Motion is opt-in per element and can never hide content**
   (`components/Reveal.tsx`). One IntersectionObserver per page watches
   `[data-reveal]`; `--i` staggers siblings; the hidden state is scoped to a
