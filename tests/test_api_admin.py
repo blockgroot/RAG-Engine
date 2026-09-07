@@ -142,6 +142,12 @@ def test_connections_list_scoped_to_own_org(client, admin_org, store, org_cleanu
     connections = client.get("/admin/connections", cookies=cookies).json()
     assert len(connections) == 1
     assert connections[0]["external_workspace_name"] == "Admin API Workspace"
+    # The Check button is gone, so this field IS the freshness signal: a card
+    # that cannot say when the background sync last looked makes a working
+    # auto-sync indistinguishable from a dead one. None on a fresh connection
+    # (never attempted) is a state the UI renders, not a missing key.
+    assert "last_sync_at" in connections[0]
+    assert connections[0]["last_sync_at"] is None
 
 
 @requires_db

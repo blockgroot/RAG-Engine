@@ -316,6 +316,18 @@ elapsed).
   message and the tick reads-and-clears it, so fifty messages produce ONE job.
   That read-and-clear IS the debounce; there is no timer and no counter. A
   webhook handler must therefore never ingest inline (Slack wants a 3s ack).
+- **The interval is 1h, and shortening it was cheap because it governs the
+  DIFF, not the ingest.** `pipeline._plan_refs` splits the listing into
+  new/updated/unchanged and an unchanged document never reaches
+  `fetch_document`, so a no-op sync is one `list_documents` plus one
+  `documents` SELECT — no embedding, no contextualization. Daily LLM spend is
+  set by how often content actually CHANGES, which no interval can alter. What
+  the interval does bound is throughput: `batch_size` connections per 10-minute
+  tick, so 1h keeps at most `batch_size * 6` connections on schedule and past
+  that the oldest-first ordering stretches the effective interval. Raise
+  `AUTO_SYNC_BATCH_SIZE`, never the interval. Render instance-hours are
+  unaffected — the tick cadence, not the sync interval, is what keeps the box
+  awake.
 - **`last_sync_at` is stamped on ATTEMPT, not success** — deliberately. One
   failed sync costs one interval of freshness, which is visible; a hot retry
   loop against a provider's rate limit is not. `needs_reauth` rows are skipped
@@ -323,7 +335,7 @@ elapsed).
 - **`POST /internal/tick` exists because the free instance sleeps.** Render
   free spins down after ~15 min with no *inbound* HTTP — process activity does
   not count, so every in-process loop stops shortly after the last user leaves
-  and "syncs every 6 hours" becomes fiction. `.github/workflows/tick.yml`
+  and "syncs every hour" becomes fiction. `.github/workflows/tick.yml`
   drives it (in-repo, so deploying starts it; free and unlimited on a public
   repo). The workflow **GET `/health` until 200, then POST `/internal/tick`**
   — a 503 from Render's proxy during cold start used to fail the job in ~3s
@@ -1075,11 +1087,18 @@ when the model says qa.
   `rag.query_signals` logs rather than hand-measured examples.
 - **Auto-sync is polling ONLY so far** — `request_sync()` and the flag column
   exist, but **no webhook endpoint calls them yet**, so today's worst case is
-  the 6h interval rather than one tick. Slack/Linear/Notion handlers are the
+  the 1h interval rather than one tick. Slack/Linear/Notion handlers are the
   next step; Drive can never have one.
-- The **Check button is still in the UI** on purpose: it is the manual override
-  until an unattended sync is observed working in prod. Remove it only after
-  that.
+- **The Check button is GONE, and `last_sync_at` replaced it on the card**
+  (`credentials.OAuthConnectionInfo` -> `/admin/connections` ->
+  `ConnectionCard::checkedAgo`). It was the manual override held until an
+  unattended sync was observed in prod, which it now is. Removing it without a
+  freshness line would have been strictly worse: nothing else on the page can
+  distinguish a working automatic sync from a dead one, and the stamp is on
+  ATTEMPT, so the line says "last checked", never "up to date". `Update` is now
+  reachable only after a folder/channel change (the one moment a check runs by
+  itself), which is deliberate — a manual sync button is the chore this feature
+  exists to delete.
 - Auto-sync needs THREE things outside the repo: the migration, Render's
   `INTERNAL_TICK_SECRET`, and GitHub repo secrets `TICK_URL`/`TICK_SECRET`.
   Missing the last two means the schedule runs and calls nothing (exit 0 by

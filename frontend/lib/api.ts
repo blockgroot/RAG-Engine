@@ -139,6 +139,8 @@ export interface ConnectionRecord {
   source_config?: ConnectionSourceConfig | null;
   needs_reauth?: boolean;
   reauth_reason?: string | null;
+  /** When the background sync last looked at this connection. */
+  last_sync_at?: string | null;
 }
 
 export interface ConnectionConfigResponse {

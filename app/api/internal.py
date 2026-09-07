@@ -8,7 +8,7 @@ does not keep the instance alive, so every background loop in this codebase
 (ingestion queue, activity scheduler, auto-sync) silently stops shortly after
 the last user closes the tab — and comes back only when someone visits.
 
-That makes "we sync every 6 hours" false on the deployment we actually run on.
+That makes "we sync every hour" false on the deployment we actually run on.
 A free external cron (cron-job.org, UptimeRobot, a GitHub Actions schedule)
 hitting this endpoint fixes it, and fixes it *properly*: the same request that
 wakes the instance also does the work, so there is no ping-then-hope window

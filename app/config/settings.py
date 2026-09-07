@@ -1366,12 +1366,23 @@ class SchedulerSettings:
 # The interval is a FLOOR, not the plan: Slack/Linear/Notion push an event and
 # get synced within one tick, while Drive can only ever be polled (its push
 # notifications require a Google-verified domain, which a *.onrender.com host
-# cannot be). 6h keeps a free Gemini contextualization budget intact while
-# bounding worst-case staleness to a working day.
+# cannot be), and a webhook delivered while the free box was asleep is lost.
+#
+# 1h, not 6h, because the interval only governs how often we DIFF, not how much
+# we ingest: `pipeline._plan_refs` splits the listing into new/updated/unchanged
+# and an unchanged document never reaches `fetch_document`, so it costs no
+# embedding and no contextualization call. A no-op sync is one `list_documents`
+# plus one `documents` SELECT. The LLM/embedding spend per day is set by how
+# often content actually changes, which an interval cannot alter -- so shortening
+# it buys freshness at listing prices. What it does bound is THROUGHPUT:
+# batch_size connections per tick (a tick every 10 min) is the ceiling, so an
+# interval of 1h means at most batch_size * 6 connections can be kept on
+# schedule; past that the oldest-first ordering starts to slip and the effective
+# interval stretches. Raise batch_size, not the interval, when that day comes.
 #
 # batch_size bounds how many connections one tick may enqueue: a 40-connection
 # org must not turn a single tick into 40 simultaneous ingests on a 512MB box.
-DEFAULT_AUTO_SYNC_INTERVAL_HOURS = 6
+DEFAULT_AUTO_SYNC_INTERVAL_HOURS = 1
 DEFAULT_AUTO_SYNC_BATCH_SIZE = 5
 
 

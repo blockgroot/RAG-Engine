@@ -191,8 +191,12 @@ services:
       # while this free instance was cold-started is simply lost.
       - key: AUTO_SYNC_ENABLED
         value: "true"
+      # 1h: the interval decides how often we DIFF, not how much we ingest --
+      # an unchanged document is skipped before it is ever fetched, so a no-op
+      # sync costs one listing call. Ceiling is AUTO_SYNC_BATCH_SIZE per
+      # 10-minute tick; raise that, not this, if connections outgrow it.
       - key: AUTO_SYNC_INTERVAL_HOURS
-        value: "6"
+        value: "1"
       # How many connections one tick may enqueue. Drop to 2 if the LLM
       # endpoint starts returning 429s during unattended syncs.
       - key: AUTO_SYNC_BATCH_SIZE

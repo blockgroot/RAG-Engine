@@ -61,6 +61,12 @@ class OAuthConnectionInfo:
     # or a successful live provider call). Safe / non-secret.
     needs_reauth: bool = False
     reauth_reason: str | None = None
+    # When the background sync last ATTEMPTED this connection
+    # (``app/jobs/autosync.py``). Surfaced because the Check button is gone:
+    # with no manual override, "when did this last look for changes?" is the
+    # only freshness signal an admin has left, and a card that shows nothing
+    # makes a working automatic sync indistinguishable from a broken one.
+    last_sync_at: datetime | None = None
 
 
 def save_connection(
@@ -424,7 +430,7 @@ def list_connections(
         rows = conn.execute(
             "SELECT id::text, provider, external_workspace_id, "
             "external_workspace_name, created_at, source_config, "
-            "needs_reauth, reauth_reason "
+            "needs_reauth, reauth_reason, last_sync_at "
             "FROM oauth_connections "
             "WHERE org_id = %s AND workspace_id IS NOT DISTINCT FROM %s "
             # The org's own LLM credential lives in this table (no migration)
@@ -448,6 +454,7 @@ def list_connections(
             source_config=r[5],
             needs_reauth=bool(r[6]),
             reauth_reason=r[7],
+            last_sync_at=r[8],
         )
         for r in rows
     ]

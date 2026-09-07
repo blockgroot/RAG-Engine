@@ -4,7 +4,7 @@
 # A free Render web service spins down after ~15 minutes with no INBOUND HTTP
 # request. Process activity does not count, so the in-process worker thread
 # (ingestion queue, auto-sync, activity scheduler) stops shortly after the last
-# user closes the tab. Every "syncs every 6 hours" guarantee is fiction without
+# user closes the tab. Every "syncs every hour" guarantee is fiction without
 # something outside the box knocking on the door.
 #
 # WHY GITHUB ACTIONS RATHER THAN AN EXTERNAL CRON SERVICE

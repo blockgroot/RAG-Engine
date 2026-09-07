@@ -114,6 +114,24 @@ function manageExternalTitle(provider: Provider): string {
   return "Open Notion to share or unshare pages with this integration";
 }
 
+/** "last checked 12 minutes ago" — the freshness signal that replaced Check.
+ *
+ * Automatic sync (``app/jobs/autosync.py``) stamps ``last_sync_at`` on every
+ * ATTEMPT, so this answers "is the background sync alive?" and nothing more:
+ * a stamp is not a promise that anything was ingested. That is exactly the
+ * question the removed Check button used to answer by hand.
+ */
+function checkedAgo(iso: string): string {
+  const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (!Number.isFinite(minutes) || minutes < 0) return "just now";
+  if (minutes < 2) return "just now";
+  if (minutes < 60) return `${minutes} minutes ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
 export function ConnectionCard({
   provider,
   connection,
@@ -121,7 +139,6 @@ export function ConnectionCard({
   changes,
   checkingChanges,
   onUpdate,
-  onCheckAgain,
   onConfigSaved,
   onDisconnected,
   needsReauth = false,
@@ -135,7 +152,6 @@ export function ConnectionCard({
   changes?: SyncChanges | null;
   checkingChanges?: boolean;
   onUpdate: (connectionId: string) => void;
-  onCheckAgain?: () => void;
   onConfigSaved?: (connection: ConnectionRecord) => void;
   onDisconnected?: (connectionId: string) => void;
   needsReauth?: boolean;
@@ -391,16 +407,6 @@ export function ConnectionCard({
               {syncInProgress ? "Updating…" : "Update"}
             </button>
           )}
-          {connection && !isLive && !needsFolder && !needsChannels && !syncInProgress && onCheckAgain && (
-            <button
-              className="button button-secondary"
-              type="button"
-              onClick={onCheckAgain}
-              disabled={checkingChanges}
-            >
-              {checkingChanges ? "Checking…" : "Check"}
-            </button>
-          )}
           {connection && needsReauth && (
             <a
               className="button"
@@ -611,6 +617,14 @@ export function ConnectionCard({
             </>
           )}
         </div>
+      )}
+
+      {connection && !needsReauth && !needsFolder && !needsChannels && !syncInProgress && !needsUpdate && (
+        <p className="muted" style={{ marginTop: "0.55rem" }}>
+          {connection.last_sync_at
+            ? `Syncs automatically · last checked ${checkedAgo(connection.last_sync_at)}`
+            : "Syncs automatically · first check due within the hour"}
+        </p>
       )}
 
       {docsCheckedFresh && !showDocsJobBadge && (

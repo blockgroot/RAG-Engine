@@ -353,6 +353,7 @@ def get_connections(workspace_id: str, session: SessionClaims = Depends(get_sess
             "source_config": c.source_config,
             "needs_reauth": c.needs_reauth,
             "reauth_reason": c.reauth_reason,
+            "last_sync_at": c.last_sync_at.isoformat() if c.last_sync_at else None,
         }
         for c in list_connections(session.org_id, workspace_id=workspace_id)
     ]

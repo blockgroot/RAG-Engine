@@ -40,7 +40,7 @@ from ..db.connection import get_connection
 SUPPORTED_PROVIDERS = ("github", "slack", "linear", "notion", "google")
 # "daily" only became viable once syncing was automatic
 # (``app/jobs/autosync.py``). A daily window is 24h and the index is at most
-# AUTO_SYNC_INTERVAL_HOURS (6h) behind, so a daily report reads content that
+# AUTO_SYNC_INTERVAL_HOURS (1h) behind, so a daily report reads content that
 # actually moved yesterday. Before that, a daily report would have re-summarised
 # the same stale index every morning until someone pressed Update.
 FREQUENCIES = ("daily", "weekly", "monthly")

@@ -696,7 +696,6 @@ function WorkspaceDetailPageInner() {
                         changes={connection ? changesById[connection.id] : null}
                         checkingChanges={connection ? checkingIds.has(connection.id) : false}
                         onUpdate={handleUpdate}
-                        onCheckAgain={connection ? () => refreshChanges([connection]) : undefined}
                         onConfigSaved={(updated) => {
                           setConnections((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
                           refreshChanges([updated]);
