@@ -584,6 +584,35 @@ facts, a space's Ask reads that space only — no separate company dashboard.
   chart keeps colour meaning the series, or the legend stops being true. Bars
   and leaderboard fills grow in once (`chart-rise`/`chart-grow`), disabled
   under `prefers-reduced-motion`.
+- **A category's colour is MEANINGFUL, STABLE and DISTINCT**
+  (`frontend/components/chartColors.ts`). Index-based colouring was a defect,
+  not a style choice: the index came from the order rows arrived, so "Done"
+  was teal in one chart and orange in the next, and a repository changed
+  colour when another appeared — a legend whose colours move cannot be
+  learned. Known categories carry a MEANING (done/completed/approved green,
+  canceled/blocked/changes_requested red, in-progress blue) because a
+  lifecycle chart where Canceled is a reassuring green is actively
+  misleading; everything else hashes its own name, then takes the next free
+  swatch when that one is gone — hashing alone collided on two of four real
+  Notion pages and two of three real repositories. Semantic assignments go
+  first and are never displaced.
+- **The colour module has no JSX so `node --experimental-strip-types` can run
+  its check** (`components/__checks__/chart-colors.ts`, `npm run check:colors`).
+  Zero dependencies and zero test framework — it imports the real
+  implementation, so it cannot drift, and it asserts distinctness on the
+  category sets that are actually in the production DB. The directory is
+  excluded from tsconfig because Next's compiler rejects the explicit `.ts`
+  import extension Node requires.
+- **A chart is read with a cursor, not a squint.** A `<title>` tooltip needs a
+  hit on a 4px dot, so there is a vertical guide following the nearest bucket
+  and a readout line under the plot naming the bucket and every series value.
+  The hit test converts client pixels to viewBox units, because the SVG is
+  scaled to the card. Gradient ids come from `useId()` — several charts share
+  a page and a duplicate id makes every later chart reuse the first one's
+  fill. The cursor's point and the LATEST point are drawn larger: "where are
+  we now" is what a trend line is usually asked. `w/c` prefixes a week bucket,
+  since "Jul 6" otherwise means either that Monday or that day depending on a
+  period the axis does not show.
 - **A pie label goes inside its slice or nowhere.** At `1.22r` a small slice's
   label floated outside the circle with no leader line, reading as a stray
   number above the chart; the legend already names every slice with its exact

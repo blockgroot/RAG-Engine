@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 /**
  * Line, bar, pie and stacked-bar charts as plain SVG.
@@ -26,15 +26,12 @@ export type Point = {
   value: number;
 };
 
-/** Distinct enough to tell series apart, muted enough to sit in the page. */
-const SERIES_COLORS = [
-  "var(--chart-1)",
-  "var(--chart-2)",
-  "var(--chart-3)",
-  "var(--chart-4)",
-  "var(--chart-5)",
-  "var(--chart-6)",
-];
+import {
+  CATEGORY_COLORS,
+  SERIES_COLORS,
+  categoryColors,
+  pick,
+} from "./chartColors";
 
 const PAD = { top: 16, right: 16, bottom: 30, left: 44 };
 const HEIGHT = 240;
@@ -95,7 +92,14 @@ function formatBucket(iso: string, period: string): string {
       year: "2-digit",
     });
   }
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  const short = date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+  // A week bucket and a day bucket both start on a date, so "Jul 6" meant
+  // either "that Monday" or "that day" depending on a period the axis does
+  // not show. The prefix is what distinguishes them.
+  return period === "week" ? `w/c ${short}` : short;
 }
 
 /** Bucket then series then value, preserving the order the server sent. */
@@ -151,6 +155,13 @@ export function Chart({
   // Above every early return: hooks must run in the same order on every
   // render, and the pie and leaderboard branches return before the plot.
   const [ref, measured] = useMeasuredWidth();
+  // Which bucket the cursor is nearest. A chart you can only read by
+  // squinting at gridlines is not navigable -- and `<title>` tooltips need a
+  // hit on a 4px dot, which on a dense chart is most of the way to unusable.
+  const [near, setNear] = useState<number | null>(null);
+  // Gradient ids must be unique per chart: several charts share one page, and
+  // a duplicate id makes every later chart reuse the first one's fill.
+  const gid = useId().replace(/[^a-zA-Z0-9]/g, "");
   const ranked = useMemo(() => {
     if (!grouped) return [];
     return series
@@ -161,6 +172,19 @@ export function Chart({
       .sort((a, b) => b.value - a.value)
       .slice(0, 12);
   }, [grouped, series, buckets, at]);
+
+  // Built from every name this chart will draw, so collisions are resolved
+  // once and the same category keeps its colour in the plot, the legend and
+  // the readout.
+  const palette = useMemo(
+    () =>
+      categoryColors([
+        ...series,
+        ...ranked.map((r) => r.name),
+        ...(series.length === 1 ? buckets : []),
+      ]),
+    [series, ranked, buckets],
+  );
 
   if (points.length === 0) return null;
 
@@ -219,6 +243,9 @@ export function Chart({
         {ranked.map((row, i) => (
           <li key={row.name} className="chart-rank-row">
             <span className="chart-rank-label" title={row.name}>
+              {/* The position, because a ranking read top-to-bottom still
+                  makes you count rows to answer "who is third?" */}
+              <span className="chart-rank-index">{i + 1}</span>
               {row.name}
             </span>
             <span className="chart-rank-track">
@@ -226,7 +253,7 @@ export function Chart({
                 className="chart-rank-fill"
                 style={{
                   width: `${(row.value / max) * 100}%`,
-                  background: SERIES_COLORS[i % SERIES_COLORS.length],
+                  background: pick(palette, row.name, i),
                 }}
               />
             </span>
@@ -280,7 +307,47 @@ export function Chart({
         height={HEIGHT}
         role="img"
         aria-label={`${chart} chart, ${buckets.length} buckets`}
+        onMouseLeave={() => setNear(null)}
+        onMouseMove={(event) => {
+          const box = event.currentTarget.getBoundingClientRect();
+          if (!box.width) return;
+          // Client pixels -> viewBox units, so the hit test stays correct
+          // while the SVG is scaled to the card.
+          const vx = ((event.clientX - box.left) / box.width) * width;
+          const slot = plotW / Math.max(1, buckets.length);
+          const index =
+            chart === "line"
+              ? Math.round(((vx - PAD.left) / plotW) * (buckets.length - 1))
+              : Math.floor((vx - PAD.left) / slot);
+          setNear(Math.max(0, Math.min(buckets.length - 1, index)));
+        }}
       >
+        <defs>
+          {series.map((name, si) => (
+            <linearGradient
+              key={name || "all"}
+              id={`${gid}-${si}`}
+              x1="0"
+              y1="0"
+              x2="0"
+              y2="1"
+            >
+              <stop offset="0%" stopColor={pick(palette, name, si)} stopOpacity={0.28} />
+              <stop offset="100%" stopColor={pick(palette, name, si)} stopOpacity={0.02} />
+            </linearGradient>
+          ))}
+        </defs>
+
+        {near != null && (
+          <line
+            x1={chart === "line" ? x(near) : PAD.left + (plotW / buckets.length) * (near + 0.5)}
+            x2={chart === "line" ? x(near) : PAD.left + (plotW / buckets.length) * (near + 0.5)}
+            y1={PAD.top}
+            y2={PAD.top + plotH}
+            className="chart-guide"
+          />
+        )}
+
         {gridlines.map((line) => (
           <g key={line.y}>
             <line
@@ -303,7 +370,7 @@ export function Chart({
                   (b, i) => `${i === 0 ? "M" : "L"} ${x(i)} ${y(at(b, name))}`,
                 )
                 .join(" ");
-              const color = SERIES_COLORS[si % SERIES_COLORS.length];
+              const color = pick(palette, name, si);
               return (
                 <g key={name || "all"}>
                   {/* A filled area under a single series. Three points and a
@@ -313,8 +380,7 @@ export function Chart({
                   {series.length === 1 && buckets.length > 1 && (
                     <path
                       d={`${path} L ${x(buckets.length - 1)} ${PAD.top + plotH} L ${x(0)} ${PAD.top + plotH} Z`}
-                      fill={color}
-                      opacity={0.1}
+                      fill={`url(#${gid}-${si})`}
                       stroke="none"
                     />
                   )}
@@ -331,8 +397,12 @@ export function Chart({
                       <circle
                         cx={x(i)}
                         cy={y(at(b, name))}
-                        r={4}
-                        fill="var(--surface)"
+                        // The cursor's point and the LATEST point are larger:
+                        // "where are we now" is the question a trend line is
+                        // usually asked, and it was the same 3px dot as every
+                        // other reading.
+                        r={near === i ? 6 : i === buckets.length - 1 ? 5 : 4}
+                        fill={near === i ? color : "var(--surface)"}
                         stroke={color}
                         strokeWidth={2}
                       >
@@ -378,8 +448,8 @@ export function Chart({
                     // meaning the SERIES, or the legend stops being true.
                     const fill =
                       series.length === 1
-                        ? SERIES_COLORS[i % SERIES_COLORS.length]
-                        : SERIES_COLORS[si % SERIES_COLORS.length];
+                        ? pick(palette, b, i)
+                        : pick(palette, name, si);
                     return (
                       <rect
                         key={name || "all"}
@@ -432,13 +502,28 @@ export function Chart({
         })}
       </svg>
 
+      {near != null && buckets[near] && (
+        <p className="chart-readout" role="status">
+          <span className="chart-readout-bucket">
+            {formatBucket(buckets[near], period)}
+          </span>
+          {series.map((name, si) => (
+            <span key={name || "all"} className="chart-readout-item">
+              <span className="chart-swatch" style={{ background: pick(palette, name, si) }} />
+              {name ? `${name}: ` : ""}
+              {withUnit(at(buckets[near], name), unit)}
+            </span>
+          ))}
+        </p>
+      )}
+
       {chart === "line" && series.length > 1 && (
         <ul className="chart-legend">
           {series.map((name, si) => (
             <li key={name || "all"}>
               <span
                 className="chart-swatch"
-                style={{ background: SERIES_COLORS[si % SERIES_COLORS.length] }}
+                style={{ background: pick(palette, name, si) }}
               />
               {name || "All"}
             </li>
@@ -633,6 +718,10 @@ function Pie({
 }) {
   const [hovered, setHovered] = useState<number | null>(null);
   const [ref, measured] = useMeasuredWidth(320);
+  const palette = useMemo(
+    () => categoryColors(rows.map((r) => r.name)),
+    [rows],
+  );
   const total = rows.reduce((sum, row) => sum + row.value, 0);
   if (total <= 0) return null;
   // Scaled to the card. A 220px circle in a 1100px panel is not a small
@@ -664,7 +753,7 @@ function Pie({
       ...row,
       i,
       pct,
-      color: SERIES_COLORS[i % SERIES_COLORS.length],
+      color: pick(palette, row.name, i),
       labelX: cx + labelR * Math.cos(mid),
       labelY: cy + labelR * Math.sin(mid),
       // Inside the slice or not at all. At 1.22r a small slice's label floated

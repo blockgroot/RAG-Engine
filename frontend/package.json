@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "check:colors": "node --experimental-strip-types components/__checks__/chart-colors.ts"
   },
   "dependencies": {
     "next": "^15.3.9",
