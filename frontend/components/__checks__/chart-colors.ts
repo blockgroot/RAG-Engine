@@ -12,7 +12,7 @@
  * the next -- so it gets a check that imports the REAL implementation and
  * cannot drift from it. Exits non-zero on failure.
  */
-import { categoryColors, pick } from "../chartColors.ts";
+import { cappedCategories, categoryColors, pick } from "../chartColors.ts";
 
 const CASES: Record<string, string[]> = {
   "Linear states": ["Backlog", "Canceled", "Done", "In Progress", "Todo"],
@@ -74,6 +74,34 @@ console.log("ok   colours survive a change in arrival order");
 const empty = categoryColors([null, undefined, ""]);
 if (!pick(empty, null)) fail("a null category has no colour");
 console.log("ok   unnamed categories resolve");
+
+
+// 5. Categories are capped to the palette, so a legend can never carry two
+//    identical swatches. Eleven real Notion pages drew eleven slices over six
+//    colours -- five of them duplicates.
+const eleven = [
+  "Compensatory Leave Policy", "Employee Referral Policy", "Leave Policy",
+  "Mental Health Policy", "Office Parties Policy", "Office Regularization Policy",
+  "Prevention of Sexual Harassment (POSH) Policy", "Upskilling Policy",
+  "Performance Bonus Policy", "Syvora Medical Health Insurance Policy",
+  "Health Allowance Policy",
+].map((name) => ({ name, value: 1 }));
+
+const capped = cappedCategories(eleven);
+if (capped.length > 6) fail(`capped to ${capped.length}, palette holds 6`);
+const cappedPalette = categoryColors(capped.map((r) => r.name));
+const cappedColors = capped.map((r) => pick(cappedPalette, r.name));
+if (new Set(cappedColors).size !== capped.length) {
+  fail(`capped set still repeats a colour: ${cappedColors.join(", ")}`);
+}
+const folded = capped[capped.length - 1];
+if (!folded.name.startsWith("Other")) fail("the remainder was dropped, not folded");
+if (folded.value !== eleven.length - (capped.length - 1)) {
+  fail(`Other holds ${folded.value}, expected ${eleven.length - (capped.length - 1)}`);
+}
+console.log(`ok   11 categories -> ${capped.length} distinct (${folded.name})`);
+
+if (failed) process.exit(1);
 
 if (failed) {
   console.error(`\n${failed} failure(s)`);

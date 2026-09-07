@@ -584,6 +584,44 @@ facts, a space's Ask reads that space only — no separate company dashboard.
   chart keeps colour meaning the series, or the legend stops being true. Bars
   and leaderboard fills grow in once (`chart-rise`/`chart-grow`), disabled
   under `prefers-reduced-motion`.
+- **A chart carries the ROWS it counted** (`store.list_facts` →
+  `panel["details"]` → `ChartDetails.tsx`). A bar labelled "4" answers how
+  many and nothing else; which commits, by whom, when and where to open them
+  are the questions that follow immediately, and every column is already on
+  the counted row — so withholding them makes the chart less trustworthy for
+  no gain. Capped at `MAX_DETAILS=12`, newest first, honours `focus`, and each
+  field is OMITTED when absent rather than rendered "Unknown". Never fatal: a
+  chart without its rows is still a chart.
+- **The window that produced the points is the window the details use.**
+  Resetting `days` to the refined period's default silently emptied every
+  detail row — July's commits are outside a 45-day daily window in September,
+  so the chart had four bars and nothing behind them.
+- **`subject` is NOT a dimension on the indexed document metrics, and the
+  reason is structural.** `facts.py` writes ONE row per document keyed on
+  `source_external_id`, and an edit MOVES that row rather than adding another
+  — so a count grouped by title is 1 for every title, always. Offering it drew
+  eleven identical 9% slices whose only message was "there are eleven pages",
+  which the centre total already said. "Which pages changed?" is a LIST with
+  dates, not a count.
+- **Categories are capped to the palette** (`cappedCategories`). Eleven
+  categories over six colours HAD to reuse them, and a legend with two
+  identical swatches cannot be read. The remainder folds into "Other (n)" —
+  stated rather than dropped, because a chart that silently omits categories
+  is worse than one that admits it grouped them.
+- **A bar chart must look like a bar chart** (`Chart.tsx::CategoryBars`).
+  Ranked horizontal tracks are right for twenty categories and wrong for
+  four, where they read as coloured lines floating in a card — so ≤
+  `VERTICAL_BAR_LIMIT` (8) categories get real columns on a visible baseline
+  with a value axis, gridlines and per-bar labels, and beyond that the ranked
+  list takes over because vertical category labels collide long before the
+  bars run out of room. Each column has a full-height transparent hit area, so
+  hovering does not require landing on a short bar.
+- **NEVER transform an SVG slice on hover.** Scaling the hovered slice moves
+  its own geometry out from under the cursor, which un-hovers it, which
+  shrinks it back under the cursor — a feedback loop that made the donut
+  visibly twitch on its own with no input. Emphasis is opacity and
+  stroke-width only: neither changes the hit area, so hover cannot re-trigger
+  itself.
 - **A category's colour is MEANINGFUL, STABLE and DISTINCT**
   (`frontend/components/chartColors.ts`). Index-based colouring was a defect,
   not a style choice: the index came from the order rows arrived, so "Done"

@@ -5679,6 +5679,90 @@ a.people-card:hover { color: inherit; }
   font-size: 11px;
   fill: var(--ink-muted);
 }
+/* The rows behind a chart. Annotation, not a second chart: the count is the
+   answer and this is its evidence. */
+.chart-details {
+  margin-top: 0.875rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+.chart-details-head {
+  margin: 0 0 0.5rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+.chart-details-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.chart-details-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.625rem;
+  font-size: 0.8125rem;
+  padding: 0.1875rem 0;
+}
+.chart-details-name {
+  font-weight: 500;
+  color: var(--ink);
+  max-width: 26rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chart-details-name a {
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid var(--border);
+}
+.chart-details-name a:hover {
+  border-bottom-color: var(--chart-1);
+}
+.chart-details-actor,
+.chart-details-when {
+  font-size: 0.75rem;
+  color: var(--ink-muted);
+}
+.chart-details-state {
+  font-size: 0.6875rem;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--ink-muted);
+  text-transform: lowercase;
+}
+.chart-details-more {
+  margin-top: 0.5rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--chart-1);
+  cursor: pointer;
+}
+.chart-details-more:hover {
+  text-decoration: underline;
+}
+
+/* The baseline a bar chart stands on. Heavier than a gridline, because
+   without a visible axis a bar chart is a set of floating rectangles. */
+.chart-axis-line {
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+.chart-bar-group {
+  cursor: default;
+}
+
 /* The vertical guide following the cursor. Faint on purpose: it locates a
    reading, it is not one. */
 .chart-guide {
@@ -5764,13 +5848,12 @@ a.people-card:hover { color: inherit; }
 }
 .chart-pie-slice {
   cursor: pointer;
-  transition: opacity 0.15s ease, transform 0.15s ease;
-  transform-origin: center;
-}
-.chart-pie-slice:hover {
-  /* Lifts the hovered slice out of the ring. Tiny on purpose -- enough to
-     confirm what the cursor is on, not enough to move the reading. */
-  transform: scale(1.03);
+  /* NO transform on hover. Scaling the hovered slice moves its own geometry
+     out from under the cursor, which un-hovers it, which shrinks it back
+     under the cursor -- a feedback loop that made the chart visibly twitch on
+     its own. Emphasis is opacity and stroke only: neither changes the hit
+     area, so hover cannot re-trigger itself. */
+  transition: opacity 0.15s ease, stroke-width 0.15s ease;
 }
 /* The total inside the ring. A donut's hole is the only place a share chart
    can state the whole without a caption. */
@@ -5812,9 +5895,6 @@ a.people-card:hover { color: inherit; }
   .chart-bar,
   .chart-rank-fill {
     animation: none;
-  }
-  .chart-pie-slice:hover {
-    transform: none;
   }
 }
 .chart-pie-label {

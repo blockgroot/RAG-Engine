@@ -184,6 +184,29 @@ def _backfill_and_retry(
         return panel, period
 
 
+def _details(spec, *, org_id, workspace_id, days, focus) -> list[dict]:
+    """Never fatal: a chart without its rows is still a chart, and losing the
+    answer to keep the annotation would be the wrong trade."""
+    try:
+        facts = store.list_facts(
+            spec.metric, org_id=org_id, workspace_id=workspace_id,
+            days=days, focus=focus,
+        )
+    except (ProviderError, KeyError):
+        logger.warning("insights: could not read details of %s", spec.metric)
+        return []
+    return [
+        {
+            "subject": f.subject,
+            "actor": f.actor,
+            "state": f.state,
+            "at": f.occurred_at,
+            "url": f.url,
+        }
+        for f in facts
+    ]
+
+
 def _buckets(points) -> list[str]:
     seen = []
     for point in points:
@@ -425,22 +448,25 @@ def _run_spec(
         and refined != registry.FINER_PERIOD.get(refined)
     ):
         finer = registry.FINER_PERIOD[refined]
-        finer_days = scopes.WINDOW_DAYS.get(finer, days)
+        finer_window = max(scopes.WINDOW_DAYS.get(finer, days), _span_days(points))
         try:
             candidate = store.run_metric(
                 spec.metric, org_id=org_id, workspace_id=workspace_id,
-                period=finer, days=max(finer_days, _span_days(points)),
+                period=finer, days=finer_window,
                 group_by=group_by, focus=focus,
             )
         except (ProviderError, ValueError):
             break
         refined = finer
         if len(_buckets(candidate)) > len(_buckets(points)):
-            points, period = candidate, finer
+            points, period, days = candidate, finer, finer_window
             if len(_buckets(points)) > 1:
                 break
 
-    days = scopes.WINDOW_DAYS.get(period, days)
+    # `days` stays the window that ACTUALLY produced these points, never the
+    # refined period's default. Resetting it to the default silently emptied
+    # the detail rows: July's commits are outside a 45-day daily window in
+    # September, so the chart had four bars and nothing behind them.
     begun = store.first_fact_at(
         metric.provider, org_id=org_id, workspace_id=workspace_id
     )
@@ -463,6 +489,14 @@ def _run_spec(
             {"bucket": p.bucket, "group": p.group, "series": p.series, "value": p.value}
             for p in points
         ],
+        # The rows the bars are made of. "4 commits" answers how many and
+        # nothing else; which ones, by whom and where to read them are the
+        # questions that follow immediately, and every column is already on
+        # the counted row.
+        "details": _details(
+            spec, org_id=org_id, workspace_id=workspace_id, days=days, focus=focus
+        ),
+        "detail_label": registry.subject_label(metric.provider),
         "measured_since": begun.isoformat() if begun else None,
     }
     return panel, period

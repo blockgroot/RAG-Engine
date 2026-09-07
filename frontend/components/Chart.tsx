@@ -29,6 +29,7 @@ export type Point = {
 import {
   CATEGORY_COLORS,
   SERIES_COLORS,
+  cappedCategories,
   categoryColors,
   pick,
 } from "./chartColors";
@@ -151,6 +152,10 @@ export function Chart({
   // files by person with every editor NULL used to look like one unnamed
   // filled circle, because series[0] === "".
   const grouped = Boolean(groupBy) || series.some((s) => s !== "");
+  //: Beyond this a vertical bar chart's category labels collide and it
+  //: becomes unreadable, which is the point at which every production chart
+  //: library switches to horizontal ranked bars.
+  const VERTICAL_BAR_LIMIT = 8;
   const leaderboard = chart === "bar" && grouped;
   // Above every early return: hooks must run in the same order on every
   // render, and the pie and leaderboard branches return before the plot.
@@ -164,13 +169,16 @@ export function Chart({
   const gid = useId().replace(/[^a-zA-Z0-9]/g, "");
   const ranked = useMemo(() => {
     if (!grouped) return [];
-    return series
-      .map((name) => ({
-        name: name.trim() || "Unknown",
-        value: buckets.reduce((sum, b) => sum + at(b, name), 0),
-      }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 12);
+    // Capped to the palette: eleven categories over six colours meant two
+    // slices the same colour and a legend that could not be read.
+    return cappedCategories(
+      series
+        .map((name) => ({
+          name: name.trim() || "Unknown",
+          value: buckets.reduce((sum, b) => sum + at(b, name), 0),
+        }))
+        .sort((a, b) => b.value - a.value),
+    );
   }, [grouped, series, buckets, at]);
 
   // Built from every name this chart will draw, so collisions are resolved
@@ -233,6 +241,21 @@ export function Chart({
           value: at(b, series[0] ?? ""),
         }));
     return <Pie rows={rows} unit={unit} />;
+  }
+
+  // Someone who asks for a bar chart means BARS: an axis, a baseline, and
+  // columns standing on it. A list of thin tracks reads as coloured lines --
+  // it is the right shape for twenty categories and the wrong one for four.
+  if (leaderboard && ranked.length <= VERTICAL_BAR_LIMIT) {
+    return (
+      <CategoryBars
+        rows={ranked}
+        unit={unit}
+        palette={palette}
+        measured={measured}
+        containerRef={ref}
+      />
+    );
   }
 
   if (leaderboard) {
@@ -639,6 +662,154 @@ function DivergingBar({ points }: { points: Point[] }) {
   );
 }
 
+function CategoryBars({
+  rows,
+  unit,
+  palette,
+  measured,
+  containerRef,
+}: {
+  rows: { name: string; value: number }[];
+  unit?: string;
+  palette: Map<string, string>;
+  measured: number;
+  containerRef: React.Ref<HTMLDivElement>;
+}) {
+  /**
+   * A real bar chart: baseline, value axis, and columns standing on it.
+   *
+   * The ranked-track list this replaces is correct for twenty categories and
+   * wrong for four -- at four it reads as a few coloured lines floating in a
+   * card, which is not what someone asking for "a bar chart" pictured. Above
+   * `VERTICAL_BAR_LIMIT` the caller keeps the ranked list, because vertical
+   * category labels collide long before the bars run out of room.
+   */
+  const [near, setNear] = useState<number | null>(null);
+  const height = 260;
+  const pad = { top: 24, right: 12, bottom: 46, left: 44 };
+  const width = Math.max(measured, 320);
+  const plotW = width - pad.left - pad.right;
+  const plotH = height - pad.top - pad.bottom;
+  const max = niceMax(Math.max(...rows.map((r) => r.value), 0));
+  const slot = plotW / Math.max(1, rows.length);
+  // Capped so three categories are columns rather than slabs, and floored so
+  // twenty are still visible.
+  const barW = Math.max(10, Math.min(64, slot * 0.62));
+  const y = (v: number) => pad.top + plotH - (v / max) * plotH;
+  const gridlines = [0, 0.25, 0.5, 0.75, 1].map((f) => ({
+    value: max * f,
+    y: y(max * f),
+  }));
+
+  return (
+    <div className="chart-scroll" ref={containerRef}>
+      <svg
+        className="chart-svg"
+        viewBox={`0 0 ${width} ${height}`}
+        width={width}
+        height={height}
+        role="img"
+        aria-label={`bar chart, ${rows.length} categories`}
+        onMouseLeave={() => setNear(null)}
+      >
+        {gridlines.map((line) => (
+          <g key={line.y}>
+            <line
+              x1={pad.left}
+              x2={width - pad.right}
+              y1={line.y}
+              y2={line.y}
+              className="chart-grid"
+            />
+            <text x={pad.left - 8} y={line.y + 4} textAnchor="end" className="chart-axis">
+              {Math.round(line.value).toLocaleString()}
+            </text>
+          </g>
+        ))}
+
+        {/* The baseline, drawn heavier than the gridlines: a bar chart without
+            a visible axis to stand on is a set of floating rectangles. */}
+        <line
+          x1={pad.left}
+          x2={width - pad.right}
+          y1={pad.top + plotH}
+          y2={pad.top + plotH}
+          className="chart-axis-line"
+        />
+
+        {rows.map((row, i) => {
+          const h = Math.max(2, (row.value / max) * plotH);
+          const x = pad.left + slot * i + (slot - barW) / 2;
+          const color = pick(palette, row.name, i);
+          const label =
+            row.name.length > 14 ? `${row.name.slice(0, 13)}…` : row.name;
+          return (
+            <g
+              key={row.name}
+              onMouseEnter={() => setNear(i)}
+              className="chart-bar-group"
+            >
+              {/* A full-height hit area, so hovering does not require landing
+                  on a short bar. */}
+              <rect
+                x={pad.left + slot * i}
+                y={pad.top}
+                width={slot}
+                height={plotH}
+                fill="transparent"
+              />
+              <rect
+                className="chart-bar"
+                x={x}
+                y={y(row.value)}
+                width={barW}
+                height={h}
+                rx={Math.min(5, barW / 4)}
+                fill={color}
+                opacity={near == null || near === i ? 1 : 0.45}
+              >
+                <title>{`${row.name}: ${withUnit(row.value, unit)}`}</title>
+              </rect>
+              <text
+                x={x + barW / 2}
+                y={y(row.value) - 8}
+                textAnchor="middle"
+                className="chart-value"
+              >
+                {row.value.toLocaleString()}
+              </text>
+              <text
+                x={pad.left + slot * i + slot / 2}
+                y={height - 26}
+                textAnchor="middle"
+                className="chart-axis"
+              >
+                {label}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+
+      <p className="chart-readout" role="status">
+        {near != null && rows[near] ? (
+          <>
+            <span className="chart-swatch" style={{ background: pick(palette, rows[near].name, near) }} />
+            <span className="chart-readout-bucket">{rows[near].name}</span>
+            <span className="chart-readout-item">{withUnit(rows[near].value, unit)}</span>
+          </>
+        ) : (
+          <span className="chart-readout-item">
+            {rows.length} {rows.length === 1 ? "category" : "categories"} ·{" "}
+            {withUnit(rows.reduce((sum, r) => sum + r.value, 0), unit)} total
+          </span>
+        )}
+      </p>
+    </div>
+  );
+}
+
+
 function Stat({
   label,
   value,
@@ -798,8 +969,10 @@ function Pie({
             // Separated by the card's own background rather than a hardcoded
             // white, so the gaps stay gaps in either theme.
             stroke="var(--surface)"
-            strokeWidth={2}
-            opacity={hovered == null || hovered === slice.i ? 1 : 0.35}
+            // Thicker separator on the hovered slice: emphasis that changes
+            // no geometry, so it cannot move the slice under the cursor.
+            strokeWidth={hovered === slice.i ? 3 : 2}
+            opacity={hovered == null || hovered === slice.i ? 1 : 0.32}
             onMouseEnter={() => setHovered(slice.i)}
             onMouseLeave={() => setHovered(null)}
           >

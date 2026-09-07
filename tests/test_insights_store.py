@@ -358,3 +358,50 @@ def test_finer_period_map_terminates():
         period = registry.FINER_PERIOD[period]
     assert period == "day"
     assert all(p in registry.PERIODS for p in registry.FINER_PERIOD.values())
+
+
+# --------------------------------------------------------------------------
+# The rows behind a chart
+# --------------------------------------------------------------------------
+
+
+def test_details_return_the_newest_rows_with_their_metadata(org):
+    """A bar labelled "4" answers how many and nothing else. Which ones, by
+    whom, when and where to open them are the questions that follow, and every
+    column is already on the counted row."""
+    now = datetime.now(timezone.utc)
+    for i, actor in enumerate(("ada", "grace", "ada")):
+        with get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO activity_facts
+                    (org_id, provider, kind, actor, subject, state,
+                     occurred_at, url, external_id)
+                VALUES (%s, 'github', 'commit', %s, 'acme/api', NULL, %s, %s, %s)
+                """,
+                (org, actor, now - timedelta(days=i),
+                 f"https://github.com/acme/api/commit/{i}", uuid.uuid4().hex),
+            )
+            conn.commit()
+
+    facts = store.list_facts("commits_by_author", org_id=org,
+                             workspace_id=None, days=90)
+    assert [f.actor for f in facts] == ["ada", "grace", "ada"]  # newest first
+    assert all(f.subject == "acme/api" for f in facts)
+    assert all(f.url and f.url.startswith("https://") for f in facts)
+
+
+def test_details_honour_the_focus_filter(org):
+    _fact(org, provider="slack", kind="doc_changed", subject="#general")
+    _fact(org, provider="slack", kind="doc_changed", subject="#random")
+    facts = store.list_facts("slack_threads", org_id=org, workspace_id=None,
+                             days=90, focus="#general")
+    assert [f.subject for f in facts] == ["#general"]
+
+
+def test_details_are_capped(org):
+    for _ in range(store.MAX_DETAILS + 6):
+        _fact(org, provider="slack", kind="doc_changed", subject="#general")
+    facts = store.list_facts("slack_threads", org_id=org, workspace_id=None,
+                             days=90, limit=999)
+    assert len(facts) == store.MAX_DETAILS

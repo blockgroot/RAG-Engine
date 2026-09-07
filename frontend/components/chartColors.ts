@@ -115,3 +115,28 @@ export function pick(
     SERIES_COLORS[index % SERIES_COLORS.length]
   );
 }
+
+
+/**
+ * Keep the largest categories and fold the rest into "Other".
+ *
+ * A categorical palette has six entries, so an eleven-category chart HAD to
+ * reuse colours -- and a legend with two identical swatches cannot be read.
+ * Every production chart library caps categories for the same reason; the
+ * folded remainder is stated rather than dropped, because a chart that
+ * silently omits categories is worse than one that admits it grouped them.
+ */
+export function cappedCategories<T extends { name: string; value: number }>(
+  rows: T[],
+  max = SERIES_COLORS.length,
+): { name: string; value: number }[] {
+  if (rows.length <= max) return rows;
+  const sorted = [...rows].sort((a, b) => b.value - a.value);
+  const kept = sorted.slice(0, max - 1);
+  const rest = sorted.slice(max - 1);
+  const other = rest.reduce((sum, r) => sum + r.value, 0);
+  return [
+    ...kept,
+    { name: `Other (${rest.length})`, value: other },
+  ];
+}

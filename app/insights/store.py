@@ -183,6 +183,79 @@ def run_metric(
     ]
 
 
+@dataclass(frozen=True)
+class Fact:
+    """One row behind a chart: what it was, who, when, and where to open it."""
+
+    subject: str | None
+    actor: str | None
+    state: str | None
+    occurred_at: str
+    url: str | None
+
+
+#: How many rows travel with a chart. Enough to see what the bars are made of,
+#: few enough that the payload stays a chart's companion rather than a table
+#: someone has to scroll -- and the chart is still the answer.
+MAX_DETAILS = 12
+
+
+def list_facts(
+    key: str,
+    *,
+    org_id: str,
+    workspace_id: str | None,
+    days: int,
+    focus: str | None = None,
+    limit: int = MAX_DETAILS,
+) -> list[Fact]:
+    """The newest rows this chart counted.
+
+    A bar labelled "4" answers "how many" and nothing else -- which commits,
+    by whom, when, and where to read them are the questions that follow
+    immediately, and every one of those columns is already on the row being
+    counted. Returned WITH the chart rather than behind a click, because a
+    number nobody can trace is a number nobody trusts.
+    """
+    metric = registry.get(key)
+    where = _scoped(
+        """
+         WHERE org_id = %(org_id)s
+           AND provider = %(provider)s
+           AND kind = %(kind)s
+           AND occurred_at >= now() - make_interval(days => %(days)s)
+        """,
+        workspace_id,
+    )
+    if focus is not None:
+        where += " AND subject = %(focus)s"
+
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT subject, actor, state, occurred_at, url
+                  FROM activity_facts {where}
+                 ORDER BY occurred_at DESC
+                 LIMIT %(limit)s
+                """,
+                {"org_id": org_id, "provider": metric.provider, "kind": metric.kind,
+                 "days": days, "workspace_id": workspace_id, "focus": focus,
+                 "limit": max(1, min(int(limit), MAX_DETAILS))},
+            ).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        raise ProviderError(f"insights: details of {key} failed", cause=exc) from exc
+
+    return [
+        Fact(
+            subject=r[0], actor=r[1], state=r[2],
+            occurred_at=r[3].isoformat() if r[3] else "",
+            url=r[4],
+        )
+        for r in rows
+    ]
+
+
 def list_subjects(
     key: str, *, org_id: str, workspace_id: str | None, days: int
 ) -> list[str]:

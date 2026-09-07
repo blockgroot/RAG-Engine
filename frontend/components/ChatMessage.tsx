@@ -3,6 +3,7 @@
 import { ChatDonePayload } from "@/lib/sse";
 import { AnswerText } from "./AnswerText";
 import { Chart } from "./Chart";
+import ChartDetails from "./ChartDetails";
 import { ProvenanceStripe } from "./ProvenanceStripe";
 
 export interface Message {
@@ -55,6 +56,12 @@ export function ChatMessageView({ message }: { message: Message }) {
                 unit={chart.unit}
                 groupBy={chart.group_by}
               />
+              {chart.details && chart.details.length > 0 && (
+                <ChartDetails
+                  rows={chart.details}
+                  label={chart.detail_label || "item"}
+                />
+              )}
               {chart.caveat && (
                 <p className="muted viz-panel-caveat">{chart.caveat}</p>
               )}

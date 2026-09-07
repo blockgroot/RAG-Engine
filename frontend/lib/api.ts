@@ -388,6 +388,18 @@ export type InsightPanel = {
   /** Facts only exist from the first sync after this shipped, so a chart
    *  whose axis starts on deploy day would read as if nobody worked before. */
   measured_since: string | null;
+  /** The rows the bars are made of: what, who, when, and where to open it.
+   *  A number nobody can trace is a number nobody trusts. */
+  details?: {
+    subject?: string | null;
+    actor?: string | null;
+    state?: string | null;
+    at?: string | null;
+    url?: string | null;
+  }[];
+  /** What `subject` holds for this connector: page, file, channel, team,
+   *  repository, topic. */
+  detail_label?: string | null;
 };
 
 export type InsightDashboard = {

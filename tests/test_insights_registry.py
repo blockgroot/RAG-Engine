@@ -146,9 +146,13 @@ def test_every_provider_that_offers_subject_names_what_it_holds():
         assert registry.subject_label(provider) != "subject"
 
 
-def test_the_indexed_document_metrics_can_group_by_title():
-    """`facts.py` has always written the page/file title into `subject`; it
-    just was not offered, so "which pages change most?" refused against a
-    populated column."""
+def test_the_indexed_document_metrics_do_NOT_group_by_title():
+    """Structural, not aesthetic. `facts.py` writes ONE row per document keyed
+    on `source_external_id`, and an edit MOVES that row rather than adding
+    another -- so a count grouped by title is 1 for every title, always.
+    Offering it drew eleven identical 9% slices whose only message was "there
+    are eleven pages", which the total already stated. The question it looked
+    like it answered ("which pages changed?") is a LIST with dates, and lives
+    in `panel["details"]`."""
     for key in ("docs_changed", "drive_docs_changed"):
-        assert "subject" in registry.get(key).dims
+        assert "subject" not in registry.get(key).dims

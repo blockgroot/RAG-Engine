@@ -127,13 +127,18 @@ def subject_label(provider: str) -> str:
 # ---------------------------------------------------------------------------
 # Notion & Drive -- countable from data ingest already stores.
 #
-# `actor` and `subject` are dimensions rather than separate metrics: "top
-# editors" and "most edited pages" are the SAME count grouped differently, and
-# giving each its own entry would mean two definitions to keep in agreement.
+# `actor` is a dimension rather than a separate metric: "top editors" is the
+# SAME count grouped differently, and its own entry would mean two definitions
+# to keep in agreement.
 #
-# `subject` is the page or file TITLE. `facts.py` has always written it; it
-# simply was not offered as a dimension, so "which pages change most?" refused
-# against a column that was already populated for every document.
+# `subject` (the page or file title) is deliberately NOT offered, and the
+# reason is structural rather than aesthetic: `facts.py` writes ONE row per
+# document, keyed on `source_external_id`, and an edit MOVES that row's date
+# rather than adding another. So a count grouped by title is 1 for every
+# title, always -- eleven pages drew eleven identical 9% slices whose only
+# message was "there are eleven pages", which the total already said. The
+# question it looked like it answered ("which pages changed?") is a LIST with
+# dates, not a count, and `panel["details"]` is where that lives.
 # ---------------------------------------------------------------------------
 
 _add(Metric(
@@ -142,7 +147,7 @@ _add(Metric(
     label="Pages created or edited",
     chart="line",
     kind="doc_changed",
-    dims=("actor", "subject"),
+    dims=("actor",),
     unit="pages",
 ))
 _add(Metric(
@@ -151,7 +156,7 @@ _add(Metric(
     label="Files created or edited",
     chart="line",
     kind="doc_changed",
-    dims=("actor", "subject"),
+    dims=("actor",),
     unit="files",
 ))
 
