@@ -223,6 +223,15 @@ conversion lives *inside* the adapter. Thin SDKs, never frameworks.
   delete, all disabled for a member. Deliberately not a redirect: that
   would make the people list unreachable and bounce any link back out.
 
+**Marketing pages** — `app/page.tsx` is THREE feature bands, not one grid.
+The grid had five cards, the honest edit was eight, and eight is a wall to
+scan; they are grouped by the question a reader is asking at that point in the
+scroll (what can I ask it / what does it do without me / what do I control).
+`how-it-works` carries a reasoned section per capability. Both pages must be
+re-read when a capability ships: they had gone stale claiming per-source tabs
+(there is one box, routed by measurement) and "weekly or monthly" (daily
+exists, across five schedulable sources).
+
 **Activity Scheduler (`app/schedulers/`)** — a member saves free-text intent
 + a cadence (**daily/weekly/monthly** — daily only became honest once syncing
 was automatic; before that it re-summarised the same stale index every morning.
@@ -272,6 +281,20 @@ embeds nothing** (the `app/githublive/` pattern).
   starve every later one while the notes still claimed it was checked), and
   hitting a Slack/GitHub/Linear cap adds a note. All three sources page
   newest-first, so a cap only ever drops the oldest end of the window.
+- **The FIRST run is a 90-day catch-up, not one cadence**
+  (`runner.FIRST_RUN_LOOKBACK`). A weekly GitHub report created on a Tuesday
+  reported the previous Tuesday-to-Tuesday — a period that happened before the
+  scheduler existed — so Syvora's commits sat just outside it and the first
+  report of a busy repository said "nothing happened". Correct by its own
+  definition and useless, which is the worst kind of correct. One number for
+  every cadence: the cadence says how often someone wants to hear from us and
+  nothing about how far back the interesting content sits. Bounded because
+  every fetcher caps items and pages newest-first, and DISCLOSED in the
+  coverage notes (`FIRST_RUN_NOTE`) rather than the prompt — "3 months" on a
+  weekly report is otherwise indistinguishable from a bug, and a note the model
+  is asked to mention is a note it can omit. Every later run still starts at
+  the previous one's end, so nothing is reported twice. `_FIRST_WINDOW` is gone:
+  one fewer table to agree with `FREQUENCIES`.
 - **The row IS the queue entry**, but as a *due list*: a claimed row advances
   `next_run_at` and returns to `active`. `attempts` is capped in **both**
   `mark_run_failed` and `requeue_interrupted_running`.
@@ -382,6 +405,25 @@ dropdown is byte-identical to pre-feature behaviour.
   privacy toggle (one global switch governing every tenant, silently wrong the
   moment someone edits a dashboard). `require_parameters=true` makes tool
   support a server-side guarantee rather than a hand-kept flag.
+- **A BYO preset's `extra_body` is a WORKAROUND and may be dropped; OpenRouter's
+  is a PROMISE and may not** (`routed._PRESET_EXTRA_OPTIONAL`,
+  `OpenAICompatProvider._create`). NVIDIA NIM serves many model families behind
+  one endpoint, `chat_template_kwargs` is read by exactly one of them (the
+  DeepSeek-v4 reasoning models that HANG without it), and the rest answer that
+  field with a 400 — so a fix for one family made every other NVIDIA model
+  impossible to save, and the admin saw NVIDIA rejecting a field they never
+  typed. A 400 on OPTIONAL extras now drops them and retries once, stickily.
+  OpenRouter is deliberately absent from that set: its extras carry
+  `data_collection: "deny"`, so a retry without them would put retrieved
+  private chunks in front of a provider that may train on them, and the request
+  must fail instead. `_with_extras` also had to stop MUTATING the caller's
+  kwargs — the retry was re-sending the exact request that had just been
+  rejected.
+- **14 BYO presets, every base URL a constant, and the absences are reasoned**
+  (`llm/org_model.py`). Azure OpenAI and self-hosted/Ollama need a
+  customer-supplied host, which is the SSRF surface that module refuses;
+  Bedrock and Vertex do not authenticate with a bearer key at all. A test pins
+  that no preset can arrive with a templated or plaintext host.
 - **Two backends, not one: OpenRouter AND Groq** (`catalog.ModelChoice.backend`).
   Quota is the binding constraint — OpenRouter free is 50 req/day account-wide,
   Groq's is thousands — so drawing from both means one being exhausted does not
@@ -550,6 +592,23 @@ facts, a space's Ask reads that space only — no separate company dashboard.
   panel is **omitted**, not returned empty, and the ask box says "can't chart
   that here" rather than "not allowed" — the latter confirms sentiment is being
   collected to exactly the people it is collected on.
+- **Which surveys are read is an ALLOW-LIST an admin picks**
+  (`connection_ops.set_google_form_ids` → `source_config.form_ids`, picked in
+  `FormsPicker.tsx`). `list_forms` goes through DRIVE, so it returns every form
+  in the connected account — and `record_form_sentiment` classified all of
+  them, meaning switching the feature on would have read an admin's unrelated
+  personal surveys, spent LLM calls on them and charted them as company
+  sentiment. Empty selection now means read NOTHING, never everything; a test
+  pins the direction of that default, because a falsy-means-unset shortcut is
+  exactly how it regresses. The PUT MERGES into `source_config` — a bare
+  `{form_ids}` would wipe Drive's `folder_id` and silently un-scope Drive
+  ingestion to the whole account — and ids are validated against what the token
+  can see, since an invisible id fails every run with a 404 that reads as a
+  broken feature rather than a stale pick. The route reports `enabled` instead
+  of 404ing when the flag is off: "not switched on here" is a different fact
+  from "not supported". Discovery is three fixed chips gated on the SAME
+  `may_see_metric` the chart route uses — a chip leading to "can't chart that
+  here" would tell a member sentiment is being collected on them.
 - **The Forms OAuth scope is opt-in** (`GOOGLE_FORMS_ENABLED` appends
   `forms.responses.readonly` in `GoogleSettings.from_env`). Not in the default:
   an already-connected tenant does not have it, so defaulting it on would force
@@ -611,6 +670,14 @@ facts, a space's Ask reads that space only — no separate company dashboard.
   worse than none. The grouping field is omitted from each row because it is
   already the tip's title. Capped at `MAX_DETAILS=12`, newest first, honours
   `focus`, fields omitted when absent rather than "Unknown". Never fatal.
+- **Chart interaction is POINTER events, and `pointerleave` is ignored for
+  touch.** Moving the metadata into the hover assumed a cursor: on a phone the
+  rows behind every bar were simply unreachable. `pointerleave` fires the
+  instant a finger lifts, so honouring it would show the tip and hide it again
+  in the same tap — on touch it now stays until the next tap moves it. The tip
+  also flips to the cursor's left near a card's right edge, measured off its own
+  `offsetParent` rather than a width prop, because the four chart shapes know
+  their width in four different ways.
 - **The tip is `pointer-events: none`, and that is load-bearing** — a tip that
   can sit between the cursor and its own section would un-hover it and
   flicker, the same class of bug as the hover `transform`.
@@ -1039,7 +1106,8 @@ tenants that predate charts get `activity_facts` from `backfill_all_document_fac
 when the model says qa.
 
 **Pending / known gaps**
-- Charts: **the Google Forms path has never run against a real form.** The
+- Charts: Forms is now REACHABLE from the product (picker + chips), but **the
+  Google Forms path has still never run against a real form.** The
   Forms API calls, the `mimeType` listing and the scope behaviour are written
   from the documented shapes and tested against a fake reader only. Enabling
   `GOOGLE_FORMS_ENABLED` also requires every tenant to reconnect Google, so
@@ -1053,6 +1121,11 @@ when the model says qa.
   diverging bar) and inline Ask charts are covered by `tsc --noEmit` only,
   never a rendered assertion. Do not add a React test stack as a side effect
   of a chart.
+- **The whole frontend remains browser-unverified.** Charts, the marketing
+  bands, the Forms picker and the phone pass are covered by `tsc --noEmit` and
+  one colour check only; the user's screenshots have been the sole rendering
+  check throughout. The touch behaviour in particular (pointer events,
+  tap-to-inspect, the flipped tip) has never run on a real phone.
 - Charts: **no browser click-through yet** — the org-member vs space-member
   difference and the sentiment gate are asserted at the API, not in a real
   page load.
