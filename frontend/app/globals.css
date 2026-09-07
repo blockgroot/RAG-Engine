@@ -6372,6 +6372,21 @@ a.people-card:hover { color: inherit; }
   box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06), inset 0 0 0 1px color-mix(in srgb, var(--accent) 14%, transparent);
   transition: transform 0.35s var(--ease), box-shadow 0.35s var(--ease);
 }
+.feature-emoji {
+  display: inline-block;
+  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+  font-size: 1.45rem;
+  line-height: 1;
+  filter: saturate(1.12);
+  transform: translateZ(0);
+  transition: transform 0.35s var(--ease), filter 0.35s var(--ease);
+}
+.show-item:hover .feature-emoji,
+.show-step:hover .feature-emoji,
+.show-tile:hover .feature-emoji {
+  transform: scale(1.16) rotate(-5deg);
+  filter: saturate(1.35) drop-shadow(0 5px 8px rgba(16, 24, 40, 0.12));
+}
 .show-item:hover .show-item-mark,
 .show-step:hover .show-step-mark,
 .show-tile:hover .show-tile-mark {
@@ -6500,6 +6515,9 @@ a.people-card:hover { color: inherit; }
   .show-item:hover .show-item-mark,
   .show-step:hover .show-step-mark,
   .show-tile:hover .show-tile-mark { transform: none; }
+  .show-item:hover .feature-emoji,
+  .show-step:hover .feature-emoji,
+  .show-tile:hover .feature-emoji { transform: none; filter: none; }
 }
 
 @media (max-width: 900px) {

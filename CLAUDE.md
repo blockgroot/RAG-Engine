@@ -223,8 +223,17 @@ conversion lives *inside* the adapter. Thin SDKs, never frameworks.
   delete, all disabled for a member. Deliberately not a redirect: that
   would make the people list unreachable and bounce any link back out.
 
-**Marketing pages** — written for a VISITOR, not a maintainer, and the
-distinction is the standing rule: what they can ask, what arrives on its own,
+**Marketing pages** — written for a VISITOR, not a maintainer, and in a
+PERSON'S voice. Two passes were needed and the second is the one worth
+remembering: removing the jargon is not the same as sounding human. "Answers
+are built from what your company connected", "the updates find you", "a space
+gives one project its own sources" were all jargon-free and still read as
+machine copy — declarative, inverted, no contractions, no concrete example.
+The fix is ordinary speech: contractions, one idea per sentence, and a real
+question a real employee would type ("How much leave do I have left?", "not
+fourteen search results"). Also never call their documents "content" or
+"sources" — those are our words for them; say "your documents", "your tools".
+The distinction from mechanics is the other standing rule: what they can ask, what arrives on its own,
 what they set up, what happens to their content. The mechanics are real and
 belong in this file; naming them on `/how-it-works` ("grounded", "org-scoped",
 "confidence gate", "refusal") made the page read as a design doc, and it went

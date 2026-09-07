@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { BrandGlyph } from "@/components/BrandGlyph";
+import { FeatureEmoji } from "@/components/FeatureEmoji";
 import { LandingProductArt } from "@/components/LandingProductArt";
 import { LandingPromptCycle } from "@/components/LandingPromptCycle";
 import { RevealOnScroll, useSpotlight } from "@/components/Reveal";
@@ -14,7 +15,15 @@ import { homePathFor } from "@/lib/routing";
 
 /**
  * Public product story. Signed-in users skip it; everyone else should leave
- * knowing *what Handbook is* (grounded Q&A over your sources), not just a name.
+ * knowing what Handbook DOES for them, in their words: ask your own tools a
+ * question and get a checkable answer, a chart, or a summary in your inbox.
+ *
+ * Copy rule for this page and /how-it-works: describe the outcome, never the
+ * machinery. "Grounded", "org-scoped", "retrieval" and "the confidence gate"
+ * are all real and all documented in CLAUDE.md — a visitor deciding whether to
+ * try this does not need any of them, and naming them made the page read like
+ * an internal design doc. Say "your documents" and "your tools", not "your
+ * content" or "the corpus".
  */
 export default function RootPage() {
   const router = useRouter();
@@ -55,7 +64,7 @@ export default function RootPage() {
       >
         <div className="landing-hero-copy">
           <p className="landing-eyebrow" data-reveal style={{ ["--i" as string]: "0" }}>
-            One question box for everything your company knows
+            Your team&rsquo;s knowledge, in one place
           </p>
           <h1
             id="landing-title"
@@ -68,10 +77,10 @@ export default function RootPage() {
             <span className="landing-title-accent">anything.</span>
           </h1>
           <p className="landing-subtitle" data-reveal style={{ ["--i" as string]: "2" }}>
-            Handbook connects to the tools your team already uses &mdash; Notion,
-            Drive, Slack, Linear and GitHub &mdash; and answers questions from
-            what&rsquo;s inside them. Ask for a chart when you need one, or have the
-            update sent to you instead.
+            Connect Notion, Drive, Slack, Linear or GitHub, and your team can just
+            ask. How much leave do I have left? What did we decide about pricing?
+            What shipped this week? Every answer comes with a link, so you can see
+            for yourself.
           </p>
           <div className="landing-cta-row" data-reveal style={{ ["--i" as string]: "3" }}>
             <Link href="/signup" className="button landing-cta-primary">
@@ -94,12 +103,12 @@ export default function RootPage() {
         <div className="show-head" data-reveal>
           <p className="landing-eyebrow">One place to ask</p>
           <h2 id="what-title" className="show-title">
-            Everything your team knows,
-            <span className="show-title-accent"> one question away.</span>
+            Ask like you&rsquo;d ask
+            <span className="show-title-accent"> a colleague.</span>
           </h2>
           <p className="show-lead">
-            No folders to search and no one to interrupt. Ask the way you would ask
-            a colleague, and the answer arrives with a link to where it came from.
+            No digging through folders. No waiting for someone to reply. Type the
+            question you were about to ask in Slack, and get the answer instead.
           </p>
         </div>
 
@@ -107,21 +116,22 @@ export default function RootPage() {
           <div className="show-demo-glow" aria-hidden />
           <LandingPromptCycle />
           <p className="show-demo-foot">
-            And when the answer isn&rsquo;t in your content, it says so instead of
-            guessing.
+            And if the answer really isn&rsquo;t in your tools, it tells you that
+            too.
           </p>
         </div>
 
         <ul className="show-list">
           <li className="show-item" data-reveal style={{ ["--i" as string]: "0" }}>
             <span className="show-item-mark">
-              <BrandGlyph name="document" size={24} />
+              <FeatureEmoji name="document" />
             </span>
             <div>
-              <h3>Your documents, answered</h3>
+              <h3>Answers from your documents</h3>
               <p>
-                Leave, expenses, onboarding, last week&rsquo;s notes. You get the
-                answer and the page it came from, so you can check it in a click.
+                Leave, expenses, onboarding, last week&rsquo;s meeting notes. You get
+                a straight answer, plus the page it came from if you want to read the
+                rest.
               </p>
             </div>
           </li>
@@ -130,22 +140,23 @@ export default function RootPage() {
               <BrandGlyph name="github" size={24} />
             </span>
             <div>
-              <h3>Your code, in plain language</h3>
+              <h3>Answers about your code</h3>
               <p>
-                What a repository does, what changed this week, which pull requests
-                are still open and who reviewed them.
+                What a codebase is for, what changed this week, which pull requests
+                are waiting and who has looked at them. Useful whether or not you
+                write the code yourself.
               </p>
             </div>
           </li>
           <li className="show-item" data-reveal style={{ ["--i" as string]: "2" }}>
             <span className="show-item-mark">
-              <BrandGlyph name="chart" size={24} />
+              <FeatureEmoji name="chart" />
             </span>
             <div>
-              <h3>A chart when a number is the answer</h3>
+              <h3>Charts, when a number says it better</h3>
               <p>
-                Ask for one and you get one &mdash; colour-coded, labelled, and
-                hover anywhere to see what it is counting.
+                Ask for a chart and you get a proper one, clearly labelled. Point at
+                any part of it to see what went into that piece.
               </p>
             </div>
           </li>
@@ -155,13 +166,13 @@ export default function RootPage() {
       <section id="works-for-you" className="show-band show-band-tint" aria-labelledby="auto-title">
         <div className="landing-wrap">
           <div className="show-head" data-reveal>
-            <p className="landing-eyebrow">Works while you don&rsquo;t</p>
+            <p className="landing-eyebrow">While you get on with work</p>
             <h2 id="auto-title" className="show-title">
-              The updates find you.
+              The updates come to you.
             </h2>
             <p className="show-lead">
-              Set it up once. Handbook keeps your sources current and sends what you
-              asked to keep an eye on.
+              Set it up once and forget about it. Handbook keeps everything current,
+              and the updates you asked for turn up on their own.
             </p>
           </div>
 
@@ -170,30 +181,33 @@ export default function RootPage() {
               <span className="show-step-mark">
                 <BrandGlyph name="drive" size={22} />
               </span>
-              <h3>Your sources stay current</h3>
+              <h3>Nothing to keep up to date</h3>
               <p>
-                New pages, messages and issues are picked up through the day.
-                Nothing to press, and every answer tells you how fresh it is.
+                Edit a doc or close a ticket and Handbook notices. There&rsquo;s no
+                sync button to remember, and answers tell you when they were last
+                checked.
               </p>
             </li>
             <li className="show-step" data-reveal style={{ ["--i" as string]: "1" }}>
               <span className="show-step-mark">
-                <BrandGlyph name="schedule" size={22} />
+                <FeatureEmoji name="schedule" />
               </span>
-              <h3>Reports arrive in your inbox</h3>
+              <h3>A summary in your inbox</h3>
               <p>
-                Say what to watch in your own words, choose daily, weekly or
-                monthly, and read the summary with links to everything behind it.
+                Tell it what you want to stay on top of, pick daily, weekly or
+                monthly, and read it with your coffee. Every point links to the real
+                thing.
               </p>
             </li>
             <li className="show-step" data-reveal style={{ ["--i" as string]: "2" }}>
               <span className="show-step-mark">
-                <BrandGlyph name="sentiment" size={22} />
+                <FeatureEmoji name="sentiment" />
               </span>
-              <h3>You can see how people feel</h3>
+              <h3>A read on how the team feels</h3>
               <p>
-                Connect a survey and watch the themes, not the individuals. Nobody
-                is named and no one&rsquo;s words are kept.
+                Link a survey and see which topics people are happy or unhappy about.
+                You see the pattern, never the person &mdash; nobody is named, and no
+                answers are kept.
               </p>
             </li>
           </ol>
@@ -202,45 +216,47 @@ export default function RootPage() {
 
       <section id="control" className="show-band landing-wrap" aria-labelledby="control-title">
         <div className="show-head" data-reveal>
-          <p className="landing-eyebrow">On your terms</p>
+          <p className="landing-eyebrow">Your call</p>
           <h2 id="control-title" className="show-title">
-            Your company&rsquo;s knowledge stays your company&rsquo;s.
+            What&rsquo;s yours stays yours.
           </h2>
           <p className="show-lead">
-            Who sees what is something you decide &mdash; right down to which AI
-            model answers.
+            You decide who sees what, which teams get their own space, and even
+            which AI does the answering.
           </p>
         </div>
 
         <div className="show-tiles">
           <article className="show-tile" data-reveal style={{ ["--i" as string]: "0" }}>
             <span className="show-tile-mark">
-              <BrandGlyph name="model" size={26} />
+              <FeatureEmoji name="model" />
             </span>
-            <h3>Choose your AI model</h3>
+            <h3>Use the AI you prefer</h3>
             <p>
-              Prefer OpenAI, Anthropic, Google or another provider? Add your key and
-              your team can pick it per question. We check it works before saving.
+              Already paying for OpenAI, Anthropic or Google? Add your key and your
+              team can choose it whenever they ask something. We test it first, so
+              nobody lands on a broken option.
             </p>
           </article>
           <article className="show-tile" data-reveal style={{ ["--i" as string]: "1" }}>
             <span className="show-tile-mark">
-              <BrandGlyph name="workspace" size={26} />
+              <FeatureEmoji name="workspace" />
             </span>
-            <h3>A space per team</h3>
+            <h3>A space for each team</h3>
             <p>
-              Give a project its own space with its own sources and its own people.
-              What is in one space stays in it.
+              Give a project or a department its own space, with its own tools and
+              its own people. What belongs to one team stays there.
             </p>
           </article>
           <article className="show-tile" data-reveal style={{ ["--i" as string]: "2" }}>
             <span className="show-tile-mark">
-              <BrandGlyph name="secure" size={26} />
+              <FeatureEmoji name="secure" />
             </span>
-            <h3>Private by default</h3>
+            <h3>Private, by default</h3>
             <p>
-              Your content answers your questions and nothing else. It is never
-              used to train AI models and never shared with another company.
+              Your documents are read to answer your team&rsquo;s questions and
+              nothing else. Never used to train AI, never shown to anyone outside
+              your company.
             </p>
           </article>
         </div>
@@ -256,9 +272,9 @@ export default function RootPage() {
           </div>
           <p className="landing-section-lead">
             Notion and Drive for documents, Slack for conversations, Linear for
-            issues, GitHub for code, and Google Forms for surveys. Signing in is a
-            link in your email &mdash; there&rsquo;s no extra password to look
-            after.
+            tickets, GitHub for code, Google Forms for surveys. Everyone signs in
+            with a link we email them, so there&rsquo;s no new password for anyone
+            to forget.
           </p>
         </div>
         <LandingSourcesOrbit />
@@ -294,11 +310,11 @@ export default function RootPage() {
               </li>
               <li className="landing-close-step" style={{ ["--step" as string]: "2" }}>
                 <span className="landing-close-step-mark" aria-hidden>
-                  <BrandGlyph name="secure" size={18} />
+                  <FeatureEmoji name="secure" />
                 </span>
                 <span className="landing-close-step-body">
                   <strong>Ask</strong>
-                  <span>Answers from your own content</span>
+                  <span>Answers from your own tools</span>
                 </span>
               </li>
             </ol>
@@ -308,16 +324,16 @@ export default function RootPage() {
             <p className="landing-eyebrow">Start here</p>
             <h2 id="close-title">Up and running in three steps.</h2>
             <p className="landing-close-lead">
-              Connect a tool, invite your team, and start asking. From then on the
-              answers come from your own content &mdash; and the updates you care
-              about arrive without being asked for.
+              Connect one tool, invite a few people, ask your first question. It
+              takes about an afternoon, and you&rsquo;ll know quickly whether it
+              earns a place in your week.
             </p>
             <div className="landing-close-actions">
               <Link href="/signup" className="button landing-cta-primary landing-close-primary">
                 Request access
               </Link>
               <Link href="/how-it-works" className="landing-close-link">
-                See how a question is answered
+                See how it works
               </Link>
             </div>
           </div>
