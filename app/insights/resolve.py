@@ -56,6 +56,11 @@ class ChartSpec:
     group_by: str | None
     period: str
     chart: str
+    #: What the member named ("the DAO repo", "#rag-updates", "the Leave
+    #: Policy"). RAW text on purpose: it is resolved against the subjects that
+    #: actually have rows, in the scope, at run time -- this layer has no
+    #: database and must not pretend to validate it.
+    focus: str | None = None
 
 
 @dataclass(frozen=True)
@@ -66,6 +71,11 @@ class AskIntent:
     ``chart`` — count something we store; InsightsAgent runs SQL.
     ``refuse`` — they wanted a visual we cannot count; do not RAG.
     ``github_live`` — a code or repository question; GitHubAgent reads live.
+    ``unavailable`` — they asked about a connector that is NOT connected in
+    this scope. A distinct outcome because "Slack is not connected here" and
+    "I cannot chart that" are different facts, and answering the second when
+    the first is true sends someone hunting a product limitation that does not
+    exist. The message names the connector and says who can fix it.
 
     Why ``github_live`` exists, and why it is the one place an LLM picks a
     non-chart destination: GitHub embeds nothing, so it can never win the
@@ -123,6 +133,37 @@ def _catalogue(metrics: list[registry.Metric]) -> str:
     return "\n".join(lines)
 
 
+#: What each connector would unlock, so "not connected" comes with a reason to
+#: connect it rather than only a closed door.
+_UNAVAILABLE_VALUE = {
+    "github": "pull requests, merges, reviews and commits",
+    "notion": "pages created or edited, and who edits them",
+    "google": "files created or edited in Drive",
+    "slack": "conversation volume by channel",
+    "linear": "tasks completed, cycle time and where work sits",
+    "forms": "survey sentiment by topic",
+}
+
+
+def _unavailable_message(provider: str) -> str:
+    """Names the connector, what it would give, and who can connect it.
+
+    Deliberately NOT the generic refusal: "I can't chart that" is a statement
+    about the product, and it is false when the truth is "this space has no
+    Slack". Someone told the first thing goes looking for a missing feature;
+    someone told the second asks an admin.
+    """
+    label = provider.title() if provider != "github" else "GitHub"
+    if provider == "google":
+        label = "Google Drive"
+    value = _UNAVAILABLE_VALUE.get(provider)
+    tail = f" Once it is, I can chart {value}." if value else ""
+    return (
+        f"{label} is not connected here, so there is nothing recorded to "
+        f"count. An admin can connect it under Sources.{tail}"
+    )
+
+
 def _refusal(metrics: list[registry.Metric]) -> str:
     labels = ", ".join(sorted(m.label.lower() for m in metrics)) or "nothing yet"
     return (
@@ -135,8 +176,27 @@ def _refusal(metrics: list[registry.Metric]) -> str:
     )
 
 
+#: Every connector that has chartable metrics at all. Compared against what
+#: is connected so the model can name one the tenant does NOT have -- offering
+#: only connected providers made "chart our Slack activity" in a Slack-less
+#: space come back as "I can't chart that", which is a claim about the product
+#: rather than about the connection.
+def _chartable_providers() -> list[str]:
+    seen = []
+    for metric in registry.METRICS.values():
+        if metric.provider not in seen:
+            seen.append(metric.provider)
+    return seen
+
+
+def _missing(providers: list[str]) -> list[str]:
+    connected = set(providers)
+    return [p for p in _chartable_providers() if p not in connected]
+
+
 def _prompt(
-    question: str, metrics: list[registry.Metric], *, github: bool = False
+    question: str, metrics: list[registry.Metric], *, github: bool = False,
+    missing: list[str] | None = None,
 ) -> str:
     # The question is user text reaching a prompt, so it is scrubbed and fenced
     # like any other untrusted input. That is a mitigation, not the guarantee:
@@ -174,6 +234,14 @@ def _prompt(
         "connector is the tag in brackets). This list is the contract, "
         "not a set of example questions:\n"
         f"{_catalogue(metrics)}\n\n"
+        + (
+            "NOT CONNECTED in this scope: " + ", ".join(missing) + ".\n"
+            "If the question is about one of THOSE, reply "
+            'intent=unavailable with that connector in "provider". Do not '
+            "substitute a connector they did have -- charting Notion for a "
+            "question about Slack answers a question nobody asked.\n\n"
+            if missing else ""
+        ) +
         f"Periods: {', '.join(registry.PERIODS)}\n"
         "Shapes: line = over time; bar = ranking; pie = share of a whole "
         "(needs group_by); stacked_bar = mix of states.\n\n"
@@ -184,11 +252,14 @@ def _prompt(
             else '{"intent": "qa"|"chart", "metric": "<key or null>", '
         ) +
         '"group_by": "<option or null>", "period": "<period>", '
-        '"chart": "<shape or null>"}\n\n'
+        '"chart": "<shape or null>", "focus": "<one named thing or null>"}\n\n'
         "Rules:\n"
         "- Never invent a metric key. Match the question to the list "
         "above, even if the wording differs from the label.\n"
         "- group_by must be one of that metric's options, or null.\n"
+        "- focus = ONE thing they narrowed to: a repository, channel, team, "
+        "page or file NAME. \"commits in the DAO repo\" is focus=\"DAO\", "
+        "not a grouping. Null when they asked about everything.\n"
         "- chart must be one of that metric's shapes, or null to use the default.\n"
         "- Do not compute or state any numbers.\n"
         "- intent=chart with metric null means they wanted a visual we cannot count.\n"
@@ -247,6 +318,10 @@ def classify_question(
     failure stays a refusal, matching the old ask-box contract.
     """
     metrics = _available(providers)
+    # Named so the model can say "Slack is not connected" instead of "I cannot
+    # chart that" -- two different facts, and the second is a lie when the
+    # first is true.
+    missing = _missing(providers)
     if not metrics:
         if fail_open:
             return AskIntent("qa")
@@ -267,7 +342,8 @@ def classify_question(
     github = "github" in providers
     try:
         reply = llm.generate(
-            _prompt(question, metrics, github=github), max_tokens=MAX_TOKENS
+            _prompt(question, metrics, github=github, missing=missing),
+            max_tokens=MAX_TOKENS,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("insights: chart resolution failed", exc_info=True)
@@ -282,7 +358,10 @@ def classify_question(
             "I couldn't work that out just now. The charts below still work."
         ) from exc
 
-    intent = _parse_intent(reply, metrics, fail_open=fail_open, github=github)
+    intent = _parse_intent(
+        reply, metrics, fail_open=fail_open, github=github,
+        missing=missing, providers=providers,
+    )
     # A model that treats "make a pie chart of this doc" as qa will retrieve
     # the file and invent slices (or say the docs don't contain a pie tool).
     # An explicit shape with no metric is a refusal, not RAG — unless the
@@ -399,10 +478,13 @@ def _parse_intent(
     *,
     fail_open: bool,
     github: bool = False,
+    missing: list[str] | None = None,
+    providers: list[str] | None = None,
 ) -> AskIntent:
     """Parse and check the model's reply. Nothing gets the benefit of the doubt."""
     allowed = {m.key: m for m in metrics}
     refusal = _refusal(metrics)
+    missing = missing or []
 
     match = _JSON_RE.search(reply or "")
     if not match:
@@ -431,6 +513,20 @@ def _parse_intent(
             intent = "chart"
         else:
             return AskIntent("github_live")
+
+    if intent == "unavailable":
+        # Validated, never trusted: the connector must be one we actually
+        # chart AND must genuinely be absent from this scope. A model that
+        # says "not connected" about a connected provider would otherwise
+        # hide a working chart behind a "go ask an admin".
+        provider = data.get("provider")
+        if isinstance(provider, str) and provider in missing:
+            return AskIntent("refuse", message=_unavailable_message(provider))
+        logger.info(
+            "insights: ignored unavailable claim for %r (connected=%s)",
+            provider, providers,
+        )
+        intent = "chart" if isinstance(data.get("metric"), str) else "qa"
 
     if intent not in ("qa", "chart"):
         # Older replies had no intent field: a metric means chart, else qa/refuse.
@@ -470,11 +566,21 @@ def _parse_intent(
     elif not isinstance(requested, str):
         requested = None
 
+    focus = data.get("focus")
+    if not isinstance(focus, str) or not focus.strip() or focus in ("null", "none"):
+        focus = None
+    else:
+        # Length-capped only. It is matched against stored subjects at run
+        # time and bound as a parameter, so this layer's job is to stop an
+        # essay reaching the database, not to decide what is real.
+        focus = focus.strip()[:120]
+
     spec = ChartSpec(
         metric=metric.key,
         group_by=group_by,
         period=period,
         chart=_pick_chart(metric, group_by, requested),
+        focus=focus,
     )
     return AskIntent("chart", spec=spec)
 

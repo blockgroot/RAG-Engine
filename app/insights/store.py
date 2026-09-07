@@ -89,6 +89,7 @@ def run_metric(
     period: str,
     days: int = 90,
     group_by: str | None = None,
+    focus: str | None = None,
 ) -> list[Point]:
     """Count one registry metric in one scope over one window.
 
@@ -137,6 +138,14 @@ def run_metric(
         """,
         workspace_id,
     )
+    # "commits in the DAO repo" is a FILTER, not a grouping. Without it the
+    # question resolved to "commits by repository" and charted every repo --
+    # a chart that answers a different question than the one asked, which is
+    # worse than a refusal because it looks like an answer. `subject` holds a
+    # VALUE (a repo, a channel, a team, a page title), so unlike `period` and
+    # `group_by` it is bound as a parameter and never spliced.
+    if focus is not None:
+        where += " AND subject = %(focus)s"
 
     inner = f"""
         SELECT date_trunc('{period}', occurred_at) AS bucket{selected},
@@ -154,6 +163,7 @@ def run_metric(
         "kind": metric.kind,
         "days": days,
         "workspace_id": workspace_id,
+        "focus": focus,
     }
 
     try:
@@ -171,6 +181,40 @@ def run_metric(
         )
         for row in rows
     ]
+
+
+def list_subjects(
+    key: str, *, org_id: str, workspace_id: str | None, days: int
+) -> list[str]:
+    """Every ``subject`` this metric actually has rows for, in this scope.
+
+    What a member types is matched against THIS, never used as a filter
+    directly -- so "the DAO repo" either resolves to a repository we have
+    activity for or is refused by name. A filter built from unmatched text
+    silently returns an empty chart, which reads as "no activity" when it
+    means "no such thing".
+    """
+    metric = registry.get(key)
+    where = _scoped(
+        """
+         WHERE org_id = %(org_id)s
+           AND provider = %(provider)s
+           AND kind = %(kind)s
+           AND occurred_at >= now() - make_interval(days => %(days)s)
+           AND subject IS NOT NULL
+        """,
+        workspace_id,
+    )
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT DISTINCT subject FROM activity_facts {where} ORDER BY 1",
+                {"org_id": org_id, "provider": metric.provider, "kind": metric.kind,
+                 "days": days, "workspace_id": workspace_id},
+            ).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        raise ProviderError(f"insights: subjects of {key} failed", cause=exc) from exc
+    return [r[0] for r in rows if r[0]]
 
 
 def first_fact_at(

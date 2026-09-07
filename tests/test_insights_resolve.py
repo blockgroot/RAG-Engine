@@ -483,3 +483,106 @@ def test_github_live_never_carries_a_chart_spec():
     assert intent.kind == "github_live"
     assert intent.spec is None
     assert intent.message is None
+
+
+# --------------------------------------------------------------------------
+# "commits in the DAO repo" is a FILTER, not a grouping
+# --------------------------------------------------------------------------
+
+
+def _classify(question, reply, providers):
+    return resolve.classify_question(
+        question, providers=providers, llm=FakeLLM(reply), fail_open=True
+    )
+
+
+def test_a_named_repository_becomes_a_focus_not_a_grouping():
+    """The bug this pins: "chart commits by DAO repository" resolved to
+    `commits_by_author group_by=subject` and charted EVERY repo. DAO had no
+    commits, so what was shown was another repository's -- a chart answering a
+    different question than the one asked, which is worse than a refusal
+    because it looks like an answer."""
+    intent = _classify(
+        "chart commits in the DAO repository",
+        '{"intent":"chart","metric":"commits_by_author","group_by":null,'
+        '"period":"month","chart":"bar","focus":"DAO"}',
+        ["github"],
+    )
+    assert intent.kind == "chart"
+    assert intent.spec.focus == "DAO"
+    assert intent.spec.group_by is None
+
+
+def test_focus_is_carried_raw_because_this_layer_has_no_database():
+    """Matched against stored subjects at RUN time and bound as a parameter,
+    so validation here is a length cap, not a judgement."""
+    long = "z" * 400
+    intent = _classify(
+        "commits in x",
+        '{"intent":"chart","metric":"commits_by_author","group_by":null,'
+        f'"period":"month","chart":"bar","focus":"{long}"}}',
+        ["github"],
+    )
+    assert len(intent.spec.focus) == 120
+
+
+def test_an_empty_focus_is_no_focus():
+    for value in ('""', '"null"', '"   "'):
+        intent = _classify(
+            "commits",
+            '{"intent":"chart","metric":"commits_by_author","group_by":null,'
+            f'"period":"month","chart":"bar","focus":{value}}}',
+            ["github"],
+        )
+        assert intent.spec.focus is None, value
+
+
+# --------------------------------------------------------------------------
+# "not connected" is a different fact from "cannot chart"
+# --------------------------------------------------------------------------
+
+
+def test_a_question_about_an_unconnected_connector_says_so():
+    """"I can't chart that" is a statement about the PRODUCT, and it is false
+    when the truth is "this space has no Slack". Someone told the first goes
+    hunting a missing feature; someone told the second asks an admin."""
+    intent = _classify(
+        "chart our slack conversations",
+        '{"intent":"unavailable","provider":"slack"}',
+        ["notion"],
+    )
+    assert intent.kind == "refuse"
+    assert "Slack is not connected" in intent.message
+    assert "admin" in intent.message
+    assert "conversation volume" in intent.message  # what it would unlock
+
+
+def test_the_unconnected_connectors_are_named_in_the_prompt():
+    """Offering only CONNECTED providers is what made "chart our Slack
+    activity" in a Slack-less space come back as "I can't chart that"."""
+    llm = FakeLLM('{"intent":"qa"}')
+    resolve.classify_question("anything", providers=["notion"], llm=llm)
+    prompt = llm.prompts[0]
+    assert "NOT CONNECTED" in prompt
+    assert "slack" in prompt and "linear" in prompt
+
+
+def test_an_unavailable_claim_about_a_CONNECTED_provider_is_ignored():
+    """Validation is the gate. A model claiming "not connected" about a
+    connected provider would hide a working chart behind "ask an admin"."""
+    intent = _classify(
+        "chart pages",
+        '{"intent":"unavailable","provider":"notion","metric":"docs_changed"}',
+        ["notion"],
+    )
+    assert intent.kind == "chart"
+    assert intent.spec.metric == "docs_changed"
+
+
+def test_an_unavailable_claim_about_an_unknown_provider_is_ignored():
+    intent = _classify(
+        "chart jira tickets",
+        '{"intent":"unavailable","provider":"jira"}',
+        ["notion"],
+    )
+    assert intent.kind != "refuse" or "Jira" not in (intent.message or "")

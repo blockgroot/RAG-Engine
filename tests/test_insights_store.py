@@ -284,3 +284,42 @@ def test_asking_for_a_space_breakdown_is_refused_not_drawn(org):
             "slack_threads", org_id=org, workspace_id=None,
             period="month", days=90, group_by="space",
         )
+
+
+# --------------------------------------------------------------------------
+# `focus` narrows to ONE subject
+# --------------------------------------------------------------------------
+
+
+def test_focus_filters_to_one_subject(org):
+    _fact(org, provider="slack", kind="doc_changed", subject="#general")
+    _fact(org, provider="slack", kind="doc_changed", subject="#general")
+    _fact(org, provider="slack", kind="doc_changed", subject="#random")
+
+    all_rows = store.run_metric("slack_threads", org_id=org, workspace_id=None,
+                                period="month", days=90)
+    one = store.run_metric("slack_threads", org_id=org, workspace_id=None,
+                           period="month", days=90, focus="#general")
+    assert _total(all_rows) == 3.0
+    assert _total(one) == 2.0
+
+
+def test_focus_is_bound_not_spliced(org):
+    """`subject` holds a VALUE, unlike `period` and `group_by` which are
+    identifiers. A quote in it must be data, never syntax."""
+    _fact(org, provider="slack", kind="doc_changed", subject="#general")
+    rows = store.run_metric(
+        "slack_threads", org_id=org, workspace_id=None, period="month",
+        days=90, focus="'; DROP TABLE activity_facts; --",
+    )
+    assert rows == []
+    with get_connection() as conn:  # the table is still there
+        assert conn.execute("SELECT count(*) FROM activity_facts").fetchone()[0] >= 1
+
+
+def test_list_subjects_returns_what_actually_has_rows(org):
+    _fact(org, provider="slack", kind="doc_changed", subject="#general")
+    _fact(org, provider="slack", kind="doc_changed", subject="#random")
+    subjects = store.list_subjects("slack_threads", org_id=org,
+                                   workspace_id=None, days=90)
+    assert subjects == ["#general", "#random"]

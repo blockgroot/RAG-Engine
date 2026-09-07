@@ -5780,6 +5780,45 @@ a.people-card:hover { color: inherit; }
 .chart-rank-value {
   font-variant-numeric: tabular-nums;
   color: var(--ink-muted);
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+.chart-rank-share {
+  font-size: 0.75rem;
+  color: var(--ink-subtle, var(--ink-muted));
+  min-width: 2.25rem;
+  text-align: right;
+}
+
+/* One group: the number, not a shape. See Chart.tsx::Stat. */
+.chart-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+}
+.chart-stat-value {
+  margin: 0;
+  font-size: 2rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--chart-1);
+}
+.chart-stat-label {
+  margin: 0;
+  font-size: 0.9375rem;
+  color: var(--ink);
+}
+.chart-stat-spark {
+  max-width: 100%;
+  height: auto;
+}
+.chart-stat-range {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--ink-muted);
 }
 
 /* The ask box. Inside the section, not a second chat surface. */

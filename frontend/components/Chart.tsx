@@ -166,6 +166,26 @@ export function Chart({
 
   if (chart === "diverging_bar") return <DivergingBar points={points} />;
 
+  // ONE group is not a ranking and not a share of anything: a lone bar has
+  // nothing to compare against and a single-slice pie is a filled circle
+  // labelled 100%, which is the least informative shape available. Show the
+  // number, and the trend that number actually has.
+  if ((leaderboard || chart === "pie") && ranked.length === 1) {
+    const only = ranked[0];
+    const name = series.find((s) => (s.trim() || "Unknown") === only.name) ?? "";
+    return (
+      <Stat
+        label={only.name}
+        value={only.value}
+        unit={unit}
+        buckets={buckets}
+        period={period}
+        seriesName={name}
+        at={at}
+      />
+    );
+  }
+
   if (chart === "pie") {
     const rows = ranked.length
       ? ranked
@@ -178,6 +198,7 @@ export function Chart({
 
   if (leaderboard) {
     const max = Math.max(...ranked.map((r) => r.value), 1);
+    const total = ranked.reduce((sum, r) => sum + r.value, 0);
     return (
       <ul className="chart-rank">
         {ranked.map((row, i) => (
@@ -196,6 +217,14 @@ export function Chart({
             </span>
             <span className="chart-rank-value">
               {withUnit(row.value, unit)}
+              {/* The share, because a bar whose only reference is the longest
+                  bar tells you rank but not weight -- "top editor" over 4% of
+                  the activity is a different fact from over 60%. */}
+              {ranked.length > 1 && total > 0 && (
+                <span className="chart-rank-share">
+                  {Math.round((row.value / total) * 100)}%
+                </span>
+              )}
             </span>
           </li>
         ))}
@@ -499,6 +528,76 @@ function DivergingBar({ points }: { points: Point[] }) {
     </div>
   );
 }
+
+function Stat({
+  label,
+  value,
+  unit,
+  buckets,
+  period,
+  seriesName,
+  at,
+}: {
+  label: string;
+  value: number;
+  unit?: string;
+  buckets: string[];
+  period: string;
+  seriesName: string;
+  at: (bucket: string, series: string) => number;
+}) {
+  /**
+   * One group, rendered as the number it is.
+   *
+   * Reached when a ranking or a share resolves to a single group -- a real
+   * situation on a small team, a new connector or a filtered chart, and the
+   * one case where the ordinary shapes actively mislead: a lone bar has
+   * nothing to compare against and a one-slice pie is a circle labelled
+   * 100%. The trend is drawn beside it because "4 commits" and "4 commits,
+   * all in one week" are different facts.
+   */
+  const values = buckets.map((b) => at(b, seriesName));
+  const peak = Math.max(...values, 1);
+  const W = 220;
+  const H = 44;
+  const step = buckets.length > 1 ? W / (buckets.length - 1) : 0;
+  const path = values
+    .map((v, i) => `${i === 0 ? "M" : "L"} ${i * step} ${H - (v / peak) * (H - 6) - 3}`)
+    .join(" ");
+
+  return (
+    <div className="chart-stat">
+      <div>
+        <p className="chart-stat-value">{withUnit(value, unit)}</p>
+        <p className="chart-stat-label">{label}</p>
+      </div>
+      {buckets.length > 1 && (
+        <svg
+          className="chart-stat-spark"
+          viewBox={`0 0 ${W} ${H}`}
+          width={W}
+          height={H}
+          role="img"
+          aria-label={`trend over ${buckets.length} ${period}s`}
+        >
+          <path
+            d={`${path} L ${W} ${H} L 0 ${H} Z`}
+            fill="var(--chart-1)"
+            opacity={0.12}
+            stroke="none"
+          />
+          <path d={path} fill="none" stroke="var(--chart-1)" strokeWidth={2} />
+        </svg>
+      )}
+      {buckets.length > 1 && (
+        <p className="chart-stat-range">
+          {formatBucket(buckets[0], period)} – {formatBucket(buckets[buckets.length - 1], period)}
+        </p>
+      )}
+    </div>
+  );
+}
+
 
 function Pie({
   rows,

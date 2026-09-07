@@ -569,6 +569,41 @@ facts, a space's Ask reads that space only — no separate company dashboard.
   four numbers should not need a hover to read four numbers. `withUnit` says
   "1 issue", never "1 issues" — a legend that mis-pluralises reads as
   generated rather than counted.
+- **`ChartSpec.focus` is a FILTER, and it is the one model-supplied VALUE.**
+  "chart commits in the DAO repo" used to resolve to `commits_by_author
+  group_by=subject` and chart every repo — DAO had none, so another
+  repository's bar was shown: a chart answering a different question than the
+  one asked, which is worse than a refusal because it looks like an answer.
+  `subject` is a value not an identifier, so `focus` is **bound as `%(focus)s`**
+  rather than spliced, and it is resolved against `store.list_subjects` —
+  punctuation-squashed, so "chain guard"/"chain-guard"/"18-sana/Chain-Guard"
+  all match. No match ⇒ refuse **by name and list what exists**; two matches ⇒
+  ask which. A filter built from unmatched text returns an empty chart, which
+  reads as "no activity" when it means "no such thing". The focus is also in
+  the TITLE: a filtered chart that looks unfiltered is the same failure.
+- **"Not connected" is a different FACT from "cannot chart"** (`resolve.py`
+  `intent=unavailable`). Offering only connected providers made "chart our
+  Slack activity" in a Slack-less space come back as "I can't chart that" — a
+  claim about the *product*, false when the truth is about the *connection*.
+  The prompt now names the unconnected connectors; the reply is **validated**
+  (the provider must be chartable AND genuinely absent, so a model cannot hide
+  a working chart behind "ask an admin"); the message names the connector,
+  what it would unlock, and that an admin connects it under Sources.
+- **An empty chart says WHICH empty it is** (`insights_agent._empty_caption`).
+  Three cases needing three different actions: nothing ever counted from this
+  connector, nothing of this kind in this window **but older rows exist**
+  (say the earliest date and suggest quarterly), or the connection works and
+  this thing simply has not happened. One "nothing recorded yet" for all three
+  sent people to wait for a sync that would change nothing — the real case was
+  23 pull requests all older than the window.
+- **One group is rendered as a NUMBER, not a shape** (`Chart.tsx::Stat`). A
+  lone bar has nothing to compare against and a one-slice pie is a circle
+  labelled 100% — the least informative shape available, and a real situation
+  on a small team, a new connector or a filtered chart. Big value + label +
+  a sparkline of its own trend, because "4 commits" and "4 commits all in one
+  week" are different facts. Leaderboard rows over one group also carry a
+  **share %**: a bar whose only reference is the longest bar gives rank but
+  not weight.
 - **`Metric.series_by` is a SECOND fixed grouping**, whitelisted through
   `DIMENSIONS` like `dims`. Only for charts that genuinely need two dimensions
   (a diverging bar is topic BY label); fixed per metric rather than requestable.
