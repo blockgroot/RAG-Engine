@@ -283,10 +283,29 @@ vocabulary ("chart commits by author") — that is theirs, not ours.
   a chart is not a chart, and that page had no artwork at all. Drawn in CSS,
   not shipped as images — they recolour with the tokens and would otherwise be
   the only asset step in this frontend.
-- **Every animated start-state is scoped to `.has-reveal`.** `opacity: 0` and
-  `scaleY(0)` written unscoped meant a JS-less visitor got an invisible reply
-  bubble and six zero-height bars — a mock that looks broken, rather than one
-  that simply does not animate.
+- **Nothing on these pages waits for a scroll.** `RevealOnScroll` and every
+  `.has-reveal` start-state are DELETED: a page that fades in band by band
+  reads as a page still loading, and it put the hidden state one JS failure
+  away from an invisible section. The mock animations (`art-land`, `art-grow`)
+  now run on load and are switched off under `prefers-reduced-motion`.
+  `ScrollRail` stays — it reports progress, it does not gate content.
+- **A section seam is a change of ground, never a rule.** The band hairline
+  and `show-band-tint`'s own inset top/bottom edges each drew one, so every
+  seam was visibly TWO lines. Both are gone; the tint wash alone separates.
+- **`.show-head` is two columns**: eyebrow + title left, lead right, baseline
+  aligned. One 46rem column left the right half of every band empty, which is
+  what made the page read as unfinished rather than as spacious.
+- **The journey connector is drawn PER STATION, not as one rail.** A single
+  absolute rail across the block has to guess where the first and last node
+  centres land; it overshot the last node and carried a travelling pulse that
+  read as a rendering fault. Station-to-station (`:not(:last-child)::after`,
+  offset by the grid gap) cannot drift.
+- **`HowSetupTracker` runs the full height of the list it tracks** — it was a
+  small sticky card beside four tall rows, so the fill line measured nothing.
+  `align-items: stretch` on `.setup` plus `justify-content: space-between` on
+  the step list.
+- **The hero privacy line had `margin-top: -0.9rem`** and sat on top of the CTA
+  buttons.
 - **`.landing` MUST be `position: relative`, and its absence was a page-wide
   defect, not a nit.** `.landing-atmosphere` is `position: absolute; inset: 0`
   with the dot grid, the sheen and all three orbs inside it — with no

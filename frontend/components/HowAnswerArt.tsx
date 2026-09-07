@@ -18,14 +18,14 @@ import { BrandGlyph } from "@/components/BrandGlyph";
 export function AnswerArt() {
   return (
     <div className="art art-answer" aria-hidden>
-      <div className="art-bubble art-bubble-ask">How much parental leave do I get?</div>
+      <div className="art-bubble art-bubble-ask">What&rsquo;s the status of ENG-142?</div>
       <div className="art-bubble art-bubble-reply">
         <span className="art-line" style={{ width: "88%" }} />
         <span className="art-line" style={{ width: "96%" }} />
         <span className="art-line" style={{ width: "54%" }} />
         <span className="art-source">
-          <BrandGlyph name="notion" size={14} />
-          People handbook
+          <BrandGlyph name="linear" size={14} />
+          ENG-142 · Fix login redirect
         </span>
       </div>
     </div>
@@ -33,6 +33,7 @@ export function AnswerArt() {
 }
 
 const BARS = [38, 64, 52, 88, 71, 46];
+const BAR_COLORS = ["#0f766e", "#2563eb", "#d97706", "#db2777", "#7c3aed", "#15803d"];
 
 export function ChartArt() {
   return (
@@ -42,7 +43,11 @@ export function ChartArt() {
           <span
             key={i}
             className="art-bar"
-            style={{ ["--h" as string]: `${height}%`, ["--b" as string]: String(i) }}
+            style={{
+              ["--h" as string]: `${height}%`,
+              ["--b" as string]: String(i),
+              ["--c" as string]: BAR_COLORS[i % BAR_COLORS.length],
+            }}
           />
         ))}
       </div>

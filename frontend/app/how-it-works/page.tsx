@@ -2,11 +2,12 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { BrandGlyph } from "@/components/BrandGlyph";
+import { BrandMark } from "@/components/BrandMark";
 import { AnswerArt, ChartArt, InboxArt } from "@/components/HowAnswerArt";
 import { HowJourney } from "@/components/HowJourney";
 import { HowSetupTracker } from "@/components/HowSetupTracker";
 import { LandingShell } from "@/components/LandingShell";
-import { RevealOnScroll, ScrollRail } from "@/components/Reveal";
+import { ScrollRail } from "@/components/Reveal";
 
 export const metadata: Metadata = {
   title: "How it works",
@@ -29,35 +30,49 @@ export const metadata: Metadata = {
 export default function HowItWorksPage() {
   return (
     <LandingShell active="how">
-      <RevealOnScroll />
       <ScrollRail />
 
       <section className="how-hero landing-wrap has-spotlight" aria-labelledby="how-title">
         <span className="how-hero-aura" aria-hidden />
-        <p className="landing-eyebrow" data-reveal>
-          How it works
-        </p>
-        <h1 id="how-title" className="how-title" data-reveal style={{ ["--i" as string]: "1" }}>
-          From your question to a useful answer.
-        </h1>
-        <p className="how-lead" data-reveal style={{ ["--i" as string]: "2" }}>
-          Handbook connects to the tools your team already uses. Ask in plain
-          English, see the answer, and open the original document when you need
-          more detail.
-        </p>
-        <div className="how-hero-tools" data-reveal style={{ ["--i" as string]: "3" }}>
-          <span className="how-hero-tools-label">Works with</span>
-          <span className="how-hero-tools-row">
-            {(["notion", "drive", "slack", "linear", "github"] as const).map((name, i) => (
-              <span
-                key={name}
-                className="how-hero-tool"
-                style={{ ["--f" as string]: String(i) }}
-              >
-                <BrandGlyph name={name} size={22} />
-              </span>
-            ))}
+        <div className="how-hero-copy">
+          <p className="landing-eyebrow">How it works</p>
+          <h1 id="how-title" className="how-title">
+            From your question to a useful answer.
+          </h1>
+          <p className="how-lead">
+            Handbook connects to the tools your team already uses. Ask in plain
+            English, see the answer, and open the original document when you need
+            more detail.
+          </p>
+          <p className="how-hero-tools-label">Works with</p>
+        </div>
+
+        {/* The right half was empty and the tools sat in a flat row under the
+            copy. They are the subject of the sentence above, so they carry the
+            column: five marks on a slow ring around Handbook, each staying
+            upright as it travels and lifting under the cursor. CSS only — the
+            page is otherwise static, and this does not need to know the
+            scroll position. */}
+        <div className="how-orbit" aria-hidden>
+          <span className="how-orbit-ring" />
+          <span className="how-orbit-core">
+            <BrandMark className="brand-mark how-orbit-mark" />
           </span>
+          <ul className="how-orbit-set">
+            {(["notion", "drive", "slack", "linear", "github"] as const).map((name, i) => (
+              <li
+                key={name}
+                className="how-orbit-item"
+                style={{ ["--a" as string]: `${i * 72}deg` }}
+              >
+                <span className="how-orbit-upright">
+                  <span className="how-orbit-tile">
+                    <BrandGlyph name={name} size={26} />
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ul>
         </div>
       </section>
 
@@ -91,9 +106,9 @@ export default function HowItWorksPage() {
             <div className="feat-copy">
               <h3>Written answers</h3>
               <p>
-                Ask, &ldquo;How much parental leave do I get?&rdquo; and get a short answer
-                from your team&rsquo;s policies, notes or conversations. The original
-                document is linked below it.
+                Ask, &ldquo;What&rsquo;s the status of ENG-142?&rdquo; and get a short answer
+                from the ticket, page or conversation that holds it. Whatever it
+                came from is linked below the answer.
               </p>
             </div>
             <div className="feat-art">

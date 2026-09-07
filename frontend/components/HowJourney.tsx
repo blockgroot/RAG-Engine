@@ -15,31 +15,28 @@ const STATIONS: Array<{ title: string; body: string }> = [
   {
     title: "You ask",
     body:
-      "Type it in the same box every time. There is no source to pick and no filter to set, and a follow-up keeps the earlier question in mind.",
+      "Type it in the same box every time. There is no source to pick and no filter to set, and a follow-up keeps the earlier one in mind.",
   },
   {
     title: "Handbook searches",
     body:
-      "It reads across every tool your company has connected — documents, conversations, tickets and code — and finds the passages that address your question.",
+      "It reads every tool your company connected: documents, chats, tickets and code. It keeps the passages that address your question.",
   },
   {
     title: "It checks the evidence",
     body:
-      "It judges whether what it found actually covers the question. If it does not, you are told so rather than given the closest-looking guess.",
+      "It judges whether what it found actually covers the question. If it does not, you are told so rather than handed the closest guess.",
   },
   {
     title: "You get the answer",
     body:
-      "Written from those passages only, with the document, message or file it came from listed underneath so you can read the rest.",
+      "Written from those passages only, with the document, message or file it came from listed underneath so you can read the rest of it.",
   },
 ];
 
 export function HowJourney() {
   return (
     <div className="journey" aria-label="What happens when you ask a question">
-      <div className="journey-rail" aria-hidden>
-        <span className="journey-pulse" />
-      </div>
       <ol className="journey-stations">
         {STATIONS.map((station, i) => (
           <li
@@ -50,7 +47,6 @@ export function HowJourney() {
           >
             <span className="journey-node">
               <span className="journey-node-num">{`0${i + 1}`}</span>
-              <span className="journey-node-ring" aria-hidden />
             </span>
             <h3>{station.title}</h3>
             <p>{station.body}</p>

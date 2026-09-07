@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 
 /** Workplace questions that map to real Handbook paths (policies / code / spaces). */
 export const LANDING_PROMPTS = [
-  "How many sick days do full-time employees get?",
   "What's our parental leave policy?",
   "What changed in the latest checkout-api commit?",
   "Summarize yesterday's design review notes",

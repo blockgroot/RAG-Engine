@@ -2288,11 +2288,15 @@ table .role-chip.role-admin,
   align-items: center;
   justify-content: unset;
   text-align: left;
-  min-height: calc(100vh - 11rem);
+  min-height: 0;
   gap: clamp(1.5rem, 4vw, 3rem);
   padding-top: clamp(1.5rem, 5vh, 3rem);
-  padding-bottom: 1.25rem;
+  padding-bottom: 0;
 }
+/* The hero mock's stage is taller than its window (the satellites orbit
+   outside it), so the section already ends in whitespace. The band after it
+   must not add a second helping. */
+.landing-hero-split + .show-band { padding-top: clamp(1.25rem, 2vw, 2rem); }
 .landing-hero-split .landing-cta-row { justify-content: flex-start; }
 .landing-hero-split .landing-connectors {
   margin-top: 0.35rem;
@@ -2308,7 +2312,7 @@ table .role-chip.role-admin,
   align-items: center;
   width: min(1120px, 100%);
   margin: 0 auto;
-  padding: clamp(2rem, 6vh, 4rem) var(--space-3) 1.5rem;
+  padding: clamp(2rem, 6vh, 4rem) var(--space-3) clamp(2rem, 5vh, 3.5rem);
   text-align: left;
 }
 .landing-hero-copy {
@@ -2481,7 +2485,7 @@ table .role-chip.role-admin,
   max-width: 52ch;
   color: var(--ink-muted);
   font-size: 0.88rem;
-  margin: -0.9rem 0 1.6rem;
+  margin: 1.25rem 0 0;
 }
 
 .landing-feature-grid {
@@ -2644,9 +2648,9 @@ table .role-chip.role-admin,
   position: relative;
   z-index: 2;
   width: min(var(--landing-max, 72rem), calc(100% - 2.5rem));
-  margin: 2.75rem auto 0;
+  margin: 1.5rem auto 0;
   text-align: left;
-  padding: 2.5rem 0 3.25rem;
+  padding: 1.5rem 0 3rem;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -4049,9 +4053,9 @@ a.people-card:hover { color: inherit; }
   position: relative;
   width: 100%;
   max-width: 540px;
-  min-height: 540px;
+  min-height: 500px;
   margin: 0 auto;
-  padding: 3.25rem 3rem;
+  padding: 2.25rem 3rem;
   box-sizing: border-box;
   display: grid;
   place-items: center;
@@ -4235,10 +4239,16 @@ a.people-card:hover { color: inherit; }
 }
 
 .how-hero {
-  padding-top: 2.35rem;
-  padding-bottom: 0.5rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  gap: clamp(1.5rem, 4vw, 3rem);
+  align-items: center;
+  padding-top: clamp(1.75rem, 4vw, 3rem);
+  padding-bottom: clamp(1.5rem, 3vw, 2.5rem);
   max-width: none;
 }
+.how-hero-copy { display: grid; gap: 0.35rem; justify-items: start; }
+.how-hero-copy .how-lead { margin-top: 0.4rem; }
 .how-hero .how-title,
 .how-hero .how-lead {
   max-width: 40rem;
@@ -6225,31 +6235,6 @@ a.people-card:hover { color: inherit; }
    a border. Same tokens throughout — nothing new in the palette.
 =========================================================================== */
 
-/* -- scroll-in motion -------------------------------------------------------
-   Scoped to `.has-reveal`, which components/Reveal.tsx adds to <html>. With
-   JS off the page is simply visible: motion may never be able to hide content.
-   `--i` staggers siblings without a per-element delay in the markup. */
-.has-reveal [data-reveal] {
-  opacity: 0;
-  transform: translate3d(0, 20px, 0);
-  transition:
-    opacity 0.7s var(--ease) calc(var(--i, 0) * 90ms),
-    transform 0.7s var(--ease) calc(var(--i, 0) * 90ms);
-  will-change: opacity, transform;
-}
-.has-reveal [data-reveal].is-in {
-  opacity: 1;
-  transform: none;
-  will-change: auto;
-}
-@media (prefers-reduced-motion: reduce) {
-  .has-reveal [data-reveal] {
-    opacity: 1;
-    transform: none;
-    transition: none;
-  }
-}
-
 /* -- hero spotlight ---------------------------------------------------------
    A soft highlight following the cursor. Behind the content and
    `pointer-events: none`, so it can never intercept a click on the CTA, and it
@@ -6290,24 +6275,8 @@ a.people-card:hover { color: inherit; }
 
 /* -- bands ------------------------------------------------------------------ */
 .show-band {
-  padding: clamp(3.5rem, 7vw, 6.5rem) 0;
+  padding: clamp(2.5rem, 4.5vw, 4rem) 0;
   position: relative;
-}
-/* A hairline between bands, instead of a border around every child. */
-.show-band + .show-band::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    color-mix(in srgb, var(--accent) 26%, var(--border)) 22%,
-    color-mix(in srgb, var(--accent) 26%, var(--border)) 78%,
-    transparent
-  );
 }
 /* One tinted band, so three white sections do not read as one long page. */
 /* Half the previous strength. Against a page-wide wash a hard tint read as one
@@ -6323,12 +6292,21 @@ a.people-card:hover { color: inherit; }
       color-mix(in srgb, var(--accent-soft) 22%, transparent) 78%,
       transparent
     );
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--accent) 12%, transparent),
-    inset 0 -1px 0 color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
-.show-head { max-width: 46rem; }
+.show-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: clamp(1.5rem, 4vw, 3.5rem);
+  align-items: end;
+}
+.show-head .landing-eyebrow,
+.show-head .show-title { grid-column: 1; }
+.show-head .show-lead { grid-column: 2; grid-row: 2; margin: 0; }
+@media (max-width: 900px) {
+  .show-head { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .show-head .show-lead { grid-column: 1; grid-row: auto; margin-top: 1rem; }
+}
 .show-title {
   font-family: var(--font-display);
   font-size: clamp(1.9rem, 4vw, 2.9rem);
@@ -6347,7 +6325,7 @@ a.people-card:hover { color: inherit; }
 /* -- hairline list --------------------------------------------------------- */
 .show-list {
   list-style: none;
-  margin: clamp(2rem, 4vw, 3rem) 0 0;
+  margin: clamp(1.5rem, 3vw, 2.25rem) 0 0;
   padding: 0;
   display: grid;
   gap: 0;
@@ -6491,7 +6469,7 @@ a.people-card:hover { color: inherit; }
 /* -- flow with a drawn connector ------------------------------------------- */
 .show-flow {
   list-style: none;
-  margin: clamp(2rem, 4vw, 3rem) 0 0;
+  margin: clamp(1.5rem, 3vw, 2.25rem) 0 0;
   padding: 0;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -6519,7 +6497,7 @@ a.people-card:hover { color: inherit; }
    No border: the edge is a gradient, and a sheen sweeps across once on hover.
    Enough motion to feel alive, not enough to compete with four lines of copy. */
 .show-tiles {
-  margin: clamp(2rem, 4vw, 3rem) 0 0;
+  margin: clamp(1.5rem, 3vw, 2.25rem) 0 0;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: clamp(1rem, 2vw, 1.5rem);
@@ -6556,7 +6534,7 @@ a.people-card:hover { color: inherit; }
 /* -- how-it-works closing panel --------------------------------------------
    The only boxed thing on that page, which is what makes it read as the end
    rather than as one more section. Shares the hero's cursor highlight. */
-.how-close { padding: clamp(3rem, 6vw, 5rem) 0 clamp(4rem, 8vw, 7rem); }
+.how-close { padding: clamp(2rem, 4vw, 3rem) 0 clamp(3rem, 5vw, 4.5rem); }
 .how-close-panel {
   position: relative;
   overflow: hidden;
@@ -6645,106 +6623,108 @@ a.people-card:hover { color: inherit; }
   .scroll-rail { display: none; }
 }
 
-/* -- the journey ----------------------------------------------------------- */
+/* -- the journey -----------------------------------------------------------
+   Four stations on one line. The connector is drawn PER STATION rather than as
+   one rail across the block: a single absolute rail has to guess where the
+   first and last node centres land, and it ended past the last node with a
+   travelling pulse that read as a mistake. Station to station cannot drift. */
 .journey {
-  position: relative;
-  padding: clamp(2rem, 5vw, 3.5rem) 0 clamp(2.5rem, 5vw, 4rem);
+  --journey-gap: clamp(1.25rem, 3vw, 2.25rem);
+  --journey-node: 2.9rem;
+  padding: clamp(1.5rem, 3vw, 2.25rem) 0 0;
 }
-/* One line running behind every station: a step is a point ON a line, which is
-   exactly what four separate cards failed to say. */
-.journey-rail {
-  position: absolute;
-  top: calc(clamp(2rem, 5vw, 3.5rem) + 1.6rem);
-  left: 6%;
-  right: 6%;
-  height: 2px;
-  border-radius: 2px;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    color-mix(in srgb, var(--accent) 34%, var(--border)) 12%,
-    color-mix(in srgb, var(--accent) 34%, var(--border)) 88%,
-    transparent
-  );
-  overflow: hidden;
-}
-.journey-pulse {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 22%;
-  height: 100%;
-  background: linear-gradient(90deg, transparent, var(--accent), transparent);
-  animation: journey-run 5.5s var(--ease) infinite;
-}
-@keyframes journey-run {
-  from { transform: translateX(-100%); }
-  to { transform: translateX(560%); }
-}
-
 .journey-stations {
-  position: relative;
   list-style: none;
+  align-items: stretch;
   margin: 0;
   padding: 0;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: clamp(1rem, 2.5vw, 2rem);
+  gap: var(--journey-gap);
 }
-.journey-station { position: relative; padding-right: 0.5rem; }
+/* Every station is the same box: same width from the grid, same rows from
+   here, so the node, the title and the first line of copy all sit on one
+   line across the four. */
+.journey-station {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto auto 1fr;
+  align-content: start;
+}
+/* From this node's right edge to the next node's left edge. */
+.journey-station:not(:last-child)::after,
+.journey-station:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  top: calc(var(--journey-node) / 2);
+  left: calc(var(--journey-node) + 0.6rem);
+  right: calc(-1 * var(--journey-gap) - 0.6rem);
+  height: 2px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+/* The travelling half: same geometry, drawn over the base line, wiping left
+   to right one station after another. */
+.journey-station:not(:last-child)::before {
+  z-index: 1;
+  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 20%, transparent));
+  transform-origin: left center;
+  animation: journey-wipe 5.5s var(--ease) infinite;
+  animation-delay: calc(var(--i, 0) * 0.55s);
+}
+@keyframes journey-wipe {
+  0%, 6% { transform: scaleX(0); opacity: 1; }
+  26% { transform: scaleX(1); opacity: 1; }
+  46% { transform: scaleX(1); opacity: 0; }
+  100% { transform: scaleX(0); opacity: 0; }
+}
+/* Each node lights as the pulse reaches it. */
+.journey-node::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  opacity: 0;
+  animation: journey-ping 5.5s var(--ease) infinite;
+  animation-delay: calc(var(--i, 0) * 0.55s);
+}
+@keyframes journey-ping {
+  0% { opacity: 0; transform: scale(0.86); }
+  8% { opacity: 0.9; transform: scale(1); }
+  30% { opacity: 0; transform: scale(1.22); }
+  100% { opacity: 0; transform: scale(1.22); }
+}
 .journey-node {
   position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 3.2rem;
-  height: 3.2rem;
+  width: var(--journey-node);
+  height: var(--journey-node);
   border-radius: 50%;
   background: var(--surface-elevated);
   box-shadow:
-    0 0 0 6px var(--bg),
-    0 10px 24px -14px rgba(15, 118, 110, 0.55),
-    inset 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
+    0 6px 16px -12px rgba(15, 118, 110, 0.6),
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent);
 }
-/* A ring that breathes, so a still page still has a heartbeat. */
-.journey-node-ring {
-  position: absolute;
-  inset: -5px;
-  border-radius: 50%;
-  border: 1px solid color-mix(in srgb, var(--accent) 34%, transparent);
-  animation: journey-breathe 3.4s ease-in-out infinite;
+.journey-station h3 {
+  margin: 1.1rem 0 0.45rem;
+  font-size: 1.06rem;
+  letter-spacing: -0.01em;
 }
-.journey-station:nth-child(2) .journey-node-ring { animation-delay: 0.4s; }
-.journey-station:nth-child(3) .journey-node-ring { animation-delay: 0.8s; }
-.journey-station:nth-child(4) .journey-node-ring { animation-delay: 1.2s; }
-@keyframes journey-breathe {
-  0%, 100% { opacity: 0.85; transform: scale(1); }
-  50% { opacity: 0.25; transform: scale(1.14); }
-}
-
 @keyframes journey-float {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-4px); }
 }
-
-.journey-index {
-  display: block;
-  margin: 1.1rem 0 0.3rem;
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  letter-spacing: 0.14em;
-  color: var(--accent-strong);
-}
-.journey-station h3 {
-  margin: 0 0 0.4rem;
-  font-size: 1.08rem;
-  letter-spacing: -0.01em;
-}
 .journey-station p {
   margin: 0;
   color: var(--ink-muted);
-  line-height: 1.55;
+  line-height: 1.6;
   font-size: 0.95rem;
+  text-align: justify;
+  text-justify: inter-word;
+  hyphens: auto;
 }
 
 /* -- alternating showcase rows -------------------------------------------- */
@@ -6798,6 +6778,26 @@ a.people-card:hover { color: inherit; }
   background: color-mix(in srgb, var(--border) 80%, var(--accent-soft));
   margin-bottom: 0.4rem;
 }
+/* A sweep along each line, one after the other — the mock reads as still
+   writing instead of as a finished screenshot. It never changes what is
+   visible, so nothing here can hide content. */
+.art-bubble-reply .art-line {
+  background-image: linear-gradient(
+    90deg,
+    transparent 20%,
+    color-mix(in srgb, var(--accent) 42%, transparent) 50%,
+    transparent 80%
+  );
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
+  animation: art-sweep 4.8s var(--ease) infinite;
+}
+.art-bubble-reply .art-line:nth-of-type(2) { animation-delay: 0.18s; }
+.art-bubble-reply .art-line:nth-of-type(3) { animation-delay: 0.36s; }
+@keyframes art-sweep {
+  0% { background-position: 180% 0; }
+  45%, 100% { background-position: -80% 0; }
+}
 
 /* answer */
 .art-bubble {
@@ -6817,16 +6817,8 @@ a.people-card:hover { color: inherit; }
   background: var(--surface);
   border-bottom-left-radius: 4px;
   box-shadow: inset 0 0 0 1px var(--border);
-}
-/* The starting state is scoped to `.has-reveal`, like every other reveal here:
-   without JS these would otherwise be an invisible bubble and six zero-height
-   bars, i.e. a mock that looks broken rather than one that simply does not
-   animate. */
-.has-reveal .art-bubble-reply {
   opacity: 0;
   transform: translateY(8px);
-}
-.is-in .art-bubble-reply {
   animation: art-land 0.6s var(--ease) 0.35s forwards;
 }
 @keyframes art-land {
@@ -6856,17 +6848,23 @@ a.people-card:hover { color: inherit; }
   flex: 1;
   height: var(--h);
   border-radius: 6px 6px 2px 2px;
-  background: linear-gradient(180deg, #2dd4bf, var(--accent));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--c) 72%, white), var(--c));
   transform-origin: bottom;
 }
-.has-reveal .art-bar { transform: scaleY(0); }
-.art-bar:nth-child(4) { background: linear-gradient(180deg, #fcd34d, #f59e0b); }
-.is-in .art-bar {
-  animation: art-grow 0.7s var(--ease) forwards;
-  animation-delay: calc(0.15s + var(--b, 0) * 0.08s);
+.art-bar {
+  transform: scaleY(0);
+  animation:
+    art-grow 0.7s var(--ease) calc(0.15s + var(--b, 0) * 0.08s) forwards,
+    art-breathe 5.5s ease-in-out calc(1s + var(--b, 0) * 0.12s) infinite;
 }
 @keyframes art-grow {
   to { transform: scaleY(1); }
+}
+/* Re-counted, not re-drawn: the bars settle back to their real height every
+   cycle, so the mock moves without ever showing a number it does not have. */
+@keyframes art-breathe {
+  0%, 100% { transform: scaleY(1); }
+  50% { transform: scaleY(0.88); }
 }
 .art-chart-axis {
   height: 1px;
@@ -6926,11 +6924,18 @@ a.people-card:hover { color: inherit; }
   background: var(--surface);
   box-shadow: inset 0 0 0 1px var(--border);
 }
-.art-tick.is-on {
-  color: var(--accent-ink);
-  background: linear-gradient(145deg, #14938c, var(--accent-strong));
-  box-shadow: none;
-  font-weight: 650;
+.art-tick {
+  animation: art-tick-on 7s steps(1, end) infinite;
+  animation-delay: calc(var(--t, 0) * 1.4s);
+}
+@keyframes art-tick-on {
+  0%, 20% {
+    color: var(--accent-ink);
+    background: linear-gradient(145deg, #14938c, var(--accent-strong));
+    box-shadow: none;
+    font-weight: 650;
+  }
+  20.01%, 100% { color: var(--ink-muted); }
 }
 
 /* -- the promise ----------------------------------------------------------- */
@@ -6972,22 +6977,38 @@ a.people-card:hover { color: inherit; }
   line-height: 1.6;
   font-size: 0.95rem;
 }
+.vow-points li {
+  animation: journey-float 7s ease-in-out infinite;
+  animation-delay: calc(var(--v, 0) * 0.9s);
+}
+.vow-points li:nth-child(2) { --v: 1; }
+.vow-points li:nth-child(3) { --v: 2; }
 .vow-points li:first-child { border-left: 0; }
 .vow-points strong { display: block; color: var(--ink); margin-bottom: 0.3rem; }
 
 @media (prefers-reduced-motion: reduce) {
-  .journey-pulse,
-  .journey-node-ring,
   .art-chip-float,
   .art-mail-dot,
+  .art-bubble-reply,
+  .art-bar,
+  .art-tick,
+  .art-bubble-reply .art-line,
+  .vow-points li,
+  .setup-track-step.is-active .setup-track-dot,
   .vow-aura { animation: none; }
-  .has-reveal .art-bubble-reply { opacity: 1; transform: none; }
-  .has-reveal .art-bar { transform: scaleY(1); }
+  .art-tick:first-child {
+    color: var(--accent-ink);
+    background: linear-gradient(145deg, #14938c, var(--accent-strong));
+    box-shadow: none;
+    font-weight: 650;
+  }
+  .art-bubble-reply { opacity: 1; transform: none; }
+  .art-bar { transform: scaleY(1); }
 }
 
 @media (max-width: 900px) {
   .journey-stations { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 2.25rem; }
-  .journey-rail { display: none; }
+  .journey-station:not(:last-child)::after { display: none; }
   .vow-points { grid-template-columns: minmax(0, 1fr); gap: 1.25rem; text-align: center; }
   .vow-points li { border-left: 0; padding-inline: 0; }
 }
@@ -7025,37 +7046,113 @@ a.people-card:hover { color: inherit; }
   .how-hero-aura { animation: none; }
 }
 
-/* -- how-it-works hero: which tools ---------------------------------------- */
-.how-hero-tools {
-  display: flex;
-  align-items: center;
-  gap: 0.9rem;
-  margin-top: clamp(1.5rem, 3vw, 2.25rem);
-  flex-wrap: wrap;
-}
+/* -- how-it-works hero: the tool ring --------------------------------------
+   The marks used to be a flat row under the copy while the right half of the
+   hero sat empty. They are what the sentence above is about, so they carry
+   that column instead: one ring, five marks travelling it, Handbook in the
+   middle. Each mark counter-rotates so it never appears upside down, and the
+   whole thing is CSS — no scroll position, no observer, nothing to hydrate. */
 .how-hero-tools-label {
+  margin: 1.1rem 0 0;
   font-size: 0.75rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   font-weight: 700;
   color: var(--ink-muted);
 }
-.how-hero-tools-row { display: inline-flex; gap: 0.5rem; }
-.how-hero-tool {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 2.6rem;
-  height: 2.6rem;
-  border-radius: 14px;
+.how-orbit {
+  --r: 8.2rem; /* the travel radius, as a length: a % here would resolve
+                  against the zero-sized item, not the ring. */
+  position: relative;
+  justify-self: center;
+  width: 22rem;
+  max-width: 100%;
+  aspect-ratio: 1;
+}
+.how-orbit-ring,
+.how-orbit-set {
+  position: absolute;
+  inset: 12%;
+}
+.how-orbit-ring {
+  border-radius: 50%;
+  border: 1px dashed color-mix(in srgb, var(--accent) 32%, transparent);
+  background: radial-gradient(60% 60% at 50% 50%, var(--accent-glow), transparent 72%);
+}
+.how-orbit-core {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+}
+/* The nav's mark, scaled up. Drawn in CSS like the small one, so it stays
+   crisp at any size and recolours with the tokens — a raster asset here would
+   be the only image step in this frontend. */
+.how-orbit-mark {
+  width: 5.4rem;
+  height: 5.4rem;
+  border-radius: 1.75rem;
+}
+.how-orbit-mark .brand-monogram-h,
+.how-orbit-mark .brand-monogram-b { font-size: 2.6rem; }
+.how-orbit-mark::before {
+  width: 4rem;
+  height: 4rem;
+  top: -1.75rem;
+  right: -1.35rem;
+}
+.how-orbit-mark::after {
+  right: 0.7rem;
+  bottom: 0.66rem;
+  width: 0.5rem;
+  height: 0.5rem;
+}
+.how-orbit-set {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  animation: how-orbit-spin 44s linear infinite;
+}
+.how-orbit-item {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  transform: rotate(var(--a, 0deg)) translateY(calc(-1 * var(--r)));
+}
+.how-orbit-upright {
+  position: absolute;
+  transform: translate(-50%, -50%) rotate(calc(-1 * var(--a, 0deg)));
+}
+.how-orbit-tile {
+  display: grid;
+  place-items: center;
+  width: 3.4rem;
+  height: 3.4rem;
+  border-radius: 18px;
   background: var(--surface-elevated);
   box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06), inset 0 0 0 1px var(--border);
-  animation: journey-float 5s ease-in-out infinite;
-  animation-delay: calc(var(--f, 0) * 0.28s);
-  transition: transform 0.3s var(--ease), box-shadow 0.3s var(--ease);
+  animation: how-orbit-spin 44s linear infinite reverse;
+  transition: box-shadow 0.3s var(--ease);
 }
-.how-hero-tool:hover {
-  box-shadow: var(--shadow-lift), inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+.how-orbit-tile:hover {
+  box-shadow: var(--shadow-lift), inset 0 0 0 1px color-mix(in srgb, var(--accent) 32%, transparent);
+}
+@keyframes how-orbit-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .how-orbit-set,
+  .how-orbit-tile,
+  .journey-node::after { animation: none; }
+  .journey-station:not(:last-child)::before { display: none; }
+}
+@media (max-width: 900px) {
+  .how-hero { grid-template-columns: minmax(0, 1fr); }
+  .how-orbit { --r: 6.4rem; width: 17rem; margin-top: 1rem; }
 }
 
 /* A touch wider, so the mock fills its half of the row instead of floating in
@@ -7065,6 +7162,71 @@ a.people-card:hover { color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   .how-hero-tool { animation: none; }
 }
+/* -- hover: one response per shape -----------------------------------------
+   Every section answers the cursor in the vocabulary of its own shape — a
+   station lights its node, a showcase row lifts its mock, a guarantee brightens
+   its rule. All transform/opacity/colour only, and all dropped under
+   prefers-reduced-motion. */
+.journey-station,
+.feat,
+.vow-points li,
+.show-step { transition: transform 0.35s var(--ease); }
+
+.journey-station:hover { transform: translateY(-4px); }
+.journey-station:hover .journey-node {
+  box-shadow:
+    0 14px 30px -18px rgba(15, 118, 110, 0.8),
+    inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.journey-station:hover .journey-node-num { color: var(--accent); }
+.journey-station:hover h3 { color: var(--accent-strong); }
+.journey-station:hover p { color: var(--ink); }
+
+.feat:hover .art {
+  transform: translateY(-6px);
+  box-shadow: 0 30px 60px -34px rgba(16, 24, 40, 0.5);
+}
+.art { transition: transform 0.4s var(--ease), box-shadow 0.4s var(--ease); }
+.feat:hover .feat-copy h3 { color: var(--accent-strong); }
+.feat-copy h3 { transition: color 0.3s var(--ease); }
+
+/* Hovering a guarantee holds it still and brings it forward — a line that
+   keeps drifting under the cursor is the thing you cannot read. */
+.vow-points li:hover {
+  animation-play-state: paused;
+  color: var(--ink);
+}
+.vow-points li:hover strong { color: var(--accent-strong); }
+.vow-points strong { transition: color 0.3s var(--ease); }
+
+.show-step:hover { transform: translateY(-3px); }
+.show-step { transition: transform 0.35s var(--ease), border-color 0.35s var(--ease); }
+.show-flow .show-step:hover { border-top-color: var(--accent); }
+
+/* The ring stops while you are looking at it, so a mark can be read rather
+   than chased. */
+.how-orbit:hover .how-orbit-set,
+.how-orbit:hover .how-orbit-tile { animation-play-state: paused; }
+.how-orbit-tile:hover { transform: scale(1.08); }
+
+.setup-track-step { transition: color 0.3s var(--ease); }
+.show-item:hover h3 { color: var(--accent-strong); }
+.show-item h3 { transition: color 0.3s var(--ease); }
+.show-item:hover .show-item-num {
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface-elevated));
+  color: var(--accent);
+}
+.show-item-num { transition: background 0.3s var(--ease), color 0.3s var(--ease); }
+.show-item:hover .show-item-ask { color: var(--accent); }
+.show-item-ask { transition: color 0.3s var(--ease); }
+
+@media (prefers-reduced-motion: reduce) {
+  .journey-station:hover,
+  .show-step:hover,
+  .how-orbit-tile:hover { transform: none; }
+  .feat:hover .art { transform: none; }
+}
+
 /* -- numbered markers, in place of an icon per row -------------------------
    The journey and the setup list both had a tool glyph on every row, which was
    decoration standing in for an explanation and made three sections in a row
@@ -7107,13 +7269,13 @@ a.people-card:hover { color: inherit; }
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 15rem);
   gap: clamp(1.5rem, 4vw, 3.5rem);
-  align-items: start;
+  align-items: stretch;
 }
 .setup .show-list { margin-top: clamp(1.5rem, 3vw, 2.25rem); }
 
 .setup-track {
-  position: sticky;
-  top: 6rem;
+  display: flex;
+  flex-direction: column;
   margin-top: clamp(1.5rem, 3vw, 2.25rem);
   padding: 1.25rem 1.1rem;
   border-radius: 20px;
@@ -7140,10 +7302,13 @@ a.people-card:hover { color: inherit; }
 }
 .setup-track-list {
   position: relative;
+  flex: 1;
   list-style: none;
   margin: 0;
   padding: 0 0 0 1.1rem;
-  display: grid;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
   gap: 0.85rem;
 }
 /* The rail, and one fill that follows the active index — a single moving
@@ -7179,6 +7344,7 @@ a.people-card:hover { color: inherit; }
   color: var(--ink-muted);
   transition: color 0.3s var(--ease);
 }
+.setup-track-step.is-active .setup-track-dot { animation: art-ping 2.4s ease-out infinite; }
 .setup-track-dot {
   width: 0.55rem;
   height: 0.55rem;
@@ -7188,14 +7354,16 @@ a.people-card:hover { color: inherit; }
   box-shadow: inset 0 0 0 2px var(--border-strong);
   transition: box-shadow 0.3s var(--ease), transform 0.3s var(--ease);
 }
-.setup-track-step.is-done .setup-track-dot {
+.setup-track-step.is-done .setup-track-step.is-active .setup-track-dot { animation: art-ping 2.4s ease-out infinite; }
+.setup-track-dot {
   box-shadow: inset 0 0 0 3px var(--accent);
 }
 .setup-track-step.is-active {
   color: var(--ink);
   font-weight: 600;
 }
-.setup-track-step.is-active .setup-track-dot {
+.setup-track-step.is-active .setup-track-step.is-active .setup-track-dot { animation: art-ping 2.4s ease-out infinite; }
+.setup-track-dot {
   transform: scale(1.25);
   background: var(--accent);
   box-shadow: 0 0 0 4px var(--accent-glow);

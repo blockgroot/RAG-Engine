@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FeatureIcon } from "@/components/FeatureIcon";
 import { LandingProductArt } from "@/components/LandingProductArt";
-import { RevealOnScroll, useSpotlight } from "@/components/Reveal";
+import { useSpotlight } from "@/components/Reveal";
 import { LandingShell } from "@/components/LandingShell";
 import { LandingSourcesOrbit } from "@/components/LandingSourcesOrbit";
 import { api } from "@/lib/api";
@@ -54,7 +54,6 @@ export default function RootPage() {
 
   return (
     <LandingShell active="home">
-      <RevealOnScroll />
       <section
         ref={heroRef}
         className="landing-hero landing-hero-split landing-wrap has-spotlight"
