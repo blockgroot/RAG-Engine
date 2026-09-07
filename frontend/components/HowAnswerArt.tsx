@@ -15,9 +15,13 @@
 
 import { BrandGlyph } from "@/components/BrandGlyph";
 
-export function AnswerArt() {
+/**
+ * `bare` drops the panel surface, for use INSIDE another panel — a card inside
+ * a card is the one thing these pages are trying to get away from.
+ */
+export function AnswerArt({ bare = false }: { bare?: boolean } = {}) {
   return (
-    <div className="art art-answer" aria-hidden>
+    <div className={`art art-answer${bare ? " art-bare" : ""}`} aria-hidden>
       <div className="art-bubble art-bubble-ask">How much parental leave do I get?</div>
       <div className="art-bubble art-bubble-reply">
         <span className="art-line" style={{ width: "88%" }} />

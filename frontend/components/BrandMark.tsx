@@ -1,16 +1,10 @@
 export function BrandMark({ className = "brand-mark" }: { className?: string }) {
   return (
     <span className={className} aria-hidden>
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src="/brand/handbook-mark.png?v=3"
-        alt=""
-        className="brand-mark-glyph"
-        width={1024}
-        height={1024}
-        decoding="async"
-        fetchPriority="high"
-      />
+      <span className="brand-monogram">
+        <span className="brand-monogram-h">H</span>
+        <span className="brand-monogram-b">B</span>
+      </span>
     </span>
   );
 }

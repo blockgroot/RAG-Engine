@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { BrandGlyph } from "@/components/BrandGlyph";
 import { FeatureIcon } from "@/components/FeatureIcon";
 import { LandingProductArt } from "@/components/LandingProductArt";
+import { AnswerArt } from "@/components/HowAnswerArt";
 import { LandingPromptCycle } from "@/components/LandingPromptCycle";
 import { RevealOnScroll, useSpotlight } from "@/components/Reveal";
 import { LandingShell } from "@/components/LandingShell";
@@ -112,9 +113,23 @@ export default function RootPage() {
           </p>
         </div>
 
+        {/* The panel used to hold one line of typing in a lot of padding, which
+            read as an unfinished card. It now shows the whole exchange: the
+            question being typed, the answer landing with the document it came
+            from, and the other things you could have asked instead. */}
         <div className="show-demo" data-reveal>
           <div className="show-demo-glow" aria-hidden />
-          <LandingPromptCycle />
+          <div className="show-demo-body">
+            <div className="show-demo-ask">
+              <LandingPromptCycle />
+            </div>
+            <AnswerArt bare />
+          </div>
+          <ul className="show-demo-chips" aria-label="Other things you could ask">
+            <li>What&rsquo;s our expenses limit?</li>
+            <li>What shipped last week?</li>
+            <li>Who reviewed the checkout change?</li>
+          </ul>
           <p className="show-demo-foot">
             And if the answer really isn&rsquo;t in your tools, it tells you that
             too.

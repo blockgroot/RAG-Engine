@@ -1915,16 +1915,47 @@ table .role-chip.role-admin,
     linear-gradient(180deg, #f8fffd 0%, #eef5f3 45%, #e8f0ee 100%);
 }
 .auth-center { overflow: hidden; }
-.landing { overflow-x: hidden; }
+/* `position: relative` is load-bearing, not tidiness. `.landing-atmosphere` is
+   `position: absolute; inset: 0`, and with no positioned ancestor it resolved
+   against the initial containing block — so the whole atmosphere (dot grid,
+   sheen, all three orbs) was confined to roughly the FIRST SCREEN and every
+   section below it sat on flat `--bg`. The page looked like it lost its design
+   halfway down, which is exactly what it was doing. */
+.landing { position: relative; overflow-x: hidden; }
 
-.landing-atmosphere { position: absolute; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
+/* The wash now spans the full page and is placed at four different depths,
+   alternating sides, so there is something behind the content wherever you
+   stop scrolling. Percentages rather than pixels: they follow the page height
+   instead of drifting away from it as sections are added. */
+.landing-atmosphere {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(40rem 24rem at 88% 14%, color-mix(in srgb, var(--accent-soft) 52%, transparent), transparent 68%),
+    radial-gradient(34rem 22rem at 4% 38%, color-mix(in srgb, var(--accent-soft) 42%, transparent), transparent 68%),
+    radial-gradient(42rem 26rem at 94% 62%, color-mix(in srgb, var(--accent-soft) 40%, transparent), transparent 68%),
+    radial-gradient(32rem 20rem at 8% 86%, color-mix(in srgb, var(--accent-soft) 36%, transparent), transparent 68%);
+}
 .landing-grid {
   position: absolute; inset: 0;
   background-image:
     radial-gradient(circle at 1px 1px, rgba(15, 118, 110, 0.14) 1.15px, transparent 0),
     radial-gradient(ellipse 80% 50% at 50% -10%, rgba(45, 212, 191, 0.16), transparent 55%);
   background-size: 28px 28px, 100% 100%;
-  mask-image: radial-gradient(ellipse at 50% 20%, black 18%, transparent 75%);
+  /* Was an ellipse mask centred at 50% 20%, which killed the dots by the end
+     of the first screen. A vertical fade keeps a trace of the texture the
+     whole way down, so the lower sections belong to the same page. */
+  mask-image: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.9) 0%,
+    rgba(0, 0, 0, 0.42) 28%,
+    rgba(0, 0, 0, 0.2) 58%,
+    rgba(0, 0, 0, 0.12) 82%,
+    transparent 100%
+  );
   opacity: 0.9;
 }
 .landing-sheen {
@@ -6279,10 +6310,22 @@ a.people-card:hover { color: inherit; }
   );
 }
 /* One tinted band, so three white sections do not read as one long page. */
+/* Half the previous strength. Against a page-wide wash a hard tint read as one
+   band with a design and several without; this is a lift in the same family,
+   with hairline edges so it starts and ends deliberately. */
 .show-band-tint {
   background:
-    radial-gradient(60rem 30rem at 82% -10%, color-mix(in srgb, var(--accent-soft) 60%, transparent), transparent 65%),
-    linear-gradient(180deg, color-mix(in srgb, var(--accent-soft) 26%, var(--bg)), var(--bg));
+    radial-gradient(60rem 30rem at 82% -10%, color-mix(in srgb, var(--accent-soft) 34%, transparent), transparent 68%),
+    linear-gradient(
+      180deg,
+      transparent,
+      color-mix(in srgb, var(--accent-soft) 22%, transparent) 22%,
+      color-mix(in srgb, var(--accent-soft) 22%, transparent) 78%,
+      transparent
+    );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--accent) 12%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .show-head { max-width: 46rem; }
@@ -6403,6 +6446,64 @@ a.people-card:hover { color: inherit; }
 .show-item:hover .feature-icon,
 .show-step:hover .feature-icon,
 .show-tile:hover .feature-icon { transform: scale(1.14) rotate(-4deg); }
+
+/* Crisp HB monogram: stays legible in the rail, auth shell, and marketing nav. */
+.brand-mark {
+  position: relative;
+  isolation: isolate;
+  width: 2.5rem;
+  height: 2.5rem;
+  display: inline-grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 0.82rem;
+  background: linear-gradient(145deg, #10201e 0%, #0f766e 100%);
+  color: #f4fff8;
+  box-shadow: 0 9px 20px -13px rgba(15, 118, 110, 0.75), inset 0 0 0 1px rgba(216, 243, 107, 0.22);
+  transform: translateZ(0);
+  transition: transform 0.25s var(--ease), box-shadow 0.25s var(--ease);
+}
+.brand-mark::before {
+  content: "";
+  position: absolute;
+  width: 1.9rem;
+  height: 1.9rem;
+  top: -0.85rem;
+  right: -0.65rem;
+  border: 1px solid rgba(216, 243, 107, 0.35);
+  border-radius: 50%;
+  transform: rotate(25deg);
+}
+.brand-mark::after {
+  content: "";
+  position: absolute;
+  right: 0.38rem;
+  bottom: 0.36rem;
+  width: 0.28rem;
+  height: 0.28rem;
+  border-radius: 50%;
+  background: #ff8c75;
+  box-shadow: 0 0 0 3px rgba(255, 140, 117, 0.16);
+}
+.brand-monogram {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+  letter-spacing: -0.14em;
+  transform: translateX(-0.04em);
+}
+.brand-monogram-h,
+.brand-monogram-b {
+  font-family: var(--font-brand), var(--font-display), sans-serif;
+  font-weight: 800;
+  font-size: 1.2rem;
+}
+.brand-monogram-h { color: #f4fff8; }
+.brand-monogram-b { margin-left: -0.04em; color: #d8f36b; }
+.brand:hover .brand-mark,
+.landing-brand:hover .brand-mark { transform: translateY(-1px) rotate(-3deg); box-shadow: 0 13px 25px -13px rgba(15, 118, 110, 0.82), inset 0 0 0 1px rgba(216, 243, 107, 0.34); }
 .show-item:hover .show-item-mark,
 .show-step:hover .show-step-mark,
 .show-tile:hover .show-tile-mark {
@@ -6980,4 +7081,89 @@ a.people-card:hover { color: inherit; }
 .how-hero > *:not(.how-hero-aura) { position: relative; z-index: 1; }
 @media (prefers-reduced-motion: reduce) {
   .how-hero-aura { animation: none; }
+}
+
+/* -- the ask panel, filled ------------------------------------------------- */
+.show-demo-body {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: clamp(1rem, 3vw, 2.25rem);
+  align-items: center;
+}
+.show-demo-ask { min-width: 0; }
+/* No surface of its own: this sits inside the demo panel, and a card inside a
+   card is the pattern these pages exist to avoid. */
+.art-bare {
+  max-width: none;
+  padding: 0;
+  background: none;
+  box-shadow: none;
+}
+.show-demo-chips {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  list-style: none;
+  margin: clamp(1rem, 2.5vw, 1.5rem) 0 0;
+  padding: 0;
+}
+.show-demo-chips li {
+  padding: 0.4rem 0.75rem;
+  border-radius: 999px;
+  background: var(--surface-elevated);
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-size: 0.82rem;
+  color: var(--ink-muted);
+  transition: transform 0.25s var(--ease), box-shadow 0.25s var(--ease), color 0.25s var(--ease);
+}
+.show-demo-chips li:hover {
+  transform: translateY(-2px);
+  color: var(--accent-strong);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent), var(--shadow-soft);
+}
+
+/* -- how-it-works hero: which tools ---------------------------------------- */
+.how-hero-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  margin-top: clamp(1.5rem, 3vw, 2.25rem);
+  flex-wrap: wrap;
+}
+.how-hero-tools-label {
+  font-size: 0.75rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-weight: 700;
+  color: var(--ink-muted);
+}
+.how-hero-tools-row { display: inline-flex; gap: 0.5rem; }
+.how-hero-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.6rem;
+  height: 2.6rem;
+  border-radius: 14px;
+  background: var(--surface-elevated);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06), inset 0 0 0 1px var(--border);
+  animation: journey-float 5s ease-in-out infinite;
+  animation-delay: calc(var(--f, 0) * 0.28s);
+  transition: transform 0.3s var(--ease), box-shadow 0.3s var(--ease);
+}
+.how-hero-tool:hover {
+  box-shadow: var(--shadow-lift), inset 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+/* A touch wider, so the mock fills its half of the row instead of floating in
+   the middle of it. */
+.feat-art .art { max-width: 27rem; }
+
+@media (prefers-reduced-motion: reduce) {
+  .how-hero-tool { animation: none; }
+}
+@media (max-width: 760px) {
+  .show-demo-body { grid-template-columns: minmax(0, 1fr); }
 }

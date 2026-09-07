@@ -43,6 +43,22 @@ export default function HowItWorksPage() {
           You ask, Handbook looks through the tools your team already uses, and you
           get an answer you can check. Here&rsquo;s what that looks like.
         </p>
+        {/* The hero was three lines of text and a lot of nothing. This says
+            which tools, in the one place a visitor asks it. */}
+        <div className="how-hero-tools" data-reveal style={{ ["--i" as string]: "3" }}>
+          <span className="how-hero-tools-label">Works with</span>
+          <span className="how-hero-tools-row">
+            {(["notion", "drive", "slack", "linear", "github"] as const).map((name, i) => (
+              <span
+                key={name}
+                className="how-hero-tool"
+                style={{ ["--f" as string]: String(i) }}
+              >
+                <BrandGlyph name={name} size={22} />
+              </span>
+            ))}
+          </span>
+        </div>
       </section>
 
       <div className="landing-wrap">

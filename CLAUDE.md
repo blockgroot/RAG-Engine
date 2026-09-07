@@ -262,6 +262,25 @@ vocabulary ("chart commits by author") — that is theirs, not ours.
   `scaleY(0)` written unscoped meant a JS-less visitor got an invisible reply
   bubble and six zero-height bars — a mock that looks broken, rather than one
   that simply does not animate.
+- **`.landing` MUST be `position: relative`, and its absence was a page-wide
+  defect, not a nit.** `.landing-atmosphere` is `position: absolute; inset: 0`
+  with the dot grid, the sheen and all three orbs inside it — with no
+  positioned ancestor it resolved against the initial containing block, so the
+  entire atmosphere was confined to roughly the FIRST SCREEN and every section
+  below sat on flat `--bg`. The page visibly lost its design halfway down. The
+  wash is now placed at four depths (percentages, so it follows the page height
+  as sections are added) alternating sides, the dot grid fades with a vertical
+  mask instead of dying at 75% of screen one, and `show-band-tint` is half its
+  old strength — against a page-wide wash a hard tint read as one band with a
+  design and several without. `.lp-constellation` is the only other
+  `inset: 0` absolute and it lives inside a relative `.lp-stage`, so nothing
+  else moved.
+- **A panel with one line in it reads as unfinished.** The landing's ask panel
+  held only the cycling prompt; it now shows the exchange — question typed,
+  answer landing with its source, and three other things you could have asked.
+  `AnswerArt` takes a `bare` prop for exactly this: reusing it inside another
+  panel would otherwise nest a card in a card, the pattern these pages exist to
+  avoid.
 - **`ScrollRail`** is the one piece of motion not tied to an element: a 2px
   accent line filling down the left edge, because on a long page "how much is
   left" is a real question. Never created at all under
