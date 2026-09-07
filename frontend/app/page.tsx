@@ -78,10 +78,9 @@ export default function RootPage() {
             <span className="landing-title-accent">anything.</span>
           </h1>
           <p className="landing-subtitle" data-reveal style={{ ["--i" as string]: "2" }}>
-            Connect Notion, Drive, Slack, Linear or GitHub, and your team can just
-            ask. How much leave do I have left? What did we decide about pricing?
-            What shipped this week? Every answer comes with a link, so you can see
-            for yourself.
+            Connect the tools your company already works in. Your team asks
+            questions in ordinary language and gets answers from what is inside
+            them, with a link to the source every time.
           </p>
           <div className="landing-cta-row" data-reveal style={{ ["--i" as string]: "3" }}>
             <Link href="/signup" className="button landing-cta-primary">
@@ -91,6 +90,10 @@ export default function RootPage() {
               See how it works
             </Link>
           </div>
+          <p className="landing-privacy-note" data-reveal style={{ ["--i" as string]: "4" }}>
+            We never train on your data and never share it. Your documents are used
+            to answer your own team&rsquo;s questions, and nothing else.
+          </p>
         </div>
         <LandingProductArt />
       </section>
@@ -102,14 +105,15 @@ export default function RootPage() {
 
       <section id="what" className="show-band landing-wrap" aria-labelledby="what-title">
         <div className="show-head" data-reveal>
-          <p className="landing-eyebrow">One place to ask</p>
+          <p className="landing-eyebrow">Asking</p>
           <h2 id="what-title" className="show-title">
-            Ask like you&rsquo;d ask
-            <span className="show-title-accent"> a colleague.</span>
+            One place to ask,
+            <span className="show-title-accent"> whatever it is about.</span>
           </h2>
           <p className="show-lead">
-            No digging through folders. No waiting for someone to reply. Type the
-            question you were about to ask in Slack, and get the answer instead.
+            One box covers policies, project decisions, tickets and code. You do not
+            choose a tool or a category first &mdash; Handbook works out where the
+            answer lives, and shows you the document it used.
           </p>
         </div>
 
@@ -131,8 +135,8 @@ export default function RootPage() {
             <li>Who reviewed the checkout change?</li>
           </ul>
           <p className="show-demo-foot">
-            And if the answer really isn&rsquo;t in your tools, it tells you that
-            too.
+            If your connected tools do not contain the answer, Handbook says so
+            rather than guessing.
           </p>
         </div>
 
@@ -144,9 +148,9 @@ export default function RootPage() {
             <div>
               <h3>Answers from your documents</h3>
               <p>
-                Leave, expenses, onboarding, last week&rsquo;s meeting notes. You get
-                a straight answer, plus the page it came from if you want to read the
-                rest.
+                Policies, expenses, onboarding, meeting notes and Slack decisions.
+                Each answer names the document behind it and who last edited it, so
+                you can open the source or check that it is still current.
               </p>
             </div>
           </li>
@@ -157,9 +161,9 @@ export default function RootPage() {
             <div>
               <h3>Answers about your code</h3>
               <p>
-                What a codebase is for, what changed this week, which pull requests
-                are waiting and who has looked at them. Useful whether or not you
-                write the code yourself.
+                What a repository is for, what changed recently, which pull requests
+                are open and who reviewed them. GitHub is read at the moment you ask,
+                so the answer reflects the repository as it stands now.
               </p>
             </div>
           </li>
@@ -168,10 +172,11 @@ export default function RootPage() {
               <FeatureIcon name="chart" />
             </span>
             <div>
-              <h3>Charts, when a number says it better</h3>
+              <h3>Charts for anything countable</h3>
               <p>
-                Ask for a chart and you get a proper one, clearly labelled. Point at
-                any part of it to see what went into that piece.
+                Ask for a figure over time and Handbook draws it, labelled and
+                colour-coded. Hovering a bar or slice lists the individual items it
+                counted.
               </p>
             </div>
           </li>
@@ -181,13 +186,14 @@ export default function RootPage() {
       <section id="works-for-you" className="show-band show-band-tint" aria-labelledby="auto-title">
         <div className="landing-wrap">
           <div className="show-head" data-reveal>
-            <p className="landing-eyebrow">While you get on with work</p>
+            <p className="landing-eyebrow">Running in the background</p>
             <h2 id="auto-title" className="show-title">
-              The updates come to you.
+              Kept current without anyone maintaining it.
             </h2>
             <p className="show-lead">
-              Set it up once and forget about it. Handbook keeps everything current,
-              and the updates you asked for turn up on their own.
+              Once your tools are connected there is nothing to run and nothing to
+              remember. Handbook refreshes what it has read, sends the updates you
+              asked for, and measures the surveys you point it at.
             </p>
           </div>
 
@@ -196,33 +202,33 @@ export default function RootPage() {
               <span className="show-step-mark">
                 <BrandGlyph name="drive" size={22} />
               </span>
-              <h3>Nothing to keep up to date</h3>
+              <h3>Kept up to date automatically</h3>
               <p>
-                Edit a doc or close a ticket and Handbook notices. There&rsquo;s no
-                sync button to remember, and answers tell you when they were last
-                checked.
+                Edited pages, new messages and closed tickets are picked up through
+                the day, so answers reflect recent work. Each source also shows when
+                it was last checked.
               </p>
             </li>
             <li className="show-step" data-reveal style={{ ["--i" as string]: "1" }}>
               <span className="show-step-mark">
                 <FeatureIcon name="schedule" />
               </span>
-              <h3>A summary in your inbox</h3>
+              <h3>Reports by email</h3>
               <p>
-                Tell it what you want to stay on top of, pick daily, weekly or
-                monthly, and read it with your coffee. Every point links to the real
-                thing.
+                Describe what you want to track, choose daily, weekly or monthly, and
+                Handbook emails a summary on that schedule. Each report covers only
+                what changed since the last one.
               </p>
             </li>
             <li className="show-step" data-reveal style={{ ["--i" as string]: "2" }}>
               <span className="show-step-mark">
                 <FeatureIcon name="sentiment" />
               </span>
-              <h3>A read on how the team feels</h3>
+              <h3>Survey sentiment</h3>
               <p>
-                Link a survey and see which topics people are happy or unhappy about.
-                You see the pattern, never the person &mdash; nobody is named, and no
-                answers are kept.
+                Connect a Google Form and see which topics your team is positive or
+                negative about. Responses are never stored and nobody is named; a
+                topic with fewer than five replies is not shown at all.
               </p>
             </li>
           </ol>
@@ -231,13 +237,14 @@ export default function RootPage() {
 
       <section id="control" className="show-band landing-wrap" aria-labelledby="control-title">
         <div className="show-head" data-reveal>
-          <p className="landing-eyebrow">Your call</p>
+          <p className="landing-eyebrow">Under your control</p>
           <h2 id="control-title" className="show-title">
-            What&rsquo;s yours stays yours.
+            You decide the boundaries.
           </h2>
           <p className="show-lead">
-            You decide who sees what, which teams get their own space, and even
-            which AI does the answering.
+            Which tools are connected, who can see them, and which AI model answers
+            are all settings an admin controls, and all of them can be changed
+            later.
           </p>
         </div>
 
@@ -248,9 +255,9 @@ export default function RootPage() {
             </span>
             <h3>Use the AI you prefer</h3>
             <p>
-              Already paying for OpenAI, Anthropic or Google? Add your key and your
-              team can choose it whenever they ask something. We test it first, so
-              nobody lands on a broken option.
+              If your company already has an account with OpenAI, Anthropic, Google
+              or another provider, add that key and your team can select the model
+              when they ask. Handbook tests it before saving.
             </p>
           </article>
           <article className="show-tile" data-reveal style={{ ["--i" as string]: "1" }}>
@@ -259,19 +266,20 @@ export default function RootPage() {
             </span>
             <h3>A space for each team</h3>
             <p>
-              Give a project or a department its own space, with its own tools and
-              its own people. What belongs to one team stays there.
+              A space is a smaller area with its own connected tools and its own
+              members. Questions asked there are answered only from that
+              space&rsquo;s material.
             </p>
           </article>
           <article className="show-tile" data-reveal style={{ ["--i" as string]: "2" }}>
             <span className="show-tile-mark">
               <FeatureIcon name="secure" />
             </span>
-            <h3>Private, by default</h3>
+            <h3>Private by default</h3>
             <p>
-              Your documents are read to answer your team&rsquo;s questions and
-              nothing else. Never used to train AI, never shown to anyone outside
-              your company.
+              Only people an admin invited can sign in, and only your company can
+              search your material. Disconnect a tool and the copy Handbook kept of
+              it is deleted.
             </p>
           </article>
         </div>
@@ -339,9 +347,9 @@ export default function RootPage() {
             <p className="landing-eyebrow">Start here</p>
             <h2 id="close-title">Up and running in three steps.</h2>
             <p className="landing-close-lead">
-              Connect one tool, invite a few people, ask your first question. It
-              takes about an afternoon, and you&rsquo;ll know quickly whether it
-              earns a place in your week.
+              Connect one tool, invite your team, and ask your first question.
+              Setup takes a few minutes per tool, and you can add the rest whenever
+              you are ready.
             </p>
             <div className="landing-close-actions">
               <Link href="/signup" className="button landing-cta-primary landing-close-primary">

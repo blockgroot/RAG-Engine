@@ -223,8 +223,20 @@ conversion lives *inside* the adapter. Thin SDKs, never frameworks.
   delete, all disabled for a member. Deliberately not a redirect: that
   would make the people list unreachable and bounce any link back out.
 
-**Marketing pages** — written for a VISITOR, not a maintainer, and in a
-PERSON'S voice. Two passes were needed and the second is the one worth
+**Marketing pages** — the two have DIFFERENT JOBS and must not share
+paragraphs. `/` states what Handbook does, one short benefit per item, and
+carries the data promise ("we never train on your data and never share it")
+where someone reads it before signing up. `/how-it-works` carries the
+definitions and the detail — what a space IS, what a report covers, what
+happens when nothing answers the question — in complete explanatory sentences.
+Repeating a line across both is the failure to check for: it made the pages
+feel interchangeable and left neither properly explained.
+- **No aphorisms on either page.** "Not fourteen search results", "read it with
+  your coffee", "it would rather say I don't know", "real figures, not a
+  picture of some" were all reported as unprofessional, and the objection is
+  right: a reader working out whether to buy this needs the function stated,
+  and a joke is a sentence that does not state it. Written for a VISITOR, not a
+  maintainer, and in a Two passes were needed and the second is the one worth
 remembering: removing the jargon is not the same as sounding human. "Answers
 are built from what your company connected", "the updates find you", "a space
 gives one project its own sources" were all jargon-free and still read as
@@ -245,6 +257,19 @@ vocabulary ("chart commits by author") — that is theirs, not ours.
   band so three white sections do not read as one page, a numbered flow with a
   drawn connector, and borderless wash tiles whose edge is a gradient. Only the
   closing panel is boxed, which is what makes it read as the end.
+- **Tool glyphs appear ONCE per page, above "Works with".** An icon on every
+  journey stage and every setup row was decoration standing in for an
+  explanation, and three iconned sections in a row looked like a sticker sheet.
+  Ordering is what those rows actually have, so they carry numbers
+  (`journey-node-num`, `show-item-num`) and the sentence does the explaining.
+- **A single-column list leaves the other half of the band empty.** The setup
+  list now pairs with `HowSetupTracker` — a sticky stepper whose fill follows
+  the row you are reading, so the space carries "how much setup is left"
+  instead of an ornament. Hidden under 900px, where a summary of a list you
+  have already scrolled past is noise. Its `--fill` is a UNITLESS 0-1 fraction:
+  `calc()` multiplies a percentage by a number but NOT by a length, so
+  `calc(33% * 0.01 * (100% - 0.9rem))` was an invalid declaration that silently
+  never moved.
 - **A box was doing every job on `/how-it-works`, and that was the whole
   problem** — a step in a journey, a kind of answer, and a guarantee all drawn
   as the same container. Each is now its own shape: `HowJourney.tsx` puts the
