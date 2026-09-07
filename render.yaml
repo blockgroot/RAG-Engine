@@ -1,5 +1,33 @@
-# Render Blueprint — one-click backend deploy. Push repo, then in Render:
-# "New +" -> "Blueprint" -> point at this repo.
+# Render Blueprint — a recipe for deploying this backend FROM SCRATCH.
+#
+# ============================================================================
+# THIS FILE DOES NOT CONFIGURE THE RUNNING PRODUCTION SERVICE. Read this before
+# editing anything below expecting prod to change.
+#
+# Production is a Render service called **Hand-Book**
+# (https://hand-book.onrender.com/health -> 200). It was created by hand, it
+# auto-deploys from this repo's default branch, and its environment lives in
+# the Render dashboard. A Blueprint can only manage services it created
+# itself, so it does not and cannot manage that one.
+#
+# The Blueprint attached to this repo therefore keeps trying to create a
+# SECOND, separate service from the `name:` below, whose `sync: false` secrets
+# (DATABASE_URL first of all) nobody ever filled in -- so its entrypoint's
+# `python scripts/init_db.py` exits non-zero under `set -e` and EVERY deploy of
+# it fails. Those are the "deploy failed for rag-backend" emails: a service
+# that has never once served a request (its host 404s), failing on repeat,
+# while prod deploys fine from git.
+#
+# The consequence that actually cost something: every `value:` env var edited
+# in this file lands on that orphan, never on prod. AUTO_SYNC_INTERVAL_HOURS
+# was changed to "1" here and production kept polling on its dashboard value,
+# because the two services share nothing but a repo.
+#
+# So: to change production, edit Hand-Book's environment in the dashboard. To
+# use THIS file for real, either delete the hand-made service first or rename
+# the service below -- a Blueprint cannot adopt an existing service by matching
+# its name, it just tries to create another one.
+# ============================================================================
 #
 # DATABASE_URL: external Postgres (Supabase/Neon), not Render-managed — avoids
 # Render's card prompt on DB provisioning. Use Supabase's Session pooler

@@ -1199,6 +1199,24 @@ when the model says qa.
   with the restore snippet in the file — they were never active anyway (they
   also needed a paid-only dashboard toggle), and every preview would have
   shared prod's external `DATABASE_URL`, writing real org data.
+- **There are TWO Render services, and `render.yaml` describes the wrong one.**
+  Prod is **Hand-Book** (`hand-book.onrender.com/health` -> 200), created by
+  hand and auto-deploying from git; its env lives in the dashboard. The
+  Blueprint keeps creating a SECOND service from `render.yaml`'s
+  `name: rag-backend`, whose `sync: false` secrets were never filled in, so
+  `init_db.py` exits non-zero under the entrypoint's `set -e` and every deploy
+  of it fails — the "deploy failed for rag-backend" mail is a service that has
+  never served a request (its host 404s), while prod is healthy. **A Blueprint
+  can only manage services it created, so it cannot adopt Hand-Book by name.**
+  Diagnose a Render mail by checking WHICH service it names first: three
+  separate fixes were attempted against render.yaml for a deploy that was never
+  prod's. To change production, edit Hand-Book's environment; the file is a
+  from-scratch recipe only.
+- **A `value:` in `render.yaml` reaches the orphan, not prod.**
+  `AUTO_SYNC_INTERVAL_HOURS` was set to 1 there while prod kept its dashboard
+  value. The backstop is the CODE default (`settings.py`, now 1h), which any
+  successful prod deploy picks up — so verify a config change against
+  `oauth_connections.last_sync_at` spacing, never against the yaml.
 - **`render.yaml` declares NO region, and must not.** Render fixes a service's
   region at creation and cannot move it in place, so a `region:` the running
   service does not already have fails the DEPLOY on every sync, forever — and
