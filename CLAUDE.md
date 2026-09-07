@@ -584,14 +584,30 @@ facts, a space's Ask reads that space only — no separate company dashboard.
   chart keeps colour meaning the series, or the legend stops being true. Bars
   and leaderboard fills grow in once (`chart-rise`/`chart-grow`), disabled
   under `prefers-reduced-motion`.
-- **A chart carries the ROWS it counted** (`store.list_facts` →
-  `panel["details"]` → `ChartDetails.tsx`). A bar labelled "4" answers how
-  many and nothing else; which commits, by whom, when and where to open them
-  are the questions that follow immediately, and every column is already on
-  the counted row — so withholding them makes the chart less trustworthy for
-  no gain. Capped at `MAX_DETAILS=12`, newest first, honours `focus`, and each
-  field is OMITTED when absent rather than rendered "Unknown". Never fatal: a
-  chart without its rows is still a chart.
+- **A chart carries the ROWS it counted, and they live in the HOVER**
+  (`store.list_facts` → `panel["details"]` → `Chart.tsx::detailsFor` →
+  `ChartTip.tsx`). A bar labelled "4" answers how many and nothing else;
+  which commits, by whom and when are the questions that follow, and every
+  column is already on the counted row. They shipped once as a list UNDER the
+  chart and that was wrong: repeating a chart's contents underneath makes the
+  card a table with a picture on top, and a chart's job is to be read at a
+  glance. On hover the question is always "what is THIS section", so the rows
+  are filtered to it — matched on the field the chart is grouped BY (actor /
+  state / subject), or by time bucket when it is ungrouped, with
+  `bucketKey` mirroring Postgres `date_trunc` (Monday-based weeks). Unmatched
+  ⇒ NO rows, never all rows: another repository's commits under this slice is
+  worse than none. The grouping field is omitted from each row because it is
+  already the tip's title. Capped at `MAX_DETAILS=12`, newest first, honours
+  `focus`, fields omitted when absent rather than "Unknown". Never fatal.
+- **The tip is `pointer-events: none`, and that is load-bearing** — a tip that
+  can sit between the cursor and its own section would un-hover it and
+  flicker, the same class of bug as the hover `transform`.
+- **Axis ticks are whole numbers, from a nice-step ladder, deduplicated**
+  (`axisTicks`). Fixed fractions of the max produced a REPEATED label on small
+  counts: max 3 with quarter steps gives 0.75/1.5/2.25/3, which rounds to an
+  axis reading "3 2 2 1 0". These are counts of real things, so a fractional
+  tick means nothing; the top of the scale is only added when it is not
+  crowding the tick below it.
 - **The window that produced the points is the window the details use.**
   Resetting `days` to the refined period's default silently emptied every
   detail row — July's commits are outside a 45-day daily window in September,

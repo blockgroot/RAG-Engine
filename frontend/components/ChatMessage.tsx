@@ -3,7 +3,6 @@
 import { ChatDonePayload } from "@/lib/sse";
 import { AnswerText } from "./AnswerText";
 import { Chart } from "./Chart";
-import ChartDetails from "./ChartDetails";
 import { ProvenanceStripe } from "./ProvenanceStripe";
 
 export interface Message {
@@ -55,13 +54,11 @@ export function ChatMessageView({ message }: { message: Message }) {
                 period={message.done?.chart_period || "month"}
                 unit={chart.unit}
                 groupBy={chart.group_by}
+                // The rows the bars are made of. They belong in the HOVER --
+                // repeating a chart's contents underneath it makes the card a
+                // table with a picture on top.
+                details={chart.details}
               />
-              {chart.details && chart.details.length > 0 && (
-                <ChartDetails
-                  rows={chart.details}
-                  label={chart.detail_label || "item"}
-                />
-              )}
               {chart.caveat && (
                 <p className="muted viz-panel-caveat">{chart.caveat}</p>
               )}

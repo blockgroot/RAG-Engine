@@ -496,7 +496,6 @@ def _run_spec(
         "details": _details(
             spec, org_id=org_id, workspace_id=workspace_id, days=days, focus=focus
         ),
-        "detail_label": registry.subject_label(metric.provider),
         "measured_since": begun.isoformat() if begun else None,
     }
     return panel, period

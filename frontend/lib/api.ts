@@ -397,9 +397,6 @@ export type InsightPanel = {
     at?: string | null;
     url?: string | null;
   }[];
-  /** What `subject` holds for this connector: page, file, channel, team,
-   *  repository, topic. */
-  detail_label?: string | null;
 };
 
 export type InsightDashboard = {

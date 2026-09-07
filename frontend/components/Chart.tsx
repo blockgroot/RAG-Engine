@@ -26,6 +26,7 @@ export type Point = {
   value: number;
 };
 
+import ChartTip from "./ChartTip";
 import {
   CATEGORY_COLORS,
   SERIES_COLORS,
@@ -130,18 +131,111 @@ function niceMax(value: number): number {
   return Math.ceil(value / magnitude) * magnitude;
 }
 
+/**
+ * Axis ticks that are whole numbers and never repeat.
+ *
+ * Fixed fractions of the max produced a DUPLICATED label on small counts: a
+ * max of 3 with quarter steps gives 0.75/1.5/2.25/3, which rounds to
+ * 1, 2, 2, 3 -- an axis reading "3 2 2 1 0". These are counts of real things,
+ * so a fractional tick is meaningless anyway; the step is an integer and the
+ * result is deduplicated.
+ */
+const NICE_STEPS = [1, 2, 5, 10, 20, 25, 50, 100, 250, 500, 1000];
+
+function axisTicks(max: number, wanted = 4): number[] {
+  if (max <= 0) return [0];
+  const step =
+    NICE_STEPS.find((s) => max / s <= wanted) ??
+    Math.ceil(max / wanted);
+  const ticks: number[] = [];
+  for (let v = 0; v <= max; v += step) ticks.push(v);
+  const last = ticks[ticks.length - 1];
+  // The top of the scale, but only when it is not crowding the tick below
+  // it -- "9 10" side by side is two labels for one reading.
+  if (last !== max && max - last >= step / 2) ticks.push(max);
+  return ticks;
+}
+
+export type DetailRow = {
+  subject?: string | null;
+  actor?: string | null;
+  state?: string | null;
+  at?: string | null;
+  url?: string | null;
+};
+
+/**
+ * The rows belonging to one section of a chart.
+ *
+ * They live in the HOVER, not in a list under the chart: a chart's job is to
+ * be read at a glance, and repeating its contents underneath makes the card
+ * a table with a picture on top. On hover the question is always "what is
+ * THIS bar", so the rows are filtered to that bar.
+ *
+ * Matched on the field the chart is grouped BY -- actor, state or subject --
+ * and by time bucket when it is not grouped at all. Unmatched means no rows
+ * rather than all rows: showing a repository's commits under a different
+ * repository's slice would be worse than showing none.
+ */
+function detailsFor(
+  rows: DetailRow[],
+  { groupBy, group, bucket, period }: {
+    groupBy?: string | null;
+    group?: string | null;
+    bucket?: string | null;
+    period: string;
+  },
+): DetailRow[] {
+  if (!rows.length) return [];
+  if (group != null && groupBy) {
+    const key = group.trim().toLowerCase();
+    const field = (row: DetailRow) =>
+      groupBy === "actor" ? row.actor
+      : groupBy === "state" ? row.state
+      : groupBy === "subject" ? row.subject
+      : null;
+    return rows.filter((row) => (field(row) || "").trim().toLowerCase() === key);
+  }
+  if (bucket) {
+    const want = bucketKey(bucket, period);
+    return rows.filter((row) => row.at && bucketKey(row.at, period) === want);
+  }
+  return rows;
+}
+
+/** The bucket a timestamp falls in, as the server's `date_trunc` would. */
+function bucketKey(iso: string, period: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  const y = date.getUTCFullYear();
+  const m = date.getUTCMonth();
+  if (period === "quarter") return `${y}-Q${Math.floor(m / 3)}`;
+  if (period === "month") return `${y}-${m}`;
+  if (period === "week") {
+    // Monday-based, matching Postgres `date_trunc('week', …)`.
+    const monday = new Date(Date.UTC(y, m, date.getUTCDate()));
+    const shift = (monday.getUTCDay() + 6) % 7;
+    monday.setUTCDate(monday.getUTCDate() - shift);
+    return monday.toISOString().slice(0, 10);
+  }
+  return date.toISOString().slice(0, 10);
+}
+
 export function Chart({
   chart,
   points,
   period,
   unit,
   groupBy,
+  details = [],
 }: {
   chart: string;
   points: Point[];
   period: string;
   unit?: string;
   groupBy?: string | null;
+  /** The rows this chart counted, shown on hover for the hovered section. */
+  details?: DetailRow[];
 }) {
   const { buckets, series, at } = useMemo(() => pivot(points), [points]);
 
@@ -164,6 +258,7 @@ export function Chart({
   // squinting at gridlines is not navigable -- and `<title>` tooltips need a
   // hit on a 4px dot, which on a dense chart is most of the way to unusable.
   const [near, setNear] = useState<number | null>(null);
+  const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
   // Gradient ids must be unique per chart: several charts share one page, and
   // a duplicate id makes every later chart reuse the first one's fill.
   const gid = useId().replace(/[^a-zA-Z0-9]/g, "");
@@ -209,8 +304,12 @@ export function Chart({
         rows={buckets.map((b) => ({
           name: formatBucket(b, period),
           value: at(b, series[0] ?? ""),
+          // The bucket itself, so the tip can find the rows for this slice.
+          bucket: b,
         }))}
         unit={unit}
+        details={details}
+        period={period}
       />
     );
   }
@@ -240,7 +339,15 @@ export function Chart({
           name: formatBucket(b, period),
           value: at(b, series[0] ?? ""),
         }));
-    return <Pie rows={rows} unit={unit} />;
+    return (
+      <Pie
+        rows={rows}
+        unit={unit}
+        details={details}
+        groupBy={ranked.length ? groupBy : null}
+        period={period}
+      />
+    );
   }
 
   // Someone who asks for a bar chart means BARS: an axis, a baseline, and
@@ -254,6 +361,9 @@ export function Chart({
         palette={palette}
         measured={measured}
         containerRef={ref}
+        details={details}
+        groupBy={groupBy}
+        period={period}
       />
     );
   }
@@ -262,9 +372,23 @@ export function Chart({
     const max = Math.max(...ranked.map((r) => r.value), 1);
     const total = ranked.reduce((sum, r) => sum + r.value, 0);
     return (
-      <ul className="chart-rank">
+      <ul
+        className="chart-rank"
+        onMouseMove={(event) => {
+          const box = event.currentTarget.getBoundingClientRect();
+          setCursor({ x: event.clientX - box.left, y: event.clientY - box.top });
+        }}
+        onMouseLeave={() => {
+          setCursor(null);
+          setNear(null);
+        }}
+      >
         {ranked.map((row, i) => (
-          <li key={row.name} className="chart-rank-row">
+          <li
+            key={row.name}
+            className="chart-rank-row"
+            onMouseEnter={() => setNear(i)}
+          >
             <span className="chart-rank-label" title={row.name}>
               {/* The position, because a ranking read top-to-bottom still
                   makes you count rows to answer "who is third?" */}
@@ -293,6 +417,21 @@ export function Chart({
             </span>
           </li>
         ))}
+        {near != null && ranked[near] && cursor && (
+          <ChartTip
+            title={ranked[near].name}
+            value={withUnit(ranked[near].value, unit)}
+            share={(ranked[near].value / Math.max(1, total)) * 100}
+            rows={detailsFor(details, {
+              group: ranked[near].name,
+              groupBy,
+              period,
+            })}
+            hide={groupBy}
+            x={cursor.x}
+            y={cursor.y}
+          />
+        )}
       </ul>
     );
   }
@@ -319,7 +458,7 @@ export function Chart({
       ? PAD.left + plotW / 2
       : PAD.left + (i / (buckets.length - 1)) * plotW;
 
-  const gridlines = [0, 0.5, 1].map((f) => ({ value: max * f, y: y(max * f) }));
+  const gridlines = axisTicks(max, 2).map((value) => ({ value, y: y(value) }));
 
   return (
     <div className="chart-scroll" ref={ref}>
@@ -330,10 +469,17 @@ export function Chart({
         height={HEIGHT}
         role="img"
         aria-label={`${chart} chart, ${buckets.length} buckets`}
-        onMouseLeave={() => setNear(null)}
+        onMouseLeave={() => {
+          setNear(null);
+          setCursor(null);
+        }}
         onMouseMove={(event) => {
           const box = event.currentTarget.getBoundingClientRect();
           if (!box.width) return;
+          setCursor({
+            x: event.clientX - box.left,
+            y: event.clientY - box.top,
+          });
           // Client pixels -> viewBox units, so the hit test stays correct
           // while the SVG is scaled to the card.
           const vx = ((event.clientX - box.left) / box.width) * width;
@@ -525,19 +671,22 @@ export function Chart({
         })}
       </svg>
 
-      {near != null && buckets[near] && (
-        <p className="chart-readout" role="status">
-          <span className="chart-readout-bucket">
-            {formatBucket(buckets[near], period)}
-          </span>
-          {series.map((name, si) => (
-            <span key={name || "all"} className="chart-readout-item">
-              <span className="chart-swatch" style={{ background: pick(palette, name, si) }} />
-              {name ? `${name}: ` : ""}
-              {withUnit(at(buckets[near], name), unit)}
-            </span>
-          ))}
-        </p>
+      {near != null && buckets[near] && cursor && (
+        <ChartTip
+          title={formatBucket(buckets[near], period)}
+          value={series
+            .map((name) =>
+              `${name ? `${name}: ` : ""}${withUnit(at(buckets[near], name), unit)}`,
+            )
+            .join(" · ")}
+          rows={detailsFor(details, {
+            bucket: buckets[near],
+            period,
+            groupBy: null,
+          })}
+          x={cursor.x}
+          y={cursor.y}
+        />
       )}
 
       {chart === "line" && series.length > 1 && (
@@ -668,12 +817,18 @@ function CategoryBars({
   palette,
   measured,
   containerRef,
+  details,
+  groupBy,
+  period,
 }: {
   rows: { name: string; value: number }[];
   unit?: string;
   palette: Map<string, string>;
   measured: number;
   containerRef: React.Ref<HTMLDivElement>;
+  details: DetailRow[];
+  groupBy?: string | null;
+  period: string;
 }) {
   /**
    * A real bar chart: baseline, value axis, and columns standing on it.
@@ -685,6 +840,7 @@ function CategoryBars({
    * category labels collide long before the bars run out of room.
    */
   const [near, setNear] = useState<number | null>(null);
+  const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
   const height = 260;
   const pad = { top: 24, right: 12, bottom: 46, left: 44 };
   const width = Math.max(measured, 320);
@@ -696,10 +852,7 @@ function CategoryBars({
   // twenty are still visible.
   const barW = Math.max(10, Math.min(64, slot * 0.62));
   const y = (v: number) => pad.top + plotH - (v / max) * plotH;
-  const gridlines = [0, 0.25, 0.5, 0.75, 1].map((f) => ({
-    value: max * f,
-    y: y(max * f),
-  }));
+  const gridlines = axisTicks(max, 4).map((value) => ({ value, y: y(value) }));
 
   return (
     <div className="chart-scroll" ref={containerRef}>
@@ -710,7 +863,14 @@ function CategoryBars({
         height={height}
         role="img"
         aria-label={`bar chart, ${rows.length} categories`}
-        onMouseLeave={() => setNear(null)}
+        onMouseLeave={() => {
+          setNear(null);
+          setCursor(null);
+        }}
+        onMouseMove={(event) => {
+          const box = event.currentTarget.getBoundingClientRect();
+          setCursor({ x: event.clientX - box.left, y: event.clientY - box.top });
+        }}
       >
         {gridlines.map((line) => (
           <g key={line.y}>
@@ -791,20 +951,33 @@ function CategoryBars({
         })}
       </svg>
 
+      {/* A standing summary, so the card says something before the cursor
+          arrives. The per-section detail is the hover's job. */}
       <p className="chart-readout" role="status">
-        {near != null && rows[near] ? (
-          <>
-            <span className="chart-swatch" style={{ background: pick(palette, rows[near].name, near) }} />
-            <span className="chart-readout-bucket">{rows[near].name}</span>
-            <span className="chart-readout-item">{withUnit(rows[near].value, unit)}</span>
-          </>
-        ) : (
-          <span className="chart-readout-item">
-            {rows.length} {rows.length === 1 ? "category" : "categories"} ·{" "}
-            {withUnit(rows.reduce((sum, r) => sum + r.value, 0), unit)} total
-          </span>
-        )}
+        <span className="chart-readout-item">
+          {rows.length} {rows.length === 1 ? "category" : "categories"} ·{" "}
+          {withUnit(rows.reduce((sum, r) => sum + r.value, 0), unit)} total
+        </span>
       </p>
+
+      {near != null && rows[near] && cursor && (
+        <ChartTip
+          title={rows[near].name}
+          value={withUnit(rows[near].value, unit)}
+          share={
+            (rows[near].value /
+              Math.max(1, rows.reduce((sum, r) => sum + r.value, 0))) * 100
+          }
+          rows={detailsFor(details, {
+            group: rows[near].name,
+            groupBy,
+            period,
+          })}
+          hide={groupBy}
+          x={cursor.x}
+          y={cursor.y}
+        />
+      )}
     </div>
   );
 }
@@ -883,11 +1056,18 @@ function Stat({
 function Pie({
   rows,
   unit,
+  details = [],
+  groupBy,
+  period = "month",
 }: {
-  rows: { name: string; value: number }[];
+  rows: { name: string; value: number; bucket?: string }[];
   unit?: string;
+  details?: DetailRow[];
+  groupBy?: string | null;
+  period?: string;
 }) {
   const [hovered, setHovered] = useState<number | null>(null);
+  const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
   const [ref, measured] = useMeasuredWidth(320);
   const palette = useMemo(
     () => categoryColors(rows.map((r) => r.name)),
@@ -950,7 +1130,15 @@ function Pie({
   });
   const active = hovered != null ? slices[hovered] : null;
   return (
-    <div className="chart-pie" ref={ref}>
+    <div
+      className="chart-pie"
+      ref={ref}
+      onMouseMove={(event) => {
+        const box = event.currentTarget.getBoundingClientRect();
+        setCursor({ x: event.clientX - box.left, y: event.clientY - box.top });
+      }}
+      onMouseLeave={() => setCursor(null)}
+    >
       <svg
         className="chart-svg"
         viewBox={`0 0 ${size} ${size}`}
@@ -1018,10 +1206,21 @@ function Pie({
           ) : null,
         )}
       </svg>
-      {active && (
-        <p className="chart-pie-hover" role="status">
-          {active.name}: {withUnit(active.value, unit)} ({Math.round(active.pct)}%)
-        </p>
+      {active && cursor && (
+        <ChartTip
+          title={active.name}
+          value={withUnit(active.value, unit)}
+          share={active.pct}
+          rows={detailsFor(details, {
+            group: groupBy ? active.name : null,
+            groupBy,
+            bucket: active.bucket ?? null,
+            period,
+          })}
+          hide={groupBy}
+          x={cursor.x}
+          y={cursor.y}
+        />
       )}
       <ul className="chart-legend">
         {slices.map((slice) => (
