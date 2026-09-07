@@ -60,8 +60,9 @@ export default function HowItWorksPage() {
             </h2>
           </div>
           <p className="landing-section-lead">
-            Every connected source works one of two ways — synced ahead of time,
-            or looked up live. Pick the tab in chat; Handbook doesn&rsquo;t guess.
+            Every connected source works one of two ways &mdash; synced ahead of
+            time, or looked up live. You never pick: one box takes the question
+            and Handbook measures which source resembles it.
           </p>
         </div>
 
@@ -114,11 +115,11 @@ export default function HowItWorksPage() {
               </div>
               <div>
                 <strong>On a schedule</strong>
-                <span>GitHub &middot; Slack &middot; Linear</span>
+                <span>GitHub &middot; Slack &middot; Linear &middot; Notion &middot; Drive</span>
               </div>
             </header>
             <ol>
-              <li>You describe what to watch, and pick weekly or monthly.</li>
+              <li>You describe what to watch, and pick daily, weekly or monthly.</li>
               <li>Each run reads only what changed since your last report.</li>
               <li>Nothing is stored from the source — it is read at run time.</li>
               <li>You get an email; the full report opens in Handbook.</li>
@@ -185,6 +186,164 @@ export default function HowItWorksPage() {
               A report is personal — nobody else in the company sees yours, and a
               report scoped to one space only ever reads that space&rsquo;s own
               connection.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section className="landing-section landing-wrap" aria-labelledby="charts-title">
+        <div className="landing-section-head">
+          <div>
+            <p className="landing-eyebrow">Charts</p>
+            <h2 id="charts-title" className="landing-section-title">
+              A number you can check, not a picture of one.
+            </h2>
+          </div>
+          <p className="landing-section-lead">
+            Ask for a chart in the same box you ask everything else. A wrong
+            sentence hedges and cites; a wrong bar chart reads as a
+            measurement &mdash; so the model is never allowed near the arithmetic.
+          </p>
+        </div>
+
+        <div className="landing-feature-grid landing-feature-grid-3">
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="chart" size={22} />
+            </span>
+            <h3>Counted, never composed</h3>
+            <p>
+              Every value is a database count over activity we recorded. The
+              model only picks WHICH question to count &mdash; it never writes a
+              number, an axis or a date, and there is no image to squint at.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="document" size={22} />
+            </span>
+            <h3>The rows are one hover away</h3>
+            <p>
+              Hover a bar or a slice and it shows the actual commits, pages or
+              issues counted &mdash; who, what and when &mdash; filtered to the
+              section under your cursor.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="private" size={22} />
+            </span>
+            <h3>An empty chart says which empty</h3>
+            <p>
+              Nothing recorded yet, nothing in this window but older activity
+              exists, or a source nobody has connected &mdash; three different
+              answers, because they need three different next steps.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section className="landing-section landing-wrap" aria-labelledby="pulse-title">
+        <div className="landing-section-head">
+          <div>
+            <p className="landing-eyebrow">Survey sentiment</p>
+            <h2 id="pulse-title" className="landing-section-title">
+              Measure the mood without reading the answers.
+            </h2>
+          </div>
+          <p className="landing-section-lead">
+            Connect a Google Form and pick which surveys count. This is the one
+            place a model touches your text &mdash; and it is fenced so that what
+            people wrote cannot come back out.
+          </p>
+        </div>
+
+        <div className="landing-feature-grid landing-feature-grid-3">
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="sentiment" size={22} />
+            </span>
+            <h3>Read once, then discarded</h3>
+            <p>
+              Each answer is labelled once and the text is thrown away. Only the
+              label, the score and the question survive &mdash; with no respondent
+              handle at all, so &ldquo;what did someone say?&rdquo; has no answer
+              to give.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="secure" size={22} />
+            </span>
+            <h3>Two floors, enforced in the data</h3>
+            <p>
+              A topic under five responses is never charted, and the charts are
+              owners-only. Both are conditions in the query, not rules in a
+              checklist &mdash; on a small team, &ldquo;3 of 4 are
+              negative&rdquo; names people.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="private" size={22} />
+            </span>
+            <h3>Never indexed, never searchable</h3>
+            <p>
+              Responses are not part of the corpus that answers questions, and
+              there is deliberately no single company score &mdash; one number is
+              the thing people manage instead of the thing it measured.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section className="landing-section landing-wrap" aria-labelledby="byo-title">
+        <div className="landing-section-head">
+          <div>
+            <p className="landing-eyebrow">Your own model</p>
+            <h2 id="byo-title" className="landing-section-title">
+              Answer on the model you chose and pay for.
+            </h2>
+          </div>
+          <p className="landing-section-lead">
+            Add one API key and everyone in your company can pick it, per
+            question. Leave it alone and the built-in models keep working exactly
+            as before.
+          </p>
+        </div>
+
+        <div className="landing-feature-grid landing-feature-grid-3">
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="model" size={22} />
+            </span>
+            <h3>The providers you already use</h3>
+            <p>
+              OpenAI, Anthropic, Google Gemini, Mistral, Groq, DeepSeek, xAI,
+              NVIDIA, Together, Fireworks, Cerebras, Perplexity, Cohere or
+              OpenRouter &mdash; a provider, a model id and a key.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="schedule" size={22} />
+            </span>
+            <h3>Tested before it is saved</h3>
+            <p>
+              We send one short message on your key first, so a mistyped model id
+              never becomes a broken option for your team &mdash; and you see the
+              provider&rsquo;s own words if it fails.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="private" size={22} />
+            </span>
+            <h3>We say what it is used for</h3>
+            <p>
+              Your key answers chat questions. Preparing your documents and the
+              internal answer-quality check stay on ours, so one corpus is never
+              half-written by two models. Nothing is hidden in a tooltip.
             </p>
           </article>
         </div>

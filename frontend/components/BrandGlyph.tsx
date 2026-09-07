@@ -9,7 +9,10 @@ export type BrandName =
   | "secure"
   | "private"
   | "document"
-  | "schedule";
+  | "schedule"
+  | "chart"
+  | "sentiment"
+  | "model";
 
 const BRAND_SRC: Record<BrandName, string | null> = {
   sendgrid: null,
@@ -23,6 +26,9 @@ const BRAND_SRC: Record<BrandName, string | null> = {
   private: null,
   document: null,
   schedule: null,
+  chart: null,
+  sentiment: null,
+  model: null,
 };
 
 function GithubMark({ size }: { size: number }) {
@@ -172,6 +178,60 @@ function ScheduleMark({ size }: { size: number }) {
   );
 }
 
+function ChartMark({ size }: { size: number }) {
+  // Bars ON a baseline with an axis, because that is the distinction the
+  // product makes: a chart here is a measurement over recorded rows, not a
+  // decorative sparkline. Three heights, so it reads as a comparison at 18px.
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
+      <rect width="24" height="24" rx="6" fill="#0e7490" />
+      <path d="M5 5.5v13h14" stroke="#fff" strokeOpacity="0.55" strokeWidth="1.3" strokeLinecap="round" fill="none" />
+      <rect x="7.2" y="12.4" width="2.9" height="5.2" rx="0.8" fill="#5eead4" />
+      <rect x="11.4" y="9.2" width="2.9" height="8.4" rx="0.8" fill="#fff" />
+      <rect x="15.6" y="6.6" width="2.9" height="11" rx="0.8" fill="#facc15" />
+    </svg>
+  );
+}
+
+function SentimentMark({ size }: { size: number }) {
+  // A diverging bar: a centre line with weight either side, which is the shape
+  // the sentiment chart actually draws. Deliberately not a smiley — the
+  // product never reports one company mood, and a single face would promise
+  // exactly that.
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
+      <rect width="24" height="24" rx="6" fill="#4c1d95" />
+      <rect x="6.6" y="6.4" width="5.4" height="2.8" rx="0.9" fill="#f472b6" />
+      <rect x="12" y="6.4" width="4.2" height="2.8" rx="0.9" fill="#a7f3d0" />
+      <rect x="9.4" y="10.6" width="2.6" height="2.8" rx="0.9" fill="#f472b6" />
+      <rect x="12" y="10.6" width="6.4" height="2.8" rx="0.9" fill="#a7f3d0" />
+      <rect x="7.8" y="14.8" width="4.2" height="2.8" rx="0.9" fill="#f472b6" />
+      <rect x="12" y="14.8" width="3" height="2.8" rx="0.9" fill="#a7f3d0" />
+      <path d="M12 5v14" stroke="#fff" strokeWidth="1.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function ModelMark({ size }: { size: number }) {
+  // A chip with pins: "the model is a component you supply", which is what
+  // bring-your-own-key means here. The spark is the only warm accent, so it
+  // reads as choice rather than as a warning.
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
+      <rect width="24" height="24" rx="6" fill="#1e293b" />
+      <g stroke="#94a3b8" strokeWidth="1.3" strokeLinecap="round">
+        <path d="M9.4 4.6v2.2M14.6 4.6v2.2M9.4 17.2v2.2M14.6 17.2v2.2" />
+        <path d="M4.6 9.4h2.2M4.6 14.6h2.2M17.2 9.4h2.2M17.2 14.6h2.2" />
+      </g>
+      <rect x="6.8" y="6.8" width="10.4" height="10.4" rx="2.4" fill="#fff" />
+      <path
+        d="M12.4 9.1 10.4 12.6h1.7l-.6 2.6 2.4-3.7h-1.8l.3-2.4Z"
+        fill="#f59e0b"
+      />
+    </svg>
+  );
+}
+
 export function BrandGlyph({
   name,
   size = 28,
@@ -213,6 +273,18 @@ export function BrandGlyph({
 
   if (name === "schedule") {
     return <ScheduleMark size={size} />;
+  }
+
+  if (name === "chart") {
+    return <ChartMark size={size} />;
+  }
+
+  if (name === "sentiment") {
+    return <SentimentMark size={size} />;
+  }
+
+  if (name === "model") {
+    return <ModelMark size={size} />;
   }
 
   return <GithubMark size={size} />;

@@ -52,9 +52,10 @@ export default function RootPage() {
             Answer from your sources.
           </h1>
           <p className="landing-subtitle">
-            Connect Notion, Google Drive, Slack, Linear, and GitHub. Handbook answers
-            employee questions from your connected content, emails you a report on
-            a schedule — and says when the documents don&rsquo;t cover it.
+            Connect Notion, Google Drive, Slack, Linear, and GitHub. Ask in plain
+            language and get an answer, a chart, or a scheduled report &mdash; every
+            one built from your own content, and honest when that content
+            doesn&rsquo;t cover the question.
           </p>
           <div className="landing-cta-row">
             <Link href="/signup" className="button landing-cta-primary">
@@ -68,32 +69,40 @@ export default function RootPage() {
         <LandingProductArt />
       </section>
 
+      {/* Three bands, not one grid of eight cards. The page grew a
+          capability at a time (charts, sentiment, own model) and a single
+          feature grid had stopped being a list of things you can do and
+          become a wall to scan. Grouped by the QUESTION a reader is asking
+          at that point: what can I ask it, what does it do without me, and
+          what do I control. */}
       <section id="what" className="landing-section landing-wrap" aria-labelledby="what-title">
         <div className="landing-section-head">
           <div>
-            <p className="landing-eyebrow">Built for work</p>
+            <p className="landing-eyebrow">Ask</p>
             <h2 id="what-title" className="landing-section-title">
-              Documents, code, and team spaces — grounded.
+              One box. Words, code, or a chart.
             </h2>
           </div>
           <p className="landing-section-lead">
-            One place to ask. Answers come from the content your company
-            connected, scoped to the right tenant every time.
+            There is no mode to choose. Ask a question and Handbook decides where
+            the answer lives &mdash; a document, a repository, or a count it can
+            draw.
           </p>
           <p className="landing-privacy-note">
-            We index your content to answer questions — never to train AI
+            We index your content to answer questions &mdash; never to train AI
             models, never shared with another company.
           </p>
         </div>
-        <div className="landing-feature-grid">
+        <div className="landing-feature-grid landing-feature-grid-3">
           <article className="landing-feature">
             <span className="landing-feature-mark">
               <BrandGlyph name="document" size={22} />
             </span>
             <h3>Grounded document answers</h3>
             <p>
-              Leave, benefits, expenses, handbooks, or any other doc — retrieved
-              from your synced content, grounded in what your company connected.
+              Leave, benefits, expenses, handbooks, or any other doc &mdash;
+              retrieved from your synced content, with the page, the app and who
+              last edited it named on every answer.
             </p>
           </article>
           <article className="landing-feature">
@@ -102,29 +111,110 @@ export default function RootPage() {
             </span>
             <h3>Live code context</h3>
             <p>
-              Ask about READMEs and recent commits through GitHub at question
-              time — always against the repositories you authorized.
+              READMEs, recent commits, open pull requests and who reviewed them,
+              read at question time from the repositories you authorized.
             </p>
           </article>
           <article className="landing-feature">
             <span className="landing-feature-mark">
+              <BrandGlyph name="chart" size={22} />
+            </span>
+            <h3>Charts, from real counts</h3>
+            <p>
+              &ldquo;Chart commits by author this quarter.&rdquo; Every number is
+              counted in the database, never written by the model &mdash; and
+              hovering a bar shows the exact rows behind it.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section id="works-for-you" className="landing-section landing-wrap" aria-labelledby="auto-title">
+        <div className="landing-section-head">
+          <div>
+            <p className="landing-eyebrow">Without being asked</p>
+            <h2 id="auto-title" className="landing-section-title">
+              The parts that keep running on their own.
+            </h2>
+          </div>
+          <p className="landing-section-lead">
+            Nobody has to remember to press anything. Your sources stay current,
+            the updates you care about arrive, and what your team tells you gets
+            measured.
+          </p>
+        </div>
+        <div className="landing-feature-grid landing-feature-grid-3">
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
               <BrandGlyph name="schedule" size={22} />
             </span>
-            <h3>Reports on a schedule</h3>
+            <h3>Reports in your inbox</h3>
             <p>
-              Say what you want to keep an eye on in your own words, pick weekly
-              or monthly, and read it in your inbox — each report covers only
-              what changed on GitHub, Slack, or Linear since the last one.
+              Say what to keep an eye on in your own words, pick daily, weekly or
+              monthly, and read it in your inbox. Each report covers only what
+              changed since the last one, and links to every source it used.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="drive" size={22} />
+            </span>
+            <h3>Always up to date</h3>
+            <p>
+              Connected sources re-sync themselves through the day, and a
+              service that can tell us it changed is picked up within minutes.
+              Every answer says when its source last synced.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="sentiment" size={22} />
+            </span>
+            <h3>Survey sentiment</h3>
+            <p>
+              Point Handbook at a Google Form and see how people feel by topic.
+              Answers are read once and the text is discarded &mdash; no response
+              and no name is ever stored, and topics with under five replies are
+              never charted.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section id="control" className="landing-section landing-wrap" aria-labelledby="control-title">
+        <div className="landing-section-head">
+          <div>
+            <p className="landing-eyebrow">Yours to control</p>
+            <h2 id="control-title" className="landing-section-title">
+              Your data, your model, your boundaries.
+            </h2>
+          </div>
+          <p className="landing-section-lead">
+            Who can see what is a decision you make, not a default you inherit
+            &mdash; down to which model answers.
+          </p>
+        </div>
+        <div className="landing-feature-grid landing-feature-grid-3">
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="model" size={22} />
+            </span>
+            <h3>Bring your own model</h3>
+            <p>
+              Add a key from OpenAI, Anthropic, Google, Mistral, Groq, DeepSeek,
+              NVIDIA and more, and your team can pick it per question. We test it
+              before saving, and tell you exactly which calls use it.
             </p>
           </article>
           <article className="landing-feature">
             <span className="landing-feature-mark">
               <BrandGlyph name="workspace" size={22} />
             </span>
-            <h3>Team workspaces</h3>
+            <h3>Team spaces</h3>
             <p>
               Create a focused space for a project or team, invite colleagues,
-              and keep questions on that space&rsquo;s own connected content.
+              and keep its questions on its own connected content &mdash; a space
+              never borrows the company&rsquo;s sources.
             </p>
           </article>
           <article className="landing-feature">
@@ -133,8 +223,9 @@ export default function RootPage() {
             </span>
             <h3>Tenant isolation</h3>
             <p>
-              Every search is scoped to your organization. Admins invite
-              members by email, and other companies never see your data.
+              Every search is scoped to your organization before anything is
+              ranked. Admins invite members by email, and other companies never
+              see your data.
             </p>
           </article>
         </div>
@@ -150,9 +241,10 @@ export default function RootPage() {
           </div>
           <p className="landing-section-lead">
             Sync Notion or Drive for your documents, Slack for team
-            conversations, and Linear for issues. Use GitHub live for code, and
-            schedule a recurring report on any of the three that track activity.
-            Sign in with a magic link — no extra password to manage.
+            conversations, and Linear for issues. Use GitHub live for code,
+            Google Forms for survey sentiment, and schedule a recurring report on
+            any source that tracks activity. Sign in with a magic link &mdash; no
+            extra password to manage.
           </p>
         </div>
         <LandingSourcesOrbit />

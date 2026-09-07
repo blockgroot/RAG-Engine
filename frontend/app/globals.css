@@ -6128,3 +6128,16 @@ a.people-card:hover { color: inherit; }
 }
 
 .forms-foot { margin: 0; font-size: 0.85rem; }
+
+/* Three-up feature band. The two-column grid is right for four or five cards
+   (the shape this page had) and wrong for three, where the odd card sits alone
+   on its own row and reads as an afterthought. Same cards, same tokens — only
+   the column count changes, and it collapses through two before one so a
+   tablet never gets a single narrow column of five. */
+.landing-feature-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 1000px) {
+  .landing-feature-grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 700px) {
+  .landing-feature-grid-3 { grid-template-columns: minmax(0, 1fr); }
+}
