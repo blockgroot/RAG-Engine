@@ -23,7 +23,7 @@ from ..workspaces.store import assert_member
 
 #: How far back a dashboard / Ask chart looks, per period. Not the same as
 #: the bucket size: a weekly view of one week is a single bar.
-WINDOW_DAYS = {"week": 84, "month": 365, "quarter": 730}
+WINDOW_DAYS = {"day": 45, "week": 84, "month": 365, "quarter": 730}
 
 
 def may_see_metric(metric, *, role: str, workspace_id: str | None, org_id: str, user_id: str) -> bool:

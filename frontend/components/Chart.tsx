@@ -166,11 +166,26 @@ export function Chart({
 
   if (chart === "diverging_bar") return <DivergingBar points={points} />;
 
-  // ONE group is not a ranking and not a share of anything: a lone bar has
-  // nothing to compare against and a single-slice pie is a filled circle
-  // labelled 100%, which is the least informative shape available. Show the
-  // number, and the trend that number actually has.
-  if ((leaderboard || chart === "pie") && ranked.length === 1) {
+  // A requested pie STAYS a pie: asking for one and being handed a number is
+  // not an answer to the question asked. With a single group there is nothing
+  // to take shares of, so the slices become the time buckets instead -- the
+  // same rows, split by when they happened, which is what someone asking
+  // "pie of commits" wants to see.
+  if (chart === "pie" && ranked.length === 1 && buckets.length > 1) {
+    return (
+      <Pie
+        rows={buckets.map((b) => ({
+          name: formatBucket(b, period),
+          value: at(b, series[0] ?? ""),
+        }))}
+        unit={unit}
+      />
+    );
+  }
+
+  // Only when even the finest bucket leaves ONE value: a lone bar has nothing
+  // to compare against and a one-slice pie is a circle labelled 100%.
+  if ((leaderboard || chart === "pie") && ranked.length === 1 && buckets.length <= 1) {
     const only = ranked[0];
     const name = series.find((s) => (s.trim() || "Unknown") === only.name) ?? "";
     return (
@@ -356,15 +371,25 @@ export function Chart({
                     if (value <= 0) return null;
                     const h = (value / max) * plotH;
                     cursor -= h;
+                    // A single-series bar chart coloured one colour is a row
+                    // of identical grey-green sticks; the bucket is the only
+                    // thing distinguishing them, so the bucket picks the
+                    // colour. A real multi-series chart must keep colour
+                    // meaning the SERIES, or the legend stops being true.
+                    const fill =
+                      series.length === 1
+                        ? SERIES_COLORS[i % SERIES_COLORS.length]
+                        : SERIES_COLORS[si % SERIES_COLORS.length];
                     return (
                       <rect
                         key={name || "all"}
+                        className="chart-bar"
                         x={cx}
                         y={cursor}
                         width={barW}
                         height={h}
-                        fill={SERIES_COLORS[si % SERIES_COLORS.length]}
-                        rx={2}
+                        fill={fill}
+                        rx={Math.min(4, barW / 3)}
                       >
                         <title>
                           {`${formatBucket(b, period)}${name ? ` - ${name}` : ""}: ${withUnit(value, unit)}`}
@@ -615,7 +640,12 @@ function Pie({
   const size = Math.max(240, Math.min(measured, 360));
   const cx = size / 2;
   const cy = size / 2;
-  const r = size * 0.36;
+  const r = size * 0.38;
+  //: A donut, not a disc. The hole carries the TOTAL, which a pie has to put
+  //: in a caption or leave out -- and every slice then reads as a share of a
+  //: number you can see rather than of an unstated whole. It also stops a
+  //: single dominant slice from becoming an undifferentiated filled circle.
+  const inner = r * 0.58;
   let angle = -Math.PI / 2;
   const slices = rows.map((row, i) => {
     const sweep = (row.value / total) * Math.PI * 2;
@@ -629,7 +659,7 @@ function Pie({
     const large = sweep > Math.PI ? 1 : 0;
     const full = sweep >= Math.PI * 2 - 1e-6;
     const pct = (row.value / total) * 100;
-    const labelR = r * 0.62;
+    const labelR = (r + inner) / 2;
     return {
       ...row,
       i,
@@ -641,10 +671,21 @@ function Pie({
       // OUTSIDE the circle with no leader line, which read as a stray number
       // above the chart rather than as a label. The legend already names every
       // slice with its exact count.
-      showOnSlice: pct >= 12,
+      showOnSlice: pct >= 9,
       d: full
-        ? `M ${cx} ${cy - r} A ${r} ${r} 0 1 1 ${cx} ${cy + r} A ${r} ${r} 0 1 1 ${cx} ${cy - r} Z`
-        : `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2} Z`,
+        ? [
+            `M ${cx} ${cy - r} A ${r} ${r} 0 1 1 ${cx} ${cy + r}`,
+            `A ${r} ${r} 0 1 1 ${cx} ${cy - r} Z`,
+            `M ${cx} ${cy - inner} A ${inner} ${inner} 0 1 0 ${cx} ${cy + inner}`,
+            `A ${inner} ${inner} 0 1 0 ${cx} ${cy - inner} Z`,
+          ].join(" ")
+        : [
+            `M ${x1} ${y1}`,
+            `A ${r} ${r} 0 ${large} 1 ${x2} ${y2}`,
+            `L ${cx + inner * Math.cos(angle)} ${cy + inner * Math.sin(angle)}`,
+            `A ${inner} ${inner} 0 ${large} 0 ${cx + inner * Math.cos(start)} ${cy + inner * Math.sin(start)}`,
+            "Z",
+          ].join(" "),
     };
   });
   const active = hovered != null ? slices[hovered] : null;
@@ -663,8 +704,13 @@ function Pie({
             key={slice.name}
             d={slice.d}
             fill={slice.color}
+            fillRule="evenodd"
             className="chart-pie-slice"
-            opacity={hovered == null || hovered === slice.i ? 1 : 0.45}
+            // Separated by the card's own background rather than a hardcoded
+            // white, so the gaps stay gaps in either theme.
+            stroke="var(--surface)"
+            strokeWidth={2}
+            opacity={hovered == null || hovered === slice.i ? 1 : 0.35}
             onMouseEnter={() => setHovered(slice.i)}
             onMouseLeave={() => setHovered(null)}
           >
@@ -673,6 +719,27 @@ function Pie({
             </title>
           </path>
         ))}
+        {/* The whole, in the hole. Hovering swaps it for that slice, so the
+            centre always answers "of what?" */}
+        <text
+          x={cx}
+          y={cy - 4}
+          textAnchor="middle"
+          className="chart-donut-total"
+          pointerEvents="none"
+        >
+          {(active ? active.value : total).toLocaleString()}
+        </text>
+        <text
+          x={cx}
+          y={cy + 14}
+          textAnchor="middle"
+          className="chart-donut-caption"
+          pointerEvents="none"
+        >
+          {active ? `${Math.round(active.pct)}%` : unit || "total"}
+        </text>
+
         {slices.map((slice) =>
           slice.showOnSlice ? (
             <text

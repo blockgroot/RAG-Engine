@@ -562,6 +562,28 @@ facts, a space's Ask reads that space only — no separate company dashboard.
   are crowded. The hook sits ABOVE every early return — the pie and
   leaderboard branches return before the plot, and a conditional hook is a
   render-order crash.
+- **`day` is a period, and a collapsed period REFINES itself.** Four commits
+  on two days were ONE bucket at week *and* at month — a flat line that reads
+  as "no data" when the data is fine and the bucket was too wide.
+  `registry.FINER_PERIOD` steps quarter→month→week→day, and
+  `insights_agent._run_spec` re-buckets (at most twice) while the result has
+  ≤1 bucket, widening the window by `_span_days` so a finer period's shorter
+  default cannot drop the very rows it is trying to show. The panel reports
+  the period ACTUALLY used, never the one requested. Same rows, never a
+  different question.
+- **A requested pie stays a pie.** With one group there is nothing to take
+  shares of, so the slices become the TIME BUCKETS — asking for a pie and
+  being handed a number is not an answer to the question asked. `Stat` is only
+  for the genuinely degenerate case: one group *and* one bucket.
+- **The share chart is a DONUT.** The hole carries the total (the whole a pie
+  has to put in a caption or omit), so every slice reads as a share of a
+  number you can see; hovering swaps the centre for that slice's value.
+  Slices are separated with a `var(--surface)` stroke, not white, so the gaps
+  survive dark mode. A single-series bar chart colours by BUCKET — one colour
+  across every bar is a row of identical sticks — while a real multi-series
+  chart keeps colour meaning the series, or the legend stops being true. Bars
+  and leaderboard fills grow in once (`chart-rise`/`chart-grow`), disabled
+  under `prefers-reduced-motion`.
 - **A pie label goes inside its slice or nowhere.** At `1.22r` a small slice's
   label floated outside the circle with no leader line, reading as a stray
   number above the chart; the legend already names every slice with its exact

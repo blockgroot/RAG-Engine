@@ -43,7 +43,13 @@ DIMENSIONS = {
 
 #: ``date_trunc``'s unit. A closed set because it reaches SQL as a literal and
 #: cannot be bound as a parameter.
-PERIODS = ("week", "month", "quarter")
+PERIODS = ("day", "week", "month", "quarter")
+
+#: One step finer, for when a period collapses everything into a single
+#: bucket. Four commits on two days are ONE point at week or month, which
+#: draws as a flat line and reads as "no data" -- the shape was the bucket's
+#: fault, not the data's.
+FINER_PERIOD = {"quarter": "month", "month": "week", "week": "day"}
 
 
 @dataclass(frozen=True)

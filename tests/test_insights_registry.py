@@ -50,10 +50,16 @@ def test_dimension_targets_are_bare_identifiers():
         assert column.isidentifier(), f"dimension {name!r} maps to {column!r}"
 
 
-def test_periods_are_a_closed_set():
-    """date_trunc's first argument is a literal, not a bindable parameter, so a
-    caller-supplied one is an injection. Three values, forever."""
-    assert set(registry.PERIODS) == {"week", "month", "quarter"}
+def test_periods_are_a_closed_set_of_bare_date_trunc_units():
+    """`date_trunc`'s first argument is a literal, not a bindable parameter, so
+    a caller-supplied one is an injection. The invariant is the WHITELIST, not
+    its length -- `day` was added because four commits on two days were one
+    bucket at both week and month, which draws as a flat line and reads as
+    missing data. Every value must be a bare lowercase word that date_trunc
+    accepts, so splicing one can never carry syntax."""
+    assert set(registry.PERIODS) == {"day", "week", "month", "quarter"}
+    for period in registry.PERIODS:
+        assert period.isalpha() and period.islower(), period
 
 
 def test_a_metric_can_be_looked_up_by_provider():

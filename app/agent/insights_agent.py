@@ -13,6 +13,7 @@ number from chunk text.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from collections.abc import Iterator
 
 from ..core.answer_sources import SOURCE_NONE
@@ -181,6 +182,33 @@ def _backfill_and_retry(
         )
     except (CannotChart, ProviderError):
         return panel, period
+
+
+def _buckets(points) -> list[str]:
+    seen = []
+    for point in points:
+        if point.bucket not in seen:
+            seen.append(point.bucket)
+    return seen
+
+
+def _span_days(points) -> int:
+    """How far apart the rows we already found are.
+
+    A finer period comes with a shorter default window, and narrowing the
+    window while narrowing the bucket can drop the very rows we are trying to
+    show -- July's commits are outside a 45-day daily window in September.
+    """
+    buckets = _buckets(points)
+    if not buckets:
+        return 0
+    try:
+        stamps = [datetime.fromisoformat(b) for b in buckets]
+    except ValueError:
+        return 0
+    oldest = min(stamps)
+    now = datetime.now(oldest.tzinfo) if oldest.tzinfo else datetime.now()
+    return max(0, (now - oldest).days + 2)
 
 
 def _resolve_focus(spec, metric, *, org_id, workspace_id, days) -> str | None:
@@ -373,15 +401,46 @@ def _run_spec(
         # A pie needs groups to be shares OF something. Without one it is a
         # single full circle, which states nothing.
         chart = "line"
+    period = spec.period
     points = store.run_metric(
         spec.metric,
         org_id=org_id,
         workspace_id=workspace_id,
-        period=spec.period,
+        period=period,
         days=days,
         group_by=group_by,
         focus=focus,
     )
+
+    # A period that puts EVERYTHING in one bucket draws as a single point --
+    # a flat line, or a pie with one slice -- and reads as "no data" when the
+    # data is fine and the bucket was too wide. Four commits on two days are
+    # one bar at week AND at month. Step finer until the shape shows what
+    # happened, at most twice: this is the same rows re-bucketed, never a
+    # different question, and the caption says which period was used.
+    refined = period
+    while (
+        len(_buckets(points)) <= 1
+        and registry.FINER_PERIOD.get(refined)
+        and refined != registry.FINER_PERIOD.get(refined)
+    ):
+        finer = registry.FINER_PERIOD[refined]
+        finer_days = scopes.WINDOW_DAYS.get(finer, days)
+        try:
+            candidate = store.run_metric(
+                spec.metric, org_id=org_id, workspace_id=workspace_id,
+                period=finer, days=max(finer_days, _span_days(points)),
+                group_by=group_by, focus=focus,
+            )
+        except (ProviderError, ValueError):
+            break
+        refined = finer
+        if len(_buckets(candidate)) > len(_buckets(points)):
+            points, period = candidate, finer
+            if len(_buckets(points)) > 1:
+                break
+
+    days = scopes.WINDOW_DAYS.get(period, days)
     begun = store.first_fact_at(
         metric.provider, org_id=org_id, workspace_id=workspace_id
     )
@@ -406,4 +465,4 @@ def _run_spec(
         ],
         "measured_since": begun.isoformat() if begun else None,
     }
-    return panel, spec.period
+    return panel, period

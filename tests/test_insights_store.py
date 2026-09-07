@@ -323,3 +323,38 @@ def test_list_subjects_returns_what_actually_has_rows(org):
     subjects = store.list_subjects("slack_threads", org_id=org,
                                    workspace_id=None, days=90)
     assert subjects == ["#general", "#random"]
+
+
+# --------------------------------------------------------------------------
+# `day` exists because a wide bucket looks like missing data
+# --------------------------------------------------------------------------
+
+
+def test_day_is_a_period(org):
+    """Four commits on two days were ONE bucket at week AND at month, which
+    draws as a flat line and reads as "nothing recorded" -- the shape was the
+    bucket's fault, not the data's."""
+    now = datetime.now(timezone.utc)
+    for offset in (1, 1, 1, 2):
+        _fact(org, provider="slack", kind="doc_changed",
+              subject="#general", when=now - timedelta(days=offset))
+
+    monthly = store.run_metric("slack_threads", org_id=org, workspace_id=None,
+                               period="month", days=90)
+    daily = store.run_metric("slack_threads", org_id=org, workspace_id=None,
+                             period="day", days=45)
+    assert len({p.bucket for p in monthly}) == 1     # the flat line
+    assert len({p.bucket for p in daily}) == 2       # the real shape
+    assert _total(monthly) == _total(daily) == 4.0   # same rows, re-bucketed
+
+
+def test_finer_period_map_terminates():
+    """A refinement loop that could cycle would hang a request."""
+    seen = set()
+    period = "quarter"
+    while period in registry.FINER_PERIOD:
+        assert period not in seen, f"cycle at {period}"
+        seen.add(period)
+        period = registry.FINER_PERIOD[period]
+    assert period == "day"
+    assert all(p in registry.PERIODS for p in registry.FINER_PERIOD.values())

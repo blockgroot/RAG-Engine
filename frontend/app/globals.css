@@ -5700,6 +5700,22 @@ a.people-card:hover { color: inherit; }
   display: flex;
   align-items: center;
   gap: 0.375rem;
+  padding: 0.125rem 0.375rem;
+  border-radius: 5px;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.chart-legend li[data-active] {
+  background: var(--surface-muted);
+  color: var(--ink);
+}
+.chart-legend-name {
+  font-weight: 550;
+  color: var(--ink);
+}
+.chart-legend li {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
 }
 .chart-swatch {
   width: 0.625rem;
@@ -5716,7 +5732,58 @@ a.people-card:hover { color: inherit; }
 }
 .chart-pie-slice {
   cursor: pointer;
-  transition: opacity 0.12s ease;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  transform-origin: center;
+}
+.chart-pie-slice:hover {
+  /* Lifts the hovered slice out of the ring. Tiny on purpose -- enough to
+     confirm what the cursor is on, not enough to move the reading. */
+  transform: scale(1.03);
+}
+/* The total inside the ring. A donut's hole is the only place a share chart
+   can state the whole without a caption. */
+.chart-donut-total {
+  font-size: 22px;
+  font-weight: 680;
+  fill: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.chart-donut-caption {
+  font-size: 10px;
+  font-weight: 500;
+  fill: var(--ink-muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+/* Bars and slices grow in once, from the axis. A chart that assembles itself
+   reads as live data; the same chart appearing fully formed reads as an
+   image. Disabled outright for reduced motion. */
+.chart-bar {
+  transform-origin: center bottom;
+  animation: chart-rise 0.45s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+@keyframes chart-rise {
+  from { transform: scaleY(0); }
+  to { transform: scaleY(1); }
+}
+.chart-rank-fill {
+  animation: chart-grow 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+@keyframes chart-grow {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+.chart-rank-fill {
+  transform-origin: left center;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chart-bar,
+  .chart-rank-fill {
+    animation: none;
+  }
+  .chart-pie-slice:hover {
+    transform: none;
+  }
 }
 .chart-pie-label {
   font-size: 11px;

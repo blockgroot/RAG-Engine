@@ -33,7 +33,7 @@ router = APIRouter(prefix="/insights", tags=["insights"])
 
 #: How far back a dashboard looks, per period. Not the same as the bucket size:
 #: a weekly view of one week is a single bar, which tells nobody anything.
-_WINDOW_DAYS = {"week": 84, "month": 365, "quarter": 730}
+_WINDOW_DAYS = {"day": 45, "week": 84, "month": 365, "quarter": 730}
 
 #: A question, not an essay. Long enough for a real multi-clause request, short
 #: enough that it cannot bloat the resolution prompt.
