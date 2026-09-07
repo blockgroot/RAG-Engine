@@ -300,12 +300,25 @@ vocabulary ("chart commits by author") — that is theirs, not ours.
   design and several without. `.lp-constellation` is the only other
   `inset: 0` absolute and it lives inside a relative `.lp-stage`, so nothing
   else moved.
-- **A panel with one line in it reads as unfinished.** The landing's ask panel
-  held only the cycling prompt; it now shows the exchange — question typed,
-  answer landing with its source, and three other things you could have asked.
-  `AnswerArt` takes a `bare` prop for exactly this: reusing it inside another
-  panel would otherwise nest a card in a card, the pattern these pages exist to
-  avoid.
+- **One demo per page, one shape per idea.** The landing typed a question in
+  the hero mock AND again in a second ask panel below it, with a third answer
+  mock inside that panel — three demos of one exchange read as filler. The hero
+  is now the only demo; `#what` is three hairline rows, each ending in the real
+  question it answers (`show-item-ask`, the reader's words). `/how-it-works`
+  lost "Answers you can trust" entirely: its three points restated journey
+  steps 2/3/4 in different words, which is what made the two pages feel
+  interchangeable. `feat-kicker` is gone for the same reason — it printed the
+  heading twice in one block. `AnswerArt`'s `bare` prop and every `show-demo`
+  rule went with the panel.
+- **A tool logo is never a feature icon.** Drive stood for "automatic updates"
+  and SendGrid for "invite your team" on the landing; brand glyphs now appear
+  once per page (the orbit on `/`, the "Works with" row on `/how-it-works`) and
+  everything else uses `FeatureIcon`. `HowJourney`'s per-station source chips
+  are gone for that reason.
+- **`.show-flow` steps carry a top rule, not a connector.** When the number
+  moved out of `h3::before` the steps gained a 2px border-top and the old
+  `:not(:last-child)::after` stub stayed, so every column had a rule above it
+  *and* a line dangling off its icon into the gutter.
 - **`ScrollRail`** is the one piece of motion not tied to an element: a 2px
   accent line filling down the left edge, because on a long page "how much is
   left" is a real question. Never created at all under

@@ -6,7 +6,11 @@ export type FeatureIconName =
   | "model"
   | "workspace"
   | "secure"
-  | "private";
+  | "private"
+  | "code"
+  | "refresh"
+  | "link"
+  | "invite";
 
 const ICONS: Record<FeatureIconName, string> = {
   document: "description",
@@ -17,6 +21,10 @@ const ICONS: Record<FeatureIconName, string> = {
   workspace: "widgets",
   secure: "shield",
   private: "lock",
+  code: "code",
+  refresh: "autorenew",
+  link: "cable",
+  invite: "group_add",
 };
 
 export function FeatureIcon({ name }: { name: FeatureIconName }) {

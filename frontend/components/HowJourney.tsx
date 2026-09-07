@@ -11,29 +11,26 @@
  * once on the page, above "Works with", where they mean something.
  */
 
-import { BrandGlyph, type BrandName } from "@/components/BrandGlyph";
-
-const STATIONS: Array<{ title: string; body: string; feed?: BrandName[] }> = [
+const STATIONS: Array<{ title: string; body: string }> = [
   {
     title: "You ask",
     body:
-      "Type your question in the same box every time. There is no source to pick and no filter to set. Follow-up questions keep the earlier ones in mind, so you can narrow something down without repeating yourself.",
+      "Type it in the same box every time. There is no source to pick and no filter to set, and a follow-up keeps the earlier question in mind.",
   },
   {
     title: "Handbook searches",
     body:
       "It reads across every tool your company has connected — documents, conversations, tickets and code — and finds the passages that address your question.",
-    feed: ["notion", "slack", "drive"],
   },
   {
     title: "It checks the evidence",
     body:
-      "Before answering, it judges whether what it found actually covers the question. If it does not, you are told that instead of being given the closest-looking guess.",
+      "It judges whether what it found actually covers the question. If it does not, you are told so rather than given the closest-looking guess.",
   },
   {
     title: "You get the answer",
     body:
-      "Written from those passages only, with the document, message or file it came from listed underneath so you can open it and read the rest.",
+      "Written from those passages only, with the document, message or file it came from listed underneath so you can read the rest.",
   },
 ];
 
@@ -55,19 +52,6 @@ export function HowJourney() {
               <span className="journey-node-num">{`0${i + 1}`}</span>
               <span className="journey-node-ring" aria-hidden />
             </span>
-            {station.feed && (
-              <span className="journey-feed" aria-hidden>
-                {station.feed.map((name, f) => (
-                  <span
-                    key={name}
-                    className="journey-feed-chip"
-                    style={{ ["--f" as string]: String(f) }}
-                  >
-                    <BrandGlyph name={name} size={14} />
-                  </span>
-                ))}
-              </span>
-            )}
             <h3>{station.title}</h3>
             <p>{station.body}</p>
           </li>

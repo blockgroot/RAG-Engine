@@ -89,7 +89,6 @@ export default function HowItWorksPage() {
 
           <div className="feat" data-reveal>
             <div className="feat-copy">
-              <span className="feat-kicker">A written answer</span>
               <h3>Written answers</h3>
               <p>
                 Ask, &ldquo;How much parental leave do I get?&rdquo; and get a short answer
@@ -104,7 +103,6 @@ export default function HowItWorksPage() {
 
           <div className="feat feat-flip" data-reveal>
             <div className="feat-copy">
-              <span className="feat-kicker">A chart</span>
               <h3>Charts and insights</h3>
               <p>
                 Ask, &ldquo;Show commits by author this quarter,&rdquo; and Handbook turns
@@ -118,7 +116,6 @@ export default function HowItWorksPage() {
 
           <div className="feat" data-reveal>
             <div className="feat-copy">
-              <span className="feat-kicker">A scheduled report</span>
               <h3>Scheduled reports</h3>
               <p>
                 Choose what you want to follow and set a daily, weekly or monthly
@@ -132,44 +129,7 @@ export default function HowItWorksPage() {
         </div>
       </section>
 
-      <section className="show-band landing-wrap" aria-labelledby="trust-title">
-        <div className="show-head" data-reveal>
-          <p className="landing-eyebrow">Clear and reliable</p>
-          <h2 id="trust-title" className="show-title">
-            Answers you can trust.
-          </h2>
-          <p className="show-lead">
-            Handbook keeps answers tied to your company&rsquo;s connected information.
-            When it cannot find enough information, it tells you.
-          </p>
-        </div>
-
-        <ol className="show-flow" aria-label="How answers stay accurate">
-          <li className="show-step" data-reveal style={{ ["--i" as string]: "0" }}>
-              <h3>Uses your connected information</h3>
-            <p>
-              Answers come from the documents, messages, tickets and code your team
-              connected.
-            </p>
-          </li>
-          <li className="show-step" data-reveal style={{ ["--i" as string]: "1" }}>
-            <h3>Says when information is missing</h3>
-            <p>
-              If the connected tools do not cover your question, Handbook says so
-              instead of filling the gap with a guess.
-            </p>
-          </li>
-          <li className="show-step" data-reveal style={{ ["--i" as string]: "2" }}>
-              <h3>Shows the original source</h3>
-            <p>
-              Answers link to the document, message or ticket they came from so you
-              can check the detail yourself.
-            </p>
-          </li>
-        </ol>
-      </section>
-
-      <section className="show-band show-band-tint" aria-labelledby="setup-title">
+      <section className="show-band" aria-labelledby="setup-title">
         <div className="landing-wrap">
           <div className="show-head" data-reveal>
             <p className="landing-eyebrow">Getting started</p>
@@ -238,7 +198,7 @@ export default function HowItWorksPage() {
         </div>
       </section>
 
-      <section className="show-band vow landing-wrap" aria-labelledby="privacy-title">
+      <section className="show-band show-band-tint vow landing-wrap" aria-labelledby="privacy-title">
         <span className="vow-aura" aria-hidden />
         <p className="landing-eyebrow" data-reveal>
           Your data

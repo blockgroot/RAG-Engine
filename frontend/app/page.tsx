@@ -3,11 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { BrandGlyph } from "@/components/BrandGlyph";
 import { FeatureIcon } from "@/components/FeatureIcon";
 import { LandingProductArt } from "@/components/LandingProductArt";
-import { AnswerArt } from "@/components/HowAnswerArt";
-import { LandingPromptCycle } from "@/components/LandingPromptCycle";
 import { RevealOnScroll, useSpotlight } from "@/components/Reveal";
 import { LandingShell } from "@/components/LandingShell";
 import { LandingSourcesOrbit } from "@/components/LandingSourcesOrbit";
@@ -114,51 +111,31 @@ export default function RootPage() {
           </p>
         </div>
 
-        {/* The panel used to hold one line of typing in a lot of padding, which
-            read as an unfinished card. It now shows the whole exchange: the
-            question being typed, the answer landing with the document it came
-            from, and the other things you could have asked instead. */}
-        <div className="show-demo" data-reveal>
-          <div className="show-demo-glow" aria-hidden />
-          <div className="show-demo-body">
-            <div className="show-demo-ask">
-              <LandingPromptCycle />
-            </div>
-            <AnswerArt bare />
-          </div>
-          <ul className="show-demo-chips" aria-label="Other things you could ask">
-            <li>What&rsquo;s our expenses limit?</li>
-            <li>What shipped last week?</li>
-            <li>Who reviewed the checkout change?</li>
-          </ul>
-          <p className="show-demo-foot">
-            If the answer is not in your connected tools, Handbook tells you clearly.
-          </p>
-        </div>
-
         <ul className="show-list">
           <li className="show-item" data-reveal style={{ ["--i" as string]: "0" }}>
             <span className="show-item-mark">
               <FeatureIcon name="document" />
             </span>
             <div>
-              <h3>Find answers quickly</h3>
+              <h3>Get the answer, not a list of links</h3>
               <p>
-                Ask about policies, expenses, onboarding or decisions. Every answer
-                links to the document it came from.
+                Policies, expenses, onboarding, decisions. The document it came
+                from is linked underneath.
               </p>
+              <p className="show-item-ask">&ldquo;How much leave do I have left?&rdquo;</p>
             </div>
           </li>
           <li className="show-item" data-reveal style={{ ["--i" as string]: "1" }}>
             <span className="show-item-mark">
-              <BrandGlyph name="github" size={24} />
+              <FeatureIcon name="code" />
             </span>
             <div>
-              <h3>Understand your codebase</h3>
+              <h3>Catch up on what your team shipped</h3>
               <p>
-                Ask what changed, which pull requests are open, or who reviewed them.
-                GitHub is checked when you ask, so the answer stays current.
+                GitHub is checked at the moment you ask, so what you read is what
+                is there right now.
               </p>
+              <p className="show-item-ask">&ldquo;Who reviewed the checkout change?&rdquo;</p>
             </div>
           </li>
           <li className="show-item" data-reveal style={{ ["--i" as string]: "2" }}>
@@ -166,11 +143,12 @@ export default function RootPage() {
               <FeatureIcon name="chart" />
             </span>
             <div>
-              <h3>Turn activity into charts</h3>
+              <h3>See a chart when the answer is a number</h3>
               <p>
-                Ask for a count over time and Handbook creates a clear chart with the
-                items behind each result.
+                Counted from the activity in your tools, with the items behind
+                every bar.
               </p>
+              <p className="show-item-ask">&ldquo;Chart commits by author this quarter&rdquo;</p>
             </div>
           </li>
         </ul>
@@ -192,7 +170,7 @@ export default function RootPage() {
           <ol className="show-flow" aria-label="What happens on its own">
             <li className="show-step" data-reveal style={{ ["--i" as string]: "0" }}>
               <span className="show-step-mark">
-                <BrandGlyph name="drive" size={22} />
+                <FeatureIcon name="refresh" />
               </span>
               <h3>Automatic updates</h3>
               <p>
@@ -298,7 +276,7 @@ export default function RootPage() {
             <ol className="landing-close-orbit" aria-label="Getting started path">
               <li className="landing-close-step" style={{ ["--step" as string]: "0" }}>
                 <span className="landing-close-step-mark" aria-hidden>
-                  <BrandGlyph name="notion" size={18} />
+                  <FeatureIcon name="link" />
                 </span>
                 <span className="landing-close-step-body">
                   <strong>Connect</strong>
@@ -307,7 +285,7 @@ export default function RootPage() {
               </li>
               <li className="landing-close-step" style={{ ["--step" as string]: "1" }}>
                 <span className="landing-close-step-mark" aria-hidden>
-                  <BrandGlyph name="sendgrid" size={20} />
+                  <FeatureIcon name="invite" />
                 </span>
                 <span className="landing-close-step-body">
                   <strong>Invite</strong>
