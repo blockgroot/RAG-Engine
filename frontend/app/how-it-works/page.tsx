@@ -1,37 +1,611 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { BrandGlyph } from "@/components/BrandGlyph";
-import { BrandMark } from "@/components/BrandMark";
 import { LandingShell } from "@/components/LandingShell";
 
 export const metadata: Metadata = {
   title: "How it works",
-  description: "See how Handbook turns a workplace question into a clear answer.",
+  description:
+    "How Handbook turns a workplace question into a grounded answer from your connected sources.",
 };
-
-const steps = [
-  { number: "01", title: "Ask naturally", text: "Type the question the way you would ask a teammate. No special words or search tricks needed." },
-  { number: "02", title: "Handbook finds the thread", text: "It looks across the sources your team connected and brings the most useful context together." },
-  { number: "03", title: "Get the answer", text: "You get a clear reply with its source. If the answer is not there, Handbook will not make one up." },
-];
 
 export default function HowItWorksPage() {
   return (
     <LandingShell active="how">
-      <section className="how-new-hero landing-wrap" aria-labelledby="how-new-title">
-        <div><p className="landing-eyebrow">A simpler way to work</p><h1 id="how-new-title">Ask. Find.<br /><em>Keep moving.</em></h1><p>Handbook turns scattered team knowledge into an answer you can use, without making you learn another system.</p><Link href="/signup" className="button home-primary">Try Handbook <span aria-hidden>↗</span></Link></div>
-        <div className="how-new-hero-art" aria-label="Handbook finds an answer from connected sources">
-          <div className="how-art-label how-art-label-one"><BrandGlyph name="notion" size={17} /> Notes</div><div className="how-art-label how-art-label-two"><BrandGlyph name="slack" size={17} /> Conversations</div><div className="how-art-label how-art-label-three"><BrandGlyph name="linear" size={17} /> Work</div><div className="how-art-core"><BrandMark /><span>One clear answer</span></div><i className="how-art-path path-one" /><i className="how-art-path path-two" /><i className="how-art-path path-three" />
+      <section className="how-hero landing-wrap" aria-labelledby="how-title">
+        <p className="landing-eyebrow">Product walkthrough</p>
+        <h1 id="how-title" className="how-title">
+          From question to grounded answer.
+        </h1>
+        <p className="how-lead">
+          Handbook retrieves from your company&rsquo;s connected content,
+          checks confidence, then answers only from that evidence — or clearly
+          says when it can&rsquo;t. Ask once and it can keep answering on a
+          weekly or monthly schedule.
+        </p>
+      </section>
+
+      <div className="how-flow landing-wrap" aria-label="Answer pipeline">
+        <article className="how-flow-step">
+          <span className="how-flow-num">1</span>
+          <strong>Ask</strong>
+          <p>Type a question. Follow-ups are rewritten into a clear standalone ask.</p>
+        </article>
+        <span className="how-flow-arrow" aria-hidden />
+        <article className="how-flow-step">
+          <span className="how-flow-num">2</span>
+          <strong>Retrieve</strong>
+          <p>Search your org&rsquo;s connected content — never another company&rsquo;s.</p>
+        </article>
+        <span className="how-flow-arrow" aria-hidden />
+        <article className="how-flow-step">
+          <span className="how-flow-num">3</span>
+          <strong>Verify</strong>
+          <p>If the best match is too weak, we refuse instead of guessing.</p>
+        </article>
+        <span className="how-flow-arrow" aria-hidden />
+        <article className="how-flow-step">
+          <span className="how-flow-num">4</span>
+          <strong>Answer</strong>
+          <p>The reply stays on retrieved text — or a clear fallback if it can&rsquo;t.</p>
+        </article>
+      </div>
+
+      <section className="landing-section landing-wrap" aria-labelledby="paths-title">
+        <div className="landing-section-head">
+          <div>
+            <p className="landing-eyebrow">Two paths</p>
+            <h2 id="paths-title" className="landing-section-title">
+              Search your documents, conversations, and code.
+            </h2>
+          </div>
+          <p className="landing-section-lead">
+            Every connected source works one of two ways &mdash; synced ahead of
+            time, or looked up live. You never pick: one box takes the question
+            and Handbook measures which source resembles it.
+          </p>
+        </div>
+
+        <div className="how-paths">
+          <article className="how-path">
+            <header className="how-path-head">
+              <div className="how-path-sources" aria-label="Synced sources">
+                <BrandGlyph name="notion" size={24} />
+                <BrandGlyph name="drive" size={24} />
+                <BrandGlyph name="slack" size={24} />
+                <BrandGlyph name="linear" size={24} />
+              </div>
+              <div>
+                <strong>Synced content</strong>
+                <span>Notion &middot; Drive &middot; Slack &middot; Linear</span>
+              </div>
+            </header>
+            <ol>
+              <li>Admin connects a source and runs a sync.</li>
+              <li>Content is stored under your organization, one tab per source.</li>
+              <li>Questions retrieve that source&rsquo;s content, then pass a confidence check.</li>
+              <li>Answers stay grounded in that content, or refuse when they can&rsquo;t.</li>
+            </ol>
+          </article>
+
+          <article className="how-path">
+            <header className="how-path-head">
+              <div className="how-path-sources" aria-label="Live-lookup sources">
+                <BrandGlyph name="github" size={24} />
+              </div>
+              <div>
+                <strong>Live lookup</strong>
+                <span>GitHub</span>
+              </div>
+            </header>
+            <ol>
+              <li>Nothing is pre-indexed — reads happen when you ask.</li>
+              <li>Handbook may fetch a README or recent commits once.</li>
+              <li>Only repositories you authorized are allowed.</li>
+              <li>If nothing usable returns, you get a clear fallback.</li>
+            </ol>
+          </article>
+
+          <article className="how-path">
+            <header className="how-path-head">
+              <div className="how-path-sources" aria-label="Schedulable sources">
+                <BrandGlyph name="github" size={24} />
+                <BrandGlyph name="slack" size={24} />
+                <BrandGlyph name="linear" size={24} />
+              </div>
+              <div>
+                <strong>On a schedule</strong>
+                <span>GitHub &middot; Slack &middot; Linear &middot; Notion &middot; Drive</span>
+              </div>
+            </header>
+            <ol>
+              <li>You describe what to watch, and pick daily, weekly or monthly.</li>
+              <li>Each run reads only what changed since your last report.</li>
+              <li>Nothing is stored from the source — it is read at run time.</li>
+              <li>You get an email; the full report opens in Handbook.</li>
+            </ol>
+          </article>
         </div>
       </section>
 
-      <section className="how-new-steps landing-wrap" aria-labelledby="how-steps-title"><div className="how-new-section-heading"><p className="landing-eyebrow">The whole experience</p><h2 id="how-steps-title">Three simple moves.</h2></div><div className="how-step-list">{steps.map((step, index) => <article className="how-step-row" key={step.number} style={{ ["--step-delay" as string]: `${index * 120}ms` }}><span>{step.number}</span><div><h3>{step.title}</h3><p>{step.text}</p></div><b aria-hidden>{index === 0 ? "↗" : index === 1 ? "⌁" : "✓"}</b></article>)}</div></section>
+      <section className="landing-section landing-wrap" aria-labelledby="reports-title">
+        <div className="landing-section-head">
+          <div>
+            <p className="landing-eyebrow">Scheduled reports</p>
+            <h2 id="reports-title" className="landing-section-title">
+              Stop chasing the same update every week.
+            </h2>
+          </div>
+          <p className="landing-section-lead">
+            Some questions are not one-offs — &ldquo;what shipped&rdquo;,
+            &ldquo;what is stuck&rdquo;, &ldquo;what did the team decide&rdquo;.
+            Ask once, and the answer arrives on its own.
+          </p>
+        </div>
 
-      <section className="how-new-sources landing-wrap" aria-labelledby="how-sources-title"><div className="how-sources-copy"><p className="landing-eyebrow">Your tools, together</p><h2 id="how-sources-title">One question.<br /><em>The right place.</em></h2><p>Connect the tools your team already trusts. Handbook brings them into one place, while keeping each source and workspace in its proper lane.</p></div><div className="how-source-stage"><div className="how-source-line" /><div className="how-source-orbit"><span className="orbit-source orbit-notion"><BrandGlyph name="notion" size={20} /></span><span className="orbit-source orbit-drive"><BrandGlyph name="drive" size={20} /></span><span className="orbit-source orbit-slack"><BrandGlyph name="slack" size={20} /></span><span className="orbit-source orbit-github"><BrandGlyph name="github" size={20} /></span><span className="orbit-core"><BrandMark /></span></div></div></section>
+        <div className="landing-feature-grid">
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="schedule" size={22} />
+            </span>
+            <h3>Your words, every run</h3>
+            <p>
+              Pick the space and the service, then say what the report should
+              cover in plain English. That instruction is re-applied on every
+              run — you never rewrite it.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="linear" size={22} />
+            </span>
+            <h3>Only what changed</h3>
+            <p>
+              Each report covers the window since the last one was delivered, so
+              nothing repeats and nothing is skipped — even if a run fails and
+              retries later.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="document" size={22} />
+            </span>
+            <h3>Every claim traceable</h3>
+            <p>
+              Each report lists the commits, messages, or issues it was built
+              from, with links straight to the source. The summary never writes a
+              link, so none can be invented.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="secure" size={22} />
+            </span>
+            <h3>Yours alone</h3>
+            <p>
+              A report is personal — nobody else in the company sees yours, and a
+              report scoped to one space only ever reads that space&rsquo;s own
+              connection.
+            </p>
+          </article>
+        </div>
+      </section>
 
-      <section className="how-new-trust landing-wrap" aria-labelledby="how-trust-title"><div><p className="landing-eyebrow">Designed for confidence</p><h2 id="how-trust-title">Useful when it knows.<br /><em>Honest when it doesn&apos;t.</em></h2></div><div className="how-trust-notes"><p><BrandGlyph name="secure" size={20} /><span><strong>Your content stays yours.</strong> Every search is limited to your organization and workspace.</span></p><p><BrandGlyph name="document" size={20} /><span><strong>Sources stay visible.</strong> See where an answer came from, not just what it says.</span></p><p><BrandGlyph name="private" size={20} /><span><strong>No confident guessing.</strong> When your sources do not cover it, Handbook tells you.</span></p></div></section>
+      <section className="landing-section landing-wrap" aria-labelledby="charts-title">
+        <div className="landing-section-head">
+          <div>
+            <p className="landing-eyebrow">Charts</p>
+            <h2 id="charts-title" className="landing-section-title">
+              A number you can check, not a picture of one.
+            </h2>
+          </div>
+          <p className="landing-section-lead">
+            Ask for a chart in the same box you ask everything else. A wrong
+            sentence hedges and cites; a wrong bar chart reads as a
+            measurement &mdash; so the model is never allowed near the arithmetic.
+          </p>
+        </div>
 
-      <section className="how-new-final landing-wrap" aria-labelledby="how-final-title"><div className="how-final-orb"><BrandMark /></div><p className="landing-eyebrow">Start with one question</p><h2 id="how-final-title">Your team already<br /><em>has the answers.</em></h2><Link href="/signup" className="button home-primary">Request access <span aria-hidden>↗</span></Link></section>
+        <div className="landing-feature-grid landing-feature-grid-3">
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="chart" size={22} />
+            </span>
+            <h3>Counted, never composed</h3>
+            <p>
+              Every value is a database count over activity we recorded. The
+              model only picks WHICH question to count &mdash; it never writes a
+              number, an axis or a date, and there is no image to squint at.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="document" size={22} />
+            </span>
+            <h3>The rows are one hover away</h3>
+            <p>
+              Hover a bar or a slice and it shows the actual commits, pages or
+              issues counted &mdash; who, what and when &mdash; filtered to the
+              section under your cursor.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="private" size={22} />
+            </span>
+            <h3>An empty chart says which empty</h3>
+            <p>
+              Nothing recorded yet, nothing in this window but older activity
+              exists, or a source nobody has connected &mdash; three different
+              answers, because they need three different next steps.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section className="landing-section landing-wrap" aria-labelledby="pulse-title">
+        <div className="landing-section-head">
+          <div>
+            <p className="landing-eyebrow">Survey sentiment</p>
+            <h2 id="pulse-title" className="landing-section-title">
+              Measure the mood without reading the answers.
+            </h2>
+          </div>
+          <p className="landing-section-lead">
+            Connect a Google Form and pick which surveys count. This is the one
+            place a model touches your text &mdash; and it is fenced so that what
+            people wrote cannot come back out.
+          </p>
+        </div>
+
+        <div className="landing-feature-grid landing-feature-grid-3">
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="sentiment" size={22} />
+            </span>
+            <h3>Read once, then discarded</h3>
+            <p>
+              Each answer is labelled once and the text is thrown away. Only the
+              label, the score and the question survive &mdash; with no respondent
+              handle at all, so &ldquo;what did someone say?&rdquo; has no answer
+              to give.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="secure" size={22} />
+            </span>
+            <h3>Two floors, enforced in the data</h3>
+            <p>
+              A topic under five responses is never charted, and the charts are
+              owners-only. Both are conditions in the query, not rules in a
+              checklist &mdash; on a small team, &ldquo;3 of 4 are
+              negative&rdquo; names people.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="private" size={22} />
+            </span>
+            <h3>Never indexed, never searchable</h3>
+            <p>
+              Responses are not part of the corpus that answers questions, and
+              there is deliberately no single company score &mdash; one number is
+              the thing people manage instead of the thing it measured.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section className="landing-section landing-wrap" aria-labelledby="byo-title">
+        <div className="landing-section-head">
+          <div>
+            <p className="landing-eyebrow">Your own model</p>
+            <h2 id="byo-title" className="landing-section-title">
+              Answer on the model you chose and pay for.
+            </h2>
+          </div>
+          <p className="landing-section-lead">
+            Add one API key and everyone in your company can pick it, per
+            question. Leave it alone and the built-in models keep working exactly
+            as before.
+          </p>
+        </div>
+
+        <div className="landing-feature-grid landing-feature-grid-3">
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="model" size={22} />
+            </span>
+            <h3>The providers you already use</h3>
+            <p>
+              OpenAI, Anthropic, Google Gemini, Mistral, Groq, DeepSeek, xAI,
+              NVIDIA, Together, Fireworks, Cerebras, Perplexity, Cohere or
+              OpenRouter &mdash; a provider, a model id and a key.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="schedule" size={22} />
+            </span>
+            <h3>Tested before it is saved</h3>
+            <p>
+              We send one short message on your key first, so a mistyped model id
+              never becomes a broken option for your team &mdash; and you see the
+              provider&rsquo;s own words if it fails.
+            </p>
+          </article>
+          <article className="landing-feature">
+            <span className="landing-feature-mark">
+              <BrandGlyph name="private" size={22} />
+            </span>
+            <h3>We say what it is used for</h3>
+            <p>
+              Your key answers chat questions. Preparing your documents and the
+              internal answer-quality check stay on ours, so one corpus is never
+              half-written by two models. Nothing is hidden in a tooltip.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section className="landing-section landing-wrap" aria-labelledby="isolate-title">
+        <div className="landing-section-head">
+          <div>
+            <p className="landing-eyebrow">Access & safety</p>
+            <h2 id="isolate-title" className="landing-section-title">
+              Your company&rsquo;s boundary, end to end.
+            </h2>
+          </div>
+          <p className="landing-section-lead">
+            Isolation is built into every read. Workspaces add a second,
+            tighter scope for team content inside the same company.
+          </p>
+        </div>
+        <div className="how-boundary" role="list" aria-label="Access and safety guarantees">
+          <div className="how-boundary-item" role="listitem">
+            <span className="how-boundary-mark" aria-hidden>
+              <BrandGlyph name="secure" size={24} />
+            </span>
+            <strong>Organization isolation</strong>
+            <p>
+              Searches always include your org. Another company&rsquo;s
+              documents are never in the result set.
+            </p>
+            <span className="how-boundary-tag">Scoped</span>
+          </div>
+          <div className="how-boundary-item" role="listitem">
+            <span className="how-boundary-mark" aria-hidden>
+              <BrandGlyph name="workspace" size={24} />
+            </span>
+            <strong>Team workspaces</strong>
+            <p>
+              Invite colleagues into a space with its own connected
+              sources — ideal for projects and shared team knowledge.
+            </p>
+            <span className="how-boundary-tag">Flexible</span>
+          </div>
+          <div className="how-boundary-item" role="listitem">
+            <span className="how-boundary-mark" aria-hidden>
+              <BrandGlyph name="sendgrid" size={24} />
+            </span>
+            <strong>Invite-only access</strong>
+            <p>
+              Members sign in with a magic link. Admins invite people by
+              email, and there is no open join into someone else&rsquo;s
+              company.
+            </p>
+            <span className="how-boundary-tag">Invite-only</span>
+          </div>
+          <div className="how-boundary-item" role="listitem">
+            <span className="how-boundary-mark" aria-hidden>
+              <BrandGlyph name="private" size={24} />
+            </span>
+            <strong>Your content, kept private</strong>
+            <p>
+              Connected documents are indexed only to answer your
+              team&rsquo;s questions — never used to train any AI model,
+              and never accessible to another company.
+            </p>
+            <span className="how-boundary-tag">Private</span>
+          </div>
+        </div>
+      </section>
+
+      <section className="landing-section landing-wrap how-why" aria-labelledby="why-title">
+        <div className="how-why-hero">
+          <p className="landing-eyebrow">Why Handbook</p>
+          <h2 id="why-title">Why teams connect — and what you get.</h2>
+          <p>
+            Workplace questions should land on your own documents, Slack
+            threads, and repos — not a model&rsquo;s guess. Handbook keeps
+            every answer grounded, scoped, and honest when the content
+            doesn&rsquo;t cover it.
+          </p>
+        </div>
+
+        <ol className="how-promise" aria-label="Why connect with Handbook">
+          <li className="how-promise-item" style={{ ["--i" as string]: "0" }}>
+            <span className="how-promise-index" aria-hidden>01</span>
+            <div className="how-promise-body">
+              <strong>Stop hunting across tools</strong>
+              <p>
+                One place for leave, benefits, expenses, channel decisions,
+                READMEs, and recent commits — instead of tab-hopping.
+              </p>
+            </div>
+            <span className="how-promise-tag">Ask once</span>
+          </li>
+          <li className="how-promise-item" style={{ ["--i" as string]: "1" }}>
+            <span className="how-promise-index" aria-hidden>02</span>
+            <div className="how-promise-body">
+              <strong>Trust answers you can rely on</strong>
+              <p>
+                Answers come only from your connected content. Weak evidence
+                means a clear refusal — never a confident invention.
+              </p>
+            </div>
+            <span className="how-promise-tag">Grounded</span>
+          </li>
+          <li className="how-promise-item" style={{ ["--i" as string]: "2" }}>
+            <span className="how-promise-index" aria-hidden>03</span>
+            <div className="how-promise-body">
+              <strong>Keep knowledge inside the company</strong>
+              <p>
+                Every search is org-scoped. Admins invite by email; other
+                tenants never see your content.
+              </p>
+            </div>
+            <span className="how-promise-tag">Isolated</span>
+          </li>
+        </ol>
+
+        <div className="how-included" aria-labelledby="offer-title">
+          <div className="how-included-copy">
+            <p className="landing-eyebrow">What you get</p>
+            <h3 id="offer-title">Connect once. Ask with confidence.</h3>
+            <p className="how-included-lead">
+              Sync Notion, Drive, Slack, or Linear, look up GitHub live, invite the
+              team with a magic link, and get grounded answers — or a clear
+              fallback when the connected content doesn&rsquo;t cover it.
+            </p>
+            <p className="how-included-for">
+              Built for <em>People &amp; ops</em>, <em>Engineering</em>, and{" "}
+              <em>Admins</em>.
+            </p>
+          </div>
+
+          <div className="how-constellation" aria-hidden>
+            <svg className="how-constellation-links" viewBox="0 0 280 260" fill="none">
+              <path
+                className="how-constellation-path"
+                d="M140 130 L70 48 M140 130 L140 42 M140 130 L210 48 M140 130 L58 175 M140 130 L222 175 M140 130 L140 222"
+              />
+            </svg>
+            <div className="how-constellation-core">
+              <span>Ask</span>
+            </div>
+            <span className="how-constellation-node how-node-a" style={{ ["--d" as string]: "0s" }}>
+              <BrandGlyph name="notion" size={20} />
+              <em>Notion</em>
+            </span>
+            <span className="how-constellation-node how-node-b" style={{ ["--d" as string]: "0.15s" }}>
+              <BrandGlyph name="drive" size={20} />
+              <em>Drive</em>
+            </span>
+            <span className="how-constellation-node how-node-c" style={{ ["--d" as string]: "0.3s" }}>
+              <BrandGlyph name="github" size={20} />
+              <em>GitHub</em>
+            </span>
+            <span className="how-constellation-node how-node-d" style={{ ["--d" as string]: "0.45s" }}>
+              <BrandGlyph name="sendgrid" size={22} />
+              <em>Magic link</em>
+            </span>
+            <span className="how-constellation-node how-node-e" style={{ ["--d" as string]: "0.6s" }}>
+              <BrandGlyph name="slack" size={20} />
+              <em>Slack</em>
+            </span>
+            <span className="how-constellation-node how-node-f" style={{ ["--d" as string]: "0.75s" }}>
+              <BrandGlyph name="linear" size={20} />
+              <em>Linear</em>
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <section className="landing-section landing-wrap how-craft" aria-labelledby="craft-title">
+        <div className="how-craft-head">
+          <p className="landing-eyebrow">How it answers</p>
+          <h2 id="craft-title" className="landing-section-title">
+            Built for how people actually ask.
+          </h2>
+          <p className="landing-section-lead">
+            Beyond connect and sync — the reply path is designed to understand
+            intent, stay clear, and stay honest.
+          </p>
+        </div>
+
+        <ol className="how-craft-zigzag" aria-label="Answer experience">
+          <li className="how-craft-step" style={{ ["--i" as string]: "0" }}>
+            <span className="how-craft-num" aria-hidden>01</span>
+            <div className="how-craft-card">
+              <span className="how-craft-kicker">Intent</span>
+              <strong>Understands intent</strong>
+              <p>
+                Follow-ups and shorthand become a clear standalone question before
+                retrieval — so “what about part-timers?” still finds the right document.
+              </p>
+            </div>
+          </li>
+          <li className="how-craft-step" style={{ ["--i" as string]: "1" }}>
+            <span className="how-craft-num" aria-hidden>02</span>
+            <div className="how-craft-card">
+              <span className="how-craft-kicker">Tone</span>
+              <strong>Answers with care</strong>
+              <p>
+                Clear, empathetic, workplace-ready language — what your documents
+                support, without fluff or invented certainty.
+              </p>
+            </div>
+          </li>
+          <li className="how-craft-step" style={{ ["--i" as string]: "2" }}>
+            <span className="how-craft-num" aria-hidden>03</span>
+            <div className="how-craft-card">
+              <span className="how-craft-kicker">Recovery</span>
+              <strong>Recovers when wording misses</strong>
+              <p>
+                Typos and alternate phrasings get a bounded second look — so a near
+                miss doesn&rsquo;t become a dead end.
+              </p>
+            </div>
+          </li>
+          <li className="how-craft-step" style={{ ["--i" as string]: "3" }}>
+            <span className="how-craft-num" aria-hidden>04</span>
+            <div className="how-craft-card">
+              <span className="how-craft-kicker">Memory</span>
+              <strong>Remembers the conversation</strong>
+              <p>
+                Recent turns stay in context; older ones fold into a running summary
+                so long chats stay coherent without starting over.
+              </p>
+            </div>
+          </li>
+          <li className="how-craft-step" style={{ ["--i" as string]: "4" }}>
+            <span className="how-craft-num" aria-hidden>05</span>
+            <div className="how-craft-card">
+              <span className="how-craft-kicker">Honesty</span>
+              <strong>Stays honest when it can&rsquo;t</strong>
+              <p>
+                Weak evidence means a clear fallback — never a confident guess.
+                External web answers are labelled when they apply.
+              </p>
+            </div>
+          </li>
+        </ol>
+      </section>
+
+      <section
+        className="landing-close landing-close-simple landing-wrap"
+        aria-labelledby="how-close"
+      >
+        <div className="landing-close-panel">
+          <div className="landing-close-copy">
+            <p className="landing-eyebrow">Ready when you are</p>
+            <h2 id="how-close">Clear answers. Honest when it can&rsquo;t.</h2>
+            <p className="landing-close-lead">
+              Request access to try Handbook with your own company sources.
+            </p>
+            <div className="landing-close-actions">
+              <Link href="/signup" className="button landing-cta-primary landing-close-primary">
+                Request access
+              </Link>
+              <Link href="/" className="landing-close-link">
+                Back to product overview
+              </Link>
+            </div>
+          </div>
+        </div>
+      </section>
     </LandingShell>
   );
 }
