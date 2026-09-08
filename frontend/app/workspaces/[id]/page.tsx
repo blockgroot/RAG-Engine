@@ -188,6 +188,25 @@ function WorkspaceDetailPageInner() {
     [workspaceId]
   );
 
+  /** Re-read this space's jobs and adopt any that are already running.
+   *
+   *  The SERVER queues the first ingest itself the moment a source is
+   *  connected or its folder/channels are saved (``autosync.sync_now``).
+   *  Nothing pushes that to the page, so without re-reading here the card
+   *  claims "first check due within the hour" and "Up to date" while an
+   *  ingest is actually running -- and Update then fails with "a sync is
+   *  already in progress", which reads as a bug rather than as the guard
+   *  working.
+   */
+  const adoptJobs = useCallback(async () => {
+    const list = await api.listWorkspaceJobs(workspaceId).catch(() => null);
+    if (!list) return;
+    setJobs(list);
+    const active = list.filter((j) => ACTIVE_STATUSES.has(j.status));
+    setWatchedJobId(active.length === 1 ? active[0].id : null);
+    if (active.length > 0) setPollToken((n) => n + 1);
+  }, [workspaceId]);
+
   useEffect(() => {
     if (!me || loaded.current) return;
     loaded.current = true;
@@ -208,14 +227,8 @@ function WorkspaceDetailPageInner() {
       })
       .catch(() => {})
       .finally(() => setLoadingConnections(false));
-    api.listWorkspaceJobs(workspaceId).then((list) => {
-      setJobs(list);
-      const active = list.filter((j) => ACTIVE_STATUSES.has(j.status));
-      if (active.length === 1) setWatchedJobId(active[0].id);
-      else if (active.length > 1) setWatchedJobId(null);
-      if (active.length > 0) setPollToken((n) => n + 1);
-    }).catch(() => {});
-  }, [me, workspaceId, refreshChanges, refreshWorkspace]);
+    void adoptJobs();
+  }, [me, workspaceId, refreshChanges, refreshWorkspace, adoptJobs]);
 
   useEffect(() => {
     if (!me) return;
@@ -275,6 +288,8 @@ function WorkspaceDetailPageInner() {
         : `${label} connected to this space.`
     );
     void refreshWorkspace();
+    // Connecting queues the first ingest server-side -- pick it up now.
+    void adoptJobs();
     api
       .listWorkspaceConnections(workspaceId)
       .then((list) => {
@@ -285,7 +300,7 @@ function WorkspaceDetailPageInner() {
       })
       .catch(() => {});
     router.replace(`/workspaces/${workspaceId}`, { scroll: false });
-  }, [me, searchParams, workspaceId, refreshWorkspace, refreshChanges, router]);
+  }, [me, searchParams, workspaceId, refreshWorkspace, refreshChanges, router, adoptJobs]);
 
   useEffect(() => {
     if (!me) return;
@@ -699,6 +714,8 @@ function WorkspaceDetailPageInner() {
                         onUpdate={handleUpdate}
                         onConfigSaved={(updated) => {
                           setConnections((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+                          // Saving the folder/channels queues the ingest server-side.
+                          void adoptJobs();
                           refreshChanges([updated]);
                           invalidateSuggestionsCache(workspaceId);
                           void refreshWorkspace();

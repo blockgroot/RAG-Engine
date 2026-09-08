@@ -1740,6 +1740,14 @@ table .role-chip.role-admin,
   color: var(--ink);
   transition: transform 0.22s var(--ease), box-shadow 0.22s var(--ease), border-color 0.22s var(--ease);
 }
+/* A suggested question can name a real document, and a filename
+   ("RAG_Bot_Meeting_Notes_03_Updated.docx") has no space to wrap at -- so the
+   text ran straight out of the card. The span needs min-width:0 because a
+   flex item's default min-width is its content, which here is one long word. */
+.suggested-chip-card > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .suggested-chip-icon {
   flex: none;
   margin-top: 0.1rem;

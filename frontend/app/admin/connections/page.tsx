@@ -165,6 +165,19 @@ function ConnectionsPageInner() {
     });
   }, []);
 
+  /** Re-read jobs and adopt any already running. See the space page's copy:
+   *  the server queues the first ingest itself on connect / scope-save
+   *  (``autosync.sync_now``), so a page that only knows about jobs it started
+   *  shows "first check due within the hour" over a running ingest. */
+  const adoptJobs = useCallback(async () => {
+    const list = await api.listJobs().catch(() => null);
+    if (!list) return;
+    setJobs(list);
+    const active = list.filter((j) => ACTIVE_STATUSES.has(j.status));
+    setWatchedJobId(active.length === 1 ? active[0].id : null);
+    if (active.length > 0) setPollToken((n) => n + 1);
+  }, []);
+
   useEffect(() => {
     if (loaded.current) return;
     loaded.current = true;
@@ -180,14 +193,8 @@ function ConnectionsPageInner() {
         /* useMe owns the auth redirect; leave the cards in their unknown state */
       })
       .finally(() => setLoadingConnections(false));
-    api.listJobs().then((list) => {
-      setJobs(list);
-      const active = list.filter((j) => ACTIVE_STATUSES.has(j.status));
-      if (active.length === 1) setWatchedJobId(active[0].id);
-      else if (active.length > 1) setWatchedJobId(null);
-      if (active.length > 0) setPollToken((n) => n + 1);
-    }).catch(() => undefined);
-  }, []);
+    void adoptJobs();
+  }, [adoptJobs]);
 
   const hasActiveJob = jobs.some((j) => ACTIVE_STATUSES.has(j.status));
   useJobPolling({
@@ -352,6 +359,8 @@ function ConnectionsPageInner() {
                     setConnections((prev) =>
                       prev.map((c) => (c.id === updated.id ? updated : c))
                     );
+                    // Saving the folder/channels queues the ingest server-side.
+                    void adoptJobs();
                     refreshChanges([updated]);
                     invalidateSuggestionsCache(null);
                   }}
