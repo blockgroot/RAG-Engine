@@ -396,6 +396,7 @@ embeds nothing** (the `app/githublive/` pattern).
   (prompt, provider, cadence, `space_name`) — re-resolving would rewrite
   history on an edit or rename. No excerpt of the report text in the mail: a
   two-line preview of a grounded summary reads as the whole answer.
+- **The report page is the source of truth**: `/schedulers/reports` lists stored rows newest-first, `/schedulers/reports/{id}` renders the saved `report_text`, `items`, `notes`, window, and `delivered` flag from `scheduler_reports` only, so the mail is just a link back into the app.
 - **Fetchers return an `ActivityDigest`**: structured items (summary + url) +
   coverage notes + prompt text. **The email renders links, never the model** —
   the prompt forbids writing URLs, so a fabricated link is impossible rather

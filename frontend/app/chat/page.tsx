@@ -346,7 +346,12 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                 ? "This space isn’t ready yet"
                 : "Your company isn’t ready yet"}
             </h1>
-            {workspaceId ? (
+            {workspaceId && workspaceRole === "owner" ? (
+              <p className="muted">
+                A new space starts empty. Connect this space’s documents and the first refresh
+                starts on its own.
+              </p>
+            ) : workspaceId ? (
               <p className="muted">
                 The owner still needs to connect documents and finish the first refresh. This page
                 updates on its own.
@@ -361,12 +366,23 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                 An admin still needs to connect your company’s documents. This page updates on its own.
               </p>
             )}
-            <div className="pulse-dot" aria-hidden />
-            <p className="muted" style={{ fontSize: "0.85rem" }}>
-              {syncing
-                ? "Refreshing documents — Ask unlocks when they’re ready…"
-                : "Waiting for the first refresh to finish…"}
-            </p>
+            {/* An owner with nothing connected is not waiting on anything — a
+                progress line there reads as a stuck sync rather than a step
+                they have to take. */}
+            {workspaceId && workspaceRole === "owner" && !syncing ? (
+              <Link className="btn" href={`/workspaces/${workspaceId}`}>
+                Connect documents
+              </Link>
+            ) : (
+              <>
+                <div className="pulse-dot" aria-hidden />
+                <p className="muted" style={{ fontSize: "0.85rem" }}>
+                  {syncing
+                    ? "Refreshing documents — Ask unlocks when they’re ready…"
+                    : "Waiting for the first refresh to finish…"}
+                </p>
+              </>
+            )}
           </div>
         </main>
       </AppShell>
