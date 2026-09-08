@@ -13,6 +13,8 @@ own org.
 
 from __future__ import annotations
 
+import re
+
 import json
 import logging
 
@@ -222,6 +224,44 @@ def _spaces(org_id: str, user_id: str) -> list[dict]:
     return spaces
 
 
+#: What a member is likely to CALL each service in a prompt. Deliberately tight
+#: -- an alias that can appear innocently in a sentence would hijack the report
+#: (the reason "repo" is not a GitHub alias and "docs" is not a Drive one).
+_PROVIDER_ALIASES: dict[str, tuple[str, ...]] = {
+    "github": ("github",),
+    "slack": ("slack",),
+    "linear": ("linear",),
+    "notion": ("notion",),
+    "google": ("google drive", "google", "drive", "gdrive"),
+}
+
+
+def _named_provider(prompt: str, available: list[str]) -> str | None:
+    """The service the prompt NAMES, when it names exactly one of them.
+
+    The 400 below tells people to "mention it in the prompt", and until this
+    existed that advice did nothing: the only classifier was a cosine probe
+    over embedded chunks, so writing "in linear" changed the wording but not
+    the measurement, and the same error came back. Someone who names the app
+    has answered the question being asked, and a word match beats a similarity
+    score at reading their intent.
+
+    Checked BEFORE the probe for the reason the chat router checks a named
+    repo first: a Notion page ABOUT Linear can outscore Linear itself.
+
+    Two named services fall through to the probe rather than guess between
+    them -- the wrong standing report is worse than one more question.
+    """
+    text = (prompt or "").lower()
+    hits = {
+        provider
+        for provider in available
+        for alias in _PROVIDER_ALIASES.get(provider, ())
+        if re.search(rf"\b{re.escape(alias)}\b", text)
+    }
+    return hits.pop() if len(hits) == 1 else None
+
+
 def _classify_provider(
     prompt: str, org_id: str, user_id: str, workspace_id: str | None
 ) -> str:
@@ -259,6 +299,11 @@ def _classify_provider(
     # probe here saves an embedding on the overwhelmingly common tenant.
     if len(available) == 1:
         return available[0]
+
+    named = _named_provider(prompt, available)
+    if named is not None:
+        logger.info("Scheduler provider named in the prompt: %s", named)
+        return named
 
     from ..agent.routing import choose_agent
 

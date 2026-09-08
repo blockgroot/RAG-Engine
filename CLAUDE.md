@@ -444,6 +444,16 @@ embeds nothing** (the `app/githublive/` pattern).
   sources aren't schedulable yet** — an empty `providers` list plus a
   `connected` list, so "Meeting notes has Drive, not schedulable" is visible
   instead of the space silently vanishing.
+- **Naming the app in the prompt PICKS it** (`api/schedulers._named_provider`,
+  checked before the cosine probe). The 400 tells people to "mention it in the
+  prompt" and that advice did nothing: the only classifier was `choose_agent`'s
+  probe over embedded chunks, so writing "...remaining in linear" changed the
+  wording and not the measurement, and the same error came back. Ordered ahead
+  of the probe for the reason the chat router puts a named repo first — a
+  Notion page ABOUT Linear can outscore Linear itself. Aliases are deliberately
+  tight (no "repo", no "docs"), and TWO named services fall through to the
+  probe rather than guess: a standing wrong report is worse than one more
+  question (`tests/test_scheduler_named_provider.py`).
 - The setup-chat endpoint stays **org-wide only** (it has no space slot); the
   page now uses explicit space/service/cadence dropdowns, since which
   connection is read is not a thing to infer from prose.
