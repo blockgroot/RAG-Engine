@@ -117,17 +117,8 @@ export function FormsPicker({
 
   return (
     <div className="forms-picker stack">
-      <p className="muted" style={{ margin: 0 }}>
-        Pick the surveys to measure. Each answer is read once, labelled, and the
-        text is thrown away &mdash; no answer, and no respondent, is ever stored or
-        shown. Nothing selected means nothing is read.
-      </p>
-
       {forms.length === 0 ? (
-        <p className="muted">
-          No forms visible to this Google connection yet. Create one in Google Forms,
-          or check the account you connected, then reopen this.
-        </p>
+        <p className="muted">No forms in this Google account yet.</p>
       ) : (
         <div className="forms-list">
           {forms.map((form) => (
@@ -149,12 +140,6 @@ export function FormsPicker({
         </button>
         {savedNote && <span className="muted">{savedNote}</span>}
       </div>
-
-      <p className="muted forms-foot">
-        Charts stay owners-only, and a question with fewer than five responses is
-        never charted &mdash; a sentiment chart of three people is a chart of who
-        said it.
-      </p>
     </div>
   );
 }

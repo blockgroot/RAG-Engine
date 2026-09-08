@@ -79,7 +79,7 @@ export function FormsCard({
 
       <p className="muted" style={{ margin: "0.65rem 0 0" }}>
         {connection
-          ? "Read once for a positive-or-negative label, then the answer text is thrown away. Never indexed, so a survey answer can never come back in a chat answer."
+          ? "Read once for a sentiment label. Answers are never stored, never indexed."
           : "Uses your Google connection above — connect Google Drive first, then pick which surveys to measure."}
       </p>
 
