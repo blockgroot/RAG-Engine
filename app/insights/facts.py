@@ -17,6 +17,7 @@ import logging
 
 from ..core.exceptions import ProviderError
 from ..db.connection import get_connection
+from ..sources.factory import INDEXED_PROVIDERS
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,9 @@ logger = logging.getLogger(__name__)
 #: chart is indistinguishable from "no activity" -- so ``record_document_facts``
 #: raises instead of quietly succeeding. GitHub's facts come from
 #: ``github_facts.py`` and its own live reads.
-DOCUMENT_PROVIDERS = ("notion", "google", "slack", "linear")
+#: Imported, not restated: a second copy of this list is what let a
+#: disconnected Linear keep its documents (see connection_ops).
+DOCUMENT_PROVIDERS = INDEXED_PROVIDERS
 
 #: The one ``activity_facts.kind`` this module writes. Notion pages, Drive
 #: files, Slack threads and Linear issues all arrive as documents, so they

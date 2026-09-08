@@ -475,6 +475,18 @@ elapsed).
   `AUTO_SYNC_BATCH_SIZE`, never the interval. Render instance-hours are
   unaffected — the tick cadence, not the sync interval, is what keeps the box
   awake.
+- **The FIRST ingest happens on connect, not on the next tick**
+  (`autosync.sync_now`, called from the OAuth callback and both scope-save
+  routes). A connection whose content is invisible for up to an interval reads
+  as broken, and "delete the manual sync chore" cannot mean "wait an hour to
+  see anything". It stamps `last_sync_at` exactly as the tick does, so the new
+  connection does not immediately re-qualify as due and earn a second job.
+  `SCOPED_PROVIDERS` (`google`, `slack`) are queued when the FOLDER or CHANNELS
+  are saved rather than at connect: their adapters raise without a scope, so an
+  eager job would only manufacture a failure. GitHub is skipped via
+  `UNSYNCABLE_PROVIDERS`. Never raises — an already-active job is a no-op and a
+  queue failure leaves the tick to catch it, so a connect that succeeded can
+  never be failed by the sync it triggers (`tests/test_first_sync.py`).
 - **`last_sync_at` is stamped on ATTEMPT, not success** — deliberately. One
   failed sync costs one interval of freshness, which is visible; a hot retry
   loop against a provider's rate limit is not. `needs_reauth` rows are skipped
@@ -1164,6 +1176,17 @@ frontend/ Next.js 15 portal · tests/ pytest
 - **A workspace GitHub connect must never bind the org's installation**
   (compare installation *ids*, not account type), and a workspace with no
   GitHub must raise rather than fall back — don't add a fallback.
+- **Disconnecting must leave nothing that can still answer.**
+  `connection_ops._INDEXED_PROVIDERS` was a hand-kept copy missing **linear**,
+  so disconnecting Linear dropped the OAuth row and left every issue indexed:
+  the starter chips still offered Linear questions, retrieval still returned
+  Linear chunks, and the UI's "Indexed documents for this source will be
+  deleted" was simply false. Both copies now read `sources.factory.
+  INDEXED_PROVIDERS` (`insights.facts.DOCUMENT_PROVIDERS` was the other), which
+  sits next to the adapter branches it describes. Disconnect also clears the
+  org's `query_answer_cache` for the same reason an ingest does — a cached
+  answer outlives the content it was built from, so a disconnected source keeps
+  answering for the TTL (`tests/test_disconnect_purge.py`).
 - **Never delete on one unverified listing** — `_sanitize_removals` refuses
   to drop >50% of known docs (above a 5-doc floor); a suspicious first sync
   retries once.

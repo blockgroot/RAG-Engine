@@ -29,6 +29,7 @@ from ..core.exceptions import AuthError, ConfigurationError, OAuthReauthRequired
 from ..githublive import refresh_installation_scope
 from ..ingestion import detect_source_changes
 from ..jobs import JobAlreadyActiveError, enqueue, get_job, has_active_job, list_jobs
+from ..jobs.autosync import sync_now
 from .serialize import job_payload
 from ..sources import (
     build_source_adapter,
@@ -402,6 +403,11 @@ def put_connection_config(
             # Drop the old folder's corpus immediately so Ask cannot keep citing it.
             purged = purge_provider_documents(session.org_id, conn.provider)
 
+        # Naming the folder is the request to index it: the adapter could not
+        # run before this point, so this is the first moment a sync is possible
+        # at all, and waiting a tick would read as a broken connection.
+        sync_now(session.org_id, connection_id, provider=conn.provider)
+
         return {
             "connection_id": connection_id,
             "provider": conn.provider,
@@ -439,6 +445,8 @@ def put_connection_config(
         # A dropped channel's corpus must not keep being cited (mirrors the
         # Drive folder-swap purge); a pure addition needs no purge.
         purged = purge_provider_documents(session.org_id, conn.provider)
+
+    sync_now(session.org_id, connection_id, provider=conn.provider)
 
     return {
         "connection_id": connection_id,

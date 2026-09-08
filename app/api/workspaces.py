@@ -38,6 +38,7 @@ from ..core.exceptions import (
 from ..githublive import refresh_installation_scope
 from ..ingestion import detect_source_changes
 from ..jobs import JobAlreadyActiveError, enqueue, get_job, has_active_job, list_jobs
+from ..jobs.autosync import sync_now
 from ..sources import (
     build_source_adapter,
     extract_drive_folder_id,
@@ -659,6 +660,11 @@ def put_connection_config(
             purged = purge_provider_documents(
                 session.org_id, conn.provider, workspace_id=workspace_id
             )
+        # Naming the folder is the request to index it -- see admin's copy.
+        sync_now(
+            session.org_id, connection_id, provider=conn.provider,
+            workspace_id=workspace_id,
+        )
         return {
             "connection_id": connection_id,
             "provider": conn.provider,
@@ -700,6 +706,11 @@ def put_connection_config(
         purged = purge_provider_documents(
             session.org_id, conn.provider, workspace_id=workspace_id
         )
+    # Naming the scope is the request to index it -- see admin.put_connection_config.
+    sync_now(
+        session.org_id, connection_id, provider=conn.provider,
+        workspace_id=workspace_id,
+    )
     return {
         "connection_id": connection_id,
         "provider": conn.provider,

@@ -16,6 +16,14 @@ from .notion import NotionAdapter
 from .slack import SlackAdapter
 
 
+#: Providers with a `SourceAdapter` below, i.e. the ones that write
+#: `documents`/`chunks` rows. The single source of truth for "does disconnecting
+#: this leave a corpus behind?" — `api/connection_ops` and `insights/facts` both
+#: kept their own copy, and one of them was missing Linear, so a disconnected
+#: Linear stayed fully indexed and answerable.
+INDEXED_PROVIDERS: tuple[str, ...] = ("notion", "google", "slack", "linear")
+
+
 def build_source_adapter(
     source_type: str = DEFAULT_SOURCE_TYPE,
     *,

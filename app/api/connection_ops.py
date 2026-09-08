@@ -18,13 +18,18 @@ from ..auth.credentials import (
 )
 from ..core.exceptions import ConfigurationError, OAuthReauthRequiredError, SourceError
 from ..db.connection import get_connection
+from ..rag.query_cache import delete_org_entries
+from ..sources.factory import INDEXED_PROVIDERS
 from ..vectorstore import build_vector_store
 
 logger = logging.getLogger(__name__)
 
-# Providers that store documents/chunks. GitHub is live-only — disconnect
-# only drops the oauth_connections row.
-_INDEXED_PROVIDERS = frozenset({"notion", "google", "slack"})
+# Providers that store documents/chunks. GitHub is live-only — disconnect only
+# drops the oauth_connections row. Taken from the source factory rather than
+# listed again here: this set was hand-kept and had gone stale, omitting Linear,
+# so "Indexed documents for this source will be deleted" was false for it and a
+# disconnected Linear kept answering questions.
+_INDEXED_PROVIDERS = frozenset(INDEXED_PROVIDERS)
 
 
 def purge_provider_documents(
@@ -52,6 +57,13 @@ def disconnect_connection(
     """
     provider = delete_connection(org_id, connection_id, workspace_id=workspace_id)
     purged = purge_provider_documents(org_id, provider, workspace_id=workspace_id)
+    # The same reason an ingest clears it: a cached answer outlives the content
+    # it was built from, so for up to the TTL a disconnected source keeps
+    # answering. Org-wide because the provider is folded into the question hash.
+    try:
+        delete_org_entries(org_id)
+    except Exception:  # noqa: BLE001 - a stale cache entry, never a failed disconnect
+        logger.warning("Could not clear the answer cache after a disconnect", exc_info=True)
     return {"provider": provider, "documents_purged": purged}
 
 

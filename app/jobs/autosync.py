@@ -223,6 +223,54 @@ def _stamp_attempted(connection_id: str) -> None:
         )
 
 
+#: Providers whose ingestion needs a SCOPE the admin picks after connecting.
+#: Their adapters raise without one (``GoogleDriveAdapter`` on an empty
+#: ``folder_id``, ``SlackAdapter`` on empty ``channel_ids``), so connecting is
+#: not yet the moment to ingest — saving the scope is, and that is where
+#: ``sync_now`` is called from instead.
+SCOPED_PROVIDERS = ("google", "slack")
+
+
+def sync_now(
+    org_id: str,
+    connection_id: str,
+    *,
+    provider: str,
+    workspace_id: str | None = None,
+) -> str | None:
+    """Ingest this connection immediately. Returns the job id, or None.
+
+    Connecting a source, or naming the folder or channels it should read, IS
+    the request to index it — waiting for the next tick makes a working
+    connection look broken for up to an interval, and the whole point of
+    automatic freshness was to delete that chore rather than move it.
+
+    Stamps ``last_sync_at`` exactly as the tick does, so this connection does
+    not immediately re-qualify as due and get a second job behind this one.
+
+    Never raises: an already-active job is a no-op (the work is happening), and
+    a failure to queue must not fail the connect or the scope save that just
+    succeeded — the tick still picks it up, which is the behaviour this
+    replaces rather than depends on.
+    """
+    if provider in UNSYNCABLE_PROVIDERS:
+        return None
+    try:
+        job_id = queue.enqueue(org_id, connection_id, workspace_id=workspace_id)
+    except queue.JobAlreadyActiveError:
+        logger.debug("First sync: %s already has an active job", connection_id)
+        return None
+    except Exception:  # noqa: BLE001
+        logger.exception("First sync: could not queue %s", connection_id)
+        return None
+    try:
+        _stamp_attempted(connection_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("First sync: could not stamp %s", connection_id)
+    logger.info("First sync: queued %s (org %s)", connection_id, org_id)
+    return job_id
+
+
 def enqueue_due_syncs(settings: AutoSyncSettings | None = None) -> int:
     """Enqueue an ingest for every due connection. Returns how many.
 
