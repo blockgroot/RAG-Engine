@@ -2132,6 +2132,8 @@ table .role-chip.role-admin,
   animation: rise-in 0.5s var(--ease) both;
 }
 .auth-center-footer { color: var(--ink-muted); font-size: 0.92rem; text-align: center; }
+.auth-center-footer p { margin: 0 0 0.35rem; }
+.auth-center-footer p:last-child { margin-bottom: 0; }
 .auth-center-footer a { color: var(--accent-strong); font-weight: 650; }
 .auth-v2-card-head { margin-bottom: 1.25rem; }
 .auth-v2-card-kicker {

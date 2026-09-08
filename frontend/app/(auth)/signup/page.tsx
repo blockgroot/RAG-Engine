@@ -46,17 +46,22 @@ export default function SignupPage() {
     <AuthShell
       variant="signup"
       footer={
-        <p>
-          Already have an account? <Link href="/login">Sign in</Link>
-        </p>
+        <>
+          {/* The data promise belongs where someone reads it before handing
+              over their company's tools, which is here. */}
+          <p>We never train on your data and never share it.</p>
+          <p>
+            Already have an account? <Link href="/login">Sign in</Link>
+          </p>
+        </>
       }
     >
       <div className="auth-v2-card-head">
         <p className="auth-v2-card-kicker">Get started</p>
-        <h2>Request your organization</h2>
+        <h2>Request access for your company</h2>
         <p className="muted">
-          We review every request. Once approved, you&rsquo;ll set up sources and
-          invite your team.
+          We review every request. Once you&rsquo;re approved you&rsquo;ll connect
+          your tools, invite your team and pick which AI model answers.
         </p>
       </div>
 

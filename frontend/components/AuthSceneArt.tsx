@@ -195,14 +195,28 @@ function SignupSceneSvg() {
 export function AuthSceneArt({ variant = "login" }: { variant?: "login" | "signup" }) {
   const isSignup = variant === "signup";
 
-  const title = isSignup ? "Set up your company's Handbook" : "Sign in to Handbook";
+  /* These two pages are where someone decides whether to bother, so the panel
+     says what Handbook does TODAY — ask across the connected tools, charts,
+     scheduled reports, spaces — rather than describing the sign-in mechanism,
+     which the form beside it already covers. */
+  const title = isSignup
+    ? "Set up Handbook for your company."
+    : "Ask across everything your team connected.";
   const blurb = isSignup
-    ? "Tell us who you are. We review each request, then you connect sources and invite your team."
-    : "Enter your work email and we’ll send a secure, one-time sign-in link — no password required.";
+    ? "Tell us who you are. We read every request ourselves, and once you\u2019re approved you connect your tools and invite the team."
+    : "Sign in with your work email. We\u2019ll send a one-time link, so there\u2019s no password to remember.";
 
   const points = isSignup
-    ? ["Request reviewed by a human", "Connect Notion, Drive, Slack, or GitHub", "Invite teammates when you’re ready"]
-    : ["One-time magic link to your inbox", "Pick up Ask, Spaces, and Sources", "Same grounded answers as last time"];
+    ? [
+        "Connect Notion, Drive, Slack, Linear or GitHub",
+        "Invite your team \u2014 they sign in with a link",
+        "Give a project its own space, with its own tools",
+      ]
+    : [
+        "Answers from your documents, chats, tickets and code",
+        "A chart when the answer is a number",
+        "Reports emailed daily, weekly or monthly",
+      ];
 
   return (
     <div className={`auth-scene auth-scene--${variant}`}>

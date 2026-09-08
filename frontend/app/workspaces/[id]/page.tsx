@@ -6,6 +6,7 @@ import Link from "next/link";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { ConnectionCard } from "@/components/ConnectionCard";
+import { FormsCard } from "@/components/FormsCard";
 import { useMe } from "@/lib/useMe";
 import {
   api,
@@ -731,6 +732,18 @@ function WorkspaceDetailPageInner() {
                       />
                     );
                   })}
+              {/* Same Google connection, shown apart — see FormsCard. */}
+              {!loadingConnections && (
+                <FormsCard
+                  connection={connections.find((c) => c.provider === "google")}
+                  workspaceId={workspaceId}
+                  onConfigSaved={(updated) =>
+                    setConnections((prev) =>
+                      prev.map((c) => (c.id === updated.id ? updated : c))
+                    )
+                  }
+                />
+              )}
             </div>
           </section>
         )}

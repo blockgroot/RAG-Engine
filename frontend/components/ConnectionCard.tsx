@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { api, ApiError, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
 import { syncPagesDetail, syncPercent, syncPhaseHeadline } from "@/lib/syncProgress";
 import { DriveFolderPicker } from "./DriveFolderPicker";
-import { FormsPicker } from "./FormsPicker";
 import { SlackChannelPicker } from "./SlackChannelPicker";
 import { SlackMemberInvitePicker } from "./SlackMemberInvitePicker";
 import { JobStatusBadge } from "./JobStatusBadge";
@@ -175,17 +174,12 @@ export function ConnectionCard({
   const channelsConfigured = channelIds.length > 0;
   const needsChannels = provider === "slack" && connection && !channelsConfigured;
   const [changingFolder, setChangingFolder] = useState(false);
-  // Surveys are a SECOND scope decision on the same connection, not part of
-  // the folder one: a form lives outside the ingested folder and is never
-  // indexed at all, so it cannot ride the Drive picker.
-  const [pickingForms, setPickingForms] = useState(false);
   const [changingChannels, setChangingChannels] = useState(false);
   const [invitingMembers, setInvitingMembers] = useState(false);
   const [folderHint, setFolderHint] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
   const [disconnectError, setDisconnectError] = useState<string | null>(null);
 
-  const formsSelected = (connection?.source_config?.form_ids ?? []).length;
   const repoSelection = connection?.source_config?.repository_selection;
   const repos = connection?.source_config?.repos ?? [];
   const installationId = connection?.source_config?.installation_id;
@@ -356,20 +350,6 @@ export function ConnectionCard({
                 Change folder
               </button>
             )}
-          {provider === "google" && connection && !changingFolder && (
-            <button
-              className="button button-secondary"
-              type="button"
-              onClick={() => {
-                setPickingForms((open) => !open);
-                setFolderHint(null);
-                setConfigError(null);
-              }}
-              title="Choose which Google Forms surveys feed the sentiment charts"
-            >
-              {pickingForms ? "Hide surveys" : formsSelected > 0 ? `Surveys (${formsSelected})` : "Surveys"}
-            </button>
-          )}
           {provider === "slack" &&
             connection &&
             channelsConfigured &&
@@ -491,71 +471,6 @@ export function ConnectionCard({
         </div>
       )}
 
-      {provider === "google" && connection && pickingForms && (
-        <div className="stack" style={{ marginTop: "0.9rem" }}>
-          <FormsPicker
-            connectionId={connection.id}
-            workspaceId={workspaceId}
-            onSaved={(selected) => {
-              setConfigError(null);
-              onConfigSaved?.({
-                ...connection,
-                source_config: { ...connection.source_config, form_ids: selected },
-              });
-            }}
-            onError={(message) => setConfigError(message || null)}
-          />
-        </div>
-      )}
-
-      {provider === "google" && connection && folderConfigured && changingFolder && (
-        <div className="stack" style={{ marginTop: "0.9rem" }}>
-          <DriveFolderPicker
-            connectionId={connection.id}
-            workspaceId={workspaceId}
-            inputId={`folder-change-${provider}`}
-            mode="change"
-            currentFolderId={connection.source_config?.folder_id}
-            currentFolderName={connection.source_config?.folder_name}
-            onSaved={(config, meta) => {
-              setConfigError(null);
-              setChangingFolder(false);
-              onNeedsReauth?.(false);
-              const purged = meta?.documents_purged ?? 0;
-              setFolderHint(
-                meta?.folder_changed
-                  ? purged > 0
-                    ? `Folder updated · ${purged} old page${purged === 1 ? "" : "s"} removed. Run Update to index the new folder.`
-                    : "Folder updated. Run Update to index the new folder."
-                  : "Folder saved."
-              );
-              onConfigSaved?.({ ...connection, source_config: config });
-            }}
-            onError={(message) => setConfigError(message || null)}
-            onCancel={() => {
-              setChangingFolder(false);
-              setConfigError(null);
-            }}
-          />
-          {configError && <div className="banner banner-warn">{configError}</div>}
-        </div>
-      )}
-
-      {needsChannels && connection && (
-        <div className="stack" style={{ marginTop: "0.9rem" }}>
-          <SlackChannelPicker
-            connectionId={connection.id}
-            workspaceId={workspaceId}
-            onSaved={(config) => {
-              setConfigError(null);
-              setFolderHint(null);
-              onConfigSaved?.({ ...connection, source_config: config });
-            }}
-            onError={(message) => setConfigError(message || null)}
-          />
-          {configError && <div className="banner banner-warn">{configError}</div>}
-        </div>
-      )}
 
       {provider === "slack" && connection && channelsConfigured && changingChannels && (
         <div className="stack" style={{ marginTop: "0.9rem" }}>

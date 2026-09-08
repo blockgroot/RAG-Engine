@@ -716,6 +716,16 @@ facts, a space's Ask reads that space only — no separate company dashboard.
   panel is **omitted**, not returned empty, and the ask box says "can't chart
   that here" rather than "not allowed" — the latter confirms sentiment is being
   collected to exactly the people it is collected on.
+- **Forms is its own CARD, never its own CONNECTOR** (`frontend/components/
+  FormsCard.tsx`, on both Sources pages). It reads and writes the SAME Google
+  connection: surveys authenticate with the same account and the same stored
+  token, and `list_forms` goes through DRIVE, so a second `oauth_connections`
+  row would mean a second consent screen, a duplicate token, and two rows able
+  to point at different Google accounts. What was genuinely confusing is that
+  one card carried two decisions with different consequences — which folder is
+  INDEXED and answers questions, versus which surveys are read ONCE for a label
+  and never indexed — so the split is presentational and stops there. With no
+  Google connection the card says so instead of offering a connect button.
 - **Which surveys are read is an ALLOW-LIST an admin picks**
   (`connection_ops.set_google_form_ids` → `source_config.form_ids`, picked in
   `FormsPicker.tsx`). `list_forms` goes through DRIVE, so it returns every form

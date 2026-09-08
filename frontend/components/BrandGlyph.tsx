@@ -12,6 +12,7 @@ export type BrandName =
   | "schedule"
   | "chart"
   | "sentiment"
+  | "forms"
   | "model";
 
 const BRAND_SRC: Record<BrandName, string | null> = {
@@ -28,6 +29,7 @@ const BRAND_SRC: Record<BrandName, string | null> = {
   schedule: null,
   chart: null,
   sentiment: null,
+  forms: null,
   model: null,
 };
 
@@ -193,6 +195,31 @@ function ChartMark({ size }: { size: number }) {
   );
 }
 
+function FormsMark({ size }: { size: number }) {
+  // Google Forms' own mark: a purple sheet with a folded corner and three
+  // answer rows. Drawn rather than added to /public/brands so it scales at
+  // every size a glyph is used at and needs no asset step, like GithubMark.
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden>
+      <path
+        d="M6 1.5h8.6L20 6.9V20a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 20V4a2.5 2.5 0 0 1 2-2.5Z"
+        fill="#7248B9"
+      />
+      {/* The fold: the lighter face, plus the shadow it casts on the sheet. */}
+      <path d="M14.6 1.5 20 6.9h-4.2a1.2 1.2 0 0 1-1.2-1.2V1.5Z" fill="#AC8CE0" />
+      <path d="M14.6 5.7 20 11.1V6.9h-4.2a1.2 1.2 0 0 1-1.2-1.2Z" fill="#5B33A3" />
+      <g fill="#F1F1F1">
+        <circle cx="8.2" cy="11" r="1" />
+        <circle cx="8.2" cy="14.6" r="1" />
+        <circle cx="8.2" cy="18.2" r="1" />
+        <rect x="10.6" y="10.2" width="6.4" height="1.6" rx="0.3" />
+        <rect x="10.6" y="13.8" width="6.4" height="1.6" rx="0.3" />
+        <rect x="10.6" y="17.4" width="6.4" height="1.6" rx="0.3" />
+      </g>
+    </svg>
+  );
+}
+
 function SentimentMark({ size }: { size: number }) {
   // A diverging bar: a centre line with weight either side, which is the shape
   // the sentiment chart actually draws. Deliberately not a smiley — the
@@ -281,6 +308,10 @@ export function BrandGlyph({
 
   if (name === "sentiment") {
     return <SentimentMark size={size} />;
+  }
+
+  if (name === "forms") {
+    return <FormsMark size={size} />;
   }
 
   if (name === "model") {

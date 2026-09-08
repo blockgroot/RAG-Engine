@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { ConnectionCard } from "@/components/ConnectionCard";
+import { FormsCard } from "@/components/FormsCard";
 import { useMe } from "@/lib/useMe";
 import { api, ApiError, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
 import { ACTIVE_JOB_STATUSES, useJobPolling } from "@/lib/jobPoll";
@@ -377,6 +378,19 @@ function ConnectionsPageInner() {
                 />
               );
                 })}
+            {/* Surveys ride the same Google connection but are shown apart:
+                indexing a folder and reading a survey once have different
+                consequences, and one card made them look like one decision. */}
+            {!loadingConnections && (
+              <FormsCard
+                connection={connections.find((c) => c.provider === "google")}
+                onConfigSaved={(updated) =>
+                  setConnections((prev) =>
+                    prev.map((c) => (c.id === updated.id ? updated : c))
+                  )
+                }
+              />
+            )}
           </div>
         </section>
       </main>

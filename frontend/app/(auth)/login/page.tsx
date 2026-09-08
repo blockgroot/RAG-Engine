@@ -61,8 +61,8 @@ export default function LoginPage() {
         <p className="auth-v2-card-kicker">Welcome back</p>
         <h2>Sign in to Handbook</h2>
         <p className="muted">
-          Enter your work email — we&rsquo;ll send a one-time link. No password
-          needed.
+          Enter your work email and we&rsquo;ll send a one-time link. It works once
+          and expires shortly.
         </p>
       </div>
 
