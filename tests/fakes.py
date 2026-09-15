@@ -171,7 +171,12 @@ class InMemoryConversationStore(ConversationStore):
         self._last: dict[str, list[RetrievedChunkRecord]] = {}
         self._seq = 0
 
-    def create_conversation(self, org_id: str, workspace_id: str | None = None) -> str:
+    def create_conversation(
+        self,
+        org_id: str,
+        workspace_id: str | None = None,
+        user_id: str | None = None,
+    ) -> str:
         self._seq += 1
         cid = f"conv-{self._seq}"
         self._summaries[cid] = None

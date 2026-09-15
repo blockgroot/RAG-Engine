@@ -288,6 +288,14 @@ CREATE INDEX IF NOT EXISTS idx_chunks_workspace ON chunks (workspace_id);
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS idx_conversations_workspace ON conversations (workspace_id);
 
+-- A conversation is PERSONAL, like schedulers/insight_pins/scheduler_reports —
+-- chat history is the most sensitive of the four and was the only one scoped by
+-- org alone, so any member holding another's conversation_id could resume it and
+-- read the history. NULL = a row predating this column: still resumable by
+-- anyone in scope (we cannot invent an owner for it), never silently reassigned.
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users (id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations (org_id, user_id);
+
 ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
 
 -- Per-org, per-provider OAuth credentials (Phase 10) — replaces hand-set

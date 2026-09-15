@@ -63,7 +63,12 @@ class ConversationStore(ABC):
     """Abstract, org-scoped store for conversation history."""
 
     @abstractmethod
-    def create_conversation(self, org_id: str, workspace_id: str | None = None) -> str:
+    def create_conversation(
+        self,
+        org_id: str,
+        workspace_id: str | None = None,
+        user_id: str | None = None,
+    ) -> str:
         """Create a conversation for a tenant and return its ``conversation_id``.
 
         ``workspace_id`` (Workspace-within-a-Workspace): ``None`` (default)
@@ -71,6 +76,12 @@ class ConversationStore(ABC):
         A non-``None`` value stamps which sub-workspace this conversation
         belongs to, so the API layer can later verify a client-supplied
         ``conversation_id`` actually belongs to the caller's workspace.
+
+        ``user_id`` stamps the OWNER. A conversation is personal like a
+        scheduler or a pin, and chat history is the most sensitive of those,
+        so the API layer requires it to match on resume. ``None`` keeps every
+        non-API caller (tests, scripts) working and leaves the row ownerless,
+        which is what a pre-existing row looks like.
         """
         raise NotImplementedError
 

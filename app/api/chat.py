@@ -179,14 +179,26 @@ def _agent_graph():
 
 
 def _conversation_belongs_to_scope(
-    conversation_id: str, org_id: str, workspace_id: str | None
+    conversation_id: str, org_id: str, workspace_id: str | None, user_id: str
 ) -> bool:
-    """A client-supplied conversation id must match both org and workspace."""
+    """A client-supplied conversation id must match org, workspace AND owner.
+
+    The owner check is what makes a conversation personal, the same scoping
+    ``schedulers``/``insight_pins`` already use. Without it any member holding
+    another member's ``conversation_id`` could resume their chat and read the
+    history -- the org+workspace pair says they may ask in this scope, never
+    that this particular exchange was theirs.
+
+    A NULL ``user_id`` is a row created before the column existed: still
+    resumable by anyone in scope, because we cannot invent an owner for it and
+    refusing would strand every conversation open at deploy time.
+    """
     with get_connection() as conn:
         row = conn.execute(
             "SELECT 1 FROM conversations WHERE id = %s AND org_id = %s "
-            "AND workspace_id IS NOT DISTINCT FROM %s",
-            (conversation_id, org_id, workspace_id),
+            "AND workspace_id IS NOT DISTINCT FROM %s "
+            "AND (user_id IS NULL OR user_id = %s)",
+            (conversation_id, org_id, workspace_id, user_id),
         ).fetchone()
     return row is not None
 
@@ -520,7 +532,7 @@ def create_conversation(
         raise HTTPException(status_code=503, detail="Conversation memory is not enabled")
 
     conversation_id = agent.pipeline.memory.create_conversation(
-        session.org_id, workspace_id=workspace_id
+        session.org_id, workspace_id=workspace_id, user_id=session.user_id
     )
     return {"conversation_id": conversation_id}
 
@@ -687,7 +699,7 @@ def chat_stream(
 
     conversation_id = body.get("conversation_id")
     if conversation_id is not None and not _conversation_belongs_to_scope(
-        conversation_id, session.org_id, workspace_id
+        conversation_id, session.org_id, workspace_id, session.user_id
     ):
         raise HTTPException(status_code=404, detail="No such conversation for this organization")
 

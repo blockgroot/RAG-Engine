@@ -177,6 +177,43 @@ def test_chat_stream_rejects_conversation_id_from_another_org(
 
 
 @requires_db
+def test_chat_stream_rejects_another_members_conversation(client_and_session):
+    """A conversation is personal: same org, same scope, different person => 404.
+
+    The org+workspace pair only says this member may ask here; it never said
+    this exchange was theirs. Regression guard for chat history being the one
+    personal surface scoped by org alone.
+    """
+    from app.auth import create_admin, create_session_token
+
+    client, cookies, org_id, _memory = client_and_session
+
+    created = client.post("/chat/conversations", json={}, cookies=cookies)
+    assert created.status_code == 200
+    conversation_id = created.json()["conversation_id"]
+
+    # The owner can resume it.
+    assert (
+        client.post(
+            "/chat/stream",
+            json={"question": "How many annual leave days?", "conversation_id": conversation_id},
+            cookies=cookies,
+        ).status_code
+        == 200
+    )
+
+    other = create_admin(f"chatapi-other-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    other_cookies = {"session": create_session_token(other)}
+
+    response = client.post(
+        "/chat/stream",
+        json={"question": "How many annual leave days?", "conversation_id": conversation_id},
+        cookies=other_cookies,
+    )
+    assert response.status_code == 404
+
+
+@requires_db
 def test_chat_stream_emits_error_event_when_llm_is_rate_limited(client_and_session, monkeypatch):
     """FreeLLMAPI 429 must not crash the ASGI stream — surface a chat error."""
     from app.core.exceptions import LLMProviderError

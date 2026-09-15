@@ -49,6 +49,31 @@ hook, and every process boundary must `close_pool()`.
   workspace sees ONLY its own rows, never also org-wide ones — otherwise a
   meeting-notes space blending in HR policy makes membership meaningless.
   `workspaces/store.py::assert_member` is the one place it's validated.
+- **The smallest private unit is a SPACE, never a document** — and that is the
+  permission contract, not an oversight. We sync with ONE admin's token per
+  connection and store no per-document ACL (`documents` has no viewer column;
+  `SourceRef`/`SourceDocument` carry no permission fields), so a source's own
+  sharing rules are dropped at ingest: a Drive file shared with two people
+  becomes readable by everyone in the scope that indexed it. The only controls
+  are **what the token can reach** (Drive `folder_id`, Slack channel list,
+  GitHub authorized repos, Notion's explicit share, Forms `form_ids`) and
+  **who is in the scope**. Two consequences worth stating out loud: adding a
+  member to a space grants RETROACTIVE access to everything it ever indexed
+  (the invite panel says so), and losing access *in the source* never reaches
+  us — nothing re-checks permissions after the first sync, and
+  `_sanitize_removals` actively REFUSES a mass unshare as a bad listing. Real
+  parity would need per-document viewers captured at sync, a source-identity →
+  `users` mapping and a filter at retrieval; it is a feature, not a patch.
+- **A conversation is PERSONAL** (`conversations.user_id`, checked in
+  `chat.py::_conversation_belongs_to_scope`). It was the one personal surface
+  scoped by org alone while `schedulers`/`insight_pins`/`scheduler_reports` all
+  key on `(org_id, user_id)` — so any member holding another's
+  `conversation_id` could resume their chat and read the history. org+workspace
+  only says the asker may ask in this scope, never that this exchange was
+  theirs. A NULL `user_id` (pre-column row) stays resumable in scope: we cannot
+  invent an owner, and refusing would strand every conversation open at deploy.
+  `query_answer_cache` deliberately does NOT key on user — it is keyed on the
+  scope whose check already passed, so per-user keys would only cost hit rate.
 
 **Retrieved context carries its provenance** (`rag/context_assemble.py::describe_hit`)
 — every chunk reaches the prompt behind one line naming the document, the app,

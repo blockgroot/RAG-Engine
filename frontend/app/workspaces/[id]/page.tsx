@@ -584,6 +584,10 @@ function WorkspaceDetailPageInner() {
               <div className="studio-section-head">
                 <h2 id="space-invite-title">Invite someone</h2>
                 <p className="muted">They must already be in this company — this only adds them to the room.</p>
+                <p className="muted">
+                  Once they&rsquo;re in, they can ask about everything this space has connected,
+                  including documents added before today.
+                </p>
               </div>
               <form onSubmit={handleInvite} className="invite-form">
                 <div className="field">
