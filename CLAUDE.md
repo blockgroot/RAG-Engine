@@ -226,6 +226,46 @@ source-agnostic on purpose.
   and the pill names both, because with no tab a member cannot otherwise tell
   a misroute from a source that genuinely lacked the answer.
 
+**Ask in Slack (`app/api/slack_events.py`)** — the bot answers where the
+question is already being typed; the web app keeps connections/spaces/charts/
+schedulers. An ADAPTER, not an agent: the routing graph, the gate, the strict
+prompt and memory are reused untouched, so nothing here can weaken a grounding
+guarantee.
+- **A channel question is answered from THAT CHANNEL ONLY; a DM searches
+  everything the asker could see in the app.** This is a permission decision,
+  not a preference — everyone in a channel can already scroll up and read it,
+  so a channel-scoped answer discloses nothing, while answering a channel from
+  Drive/Notion/another channel BROADCASTS content some people present may not
+  be able to open. The bot must not become a new way to hit the parity gap
+  (§3 Isolation). `channel_type == "im"` is how Slack marks a DM.
+- **Channel scoping rides `documents.tags`**, which was plumbed end-to-end and
+  never populated. `SourceDocument.tags` is the new per-document slot — a
+  run-level tag list is ONE value for a whole sync and cannot express "this
+  thread is #engineering and that one is #random". Tagged by channel **ID**
+  (`slack_utils.channel_tag`), never name: a rename moves no message id, so a
+  name-based tag silently stops matching. `_doc_tags` unions run-level and
+  per-document tags, so every existing caller is byte-identical.
+- **Existing threads are backfilled in `schema.sql`, not by re-ingest** — the
+  channel id is already the first half of the Slack external id
+  (`<channel>:<thread_ts>`), so one idempotent UPDATE needs no API call and no
+  name lookup. Waiting for re-ingest would leave a quiet channel unanswerable
+  forever, since a thread that never changes is never re-fetched.
+- **Ack in 3s, answer in a `BackgroundTask`.** Slack retries on timeout and one
+  answer is ~6 LLM calls, so inline work would deliver the SAME answer several
+  times, not merely slowly.
+- **Identity is resolved or we refuse.** `team_id` → org via
+  `oauth_connections.external_workspace_id` (already stored by `slack_oauth`,
+  so no new table); Slack user → email via `users.info` → `users`. No account
+  ⇒ a message saying so; we never answer org-scoped content for "some human in
+  this Slack", and a user whose `org_id` differs is refused the same way.
+- **An unset `SLACK_SIGNING_SECRET` 404s the route** (the `INTERNAL_TICK_SECRET`
+  posture). Signatures are HMAC-SHA256 over the raw body, `compare_digest`, and
+  rejected beyond a 5-minute window so a captured request cannot be replayed.
+- **`bot_id`/`subtype` events are dropped first** — the bot's own reply is
+  itself a message event, so reacting to one loops forever.
+- `chat:write` + `app_mentions:read` are new default scopes, so **every tenant
+  reconnects Slack once**: Slack grants scopes at install, never retroactively.
+
 **Sources (`app/sources/`)** — one `SourceAdapter` per source; format
 conversion lives *inside* the adapter. Thin SDKs, never frameworks.
 - **Provider-partitioned sync is mandatory** — every sync path takes an

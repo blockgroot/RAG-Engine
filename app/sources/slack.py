@@ -11,6 +11,7 @@ import httpx
 from ..config.settings import SlackSettings
 from ..core.exceptions import ConfigurationError, SourceError
 from .base import SourceAdapter, SourceDocument, SourceRef
+from .slack_utils import channel_tag
 
 _API_BASE = "https://slack.com/api"
 _TIMEOUT = 15.0
@@ -399,6 +400,11 @@ class SlackAdapter(SourceAdapter):
             # attribute a reply. Free here: `_display_name` already resolved
             # (and cached) this name while building the body above.
             last_editor=self._display_name(messages[0].get("user")) or None,
+            # Tagged by channel ID, not name: ids survive a rename, names do
+            # not. This is what lets an in-channel question be answered from
+            # that channel ONLY -- everyone in the room can already scroll up
+            # and read it, so a channel-scoped answer widens nothing.
+            tags=[channel_tag(channel_id)],
         )
 
     def get_last_modified(self, external_id: str) -> datetime | None:

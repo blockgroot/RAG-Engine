@@ -38,6 +38,7 @@ from . import internal as internal_router
 from . import llm_model as llm_model_router
 from . import auth as auth_router
 from . import chat as chat_router
+from . import slack_events as slack_events_router
 from . import orgs as orgs_router
 from . import insights as insights_router
 from . import schedulers as schedulers_router
@@ -210,6 +211,7 @@ def create_app() -> FastAPI:
     app.include_router(schedulers_router.router)
     app.include_router(insights_router.router)
     app.include_router(internal_router.router)
+    app.include_router(slack_events_router.router)
 
     @app.get("/health")
     def health():

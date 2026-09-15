@@ -35,6 +35,42 @@ _MAX_LIST_PAGES = 10
 _MAX_CHANNEL_MEMBERS = 500
 
 
+# One place that says how a Slack channel becomes a `documents.tags` entry, so
+# the ingest side (slack.py) and the ask side (api/slack_events.py) can never
+# drift into two spellings of the same label. Namespaced so a future source
+# tagging its own partitions cannot collide with a channel id.
+_CHANNEL_TAG_PREFIX = "slack:channel:"
+
+
+def channel_tag(channel_id: str) -> str:
+    """The `documents.tags` label for one Slack channel."""
+    return f"{_CHANNEL_TAG_PREFIX}{channel_id}"
+
+
+def post_message(token: str, channel: str, text: str, thread_ts: str | None = None) -> None:
+    """Post one message, optionally into a thread. Never raises.
+
+    A failed post costs the reply, never the request that triggered it: the
+    caller is a background task started AFTER Slack was already acknowledged,
+    so raising here could only produce an unhandled task error nobody sees.
+    """
+    payload: dict = {"channel": channel, "text": text}
+    if thread_ts:
+        payload["thread_ts"] = thread_ts
+    try:
+        response = httpx.post(
+            f"{_API_BASE}/chat.postMessage",
+            json=payload,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=_TIMEOUT,
+        )
+        body = response.json()
+        if not body.get("ok"):
+            logger.warning("slack.chat_postMessage failed: %s", body.get("error"))
+    except Exception as exc:  # noqa: BLE001 - a failed reply is never fatal
+        logger.warning("slack.chat_postMessage error: %s", exc)
+
+
 def _get(token: str, method: str, params: dict, *, timeout: float = _TIMEOUT) -> dict:
     try:
         response = httpx.get(

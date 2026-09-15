@@ -48,6 +48,14 @@ class SourceDocument:
     source_uri: str | None = None
     last_modified: datetime | None = None
     last_editor: str | None = None
+    # Per-document hard-filter labels, merged with any run-level tags by the
+    # ingestion pipeline. The adapter owns these because only it knows what
+    # partitions its own source: a run-level tag list is one value for the
+    # whole sync, which cannot express "this thread is in #engineering and
+    # that one is in #random". Use STABLE identifiers, never display names --
+    # a Slack channel rename moves no message id, so a name-based tag would
+    # silently stop matching (see slack_utils.refresh_channel_names).
+    tags: list[str] | None = None
 
 
 class SourceAdapter(ABC):

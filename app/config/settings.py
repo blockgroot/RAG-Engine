@@ -689,7 +689,12 @@ DEFAULT_SLACK_BOT_SCOPES = (
     "channels:history,channels:read,channels:join,"
     "groups:history,groups:read,"
     "im:history,im:read,mpim:history,mpim:read,"
-    "users:read,users:read.email"
+    "users:read,users:read.email,"
+    # Ask-in-Slack: `chat:write` is the only scope the bot needs to ANSWER
+    # (reading DMs and mentions is already covered above). Adding it means
+    # every existing connection must reconnect once to pick it up -- Slack
+    # grants scopes at install time, never retroactively.
+    "chat:write,app_mentions:read"
 )
 
 # Phase 2 bounds (plan §6/D11 — "bound the walk itself" discipline, same as
@@ -727,6 +732,11 @@ class SlackSettings:
     min_thread_chars: int = DEFAULT_SLACK_MIN_THREAD_CHARS
     max_thread_messages: int = DEFAULT_SLACK_MAX_THREAD_MESSAGES
     max_documents_per_sync: int = DEFAULT_SLACK_MAX_DOCUMENTS_PER_SYNC
+    # Slack signs every event it sends us; without this we cannot tell a real
+    # event from anyone who has guessed the URL. Unset DISABLES the events
+    # route entirely (same posture as INTERNAL_TICK_SECRET) rather than
+    # accepting unverified posts.
+    signing_secret: str | None = None
 
     @classmethod
     def from_env(cls) -> "SlackSettings":
@@ -735,6 +745,7 @@ class SlackSettings:
             client_secret=os.getenv("SLACK_CLIENT_SECRET"),
             redirect_uri=os.getenv("SLACK_REDIRECT_URI"),
             scopes=os.getenv("SLACK_BOT_SCOPES", DEFAULT_SLACK_BOT_SCOPES),
+            signing_secret=os.getenv("SLACK_SIGNING_SECRET"),
             backfill_days=int(
                 os.getenv("SLACK_BACKFILL_DAYS") or DEFAULT_SLACK_BACKFILL_DAYS
             ),

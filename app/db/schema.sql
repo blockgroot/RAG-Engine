@@ -57,6 +57,22 @@ DROP INDEX IF EXISTS idx_documents_org_provider_external;
 -- in this schema.
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS tags TEXT[];
 
+-- Ask-in-Slack backfill: tag every already-indexed Slack thread with its
+-- channel, so an in-channel question can be answered from that channel only
+-- without waiting for each thread to change and re-ingest (a quiet channel
+-- might never change). Same shape as the source_provider backfill above.
+--
+-- The channel id is already the first half of the Slack external id
+-- (`<channel>:<thread_ts>`, see sources/slack.py), so this needs no API call
+-- and no channel-NAME lookup -- which also means a renamed channel backfills
+-- correctly. Idempotent: only rows missing the tag are touched.
+UPDATE documents
+   SET tags = coalesce(tags, '{}') || ('slack:channel:' || split_part(source_external_id, ':', 1))
+ WHERE source_provider = 'slack'
+   AND source_external_id IS NOT NULL
+   AND position(':' in source_external_id) > 1
+   AND NOT coalesce(tags, '{}') && ARRAY['slack:channel:' || split_part(source_external_id, ':', 1)];
+
 -- Who last edited the source document, as the source names them. Captured at
 -- ingest so a "top editors" chart is a GROUP BY rather than an API call per
 -- page load -- Drive returns it in the `files.list` we already make, and Notion

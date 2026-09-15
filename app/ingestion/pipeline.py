@@ -208,6 +208,20 @@ def detect_source_changes(
     )
 
 
+def _doc_tags(doc, run_tags: list[str] | None) -> list[str] | None:
+    """Merge the adapter's per-document tags with the run-level ones.
+
+    Run-level tags describe the whole sync ("hr", "policies"); a document's own
+    tags describe where inside the source it came from (which Slack channel).
+    Both are hard filters on the same column, so they simply union -- and an
+    adapter that sets none leaves every existing caller byte-identical.
+    """
+    merged = list(run_tags or []) + list(getattr(doc, "tags", None) or [])
+    # dict.fromkeys: de-duplicate while keeping order stable, so a re-ingest
+    # of an unchanged document does not rewrite the column in a new order.
+    return list(dict.fromkeys(merged)) or None
+
+
 def _plan_refs(
     refs: list[SourceRef],
     stored: dict,
@@ -377,7 +391,7 @@ def ingest_source(
                 source_uri=doc.source_uri,
                 last_modified=doc.last_modified or ref.last_modified,
                 workspace_id=workspace_id,
-                tags=tags,
+                tags=_doc_tags(doc, tags),
                 last_editor=doc.last_editor or ref.last_editor,
             )
             skipped += 1
@@ -422,7 +436,7 @@ def ingest_source(
             source_uri=doc.source_uri,
             last_modified=doc.last_modified or ref.last_modified,
             workspace_id=workspace_id,
-            tags=tags,
+            tags=_doc_tags(doc, tags),
             last_editor=doc.last_editor or ref.last_editor,
         )
         doc_ids.append(document_id)
