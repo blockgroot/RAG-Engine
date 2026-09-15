@@ -66,10 +66,32 @@ def _question_hash(
 
 
 def _chunk_to_dict(c: RetrievedChunk) -> dict:
-    return asdict(c)
+    """JSON-safe dict for one hit.
+
+    ``last_modified`` is a ``datetime`` (provenance), and ``json.dumps`` has no
+    encoder for it -- a bare ``asdict`` raises. This went unseen because the
+    cache is only written when ``conversation_id is None``, and the web chat
+    always opens a conversation first; the first caller to pass ``None`` (the
+    Slack bot) hit it immediately. ISO strings round-trip exactly and stay
+    readable in the stored jsonb.
+    """
+    d = asdict(c)
+    when = d.get("last_modified")
+    if isinstance(when, datetime):
+        d["last_modified"] = when.isoformat()
+    return d
 
 
 def _chunk_from_dict(d: dict) -> RetrievedChunk:
+    when = d.get("last_modified")
+    if isinstance(when, str):
+        try:
+            d = {**d, "last_modified": datetime.fromisoformat(when)}
+        except ValueError:
+            # A stored value we cannot parse must not poison every later read
+            # of this org's cache -- provenance is optional everywhere it is
+            # consumed, so dropping it degrades the header, not the answer.
+            d = {**d, "last_modified": None}
     return RetrievedChunk(**d)
 
 

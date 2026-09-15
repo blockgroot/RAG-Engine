@@ -216,9 +216,14 @@ def _handle(event: dict, team_id: str) -> None:
     channel = event.get("channel")
     slack_user = event.get("user")
     text = (event.get("text") or "").strip()
-    # Reply inside the thread when the question was already in one, so a busy
-    # channel does not get a second top-level message per question.
-    thread_ts = event.get("thread_ts") or event.get("ts")
+    # Reply IN the channel for a top-level question, and inside the thread only
+    # when the question was already in one. Falling back to the message's own
+    # `ts` (the obvious default) threads every answer under its question, which
+    # hides it behind a "1 reply" link the asker has to open -- two places to
+    # look for one answer. Staying in an existing thread is different: there
+    # the conversation already lives there, and answering outside it would pull
+    # the reply away from its question.
+    thread_ts = event.get("thread_ts")
     if not channel or not slack_user or not text:
         return
 
@@ -270,6 +275,7 @@ async def slack_events(
     background: BackgroundTasks,
     x_slack_request_timestamp: str | None = Header(default=None),
     x_slack_signature: str | None = Header(default=None),
+    x_slack_retry_num: str | None = Header(default=None),
 ):
     """Receive one Slack event. Acks immediately; answers in the background.
 
@@ -292,6 +298,17 @@ async def slack_events(
     # One-time handshake when the Request URL is saved in the Slack app config.
     if payload.get("type") == "url_verification":
         return {"challenge": payload.get("challenge")}
+
+    # Slack retries up to 3 times when an ack misses its 3-second deadline,
+    # and on a free instance a cold start misses it routinely. The first
+    # delivery has ALREADY started answering by then, so honouring a retry
+    # posts the same answer two or three times. Dropping retries can only cost
+    # an answer whose original delivery genuinely died -- asking again is one
+    # message, while a channel of triplicated replies is the failure people
+    # actually notice.
+    if x_slack_retry_num:
+        logger.info("slack.bot ignoring retry #%s", x_slack_retry_num)
+        return {"ok": True}
 
     event = payload.get("event") or {}
     # Never react to our own posts (or any bot's): the bot's reply is itself a

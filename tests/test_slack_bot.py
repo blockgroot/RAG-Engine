@@ -229,3 +229,66 @@ def test_a_dm_never_checks_channel_indexing(monkeypatch):
         "T1",
     )
     assert seen == [None]
+
+
+def test_a_retry_delivery_is_dropped(client, monkeypatch):
+    """Slack retries on a missed 3s ack; the first delivery is already answering."""
+    called = []
+    monkeypatch.setattr(slack_events, "_handle", lambda *a: called.append(a))
+    raw, headers = _signed(
+        {
+            "type": "event_callback",
+            "team_id": "T1",
+            "event": {"type": "app_mention", "channel": "C1", "user": "U1",
+                      "text": "q", "ts": "1"},
+        }
+    )
+    first = client.post("/slack/events", content=raw, headers=headers)
+    assert first.status_code == 200
+    assert len(called) == 1
+
+    retry = client.post(
+        "/slack/events", content=raw, headers={**headers, "X-Slack-Retry-Num": "1"}
+    )
+    assert retry.status_code == 200
+    assert len(called) == 1, "a retry must not queue a second answer"
+
+
+def _capture_post(monkeypatch) -> list:
+    """Like ``_capture_scope`` but records where the reply was posted."""
+    posted: list = []
+    monkeypatch.setattr(slack_events, "_org_for_team", lambda team: ("org-1", None))
+    monkeypatch.setattr(slack_events, "get_live_connection_token", lambda *a, **k: "tok")
+    monkeypatch.setattr(slack_events, "_slack_email", lambda t, u: "a@b.com")
+    monkeypatch.setattr(
+        slack_events, "get_user_by_email",
+        lambda email: type("U", (), {"id": "u1", "org_id": "org-1"})(),
+    )
+    monkeypatch.setattr(slack_events, "_channel_is_indexed", lambda *a: True)
+    monkeypatch.setattr(slack_events, "_answer", lambda *a: "the answer")
+    monkeypatch.setattr(
+        slack_events, "post_message",
+        lambda tok, ch, text, ts=None: posted.append((ch, text, ts)),
+    )
+    return posted
+
+
+def test_a_top_level_question_is_answered_in_the_channel(monkeypatch):
+    """Not threaded: a "1 reply" link is a second place to look for one answer."""
+    posted = _capture_post(monkeypatch)
+    slack_events._handle(
+        {"type": "app_mention", "channel": "C1", "user": "U1", "text": "q", "ts": "111"},
+        "T1",
+    )
+    assert posted == [("C1", "the answer", None)]
+
+
+def test_a_question_inside_a_thread_is_answered_in_that_thread(monkeypatch):
+    """The conversation already lives there; answering outside would split it."""
+    posted = _capture_post(monkeypatch)
+    slack_events._handle(
+        {"type": "app_mention", "channel": "C1", "user": "U1", "text": "q",
+         "ts": "222", "thread_ts": "111"},
+        "T1",
+    )
+    assert posted == [("C1", "the answer", "111")]
