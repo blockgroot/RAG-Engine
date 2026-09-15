@@ -129,6 +129,23 @@ def _answer(question: str, org_id: str, workspace_id: str | None, tags: list[str
     from ..agent.orchestration import build_agent_graph
     from .chat import _agent_getters
 
+    # The chart spec has to be carried through exactly as the web chat does.
+    # `choose_agent` can route to InsightsAgent AND resolve the spec in one
+    # step, so dropping the spec sends a routed chart question to an agent
+    # holding nothing -- which answers "I can't chart that", a flat denial of
+    # something the router had already resolved.
+    spec = getattr(decision, "chart_spec", None)
+    chart_spec = (
+        {
+            "metric": spec.metric,
+            "group_by": spec.group_by,
+            "period": spec.period,
+            "chart": spec.chart,
+        }
+        if spec is not None
+        else None
+    )
+
     state = build_agent_graph(_agent_getters()).invoke(
         {
             "question": question,
@@ -137,9 +154,44 @@ def _answer(question: str, org_id: str, workspace_id: str | None, tags: list[str
             "workspace_id": workspace_id,
             "requested_agent": decision.agent_key,
             "stream": False,
+            "chart_spec": chart_spec,
+            "chart_refusal": getattr(decision, "chart_refusal", None),
+            # Deliberately NOT the asker's real role: Slack has no owner-only
+            # surface, and the gated metrics (Forms sentiment) exist precisely
+            # so the people they are collected on cannot read them. Answering
+            # "member" keeps the floor here and can only ever omit a panel.
+            "role": "member",
         }
     )
-    return state["response"].answer
+    response = state["response"]
+    return _with_chart_values(response)
+
+
+def _with_chart_values(response) -> str:
+    """Append a chart's numbers to its caption as text.
+
+    `AgentResponse.chart` carries the counted rows, and the web UI draws them;
+    Slack has no canvas. The caption alone ("Commits by author, last quarter")
+    is a title with no data under it, which reads as the bot ignoring the
+    question -- so the buckets are printed. Deliberately NOT an image: a PNG of
+    numbers cannot be scrolled back to or re-scoped, which is the same reason
+    `app/insights/` renders SVG rather than generating pictures.
+    """
+    chart = getattr(response, "chart", None)
+    points = (chart or {}).get("points") if isinstance(chart, dict) else None
+    if not points:
+        return response.answer
+
+    lines = []
+    for point in points[:10]:
+        label = point.get("group") or point.get("bucket") or ""
+        value = point.get("value")
+        if label and value is not None:
+            lines.append(f"• {label}: {value}")
+    if not lines:
+        return response.answer
+    more = "" if len(points) <= 10 else f"\n…and {len(points) - 10} more"
+    return f"{response.answer}\n" + "\n".join(lines) + more
 
 
 def _handle(event: dict, team_id: str) -> None:

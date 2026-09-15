@@ -160,3 +160,35 @@ def test_a_person_without_an_account_is_refused(monkeypatch):
         "T1",
     )
     assert posted == [slack_events._NO_ACCOUNT]
+
+
+class _Resp:
+    def __init__(self, answer, chart=None):
+        self.answer = answer
+        self.chart = chart
+
+
+def test_chart_numbers_are_printed_not_just_the_caption():
+    """Slack has no canvas: a caption with no data under it reads as a non-answer."""
+    text = slack_events._with_chart_values(
+        _Resp(
+            "Commits by author, last quarter",
+            {"points": [
+                {"bucket": "2026-07-01", "group": "18-sana", "series": None, "value": 12},
+                {"bucket": "2026-07-01", "group": "ada", "series": None, "value": 4},
+            ]},
+        )
+    )
+    assert "Commits by author" in text
+    assert "18-sana: 12" in text
+    assert "ada: 4" in text
+
+
+def test_a_plain_answer_is_left_alone():
+    assert slack_events._with_chart_values(_Resp("25 days.")) == "25 days."
+
+
+def test_an_empty_chart_falls_back_to_its_caption():
+    """`points: []` means the chart ran with nothing to show -- the caption says which."""
+    caption = "Nothing recorded from GitHub in this window."
+    assert slack_events._with_chart_values(_Resp(caption, {"points": []})) == caption

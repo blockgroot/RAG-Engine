@@ -472,6 +472,32 @@ export function ConnectionCard({
       )}
 
 
+      {/* A freshly connected Slack has no channels yet, and every OTHER Slack
+          picker branch below is gated on `channelsConfigured` -- so without
+          this one there is nothing to click and the card reads as "Linked"
+          while indexing nothing. Drive has always had the equivalent
+          (`needsFolder` above); Slack was simply never given it. */}
+      {needsChannels && connection && (
+        <div className="stack" style={{ marginTop: "0.9rem" }}>
+          <p className="muted" style={{ margin: 0 }}>
+            Pick the channels Handbook may read. Nothing is indexed until you choose.
+          </p>
+          <SlackChannelPicker
+            connectionId={connection.id}
+            workspaceId={workspaceId}
+            currentChannelIds={channelIds}
+            onSaved={(config) => {
+              setConfigError(null);
+              setFolderHint("Channels saved. Indexing has been queued.");
+              onNeedsReauth?.(false);
+              onConfigSaved?.({ ...connection, source_config: config });
+            }}
+            onError={(message) => setConfigError(message || null)}
+          />
+          {configError && <div className="banner banner-warn">{configError}</div>}
+        </div>
+      )}
+
       {provider === "slack" && connection && channelsConfigured && changingChannels && (
         <div className="stack" style={{ marginTop: "0.9rem" }}>
           <SlackChannelPicker

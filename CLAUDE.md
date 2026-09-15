@@ -1214,6 +1214,21 @@ frontend/ Next.js 15 portal · tests/ pytest
   means "org-wide"; Postgres treats NULLs as distinct in a plain `UNIQUE`.
 
 **Sources**
+- **A connector needing post-connect scope MUST render its picker from the
+  UNCONFIGURED state** (`ConnectionCard.tsx`). Slack's every picker branch and
+  its "Change channels" button were gated on `channelsConfigured`
+  (`channel_ids.length > 0`), so a freshly connected Slack offered nothing to
+  click: the card said "Linked" while indexing zero channels, and the only way
+  out was a state it could never reach. `needsChannels` was already computed
+  and used ONLY in negations that hide other UI. Drive never had the bug
+  because `needsFolder` renders `DriveFolderPicker` directly; Slack was simply
+  never given the equivalent. Audited at the same time: Forms is fine (its
+  button renders whenever Google is connected and reads "Choose surveys" at
+  zero), GitHub is fine (repos come from the App install and the card says so),
+  Notion/Linear need no scope at all. The backend was correct throughout —
+  both config-save routes call `sync_now`, so the picker was the only missing
+  link. **No frontend test infrastructure exists**, so this class of bug is
+  caught by eye or not at all.
 - **A Slack channel rename is invisible to change detection** — no message id
   or `ts` moves, so "up to date" is correct — but `source_config.channel_names`
   is a SNAPSHOT, so every label (suggestion chips, report coverage notes,
