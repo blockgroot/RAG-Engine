@@ -111,6 +111,7 @@ def _capture_scope(monkeypatch) -> list:
         lambda email: type("U", (), {"id": "u1", "org_id": "org-1"})(),
     )
     monkeypatch.setattr(slack_events, "post_message", lambda *a, **k: None)
+    monkeypatch.setattr(slack_events, "_channel_is_indexed", lambda *a: True)
 
     def _fake_answer(question, org_id, workspace_id, tags):
         seen.append(tags)
@@ -192,3 +193,39 @@ def test_an_empty_chart_falls_back_to_its_caption():
     """`points: []` means the chart ran with nothing to show -- the caption says which."""
     caption = "Nothing recorded from GitHub in this window."
     assert slack_events._with_chart_values(_Resp(caption, {"points": []})) == caption
+
+
+def test_an_unconnected_channel_says_so_instead_of_refusing(monkeypatch):
+    """A hedged "I couldn't find that" tells nobody the channel was never indexed."""
+    posted: list = []
+    _capture_scope(monkeypatch)
+    monkeypatch.setattr(slack_events, "_channel_is_indexed", lambda *a: False)
+    monkeypatch.setattr(
+        slack_events, "post_message", lambda tok, ch, text, ts=None: posted.append(text)
+    )
+
+    def _must_not_run(*a, **k):
+        raise AssertionError("an unconnected channel must not reach the pipeline")
+
+    monkeypatch.setattr(slack_events, "_answer", _must_not_run)
+    slack_events._handle(
+        {"type": "app_mention", "channel": "C999", "user": "U1", "text": "q", "ts": "1"},
+        "T1",
+    )
+    assert posted == [slack_events._NOT_CONNECTED]
+
+
+def test_a_dm_never_checks_channel_indexing(monkeypatch):
+    """A DM has no channel to be connected -- the check must not gate it."""
+    seen = _capture_scope(monkeypatch)
+    monkeypatch.setattr(
+        slack_events, "_channel_is_indexed", lambda *a: (_ for _ in ()).throw(
+            AssertionError("a DM must not check channel indexing")
+        )
+    )
+    slack_events._handle(
+        {"type": "message", "channel_type": "im", "channel": "D1", "user": "U1",
+         "text": "q", "ts": "1"},
+        "T1",
+    )
+    assert seen == [None]

@@ -22,6 +22,11 @@ class PromptProfile:
     persona: str
     scope_adjective: str
     scope_noun: str
+    # Who to ask when CONTEXT names no contact. MUST match the source: every
+    # profile once copied the policy profile's "your HR team", so a question
+    # about an engineering Slack channel closed by directing the asker to HR.
+    # A wrong contact is worse than none -- it sends someone to a team that
+    # cannot help and did not write the content.
     escalation_hint: str
     source_label: str
 
@@ -41,7 +46,7 @@ SLACK_PROMPT_PROFILE = PromptProfile(
     ),
     scope_adjective="team-discussion",
     scope_noun="team's Slack history",
-    escalation_hint="your HR team can help with this",
+    escalation_hint="the people in that channel can help with this",
     source_label=SOURCE_SLACK,
 )
 
@@ -52,7 +57,7 @@ LINEAR_PROMPT_PROFILE = PromptProfile(
     ),
     scope_adjective="issue-tracking",
     scope_noun="team's Linear issues",
-    escalation_hint="your HR team can help with this",
+    escalation_hint="the issue's assignee can help with this",
     source_label=SOURCE_LINEAR,
 )
 
@@ -60,7 +65,7 @@ NOTION_PROMPT_PROFILE = PromptProfile(
     persona="an assistant answering only from this company's connected Notion pages",
     scope_adjective="Notion-documented",
     scope_noun="Notion pages",
-    escalation_hint="your HR team can help with this",
+    escalation_hint="whoever owns that page can help with this",
     source_label=SOURCE_NOTION,
 )
 
@@ -68,7 +73,7 @@ DRIVE_PROMPT_PROFILE = PromptProfile(
     persona="an assistant answering only from this company's connected Google Drive documents",
     scope_adjective="Drive-documented",
     scope_noun="Google Drive documents",
-    escalation_hint="your HR team can help with this",
+    escalation_hint="whoever owns that document can help with this",
     source_label=SOURCE_GOOGLE,
 )
 
@@ -80,7 +85,7 @@ WORKSPACE_PROMPT_PROFILE = PromptProfile(
     ),
     scope_adjective="workspace-specific",
     scope_noun="workspace",
-    escalation_hint="your HR team can help with this",
+    escalation_hint="someone else in this space can help with this",
     source_label=SOURCE_WORKSPACE,
 )
 

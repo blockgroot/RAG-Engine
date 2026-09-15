@@ -66,6 +66,11 @@ _NO_ACCOUNT = (
     "Ask an admin to invite you."
 )
 _ERROR = "Something went wrong answering that. Please try again in a moment."
+_NOT_CONNECTED = (
+    "This channel isn't connected to Handbook yet, so I can't read its history. "
+    "An admin can add it under Sources → Slack. You can also DM me — I can answer "
+    "from every source your company has connected."
+)
 
 
 def _verify(body: bytes, timestamp: str | None, signature: str | None, secret: str) -> bool:
@@ -111,6 +116,18 @@ def _slack_email(token: str, user_id: str) -> str | None:
         logger.warning("slack.bot users.info failed for %s: %s", user_id, exc)
         return None
     return ((info.get("user") or {}).get("profile") or {}).get("email")
+
+
+def _channel_is_indexed(org_id: str, workspace_id: str | None, tag: str) -> bool:
+    """Has anything from this channel ever been indexed?"""
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM documents WHERE org_id = %s::uuid "
+            "AND workspace_id IS NOT DISTINCT FROM %s::uuid "
+            "AND tags && ARRAY[%s] LIMIT 1",
+            (org_id, workspace_id, tag),
+        ).fetchone()
+    return row is not None
 
 
 def _answer(question: str, org_id: str, workspace_id: str | None, tags: list[str] | None) -> str:
@@ -227,6 +244,17 @@ def _handle(event: dict, team_id: str) -> None:
     # everything the asker could see in the app. `channel_type == "im"` is how
     # Slack marks a direct message.
     tags = None if event.get("channel_type") == "im" else [channel_tag(channel)]
+
+    # "This channel is not connected" is a different FACT from "nothing here
+    # answers that", and only the first tells anyone what to DO about it. The
+    # bot can be invited to any channel, so this is the common case, not an
+    # edge one -- and the RAG fallback can only ever hedge ("it MAY have been
+    # discussed in a channel that isn't connected") because retrieval cannot
+    # distinguish an unindexed channel from an unanswered question. Checked
+    # BEFORE the pipeline, so an unconnected channel also costs no LLM call.
+    if tags and not _channel_is_indexed(org_id, workspace_id, tags[0]):
+        post_message(token, channel, _NOT_CONNECTED, thread_ts)
+        return
 
     try:
         answer = _answer(text, org_id, workspace_id, tags)
