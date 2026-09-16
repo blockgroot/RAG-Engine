@@ -289,6 +289,21 @@ def _answer(
     return f"_{source} · {scope_label}_\n{body}"
 
 
+def _count(value) -> str:
+    """Render a metric value. Counts are whole things, never "2.0".
+
+    SQL aggregates come back as float/Decimal, and every registry metric counts
+    REAL things -- issues, commits, pages -- so a decimal point is not a more
+    precise answer, it is a wrong one. Same reasoning as `Chart.tsx::axisTicks`
+    refusing fractional ticks.
+    """
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return str(int(number)) if number == int(number) else f"{number:g}"
+
+
 def _with_chart_values(response) -> str:
     """Append a chart's numbers to its caption as text.
 
@@ -309,7 +324,7 @@ def _with_chart_values(response) -> str:
         label = point.get("group") or point.get("bucket") or ""
         value = point.get("value")
         if label and value is not None:
-            lines.append(f"• {label}: {value}")
+            lines.append(f"•   {label}: {_count(value)}")
     if not lines:
         return response.answer
     more = "" if len(points) <= 10 else f"\n…and {len(points) - 10} more"

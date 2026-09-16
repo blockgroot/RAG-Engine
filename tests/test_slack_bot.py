@@ -184,6 +184,7 @@ def test_chart_numbers_are_printed_not_just_the_caption():
     assert "Commits by author" in text
     assert "18-sana: 12" in text
     assert "ada: 4" in text
+    assert "12.0" not in text
 
 
 def test_a_plain_answer_is_left_alone():
@@ -492,3 +493,21 @@ def test_an_ambiguous_name_falls_through_to_the_probe(monkeypatch):
         "T1",
     )
     assert seen == [("ws-b", None, "B")]
+
+
+def test_counts_never_render_with_a_decimal_point():
+    """SQL returns floats; "2.0 issues" is not a more precise count, just wrong."""
+    text = slack_events._with_chart_values(
+        _Resp("Where the work sits by state",
+              {"points": [{"bucket": "b", "group": "Backlog", "value": 2.0},
+                          {"bucket": "b", "group": "Done", "value": 3.0}]})
+    )
+    assert "Backlog: 2" in text and "2.0" not in text
+    assert "Done: 3" in text and "3.0" not in text
+
+
+def test_a_genuinely_fractional_value_keeps_its_decimals():
+    text = slack_events._with_chart_values(
+        _Resp("Average", {"points": [{"bucket": "b", "group": "Mean", "value": 2.5}]})
+    )
+    assert "Mean: 2.5" in text
