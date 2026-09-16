@@ -44,7 +44,7 @@ import time
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, status
 
-from ..agent.routing import choose_agent
+from ..agent.routing import _NO_MATCH, choose_agent, probe_best_scope
 from ..auth.credentials import get_live_connection_token
 from ..auth.users import get_user_by_email
 from ..config.settings import SlackSettings
@@ -89,12 +89,20 @@ def _verify(body: bytes, timestamp: str | None, signature: str | None, secret: s
     return hmac.compare_digest(expected, signature)
 
 
-def _org_for_team(team_id: str) -> tuple[str, str | None] | None:
-    """Resolve a Slack team id to ``(org_id, workspace_id)``.
+#: ``_scope_for_channel`` found no scope indexing that channel. A distinct
+#: sentinel because ``None`` is a VALID scope (org-wide), so "not found" and
+#: "found, org-wide" cannot share a return value.
+_NO_SCOPE = object()
 
-    Prefers an org-wide connection over a space-scoped one when a team somehow
-    has both: the bot has no space context in a DM, and answering from the
-    narrower scope would silently hide content the asker can see in the app.
+
+def _org_for_team(team_id: str) -> tuple[str, str | None] | None:
+    """Resolve a Slack team id to ``(org_id, workspace_id)`` for the TOKEN.
+
+    This picks which connection's token posts the reply, NOT what the answer
+    may read -- those are two different questions and conflating them is what
+    made a company-wide bot answer from one private space. Any connection for
+    this team can post (it is the same Slack workspace), so org-wide first
+    purely for determinism.
     """
     with get_connection() as conn:
         row = conn.execute(
@@ -105,6 +113,32 @@ def _org_for_team(team_id: str) -> tuple[str, str | None] | None:
             (team_id,),
         ).fetchone()
     return (row[0], row[1]) if row else None
+
+
+def _scope_for_channel(org_id: str, tag: str):
+    """Which scope indexes this channel: ``None`` (org-wide), a space id, or ``_NO_SCOPE``.
+
+    A channel's content lives wherever it was CONNECTED, and that is not
+    necessarily where the token came from: a company can connect its public
+    channels org-wide while a private channel stays inside one space. Asking
+    the documents directly is what keeps those two apart -- resolving the scope
+    from the connection instead would answer a private channel from the
+    org-wide corpus (finding nothing) or, worse, require indexing that private
+    channel org-wide to make the bot work, which publishes it to everyone.
+
+    Org-wide wins a tie: a channel indexed in both places is already
+    company-readable, so the broader copy is not a wider disclosure.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT workspace_id::text FROM documents "
+            "WHERE org_id = %s::uuid AND tags && ARRAY[%s] "
+            "GROUP BY workspace_id ORDER BY workspace_id NULLS FIRST LIMIT 1",
+            (org_id, tag),
+        ).fetchone()
+    if row is None:
+        return _NO_SCOPE
+    return row[0]
 
 
 def _slack_email(token: str, user_id: str) -> str | None:
@@ -118,20 +152,51 @@ def _slack_email(token: str, user_id: str) -> str | None:
     return ((info.get("user") or {}).get("profile") or {}).get("email")
 
 
-def _channel_is_indexed(org_id: str, workspace_id: str | None, tag: str) -> bool:
-    """Has anything from this channel ever been indexed?"""
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT 1 FROM documents WHERE org_id = %s::uuid "
-            "AND workspace_id IS NOT DISTINCT FROM %s::uuid "
-            "AND tags && ARRAY[%s] LIMIT 1",
-            (org_id, workspace_id, tag),
-        ).fetchone()
-    return row is not None
+#: Agent key -> what a person calls that source. The agent key is ours; nobody
+#: in Slack knows what "google" or "github_live" means.
+_SOURCE_LABELS = {
+    "notion": "Notion",
+    "google": "Google Drive",
+    "slack": "Slack",
+    "linear": "Linear",
+    "github": "GitHub",
+    "github_live": "GitHub",
+    "insights": "Charts",
+    "workspace": "Connected documents",
+    "policy": "Company documents",
+}
 
 
-def _answer(question: str, org_id: str, workspace_id: str | None, tags: list[str] | None) -> str:
-    """Run the existing pipeline. ``tags`` set => channel-scoped Slack only."""
+def _dm_scopes(org_id: str, user_id: str) -> list[tuple[str | None, str]]:
+    """Org-wide plus every space this person belongs to, as ``(id, label)``.
+
+    Membership is READ, never inferred: `list_my_workspaces` is the same query
+    the app uses, so a DM can only ever reach a space the asker is already in.
+    """
+    from ..workspaces import list_my_workspaces
+
+    scopes: list[tuple[str | None, str]] = [(None, "Company")]
+    try:
+        scopes += [(w.id, w.name) for w in list_my_workspaces(org_id, user_id)]
+    except Exception:  # noqa: BLE001 - a DM must still answer org-wide
+        logger.warning("slack.bot could not list spaces for %s", user_id, exc_info=True)
+    return scopes
+
+
+def _answer(
+    question: str,
+    org_id: str,
+    workspace_id: str | None,
+    tags: list[str] | None,
+    scope_label: str | None = None,
+) -> str:
+    """Run the existing pipeline. ``tags`` set => channel-scoped Slack only.
+
+    ``scope_label`` names where the answer was allowed to look ("Company",
+    "Meeting notes"); when given, the reply is prefixed with that plus the
+    source that answered. Omitted for a channel question, where the asker is
+    standing in the only place it could have come from.
+    """
     if tags:
         # Pinned to Slack and filtered to one channel. Goes through the agent's
         # pipeline rather than the routing graph because `Agent.answer` has no
@@ -181,7 +246,15 @@ def _answer(question: str, org_id: str, workspace_id: str | None, tags: list[str
         }
     )
     response = state["response"]
-    return _with_chart_values(response)
+    body = _with_chart_values(response)
+    if scope_label is None:
+        return body
+    # WHICH source and WHICH scope, above the answer. With one box answering
+    # from a company's Notion and from several private spaces, "where did this
+    # come from?" is not answerable from the text -- and an answer whose origin
+    # cannot be checked is the failure this whole codebase is arranged against.
+    source = _SOURCE_LABELS.get(decision.agent_key, decision.agent_key)
+    return f"_{source} · {scope_label}_\n{body}"
 
 
 def _with_chart_values(response) -> str:
@@ -231,10 +304,10 @@ def _handle(event: dict, team_id: str) -> None:
     if scope is None:
         logger.info("slack.bot: no connection for team %s", team_id)
         return
-    org_id, workspace_id = scope
+    org_id, token_workspace_id = scope
 
     try:
-        token = get_live_connection_token(org_id, "slack", workspace_id=workspace_id)
+        token = get_live_connection_token(org_id, "slack", workspace_id=token_workspace_id)
     except ProviderError as exc:
         logger.warning("slack.bot token unavailable for org %s: %s", org_id, exc)
         return
@@ -245,24 +318,60 @@ def _handle(event: dict, team_id: str) -> None:
         post_message(token, channel, _NO_ACCOUNT, thread_ts)
         return
 
-    # A channel question is answered from that channel ONLY; a DM searches
-    # everything the asker could see in the app. `channel_type == "im"` is how
-    # Slack marks a direct message.
-    tags = None if event.get("channel_type") == "im" else [channel_tag(channel)]
-
-    # "This channel is not connected" is a different FACT from "nothing here
-    # answers that", and only the first tells anyone what to DO about it. The
-    # bot can be invited to any channel, so this is the common case, not an
-    # edge one -- and the RAG fallback can only ever hedge ("it MAY have been
-    # discussed in a channel that isn't connected") because retrieval cannot
-    # distinguish an unindexed channel from an unanswered question. Checked
-    # BEFORE the pipeline, so an unconnected channel also costs no LLM call.
-    if tags and not _channel_is_indexed(org_id, workspace_id, tags[0]):
-        post_message(token, channel, _NOT_CONNECTED, thread_ts)
-        return
+    # THE SEPARATION OF CONCERNS, and it is a privacy boundary rather than a
+    # convenience:
+    #
+    # * A DM is a COMPANY-WIDE surface -- every person in the Slack workspace
+    #   can open one -- so it reads org-wide content ONLY, never a space's.
+    #   Answering a DM from a space would hand that space's private content to
+    #   anyone in Slack, which is precisely what a space exists to prevent.
+    # * A channel question reads THAT CHANNEL, in whichever scope indexes it.
+    #   Everyone in the room can already scroll up and read those messages, so
+    #   a channel-scoped answer discloses nothing new -- and this is what lets
+    #   a private channel stay connected to one space instead of having to be
+    #   indexed org-wide (publishing it to the whole company) just to make the
+    #   bot answer in it.
+    #
+    # `channel_type == "im"` is how Slack marks a direct message.
+    if event.get("channel_type") == "im":
+        # A DM is the PERSON's surface, not a space's: they legitimately see
+        # org-wide content and every space they belong to, so answering only
+        # org-wide would refuse questions whose answer they can read in the
+        # app. The corpus picks which scope -- the same principle the router
+        # already uses for sources ("the corpus answers which one resembles
+        # this") -- and only the caller's OWN scopes are offered, so this can
+        # never reach a space they are not a member of.
+        scopes = _dm_scopes(org_id, user.id)
+        answer_workspace_id, tags = None, None
+        scope_label = "Company"
+        if len(scopes) > 1:
+            best = probe_best_scope(text, org_id, [sid for sid, _ in scopes])
+            if best is not _NO_MATCH:
+                answer_workspace_id = best
+                scope_label = next(
+                    (name for sid, name in scopes if sid == best), "Company"
+                )
+    else:
+        tag = channel_tag(channel)
+        resolved = _scope_for_channel(org_id, tag)
+        # "This channel is not connected" is a different FACT from "nothing
+        # here answers that", and only the first tells anyone what to DO about
+        # it. The bot can be invited to any channel, so this is the common
+        # case, not an edge one -- and the RAG fallback can only ever hedge
+        # ("it MAY have been discussed in a channel that isn't connected")
+        # because retrieval cannot distinguish an unindexed channel from an
+        # unanswered question. Checked BEFORE the pipeline, so an unconnected
+        # channel also costs no LLM call.
+        if resolved is _NO_SCOPE:
+            post_message(token, channel, _NOT_CONNECTED, thread_ts)
+            return
+        answer_workspace_id, tags = resolved, [tag]
+        # No label in a channel: the asker is standing in the only place the
+        # answer could have come from, so naming it is noise.
+        scope_label = None
 
     try:
-        answer = _answer(text, org_id, workspace_id, tags)
+        answer = _answer(text, org_id, answer_workspace_id, tags, scope_label)
     except Exception as exc:  # noqa: BLE001 - a failed answer must still reply
         logger.warning("slack.bot answer failed for org %s: %s", org_id, exc, exc_info=True)
         answer = _ERROR

@@ -231,13 +231,33 @@ question is already being typed; the web app keeps connections/spaces/charts/
 schedulers. An ADAPTER, not an agent: the routing graph, the gate, the strict
 prompt and memory are reused untouched, so nothing here can weaken a grounding
 guarantee.
-- **A channel question is answered from THAT CHANNEL ONLY; a DM searches
-  everything the asker could see in the app.** This is a permission decision,
-  not a preference — everyone in a channel can already scroll up and read it,
-  so a channel-scoped answer discloses nothing, while answering a channel from
-  Drive/Notion/another channel BROADCASTS content some people present may not
-  be able to open. The bot must not become a new way to hit the parity gap
-  (§3 Isolation). `channel_type == "im"` is how Slack marks a DM.
+- **A DM is the PERSON'S surface; a channel reads THAT CHANNEL, in whichever
+  scope indexes it.** A DM may reach org-wide content AND every space the asker
+  belongs to — `_dm_scopes` READS membership (`list_my_workspaces`) and never
+  infers it, so a DM can only ever reach a space they are already in, which is
+  exactly what they see in the app. `routing.probe_best_scope` then picks ONE
+  scope in a single grouped query (the corpus answers "which resembles this?",
+  the same principle the router already uses for sources) and the pipeline runs
+  inside it unchanged — **picked, never blended**, so a space's rows still
+  never mix with org-wide rows in one answer. `_NO_MATCH` is a sentinel because
+  `None` means org-wide, a valid winner. A channel answer discloses nothing,
+  because everyone in the room can already scroll up and read it.
+- **A DM reply names the SOURCE and the SCOPE** (`_SOURCE_LABELS`, e.g.
+  `Google Drive · Meeting notes`). With one box answering from a company's
+  Notion and from several private spaces, "where did this come from?" is not
+  answerable from the text, and an answer whose origin cannot be checked is the
+  failure this codebase is arranged against. Omitted in a channel: the asker is
+  standing in the only place it could have come from.
+- **The token's scope must not decide what the answer may read**
+  (`_org_for_team` picks the poster, `_scope_for_channel` picks the corpus).
+  Conflating them made a company-wide bot answer from one private space, and it
+  forced a false choice: a private channel connected to a space either had to
+  be re-indexed ORG-WIDE — publishing it to the whole company — or the bot
+  would refuse inside it. Resolving the channel's scope from `documents.tags`
+  instead lets a private channel stay in its space and stay answerable *there*.
+  `_NO_SCOPE` is a sentinel because `None` is a VALID scope (org-wide), so
+  "not indexed" and "indexed org-wide" cannot share a return value. Org-wide
+  wins a tie: a channel indexed in both places is already company-readable.
 - **Channel scoping rides `documents.tags`**, which was plumbed end-to-end and
   never populated. `SourceDocument.tags` is the new per-document slot — a
   run-level tag list is ONE value for a whole sync and cannot express "this

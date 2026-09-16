@@ -202,6 +202,11 @@ def _named_repo(question: str, org_id: str, workspace_id: str | None) -> str | N
     return None
 
 
+#: ``probe_best_scope`` found nothing indexed in any of the caller's scopes.
+#: A distinct object because ``None`` means "org-wide", a real answer.
+_NO_MATCH = object()
+
+
 def _probe_scores(
     question: str,
     org_id: str,
@@ -245,6 +250,63 @@ def _probe_scores(
             (vector, org_id, workspace_id, providers),
         ).fetchall()
     return {row[0]: float(row[1]) for row in rows if row[1] is not None}
+
+
+def probe_best_scope(
+    question: str, org_id: str, workspace_ids: list[str | None]
+) -> str | None | object:
+    """Which of the caller's scopes best resembles this question. ONE query.
+
+    Used by the Slack DM path, where the asker is a person rather than a space:
+    they legitimately see org-wide content AND every space they belong to, so a
+    DM that could only read one of those is answering a narrower question than
+    the one asked. The scopes passed in are the caller's OWN -- membership is
+    resolved before this is called and is never inferred here.
+
+    This does NOT blend scopes. It picks the single best one and the pipeline
+    then runs inside it exactly as before, so a space's rows never mix with
+    org-wide rows in one answer (CLAUDE.md §3: blending is what would make
+    membership meaningless). Returning the winner rather than merging is also
+    what keeps this one grouped query instead of one retrieval per scope.
+
+    Returns the winning ``workspace_id`` (``None`` meaning org-wide), or
+    ``_NO_MATCH`` when nothing is indexed in any scope -- ``None`` is a VALID
+    answer here, so "no match" needs its own value.
+    """
+    if not workspace_ids:
+        return _NO_MATCH
+
+    from ..db.connection import get_connection
+
+    try:
+        vector = _probe_embedder().embed([question])[0]
+    except Exception:  # noqa: BLE001 - caller falls back to org-wide
+        logger.warning("Slack DM routing: could not embed the question", exc_info=True)
+        return _NO_MATCH
+
+    # `= ANY(array)` cannot match NULL (org-wide), so the org-wide scope is
+    # asked for with its own IS NULL branch rather than being silently dropped.
+    spaces = [w for w in workspace_ids if w is not None]
+    include_org_wide = None in workspace_ids
+
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT c.workspace_id::text,
+                   MAX(1 - (c.embedding <=> %s::vector)) AS best
+            FROM chunks c
+            WHERE c.org_id = %s
+              AND ((%s AND c.workspace_id IS NULL)
+                   OR c.workspace_id = ANY(%s::uuid[]))
+            GROUP BY c.workspace_id
+            ORDER BY best DESC
+            LIMIT 1
+            """,
+            (vector, org_id, include_org_wide, spaces),
+        ).fetchall()
+    if not rows or rows[0][1] is None:
+        return _NO_MATCH
+    return rows[0][0]
 
 
 def _has_authorized_repos(org_id: str, workspace_id: str | None) -> bool:

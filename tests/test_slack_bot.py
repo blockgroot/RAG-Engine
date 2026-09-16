@@ -111,9 +111,10 @@ def _capture_scope(monkeypatch) -> list:
         lambda email: type("U", (), {"id": "u1", "org_id": "org-1"})(),
     )
     monkeypatch.setattr(slack_events, "post_message", lambda *a, **k: None)
-    monkeypatch.setattr(slack_events, "_channel_is_indexed", lambda *a: True)
+    monkeypatch.setattr(slack_events, "_scope_for_channel", lambda *a: None)
+    monkeypatch.setattr(slack_events, "_dm_scopes", lambda org, uid: [(None, "Company")])
 
-    def _fake_answer(question, org_id, workspace_id, tags):
+    def _fake_answer(question, org_id, workspace_id, tags, scope_label=None):
         seen.append(tags)
         return "answer"
 
@@ -199,7 +200,7 @@ def test_an_unconnected_channel_says_so_instead_of_refusing(monkeypatch):
     """A hedged "I couldn't find that" tells nobody the channel was never indexed."""
     posted: list = []
     _capture_scope(monkeypatch)
-    monkeypatch.setattr(slack_events, "_channel_is_indexed", lambda *a: False)
+    monkeypatch.setattr(slack_events, "_scope_for_channel", lambda *a: slack_events._NO_SCOPE)
     monkeypatch.setattr(
         slack_events, "post_message", lambda tok, ch, text, ts=None: posted.append(text)
     )
@@ -219,8 +220,8 @@ def test_a_dm_never_checks_channel_indexing(monkeypatch):
     """A DM has no channel to be connected -- the check must not gate it."""
     seen = _capture_scope(monkeypatch)
     monkeypatch.setattr(
-        slack_events, "_channel_is_indexed", lambda *a: (_ for _ in ()).throw(
-            AssertionError("a DM must not check channel indexing")
+        slack_events, "_scope_for_channel", lambda *a: (_ for _ in ()).throw(
+            AssertionError("a DM must not resolve a channel scope")
         )
     )
     slack_events._handle(
@@ -264,8 +265,8 @@ def _capture_post(monkeypatch) -> list:
         slack_events, "get_user_by_email",
         lambda email: type("U", (), {"id": "u1", "org_id": "org-1"})(),
     )
-    monkeypatch.setattr(slack_events, "_channel_is_indexed", lambda *a: True)
-    monkeypatch.setattr(slack_events, "_answer", lambda *a: "the answer")
+    monkeypatch.setattr(slack_events, "_scope_for_channel", lambda *a: None)
+    monkeypatch.setattr(slack_events, "_answer", lambda *a, **k: "the answer")
     monkeypatch.setattr(
         slack_events, "post_message",
         lambda tok, ch, text, ts=None: posted.append((ch, text, ts)),
@@ -292,3 +293,140 @@ def test_a_question_inside_a_thread_is_answered_in_that_thread(monkeypatch):
         "T1",
     )
     assert posted == [("C1", "the answer", "111")]
+
+
+def _capture_answer_scope(monkeypatch) -> list:
+    """Record the (workspace_id, tags) the answer was actually run with."""
+    seen: list = []
+    monkeypatch.setattr(slack_events, "_org_for_team", lambda team: ("org-1", "space-1"))
+    monkeypatch.setattr(slack_events, "get_live_connection_token", lambda *a, **k: "tok")
+    monkeypatch.setattr(slack_events, "_slack_email", lambda t, u: "a@b.com")
+    monkeypatch.setattr(
+        slack_events, "get_user_by_email",
+        lambda email: type("U", (), {"id": "u1", "org_id": "org-1"})(),
+    )
+    monkeypatch.setattr(slack_events, "post_message", lambda *a, **k: None)
+    monkeypatch.setattr(
+        slack_events, "_answer",
+        lambda q, org, ws, tags, label=None: seen.append((ws, tags, label)) or "answer",
+    )
+    return seen
+
+
+def test_a_dm_defaults_to_company_when_the_asker_is_in_no_space(monkeypatch):
+    """The token's scope must never decide what the answer may read."""
+    seen = _capture_answer_scope(monkeypatch)
+    monkeypatch.setattr(slack_events, "_dm_scopes", lambda org, uid: [(None, "Company")])
+    slack_events._handle(
+        {"type": "message", "channel_type": "im", "channel": "D1", "user": "U1",
+         "text": "what is the leave policy?", "ts": "1"},
+        "T1",
+    )
+    # Space-scoped token, but the answer is org-wide and labelled Company.
+    assert seen == [(None, None, "Company")]
+
+
+def test_a_channel_is_answered_from_the_scope_that_indexes_it(monkeypatch):
+    """A private channel connected to ONE space stays answerable in that channel.
+
+    Without this, making the bot work in a private channel would require
+    indexing it org-wide -- publishing it to the whole company.
+    """
+    seen = _capture_answer_scope(monkeypatch)
+    monkeypatch.setattr(slack_events, "_scope_for_channel", lambda org, tag: "space-1")
+    slack_events._handle(
+        {"type": "app_mention", "channel": "C_PRIVATE", "user": "U1",
+         "text": "what was decided?", "ts": "1"},
+        "T1",
+    )
+    assert seen == [("space-1", [channel_tag("C_PRIVATE")], None)]
+
+
+def test_an_org_wide_channel_is_answered_org_wide(monkeypatch):
+    seen = _capture_answer_scope(monkeypatch)
+    monkeypatch.setattr(slack_events, "_scope_for_channel", lambda org, tag: None)
+    slack_events._handle(
+        {"type": "app_mention", "channel": "C_PUBLIC", "user": "U1",
+         "text": "q", "ts": "1"},
+        "T1",
+    )
+    assert seen == [(None, [channel_tag("C_PUBLIC")], None)]
+
+
+def test_not_found_is_distinguishable_from_org_wide():
+    """`None` is a valid scope, so the sentinel cannot be `None`."""
+    assert slack_events._NO_SCOPE is not None
+
+
+def test_a_dm_can_reach_a_space_the_asker_belongs_to(monkeypatch):
+    """A DM is the PERSON's surface: they see org-wide AND their own spaces."""
+    seen = _capture_answer_scope(monkeypatch)
+    monkeypatch.setattr(
+        slack_events, "_dm_scopes",
+        lambda org, uid: [(None, "Company"), ("ws-meet", "Meeting notes")],
+    )
+    monkeypatch.setattr(slack_events, "probe_best_scope", lambda q, org, ids: "ws-meet")
+    slack_events._handle(
+        {"type": "message", "channel_type": "im", "channel": "D1", "user": "U1",
+         "text": "what did we agree on Tuesday?", "ts": "1"},
+        "T1",
+    )
+    assert seen == [("ws-meet", None, "Meeting notes")]
+
+
+def test_only_the_askers_own_scopes_are_ever_probed(monkeypatch):
+    """Membership is READ, never inferred -- the probe is offered nothing else."""
+    offered: list = []
+    _capture_answer_scope(monkeypatch)
+    monkeypatch.setattr(
+        slack_events, "_dm_scopes",
+        lambda org, uid: [(None, "Company"), ("ws-mine", "Mine")],
+    )
+    monkeypatch.setattr(
+        slack_events, "probe_best_scope",
+        lambda q, org, ids: offered.append(list(ids)) or None,
+    )
+    slack_events._handle(
+        {"type": "message", "channel_type": "im", "channel": "D1", "user": "U1",
+         "text": "q", "ts": "1"},
+        "T1",
+    )
+    assert offered == [[None, "ws-mine"]]
+    assert "ws-someone-else" not in offered[0]
+
+
+def test_an_unmatched_probe_falls_back_to_company(monkeypatch):
+    """Nothing indexed anywhere must not strand the question in a space."""
+    seen = _capture_answer_scope(monkeypatch)
+    monkeypatch.setattr(
+        slack_events, "_dm_scopes",
+        lambda org, uid: [(None, "Company"), ("ws-x", "X")],
+    )
+    monkeypatch.setattr(
+        slack_events, "probe_best_scope", lambda q, org, ids: slack_events._NO_MATCH
+    )
+    slack_events._handle(
+        {"type": "message", "channel_type": "im", "channel": "D1", "user": "U1",
+         "text": "q", "ts": "1"},
+        "T1",
+    )
+    assert seen == [(None, None, "Company")]
+
+
+def test_the_reply_names_the_source_and_the_scope(monkeypatch):
+    """"Where did this come from?" must be answerable from the message itself."""
+    monkeypatch.setattr(
+        slack_events, "choose_agent",
+        lambda q, org, workspace_id=None: type(
+            "D", (), {"agent_key": "google", "chart_spec": None, "chart_refusal": None}
+        )(),
+    )
+
+    class _G:
+        def invoke(self, state):
+            return {"response": type("R", (), {"answer": "Tuesday's notes.", "chart": None})()}
+
+    monkeypatch.setattr("app.agent.orchestration.build_agent_graph", lambda g: _G())
+    text = slack_events._answer("q", "org-1", "ws-meet", None, "Meeting notes")
+    assert text.startswith("_Google Drive · Meeting notes_\n")
+    assert "Tuesday's notes." in text
