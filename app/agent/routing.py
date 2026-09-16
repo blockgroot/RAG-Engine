@@ -252,6 +252,89 @@ def _probe_scores(
     return {row[0]: float(row[1]) for row in rows if row[1] is not None}
 
 
+def _words(text: str) -> set[str]:
+    """Lowercased alphanumeric tokens, crudely singularised.
+
+    `Meeting_notes_1` and "Meeting_note_1" must match: people retype a title
+    from memory, and an exact-string check fails on one letter.
+    """
+    return {
+        w[:-1] if len(w) > 3 and w.endswith("s") else w
+        for w in re.findall(r"[a-z0-9]+", text.lower())
+    }
+
+
+
+def _named_scope(org_id: str, scopes: list[tuple[str | None, str]], question: str):
+    """The scope whose SPACE NAME or a DOCUMENT TITLE the question names.
+
+    Ordered ahead of the cosine probe for the reason `_named_repo` already is
+    (CLAUDE.md §3): a document ABOUT meeting notes can out-score the meeting
+    notes themselves, so a name the asker actually typed is stronger evidence
+    than a similarity score. Measured: "What should I know from Meeting_note_1?"
+    probed to org-wide and answered from Linear, while the file sat indexed in
+    the Meeting notes space one scope away.
+
+    Requires EVERY token of the name to appear in the question, so a one-word
+    title cannot hijack an unrelated question; two scopes matching resolves to
+    NEITHER -- the wrong space is worse than letting the probe decide.
+    """
+    asked = _words(question)
+    if not asked:
+        return _NO_MATCH
+
+    candidates: set[str | None] = set()
+    for scope_id, name in scopes:
+        tokens = _words(name)
+        if tokens and tokens <= asked:
+            candidates.add(scope_id)
+
+    from ..db.connection import get_connection
+
+    ids = [sid for sid, _ in scopes]
+    spaces = [sid for sid in ids if sid is not None]
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT title, workspace_id::text FROM documents "
+            "WHERE org_id = %s::uuid AND title IS NOT NULL "
+            "AND ((%s AND workspace_id IS NULL) OR workspace_id = ANY(%s::uuid[]))",
+            (org_id, None in ids, spaces),
+        ).fetchall()
+    for title, scope_id in rows:
+        tokens = _words(title or "")
+        # A single generic token ("notes") is not a name; two is a title.
+        if len(tokens) >= 2 and tokens <= asked:
+            candidates.add(scope_id)
+
+    if len(candidates) == 1:
+        return candidates.pop()
+    return _NO_MATCH
+
+
+
+def choose_scope(
+    org_id: str, scopes: list[tuple[str | None, str]], question: str
+):
+    """Which of the caller's scopes should answer. The Slack DM entry point.
+
+    The counterpart to ``choose_agent``, and deliberately the same SHAPE: a
+    deterministic precedence ladder, a name beating a measurement, and a
+    fall-through that never fails the question. Agent selection INSIDE the
+    chosen scope is then `choose_agent` + the LangGraph exactly as the web
+    chat runs it -- there is one router, not a Slack copy of one.
+
+    Only Slack needs this. In the app the member is already standing in a
+    space or in company Ask, so the UI supplies the scope; a DM has no such
+    context and is the one surface that must infer it.
+
+    Returns the winning ``workspace_id`` (``None`` = org-wide) or ``_NO_MATCH``.
+    """
+    named = _named_scope(org_id, scopes, question)
+    if named is not _NO_MATCH:
+        return named
+    return probe_best_scope(question, org_id, [sid for sid, _ in scopes])
+
+
 def probe_best_scope(
     question: str, org_id: str, workspace_ids: list[str | None]
 ) -> str | None | object:

@@ -242,6 +242,30 @@ guarantee.
   never mix with org-wide rows in one answer. `_NO_MATCH` is a sentinel because
   `None` means org-wide, a valid winner. A channel answer discloses nothing,
   because everyone in the room can already scroll up and read it.
+- **There is ONE router, not a Slack copy of one.** Scope selection lives in
+  `agent/routing.py::choose_scope` — the counterpart to `choose_agent` and
+  deliberately the same shape (a deterministic ladder, a name beating a
+  measurement, a fall-through that never fails the question). Inside the chosen
+  scope the DM path then runs `choose_agent` + the LangGraph **exactly** as
+  `api/chat.py` does, chart spec included. Only Slack needs `choose_scope` at
+  all: in the app the member is already standing in a space or in company Ask,
+  so the UI supplies the scope; a DM is the one surface that must infer it.
+- **A NAME the asker typed beats the cosine probe** (`_named_scope`, ordered
+  ahead of `probe_best_scope` for the reason `_named_repo` already is). Measured
+  on the live tenant: "What should I know from Meeting_note_1?" probed to
+  org-wide and answered from **Linear**, while the file sat indexed in the
+  Meeting notes space one scope away — a scope probe compares corpora of wildly
+  different sizes, so a vague question is decided by whichever scope happens to
+  hold more text. Matches a SPACE NAME or a DOCUMENT TITLE; `_words` singularises
+  crudely so `Meeting_note_1` matches `Meeting_notes_1` (people retype a title
+  from memory). Every token of the name must appear in the question, and a title
+  of one token is ignored, so a generic word cannot hijack an unrelated ask; two
+  scopes matching resolves to NEITHER — the wrong space is worse than the probe.
+- **Slack renders NO Markdown** (`_to_slack_mrkdwn`). `**bold**` shows its
+  asterisks, `- item` stays a hyphen and `### H` prints the hashes, so a
+  grounded answer arrived as a wall of punctuation. Converted at the edge, not
+  by asking the model for a per-surface format — that would make an answer's
+  shape depend on where it was asked, and the model would forget.
 - **A DM reply names the SOURCE and the SCOPE** (`_SOURCE_LABELS`, e.g.
   `Google Drive · Meeting notes`). With one box answering from a company's
   Notion and from several private spaces, "where did this come from?" is not

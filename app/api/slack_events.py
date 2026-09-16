@@ -39,12 +39,13 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import logging
 import time
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, status
 
-from ..agent.routing import _NO_MATCH, choose_agent, probe_best_scope
+from ..agent.routing import _NO_MATCH, choose_agent, choose_scope
 from ..auth.credentials import get_live_connection_token
 from ..auth.users import get_user_by_email
 from ..config.settings import SlackSettings
@@ -167,6 +168,37 @@ _SOURCE_LABELS = {
 }
 
 
+def _to_slack_mrkdwn(text: str) -> str:
+    """Rewrite the model's Markdown as Slack mrkdwn.
+
+    Slack does NOT render Markdown: `**bold**` shows its asterisks, `- item`
+    stays a hyphen, and `### Heading` prints the hashes. The prompt produces
+    Markdown for the web UI, so converting here is right -- asking the model
+    for a per-surface format would make the answer's shape depend on where it
+    was asked, and it would forget.
+    """
+    out: list[str] = []
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        indent = line[: len(line) - len(stripped)]
+        # Headings become bold lines: Slack has no heading syntax at all.
+        heading = re.match(r"^#{1,6}\s+(.*)$", stripped)
+        if heading:
+            out.append(f"{indent}*{heading.group(1).strip()}*")
+            continue
+        # "- " / "* " -> a real bullet. Numbered lists already read fine.
+        bullet = re.match(r"^[-*]\s+(.*)$", stripped)
+        if bullet:
+            out.append(f"{indent}•   {bullet.group(1)}")
+            continue
+        out.append(line)
+    body = "\n".join(out)
+    # **bold** -> *bold*. Done after the bullet pass so a "* " list marker at
+    # the start of a line is never mistaken for an emphasis delimiter.
+    body = re.sub(r"\*\*(.+?)\*\*", r"*\1*", body, flags=re.S)
+    return body
+
+
 def _dm_scopes(org_id: str, user_id: str) -> list[tuple[str | None, str]]:
     """Org-wide plus every space this person belongs to, as ``(id, label)``.
 
@@ -205,7 +237,7 @@ def _answer(
         result = get_slack_agent().pipeline.answer(
             question, org_id=org_id, workspace_id=workspace_id, tags=tags
         )
-        return result.answer
+        return _to_slack_mrkdwn(result.answer)
 
     decision = choose_agent(question, org_id, workspace_id=workspace_id)
     from ..agent.orchestration import build_agent_graph
@@ -246,7 +278,7 @@ def _answer(
         }
     )
     response = state["response"]
-    body = _with_chart_values(response)
+    body = _to_slack_mrkdwn(_with_chart_values(response))
     if scope_label is None:
         return body
     # WHICH source and WHICH scope, above the answer. With one box answering
@@ -345,7 +377,9 @@ def _handle(event: dict, team_id: str) -> None:
         answer_workspace_id, tags = None, None
         scope_label = "Company"
         if len(scopes) > 1:
-            best = probe_best_scope(text, org_id, [sid for sid, _ in scopes])
+            # The counterpart to `choose_agent`, and the same router module --
+            # a DM is the one surface with no UI to say which space it means.
+            best = choose_scope(org_id, scopes, text)
             if best is not _NO_MATCH:
                 answer_workspace_id = best
                 scope_label = next(

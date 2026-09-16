@@ -306,6 +306,11 @@ def _capture_answer_scope(monkeypatch) -> list:
         lambda email: type("U", (), {"id": "u1", "org_id": "org-1"})(),
     )
     monkeypatch.setattr(slack_events, "post_message", lambda *a, **k: None)
+    # Default to "no name in the question" so each test exercises the path it
+    # names; the named-scope tests override this.
+    monkeypatch.setattr(
+        slack_events, "choose_scope", lambda org, scopes, q: slack_events._NO_MATCH
+    )
     monkeypatch.setattr(
         slack_events, "_answer",
         lambda q, org, ws, tags, label=None: seen.append((ws, tags, label)) or "answer",
@@ -365,7 +370,7 @@ def test_a_dm_can_reach_a_space_the_asker_belongs_to(monkeypatch):
         slack_events, "_dm_scopes",
         lambda org, uid: [(None, "Company"), ("ws-meet", "Meeting notes")],
     )
-    monkeypatch.setattr(slack_events, "probe_best_scope", lambda q, org, ids: "ws-meet")
+    monkeypatch.setattr(slack_events, "choose_scope", lambda org, scopes, q: "ws-meet")
     slack_events._handle(
         {"type": "message", "channel_type": "im", "channel": "D1", "user": "U1",
          "text": "what did we agree on Tuesday?", "ts": "1"},
@@ -383,8 +388,8 @@ def test_only_the_askers_own_scopes_are_ever_probed(monkeypatch):
         lambda org, uid: [(None, "Company"), ("ws-mine", "Mine")],
     )
     monkeypatch.setattr(
-        slack_events, "probe_best_scope",
-        lambda q, org, ids: offered.append(list(ids)) or None,
+        slack_events, "choose_scope",
+        lambda org, scopes, q: offered.append([sid for sid, _ in scopes]) or None,
     )
     slack_events._handle(
         {"type": "message", "channel_type": "im", "channel": "D1", "user": "U1",
@@ -403,7 +408,7 @@ def test_an_unmatched_probe_falls_back_to_company(monkeypatch):
         lambda org, uid: [(None, "Company"), ("ws-x", "X")],
     )
     monkeypatch.setattr(
-        slack_events, "probe_best_scope", lambda q, org, ids: slack_events._NO_MATCH
+        slack_events, "choose_scope", lambda org, scopes, q: slack_events._NO_MATCH
     )
     slack_events._handle(
         {"type": "message", "channel_type": "im", "channel": "D1", "user": "U1",
@@ -430,3 +435,60 @@ def test_the_reply_names_the_source_and_the_scope(monkeypatch):
     text = slack_events._answer("q", "org-1", "ws-meet", None, "Meeting notes")
     assert text.startswith("_Google Drive · Meeting notes_\n")
     assert "Tuesday's notes." in text
+
+
+def test_markdown_becomes_slack_mrkdwn():
+    """Slack renders none of Markdown: asterisks and hyphens show literally."""
+    out = slack_events._to_slack_mrkdwn(
+        "### Key details\n- **Eligibility**: full-time only\n- Amount: Rs. 5,000\n\nPlain line."
+    )
+    assert "*Key details*" in out and "###" not in out
+    assert "•   *Eligibility*: full-time only" in out
+    assert "**" not in out
+    assert "Plain line." in out
+
+
+def test_a_numbered_list_and_plain_text_are_left_alone():
+    text = "1. First\n2. Second\n\nJust a sentence."
+    assert slack_events._to_slack_mrkdwn(text) == text
+
+
+def test_words_tolerates_a_retyped_title():
+    """"Meeting_note_1" must match "Meeting_notes_1" -- people retype from memory."""
+    from app.agent import routing
+    assert routing._words("Meeting_notes_1") == routing._words("Meeting_note_1")
+
+
+def test_a_named_space_beats_the_probe(monkeypatch):
+    seen = _capture_answer_scope(monkeypatch)
+    monkeypatch.setattr(
+        slack_events, "_dm_scopes",
+        lambda org, uid: [(None, "Company"), ("ws-meet", "Meeting notes")],
+    )
+    monkeypatch.setattr(slack_events, "choose_scope", lambda org, scopes, q: "ws-meet")
+
+    slack_events._handle(
+        {"type": "message", "channel_type": "im", "channel": "D1", "user": "U1",
+         "text": "what should I know from Meeting_note_1?", "ts": "1"},
+        "T1",
+    )
+    assert seen == [("ws-meet", None, "Meeting notes")]
+
+
+def test_an_ambiguous_name_falls_through_to_the_probe(monkeypatch):
+    """Two scopes matching resolves to NEITHER: the wrong space beats no space."""
+    seen = _capture_answer_scope(monkeypatch)
+    monkeypatch.setattr(
+        slack_events, "_dm_scopes",
+        lambda org, uid: [(None, "Company"), ("ws-a", "A"), ("ws-b", "B")],
+    )
+    monkeypatch.setattr(
+        slack_events, "choose_scope", lambda org, scopes, q: slack_events._NO_MATCH
+    )
+    monkeypatch.setattr(slack_events, "choose_scope", lambda org, scopes, q: "ws-b")
+    slack_events._handle(
+        {"type": "message", "channel_type": "im", "channel": "D1", "user": "U1",
+         "text": "q", "ts": "1"},
+        "T1",
+    )
+    assert seen == [("ws-b", None, "B")]
