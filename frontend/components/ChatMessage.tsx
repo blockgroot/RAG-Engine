@@ -1,6 +1,7 @@
 "use client";
 
 import { ChatDonePayload } from "@/lib/sse";
+import { AnswerFeedback } from "./AnswerFeedback";
 import { AnswerText } from "./AnswerText";
 import { Chart } from "./Chart";
 import { ProvenanceStripe } from "./ProvenanceStripe";
@@ -20,7 +21,22 @@ export interface Message {
  * A chart-shaped question is answered from counted facts, not RAG: the SVG
  * is the measurement; the caption is only the registry title.
  */
-export function ChatMessageView({ message }: { message: Message }) {
+export function ChatMessageView({
+  message,
+  conversationId,
+  question,
+  workspaceId,
+}: {
+  message: Message;
+  /** The chat this answer belongs to. Feedback is stored against it, and the
+   *  route checks it belongs to this person — so with no id there is nothing
+   *  to rate and the thumbs are simply absent. */
+  conversationId?: string | null;
+  /** The question this answer replied to. Kept beside the answer so an admin
+   *  reading a downvote is not holding half an exchange. */
+  question?: string;
+  workspaceId?: string | null;
+}) {
   if (message.role === "user") {
     return <div className="chat-bubble chat-bubble-user">{message.text}</div>;
   }
@@ -77,6 +93,14 @@ export function ChatMessageView({ message }: { message: Message }) {
           {message.streaming && <span className="chat-stream-caret" aria-hidden />}
           {message.done?.model && (
             <span className="chat-model-tag">Answered by {message.done.model}</span>
+          )}
+          {message.done && conversationId && question && (
+            <AnswerFeedback
+              conversationId={conversationId}
+              question={question}
+              done={message.done}
+              workspaceId={workspaceId}
+            />
           )}
         </>
       )}

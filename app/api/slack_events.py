@@ -46,6 +46,7 @@ import time
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, status
 
 from ..agent.routing import _NO_MATCH, choose_agent, choose_scope
+from ..feedback import record_gap
 from ..auth.credentials import get_live_connection_token
 from ..auth.users import get_user_by_email
 from ..config.settings import SlackSettings
@@ -221,6 +222,7 @@ def _answer(
     workspace_id: str | None,
     tags: list[str] | None,
     scope_label: str | None = None,
+    user_id: str | None = None,
 ) -> str:
     """Run the existing pipeline. ``tags`` set => channel-scoped Slack only.
 
@@ -228,6 +230,12 @@ def _answer(
     "Meeting notes"); when given, the reply is prefixed with that plus the
     source that answered. Omitted for a channel question, where the asker is
     standing in the only place it could have come from.
+
+    ``user_id`` is the asker's Handbook account, carried only so an unanswered
+    question is logged as a documentation gap with a person attached -- "nine
+    people asked this" is the line that gets a document written, and it is
+    COUNT(DISTINCT user_id). Slack has no thumbs yet, so this surface writes
+    gaps and never ratings.
     """
     if tags:
         # Pinned to Slack and filtered to one channel. Goes through the agent's
@@ -237,6 +245,18 @@ def _answer(
         result = get_slack_agent().pipeline.answer(
             question, org_id=org_id, workspace_id=workspace_id, tags=tags
         )
+        if not result.answered:
+            record_gap(
+                org_id=org_id,
+                question=question,
+                resolved_question=result.resolved_question,
+                answer=result.answer,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                agent="slack",
+                surface="slack",
+                gate_score=result.top_score,
+            )
         return _to_slack_mrkdwn(result.answer)
 
     decision = choose_agent(question, org_id, workspace_id=workspace_id)
@@ -278,6 +298,27 @@ def _answer(
         }
     )
     response = state["response"]
+    # Same gap log as the web chat, for the same reason and at the same edge:
+    # a question asked in Slack that nothing could answer is the same missing
+    # document as one asked in the app, and an admin reading the gap list must
+    # not have to know which box it was typed into.
+    # `getattr` rather than attribute access, like `_with_chart_values` just
+    # below: an agent node is free to return any response shape, and a missing
+    # diagnostic field must cost the gap log, never the answer. Absent =>
+    # treated as grounded, so a gap is only ever recorded when we KNOW there
+    # was one.
+    if not getattr(response, "grounded", True):
+        record_gap(
+            org_id=org_id,
+            question=question,
+            resolved_question=getattr(response, "resolved_question", None),
+            answer=getattr(response, "answer", None),
+            workspace_id=workspace_id,
+            user_id=user_id,
+            agent=decision.agent_key,
+            surface="slack",
+            gate_score=getattr(response, "top_score", None),
+        )
     body = _to_slack_mrkdwn(_with_chart_values(response))
     if scope_label is None:
         return body
@@ -420,7 +461,9 @@ def _handle(event: dict, team_id: str) -> None:
         scope_label = None
 
     try:
-        answer = _answer(text, org_id, answer_workspace_id, tags, scope_label)
+        answer = _answer(
+            text, org_id, answer_workspace_id, tags, scope_label, user_id=user.id
+        )
     except Exception as exc:  # noqa: BLE001 - a failed answer must still reply
         logger.warning("slack.bot answer failed for org %s: %s", org_id, exc, exc_info=True)
         answer = _ERROR

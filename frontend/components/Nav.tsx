@@ -9,6 +9,7 @@ const LINKS = [
   { href: "/workspaces", label: "My Workspaces" },
   { href: "/admin/connections", label: "Connections", adminOnly: true },
   { href: "/admin/members", label: "Members", adminOnly: true },
+  { href: "/admin/feedback", label: "Gaps", adminOnly: true },
 ];
 
 export function Nav({ me }: { me: Me | null }) {

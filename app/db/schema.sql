@@ -762,3 +762,67 @@ CREATE TABLE IF NOT EXISTS conversation_attachments (
 
 CREATE INDEX IF NOT EXISTS idx_conversation_attachments_owner
     ON conversation_attachments (conversation_id, org_id, user_id, created_at);
+
+-- ---------------------------------------------------------------------------
+-- Feedback & documentation-gap tracking (Feature 2 of the Onyx parity
+-- analysis).
+--
+-- Two kinds of row, one table, because they answer the same admin question
+-- ("what are people asking that we cannot answer?") and a downvote ON a
+-- refusal is one event, not two:
+--
+--   * refusal = true, rating NULL  -- written automatically whenever an answer
+--     came back ungrounded. Nobody has to report a gap for it to be counted,
+--     which is the point: the gaps people give up on are the ones that never
+--     get reported.
+--   * rating = +1/-1               -- a thumb, with an optional `reason`
+--     category and free-text comment on a downvote.
+--
+-- The question/answer text is SNAPSHOTTED rather than joined, for the same
+-- reason `scheduler_reports` snapshots its labels: `conversation_turns` rows
+-- are DELETEd by `set_summary_and_prune` once folded into a summary, and the
+-- GitHub/Insights/Slack paths never write a turn row at all. A foreign key to
+-- a turn would therefore be NULL in most rows and dangling in the rest.
+--
+-- `normalized_question` is what the admin view GROUPs by. It is derived from
+-- the RESOLVED (rewritten, standalone) question where there is one -- a
+-- follow-up's raw text is "what about dental?", which is unusable in a gap
+-- list.
+--
+-- `user_id` is ON DELETE SET NULL, unlike the cascade every other tenant
+-- table uses: the gap is a fact about the company's documentation, not about
+-- the person who happened to hit it, so it must outlive their account. It is
+-- stored at all because "15 people asked this" is COUNT(DISTINCT user_id) --
+-- without it one frustrated person re-asking five times reads as five people.
+--
+-- `gate_score` separates the two failures an admin fixes differently: NULL
+-- means retrieval matched nothing at all (no such document), a value below
+-- RAG_SIMILARITY_THRESHOLD means something was close but not close enough
+-- (the document may exist and be unreachable).
+CREATE TABLE IF NOT EXISTS feedback_and_gaps (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id              UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    workspace_id        UUID REFERENCES workspaces (id) ON DELETE CASCADE,
+    user_id             UUID REFERENCES users (id) ON DELETE SET NULL,
+    conversation_id     UUID REFERENCES conversations (id) ON DELETE CASCADE,
+    question            TEXT NOT NULL,
+    normalized_question TEXT NOT NULL,
+    answer              TEXT,
+    -- Which agent answered, and where it was asked ('web' | 'slack'). Both are
+    -- diagnostics: a gap that only ever appears on one surface is a routing
+    -- bug, not a missing document.
+    agent               TEXT,
+    surface             TEXT NOT NULL DEFAULT 'web',
+    refusal             BOOLEAN NOT NULL DEFAULT false,
+    gate_score          REAL,
+    rating              SMALLINT CHECK (rating IN (-1, 1)),
+    reason              TEXT,
+    comment             TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_feedback_org_recent
+    ON feedback_and_gaps (org_id, created_at DESC);
+-- The gap view groups by normalized question within an org and a window.
+CREATE INDEX IF NOT EXISTS idx_feedback_org_question
+    ON feedback_and_gaps (org_id, normalized_question);

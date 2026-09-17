@@ -48,6 +48,7 @@ from ..llm import catalog
 from ..llm import org_model
 from ..llm.routed import answering_model, selected_model, use_model
 from ..db.connection import get_connection
+from ..feedback import record_gap
 from ..security.rate_limit import check_rate_limit
 from ..workspaces import assert_member
 from .deps import (
@@ -722,6 +723,29 @@ def _stream_answer(
         logger.warning("Chat provider failure: %s", exc, exc_info=True)
         yield _sse_event("error", {"message": _user_facing_llm_error(exc)})
         return
+
+    # A question that came back ungrounded is a documentation gap, and it is
+    # recorded here without anyone having to report it -- the gaps people
+    # quietly give up on are exactly the ones that never get reported.
+    #
+    # This is the API EDGE and not the gate inside `RagPipeline`, deliberately:
+    # a gate miss is only one of the four ways an answer ends up ungrounded
+    # (the strict prompt refusing on a gate-passing retrieval, the groundedness
+    # audit downgrading an answer, and GitHubAgent/InsightsAgent refusing with
+    # no gate at all are the others). `grounded=False` is the union of them,
+    # and this is also the only place `user_id` exists.
+    if not result.grounded:
+        record_gap(
+            org_id=org_id,
+            question=question,
+            resolved_question=result.resolved_question,
+            answer=result.answer,
+            workspace_id=workspace_id,
+            user_id=session.user_id if session else None,
+            conversation_id=conversation_id,
+            agent=decision.agent_key,
+            gate_score=result.top_score,
+        )
 
     delay = _stream_word_delay_seconds()
     for chunk in _word_chunks(result.answer):

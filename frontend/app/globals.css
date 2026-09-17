@@ -7461,3 +7461,126 @@ a.people-card:hover { color: inherit; }
   .setup { grid-template-columns: minmax(0, 1fr); }
   .setup-track { display: none; }
 }
+
+/* ---- Answer feedback (thumbs under an answer) --------------------------
+   A quiet row: the thumbs sit under the model tag and only gain colour once
+   pressed, because an unrated answer is the normal case and a pair of bright
+   buttons under every reply reads as the product asking for reassurance. */
+.answer-feedback {
+  margin-top: 0.6rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.55rem;
+}
+
+.answer-feedback-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.answer-feedback-label,
+.answer-feedback-thanks {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.answer-feedback-thumb {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  border: 1px solid var(--border);
+  border-radius: 0.45rem;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s var(--ease), border-color 0.15s var(--ease);
+}
+
+.answer-feedback-thumb:hover { color: var(--fg); border-color: var(--fg); }
+.answer-feedback-thumb[data-active] { color: var(--accent); border-color: var(--accent); }
+
+/* One glyph for both buttons — the down thumb is the same path turned over,
+   which is one shape to maintain instead of two that have to match. */
+.answer-feedback-thumb-down svg { transform: rotate(180deg); }
+
+.answer-feedback-panel {
+  margin-top: 0.55rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.answer-feedback-question { font-size: 0.78rem; margin: 0; }
+
+.answer-feedback-reasons { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+
+.answer-feedback-reason {
+  font-size: 0.72rem;
+  padding: 0.28rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.answer-feedback-reason:hover { color: var(--fg); border-color: var(--fg); }
+.answer-feedback-reason[data-active] { color: var(--accent); border-color: var(--accent); }
+
+.answer-feedback-comment { display: flex; gap: 0.4rem; }
+.answer-feedback-comment .input { flex: 1; font-size: 0.78rem; padding: 0.4rem 0.6rem; }
+
+.answer-feedback-error { font-size: 0.72rem; color: var(--danger, #b42318); margin: 0.4rem 0 0; }
+
+/* ---- Admin: unanswered questions --------------------------------------- */
+.gap-window { display: flex; gap: 0.4rem; }
+
+.gap-window-option {
+  font-size: 0.78rem;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.gap-window-option[data-active] { color: var(--accent); border-color: var(--accent); }
+
+.gap-table { width: 100%; border-collapse: collapse; font-size: 0.86rem; }
+
+.gap-table th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  padding-bottom: 0.5rem;
+}
+
+.gap-table td { padding: 0.55rem 0.75rem 0.55rem 0; border-top: 1px solid var(--border); }
+.gap-table td:first-child { font-weight: 500; }
+
+.gap-list { list-style: none; margin: 0; padding: 0; }
+
+.gap-item { padding: 0.75rem 0; border-top: 1px solid var(--border); }
+.gap-item:first-child { border-top: 0; }
+.gap-item-question { margin: 0; font-weight: 500; }
+.gap-item-meta { margin: 0.2rem 0 0; font-size: 0.75rem; }
+.gap-item-comment { margin: 0.4rem 0 0; font-size: 0.86rem; }
+
+/* The answer is context for the complaint, not the point of the row, so it is
+   clamped rather than printed in full — three of these at full length and the
+   list stops being scannable. */
+.gap-item-answer {
+  margin: 0.35rem 0 0;
+  font-size: 0.8rem;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

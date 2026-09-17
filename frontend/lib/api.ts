@@ -46,6 +46,47 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+/** The three downvote categories. A closed set because the point of a category
+ *  is that it groups: "out of date" sends an admin to re-sync a source,
+ *  "incorrect" sends them to rewrite a document. Anything else goes in the
+ *  comment box. */
+export const FEEDBACK_REASONS = [
+  { value: "incorrect", label: "Incorrect information" },
+  { value: "out_of_date", label: "Out of date" },
+  { value: "unhelpful", label: "Too long / unhelpful" },
+] as const;
+
+export type FeedbackReason = (typeof FEEDBACK_REASONS)[number]["value"];
+
+export interface FeedbackGap {
+  question: string;
+  /** DISTINCT people, not repeats — one person asking five times is one. */
+  asked_by: number;
+  refusals: number;
+  downvotes: number;
+  /** null = retrieval matched nothing at all; a number = something was close
+   *  but under the confidence gate. Different fixes. */
+  best_gate_score: number | null;
+  last_asked: string;
+}
+
+export interface FeedbackDownvote {
+  id: string;
+  question: string;
+  answer: string | null;
+  agent: string | null;
+  reason: FeedbackReason | null;
+  comment: string | null;
+  created_at: string;
+}
+
+export interface FeedbackSummary {
+  days: number;
+  counts: { up: number; down: number; refusals: number };
+  gaps: FeedbackGap[];
+  downvoted: FeedbackDownvote[];
+}
+
 export interface Attachment {
   id: string;
   filename: string;
@@ -622,6 +663,35 @@ export const api = {
    *  multipart body needs the BROWSER to set the type so it can put the
    *  boundary in it. Setting it by hand produces a body the server cannot
    *  parse. */
+  submitFeedback: (input: {
+    conversationId: string;
+    question: string;
+    rating: 1 | -1;
+    answer?: string | null;
+    resolvedQuestion?: string | null;
+    agent?: string | null;
+    reason?: FeedbackReason | null;
+    comment?: string | null;
+    workspaceId?: string | null;
+  }) =>
+    request<{ id: string; rating: number }>("/chat/feedback", {
+      method: "POST",
+      body: JSON.stringify({
+        conversation_id: input.conversationId,
+        question: input.question,
+        rating: input.rating,
+        answer: input.answer ?? null,
+        resolved_question: input.resolvedQuestion ?? null,
+        agent: input.agent ?? null,
+        reason: input.reason ?? null,
+        comment: input.comment ?? null,
+        ...(input.workspaceId ? { workspace_id: input.workspaceId } : {}),
+      }),
+    }),
+
+  feedbackSummary: (days = 30) =>
+    request<FeedbackSummary>(`/admin/feedback?days=${days}`),
+
   uploadAttachment: async (
     conversationId: string,
     file: File,

@@ -310,6 +310,52 @@ guarantee.
 - `chat:write` + `app_mentions:read` are new default scopes, so **every tenant
   reconnects Slack once**: Slack grants scopes at install, never retroactively.
 
+**Feedback & gap tracking (`app/feedback/`, `POST /chat/feedback`,
+`GET /admin/feedback`)** — thumbs on an answer, and the list of questions the
+company could not answer. One table, `feedback_and_gaps`, two writers.
+- **A refusal is logged WITHOUT anyone reporting it.** `refusal=true,
+  rating=NULL` is written whenever an answer came back ungrounded; a thumb sets
+  `rating` on that same row, so a downvote ON a refusal is one event, not two.
+  The gaps people quietly give up on are the ones that never get reported,
+  which is the whole reason the automatic half exists.
+- **Logged at the API EDGE, never at the gate inside `RagPipeline`.** A gate
+  miss is ONE of four ways a question goes unanswered — the strict prompt
+  refusing on a gate-passing retrieval, the audit downgrading an answer, and
+  GitHubAgent/InsightsAgent refusing with no gate at all are the others.
+  `grounded=False` in `chat.py`/`slack_events.py` is the union of them, and the
+  edge is also the only place `user_id` exists. Both call sites read the
+  response with `getattr`: a diagnostic must cost the gap log, never the answer.
+- **No FK to `conversation_turns`** — `set_summary_and_prune` DELETEs those rows
+  once folded into a summary, and the GitHub/Insights/Slack paths never write
+  one at all, so the key would be NULL in most rows and dangling in the rest.
+  Question/answer text is SNAPSHOTTED, the `scheduler_reports` posture.
+- **`normalized_question` is derived from the RESOLVED question** — a
+  follow-up's raw text is "what about dental?", unusable in a gap list.
+- **`asked_by` is `COUNT(DISTINCT user_id)`**, which is why `user_id` is stored
+  at all: one frustrated person re-asking five times must not read as five
+  people. It is `ON DELETE SET NULL`, unlike every other tenant table's cascade
+  — the gap is a fact about the company's documentation, not about whoever hit
+  it, so it outlives their account.
+- **`gate_score NULL` means retrieval matched NOTHING; a value means something
+  was close but under the gate** — write the document versus find out why the
+  one we have is unreachable, two different fixes, so the admin view prints it.
+- **The three downvote reasons are a CLOSED set** (`RATING_REASONS`): the point
+  of a category is that it groups, and "out of date" (re-sync) must not land in
+  the same bucket as "incorrect" (rewrite). The thumb is recorded on the CLICK,
+  before the reason is picked — losing the vote of everyone who closes the
+  panel would drop most of them.
+- **Grouping is exact text after normalization, and that is a known ceiling**
+  (`normalize_question`, marked `ponytail:`). "15 people asked about health
+  insurance" only works when they phrase it alike. The upgrade is embedding each
+  gap question and grouping by cosine (the embedder and pgvector are already
+  here); worth doing when the list is too long to read by eye, not before.
+- **Slack logs gaps but has NO thumbs** — the same insert at the same edge, so
+  a question asked in Slack is the same missing document as one asked in the
+  app. Buttons there need a block-actions interactivity endpoint with its own
+  signature verification: a second HTTP surface for a second copy of one vote.
+- The attachment path deliberately does not log: "the file didn't say" is not a
+  gap in the corpus.
+
 **Sources (`app/sources/`)** — one `SourceAdapter` per source; format
 conversion lives *inside* the adapter. Thin SDKs, never frameworks.
 - **Provider-partitioned sync is mandatory** — every sync path takes an
@@ -1094,6 +1140,7 @@ app/security/ crypto, untrusted (scrub), rate_limit, client_ip
 app/auth/     OAuth providers, credentials, users, magic_link, session, email
 app/jobs/     ingestion queue + worker + scheduler_queue + autosync
 app/llm/      + pacing.py (rate-limit headroom for interactive calls)
+app/feedback/ answer ratings + documentation gaps (one table, two writers)
 app/insights/  registry + panels + store (SQL) + facts + github_facts +
               linear_facts + sentiment + scopes + resolve (ask box) + pins
 app/workspaces/ sub-workspace CRUD + membership (assert_member)
@@ -1361,7 +1408,7 @@ partial unique indexes: org-wide vs workspace; `sync_requested_at` webhook flag
 `github_install_pending` · `query_answer_cache` · `api_rate_counters` ·
 `workspaces` / `workspace_members` · `org_signup_requests` · `schedulers`
 (scoped by `org_id` **and** `user_id`, unlike every other tenant table; `model` NULL = the configured default) ·
-`activity_facts` (the ONLY numeric substrate for charts; two partial unique
+`feedback_and_gaps` (refusals + thumbs in one table; `user_id` is `ON DELETE SET NULL`, the only tenant table that does not cascade from a person) · `activity_facts` (the ONLY numeric substrate for charts; two partial unique
 indexes on `external_id`, org-wide vs workspace) · `insight_pins` (personal,
 `(org_id, user_id)`; stores the spec, never the numbers) · `scheduler_reports` (same `(org_id, user_id)` scoping; snapshots its labels
 rather than joining, so an archived report survives a rename or a deleted
@@ -1387,7 +1434,7 @@ RAGAS); identity/OAuth/admin/ingestion queue/HTTP API/streaming chat; Next.js
 portal; Workspace-within-a-Workspace; signup-approval queue; injection,
 latency, security and eval hardening; the Activity Scheduler; Multi-Model
 Selection (OpenRouter, ~5 models, per-request routing); automatic freshness (interval + webhook-flag sync, external tick, LLM pacing);
-Visual Representation, **all five phases** — `activity_facts`, metric registry
+in-chat file attachments; feedback & documentation-gap tracking (automatic refusal logging on web + Slack, thumbs with three reasons, `/admin/feedback`); Visual Representation, **all five phases** — `activity_facts`, metric registry
 + panels, charts **in Ask** (no Visualizations tab; `/visualizations` redirects
 to `/chat`; `InsightsAgent` + `classify_question` rather than a keyword regex), editor capture at sync time, GitHub PR/merge/review facts on a
 facts-only sync branch (PRs plus commits), Linear completion-by-team on the ingest job, Slack
@@ -1409,6 +1456,10 @@ when the model says qa.
   `application/vnd.google-apps.spreadsheet`. A form export in a connected
   folder is Q&A fodder only if we add that MIME later, never a pie. Plan:
   `docs/plans/2026-09-02-visual-representation.md`.
+- Gaps: **`/admin/feedback` and the answer thumbs are browser-unverified**
+  (`tsc --noEmit` only, like the rest of `frontend/`), Slack has no thumbs,
+  and gap grouping is exact-text — see `normalize_question`'s ceiling note
+  before concluding the list is short because nothing is failing.
 - Charts: **no frontend test infrastructure** — `Chart.tsx` (including the
   diverging bar) and inline Ask charts are covered by `tsc --noEmit` only,
   never a rendered assertion. Do not add a React test stack as a side effect

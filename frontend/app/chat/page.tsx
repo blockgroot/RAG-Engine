@@ -562,7 +562,16 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
           ) : (
             <div className="chat-log" ref={logRef} aria-live="polite">
               {messages.map((m, i) => (
-                <ChatMessageView key={i} message={m} />
+                <ChatMessageView
+                  key={i}
+                  message={m}
+                  conversationId={conversationId.current}
+                  // The question this answer replied to is the message before
+                  // it, and only the page knows that — a bubble holds one
+                  // message.
+                  question={messages[i - 1]?.role === "user" ? messages[i - 1].text : ""}
+                  workspaceId={workspaceId}
+                />
               ))}
               <div ref={bottomRef} aria-hidden className="chat-scroll-anchor" />
             </div>

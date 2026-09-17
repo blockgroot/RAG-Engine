@@ -9,6 +9,10 @@ const LABELS: Record<string, string> = {
   google: "Google Drive",
   forms: "Google Forms",
   insights: "Activity",
+  // The asker's own upload, not a connected source. Named differently on
+  // purpose: every other label answers "which of our tools was this in?",
+  // and this one answers "this came from the file you just gave me".
+  attachment: "Attached file",
   none: "No answer found",
 };
 
@@ -25,6 +29,7 @@ const COLORS: Record<string, string> = {
   google: "var(--provenance-google, var(--provenance-policy))",
   forms: "var(--provenance-forms, var(--provenance-policy))",
   insights: "var(--provenance-insights, var(--chart-1))",
+  attachment: "var(--provenance-attachment, var(--accent))",
   none: "var(--provenance-none)",
 };
 
@@ -46,6 +51,9 @@ const AGENT_NAMES: Record<string, string> = {
   google: "Drive agent",
   forms: "Forms",
   insights: "Charts",
+  // Deliberately absent: `attachment` needs no second word. The label
+  // already says the whole truth, and "Attached file · Attachment agent"
+  // reads as two facts where there is one.
 };
 
 export function ProvenanceStripe({

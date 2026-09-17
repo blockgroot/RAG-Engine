@@ -114,7 +114,7 @@ def _capture_scope(monkeypatch) -> list:
     monkeypatch.setattr(slack_events, "_scope_for_channel", lambda *a: None)
     monkeypatch.setattr(slack_events, "_dm_scopes", lambda org, uid: [(None, "Company")])
 
-    def _fake_answer(question, org_id, workspace_id, tags, scope_label=None):
+    def _fake_answer(question, org_id, workspace_id, tags, scope_label=None, **_):
         seen.append(tags)
         return "answer"
 
@@ -314,7 +314,8 @@ def _capture_answer_scope(monkeypatch) -> list:
     )
     monkeypatch.setattr(
         slack_events, "_answer",
-        lambda q, org, ws, tags, label=None: seen.append((ws, tags, label)) or "answer",
+        lambda q, org, ws, tags, label=None, **_: seen.append((ws, tags, label))
+        or "answer",
     )
     return seen
 
