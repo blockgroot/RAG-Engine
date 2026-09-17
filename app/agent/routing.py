@@ -172,24 +172,22 @@ def _connected_providers(org_id: str, workspace_id: str | None) -> set[str]:
     return {r[0] for r in rows}
 
 
-def _named_repo(question: str, org_id: str, workspace_id: str | None) -> str | None:
-    """A GitHub repo this question names by name, if any.
+def _repo_named_in(question: str, repos) -> str | None:
+    """The authorized repo this question names, if any. The shared matcher.
 
-    Matched against the installation's AUTHORIZED repos only, so this cannot
-    be steered by a question mentioning some public repository. Both
-    ``owner/name`` and the bare ``name`` count: people say "Chain-Guard", not
-    "18-sana/Chain-Guard".
+    Both ladder rungs that care about a repo name route through here: agent
+    selection (``_named_repo``) and, for a Slack DM, SCOPE selection
+    (``_named_scope``). They had to agree anyway -- a repo name strong enough
+    to pick GitHub is strong enough to pick the space GitHub is connected in
+    -- and one matcher is what makes that true by construction.
+
+    Matched against AUTHORIZED repos only, so this cannot be steered by a
+    question mentioning some public repository. Both ``owner/name`` and the
+    bare ``name`` count: people say "Chain-Guard", not "18-sana/Chain-Guard".
     """
-    from ..auth.credentials import get_connection_config
-
-    try:
-        config = get_connection_config(org_id, "github", workspace_id) or {}
-    except Exception:  # noqa: BLE001 - routing must never fail a question
-        return None
-
     lowered = question.lower()
-    for repo in config.get("repos") or []:
-        full = str(repo.get("full_name") or "")
+    for repo in repos or []:
+        full = str((repo or {}).get("full_name") or "")
         if not full:
             continue
         short = full.split("/")[-1]
@@ -200,6 +198,17 @@ def _named_repo(question: str, org_id: str, workspace_id: str | None) -> str | N
             ):
                 return full
     return None
+
+
+def _named_repo(question: str, org_id: str, workspace_id: str | None) -> str | None:
+    """A GitHub repo this question names by name, in THIS scope."""
+    from ..auth.credentials import get_connection_config
+
+    try:
+        config = get_connection_config(org_id, "github", workspace_id) or {}
+    except Exception:  # noqa: BLE001 - routing must never fail a question
+        return None
+    return _repo_named_in(question, config.get("repos"))
 
 
 #: ``probe_best_scope`` found nothing indexed in any of the caller's scopes.
@@ -265,8 +274,58 @@ def _words(text: str) -> set[str]:
 
 
 
+def _github_repo_scopes(org_id: str, scope_ids: list[str | None]):
+    """``(workspace_id, repos)`` for every live GitHub connection in these scopes.
+
+    GitHub is the one connected source with no chunks, so it is invisible to
+    every other signal in scope selection. Read once here and used by both
+    rungs that need it -- the name match and the code-intent floor.
+    """
+    from ..db.connection import get_connection
+
+    spaces = [sid for sid in scope_ids if sid is not None]
+    try:
+        with get_connection() as conn:
+            return conn.execute(
+                "SELECT workspace_id::text, source_config->'repos' "
+                "FROM oauth_connections "
+                "WHERE org_id = %s::uuid AND provider = 'github' "
+                "AND needs_reauth = false "
+                "AND ((%s AND workspace_id IS NULL) "
+                "     OR workspace_id = ANY(%s::uuid[]))",
+                (org_id, None in scope_ids, spaces),
+            ).fetchall()
+    except Exception:  # noqa: BLE001 - routing must never fail a question
+        logger.warning("Scope routing: could not read GitHub scopes", exc_info=True)
+        return []
+
+
+def _code_scope(org_id: str, scopes: list[tuple[str | None, str]], question: str):
+    """The scope holding GitHub, for a code question no corpus can answer.
+
+    The exact counterpart of rung 7 in ``choose_agent``, and ordered the same
+    way for the same reason: BELOW the probe, so a document question that
+    actually scores is never hijacked by a code-shaped word inside it
+    ("who approved the budget?"), and above the weak fall-through, so a scope
+    whose only source embeds nothing is reachable at all.
+
+    Exactly one candidate or nothing: with two GitHub-bearing scopes the
+    question names neither, and the wrong space is worse than the probe.
+    """
+    if not _CODE_INTENT.search(question):
+        return _NO_MATCH
+    candidates = {
+        scope_id
+        for scope_id, repos in _github_repo_scopes(org_id, [sid for sid, _ in scopes])
+        if repos
+    }
+    if len(candidates) == 1:
+        return candidates.pop()
+    return _NO_MATCH
+
+
 def _named_scope(org_id: str, scopes: list[tuple[str | None, str]], question: str):
-    """The scope whose SPACE NAME or a DOCUMENT TITLE the question names.
+    """The scope whose SPACE NAME, DOCUMENT TITLE or REPO the question names.
 
     Ordered ahead of the cosine probe for the reason `_named_repo` already is
     (CLAUDE.md §3): a document ABOUT meeting notes can out-score the meeting
@@ -300,10 +359,25 @@ def _named_scope(org_id: str, scopes: list[tuple[str | None, str]], question: st
             "AND ((%s AND workspace_id IS NULL) OR workspace_id = ANY(%s::uuid[]))",
             (org_id, None in ids, spaces),
         ).fetchall()
+    repo_rows = _github_repo_scopes(org_id, ids)
     for title, scope_id in rows:
         tokens = _words(title or "")
         # A single generic token ("notes") is not a name; two is a title.
         if len(tokens) >= 2 and tokens <= asked:
+            candidates.add(scope_id)
+
+    # An authorized REPO NAME is a name for this scope too, and it has to be
+    # checked here or GitHub is unreachable from a DM by construction. Every
+    # other signal in this function comes from `chunks`/`documents`, and
+    # GitHub embeds nothing -- so a space whose GitHub holds `Chain-Guard`
+    # looks empty to `probe_best_scope`, the probe picks whichever scope has
+    # the most prose, and `choose_agent` then runs in a scope with no GitHub
+    # connection at all, where every GitHub rung is guarded on
+    # `"github" in connected` and is skipped. Measured: "What does the
+    # chain-guard repository do?" answered from org-wide Google Drive while
+    # the repo sat authorized in a space one scope away.
+    for scope_id, repos in repo_rows:
+        if _repo_named_in(question, repos):
             candidates.add(scope_id)
 
     if len(candidates) == 1:
@@ -327,18 +401,51 @@ def choose_scope(
     space or in company Ask, so the UI supplies the scope; a DM has no such
     context and is the one surface that must infer it.
 
+    Precedence, mirroring ``choose_agent`` rung for rung:
+
+    1. **A NAME the asker typed** -- a space name, a document title, or an
+       authorized repo. Stronger evidence than a similarity score, because a
+       document ABOUT a thing routinely out-scores the thing itself.
+    2. **The best-scoring scope, if it clears the confidence gate.** The same
+       0.35 retrieval already uses: below it, nothing in that scope resembles
+       the question.
+    3. **Code intent, when nothing cleared the gate.** A scope whose only
+       source is GitHub has no chunks and can never win step 2 -- it would be
+       permanently unreachable from a DM without this. Below the probe so a
+       code word inside a document question cannot hijack a scope that scores.
+    4. **The best score anyway**, then ``_NO_MATCH``. The chosen scope's own
+       gate still refuses honestly, so a miss costs a refusal, never an answer
+       from the wrong space.
+
     Returns the winning ``workspace_id`` (``None`` = org-wide) or ``_NO_MATCH``.
     """
     named = _named_scope(org_id, scopes, question)
     if named is not _NO_MATCH:
         return named
-    return probe_best_scope(question, org_id, [sid for sid, _ in scopes])
+
+    best = _probe_scope_best(question, org_id, [sid for sid, _ in scopes])
+    if best is not None and best[1] >= RagSettings.from_env().similarity_threshold:
+        return best[0]
+
+    code = _code_scope(org_id, scopes, question)
+    if code is not _NO_MATCH:
+        return code
+
+    return best[0] if best is not None else _NO_MATCH
 
 
 def probe_best_scope(
     question: str, org_id: str, workspace_ids: list[str | None]
 ) -> str | None | object:
-    """Which of the caller's scopes best resembles this question. ONE query.
+    """The best-scoring scope, or ``_NO_MATCH``. Score-free wrapper."""
+    best = _probe_scope_best(question, org_id, workspace_ids)
+    return _NO_MATCH if best is None else best[0]
+
+
+def _probe_scope_best(
+    question: str, org_id: str, workspace_ids: list[str | None]
+) -> tuple[str | None, float] | None:
+    """``(workspace_id, best cosine)`` for the closest scope. ONE query.
 
     Used by the Slack DM path, where the asker is a person rather than a space:
     they legitimately see org-wide content AND every space they belong to, so a
@@ -352,12 +459,15 @@ def probe_best_scope(
     membership meaningless). Returning the winner rather than merging is also
     what keeps this one grouped query instead of one retrieval per scope.
 
-    Returns the winning ``workspace_id`` (``None`` meaning org-wide), or
-    ``_NO_MATCH`` when nothing is indexed in any scope -- ``None`` is a VALID
-    answer here, so "no match" needs its own value.
+    ``None`` when nothing is indexed in any scope. The SCORE is returned with
+    the winner because the caller has to compare it against the confidence
+    gate -- a scope that merely scored highest has not necessarily been
+    resembled at all, and that difference is what lets a GitHub-only scope be
+    reached below the gate instead of always losing to whichever scope holds
+    the most prose.
     """
     if not workspace_ids:
-        return _NO_MATCH
+        return None
 
     from ..db.connection import get_connection
 
@@ -365,7 +475,7 @@ def probe_best_scope(
         vector = _probe_embedder().embed([question])[0]
     except Exception:  # noqa: BLE001 - caller falls back to org-wide
         logger.warning("Slack DM routing: could not embed the question", exc_info=True)
-        return _NO_MATCH
+        return None
 
     # `= ANY(array)` cannot match NULL (org-wide), so the org-wide scope is
     # asked for with its own IS NULL branch rather than being silently dropped.
@@ -388,8 +498,8 @@ def probe_best_scope(
             (vector, org_id, include_org_wide, spaces),
         ).fetchall()
     if not rows or rows[0][1] is None:
-        return _NO_MATCH
-    return rows[0][0]
+        return None
+    return rows[0][0], float(rows[0][1])
 
 
 def _has_authorized_repos(org_id: str, workspace_id: str | None) -> bool:
