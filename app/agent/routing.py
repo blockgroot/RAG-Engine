@@ -128,7 +128,7 @@ _CODE_INTENT = re.compile(
     # already won. `reviewer`/`approved` are code-shaped enough to be worth the
     # remaining risk, and a misroute costs a refusal, not a wrong answer.
     r"|reviewer|reviewers|code review|approved this|who approved"
-    r"|codebase|source code"
+    r"|codebase|source code|github"
     r"|changelog|release notes"
     r")\b",
     re.IGNORECASE,
@@ -150,6 +150,40 @@ class RoutingDecision:
     scores: dict[str, float] = field(default_factory=dict)
     chart_spec: object | None = None
     chart_refusal: str | None = None
+
+
+#: What a member is likely to CALL each service when they type its name.
+#: Deliberately tight -- an alias that can appear innocently in a sentence would
+#: hijack the routing ("repo" is not a GitHub alias, "docs" not a Drive one).
+#: Lives here rather than in ``api/schedulers`` (its first caller) because the
+#: scheduler's provider pick and a DM's SCOPE pick must read the same names: a
+#: word strong enough to choose a service is strong enough to choose the space
+#: that service is connected in.
+PROVIDER_ALIASES: dict[str, tuple[str, ...]] = {
+    "github": ("github",),
+    "slack": ("slack",),
+    "linear": ("linear",),
+    "notion": ("notion",),
+    "google": ("google drive", "google", "drive", "gdrive"),
+}
+
+
+def named_provider(text: str, available) -> str | None:
+    """The service this text NAMES, when it names exactly one of them.
+
+    Someone who writes "in github" has answered the question being asked, and a
+    word match beats a similarity score at reading that intent. Two named
+    services return None rather than guess: the wrong one is worse than
+    falling through to the measurement.
+    """
+    lowered = (text or "").lower()
+    hits = {
+        provider
+        for provider in available
+        for alias in PROVIDER_ALIASES.get(provider, ())
+        if re.search(rf"\b{re.escape(alias)}\b", lowered)
+    }
+    return hits.pop() if len(hits) == 1 else None
 
 
 def _connected_providers(org_id: str, workspace_id: str | None) -> set[str]:
@@ -274,12 +308,13 @@ def _words(text: str) -> set[str]:
 
 
 
-def _github_repo_scopes(org_id: str, scope_ids: list[str | None]):
-    """``(workspace_id, repos)`` for every live GitHub connection in these scopes.
+def _connection_scopes(org_id: str, scope_ids: list[str | None]):
+    """``(workspace_id, provider, repos)`` for every live connection in these scopes.
 
-    GitHub is the one connected source with no chunks, so it is invisible to
-    every other signal in scope selection. Read once here and used by both
-    rungs that need it -- the name match and the code-intent floor.
+    One query for both rungs that need it. GitHub is the reason it exists --
+    it has no chunks, so it is invisible to every other signal in scope
+    selection -- but a connector the asker NAMES is the same kind of evidence
+    whichever one it is, so the read is not GitHub-specific.
     """
     from ..db.connection import get_connection
 
@@ -287,16 +322,15 @@ def _github_repo_scopes(org_id: str, scope_ids: list[str | None]):
     try:
         with get_connection() as conn:
             return conn.execute(
-                "SELECT workspace_id::text, source_config->'repos' "
+                "SELECT workspace_id::text, provider, source_config->'repos' "
                 "FROM oauth_connections "
-                "WHERE org_id = %s::uuid AND provider = 'github' "
-                "AND needs_reauth = false "
+                "WHERE org_id = %s::uuid AND needs_reauth = false "
                 "AND ((%s AND workspace_id IS NULL) "
                 "     OR workspace_id = ANY(%s::uuid[]))",
                 (org_id, None in scope_ids, spaces),
             ).fetchall()
     except Exception:  # noqa: BLE001 - routing must never fail a question
-        logger.warning("Scope routing: could not read GitHub scopes", exc_info=True)
+        logger.warning("Scope routing: could not read connections", exc_info=True)
         return []
 
 
@@ -316,8 +350,10 @@ def _code_scope(org_id: str, scopes: list[tuple[str | None, str]], question: str
         return _NO_MATCH
     candidates = {
         scope_id
-        for scope_id, repos in _github_repo_scopes(org_id, [sid for sid, _ in scopes])
-        if repos
+        for scope_id, provider, repos in _connection_scopes(
+            org_id, [sid for sid, _ in scopes]
+        )
+        if provider == "github" and repos
     }
     if len(candidates) == 1:
         return candidates.pop()
@@ -359,7 +395,7 @@ def _named_scope(org_id: str, scopes: list[tuple[str | None, str]], question: st
             "AND ((%s AND workspace_id IS NULL) OR workspace_id = ANY(%s::uuid[]))",
             (org_id, None in ids, spaces),
         ).fetchall()
-    repo_rows = _github_repo_scopes(org_id, ids)
+    conn_rows = _connection_scopes(org_id, ids)
     for title, scope_id in rows:
         tokens = _words(title or "")
         # A single generic token ("notes") is not a name; two is a title.
@@ -376,9 +412,27 @@ def _named_scope(org_id: str, scopes: list[tuple[str | None, str]], question: st
     # `"github" in connected` and is skipped. Measured: "What does the
     # chain-guard repository do?" answered from org-wide Google Drive while
     # the repo sat authorized in a space one scope away.
-    for scope_id, repos in repo_rows:
-        if _repo_named_in(question, repos):
+    for scope_id, provider, repos in conn_rows:
+        if provider == "github" and _repo_named_in(question, repos):
             candidates.add(scope_id)
+
+    # NAMING THE CONNECTOR is a name too, and its absence was the defect this
+    # rung fixes. "what were my contributions in github?" reached org-wide
+    # Company -- the probe clears 0.35 there for almost any question, since the
+    # company corpus is the largest one a member can see -- and the GitHub-
+    # bearing space one scope away was never considered. `_code_scope` could
+    # not save it: that rung sits BELOW the probe on purpose, so a scope that
+    # scores always pre-empts it. A typed connector name is high-precision
+    # enough to belong up here with a repo name, and it is the ONLY signal a
+    # source with no corpus can offer when no repo is named.
+    #
+    # Exactly one connector named, or nothing: two services named picks
+    # neither, the rule this whole function already follows.
+    spoken = named_provider(question, {provider for _, provider, _ in conn_rows})
+    if spoken is not None:
+        candidates |= {
+            scope_id for scope_id, provider, _ in conn_rows if provider == spoken
+        }
 
     if len(candidates) == 1:
         return candidates.pop()

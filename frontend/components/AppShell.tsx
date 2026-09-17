@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { BrandMark } from "@/components/BrandMark";
+import { NotificationBell } from "@/components/NotificationBell";
 import { api, Me } from "@/lib/api";
 import { canAccessAdminPortal, isSetupComplete } from "@/lib/routing";
 import { clearMeCache } from "@/lib/useMe";
@@ -262,6 +263,9 @@ export function AppShell({
 
         {me && (
           <div className="rail-foot">
+            {/* In the rail, not a top bar: there is no top bar, and the rail is
+                the one thing on screen for every page of the app. */}
+            {showMainNav && <NotificationBell />}
             <div className="rail-user" aria-label="Signed-in account">
               <span className="rail-avatar" aria-hidden>
                 {initial}

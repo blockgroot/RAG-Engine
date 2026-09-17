@@ -38,7 +38,9 @@ def _patch_db(monkeypatch, titles, repos):
 
 
 SCOPES = [(None, "Company"), ("ws-code", "Engineering")]
-REPOS = [("ws-code", [{"full_name": "18-sana/Chain-Guard"}, {"full_name": "18-sana/DAO"}])]
+REPOS = [
+    ("ws-code", "github", [{"full_name": "18-sana/Chain-Guard"}, {"full_name": "18-sana/DAO"}])
+]
 
 
 def test_repo_name_picks_the_scope_its_github_lives_in(monkeypatch):
@@ -64,7 +66,7 @@ def test_an_unnamed_question_still_falls_through_to_the_probe(monkeypatch):
 
 def test_a_substring_is_not_a_repo_name(monkeypatch):
     """The word-edge discipline `_named_repo` already had, now shared."""
-    _patch_db(monkeypatch, titles=[], repos=[("ws-code", [{"full_name": "acme/api"}])])
+    _patch_db(monkeypatch, titles=[], repos=[("ws-code", "github", [{"full_name": "acme/api"}])])
     assert (
         routing._named_scope("org", SCOPES, "how rapidly did we ship?")
         is routing._NO_MATCH
@@ -77,8 +79,8 @@ def test_two_scopes_naming_it_resolve_to_neither(monkeypatch):
         monkeypatch,
         titles=[],
         repos=[
-            ("ws-code", [{"full_name": "a/Chain-Guard"}]),
-            ("ws-other", [{"full_name": "b/Chain-Guard"}]),
+            ("ws-code", "github", [{"full_name": "a/Chain-Guard"}]),
+            ("ws-other", "github", [{"full_name": "b/Chain-Guard"}]),
         ],
     )
     assert (
@@ -102,10 +104,10 @@ def _patch_scope_ladder(monkeypatch, probe, repos):
     """Stub the two DB-backed inputs `choose_scope` consults."""
     monkeypatch.setattr(routing, "_named_scope", lambda *a: routing._NO_MATCH)
     monkeypatch.setattr(routing, "_probe_scope_best", lambda *a: probe)
-    monkeypatch.setattr(routing, "_github_repo_scopes", lambda *a: repos)
+    monkeypatch.setattr(routing, "_connection_scopes", lambda *a: repos)
 
 
-GH = [("ws-code", [{"full_name": "18-sana/Chain-Guard"}])]
+GH = [("ws-code", "github", [{"full_name": "18-sana/Chain-Guard"}])]
 
 
 def test_code_question_reaches_the_github_scope_when_nothing_clears_the_gate(
@@ -130,11 +132,75 @@ def test_two_github_scopes_resolve_to_neither(monkeypatch):
     _patch_scope_ladder(
         monkeypatch,
         probe=("ws-meet", 0.19),
-        repos=[("ws-a", [{"full_name": "x/one"}]), ("ws-b", [{"full_name": "y/two"}])],
+        repos=[
+            ("ws-a", "github", [{"full_name": "x/one"}]),
+            ("ws-b", "github", [{"full_name": "y/two"}]),
+        ],
     )
     assert routing.choose_scope("org", SCOPES, "show me the commits") == "ws-meet"
 
 
 def test_a_github_scope_with_no_authorized_repos_is_not_a_candidate(monkeypatch):
-    _patch_scope_ladder(monkeypatch, probe=None, repos=[("ws-code", [])])
+    _patch_scope_ladder(monkeypatch, probe=None, repos=[("ws-code", "github", [])])
     assert routing.choose_scope("org", SCOPES, "show me the commits") is routing._NO_MATCH
+
+
+# --- rung 1: naming the CONNECTOR picks the scope it is connected in --------
+#
+# The measured failure: "on september 13, what were my contributions in
+# github?" resolved to org-wide Company and came back "GitHub is not connected
+# here". The company corpus is the largest one a member can see, so the probe
+# clears the gate there for nearly any question -- and `_code_scope`, which
+# sits BELOW the probe on purpose, could never run.
+
+
+CONNS = [
+    (None, "notion", None),
+    (None, "google", None),
+    ("ws-code", "github", [{"full_name": "18-sana/Chain-Guard"}]),
+]
+
+
+def test_naming_github_picks_the_scope_it_is_connected_in(monkeypatch):
+    _patch_db(monkeypatch, titles=[], repos=CONNS)
+    assert (
+        routing._named_scope("org", SCOPES, "what were my contributions in github?")
+        == "ws-code"
+    )
+
+
+def test_the_connector_name_beats_a_scoring_probe(monkeypatch):
+    """Rung 1, so a company corpus that scores cannot bury the named source."""
+    monkeypatch.setattr(routing, "_probe_scope_best", lambda *a: (None, 0.72))
+    _patch_db(monkeypatch, titles=[], repos=CONNS)
+    assert routing.choose_scope("org", SCOPES, "my github contributions?") == "ws-code"
+
+
+def test_naming_no_connector_falls_through(monkeypatch):
+    _patch_db(monkeypatch, titles=[], repos=CONNS)
+    assert (
+        routing._named_scope("org", SCOPES, "what were my contributions?")
+        is routing._NO_MATCH
+    )
+
+
+def test_two_named_connectors_resolve_to_neither(monkeypatch):
+    """Same rule the rest of this function follows: the wrong scope is worse."""
+    _patch_db(monkeypatch, titles=[], repos=CONNS)
+    assert (
+        routing._named_scope("org", SCOPES, "compare github and notion activity")
+        is routing._NO_MATCH
+    )
+
+
+def test_one_connector_named_in_two_scopes_resolves_to_neither(monkeypatch):
+    _patch_db(
+        monkeypatch,
+        titles=[],
+        repos=[("ws-a", "github", [{"full_name": "x/one"}]),
+               ("ws-b", "github", [{"full_name": "y/two"}])],
+    )
+    assert (
+        routing._named_scope("org", SCOPES, "my github contributions?")
+        is routing._NO_MATCH
+    )

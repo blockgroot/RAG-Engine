@@ -501,6 +501,17 @@ export type ConnectorFreshness = {
   chartable: boolean;
 };
 
+export type Notification = {
+  kind: "reauth" | "scope";
+  severity: "high" | "medium";
+  provider: string;
+  scope: string;
+  title: string;
+  detail: string;
+  action: string;
+  href: string;
+};
+
 export const api = {
   signup: (email: string, companyName: string) =>
     request<SignupResponse>("/auth/signup", {
@@ -515,6 +526,8 @@ export const api = {
     }),
 
   me: () => request<Me>("/me"),
+  notifications: () =>
+    request<{ items: Notification[]; count: number }>("/notifications"),
   logout: () =>
     request<{ status: string }>("/auth/logout", { method: "POST" }),
 

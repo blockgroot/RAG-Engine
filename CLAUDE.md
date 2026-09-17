@@ -261,6 +261,22 @@ guarantee.
   from memory). Every token of the name must appear in the question, and a title
   of one token is ignored, so a generic word cannot hijack an unrelated ask; two
   scopes matching resolves to NEITHER — the wrong space is worse than the probe.
+- **NAMING THE CONNECTOR is a name too** (`routing.named_provider`, inside
+  `_named_scope` alongside the repo match). Measured: "what were my
+  contributions in github?" in a DM answered `Charts · Company` with "GitHub is
+  not connected here", while a live GitHub with 3 repos sat in Coding-Workspace
+  one scope away — the company corpus is the largest a member can see, so the
+  probe clears 0.35 there for nearly any question, and `_code_scope` sits BELOW
+  the probe on purpose and could never run. `choose_agent` has a high-precision
+  GitHub rung ABOVE its probe (`github_live`); `choose_scope` had none, so a
+  source with no corpus was reachable from a DM only by naming a repo.
+  `PROVIDER_ALIASES` moved from `api/schedulers` into `agent/routing` so the
+  scheduler's provider pick and a DM's scope pick read ONE list — a word strong
+  enough to choose a service is strong enough to choose the space it is
+  connected in. Two named services, or one named service in two scopes, resolve
+  to NEITHER. `github` also joined `_CODE_INTENT`: the connector's own name was
+  missing from the floor, so even that rung would not have fired.
+
 - **Slack renders NO Markdown** (`_to_slack_mrkdwn`). `**bold**` shows its
   asterisks, `- item` stays a hyphen and `### H` prints the hashes, so a
   grounded answer arrived as a wall of punctuation. Converted at the edge, not
@@ -355,6 +371,30 @@ company could not answer. One table, `feedback_and_gaps`, two writers.
   signature verification: a second HTTP surface for a second copy of one vote.
 - The attachment path deliberately does not log: "the file didn't say" is not a
   gap in the corpus.
+
+**Needs attention (`app/api/notifications.py`, `NotificationBell.tsx`)** — one
+bell in the rail listing what is broken and who can fix it. A `needs_reauth`
+connection stops syncing SILENTLY: the state was already stored and already
+rendered on the Sources card, but nobody opens a page that has never given them
+a reason to, so a space went on answering from a corpus that had quietly
+stopped updating and the asker could not tell a stale answer from a current one.
+- **Derived, never stored.** Each item is computed from the `oauth_connections`
+  row that is already the source of truth, so an item vanishes the moment the
+  thing is fixed and there is no read/unread state to keep in agreement with
+  reality. A notification that outlives its cause is why people stop reading
+  them. No table, no migration.
+- **Scoped to what the caller can FIX, not to what is wrong.** Org-wide items
+  go to admins, a space's to its OWNER only — every control on the space page
+  is disabled for a member, so telling them is an alarm with no off switch.
+  That is also what makes the endpoint leak nothing: every item names a scope
+  the caller already administers.
+- **Two item kinds, both real failures seen in prod**: `reauth` (high) and
+  `scope` (medium — Drive with no `folder_id` or Slack with no `channel_ids`
+  reports "Linked" while indexing zero documents, the §5 Sources bug class).
+  An expired connection is NOT also reported as unscoped: one connection is one
+  problem, and reconnecting is what unblocks the rest.
+- The panel opens UPWARD — the bell sits at the bottom of a full-height rail —
+  and a bell that cannot load is silent, never an error on every page it is on.
 
 **Sources (`app/sources/`)** — one `SourceAdapter` per source; format
 conversion lives *inside* the adapter. Thin SDKs, never frameworks.
@@ -1141,6 +1181,7 @@ app/auth/     OAuth providers, credentials, users, magic_link, session, email
 app/jobs/     ingestion queue + worker + scheduler_queue + autosync
 app/llm/      + pacing.py (rate-limit headroom for interactive calls)
 app/feedback/ answer ratings + documentation gaps (one table, two writers)
+app/api/notifications.py  what needs attention, derived from connection rows
 app/insights/  registry + panels + store (SQL) + facts + github_facts +
               linear_facts + sentiment + scopes + resolve (ask box) + pins
 app/workspaces/ sub-workspace CRUD + membership (assert_member)
@@ -1434,7 +1475,7 @@ RAGAS); identity/OAuth/admin/ingestion queue/HTTP API/streaming chat; Next.js
 portal; Workspace-within-a-Workspace; signup-approval queue; injection,
 latency, security and eval hardening; the Activity Scheduler; Multi-Model
 Selection (OpenRouter, ~5 models, per-request routing); automatic freshness (interval + webhook-flag sync, external tick, LLM pacing);
-in-chat file attachments; feedback & documentation-gap tracking (automatic refusal logging on web + Slack, thumbs with three reasons, `/admin/feedback`); Visual Representation, **all five phases** — `activity_facts`, metric registry
+in-chat file attachments; the needs-attention bell (derived, owner/admin-scoped); feedback & documentation-gap tracking (automatic refusal logging on web + Slack, thumbs with three reasons, `/admin/feedback`); Visual Representation, **all five phases** — `activity_facts`, metric registry
 + panels, charts **in Ask** (no Visualizations tab; `/visualizations` redirects
 to `/chat`; `InsightsAgent` + `classify_question` rather than a keyword regex), editor capture at sync time, GitHub PR/merge/review facts on a
 facts-only sync branch (PRs plus commits), Linear completion-by-team on the ingest job, Slack
