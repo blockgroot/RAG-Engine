@@ -650,6 +650,72 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 .chat-composer-send:hover:not(:disabled) { transform: scale(1.05); filter: brightness(1.05); }
 .chat-composer-send:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* Attach control + the chip row above the composer.
+
+   The chip row carries a SENTENCE, not just filenames: with a file attached
+   the connected sources are bypassed entirely, and nothing else on the page
+   says so -- the routing pill just reads "attachment". A row of filenames
+   alone would leave "why didn't it use our Notion?" unanswered. */
+.chat-composer-attach {
+  flex: none;
+  width: 2.1rem;
+  height: 2.1rem;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--ink-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: color 0.18s var(--ease), background 0.18s var(--ease);
+}
+.chat-composer-attach:hover:not(:disabled) { color: var(--ink); background: var(--surface-muted); }
+.chat-composer-attach:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.attach-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0 0.2rem 0.55rem;
+}
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 15rem;
+  padding: 0.28rem 0.5rem 0.28rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-elevated);
+  font-size: 0.83rem;
+  color: var(--ink);
+}
+.attach-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Stated, never silent: a file we only half-read must not look complete. */
+.attach-cut {
+  flex: none;
+  padding: 0.05rem 0.35rem;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+}
+.attach-remove {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.1rem;
+}
+.attach-remove:hover { color: var(--ink); }
+.attach-note { font-size: 0.82rem; color: var(--ink-muted); }
+.attach-error { font-size: 0.82rem; color: var(--danger, #b42318); }
+
 /* Model picker. Still a native <select> — free keyboard nav, free mobile
    behaviour, free accessibility — but stripped of the OS chrome so it reads as
    a soft chip riding inside the composer pill rather than a form control

@@ -17,6 +17,9 @@ SOURCE_LINEAR = "linear"
 SOURCE_NOTION = "notion"
 SOURCE_GOOGLE = "google"
 SOURCE_WEB = "web"
+#: An answer built from a file the asker attached to THIS conversation --
+#: never retrieved, never indexed, never visible to anyone else.
+SOURCE_ATTACHMENT = "attachment"
 SOURCE_NONE = "none"
 
 # Every value an agent may report as `source`/`final_answer_source`.
@@ -30,6 +33,7 @@ ANSWER_SOURCES = frozenset(
         SOURCE_NOTION,
         SOURCE_GOOGLE,
         SOURCE_WEB,
+        SOURCE_ATTACHMENT,
         SOURCE_NONE,
     }
 )

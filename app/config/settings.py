@@ -932,6 +932,65 @@ class AuditSettings:
 
 
 @dataclass(frozen=True)
+class AttachmentSettings:
+    """Bounds for an in-chat file attachment.
+
+    Every value here is a CEILING, not a target. The upload is read into
+    memory to be parsed, this runs on a 512MB box (CLAUDE.md §5), so
+    ``max_bytes`` protects the box; the rest protect the PROMPT, which is the
+    scarcer resource.
+
+    **Two ways a file reaches the model, chosen by size.** A short file is
+    injected whole (``inline_char_budget``) -- simplest thing that works, and
+    the model sees everything. A long one is injected as a ``preview_chars``
+    head per file plus a ``read_file`` tool it can call to page through the
+    rest. The alternative was a hard truncation, which answers a 300-page
+    contract from its first 60k characters and presents that as an answer
+    about the contract.
+    """
+
+    #: Read into memory to parse, so this is a memory bound as much as a
+    #: product one. Deliberately NOT raised alongside the char budget: a 100MB
+    #: PDF is ~200MB resident once pypdf has it, which is the whole box.
+    max_bytes: int = 10 * 1024 * 1024
+    #: What we STORE. Large because paging makes a long document usable
+    #: rather than truncated; a 400k-char string is 0.4MB in Postgres and in
+    #: memory, which is nothing next to the byte budget above.
+    max_chars: int = 400_000
+    max_pdf_pages: int = 1_000
+    max_csv_rows: int = 20_000
+    #: Per conversation. Every attachment rides on EVERY turn of that chat,
+    #: so an unbounded count is an unbounded prompt.
+    max_per_conversation: int = 5
+
+    #: At or below this TOTAL across all attachments, the text goes into the
+    #: prompt whole and no tool is offered. ~3k tokens.
+    inline_char_budget: int = 12_000
+    #: The head shown per file when the total is over that budget. Enough to
+    #: identify the document and its structure, not to answer from.
+    preview_chars: int = 500
+    #: One `read_file` call returns at most this much. Onyx's number.
+    max_read_chars: int = 16_000
+    #: Calls honoured in the single tool round. Bounds the worst case at
+    #: max_reads * max_read_chars of added context.
+    max_reads: int = 4
+
+    @classmethod
+    def from_env(cls) -> "AttachmentSettings":
+        return cls(
+            max_bytes=int(os.getenv("ATTACHMENT_MAX_BYTES") or 10 * 1024 * 1024),
+            max_chars=int(os.getenv("ATTACHMENT_MAX_CHARS") or 400_000),
+            max_pdf_pages=int(os.getenv("ATTACHMENT_MAX_PDF_PAGES") or 1_000),
+            max_csv_rows=int(os.getenv("ATTACHMENT_MAX_CSV_ROWS") or 20_000),
+            max_per_conversation=int(os.getenv("ATTACHMENT_MAX_PER_CONVERSATION") or 5),
+            inline_char_budget=int(os.getenv("ATTACHMENT_INLINE_CHARS") or 12_000),
+            preview_chars=int(os.getenv("ATTACHMENT_PREVIEW_CHARS") or 500),
+            max_read_chars=int(os.getenv("ATTACHMENT_MAX_READ_CHARS") or 16_000),
+            max_reads=int(os.getenv("ATTACHMENT_MAX_READS") or 4),
+        )
+
+
+@dataclass(frozen=True)
 class DecomposeSettings:
     """Compound-question decomposition before retrieval (Phase 18).
 

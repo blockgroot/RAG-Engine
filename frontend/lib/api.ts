@@ -46,6 +46,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export interface Attachment {
+  id: string;
+  filename: string;
+  char_count: number;
+  /** True when the file was longer than the server's page/row/char budget.
+   *  Shown in the chip: a partial file that looks complete is the failure the
+   *  whole feature is arranged against. */
+  truncated: boolean;
+}
+
 export interface Me {
   user_id: string;
   org_id: string;
@@ -598,6 +608,53 @@ export const api = {
 
   listJobs: () => request<JobRecord[]>("/admin/jobs"),
   getJob: (jobId: string) => request<JobRecord>(`/admin/jobs/${jobId}`),
+
+  /** In-chat attachments. Extracted text only — the uploaded bytes never
+   *  leave the request, so there is no URL to share and nothing to expire. */
+  listAttachments: (conversationId: string, workspaceId?: string | null) => {
+    const q = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : "";
+    return request<{ attachments: Attachment[] }>(
+      `/chat/conversations/${conversationId}/attachments${q}`,
+    );
+  },
+
+  /** Not `request()`: it pins `Content-Type: application/json`, and a
+   *  multipart body needs the BROWSER to set the type so it can put the
+   *  boundary in it. Setting it by hand produces a body the server cannot
+   *  parse. */
+  uploadAttachment: async (
+    conversationId: string,
+    file: File,
+    workspaceId?: string | null,
+  ): Promise<Attachment> => {
+    const q = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : "";
+    const form = new FormData();
+    form.append("file", file);
+    const response = await fetch(
+      `${API_BASE_URL}/chat/conversations/${conversationId}/attachments${q}`,
+      { method: "POST", credentials: "include", body: form },
+    );
+    if (!response.ok) {
+      const body = await response
+        .json()
+        .catch(() => ({ detail: response.statusText }));
+      const parsed = parseApiDetail(body.detail ?? body);
+      throw new ApiError(response.status, parsed.message, parsed.code);
+    }
+    return response.json() as Promise<Attachment>;
+  },
+
+  deleteAttachment: (
+    conversationId: string,
+    attachmentId: string,
+    workspaceId?: string | null,
+  ) => {
+    const q = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : "";
+    return request<{ deleted: boolean }>(
+      `/chat/conversations/${conversationId}/attachments/${attachmentId}${q}`,
+      { method: "DELETE" },
+    );
+  },
 
   createConversation: (workspaceId?: string | null) =>
     request<{ conversation_id: string }>("/chat/conversations", {

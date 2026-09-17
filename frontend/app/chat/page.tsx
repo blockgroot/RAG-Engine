@@ -9,7 +9,7 @@ import { ChatMessageView, Message } from "@/components/ChatMessage";
 import { SpacePanel } from "@/components/SpacePanel";
 import { useMe } from "@/lib/useMe";
 import { streamChat } from "@/lib/sse";
-import { api, ModelChoice } from "@/lib/api";
+import { api, ApiError, Attachment, ModelChoice } from "@/lib/api";
 import { JOB_POLL_MS } from "@/lib/jobPoll";
 import {
   getCachedSuggestions,
@@ -34,6 +34,20 @@ function PeopleIcon() {
         stroke="currentColor"
         strokeWidth="1.6"
         strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function PaperclipIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M21 11.5 12.5 20a5 5 0 0 1-7-7l8-8a3.5 3.5 0 0 1 5 5l-8 8a2 2 0 0 1-3-3l7-7"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
     </svg>
   );
@@ -100,6 +114,13 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const [workspaceName, setWorkspaceName] = useState<string | null>(null);
   const [workspaceRole, setWorkspaceRole] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
+  // Attachments live for this conversation only. The chip row is the ONLY
+  // place the corpus-bypass is visible, so it doubles as the explanation for
+  // why the routing pill says "attachment" instead of naming a source.
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
   const codeAvailable = workspaceId ? workspaceGithub : Boolean(me?.github_connected);
   const slackAvailable = workspaceId ? workspaceSlack : Boolean(me?.slack_ready);
   const linearAvailable = workspaceId ? workspaceLinear : Boolean(me?.linear_ready);
@@ -267,6 +288,47 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     } catch {
     }
     return conversationId.current;
+  }
+
+  async function attach(files: FileList | null) {
+    if (!files?.length || uploading) return;
+    setUploadError(null);
+    setUploading(true);
+    // A conversation must exist before a file can hang off it -- the row is
+    // what scopes the attachment to this chat and this person.
+    const convId = await ensureConversation();
+    if (!convId) {
+      setUploadError("Couldn't start a chat to attach that to.");
+      setUploading(false);
+      return;
+    }
+    for (const file of Array.from(files)) {
+      try {
+        const saved = await api.uploadAttachment(convId, file, workspaceId);
+        setAttachments((prev) => [...prev, saved]);
+      } catch (err) {
+        // The server's message is written for the uploader ("this is a scan",
+        // "this is password-protected"), so it is shown rather than replaced.
+        setUploadError(
+          err instanceof ApiError ? err.message : `Couldn't read ${file.name}`,
+        );
+        break;
+      }
+    }
+    setUploading(false);
+    if (fileInput.current) fileInput.current.value = "";
+  }
+
+  async function detach(id: string) {
+    const convId = conversationId.current;
+    if (!convId) return;
+    setUploadError(null);
+    try {
+      await api.deleteAttachment(convId, id, workspaceId);
+      setAttachments((prev) => prev.filter((a) => a.id !== id));
+    } catch {
+      setUploadError("Couldn't remove that file.");
+    }
   }
 
   async function ask(question: string) {
@@ -507,10 +569,63 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
           )}
         </div>
 
+        {(attachments.length > 0 || uploadError) && (
+          <div className="attach-row">
+            {attachments.map((a) => (
+              <span key={a.id} className="attach-chip">
+                <PaperclipIcon />
+                <span className="attach-name" title={a.filename}>
+                  {a.filename}
+                </span>
+                {a.truncated && (
+                  <span
+                    className="attach-cut"
+                    title="This file was long, so only the first part is being read."
+                  >
+                    part only
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="attach-remove"
+                  onClick={() => detach(a.id)}
+                  aria-label={`Remove ${a.filename}`}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+            {attachments.length > 0 && (
+              <span className="attach-note">
+                Answering from {attachments.length === 1 ? "this file" : "these files"}, not your connected tools.
+              </span>
+            )}
+            {uploadError && <span className="attach-error">{uploadError}</span>}
+          </div>
+        )}
+
         <form onSubmit={handleSubmit} className="chat-composer" aria-label="Ask a question">
           <label className="sr-only" htmlFor="ask-input">
             Your question
           </label>
+          <input
+            ref={fileInput}
+            type="file"
+            className="sr-only"
+            accept=".pdf,.docx,.csv,.tsv,.txt,.md,.markdown,.log,.json"
+            multiple
+            onChange={(e) => attach(e.target.files)}
+          />
+          <button
+            type="button"
+            className="chat-composer-attach"
+            onClick={() => fileInput.current?.click()}
+            disabled={busy || uploading}
+            title="Attach a file to ask about (PDF, Word, CSV, text)"
+            aria-label="Attach a file"
+          >
+            {uploading ? <span className="composer-spinner" aria-hidden /> : <PaperclipIcon />}
+          </button>
           <input
             id="ask-input"
             className="chat-composer-input"

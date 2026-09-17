@@ -23,6 +23,11 @@ dependencies = [
     "fastapi>=0.110.0",
     "uvicorn[standard]>=0.29.0",
     "python-multipart>=0.0.9",
+    # In-chat attachments: pure-Python parsers, small enough for the 512MB box
+    # (`unstructured` and friends are not). Already in requirements.txt; listed
+    # here too because CI installs via `pip install -e ".[dev]"`.
+    "pypdf>=4.0.0",
+    "python-docx>=1.1.0",
 ]
 
 [project.optional-dependencies]

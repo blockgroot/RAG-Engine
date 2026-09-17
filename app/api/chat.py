@@ -554,6 +554,86 @@ def _answering_model() -> str | None:
     return answering_model() or selected_model()
 
 
+def _conversation_attachments(
+    org_id: str, conversation_id: str | None, session: SessionClaims | None
+) -> list[tuple[str, str, bool]]:
+    """``(filename, text, truncated)`` for this chat's files, oldest first.
+
+    Empty for an anonymous or conversation-less call, and never raises: a
+    failure to read attachments must degrade to answering from the corpus,
+    which is the behaviour that existed before this feature.
+    """
+    if conversation_id is None or session is None:
+        return []
+    try:
+        from ..attachments import load_attachment_texts
+
+        return [
+            (a.filename, a.content or "", a.truncated)
+            for a in load_attachment_texts(
+                org_id=org_id,
+                conversation_id=conversation_id,
+                user_id=session.user_id,
+            )
+        ]
+    except Exception:  # noqa: BLE001
+        logger.warning("Chat: could not load attachments", exc_info=True)
+        return []
+
+
+def _stream_attachment_answer(
+    question: str,
+    attached: list[tuple[str, str, bool]],
+    org_id: str,
+    conversation_id: str | None,
+) -> Iterator[str]:
+    """Answer from the attached files, streamed in the same SSE shape.
+
+    Runs the SAME strict prompt, MODE tag and audit as every other answer
+    (`RagPipeline.answer_from_attachments`) -- only the retrieval and the
+    cosine gate are absent, because there is nothing embedded to score and the
+    person attaching the file already answered "is this relevant".
+    """
+    names = ", ".join(name for name, _, _ in attached)
+    try:
+        # Any RagPipelineAgent's pipeline will do -- the attachment path
+        # overrides the prompt profile and never touches the agent's retriever
+        # or its source label, so which agent owns the pipeline is immaterial.
+        result = _agent_getters()[AGENT_POLICY]().pipeline.answer_from_attachments(
+            question, attached, org_id=org_id, conversation_id=conversation_id
+        )
+    except ProviderError as exc:
+        logger.warning("Chat attachment failure: %s", exc, exc_info=True)
+        yield _sse_event("error", {"message": _user_facing_llm_error(exc)})
+        return
+
+    response = RagPipelineAgent._to_response(result)
+    delay = _stream_word_delay_seconds()
+    for chunk in _word_chunks(response.answer):
+        yield _sse_event("token", chunk)
+        if delay:
+            time.sleep(delay)
+    yield _sse_event(
+        "done",
+        {
+            "answer": response.answer,
+            "grounded": response.grounded,
+            "source": response.source,
+            "citations": [],
+            "resolved_question": response.resolved_question,
+            "latency_ms": response.latency_ms,
+            "agent": "attachment",
+            # Named, not just labelled: with the corpus bypassed, "why didn't
+            # it use our Notion?" is the obvious next question and the pill is
+            # the only place it gets answered.
+            "routing_reason": f"answered from attached file(s): {names}",
+            "model": _answering_model(),
+            "chart": None,
+            "chart_period": None,
+        },
+    )
+
+
 def _stream_answer(
     question: str,
     org_id: str,
@@ -570,6 +650,26 @@ def _stream_answer(
     # here also resets it per stream, so a pooled thread cannot leak one
     # request's model choice into the next.
     use_model(model, org_id=org_id)
+
+    # An attached file OVERRIDES routing, and this is checked before
+    # `choose_agent` runs at all. Someone who has just dropped a contract into
+    # the chat and asked "what's the notice period?" means THAT contract, not
+    # whichever connected source scores highest on the word "notice" -- and
+    # the cosine probe cannot know the file exists, because nothing about it
+    # is embedded. Routing would therefore be guaranteed to answer a different
+    # question than the one asked, which is the failure this codebase is
+    # arranged against.
+    #
+    # Deliberately NOT blended with retrieval: one answer drawing on both a
+    # personal upload and the shared corpus could not say which sentence came
+    # from which, and "where did this come from?" has to stay answerable.
+    # Remove the file to go back to asking the corpus.
+    attached = _conversation_attachments(org_id, conversation_id, session)
+    if attached:
+        yield from _stream_attachment_answer(
+            question, attached, org_id, conversation_id
+        )
+        return
 
     # Decide WHICH agent answers before invoking the graph. `choose_agent`
     # honours an explicit `requested_agent` unchanged, so a caller that still

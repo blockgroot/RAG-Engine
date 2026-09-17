@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..core.answer_sources import (
+    SOURCE_ATTACHMENT,
     SOURCE_GOOGLE,
     SOURCE_LINEAR,
     SOURCE_NOTION,
@@ -88,6 +89,53 @@ WORKSPACE_PROMPT_PROFILE = PromptProfile(
     escalation_hint="someone else in this space can help with this",
     source_label=SOURCE_WORKSPACE,
 )
+
+ATTACHMENT_PROMPT_PROFILE = PromptProfile(
+    persona=(
+        "an assistant answering from the file the person has just attached to "
+        "this chat, and from nothing else"
+    ),
+    scope_adjective="file-specific",
+    scope_noun="attached file",
+    # NOT "your HR team". The escalation hint must match the source (see
+    # PromptProfile): an attachment can be a contract, a CSV of sales or a
+    # scanned rota, so the only true statement is that the answer is not in
+    # the file -- naming any team here would send someone to people who have
+    # never seen the document they uploaded.
+    escalation_hint="that detail isn't in the file you attached",
+    source_label=SOURCE_ATTACHMENT,
+)
+
+
+def build_attachment_paging_prompt(*, question: str, preview_block: str) -> str:
+    """Ask the model WHICH parts of a long attachment to read. Not an answer.
+
+    Deliberately not the grounded prompt: nothing is being answered here, so
+    the MODE tag, the fallback rule and the persona would all be noise the
+    model has to reason past. Its only job is to choose offsets, and the
+    grounded prompt runs afterwards over what comes back -- which is what
+    keeps this extra call from touching any grounding guarantee.
+
+    The previews are fenced and scrubbed like every other untrusted body of
+    text. This call can request a read; it can never produce the answer, so a
+    prompt injection in a file's opening 500 characters buys an attacker one
+    badly chosen offset.
+    """
+    scrubbed = scrub_untrusted_text(preview_block)
+    return (
+        "The person has attached the following file(s) to this chat and asked "
+        "a question about them. The files are too long to show in full.\n\n"
+        "ATTACHED FILES\n"
+        "<<<UNTRUSTED_DOCUMENT_CONTENT>>>\n"
+        f"{scrubbed}\n"
+        "<<<END_UNTRUSTED_DOCUMENT_CONTENT>>>\n\n"
+        f"QUESTION: {question}\n\n"
+        "Call read_file to read the sections most likely to answer it. You may "
+        "call it several times in one reply to read several sections or "
+        "several files. Prefer a few larger reads over many small ones. Do not "
+        "answer the question now — only choose what to read."
+    )
+
 
 def build_grounded_prompt(
     question: str,

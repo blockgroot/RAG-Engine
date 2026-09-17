@@ -716,3 +716,49 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_insight_pins_space
     ON insight_pins (org_id, user_id, workspace_id, metric, period,
                      coalesce(group_by, ''))
     WHERE workspace_id IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- In-chat file attachments (Feature 1 of the Onyx parity analysis).
+--
+-- A person drops a PDF/DOCX/CSV/TXT into a conversation and asks about THAT
+-- file. Only the EXTRACTED TEXT is stored -- never the uploaded bytes, never a
+-- URL, and deliberately no vector. Three reasons, in order of how much they
+-- matter:
+--
+--   1. An attachment is a one-off, not corpus. Embedding it would make it
+--      retrievable by every later question in the scope, which is the exact
+--      opposite of "ask about this file in this chat" -- and `documents` is
+--      shared by everyone in the scope, so a personal upload landing there
+--      would be a disclosure, not a feature.
+--   2. Discarding the bytes means there is no file to leak, no storage to
+--      scope and nothing to clean up. A CDN/object-store URL is public by
+--      link, so it would widen access rather than narrow it.
+--   3. Text is what the model consumes anyway. Keeping it here means a
+--      follow-up question re-reads it with no second upload and no re-parse.
+--
+-- `user_id` is NOT NULL and is checked on every read even though
+-- `conversations` is already personal: an attachment is the one thing here a
+-- member supplies rather than an admin, so it gets its own owner check rather
+-- than inheriting one. Unlike `conversations.user_id` there are no pre-column
+-- rows to be lenient about, so this one can be strict.
+--
+-- Cascades from the conversation, so deleting a chat clears its attachments
+-- with it -- no sweeper, no TTL job.
+CREATE TABLE IF NOT EXISTS conversation_attachments (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    conversation_id UUID NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
+    org_id          UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    user_id         UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    filename        TEXT NOT NULL,
+    content_type    TEXT NOT NULL,
+    content         TEXT NOT NULL,
+    char_count      INT  NOT NULL,
+    -- True when the file was longer than the char budget. Surfaced to the
+    -- asker AND stated in the prompt: a partial document that looks complete
+    -- is the failure this codebase is arranged against (CLAUDE.md §2).
+    truncated       BOOLEAN NOT NULL DEFAULT false,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_attachments_owner
+    ON conversation_attachments (conversation_id, org_id, user_id, created_at);

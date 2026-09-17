@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from collections.abc import Iterator
@@ -11,6 +12,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from ..config.settings import (
+    AttachmentSettings,
     AuditSettings,
     DecomposeSettings,
     MemorySettings,
@@ -25,6 +27,7 @@ from ..config.settings import (
 from ..core.answer_sources import (
     RECOVERY_REASON_GATE_MISS as _RECOVERY_REASON_GATE_MISS,
     RECOVERY_REASON_INSUFFICIENT_EVIDENCE as _RECOVERY_REASON_INSUFFICIENT_EVIDENCE,
+    SOURCE_ATTACHMENT,
     SOURCE_NONE,
     SOURCE_POLICY,
     SOURCE_WEB,
@@ -53,6 +56,12 @@ from .query_signals import log_query_signal
 from ..memory.base import ConversationContext, ConversationStore, RetrievedChunkRecord
 from ..vectorstore.base import DateRange, RetrievedChunk, VectorStore
 from ..websearch.base import SearchResult, WebSearchProvider
+from .attachment_tools import (
+    READ_FILE_TOOL,
+    AttachedFile,
+    build_preview_block,
+    run_reads,
+)
 from .audit import parse_audit_verdict
 from .retrieval import HybridRetriever, RetrievalResult
 from .context_assemble import assemble_context_texts, describe_hit
@@ -76,6 +85,8 @@ from .prompts import (
     PromptProfile,
     build_audit_prompt,
     build_decompose_prompt,
+    ATTACHMENT_PROMPT_PROFILE,
+    build_attachment_paging_prompt,
     build_grounded_prompt,
     build_recovery_queries_prompt,
     build_rewrite_prompt,
@@ -94,6 +105,9 @@ _MAX_RECOVERY_QUERY_LEN = 200
 _MODE_TAG_RE = re.compile(r"^\s*MODE:\s*([ABC])\s*\n+(.*)", re.IGNORECASE | re.DOTALL)
 
 
+
+logger = logging.getLogger(__name__)
+
 def _tone_retry_addendum(mode: str) -> str:
     """Appended on the one bounded meta-language tone-compliance retry."""
     return (
@@ -105,6 +119,16 @@ def _tone_retry_addendum(mode: str) -> str:
         "meta-language about sources, following ALL of the rules for Mode "
         f"{mode} above exactly. Still begin with 'MODE: {mode}'."
     )
+
+
+def _safe_json_args(raw: str | None) -> dict:
+    """Tool-call arguments as a dict, never raising. A malformed payload is a
+    read we skip, not a failed answer."""
+    try:
+        parsed = json.loads(raw or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _parse_tagged_mode(raw: str) -> tuple[str | None, str]:
@@ -855,6 +879,161 @@ class RagPipeline:
             return None
         return normalize_opener(raw)
 
+    def answer_from_attachments(
+        self,
+        question: str,
+        attachments: list[tuple[str, str, bool]],
+        *,
+        org_id: str | None = None,
+        conversation_id: str | None = None,
+        settings: AttachmentSettings | None = None,
+    ) -> RagResult:
+        """Answer from files the asker attached, not from the corpus.
+
+        ``attachments`` is ``(filename, text, truncated)``, oldest first.
+
+        **There is no confidence gate on this path, and that is the design.**
+        The gate answers "does the corpus resemble this question?" using a
+        cosine score that does not exist here -- nothing was embedded. The
+        person attaching the file has already answered that question by
+        attaching it, and a threshold invented for this path would be a number
+        with nothing behind it. The SECOND grounding layer is untouched and
+        does the whole job: the same strict prompt, so a file that does not
+        answer the question produces the same fixed fallback it always did
+        (CLAUDE.md §3 -- "a threshold can't separate 'answers' from 'on-topic
+        but doesn't'"; here only the threshold is absent, never the prompt).
+
+        Scrubbing and fencing are likewise unchanged: `build_grounded_prompt`
+        runs `scrub_untrusted_text` over every context, so an uploaded file is
+        treated as exactly as hostile as a synced one -- more so in practice,
+        since anyone with an account can upload where only an admin can
+        connect a source.
+
+        Short files go in WHOLE; long ones are paged (`_page_attachments`).
+        Both end in the same `_generate`, so the two differ in which text
+        reaches the prompt and in nothing else.
+        """
+        files = [
+            AttachedFile(name, text, cut)
+            for name, text, cut in attachments
+            if text.strip()
+        ]
+        if not files:
+            return RagResult(
+                answer=self._settings.fallback_response,
+                answered=False,
+                source=SOURCE_NONE,
+                sources=[],
+                top_score=None,
+            )
+
+        settings = settings or AttachmentSettings.from_env()
+        total = sum(len(f.text) for f in files)
+
+        if total <= settings.inline_char_budget:
+            contexts = [
+                # The filename rides IN the context for the reason
+                # `describe_hit` puts provenance there: with two files
+                # attached, "which one says that?" is the first follow-up and
+                # the model cannot answer it from text alone.
+                f"Attached file: {f.filename}"
+                + (" (truncated — only the first part is shown)" if f.truncated else "")
+                + "\n\n"
+                + f.text
+                for f in files
+            ]
+        else:
+            contexts = self._page_attachments(
+                question,
+                files,
+                settings,
+                org_id=org_id,
+                conversation_id=conversation_id,
+            )
+
+        result = self._generate(
+            question,
+            [],
+            None,
+            retrieval_reused=False,
+            org_id=org_id,
+            conversation_id=conversation_id,
+            contexts=contexts,
+            profile=ATTACHMENT_PROMPT_PROFILE,
+        )
+        # `_generate` labels the answer with the agent's own profile; the
+        # attachment is not that agent's corpus, so the label would be a false
+        # provenance claim on the one path where provenance is unambiguous.
+        return replace(
+            result,
+            source=SOURCE_ATTACHMENT if result.answered else SOURCE_NONE,
+        )
+
+    def _page_attachments(
+        self,
+        question: str,
+        files: list[AttachedFile],
+        settings: AttachmentSettings,
+        *,
+        org_id: str | None,
+        conversation_id: str | None,
+    ) -> list[str]:
+        """ONE tool round: show previews, let the model pick what to read.
+
+        Returns the contexts for the final grounded generation. Never raises
+        and never returns empty: **every** failure -- a provider with no tool
+        support, an LLM error, a model that asks for nothing, arguments that
+        make no sense -- degrades to the head of each file, which is exactly
+        the truncation behaviour that existed before paging. A worse answer is
+        acceptable here; no answer is not.
+
+        One round, never a loop, matching GitHubAgent. A read is a slice of a
+        string already in memory, so several sections cost one LLM call and no
+        query -- which is what makes a single round enough.
+        """
+        # The degraded path: each file's head, sharing the inline budget. This
+        # IS the old truncation, kept as the floor so no failure below can
+        # cost the answer entirely.
+        share = max(1, settings.inline_char_budget // len(files))
+        fallback = [
+            f"Attached file: {f.filename} (first {share} characters)\n\n"
+            + f.text[:share]
+            for f in files
+        ]
+
+        prompt = build_attachment_paging_prompt(
+            question=question,
+            preview_block=build_preview_block(files, settings.preview_chars),
+        )
+        try:
+            result = self._llm.generate_with_tools(
+                [{"role": "user", "content": prompt}],
+                tools=[READ_FILE_TOOL],
+                tool_choice="auto",
+            )
+        except NotImplementedError:
+            # A selected model without function calling. The picker offers
+            # several backends, so this is a routine outcome, not a defect.
+            logger.info("Attachments: provider has no tool support; using file heads")
+            return fallback
+        except LLMProviderError:
+            logger.warning("Attachments: paging call failed; using file heads", exc_info=True)
+            return fallback
+
+        calls = [(c.name, _safe_json_args(c.arguments)) for c in result.tool_calls]
+        contexts = run_reads(
+            files,
+            calls,
+            max_reads=settings.max_reads,
+            max_read_chars=settings.max_read_chars,
+        )
+        if not contexts:
+            return fallback
+        logger.info(
+            "Attachments: paged %d section(s) from %d file(s)", len(contexts), len(files)
+        )
+        return contexts
+
     def _generate(
         self,
         question: str,
@@ -866,14 +1045,24 @@ class RagPipeline:
         conversation_id: str | None = None,
         budget: RequestBudget | None = None,
         user_question: str | None = None,
+        contexts: list[str] | None = None,
+        profile: PromptProfile | None = None,
     ) -> RagResult:
-        contexts = assemble_context_texts(
-            # Title AND provenance: the provider, who last edited it and when.
-            # All of it was already on the JOINed document row and was being
-            # dropped, so "who wrote this?" refused against data we had.
-            [describe_hit(h) for h in hits],
-            self._settings.max_context_chars,
-        )
+        # `contexts` is supplied only by `answer_from_attachments`, where the
+        # text came from a file the asker handed us rather than from
+        # retrieval. Everything below -- the strict prompt, the MODE tag, the
+        # refusal detection, the tone retry, the groundedness audit -- is
+        # reused verbatim, which is the point: an attachment must not get its
+        # own weaker generation path.
+        if contexts is None:
+            contexts = assemble_context_texts(
+                # Title AND provenance: the provider, who last edited it and
+                # when. All of it was already on the JOINed document row and
+                # was being dropped, so "who wrote this?" refused against data
+                # we had.
+                [describe_hit(h) for h in hits],
+                self._settings.max_context_chars,
+            )
         tone_source = user_question or question
         question_tone = self._classify_question_tone(
             tone_source,
@@ -894,7 +1083,11 @@ class RagPipeline:
             question=question,
             contexts=contexts,
             fallback_response=self._settings.fallback_response,
-            profile=self._prompt_profile,
+            # An override only for the attachment path: the agent's own
+            # profile carries its escalation hint ("your HR team can help"),
+            # which is a wrong contact for a file the asker uploaded --
+            # exactly the failure PromptProfile.escalation_hint documents.
+            profile=profile or self._prompt_profile,
         )
         answer_cap = self._settings.max_answer_tokens
         raw = self._generate_text(

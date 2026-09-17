@@ -363,6 +363,19 @@ def run_external_tick() -> dict[str, int]:
     except Exception:  # noqa: BLE001 - a missing chart, never a failed tick
         logger.exception("External tick: document-fact backfill failed")
 
+    # Expire in-chat attachment text. Nothing in this codebase deletes a
+    # conversation, so the ON DELETE CASCADE that attachments hang off never
+    # fires in practice -- without this they are write-once, keep-forever on a
+    # 500MB database. Its own try/except for the reason every other step here
+    # has one: a full disk is bad, a failed tick is worse.
+    attachments_purged = 0
+    try:
+        from ..attachments import purge_expired_attachments
+
+        attachments_purged = purge_expired_attachments()
+    except Exception:  # noqa: BLE001
+        logger.exception("External tick: attachment purge failed")
+
     scheduler_settings = SchedulerSettings.from_env()
     schedulers_ran = (
         run_scheduler_tick(scheduler_settings) if scheduler_settings.enabled else 0
@@ -373,6 +386,7 @@ def run_external_tick() -> dict[str, int]:
         "syncs_queued": synced,
         "facts_recorded": facts,
         "facts_backfilled": backfilled,
+        "attachments_purged": attachments_purged,
         "schedulers_ran": schedulers_ran,
     }
 
