@@ -280,22 +280,16 @@ button { font-family: inherit; }
   overflow-y: auto;
   min-height: 0;
 }
+/* A plain title row again. The "New" button that used to sit beside it is
+   gone entirely -- starting a chat belongs on the chat page's own header,
+   where you are already looking when you want one. This rail's job is getting
+   BACK to a chat, and it had three controls for starting one. */
 .rail-chats-head {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 0.4rem;
-  padding: 0.1rem 0.25rem 0.35rem;
-}
-.rail-chats-head .rail-chats-title-row {
+  align-items: center;
   justify-content: space-between;
-}
-/* Full width, under the header rather than beside it. Inline with the title
-   it read as a twin of the "Ask" row a few pixels above — two controls that
-   looked alike and, until this pass, also DID the same thing. */
-.rail-chats-new-btn {
-  justify-content: center;
-  width: 100%;
+  gap: 0.35rem;
+  padding: 0.1rem 0.25rem 0.35rem;
 }
 .rail-chats-title-row {
   display: flex;

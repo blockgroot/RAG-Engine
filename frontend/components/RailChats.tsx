@@ -164,20 +164,6 @@ export function RailChats() {
     }
   }
 
-  function handleNew() {
-    if (isCurrentChatPath) {
-      window.dispatchEvent(new CustomEvent("new-chat"));
-    } else {
-      try {
-        const key = `chat.conversation.${workspaceId ?? "org"}`;
-        sessionStorage.removeItem(key);
-      } catch {
-        /* storage blocked */
-      }
-      router.push(targetChatPath);
-    }
-  }
-
   const top5 = items.slice(0, 5);
 
   if (!loaded || top5.length === 0) {
@@ -186,24 +172,15 @@ export function RailChats() {
 
   return (
     <div className="rail-chats" aria-label="Recent chats">
+      {/* No "New" control here. Starting a chat lives on the chat page's own
+          header, in the place you are already looking when you want one —
+          this rail had a third button for that same action, beside an "Ask"
+          row that also did it. The rail's job is getting BACK to a chat. */}
       <div className="rail-chats-head">
         <div className="rail-chats-title-row">
           <span className="rail-chats-title">Recent Chats</span>
           <span className="rail-chats-badge">{top5.length}</span>
         </div>
-        <button
-          type="button"
-          className="rail-chats-new-btn"
-          onClick={handleNew}
-          title="Start new chat"
-          aria-label="Start new chat"
-        >
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden>
-            <line x1="12" y1="5" x2="12" y2="19" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
-            <line x1="5" y1="12" x2="19" y2="12" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
-          </svg>
-          <span>New</span>
-        </button>
       </div>
 
       <ul className="rail-chats-list" role="list">

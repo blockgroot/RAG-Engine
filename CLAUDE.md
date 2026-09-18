@@ -563,10 +563,15 @@ which is a cache, not an address). `?c=` is now the single source of truth —
 when a chat is born mid-question or cleared by New. The `open-conversation`
 listener is DELETED: a second, invisible way to change which chat is showing
 is exactly how the address bar and the transcript drifted apart.
-- **"Ask" is a DESTINATION, not a second New button.** Its `onClick`
-  dispatched `new-chat` when already on `/chat`, making it identical to the
-  "+ New" control a few pixels below — two affordances, one action, and no way
-  to simply return to the chat you had open.
+- **THREE controls started a chat; now one does.** The rail's "Ask" link
+  dispatched `new-chat` when already on `/chat`, the rail's "+ New" button did
+  the same, and the chat page's own header has had a "New chat" button all
+  along. Ask is now a plain DESTINATION (so you can return to the chat you had
+  open, which nothing previously allowed) and the rail's "+ New" is DELETED.
+  Starting a chat lives on the chat page header, where you are already looking
+  when you want one; the rail's job is getting BACK to a chat.
+  `.rail-chats-new-btn` is now dead CSS and is left for a by-hand pass (§3
+  "do NOT script-delete dead CSS").
 - **Recent chats sits BELOW the destinations, in its own band, with no card.**
   Wedged between Ask and Spaces it split one list of places-to-go in half with
   a list of things-already-done; and a bordered tinted box inside the rail
