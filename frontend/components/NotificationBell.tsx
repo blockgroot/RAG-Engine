@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, Notification } from "@/lib/api";
+import { formatReauthReason } from "@/lib/reauthReason";
 
 /**
  * What needs this person's attention, on every page of the app.
@@ -154,7 +155,9 @@ export function NotificationBell() {
                   <div className="bell-item-copy">
                     <span className="bell-item-title">{item.title}</span>
                     <span className="bell-item-scope">{item.scope}</span>
-                    <span className="bell-item-detail">{item.detail}</span>
+                    <span className="bell-item-detail">
+                      {item.kind === "reauth" ? formatReauthReason(item.provider, item.detail) : item.detail}
+                    </span>
                     <Link href={item.href} className="bell-item-action" onClick={() => setOpen(false)}>
                       {item.action}
                     </Link>

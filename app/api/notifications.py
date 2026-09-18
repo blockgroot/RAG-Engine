@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from ..auth.credentials import list_connections
+from ..auth.credentials import list_connections, sanitize_reauth_reason
 from ..auth.session import SessionClaims
 from ..workspaces.store import list_my_workspaces
 from .deps import get_session
@@ -66,8 +66,11 @@ def _items_in(org_id: str, workspace_id: str | None, scope: str, href: str) -> l
                     # The reason is the provider's own, so it is shown rather
                     # than summarised -- "expired" and "access revoked" send
                     # someone to two different places.
-                    "detail": conn.reauth_reason
-                    or f"Its access expired, so {scope} has stopped syncing {name}.",
+                    "detail": (
+                        sanitize_reauth_reason(conn.provider, conn.reauth_reason)
+                        if conn.reauth_reason
+                        else f"Its access expired, so {scope} has stopped syncing {name}."
+                    ),
                     "action": "Reconnect",
                     "href": href,
                 }

@@ -680,22 +680,52 @@ def _stream_attachment_answer(
     attached: list[tuple[str, str, bool]],
     org_id: str,
     conversation_id: str | None,
+    workspace_id: str | None,
+    decision,
+    session: SessionClaims | None = None,
 ) -> Iterator[str]:
-    """Answer from the attached files, streamed in the same SSE shape.
+    """Answer with the attached files AND the routed source's corpus.
 
-    Runs the SAME strict prompt, MODE tag and audit as every other answer
-    (`RagPipeline.answer_from_attachments`) -- only the retrieval and the
-    cosine gate are absent, because there is nothing embedded to score and the
-    person attaching the file already answered "is this relevant".
+    **Attachments no longer replace retrieval, and that was a real defect.**
+    A member who uploads an expense receipt and asks "is this claimable?" is
+    asking about the receipt AND about the policy in the corpus; answering
+    from either alone answers a different question. Worse, attachments live on
+    the CONVERSATION, so the old short-circuit meant every later question in
+    that chat -- "how much leave do I have left?" -- was answered from the
+    receipt until the file was removed.
+
+    The routed agent's pipeline runs completely unchanged: same gate, same
+    strict prompt, same audit. The files are simply also in the prompt, each
+    behind its own "Attached file:" line, beside chunks that each carry their
+    own provenance line -- which is what lets one answer draw on both and
+    still say where each sentence came from.
+
+    An agent with no corpus (GitHub, Insights) has nothing to blend, so those
+    fall back to the files alone rather than losing the upload entirely.
     """
     names = ", ".join(name for name, _, _ in attached)
+    agent = _agent_getters().get(decision.agent_key, lambda: None)()
+    pipeline = getattr(agent, "pipeline", None)
+
     try:
-        # Any RagPipelineAgent's pipeline will do -- the attachment path
-        # overrides the prompt profile and never touches the agent's retriever
-        # or its source label, so which agent owns the pipeline is immaterial.
-        result = _agent_getters()[AGENT_POLICY]().pipeline.answer_from_attachments(
-            question, attached, org_id=org_id, conversation_id=conversation_id
-        )
+        if pipeline is None:
+            # GitHub/Insights: live reads and SQL, no chunks to retrieve. The
+            # attachment is still the thing in front of the asker.
+            result = _agent_getters()[AGENT_POLICY]().pipeline.answer_from_attachments(
+                question, attached, org_id=org_id, conversation_id=conversation_id
+            )
+            reason = f"answered from attached file(s): {names}"
+            agent_key = "attachment"
+        else:
+            result = pipeline.answer(
+                question,
+                org_id,
+                conversation_id=conversation_id,
+                workspace_id=workspace_id,
+                attachments=attached,
+            )
+            reason = f"{decision.reason} · with attached file(s): {names}"
+            agent_key = decision.agent_key
     except ProviderError as exc:
         logger.warning("Chat attachment failure: %s", exc, exc_info=True)
         yield _sse_event("error", {"message": _user_facing_llm_error(exc)})
@@ -707,20 +737,36 @@ def _stream_attachment_answer(
         yield _sse_event("token", chunk)
         if delay:
             time.sleep(delay)
+
+    if not response.grounded:
+        record_gap(
+            org_id=org_id,
+            question=question,
+            resolved_question=response.resolved_question,
+            answer=response.answer,
+            workspace_id=workspace_id,
+            user_id=session.user_id if session else None,
+            conversation_id=conversation_id,
+            agent=agent_key,
+            gate_score=response.top_score,
+        )
+
     yield _sse_event(
         "done",
         {
             "answer": response.answer,
             "grounded": response.grounded,
             "source": response.source,
-            "citations": [],
+            "citations": [
+                {"content": c.content, "reference": c.reference, "score": c.score}
+                for c in response.citations
+            ],
             "resolved_question": response.resolved_question,
             "latency_ms": response.latency_ms,
-            "agent": "attachment",
-            # Named, not just labelled: with the corpus bypassed, "why didn't
-            # it use our Notion?" is the obvious next question and the pill is
-            # the only place it gets answered.
-            "routing_reason": f"answered from attached file(s): {names}",
+            "agent": agent_key,
+            # Names the routed source AND the files, because with both in one
+            # prompt "where did this come from?" has two answers.
+            "routing_reason": reason,
             "model": _answering_model(),
             "chart": None,
             "chart_period": None,
@@ -745,25 +791,18 @@ def _stream_answer(
     # request's model choice into the next.
     use_model(model, org_id=org_id)
 
-    # An attached file OVERRIDES routing, and this is checked before
-    # `choose_agent` runs at all. Someone who has just dropped a contract into
-    # the chat and asked "what's the notice period?" means THAT contract, not
-    # whichever connected source scores highest on the word "notice" -- and
-    # the cosine probe cannot know the file exists, because nothing about it
-    # is embedded. Routing would therefore be guaranteed to answer a different
-    # question than the one asked, which is the failure this codebase is
-    # arranged against.
+    # Loaded BEFORE routing but no longer instead of it. An attached file used
+    # to short-circuit `choose_agent` entirely, on the reasoning that someone
+    # dropping a contract in and asking "what's the notice period?" means THAT
+    # contract rather than whichever source scores on the word "notice".
     #
-    # Deliberately NOT blended with retrieval: one answer drawing on both a
-    # personal upload and the shared corpus could not say which sentence came
-    # from which, and "where did this come from?" has to stay answerable.
-    # Remove the file to go back to asking the corpus.
+    # That was right about the file and wrong about the corpus. "Is this bill
+    # claimable?" is a question about the upload AND about the expense policy,
+    # and attachments live on the CONVERSATION -- so the short-circuit also
+    # meant every later question in the chat was answered from the bill. The
+    # files now ride along with whatever the routed source retrieves
+    # (`_stream_attachment_answer`), each context block still naming itself.
     attached = _conversation_attachments(org_id, conversation_id, session)
-    if attached:
-        yield from _stream_attachment_answer(
-            question, attached, org_id, conversation_id
-        )
-        return
 
     # Decide WHICH agent answers before invoking the graph. `choose_agent`
     # honours an explicit `requested_agent` unchanged, so a caller that still
@@ -781,6 +820,14 @@ def _stream_answer(
         decision.reason,
         decision.scores,
     )
+
+    # Routed FIRST, then blended: the router picks which corpus supports the
+    # question, and the attached files join whatever it retrieves.
+    if attached:
+        yield from _stream_attachment_answer(
+            question, attached, org_id, conversation_id, workspace_id, decision, session
+        )
+        return
 
     spec = getattr(decision, "chart_spec", None)
     chart_spec = None

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, ApiError, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
 import { syncPagesDetail, syncPercent, syncPhaseHeadline } from "@/lib/syncProgress";
+import { formatReauthReason } from "@/lib/reauthReason";
 import { DriveFolderPicker } from "./DriveFolderPicker";
 import { SlackChannelPicker } from "./SlackChannelPicker";
 import { SlackMemberInvitePicker } from "./SlackMemberInvitePicker";
@@ -551,7 +552,7 @@ export function ConnectionCard({
         </p>
       )}
 
-      {showDocsJobBadge && lastJob && (
+      {showDocsJobBadge && !needsReauth && lastJob && (
         <div className="stack" style={{ marginTop: "0.55rem", gap: "0.35rem" }}>
           <p
             className="muted"
@@ -644,13 +645,24 @@ export function ConnectionCard({
       )}
 
       {needsReauth && connection && (
-        <div className="banner banner-warn" style={{ marginTop: "0.75rem" }} role="alert">
-          Access expired — reconnect {PROVIDER_LABELS[provider]} to continue.
-          {connection.reauth_reason ? (
-            <span className="muted" style={{ display: "block", marginTop: "0.35rem" }}>
-              {connection.reauth_reason}
-            </span>
-          ) : null}
+        <div className="connection-reauth-box" role="alert">
+          <span className="connection-reauth-ico" aria-hidden>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+              <path
+                d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </span>
+          <div className="connection-reauth-body">
+            <span className="connection-reauth-title">Access expired</span>
+            <p className="connection-reauth-desc">
+              {formatReauthReason(provider, connection.reauth_reason)}
+            </p>
+          </div>
         </div>
       )}
       {disconnectError && (

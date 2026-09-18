@@ -379,6 +379,53 @@ def looks_like_auth_failure(exc: BaseException) -> bool:
     return False
 
 
+def sanitize_reauth_reason(provider: str, reason: str | None) -> str | None:
+    """Format raw API / OAuth errors into clean, human-friendly messages."""
+    if not reason:
+        return None
+    raw = reason.strip()
+    if not raw:
+        return None
+    low = raw.lower()
+    provider_names = {
+        "linear": "Linear",
+        "google": "Google Drive",
+        "drive": "Google Drive",
+        "notion": "Notion",
+        "slack": "Slack",
+        "github": "GitHub",
+    }
+    name = provider_names.get(provider.lower(), provider.title())
+
+    if any(
+        k in low
+        for k in (
+            "401",
+            "unauthorized",
+            "invalid_grant",
+            "invalid_token",
+            "token revoked",
+            "access revoked",
+            "token has expired",
+            "expired",
+            "authentication failed",
+            "forbidden",
+        )
+    ):
+        return f"{name} access token expired or was revoked. Reconnect your account to resume syncing."
+
+    import re
+    cleaned = re.sub(r"https?://\S+", "", raw)
+    cleaned = re.sub(r"For more information check:?", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"Client error '401 Unauthorized' for url.*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = " ".join(cleaned.split()).strip(" :-,.")
+    if not cleaned or len(cleaned) < 4:
+        return f"{name} access expired. Reconnect to resume syncing."
+    if len(cleaned) > 250:
+        cleaned = cleaned[:247] + "..."
+    return cleaned
+
+
 def mark_needs_reauth(
     org_id: str,
     provider: str,
@@ -386,9 +433,7 @@ def mark_needs_reauth(
     reason: str | None = None,
 ) -> None:
     """Sticky flag so Sources can show Reconnect without re-probing."""
-    detail = (reason or "").strip() or None
-    if detail and len(detail) > 500:
-        detail = detail[:497] + "..."
+    detail = sanitize_reauth_reason(provider, reason)
     with get_connection() as conn:
         conn.execute(
             """

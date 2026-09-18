@@ -371,8 +371,15 @@ class RagPipeline:
         workspace_id: str | None = None,
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
+        attachments: list[tuple[str, str, bool]] | None = None,
     ) -> RagResult:
         """Answer ``question`` using only ``org_id``'s chunks (with optional memory).
+
+        ``attachments`` are files the asker put in THIS conversation, as
+        ``(filename, text, truncated)``. They do not replace retrieval, they
+        join it: "is this bill claimable?" is a question about the uploaded
+        bill AND about the expense policy in the corpus, and answering it from
+        either one alone is answering a different question. See ``_run``.
 
         ``workspace_id`` (Workspace-within-a-Workspace): ``None`` (default)
         answers from the org-wide space, identical to every prior caller.
@@ -433,6 +440,7 @@ class RagPipeline:
             date_range=date_range,
             tags=tags,
             user_question=question,
+            attachments=attachments,
         )
 
         if conversation_id is None and not result.cache_hit:
@@ -492,13 +500,39 @@ class RagPipeline:
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
         user_question: str | None = None,
+        attachments: list[tuple[str, str, bool]] | None = None,
     ) -> RagResult:
-        """First retrieve as today; recover at most once if evidence is insufficient."""
+        """First retrieve as today; recover at most once if evidence is insufficient.
+
+        With ``attachments``, retrieval runs COMPLETELY UNCHANGED -- same
+        routing, same 0.35 gate, same strict prompt -- and the uploaded files
+        are added to the prompt alongside whatever the corpus returned. The
+        only behaviour that differs is on a gate MISS: with files attached the
+        answer is generated from them rather than refused, which is exactly
+        what the attachment-only path did before and is the reason a bill can
+        be asked about in a chat whose corpus has nothing to say about bills.
+
+        The gate itself is untouched: it still decides whether CORPUS chunks
+        are good enough to include. An attachment was handed to us by the
+        person asking, so it needs no similarity score to justify its presence
+        -- they already answered that question by uploading it.
+        """
         t0 = time.perf_counter()
         budget = budget or RequestBudget.from_settings(self._budget_settings)
         min_stage = self._budget_settings.min_stage_seconds
         budget_exhausted = False
         tone_question = user_question or question
+
+        attachment_contexts = (
+            self.attachment_contexts(
+                question,
+                attachments,
+                org_id=org_id,
+                conversation_id=conversation_id,
+            )
+            if attachments
+            else []
+        )
 
         retrieval_question = self._normalize_for_retrieval(question, org_id)
         query_vec = self._embedder.embed([retrieval_question])[0]
@@ -587,6 +621,21 @@ class RagPipeline:
             elif self._recovery_available(recovery_used):
                 budget_exhausted = True
             if self._gate_miss(hits, top_score):
+                # The corpus has nothing, but the asker handed us a document.
+                # Refusing here would be the old bug in a new place: "what's
+                # the total on this invoice?" is answerable from the invoice
+                # and has no reason to reach the corpus at all.
+                if attachment_contexts:
+                    return _finalize(
+                        self._answer_from_contexts(
+                            question,
+                            attachment_contexts,
+                            org_id=org_id,
+                            conversation_id=conversation_id,
+                            budget=budget,
+                            user_question=tone_question,
+                        )
+                    )
                 return _finalize(
                     self._gate_failed(
                         question,
@@ -607,6 +656,7 @@ class RagPipeline:
             conversation_id=conversation_id,
             budget=budget,
             user_question=tone_question,
+            extra_contexts=attachment_contexts,
         )
         audit_used, audit_downgraded, audit_reason = (
             result.audit_used,
@@ -634,6 +684,21 @@ class RagPipeline:
             recovery_queries = list(attempt.queries)
             hits, top_score = attempt.hits, attempt.gate_score
             if self._gate_miss(hits, top_score):
+                # The corpus has nothing, but the asker handed us a document.
+                # Refusing here would be the old bug in a new place: "what's
+                # the total on this invoice?" is answerable from the invoice
+                # and has no reason to reach the corpus at all.
+                if attachment_contexts:
+                    return _finalize(
+                        self._answer_from_contexts(
+                            question,
+                            attachment_contexts,
+                            org_id=org_id,
+                            conversation_id=conversation_id,
+                            budget=budget,
+                            user_question=tone_question,
+                        )
+                    )
                 return _finalize(
                     self._gate_failed(
                         question,
@@ -653,6 +718,7 @@ class RagPipeline:
                 conversation_id=conversation_id,
                 budget=budget,
                 user_question=tone_question,
+                extra_contexts=attachment_contexts,
             )
             audit_used, audit_downgraded, audit_reason = (
                 result.audit_used,
@@ -879,6 +945,87 @@ class RagPipeline:
             return None
         return normalize_opener(raw)
 
+    def _answer_from_contexts(
+        self,
+        question: str,
+        contexts: list[str],
+        *,
+        org_id: str | None,
+        conversation_id: str | None,
+        budget: RequestBudget | None,
+        user_question: str | None,
+    ) -> RagResult:
+        """Generate from attachment contexts alone, labelled as such.
+
+        Reached when retrieval found nothing worth including but files ARE
+        attached. Runs the same strict prompt and the same audit as every
+        other answer -- only the confidence gate is absent, and only because
+        there is no cosine score for a file nobody embedded (see
+        `answer_from_attachments`).
+        """
+        result = self._generate(
+            question,
+            [],
+            None,
+            retrieval_reused=False,
+            org_id=org_id,
+            conversation_id=conversation_id,
+            budget=budget,
+            user_question=user_question,
+            contexts=contexts,
+            profile=ATTACHMENT_PROMPT_PROFILE,
+        )
+        return replace(
+            result, source=SOURCE_ATTACHMENT if result.answered else SOURCE_NONE
+        )
+
+    def attachment_contexts(
+        self,
+        question: str,
+        attachments: list[tuple[str, str, bool]],
+        *,
+        settings: AttachmentSettings | None = None,
+        org_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> list[str]:
+        """Prompt-ready context blocks for the files the asker attached.
+
+        Public because two callers need the same blocks: the attachment-only
+        path (`answer_from_attachments`) and the BLENDED path, where these sit
+        alongside retrieved chunks in one prompt. Two copies of the
+        inline-vs-paging decision would eventually disagree about when a file
+        is too long to inline, and the two answers would differ for reasons
+        nobody could see.
+        """
+        files = [
+            AttachedFile(name, text, cut)
+            for name, text, cut in attachments
+            if text.strip()
+        ]
+        if not files:
+            return []
+
+        settings = settings or AttachmentSettings.from_env()
+        if sum(len(f.text) for f in files) <= settings.inline_char_budget:
+            return [
+                # The filename rides IN the context for the reason
+                # `describe_hit` puts provenance there: with two files
+                # attached, "which one says that?" is the first follow-up and
+                # the model cannot answer it from text alone.
+                f"Attached file: {f.filename}"
+                + (" (truncated — only the first part is shown)" if f.truncated else "")
+                + "\n\n"
+                + f.text
+                for f in files
+            ]
+        return self._page_attachments(
+            question,
+            files,
+            settings,
+            org_id=org_id,
+            conversation_id=conversation_id,
+        )
+
     def answer_from_attachments(
         self,
         question: str,
@@ -927,29 +1074,13 @@ class RagPipeline:
                 top_score=None,
             )
 
-        settings = settings or AttachmentSettings.from_env()
-        total = sum(len(f.text) for f in files)
-
-        if total <= settings.inline_char_budget:
-            contexts = [
-                # The filename rides IN the context for the reason
-                # `describe_hit` puts provenance there: with two files
-                # attached, "which one says that?" is the first follow-up and
-                # the model cannot answer it from text alone.
-                f"Attached file: {f.filename}"
-                + (" (truncated — only the first part is shown)" if f.truncated else "")
-                + "\n\n"
-                + f.text
-                for f in files
-            ]
-        else:
-            contexts = self._page_attachments(
-                question,
-                files,
-                settings,
-                org_id=org_id,
-                conversation_id=conversation_id,
-            )
+        contexts = self.attachment_contexts(
+            question,
+            attachments,
+            settings=settings,
+            org_id=org_id,
+            conversation_id=conversation_id,
+        )
 
         result = self._generate(
             question,
@@ -1046,6 +1177,7 @@ class RagPipeline:
         budget: RequestBudget | None = None,
         user_question: str | None = None,
         contexts: list[str] | None = None,
+        extra_contexts: list[str] | None = None,
         profile: PromptProfile | None = None,
     ) -> RagResult:
         # `contexts` is supplied only by `answer_from_attachments`, where the
@@ -1063,6 +1195,15 @@ class RagPipeline:
                 [describe_hit(h) for h in hits],
                 self._settings.max_context_chars,
             )
+        # Files the asker attached go in FIRST, ahead of retrieved chunks.
+        # They are the reason they uploaded: "is this bill claimable?" is a
+        # question about the bill, answered against the policy -- so the
+        # document under discussion leads and the corpus supports it. Both
+        # carry their own provenance line (`describe_hit` for a chunk,
+        # "Attached file: X" for an upload), which is what lets one answer
+        # draw on both and still say where each sentence came from.
+        if extra_contexts:
+            contexts = list(extra_contexts) + contexts
         tone_source = user_question or question
         question_tone = self._classify_question_tone(
             tone_source,

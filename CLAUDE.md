@@ -326,6 +326,33 @@ guarantee.
 - `chat:write` + `app_mentions:read` are new default scopes, so **every tenant
   reconnects Slack once**: Slack grants scopes at install, never retroactively.
 
+**An attachment JOINS retrieval, it does not replace it** (`rag/pipeline.py::
+_run`, `api/chat.py::_stream_attachment_answer`). Uploading used to
+short-circuit routing entirely — and because attachments live on the
+CONVERSATION, that meant every later question in the chat ("how much leave do
+I have left?") was answered from the receipt until the file was removed. The
+question it breaks is the ordinary one: "is this bill claimable?" is about the
+uploaded bill AND about the expense policy in the corpus, and either alone
+answers something else.
+- **Routing runs FIRST, then the files join whatever it retrieved.** The
+  routed agent's pipeline is unchanged — same 0.35 gate, same strict prompt,
+  same audit — and `_generate` simply takes `extra_contexts`. Files lead the
+  context and the corpus supports them: the document under discussion is what
+  the question is about.
+- **Blending is only acceptable because every block names itself** —
+  `describe_hit`'s provenance line on a chunk, `Attached file: X` on an
+  upload. That was the original objection to mixing and it was already solved;
+  refusing to mix was the wrong fix for it.
+- **The gate still governs the CORPUS only.** An attachment needs no cosine
+  score to justify its presence — the person uploading it already answered
+  that question. On a gate MISS with files attached the answer comes from the
+  files (`_answer_from_contexts`, `source="attachment"`) instead of the fixed
+  refusal: "what's the total on this invoice?" never needed the corpus.
+- **GitHub/Insights have no `pipeline`**, so they fall back to files-only
+  rather than losing the upload.
+- `tests/test_attachment_blending.py` asserts on what reached the PROMPT, not
+  on answer wording — the prompt is where the defect was.
+
 **Attachment upload gates (`app/attachments/limits.py`, `api/attachments.py`)**
 — the three checks Onyx runs at upload that we did not.
 - **Tokens are counted at UPLOAD and over-budget files are REFUSED.**
@@ -507,7 +534,7 @@ conversion lives *inside* the adapter. Thin SDKs, never frameworks.
   opens on Ask, an owner on management** — the space page is invite/connect/
   delete, all disabled for a member. Deliberately not a redirect: that
   would make the people list unreachable and bounce any link back out.
-- **Chat history recall column** docks on the left side of Ask beside the rail (toggled via rail or topbar, saved in `chat.historyCollapsed`) with a quick top-5 chats box in the left rail under Explore (`RailChats.tsx`); styled with Handbook tokens, date grouping, search, and inline delete confirmation.
+- **Recent chats sit in the left rail under Explore** (`RailChats.tsx`, top-5 most recent, 1-click access, Handbook light-mode tokens); popping sidebar and redundant topbar buttons removed. Connection expirations sanitize raw HTTP/GraphQL/Mozilla errors via `formatReauthReason` and `sanitize_reauth_reason`, with a compact structured `.connection-reauth-box` on `ConnectionCard` suppressing the misleading failed retry badge.
 
 **Marketing pages** — the two have DIFFERENT JOBS and must not share
 paragraphs. `/` states what Handbook does, one short benefit per item, and
