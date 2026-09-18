@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { AskHeroArt } from "@/components/AskHeroArt";
 import { ChatMessageView, Message } from "@/components/ChatMessage";
@@ -79,10 +79,15 @@ function listCopy(names: string[]): string {
 
 export default function ChatPage() {
   const workspaceId = useParams<{ id?: string }>().id ?? null;
-  return <ChatPageInner workspaceId={workspaceId} />;
+  return (
+    <Suspense fallback={null}>
+      <ChatPageInner workspaceId={workspaceId} />
+    </Suspense>
+  );
 }
 
 function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
+  const searchParams = useSearchParams();
   const { me, loading, refresh } = useMe({ enforceSetupFlow: !workspaceId });
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -402,6 +407,69 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     setUploadError(null);
   }
 
+  // Handle URL query parameters: ?c={conversation_id} and ?show_history=1
+  const conversationParam = searchParams.get("c");
+  const showHistoryParam = searchParams.get("show_history");
+
+  useEffect(() => {
+    if (showHistoryParam === "1") {
+      setHistoryCollapsed(false);
+    }
+    if (conversationParam) {
+      void openConversation(conversationParam);
+    }
+  }, [conversationParam, showHistoryParam, openConversation]);
+
+  // Listen for navigation and control events from RailChats or other components
+  useEffect(() => {
+    function onOpen(e: Event) {
+      const custom = e as CustomEvent<{ id: string }>;
+      if (custom.detail?.id) {
+        void openConversation(custom.detail.id);
+      }
+    }
+    function onNew() {
+      startNewChat();
+    }
+    function onToggle(e: Event) {
+      const custom = e as CustomEvent<{ open?: boolean }>;
+      if (custom.detail?.open !== undefined) {
+        setHistoryCollapsed(!custom.detail.open);
+        try {
+          localStorage.setItem("chat.historyCollapsed", String(!custom.detail.open));
+        } catch {
+          /* storage blocked */
+        }
+      } else {
+        toggleHistoryCollapse();
+      }
+    }
+    window.addEventListener("open-conversation", onOpen);
+    window.addEventListener("new-chat", onNew);
+    window.addEventListener("toggle-chat-history", onToggle);
+    return () => {
+      window.removeEventListener("open-conversation", onOpen);
+      window.removeEventListener("new-chat", onNew);
+      window.removeEventListener("toggle-chat-history", onToggle);
+    };
+  }, [openConversation]);
+
+  // Notify RailChats whenever the active conversation changes
+  useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent("active-conversation-changed", {
+        detail: { id: activeConversation },
+      }),
+    );
+  }, [activeConversation]);
+
+  // Notify RailChats whenever chats are updated/created/deleted
+  useEffect(() => {
+    if (historyKey > 0) {
+      window.dispatchEvent(new CustomEvent("chats-updated"));
+    }
+  }, [historyKey]);
+
   async function ensureConversation() {
     if (conversationId.current) return conversationId.current;
     try {
@@ -431,18 +499,23 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       setUploading(false);
       return;
     }
-    for (const file of Array.from(files)) {
-      try {
-        const saved = await api.uploadAttachment(convId, file, workspaceId);
-        setAttachments((prev) => [...prev, saved]);
-      } catch (err) {
-        // The server's message is written for the uploader ("this is a scan",
-        // "this is password-protected"), so it is shown rather than replaced.
+    try {
+      // ONE request for the whole selection. Uploading in a loop and stopping
+      // at the first failure made a single bad file cost every file after it,
+      // and the member could not tell which one was at fault.
+      const result = await api.uploadAttachments(convId, Array.from(files), workspaceId);
+      setAttachments((prev) => [...prev, ...result.attachments]);
+      if (result.rejected.length > 0) {
+        // Each refusal names its own file, because "3 files failed" sends
+        // someone re-uploading all of them to find out which.
         setUploadError(
-          err instanceof ApiError ? err.message : `Couldn't read ${file.name}`,
+          result.rejected.map((r) => r.reason).join(" "),
         );
-        break;
       }
+    } catch (err) {
+      setUploadError(
+        err instanceof ApiError ? err.message : "Couldn't upload those files.",
+      );
     }
     setUploading(false);
     if (fileInput.current) fileInput.current.value = "";
@@ -607,39 +680,66 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   return (
     <AppShell me={me} variant="app">
       <div className={`chat-with-history${historyCollapsed ? " is-history-collapsed" : ""}`}>
-      <div className="chat-page">
-        {justSynced && (
-          <div className="banner banner-ok" style={{ margin: "0 0 1rem" }}>
-            {workspaceId
-              ? "You’re all set — this space is ready for questions."
-              : "You’re all set — your documents are ready for questions."}
-          </div>
-        )}
+        <ChatHistory
+          workspaceId={workspaceId}
+          activeId={activeConversation}
+          onOpen={openConversation}
+          onNew={startNewChat}
+          reloadKey={historyKey}
+          collapsed={historyCollapsed}
+          onToggleCollapse={toggleHistoryCollapse}
+        />
+        <div className="chat-page">
+          {justSynced && (
+            <div className="banner banner-ok" style={{ margin: "0 0 1rem" }}>
+              {workspaceId
+                ? "You’re all set — this space is ready for questions."
+                : "You’re all set — your documents are ready for questions."}
+            </div>
+          )}
 
-        <div className="chat-topbar">
-          <div className="chat-topbar-copy">
-            {/* The space name OPENS the details panel rather than navigating
-                away — the Slack pattern, where a channel's people and settings
-                sit behind its name and the conversation stays put. Plain text
-                company-wide, which has no such panel. */}
-            <p className="chat-kicker">
-              {workspaceId ? (
+          <div className="chat-topbar">
+            <div className="chat-topbar-start">
+              {historyCollapsed && (
                 <button
                   type="button"
-                  className="chat-kicker-link"
-                  onClick={() => setPanelOpen(true)}
+                  className="chat-history-reopen-btn"
+                  onClick={toggleHistoryCollapse}
+                  title="Show chat history"
+                  aria-label="Show chat history"
                 >
-                  {workspaceName || "Space"}
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden>
+                    <rect x="3" y="3" width="18" height="18" rx="2.5" stroke="currentColor" strokeWidth="1.75" />
+                    <line x1="9" y1="3" x2="9" y2="21" stroke="currentColor" strokeWidth="1.75" />
+                    <path d="m13 10 2 2-2 2" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  <span>Chats</span>
                 </button>
-              ) : (
-                "Company-wide"
               )}
-            </p>
-            {/* One destination, so one title. Which source answered is stated
-                per ANSWER (see ChatMessageView) rather than per page: it is a
-                property of the reply, not of the box you typed into. */}
-            <h1>Ask</h1>
-          </div>
+              <div className="chat-topbar-copy">
+              {/* The space name OPENS the details panel rather than navigating
+                  away — the Slack pattern, where a channel's people and settings
+                  sit behind its name and the conversation stays put. Plain text
+                  company-wide, which has no such panel. */}
+              <p className="chat-kicker">
+                {workspaceId ? (
+                  <button
+                    type="button"
+                    className="chat-kicker-link"
+                    onClick={() => setPanelOpen(true)}
+                  >
+                    {workspaceName || "Space"}
+                  </button>
+                ) : (
+                  "Company-wide"
+                )}
+              </p>
+              {/* One destination, so one title. Which source answered is stated
+                  per ANSWER (see ChatMessageView) rather than per page: it is a
+                  property of the reply, not of the box you typed into. */}
+              <h1>Ask</h1>
+            </div>
+            </div>
 
           <div className="chat-topbar-actions">
             <button
@@ -848,15 +948,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
           </button>
         </form>
       </div>
-      <ChatHistory
-        workspaceId={workspaceId}
-        activeId={activeConversation}
-        onOpen={openConversation}
-        onNew={startNewChat}
-        reloadKey={historyKey}
-        collapsed={historyCollapsed}
-        onToggleCollapse={toggleHistoryCollapse}
-      />
       </div>
     </AppShell>
   );

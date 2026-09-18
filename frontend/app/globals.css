@@ -257,6 +257,159 @@ button { font-family: inherit; }
   text-overflow: ellipsis;
 }
 
+/* Rail Chats: Top-5 recent chats under Explore */
+.rail-chats {
+  margin: 0.2rem 0 0.55rem;
+  padding: 0.45rem 0.5rem;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.rail-chats-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+  padding: 0.05rem 0.2rem 0.2rem;
+}
+.rail-chats-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.rail-chats-title {
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-on-dark-muted);
+}
+.rail-chats-badge {
+  font-size: 0.6rem;
+  font-weight: 650;
+  padding: 0.05rem 0.35rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #c7ede6;
+}
+.rail-chats-new-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid rgba(43, 191, 180, 0.35);
+  background: rgba(43, 191, 180, 0.12);
+  color: #7cead9;
+  font-size: 0.68rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.16s var(--ease);
+}
+.rail-chats-new-btn:hover {
+  background: rgba(43, 191, 180, 0.24);
+  color: #dffaf6;
+  border-color: rgba(43, 191, 180, 0.6);
+  transform: translateY(-1px);
+}
+.rail-chats-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.12rem;
+}
+.rail-chat-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.32rem 0.42rem;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--ink-on-dark-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease);
+}
+.rail-chat-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink-on-dark);
+}
+.rail-chat-item.is-active {
+  background: rgba(43, 191, 180, 0.18);
+  color: #e2faf6;
+  box-shadow: inset 2.5px 0 0 #2bbfb4;
+}
+.rail-chat-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  opacity: 0.7;
+}
+.rail-chat-item.is-active .rail-chat-ico {
+  opacity: 1;
+  color: #2bbfb4;
+}
+.rail-chat-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.76rem;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rail-chat-time {
+  font-size: 0.64rem;
+  color: rgba(255, 255, 255, 0.35);
+  flex: none;
+}
+.rail-chats-empty {
+  padding: 0.35rem 0.2rem;
+  text-align: center;
+}
+.rail-chats-empty-btn {
+  background: transparent;
+  border: none;
+  color: var(--ink-on-dark-muted);
+  font-size: 0.72rem;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.rail-chats-empty-btn:hover {
+  color: #7cead9;
+}
+.rail-chats-more-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 0.1rem;
+  padding: 0.28rem 0.42rem;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: #7cead9;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s var(--ease);
+}
+.rail-chats-more-btn:hover {
+  background: rgba(43, 191, 180, 0.1);
+  color: #dffaf6;
+}
+
 .rail-foot {
   display: flex;
   flex-direction: column;
@@ -743,12 +896,12 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
   height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 17rem;
+  grid-template-columns: 17.5rem minmax(0, 1fr);
   align-items: stretch;
   transition: grid-template-columns 0.24s var(--ease);
 }
 .chat-with-history.is-history-collapsed {
-  grid-template-columns: minmax(0, 1fr) 0px;
+  grid-template-columns: 0px minmax(0, 1fr);
 }
 /* Under 1000px the column would take half the width from the thing it is a
    sidebar for. Ask stays whole; `sessionStorage` still resumes the last chat,
@@ -759,13 +912,13 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 }
 .chat-history {
   min-height: 0;
-  width: 17rem;
+  width: 17.5rem;
   display: flex;
   flex-direction: column;
   background: linear-gradient(180deg, #fbfdfc 0%, #f7fbfa 50%, #f4f7f6 100%);
-  border-left: 1px solid color-mix(in srgb, var(--border) 80%, white);
-  border-right: none;
-  box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.7);
+  border-right: 1px solid color-mix(in srgb, var(--border) 80%, white);
+  border-left: none;
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.7);
   padding: 0.9rem 0.75rem 0.65rem;
   transition: width 0.24s var(--ease), padding 0.24s var(--ease), opacity 0.2s var(--ease);
   overflow: hidden;
@@ -774,7 +927,7 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
   width: 0;
   min-width: 0;
   padding-inline: 0;
-  border-left-color: transparent;
+  border-right-color: transparent;
   opacity: 0;
   pointer-events: none;
 }
@@ -1208,6 +1361,34 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 }
 
 /* Topbar Actions & History Toggle */
+.chat-topbar-start {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-width: 0;
+}
+.chat-history-reopen-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.32rem 0.65rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface-elevated, #ffffff);
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--ink-muted);
+  cursor: pointer;
+  box-shadow: var(--shadow-soft);
+  transition: all 0.18s var(--ease);
+}
+.chat-history-reopen-btn:hover {
+  color: var(--accent-strong);
+  background: var(--surface-muted);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
 .chat-topbar-actions {
   display: flex;
   align-items: center;

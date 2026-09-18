@@ -975,6 +975,17 @@ class AttachmentSettings:
     #: max_reads * max_read_chars of added context.
     max_reads: int = 4
 
+    #: Reject an upload whose extracted text exceeds this many TOKENS. Onyx's
+    #: `file_token_count_threshold_k`, and the gate they apply that we did not:
+    #: characters bound the DATABASE, tokens bound the PROMPT, and the prompt
+    #: is what actually fails. Counting at upload means the member is told
+    #: immediately instead of discovering it as a thin answer later.
+    #:
+    #: 0 disables the gate, matching their "0 means no limit". Deliberately
+    #: generous by default -- paging already makes a long file usable, so this
+    #: is the ceiling above which paging stops being worth it, not a target.
+    max_tokens: int = 120_000
+
     @classmethod
     def from_env(cls) -> "AttachmentSettings":
         return cls(
@@ -987,6 +998,7 @@ class AttachmentSettings:
             preview_chars=int(os.getenv("ATTACHMENT_PREVIEW_CHARS") or 500),
             max_read_chars=int(os.getenv("ATTACHMENT_MAX_READ_CHARS") or 16_000),
             max_reads=int(os.getenv("ATTACHMENT_MAX_READS") or 4),
+            max_tokens=int(os.getenv("ATTACHMENT_MAX_TOKENS") or 120_000),
         )
 
 

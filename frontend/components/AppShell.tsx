@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { BrandMark } from "@/components/BrandMark";
 import { NotificationBell } from "@/components/NotificationBell";
+import { RailChats } from "@/components/RailChats";
 import { api, Me } from "@/lib/api";
 import { canAccessAdminPortal, isSetupComplete } from "@/lib/routing";
 import { clearMeCache } from "@/lib/useMe";
@@ -170,20 +171,23 @@ export function AppShell({
               Explore
             </p>
             {(setupDone || me?.role === "member") && (
-              <Link
-                href="/chat"
-                className="rail-link"
-                data-active={pathname.startsWith("/chat") ? "true" : "false"}
-                aria-current={pathname.startsWith("/chat") ? "page" : undefined}
-              >
-                <span className="rail-ico">
-                  <IconAsk />
-                </span>
-                <span className="rail-link-copy">
-                  <span className="rail-link-title">Ask</span>
-                  <span className="rail-link-hint">Company-wide</span>
-                </span>
-              </Link>
+              <>
+                <Link
+                  href="/chat"
+                  className="rail-link"
+                  data-active={pathname.startsWith("/chat") ? "true" : "false"}
+                  aria-current={pathname.startsWith("/chat") ? "page" : undefined}
+                >
+                  <span className="rail-ico">
+                    <IconAsk />
+                  </span>
+                  <span className="rail-link-copy">
+                    <span className="rail-link-title">Ask</span>
+                    <span className="rail-link-hint">Company-wide</span>
+                  </span>
+                </Link>
+                <RailChats />
+              </>
             )}
             <Link
               href="/workspaces"

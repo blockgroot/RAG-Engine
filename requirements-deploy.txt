@@ -44,6 +44,11 @@ python-docx>=1.1.0
 ddgs>=6.0.0
 cryptography>=42.0.0
 httpx>=0.27.0
+
+# Object store for chat attachments (app/attachments/blobstore.py). Small and
+# pure-Python; the uploaded bytes and their extracted text live here, not in
+# Postgres, so without it every upload fails at runtime.
+cloudinary>=1.40.0
 pyjwt>=2.8.0
 rank-bm25>=0.2.2
 symspellpy>=6.7,<7

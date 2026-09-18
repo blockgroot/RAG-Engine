@@ -105,6 +105,20 @@ export interface ConversationTurn {
   created_at: string;
 }
 
+export interface RejectedFile {
+  filename: string;
+  /** Why this one file was refused — written for the uploader, so it is shown
+   *  as-is rather than replaced with a generic message. */
+  reason: string;
+}
+
+/** Partial success is the normal outcome: some files land, some are named
+ *  with a reason. */
+export interface UploadResult {
+  attachments: Attachment[];
+  rejected: RejectedFile[];
+}
+
 export interface Attachment {
   id: string;
   filename: string;
@@ -723,26 +737,27 @@ export const api = {
   feedbackSummary: (days = 30) =>
     request<FeedbackSummary>(`/admin/feedback?days=${days}`),
 
-  uploadAttachment: async (
+  uploadAttachments: async (
     conversationId: string,
-    file: File,
+    files: File[],
     workspaceId?: string | null,
-  ): Promise<Attachment> => {
+  ): Promise<UploadResult> => {
     const q = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : "";
     const form = new FormData();
-    form.append("file", file);
+    // One request for the whole selection: the server accepts what it can and
+    // names what it refused, so a scan among four good documents no longer
+    // costs the other three.
+    for (const file of files) form.append("file", file);
     const response = await fetch(
       `${API_BASE_URL}/chat/conversations/${conversationId}/attachments${q}`,
       { method: "POST", credentials: "include", body: form },
     );
     if (!response.ok) {
-      const body = await response
-        .json()
-        .catch(() => ({ detail: response.statusText }));
+      const body = await response.json().catch(() => ({ detail: response.statusText }));
       const parsed = parseApiDetail(body.detail ?? body);
       throw new ApiError(response.status, parsed.message, parsed.code);
     }
-    return response.json() as Promise<Attachment>;
+    return response.json() as Promise<UploadResult>;
   },
 
   deleteAttachment: (

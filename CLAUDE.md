@@ -326,6 +326,36 @@ guarantee.
 - `chat:write` + `app_mentions:read` are new default scopes, so **every tenant
   reconnects Slack once**: Slack grants scopes at install, never retroactively.
 
+**Attachment upload gates (`app/attachments/limits.py`, `api/attachments.py`)**
+— the three checks Onyx runs at upload that we did not.
+- **Tokens are counted at UPLOAD and over-budget files are REFUSED.**
+  `max_chars` bounds the DATABASE, `max_tokens` bounds the PROMPT, and the
+  prompt is what actually fails; counting here tells the member while they can
+  still pick a shorter file instead of letting them discover it as a thin
+  answer. Onyx's `file_token_count_threshold_k`, including `0 = no limit`.
+  The counter is `ingestion.chunk_tokens.count_tokens`, the heuristic chunking
+  already uses — **never a model tokenizer** (§5: BGE-M3's was 325MB and
+  `transformers` is out of the image). A gate rejecting a 300k-token file does
+  not need to be right to the token. Checked BEFORE storage: there is no point
+  putting an asset in Cloudinary that can never reach a prompt.
+- **CSV/TSV skip the token gate** (`TOKEN_EXEMPT_KINDS`, Onyx's
+  `_skip_token_threshold`): a spreadsheet is legitimately long, its rows are
+  short, and it is asked narrow questions that paging answers well.
+- **PARTIAL SUCCESS is the normal outcome.** The route takes `file` as a LIST
+  and returns `{attachments, rejected:[{filename, reason}]}`. Selecting five
+  files routinely means one scan, one password-protected PDF and three good
+  documents, and failing the request on the first made the member re-pick the
+  rest and guess which was at fault. A per-file refusal — unreadable kind,
+  empty, over size, over tokens, over the per-chat cap, storage down — is a
+  fact about ONE file and comes back beside its name; only request-level
+  failures (rate limit, not their conversation) still fail the call.
+  `tests/test_attachment_upload_route.py` uploads a MIX in every case, because
+  a one-file test passes while the partial path is broken.
+- **`list_orphan_objects` REPORTS, never deletes** — two deployments sharing a
+  Cloudinary cloud and `CLOUDINARY_FOLDER` see each other's assets, so "not in
+  my database" would read as "safe to remove". Use separate folders per
+  environment.
+
 **Attachment storage (`app/attachments/blobstore.py`)** — the uploaded BYTES
 and the extracted text both live in Cloudinary; `conversation_attachments`
 keeps only metadata and a `storage_key`. This is Onyx's `FileStore` shape
@@ -341,6 +371,16 @@ original (their `_get_or_extract_plaintext`).
   the original bytes re-extracted. Unrecoverable ⇒ the attachment is OMITTED,
   never included empty — an empty context reaches the prompt as "this document
   says nothing", which is a claim about the file.
+- **`cloudinary_url(sign_url=True, expires_at=…)` SILENTLY DROPS THE EXPIRY** —
+  measured against the live account: the same URL comes back byte-identical at
+  a +600s and a -30s TTL, so every "signed" link it makes is a PERMANENT grant
+  that survives the chat it came from. Two functions now, and the split is the
+  point: `_delivery_url` (non-expiring CDN signature) is used only INSIDE a
+  call, where the URL never leaves the process, and is on the per-turn read
+  path because routing that through an API endpoint would put every answer
+  behind an API rate limit; `signed_url` uses `private_download_url`, whose
+  expiry IS enforced (Cloudinary answers a stale one with 401 "Stale request"),
+  and is the only thing that may be handed to a browser.
 - **Assets are `type="authenticated"` + `resource_type="raw"`, URLs signed and
   short-lived.** A default Cloudinary upload is a permanent public URL, so a
   tenant's contract would be one forwarded link from anyone and would outlive
@@ -467,7 +507,7 @@ conversion lives *inside* the adapter. Thin SDKs, never frameworks.
   opens on Ask, an owner on management** — the space page is invite/connect/
   delete, all disabled for a member. Deliberately not a redirect: that
   would make the people list unreachable and bounce any link back out.
-- **Chat history recall column** docks on the right side of Ask (toggled via topbar button, saved in `chat.historyCollapsed`), balancing the left navigation rail and eliminating double left sidebars; styled with Handbook tokens, date grouping, search, and inline delete confirmation.
+- **Chat history recall column** docks on the left side of Ask beside the rail (toggled via rail or topbar, saved in `chat.historyCollapsed`) with a quick top-5 chats box in the left rail under Explore (`RailChats.tsx`); styled with Handbook tokens, date grouping, search, and inline delete confirmation.
 
 **Marketing pages** — the two have DIFFERENT JOBS and must not share
 paragraphs. `/` states what Handbook does, one short benefit per item, and
@@ -1549,11 +1589,19 @@ when the model says qa.
   `application/vnd.google-apps.spreadsheet`. A form export in a connected
   folder is Q&A fodder only if we add that MIME later, never a pie. Plan:
   `docs/plans/2026-09-02-visual-representation.md`.
-- Attachments: **the Cloudinary path has never run against real credentials.**
-  Every test fakes the store, so the SDK call shapes (`authenticated` raw
-  uploads, `cloudinary_url(sign_url=True, expires_at=…)`, `destroy`) are
-  written from the documented API and unverified. Nothing exposes
-  `signed_url` yet either — there is no download-the-original route.
+- Attachments: **still short of Onyx on purpose** — no Projects (a file is
+  welded to one conversation, not a reusable library), no images (no vision
+  path at all), no admin-editable limits (env vars; a table + route + UI for
+  two integers is the config §2 forbids), no `file_record` rows. Everything
+  else they do at upload is now matched; the rest of their machinery
+  (Celery, `UserFileStatus`, Redis locks, delete-vs-write races) exists only
+  because they index, and we do not.
+- Attachments: **the Cloudinary path is VERIFIED against a live account**
+  (`scripts/verify_cloudinary.py`, 6 checks: raw + PDF round trip, unsigned URL
+  refused 401, signed link works and expires, prefix listing, destroy). Run it
+  before trusting a new cloud or a credential rotation — it is what caught
+  `expires_at` being dropped. Still nothing exposes `signed_url`: there is no
+  download-the-original route, so the expiring-link path has no caller yet.
 - Gaps: **`/admin/feedback` and the answer thumbs are browser-unverified**
   (`tsc --noEmit` only, like the rest of `frontend/`), Slack has no thumbs,
   and gap grouping is exact-text — see `normalize_question`'s ceiling note

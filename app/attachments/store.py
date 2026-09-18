@@ -310,3 +310,29 @@ def purge_expired_attachments(
     # not.
     _drop_objects([r[0] for r in rows])
     return len(rows)
+
+
+def list_orphan_objects() -> list[str]:
+    """Stored keys with no row pointing at them. REPORTS, never deletes.
+
+    Deleting on this signal would be a mistake waiting to happen: a staging
+    deployment sharing one Cloudinary cloud and folder with production sees
+    production's assets in the same listing, and "not in MY database" would
+    then read as "safe to remove". Two environments must use different
+    `CLOUDINARY_FOLDER` values, and until something enforces that, this
+    function's job is to tell a human what leaked.
+
+    Live rows outside the plaintext/original pair are impossible by
+    construction, so anything unmatched is either an orphan or another
+    deployment's.
+    """
+    known: set[str] = set()
+    with get_connection() as conn:
+        for (key,) in conn.execute(
+            "SELECT storage_key FROM conversation_attachments "
+            "WHERE storage_key IS NOT NULL"
+        ).fetchall():
+            known.add(key)
+            known.add(blobstore.plaintext_key(key))
+
+    return sorted(key for key in blobstore.list_keys() if key not in known)

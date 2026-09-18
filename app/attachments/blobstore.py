@@ -140,7 +140,7 @@ def read_bytes(key: str) -> bytes:
     cloudinary, settings = _client()
     import httpx
 
-    url = signed_url(key)
+    url = _delivery_url(key)
     try:
         response = httpx.get(url, timeout=30.0, follow_redirects=True)
         response.raise_for_status()
@@ -157,25 +157,54 @@ def read_text(key: str) -> str:
     return read_bytes(key).decode("utf-8", errors="replace")
 
 
-def signed_url(key: str, *, ttl_seconds: int | None = None) -> str:
-    """A short-lived signed URL for one asset.
+def _delivery_url(key: str) -> str:
+    """A signed CDN URL, used INSIDE this process and never handed out.
 
-    `sign_url=True` plus an expiry is what makes a forwarded link stop working.
-    Never cached and never stored: the signature is part of the URL, so a
-    persisted one is a persisted grant.
+    `cloudinary_url(sign_url=True)` produces a signature that does NOT expire
+    -- measured: passing `expires_at` returns a byte-identical URL, so the
+    parameter is silently dropped for this delivery type. That is acceptable
+    here and only here, because this URL is built, fetched and discarded
+    within one call: nothing that never leaves the process is a grant.
+
+    It is the CDN rather than `private_download_url`'s API endpoint because
+    this is the PER-TURN read path -- every question re-reads every attached
+    file -- and routing that through an API endpoint would put every answer
+    behind an API rate limit instead of a cache.
     """
     cloudinary, settings = _client()
-    import time
-
-    ttl = ttl_seconds or settings.signed_url_ttl_seconds
     url, _ = cloudinary.utils.cloudinary_url(
         f"{settings.folder}/{key}",
         resource_type="raw",
         type="authenticated",
         sign_url=True,
-        expires_at=int(time.time()) + ttl,
     )
     return url
+
+
+def signed_url(key: str, *, ttl_seconds: int | None = None) -> str:
+    """An EXPIRING URL, for handing to a browser.
+
+    `private_download_url`, not `cloudinary_url`: the latter's signature never
+    expires (see `_delivery_url`), so a link built with it and given to
+    somebody works forever and survives the deletion of the chat it came from.
+    This one carries the expiry inside the signature and Cloudinary refuses it
+    afterwards with "Stale request - expires_at ... has passed" (verified
+    against the real account by `scripts/verify_cloudinary.py`).
+
+    Never stored: the signature is part of the URL, so a persisted one is a
+    persisted grant. Build it per request.
+    """
+    cloudinary, settings = _client()
+    import time
+
+    ttl = ttl_seconds if ttl_seconds is not None else settings.signed_url_ttl_seconds
+    return cloudinary.utils.private_download_url(
+        f"{settings.folder}/{key}",
+        None,  # the key carries no extension
+        resource_type="raw",
+        type="authenticated",
+        expires_at=int(time.time()) + ttl,
+    )
 
 
 def delete_object(key: str) -> bool:
@@ -198,3 +227,36 @@ def delete_object(key: str) -> bool:
         logger.warning("Cloudinary: could not delete %s", key, exc_info=True)
         return False
     return result.get("result") == "ok"
+
+
+def list_keys(prefix: str = "") -> list[str]:
+    """Every key this app has written under ``folder``/``prefix``.
+
+    Onyx's `list_files_by_prefix`. The reason to have it is the failure mode an
+    object store has and a TEXT column does not: a row deleted while the store
+    was unreachable leaves an asset nothing will ever list again. Paginated,
+    because `resources` caps a page at 500 and a silent first page would report
+    a clean bucket as confidently as a real one.
+    """
+    cloudinary, settings = _client()
+    full_prefix = f"{settings.folder}/{prefix}" if prefix else f"{settings.folder}/"
+    keys: list[str] = []
+    cursor = None
+    try:
+        while True:
+            page = cloudinary.api.resources(
+                type="authenticated",
+                resource_type="raw",
+                prefix=full_prefix,
+                max_results=500,
+                next_cursor=cursor,
+            )
+            for resource in page.get("resources", []):
+                public_id = resource.get("public_id", "")
+                keys.append(public_id[len(settings.folder) + 1 :] if public_id.startswith(settings.folder + "/") else public_id)
+            cursor = page.get("next_cursor")
+            if not cursor:
+                break
+    except Exception as exc:  # noqa: BLE001
+        raise AttachmentStorageError("Could not list stored attachments", cause=exc) from exc
+    return keys
