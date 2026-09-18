@@ -5,6 +5,12 @@ discarded once parsed -- see the `conversation_attachments` block in
 `app/db/schema.sql` for why each of those is a decision rather than a shortcut.
 """
 
+from .blobstore import (
+    AttachmentStorageError,
+    delete_object,
+    plaintext_key,
+    signed_url,
+)
 from .extract import (
     SUPPORTED_EXTENSIONS,
     AttachmentError,
@@ -25,10 +31,14 @@ from .store import (
 __all__ = [
     "Attachment",
     "AttachmentError",
+    "AttachmentStorageError",
     "SUPPORTED_EXTENSIONS",
     "DEFAULT_ATTACHMENT_TTL_HOURS",
     "count_attachments",
     "delete_attachment",
+    "delete_object",
+    "plaintext_key",
+    "signed_url",
     "extract_text",
     "kind_for",
     "list_attachments",

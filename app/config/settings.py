@@ -991,6 +991,64 @@ class AttachmentSettings:
 
 
 @dataclass(frozen=True)
+class CloudinarySettings:
+    """Where an uploaded attachment's BYTES and extracted text are stored.
+
+    The shape is Onyx's `FileStore` (`backend/onyx/file_store/file_store.py`):
+    the object store holds BOTH the original upload and a second object
+    carrying the extracted plaintext, while Postgres keeps only the metadata
+    row. Reading the cached plaintext is what stops every turn of a chat from
+    re-parsing a PDF (their `_get_or_extract_plaintext`).
+
+    There is no `base.py`/`factory.py` here and there is deliberately no second
+    backend: CLAUDE.md §2 asks for that shape when a capability HAS another
+    implementation to abstract over, and one object store is not two. Onyx
+    carries four (S3, GCS, Azure, Postgres) because they ship to four kinds of
+    customer; we ship to one.
+
+    **Assets are uploaded `authenticated`, never public.** A Cloudinary URL is
+    otherwise permanent and readable by anyone it reaches, which would make a
+    tenant's contract a link away from the whole internet and would outlive the
+    conversation it belongs to. Signed URLs expire, so a forwarded one stops
+    working -- that is the property that makes an object store acceptable for
+    this content at all.
+    """
+
+    cloud_name: str
+    api_key: str
+    api_secret: str
+    #: Everything this app writes lives under one prefix, so a bucket shared
+    #: with anything else stays separable and a prefix listing is a complete
+    #: inventory of what we put there.
+    folder: str = "handbook/attachments"
+    #: Lifetime of a signed URL. Minutes, not hours: the only consumer is a
+    #: download the member just asked for.
+    signed_url_ttl_seconds: int = 600
+
+    @property
+    def configured(self) -> bool:
+        """False when any credential is missing.
+
+        BOTH or neither, the `aux_has_own_endpoint` posture: a half-configured
+        store fails on every upload with an auth error that reads as a broken
+        feature rather than as a missing setting.
+        """
+        return bool(self.cloud_name and self.api_key and self.api_secret)
+
+    @classmethod
+    def from_env(cls) -> "CloudinarySettings":
+        return cls(
+            cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME", ""),
+            api_key=os.getenv("CLOUDINARY_API_KEY", ""),
+            api_secret=os.getenv("CLOUDINARY_API_SECRET", ""),
+            folder=os.getenv("CLOUDINARY_FOLDER") or "handbook/attachments",
+            signed_url_ttl_seconds=int(
+                os.getenv("CLOUDINARY_SIGNED_URL_TTL_SECONDS") or 600
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class DecomposeSettings:
     """Compound-question decomposition before retrieval (Phase 18).
 

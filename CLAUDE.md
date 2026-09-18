@@ -326,6 +326,42 @@ guarantee.
 - `chat:write` + `app_mentions:read` are new default scopes, so **every tenant
   reconnects Slack once**: Slack grants scopes at install, never retroactively.
 
+**Attachment storage (`app/attachments/blobstore.py`)** — the uploaded BYTES
+and the extracted text both live in Cloudinary; `conversation_attachments`
+keeps only metadata and a `storage_key`. This is Onyx's `FileStore` shape
+(`backend/onyx/file_store/`), read from their repo rather than guessed: the
+object store holds the original AND a companion plaintext asset
+(`plaintext_{id}`), and the chat path reads the plaintext, falling back to the
+original (their `_get_or_extract_plaintext`).
+- **The plaintext asset is the whole point, not a cache nicety.** Attachments
+  ride on EVERY turn of a chat, so without it a 300-page PDF is re-parsed per
+  question — seconds of CPU and ~2x its size resident on a 512MB box.
+  `_resolve_text` reads three sources in order: the plaintext asset, then the
+  `content` column (rows predating the move, which must keep answering), then
+  the original bytes re-extracted. Unrecoverable ⇒ the attachment is OMITTED,
+  never included empty — an empty context reaches the prompt as "this document
+  says nothing", which is a claim about the file.
+- **Assets are `type="authenticated"` + `resource_type="raw"`, URLs signed and
+  short-lived.** A default Cloudinary upload is a permanent public URL, so a
+  tenant's contract would be one forwarded link from anyone and would outlive
+  the conversation. `resource_type="raw"` because these are documents —
+  Cloudinary would otherwise try to decode a PDF as an image.
+- **Row first, then upload, then stamp the key.** Postgres mints the id the
+  object keys derive from. A storage failure DELETES the row and drops any
+  half-written pair before re-raising: a row pointing at objects that do not
+  exist answers as an empty document forever, and an orphaned asset is one
+  nothing will ever list.
+- **`content` is NULLABLE, not dropped** — dropping it would silently empty
+  every attachment in an open conversation at deploy.
+- **Deletes are best-effort and run AFTER the database delete** (`_drop_objects`,
+  never raises): the row is the record of removal, so a storage failure must
+  not resurrect an attachment the member was told is gone. The TTL sweep drops
+  the assets too — it is the only thing that would ever reclaim them, which is
+  the failure mode an object store has and a TEXT column does not.
+- **No `base.py`/`factory.py`: one object store is not two** (§2). Onyx carries
+  four backends because they ship to four kinds of customer.
+- Config is `CloudinarySettings`, BOTH-or-neither like `aux_has_own_endpoint`.
+
 **Feedback & gap tracking (`app/feedback/`, `POST /chat/feedback`,
 `GET /admin/feedback`)** — thumbs on an answer, and the list of questions the
 company could not answer. One table, `feedback_and_gaps`, two writers.
@@ -1195,6 +1231,7 @@ app/security/ crypto, untrusted (scrub), rate_limit, client_ip
 app/auth/     OAuth providers, credentials, users, magic_link, session, email
 app/jobs/     ingestion queue + worker + scheduler_queue + autosync
 app/llm/      + pacing.py (rate-limit headroom for interactive calls)
+app/attachments/ extract + store (metadata) + blobstore (Cloudinary objects)
 app/feedback/ answer ratings + documentation gaps (one table, two writers)
 app/api/notifications.py  what needs attention, derived from connection rows
 app/insights/  registry + panels + store (SQL) + facts + github_facts +
@@ -1464,7 +1501,7 @@ partial unique indexes: org-wide vs workspace; `sync_requested_at` webhook flag
 `github_install_pending` · `query_answer_cache` · `api_rate_counters` ·
 `workspaces` / `workspace_members` · `org_signup_requests` · `schedulers`
 (scoped by `org_id` **and** `user_id`, unlike every other tenant table; `model` NULL = the configured default) ·
-`feedback_and_gaps` (refusals + thumbs in one table; `user_id` is `ON DELETE SET NULL`, the only tenant table that does not cascade from a person) · `activity_facts` (the ONLY numeric substrate for charts; two partial unique
+`conversation_attachments` (metadata + `storage_key` only — the bytes and the extracted text are Cloudinary objects, `content` NULL on every row written since) · `feedback_and_gaps` (refusals + thumbs in one table; `user_id` is `ON DELETE SET NULL`, the only tenant table that does not cascade from a person) · `activity_facts` (the ONLY numeric substrate for charts; two partial unique
 indexes on `external_id`, org-wide vs workspace) · `insight_pins` (personal,
 `(org_id, user_id)`; stores the spec, never the numbers) · `scheduler_reports` (same `(org_id, user_id)` scoping; snapshots its labels
 rather than joining, so an archived report survives a rename or a deleted
@@ -1490,7 +1527,7 @@ RAGAS); identity/OAuth/admin/ingestion queue/HTTP API/streaming chat; Next.js
 portal; Workspace-within-a-Workspace; signup-approval queue; injection,
 latency, security and eval hardening; the Activity Scheduler; Multi-Model
 Selection (OpenRouter, ~5 models, per-request routing); automatic freshness (interval + webhook-flag sync, external tick, LLM pacing);
-in-chat file attachments; the needs-attention bell (derived, owner/admin-scoped); feedback & documentation-gap tracking (automatic refusal logging on web + Slack, thumbs with three reasons, `/admin/feedback`); Visual Representation, **all five phases** — `activity_facts`, metric registry
+in-chat file attachments (Cloudinary object store, Onyx's FileStore shape); the needs-attention bell (derived, owner/admin-scoped); feedback & documentation-gap tracking (automatic refusal logging on web + Slack, thumbs with three reasons, `/admin/feedback`); Visual Representation, **all five phases** — `activity_facts`, metric registry
 + panels, charts **in Ask** (no Visualizations tab; `/visualizations` redirects
 to `/chat`; `InsightsAgent` + `classify_question` rather than a keyword regex), editor capture at sync time, GitHub PR/merge/review facts on a
 facts-only sync branch (PRs plus commits), Linear completion-by-team on the ingest job, Slack
@@ -1512,6 +1549,11 @@ when the model says qa.
   `application/vnd.google-apps.spreadsheet`. A form export in a connected
   folder is Q&A fodder only if we add that MIME later, never a pie. Plan:
   `docs/plans/2026-09-02-visual-representation.md`.
+- Attachments: **the Cloudinary path has never run against real credentials.**
+  Every test fakes the store, so the SDK call shapes (`authenticated` raw
+  uploads, `cloudinary_url(sign_url=True, expires_at=…)`, `destroy`) are
+  written from the documented API and unverified. Nothing exposes
+  `signed_url` yet either — there is no download-the-original route.
 - Gaps: **`/admin/feedback` and the answer thumbs are browser-unverified**
   (`tsc --noEmit` only, like the rest of `frontend/`), Slack has no thumbs,
   and gap grouping is exact-text — see `normalize_question`'s ceiling note

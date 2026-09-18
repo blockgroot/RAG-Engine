@@ -12,9 +12,14 @@ which is the same reasoning `schedulers` and `insight_pins` are scoped on
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from ..db.connection import get_connection
+from . import blobstore
+from .blobstore import AttachmentStorageError
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -37,13 +42,28 @@ def save_attachment(
     content_type: str,
     content: str,
     truncated: bool,
+    data: bytes | None = None,
 ) -> Attachment:
+    """Store one attachment: metadata here, bytes and text in the object store.
+
+    The order matters and is not arbitrary. The row is INSERTed first because
+    Postgres mints the id the object keys are derived from, then both assets
+    are uploaded, then the row is stamped with its key. If an upload fails the
+    row is deleted and the failure is raised -- a row pointing at objects that
+    do not exist would read as an empty document on every later question,
+    which is a claim about the file rather than about the upload.
+
+    ``data`` is the original bytes. Optional only so a caller that has already
+    discarded them (or a test) can store text alone; when it is absent the
+    plaintext asset is still written, so answering works and only the
+    "download the original" affordance is missing.
+    """
     with get_connection() as conn:
         row = conn.execute(
             "INSERT INTO conversation_attachments "
             "(conversation_id, org_id, user_id, filename, content_type, "
             " content, char_count, truncated) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+            "VALUES (%s, %s, %s, %s, %s, NULL, %s, %s) "
             "RETURNING id::text",
             (
                 conversation_id,
@@ -51,12 +71,38 @@ def save_attachment(
                 user_id,
                 filename,
                 content_type,
-                content,
                 len(content),
                 truncated,
             ),
         ).fetchone()
-    return Attachment(row[0], filename, len(content), truncated)
+    attachment_id = row[0]
+
+    try:
+        blobstore.save_text(blobstore.plaintext_key(attachment_id), content)
+        if data is not None:
+            blobstore.save_bytes(
+                attachment_id, data, content_type=content_type
+            )
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE conversation_attachments SET storage_key = %s "
+                "WHERE id = %s",
+                (attachment_id, attachment_id),
+            )
+    except AttachmentStorageError:
+        # Roll the row back BEFORE re-raising, and clean up a half-written
+        # pair: a partial upload that survives is an orphan nothing will ever
+        # list, because the row that named it is gone.
+        blobstore.delete_object(blobstore.plaintext_key(attachment_id))
+        blobstore.delete_object(attachment_id)
+        with get_connection() as conn:
+            conn.execute(
+                "DELETE FROM conversation_attachments WHERE id = %s",
+                (attachment_id,),
+            )
+        raise
+
+    return Attachment(attachment_id, filename, len(content), truncated)
 
 
 def list_attachments(
@@ -78,16 +124,79 @@ def list_attachments(
 def load_attachment_texts(
     *, org_id: str, conversation_id: str, user_id: str
 ) -> list[Attachment]:
-    """The attachments WITH their text, oldest first, for the prompt."""
+    """The attachments WITH their text, oldest first, for the prompt.
+
+    Three sources, in the order Onyx reads them
+    (`chat_utils::_get_or_extract_plaintext`):
+
+    1. the cached PLAINTEXT asset -- the steady-state path, one small fetch
+       and no parsing, which is the whole reason that asset is written;
+    2. the `content` column -- rows that predate the move to the object store,
+       which must keep answering;
+    3. the ORIGINAL bytes, re-extracted -- a plaintext asset that was lost or
+       never written.
+
+    A file whose text cannot be recovered by any of the three is OMITTED
+    rather than included empty: an empty context reaches the prompt as "this
+    document says nothing", which the model will answer from.
+    """
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT id::text, filename, char_count, truncated, content "
+            "SELECT id::text, filename, char_count, truncated, content, storage_key "
             "FROM conversation_attachments "
             "WHERE conversation_id = %s AND org_id = %s AND user_id = %s "
             "ORDER BY created_at",
             (conversation_id, org_id, user_id),
         ).fetchall()
-    return [Attachment(r[0], r[1], r[2], r[3], r[4]) for r in rows]
+
+    loaded: list[Attachment] = []
+    for attachment_id, filename, char_count, truncated, content, storage_key in rows:
+        text = _resolve_text(attachment_id, filename, content, storage_key)
+        if text:
+            loaded.append(Attachment(attachment_id, filename, char_count, truncated, text))
+    return loaded
+
+
+def _resolve_text(
+    attachment_id: str, filename: str, content: str | None, storage_key: str | None
+) -> str | None:
+    """Text for one attachment, or None when nothing could be recovered."""
+    if storage_key:
+        try:
+            return blobstore.read_text(blobstore.plaintext_key(storage_key))
+        except AttachmentStorageError:
+            logger.warning(
+                "Attachments: plaintext missing for %s, falling back",
+                attachment_id,
+                exc_info=True,
+            )
+
+    if content:
+        return content
+
+    if storage_key:
+        # Last resort: re-parse the original. Expensive, which is exactly why
+        # the plaintext asset exists -- reaching here means that asset is gone.
+        try:
+            from ..config.settings import AttachmentSettings
+            from .extract import extract_text
+
+            limits = AttachmentSettings.from_env()
+            raw = blobstore.read_bytes(storage_key)
+            text, _ = extract_text(
+                filename,
+                raw,
+                max_chars=limits.max_chars,
+                max_pdf_pages=limits.max_pdf_pages,
+                max_csv_rows=limits.max_csv_rows,
+            )
+            return text
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "Attachments: could not recover text for %s", attachment_id, exc_info=True
+            )
+
+    return None
 
 
 def count_attachments(*, org_id: str, conversation_id: str, user_id: str) -> int:
@@ -109,10 +218,28 @@ def delete_attachment(
         row = conn.execute(
             "DELETE FROM conversation_attachments "
             "WHERE id = %s AND conversation_id = %s AND org_id = %s "
-            "AND user_id = %s RETURNING 1",
+            "AND user_id = %s RETURNING storage_key",
             (attachment_id, conversation_id, org_id, user_id),
         ).fetchone()
-    return row is not None
+    if row is None:
+        return False
+    _drop_objects([row[0]])
+    return True
+
+
+def _drop_objects(keys: list[str | None]) -> None:
+    """Best-effort removal of the stored pair for each key.
+
+    Runs AFTER the database delete and never raises: the row is the record of
+    removal, so a storage failure must not resurrect an attachment the member
+    has already been told is gone. `delete_object` logs; a leaked asset shows
+    up in a prefix listing.
+    """
+    for key in keys:
+        if not key:
+            continue
+        blobstore.delete_object(blobstore.plaintext_key(key))
+        blobstore.delete_object(key)
 
 
 #: How long an attachment's text outlives its last use. Attachments are the
@@ -173,8 +300,13 @@ def purge_expired_attachments(
                         WHERE t.conversation_id = a.conversation_id
                     )
                )
-            RETURNING 1
+            RETURNING a.storage_key
             """,
             (ttl_hours, unused_ttl_hours),
         ).fetchall()
+    # The sweep is the only thing that would ever remove these assets, so an
+    # expired row whose objects are left behind is storage nothing will ever
+    # reclaim -- the failure mode an object store has and a TEXT column does
+    # not.
+    _drop_objects([r[0] for r in rows])
     return len(rows)

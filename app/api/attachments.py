@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from ..attachments import (
     SUPPORTED_EXTENSIONS,
     AttachmentError,
+    AttachmentStorageError,
     count_attachments,
     delete_attachment,
     extract_text,
@@ -135,18 +136,32 @@ async def upload_attachment(
         raise HTTPException(
             status_code=400, detail=f"{filename} could not be read"
         ) from exc
-    finally:
-        del data  # the bytes are not needed past this point and are not kept
 
-    saved = save_attachment(
-        org_id=session.org_id,
-        conversation_id=conversation_id,
-        user_id=session.user_id,
-        filename=filename,
-        content_type=file.content_type or "application/octet-stream",
-        content=text,
-        truncated=truncated,
-    )
+    try:
+        saved = save_attachment(
+            org_id=session.org_id,
+            conversation_id=conversation_id,
+            user_id=session.user_id,
+            filename=filename,
+            content_type=file.content_type or "application/octet-stream",
+            content=text,
+            truncated=truncated,
+            # The ORIGINAL bytes now leave this process: they go to the object
+            # store, so the member can download what they uploaded and a lost
+            # plaintext asset can be re-extracted rather than lost with it.
+            data=data,
+        )
+    except AttachmentStorageError as exc:
+        # Storage is the one dependency this route has that the member cannot
+        # do anything about, so it gets its own message rather than the
+        # generic 400 used for a file we could not read.
+        logger.exception("Attachment: storage failure for %s", filename)
+        raise HTTPException(
+            status_code=502,
+            detail=f"{filename} could not be stored. Try again in a moment.",
+        ) from exc
+    finally:
+        del data  # not kept in this process past the upload
     return {
         "id": saved.id,
         "filename": saved.filename,

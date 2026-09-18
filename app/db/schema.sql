@@ -842,3 +842,15 @@ CREATE INDEX IF NOT EXISTS idx_feedback_org_recent
 -- The gap view groups by normalized question within an org and a window.
 CREATE INDEX IF NOT EXISTS idx_feedback_org_question
     ON feedback_and_gaps (org_id, normalized_question);
+
+-- Attachment bytes and extracted text moved OUT of Postgres into an object
+-- store (Cloudinary), the shape Onyx's `FileStore` uses: the store holds the
+-- original upload AND a companion plaintext asset, while this row keeps only
+-- what is needed to find them again.
+--
+-- `content` becomes NULLABLE rather than being dropped. Rows written before
+-- this change still carry their text and must keep answering -- dropping the
+-- column would silently empty every attachment in an open conversation, and
+-- `load_attachment_texts` falls back to it precisely so that cannot happen.
+ALTER TABLE conversation_attachments ADD COLUMN IF NOT EXISTS storage_key TEXT;
+ALTER TABLE conversation_attachments ALTER COLUMN content DROP NOT NULL;
