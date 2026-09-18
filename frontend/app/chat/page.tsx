@@ -670,8 +670,24 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             <h1>Ask</h1>
           </div>
 
-          {workspaceId && (
-            <div className="chat-topbar-actions">
+          <div className="chat-topbar-actions">
+            {(messages.length > 0 || activeConversation != null) && (
+              <button
+                type="button"
+                className="chat-new-btn"
+                onClick={startNewChat}
+                title="Start a new chat"
+                aria-label="Start a new chat"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <line x1="12" y1="5" x2="12" y2="19" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+                  <line x1="5" y1="12" x2="19" y2="12" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+                </svg>
+                <span>New chat</span>
+              </button>
+            )}
+
+            {workspaceId && (
               <button
                 type="button"
                 className="chat-people-button"
@@ -682,8 +698,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                 <PeopleIcon />
                 <span>People</span>
               </button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
         {panelOpen && workspaceId && (

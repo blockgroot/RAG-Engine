@@ -275,6 +275,11 @@ button { font-family: inherit; }
   gap: 0.35rem;
   padding: 0.1rem 0.25rem 0.25rem;
 }
+.rail-chats-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
 .rail-chats-title {
   font-size: 0.65rem;
   font-weight: 700;
@@ -289,6 +294,27 @@ button { font-family: inherit; }
   border-radius: 999px;
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--accent-strong);
+}
+.rail-chats-new-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, white);
+  color: var(--accent-strong);
+  font-size: 0.68rem;
+  font-weight: 650;
+  cursor: pointer;
+  transition: all 0.16s var(--ease);
+}
+.rail-chats-new-btn:hover {
+  background: color-mix(in srgb, var(--accent) 18%, white);
+  color: var(--accent-strong);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px -2px rgba(15, 118, 110, 0.25);
 }
 .rail-chats-list {
   list-style: none;
@@ -637,6 +663,13 @@ tr:last-child td { border-bottom: none; }
 tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent); }
 
 .chat-page {
+  /* `width: 100%` is LOAD-BEARING, not belt-and-braces. `.app-body:has(
+     .chat-page)` is a flex column, and an auto margin on the cross axis
+     cancels `align-items: stretch` — so without an explicit width this panel
+     was shrink-to-fit, sized by its own content and capped at max-width. An
+     empty chat rendered narrow and the column visibly GREW as an answer
+     streamed in, one token at a time, until it hit the cap. */
+  width: 100%;
   max-width: 820px;
   margin: 0 auto;
   padding: var(--space-3) var(--space-3) var(--space-4);
@@ -1832,6 +1865,35 @@ table .role-chip.role-admin,
 .chat-topbar h1 {
   font-size: clamp(1.35rem, 2vw, 1.7rem);
   letter-spacing: -0.04em;
+}
+.chat-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: none;
+}
+.chat-new-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.32rem 0.65rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: var(--surface-elevated, #ffffff);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--accent-strong);
+  cursor: pointer;
+  box-shadow: var(--shadow-soft);
+  transition: all 0.18s var(--ease);
+}
+.chat-new-btn:hover {
+  background: color-mix(in srgb, var(--accent) 10%, white);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+  transform: translateY(-1px);
+  box-shadow: 0 3px 8px -2px rgba(15, 118, 110, 0.2);
 }
 
 
@@ -7943,4 +8005,67 @@ a.people-card:hover { color: inherit; }
   margin-top: 0.2rem;
   font-size: 0.8rem;
   font-weight: 600;
+}
+
+/* ---- Rail chat row: open on the left, delete on hover ------------------
+   The delete button sits OVER the right edge of the item rather than beside
+   it, so the label keeps the full width it had — a permanently reserved
+   gutter would shorten every title to make room for a control that is only
+   wanted occasionally. */
+.rail-chat-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.rail-chat-del {
+  position: absolute;
+  right: 0.2rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-muted);
+  cursor: pointer;
+  /* Hidden but still in the accessibility tree: `display: none` would make it
+     unreachable by keyboard, and this is the only way to delete a chat. */
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s var(--ease), color 0.12s var(--ease),
+    background 0.12s var(--ease);
+}
+
+/* Revealed by hovering the ROW, so travelling from the label to the button
+   never crosses a gap that hides it. `:focus-visible` keeps it reachable
+   without a mouse at all. */
+.rail-chat-row:hover .rail-chat-del,
+.rail-chat-row:focus-within .rail-chat-del {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.rail-chat-del:hover {
+  color: var(--danger, #b42318);
+  background: color-mix(in srgb, var(--danger, #b42318) 12%, transparent);
+}
+
+.rail-chat-del:disabled { opacity: 0.4; cursor: default; }
+
+/* The time stamp and the delete control occupy the same corner, so the one
+   being used wins. */
+.rail-chat-row:hover .rail-chat-time,
+.rail-chat-row:focus-within .rail-chat-time {
+  opacity: 0;
+}
+
+/* Touch has no hover: on a coarse pointer the control is simply always
+   visible, because otherwise it cannot be reached at all. */
+@media (hover: none) {
+  .rail-chat-del { opacity: 1; pointer-events: auto; }
+  .rail-chat-row .rail-chat-time { opacity: 1; }
 }

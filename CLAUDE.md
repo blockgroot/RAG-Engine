@@ -536,6 +536,26 @@ conversion lives *inside* the adapter. Thin SDKs, never frameworks.
   would make the people list unreachable and bounce any link back out.
 - **Recent chats sit in the left rail under Explore** (`RailChats.tsx`, top-5 most recent, 1-click access, Handbook light-mode tokens); popping sidebar and redundant topbar buttons removed. Connection expirations sanitize raw HTTP/GraphQL/Mozilla errors via `formatReauthReason` and `sanitize_reauth_reason`, with a compact structured `.connection-reauth-box` on `ConnectionCard` suppressing the misleading failed retry badge.
 
+**Ask: two layout fixes worth not repeating.**
+- **`.chat-page` MUST carry `width: 100%`.** `.app-body:has(.chat-page)` is a
+  flex column and `margin: 0 auto` is an auto margin on the CROSS axis, which
+  cancels `align-items: stretch` — so the panel was shrink-to-fit, sized by its
+  own content and merely capped by `max-width`. An empty chat rendered narrow
+  and the whole column visibly GREW as an answer streamed in, token by token,
+  until it hit the cap. Diagnose a "container keeps resizing" as a missing
+  width before suspecting the content.
+- **A chat is deleted from the rail, on hover** (`RailChats.tsx`,
+  `rail-chat-del`). The route and `api.deleteConversation` already existed and
+  nothing offered them. Two SIBLING buttons inside the `<li>`, never nested —
+  a button inside a button is invalid and the inner one stops being clickable.
+  The control is `opacity: 0` + `pointer-events: none`, never `display: none`,
+  so it stays keyboard-reachable; revealed on ROW hover (not item hover) so
+  travelling to it crosses no gap; and always visible under `@media
+  (hover: none)`, where otherwise it could not be reached at all. Deleting the
+  ACTIVE chat clears `sessionStorage` and fires `new-chat`, or the page keeps
+  showing messages that no longer exist and the next question posts to a
+  conversation the server 404s.
+
 **Marketing pages** — the two have DIFFERENT JOBS and must not share
 paragraphs. `/` states what Handbook does, one short benefit per item, and
 carries the data promise ("we never train on your data and never share it")

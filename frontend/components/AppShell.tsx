@@ -177,6 +177,11 @@ export function AppShell({
                   className="rail-link"
                   data-active={pathname.startsWith("/chat") ? "true" : "false"}
                   aria-current={pathname.startsWith("/chat") ? "page" : undefined}
+                  onClick={() => {
+                    if (pathname.startsWith("/chat")) {
+                      window.dispatchEvent(new CustomEvent("new-chat"));
+                    }
+                  }}
                 >
                   <span className="rail-ico">
                     <IconAsk />
