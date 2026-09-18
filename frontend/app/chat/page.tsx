@@ -607,15 +607,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   return (
     <AppShell me={me} variant="app">
       <div className={`chat-with-history${historyCollapsed ? " is-history-collapsed" : ""}`}>
-      <ChatHistory
-        workspaceId={workspaceId}
-        activeId={activeConversation}
-        onOpen={openConversation}
-        onNew={startNewChat}
-        reloadKey={historyKey}
-        collapsed={historyCollapsed}
-        onToggleCollapse={toggleHistoryCollapse}
-      />
       <div className="chat-page">
         {justSynced && (
           <div className="banner banner-ok" style={{ margin: "0 0 1rem" }}>
@@ -626,24 +617,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
         )}
 
         <div className="chat-topbar">
-          <div className="chat-topbar-start">
-            {historyCollapsed && (
-              <button
-                type="button"
-                className="chat-history-reopen-btn"
-                onClick={toggleHistoryCollapse}
-                title="Show chats"
-                aria-label="Show chats"
-              >
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden>
-                  <rect x="3" y="3" width="18" height="18" rx="2.5" stroke="currentColor" strokeWidth="1.75" />
-                  <line x1="9" y1="3" x2="9" y2="21" stroke="currentColor" strokeWidth="1.75" />
-                  <path d="m13 10 2 2-2 2" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-                <span>Chats</span>
-              </button>
-            )}
-            <div className="chat-topbar-copy">
+          <div className="chat-topbar-copy">
             {/* The space name OPENS the details panel rather than navigating
                 away — the Slack pattern, where a channel's people and settings
                 sit behind its name and the conversation stays put. Plain text
@@ -666,19 +640,37 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                 property of the reply, not of the box you typed into. */}
             <h1>Ask</h1>
           </div>
-          </div>
-          {workspaceId && (
+
+          <div className="chat-topbar-actions">
             <button
               type="button"
-              className="chat-people-button"
-              onClick={() => setPanelOpen(true)}
-              aria-label="People in this space"
-              title="People in this space"
+              className={`chat-history-toggle-btn${!historyCollapsed ? " is-active" : ""}`}
+              onClick={toggleHistoryCollapse}
+              title={historyCollapsed ? "Show chat history" : "Hide chat history"}
+              aria-label={historyCollapsed ? "Show chat history" : "Hide chat history"}
+              aria-expanded={!historyCollapsed}
             >
-              <PeopleIcon />
-              <span>People</span>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden>
+                <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.75" />
+                <polyline points="12 7 12 12 15 14" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <span>Chats</span>
+              <span className="chat-history-toggle-dot" aria-hidden />
             </button>
-          )}
+
+            {workspaceId && (
+              <button
+                type="button"
+                className="chat-people-button"
+                onClick={() => setPanelOpen(true)}
+                aria-label="People in this space"
+                title="People in this space"
+              >
+                <PeopleIcon />
+                <span>People</span>
+              </button>
+            )}
+          </div>
         </div>
 
         {panelOpen && workspaceId && (
@@ -856,6 +848,15 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
           </button>
         </form>
       </div>
+      <ChatHistory
+        workspaceId={workspaceId}
+        activeId={activeConversation}
+        onOpen={openConversation}
+        onNew={startNewChat}
+        reloadKey={historyKey}
+        collapsed={historyCollapsed}
+        onToggleCollapse={toggleHistoryCollapse}
+      />
       </div>
     </AppShell>
   );

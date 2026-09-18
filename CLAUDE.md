@@ -431,7 +431,7 @@ conversion lives *inside* the adapter. Thin SDKs, never frameworks.
   opens on Ask, an owner on management** — the space page is invite/connect/
   delete, all disabled for a member. Deliberately not a redirect: that
   would make the people list unreachable and bounce any link back out.
-- **Chat history recall column** aligns with Handbook design tokens (mint active gradient, indicator pill, soft wash), date grouping (Today/Yesterday/7d/older), title search, collapsible focus mode (`chat.historyCollapsed`), and non-blocking inline delete confirmation.
+- **Chat history recall column** docks on the right side of Ask (toggled via topbar button, saved in `chat.historyCollapsed`), balancing the left navigation rail and eliminating double left sidebars; styled with Handbook tokens, date grouping, search, and inline delete confirmation.
 
 **Marketing pages** — the two have DIFFERENT JOBS and must not share
 paragraphs. `/` states what Handbook does, one short benefit per item, and

@@ -743,12 +743,12 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
   height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-columns: 16.5rem minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) 17rem;
   align-items: stretch;
   transition: grid-template-columns 0.24s var(--ease);
 }
 .chat-with-history.is-history-collapsed {
-  grid-template-columns: 0px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) 0px;
 }
 /* Under 1000px the column would take half the width from the thing it is a
    sidebar for. Ask stays whole; `sessionStorage` still resumes the last chat,
@@ -759,13 +759,14 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 }
 .chat-history {
   min-height: 0;
-  width: 16.5rem;
+  width: 17rem;
   display: flex;
   flex-direction: column;
   background: linear-gradient(180deg, #fbfdfc 0%, #f7fbfa 50%, #f4f7f6 100%);
-  border-right: 1px solid color-mix(in srgb, var(--border) 80%, white);
-  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.7);
-  padding: 0.9rem 0.65rem 0.65rem;
+  border-left: 1px solid color-mix(in srgb, var(--border) 80%, white);
+  border-right: none;
+  box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.7);
+  padding: 0.9rem 0.75rem 0.65rem;
   transition: width 0.24s var(--ease), padding 0.24s var(--ease), opacity 0.2s var(--ease);
   overflow: hidden;
 }
@@ -773,7 +774,7 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
   width: 0;
   min-width: 0;
   padding-inline: 0;
-  border-right-color: transparent;
+  border-left-color: transparent;
   opacity: 0;
   pointer-events: none;
 }
@@ -1206,21 +1207,21 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
   white-space: nowrap;
 }
 
-/* Topbar Reopen button */
-.chat-topbar-start {
+/* Topbar Actions & History Toggle */
+.chat-topbar-actions {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  min-width: 0;
+  gap: 0.5rem;
+  flex: none;
 }
-.chat-history-reopen-btn {
+.chat-history-toggle-btn {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  padding: 0.3rem 0.65rem;
+  gap: 0.4rem;
+  padding: 0.35rem 0.7rem;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  background: #ffffff;
+  background: var(--surface-elevated, #ffffff);
   font: inherit;
   font-size: 0.76rem;
   font-weight: 600;
@@ -1228,14 +1229,25 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
   cursor: pointer;
   box-shadow: var(--shadow-soft);
   transition: background 0.18s var(--ease), color 0.18s var(--ease),
-    border-color 0.18s var(--ease), transform 0.18s var(--ease);
-  flex: none;
+    border-color 0.18s var(--ease), box-shadow 0.18s var(--ease), transform 0.18s var(--ease);
 }
-.chat-history-reopen-btn:hover {
-  color: var(--accent-strong);
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+.chat-history-toggle-btn:hover {
+  color: var(--ink);
+  background: var(--surface-muted);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
   transform: translateY(-1px);
+}
+.chat-history-toggle-btn.is-active {
+  color: var(--accent-strong);
+  background: color-mix(in srgb, var(--accent-soft) 55%, white);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  box-shadow: 0 2px 8px -2px rgba(15, 118, 110, 0.2);
+}
+.chat-history-toggle-dot {
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 50%;
+  background: var(--accent);
 }
 .attach-error { font-size: 0.82rem; color: var(--danger, #b42318); }
 
