@@ -288,15 +288,22 @@ def _capture_post(monkeypatch, *, update_ok: bool = True) -> tuple[list, list]:
     return posted, edited
 
 
-def test_a_top_level_question_is_answered_in_the_channel(monkeypatch):
-    """Not threaded: a "1 reply" link is a second place to look for one answer."""
+def test_a_top_level_question_is_answered_in_a_thread_under_it(monkeypatch):
+    """Threaded under the question, not posted into the channel.
+
+    A grounded answer is long; several of them dropped straight into a channel
+    bury whatever else people were discussing. The thread keeps the answer
+    attached to the question that earned it.
+    """
     posted, edited = _capture_post(monkeypatch)
     slack_events._handle(
         {"type": "app_mention", "channel": "C1", "user": "U1", "text": "q", "ts": "111"},
         "T1",
     )
-    # One post (the placeholder, in the channel, unthreaded) then one edit.
-    assert posted == [("C1", slack_events._SEARCHING, None)]
+    # The question's own `ts` becomes the thread the placeholder is posted in,
+    # and the answer replaces that placeholder -- so the answer lands in the
+    # thread, never in the channel.
+    assert posted == [("C1", slack_events._SEARCHING, "111")]
     assert edited == [("C1", "msg-1", "the answer")]
 
 
@@ -323,7 +330,9 @@ def test_the_answer_still_arrives_when_the_edit_fails(monkeypatch):
         "T1",
     )
     assert edited, "an edit was never attempted"
-    assert posted[-1] == ("C1", "the answer", None)
+    # The fallback post must land in the SAME thread as the placeholder it is
+    # replacing, or a failed edit moves the answer out into the channel.
+    assert posted[-1] == ("C1", "the answer", "111")
 
 
 def _capture_answer_scope(monkeypatch) -> list:

@@ -172,16 +172,25 @@ export function AppShell({
             </p>
             {(setupDone || me?.role === "member") && (
               <>
-                {/* A DESTINATION, not a second "new chat" button. This used
-                    to dispatch `new-chat` when you were already on /chat,
-                    which made it behave identically to the "+ New" control a
-                    few pixels below it — two affordances, one action, and no
-                    way to simply return to the chat you had open. */}
+                {/* Ask STARTS a chat. With the rail's "+ New" gone it is the
+                    one control for that, and Recent Chats below is how you
+                    get back to an existing one.
+
+                    The onClick is required, not belt-and-braces: navigating
+                    from `/chat?c=abc` to `/chat` changes the query but does
+                    not remount the page, and the param effect only fires when
+                    a `c` is PRESENT — so without this the address bar would
+                    lose the id while the old transcript stayed on screen. */}
                 <Link
                   href="/chat"
                   className="rail-link"
                   data-active={pathname.startsWith("/chat") ? "true" : "false"}
                   aria-current={pathname.startsWith("/chat") ? "page" : undefined}
+                  onClick={() => {
+                    if (pathname.startsWith("/chat")) {
+                      window.dispatchEvent(new CustomEvent("new-chat"));
+                    }
+                  }}
                 >
                   <span className="rail-ico">
                     <IconAsk />

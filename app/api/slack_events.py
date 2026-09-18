@@ -384,14 +384,18 @@ def _handle(event: dict, team_id: str) -> None:
     channel = event.get("channel")
     slack_user = event.get("user")
     text = (event.get("text") or "").strip()
-    # Reply IN the channel for a top-level question, and inside the thread only
-    # when the question was already in one. Falling back to the message's own
-    # `ts` (the obvious default) threads every answer under its question, which
-    # hides it behind a "1 reply" link the asker has to open -- two places to
-    # look for one answer. Staying in an existing thread is different: there
-    # the conversation already lives there, and answering outside it would pull
-    # the reply away from its question.
-    thread_ts = event.get("thread_ts")
+    # ALWAYS answer in a thread: an existing one when the question was already
+    # inside it, otherwise a new thread hanging off the question itself.
+    #
+    # This reverses an earlier call to reply in-channel for top-level
+    # questions, whose reasoning was that a "1 reply" link is a second place to
+    # look for one answer. In a real channel the opposite cost dominates: a
+    # grounded answer is long, and posting several of them straight into the
+    # channel buries whatever else people were discussing. Threading keeps the
+    # answer attached to the question that earned it and leaves the channel
+    # readable. A DM has nothing to bury, but threading there is harmless and
+    # keeping ONE rule means there is no second code path to get wrong.
+    thread_ts = event.get("thread_ts") or event.get("ts")
     if not channel or not slack_user or not text:
         return
 

@@ -327,6 +327,16 @@ guarantee.
   `post_message` returns the `ts` for this (None = nothing to edit), and a
   failed edit falls back to posting: leaving "Searching…" up while dropping a
   grounded answer is the worst of both.
+- **Every answer goes in a THREAD** — an existing one, else a new thread off
+  the question (`thread_ts = event["thread_ts"] or event["ts"]`). This reverses
+  the earlier in-channel rule, whose reasoning was that a "1 reply" link is a
+  second place to look for one answer. In a real channel the opposite cost
+  dominates: a grounded answer is long, and several posted straight into the
+  channel bury the conversation people were actually having. One rule for DMs
+  and channels alike — a DM has nothing to bury, and a second code path is a
+  second thing to get wrong. The PLACEHOLDER carries the thread, since it is
+  the message that becomes the answer; the failed-edit fallback must post into
+  the same thread or a retry moves the answer out into the channel.
 - **Ack in 3s, answer in a `BackgroundTask`.** Slack retries on timeout and one
   answer is ~6 LLM calls, so inline work would deliver the SAME answer several
   times, not merely slowly.
@@ -563,15 +573,15 @@ which is a cache, not an address). `?c=` is now the single source of truth —
 when a chat is born mid-question or cleared by New. The `open-conversation`
 listener is DELETED: a second, invisible way to change which chat is showing
 is exactly how the address bar and the transcript drifted apart.
-- **THREE controls started a chat; now one does.** The rail's "Ask" link
-  dispatched `new-chat` when already on `/chat`, the rail's "+ New" button did
-  the same, and the chat page's own header has had a "New chat" button all
-  along. Ask is now a plain DESTINATION (so you can return to the chat you had
-  open, which nothing previously allowed) and the rail's "+ New" is DELETED.
-  Starting a chat lives on the chat page header, where you are already looking
-  when you want one; the rail's job is getting BACK to a chat.
-  `.rail-chats-new-btn` is now dead CSS and is left for a by-hand pass (§3
-  "do NOT script-delete dead CSS").
+- **THREE controls started a chat; now Ask is the one in the rail.** The
+  rail's "Ask" link, the rail's "+ New" button and the chat page's own header
+  button all did the same thing. "+ New" is DELETED; **Ask starts a chat** and
+  Recent Chats below is how you get back to an existing one. Ask's `onClick`
+  is REQUIRED, not belt-and-braces: navigating `/chat?c=abc` -> `/chat` changes
+  the query without remounting, and the param effect only fires when a `c` is
+  present — so without it the address bar would lose the id while the old
+  transcript stayed on screen. `.rail-chats-new-btn` is now dead CSS, left for
+  a by-hand pass (§3 "do NOT script-delete dead CSS").
 - **Recent chats sits BELOW the destinations, in its own band, with no card.**
   Wedged between Ask and Spaces it split one list of places-to-go in half with
   a list of things-already-done; and a bordered tinted box inside the rail
