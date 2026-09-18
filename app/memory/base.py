@@ -7,7 +7,9 @@ so the backing store (Postgres now) can be swapped without touching callers.
 
 Storage split, mirroring the summarization design: recent turns are kept verbatim
 (``get_context`` returns them), older turns get compressed into a running
-``summary`` and pruned (``set_summary_and_prune``). Everything is org-scoped.
+``summary``, with `folded_through` marking how far it reaches
+(``set_summary_folded_through``) -- the turns themselves are KEPT, so the
+transcript survives for history. Everything is org-scoped.
 
 Phase 8 adds ``set_last_retrieval`` / ``get_last_retrieval`` so the pipeline can
 remember one turn's retrieved chunks and cheaply decide, on the next turn, whether
@@ -92,12 +94,12 @@ class ConversationStore(ABC):
 
     @abstractmethod
     def get_turns(self, conversation_id: str) -> list[Turn]:
-        """Return all stored (non-pruned) turns, oldest first."""
+        """Return every stored turn, oldest first."""
         raise NotImplementedError
 
     @abstractmethod
     def get_summary(self, conversation_id: str) -> str | None:
-        """Return the running summary of pruned older turns, if any."""
+        """Return the running summary of older turns, if any."""
         raise NotImplementedError
 
     @abstractmethod
@@ -106,10 +108,22 @@ class ConversationStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def set_summary_and_prune(
-        self, conversation_id: str, summary: str, keep_recent: int
+    def get_folded_through(self, conversation_id: str) -> int | None:
+        """Highest ``turn_index`` already folded into the summary, or None."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_summary_folded_through(
+        self, conversation_id: str, summary: str, folded_through: int
     ) -> None:
-        """Store ``summary`` and delete all but the most recent ``keep_recent`` turns."""
+        """Store ``summary`` and record how far it has folded.
+
+        Turns are **kept**. This replaced ``set_summary_and_prune``, which
+        deleted them: the marker is what stops the fold re-reading the whole
+        history, and deleting was only ever a way of achieving that. The rows
+        are also the person's transcript, and ``get_context`` already limits
+        what the model sees, so nothing needed them gone.
+        """
         raise NotImplementedError
 
     # -- Phase 8: last-turn retrieval, for the cheap retrieval-reuse check ----

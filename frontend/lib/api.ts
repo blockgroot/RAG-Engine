@@ -87,6 +87,24 @@ export interface FeedbackSummary {
   downvoted: FeedbackDownvote[];
 }
 
+export interface ConversationSummary {
+  id: string;
+  /** The first question asked. No generated title: one more thing to keep
+   *  true, and people recognise a chat by what they asked. */
+  title: string | null;
+  turn_count: number;
+  attachment_count: number;
+  created_at: string;
+  last_activity_at: string;
+}
+
+export interface ConversationTurn {
+  turn_index: number;
+  question: string;
+  answer: string;
+  created_at: string;
+}
+
 export interface Attachment {
   id: string;
   filename: string;
@@ -737,6 +755,32 @@ export const api = {
       `/chat/conversations/${conversationId}/attachments/${attachmentId}${q}`,
       { method: "DELETE" },
     );
+  },
+
+  /** Every surviving chat in this scope — retention is the only limit, so
+   *  there is nothing alive but off the end of the list. */
+  listConversations: (workspaceId?: string | null) => {
+    const q = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : "";
+    return request<{
+      retention_days: number;
+      conversations: ConversationSummary[];
+    }>(`/chat/conversations${q}`);
+  },
+
+  /** The FULL transcript — possible because the summary fold marks turns as
+   *  folded instead of deleting them. */
+  getConversation: (conversationId: string, workspaceId?: string | null) => {
+    const q = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : "";
+    return request<{ conversation_id: string; turns: ConversationTurn[] }>(
+      `/chat/conversations/${conversationId}${q}`,
+    );
+  },
+
+  deleteConversation: (conversationId: string, workspaceId?: string | null) => {
+    const q = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : "";
+    return request<{ deleted: boolean }>(`/chat/conversations/${conversationId}${q}`, {
+      method: "DELETE",
+    });
   },
 
   createConversation: (workspaceId?: string | null) =>

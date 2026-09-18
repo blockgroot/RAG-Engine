@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api, Notification } from "@/lib/api";
 
 /**
@@ -21,6 +21,40 @@ export function NotificationBell() {
   const [items, setItems] = useState<Notification[]>([]);
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  const btn = useRef<HTMLButtonElement>(null);
+  // Measured screen position for the panel. `position: fixed`, because the
+  // panel CANNOT be absolutely positioned here: `.app-rail` sets
+  // `overflow-y: auto`, and CSS computes the other axis from `visible` to
+  // `auto` when one axis is not visible -- so the rail clips horizontally and
+  // cut the panel off at its edge. Fixed positioning escapes every ancestor's
+  // overflow; nothing else does.
+  const [at, setAt] = useState<{ top: number; left: number } | null>(null);
+
+  const place = useCallback(() => {
+    const r = btn.current?.getBoundingClientRect();
+    if (!r) return;
+    const width = Math.min(352, window.innerWidth - 24);
+    setAt({
+      top: Math.min(r.bottom + 8, window.innerHeight - 24),
+      // Opens to the button's right, then flips back inside the viewport --
+      // the rail is on the left on desktop but the panel must not run off a
+      // narrow screen.
+      left: Math.max(12, Math.min(r.left, window.innerWidth - width - 12)),
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    place();
+    // Recomputed rather than remembered: the rail scrolls, and a panel pinned
+    // to a stale rect detaches from its own button.
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, place]);
 
   useEffect(() => {
     let live = true;
@@ -54,6 +88,7 @@ export function NotificationBell() {
   return (
     <div className="bell" ref={root}>
       <button
+        ref={btn}
         type="button"
         className="bell-btn"
         aria-expanded={open}
@@ -78,8 +113,13 @@ export function NotificationBell() {
         )}
       </button>
 
-      {open && (
-        <div className="bell-panel" role="dialog" aria-label="Needs attention">
+      {open && at && (
+        <div
+          className="bell-panel"
+          role="dialog"
+          aria-label="Needs attention"
+          style={{ top: at.top, left: at.left }}
+        >
           <p className="bell-head">Needs attention</p>
           {items.length === 0 ? (
             /* Not an empty box: "nothing is broken" is the answer they opened

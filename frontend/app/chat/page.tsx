@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { AskHeroArt } from "@/components/AskHeroArt";
 import { ChatMessageView, Message } from "@/components/ChatMessage";
+import { ChatHistory } from "@/components/ChatHistory";
 import { SpacePanel } from "@/components/SpacePanel";
 import { useMe } from "@/lib/useMe";
 import { streamChat } from "@/lib/sse";
@@ -118,6 +119,13 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // place the corpus-bypass is visible, so it doubles as the explanation for
   // why the routing pill says "attachment" instead of naming a source.
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // True when this page load adopted a conversation from a previous one. The
+  // transcript is NOT restored (see the resume effect), so the UI has to say
+  // so rather than present an empty log as the whole chat.
+  // Bumped after each answer so a brand-new chat shows up in the list without
+  // a reload; the list is otherwise loaded once per scope.
+  const [historyKey, setHistoryKey] = useState(0);
+  const [activeConversation, setActiveConversation] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -280,11 +288,109 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     };
   }, [readyToAsk, refresh, workspaceId]);
 
+  // Per SCOPE: company Ask and each space are different conversations, so one
+  // key would hand a space's chat id to company Ask, where it 404s.
+  const convKey = `chat.conversation.${workspaceId ?? "org"}`;
+
+  // Resume the conversation this tab was last using, and re-show its files.
+  //
+  // `conversationId` is a ref, so before this a refresh silently started a new
+  // chat and the old one became UNREACHABLE -- with its attachments still
+  // attached to it. The member could not remove a file they had uploaded,
+  // because the x that removes it had gone with the page. The sweep in
+  // `attachments/store.py` bounds how long that text lives; this is what gives
+  // them the control back.
+  //
+  // sessionStorage, not localStorage: it survives a refresh and dies with the
+  // tab, which is how people already think about a chat. localStorage would
+  // resume last week's conversation in a new window.
+  //
+  // The transcript is deliberately NOT restored. `set_summary_and_prune`
+  // DELETES older turns once they are folded into the summary, so what is
+  // still in `conversation_turns` is a WINDOW, not the conversation -- showing
+  // it would draw a chat that appears to have started later than it did.
+  const openConversation = useCallback(
+    async (id: string) => {
+      conversationId.current = id;
+      setActiveConversation(id);
+      setAttachments([]);
+      setUploadError(null);
+      try {
+        sessionStorage.setItem(convKey, id);
+      } catch {
+        /* storage blocked; the chat still works */
+      }
+      // The FULL transcript, not a window. `set_summary_and_prune` used to
+      // delete folded turns, so this could only ever have drawn the tail of a
+      // conversation while looking like the whole of it; the fold now marks
+      // turns instead (`conversations.folded_through`), which is what makes
+      // reopening a chat honest.
+      const [turns, files] = await Promise.all([
+        api.getConversation(id, workspaceId).then((r) => r.turns).catch(() => []),
+        api.listAttachments(id, workspaceId).then((r) => r.attachments).catch(() => []),
+      ]);
+      setMessages(
+        turns.flatMap((t) => [
+          { role: "user" as const, text: t.question },
+          { role: "assistant" as const, text: t.answer },
+        ]),
+      );
+      setAttachments(files);
+    },
+    [convKey, workspaceId],
+  );
+
+  // Resume the conversation this tab was last using. sessionStorage, not
+  // localStorage: it survives a refresh and dies with the tab, which is how
+  // people already think about a chat.
+  useEffect(() => {
+    let saved: string | null = null;
+    try {
+      saved = sessionStorage.getItem(convKey);
+    } catch {
+      // Private mode / blocked storage. Nothing to resume; not an error.
+    }
+    if (!saved) return;
+    // Validated before it is trusted, the `chat.model` pattern above: a stale
+    // id (deleted chat, different account, another scope) 404s and is dropped
+    // rather than sent with the next question.
+    api
+      .getConversation(saved, workspaceId)
+      .then(() => openConversation(saved as string))
+      .catch(() => {
+        try {
+          sessionStorage.removeItem(convKey);
+        } catch {
+          /* nothing to clean up */
+        }
+      });
+  }, [convKey, workspaceId, openConversation]);
+
+  function startNewChat() {
+    conversationId.current = null;
+    try {
+      sessionStorage.removeItem(convKey);
+    } catch {
+      /* nothing to clean up */
+    }
+    setMessages([]);
+    setAttachments([]);
+    setActiveConversation(null);
+    setUploadError(null);
+  }
+
   async function ensureConversation() {
     if (conversationId.current) return conversationId.current;
     try {
       const { conversation_id } = await api.createConversation(workspaceId);
       conversationId.current = conversation_id;
+      setActiveConversation(conversation_id);
+      try {
+        sessionStorage.setItem(convKey, conversation_id);
+      } catch {
+        // Storage blocked: the chat still works, it just will not survive a
+        // refresh. Never worth failing the question over.
+      }
     } catch {
     }
     return conversationId.current;
@@ -364,6 +470,9 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             next[next.length - 1] = { ...last, streaming: false, done: payload };
             return next;
           });
+          // A new chat only becomes listable once it has a turn, so the
+          // list is refreshed here rather than on creation.
+          setHistoryKey((k) => k + 1);
           setBusy(false);
         },
         onError: (message) => {
@@ -474,6 +583,14 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
 
   return (
     <AppShell me={me} variant="app">
+      <div className="chat-with-history">
+      <ChatHistory
+        workspaceId={workspaceId}
+        activeId={activeConversation}
+        onOpen={openConversation}
+        onNew={startNewChat}
+        reloadKey={historyKey}
+      />
       <div className="chat-page">
         {justSynced && (
           <div className="banner banner-ok" style={{ margin: "0 0 1rem" }}>
@@ -695,6 +812,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             )}
           </button>
         </form>
+      </div>
       </div>
     </AppShell>
   );

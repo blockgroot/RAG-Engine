@@ -118,10 +118,14 @@ def test_deferred_summary_still_usable_on_later_turn():
         pipe.answer(f"leave question {i}?", ORG, conversation_id=cid)
 
     # Next turn's rewrite barrier waits for the fold; summary must be present
-    # for the rewriter (we only assert the summary landed + prune happened).
+    # for the rewriter (we only assert the summary landed + the marker moved).
     pipe.answer("and how many of those carry over?", ORG, conversation_id=cid)
     wait_for_pending_summary_folds(timeout=5.0)
 
     assert memory.get_summary(cid) is not None
-    assert len(memory.get_turns(cid)) == WINDOW
+    # Turns are KEPT now; the marker records what the summary covers.
+    # WINDOW + 1 in the loop, then one more turn below = 5 (indices 0..4),
+    # so the last WINDOW stay verbatim and indices 0..1 are folded.
+    assert len(memory.get_turns(cid)) == WINDOW + 2
+    assert memory.get_folded_through(cid) == 1
     assert len(llm.summary_prompts) >= 1

@@ -44,6 +44,7 @@ from ..agent.orchestration import build_agent_graph, route_agent_key
 from ..agent.routing import choose_agent
 from ..agent.rag_pipeline_agent import RagPipelineAgent
 from ..core.exceptions import AuthError, LLMProviderError, ProviderError
+from ..memory import conversations as conversation_store
 from ..llm import catalog
 from ..llm import org_model
 from ..llm.routed import answering_model, selected_model, use_model
@@ -508,6 +509,98 @@ def _titles_for_scope_by_provider(
 def _linear_titles_for_scope(org_id: str, workspace_id: str | None) -> list[str]:
     """Ingested Linear issue titles for this org (or one workspace), newest first."""
     return _titles_for_scope_by_provider(org_id, workspace_id, "linear")
+
+
+@router.get("/conversations")
+def list_conversations_route(
+    workspace_id: str | None = None,
+    session: SessionClaims = Depends(get_session),
+):
+    """This person's chats in this scope. Every surviving one, not a page.
+
+    Retention is the only limit (`DEFAULT_CONVERSATION_TTL_DAYS`) -- a display
+    cap would leave a live chat off the end of the list, unreachable and
+    undeletable, which is the state this endpoint exists to end.
+    """
+    if workspace_id is not None:
+        try:
+            assert_member(workspace_id, session.org_id, session.user_id)
+        except AuthError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    rows = conversation_store.list_conversations(
+        org_id=session.org_id, user_id=session.user_id, workspace_id=workspace_id
+    )
+    return {
+        "retention_days": conversation_store.DEFAULT_CONVERSATION_TTL_DAYS,
+        "conversations": [
+            {
+                "id": r.id,
+                "title": r.title,
+                "turn_count": r.turn_count,
+                "attachment_count": r.attachment_count,
+                "created_at": r.created_at.isoformat(),
+                "last_activity_at": r.last_activity_at.isoformat(),
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/conversations/{conversation_id}")
+def get_conversation_route(
+    conversation_id: str,
+    workspace_id: str | None = None,
+    session: SessionClaims = Depends(get_session),
+):
+    """The FULL transcript -- possible only because the fold stopped deleting.
+
+    404 on an empty result rather than an empty list: an id that resolves to
+    nothing is either not this person's or gone, and the two must not be
+    distinguishable from the outside.
+    """
+    turns = conversation_store.get_conversation_turns(
+        conversation_id=conversation_id,
+        org_id=session.org_id,
+        user_id=session.user_id,
+        workspace_id=workspace_id,
+    )
+    if not turns:
+        raise HTTPException(status_code=404, detail="No such conversation")
+    return {
+        "conversation_id": conversation_id,
+        "turns": [
+            {
+                "turn_index": t.turn_index,
+                "question": t.question,
+                "answer": t.answer,
+                "created_at": t.created_at.isoformat(),
+            }
+            for t in turns
+        ],
+    }
+
+
+@router.delete("/conversations/{conversation_id}")
+def delete_conversation_route(
+    conversation_id: str,
+    workspace_id: str | None = None,
+    session: SessionClaims = Depends(get_session),
+):
+    """Delete a chat now, rather than waiting for the retention sweep.
+
+    A sweep is not a substitute for this: someone who pastes something they
+    regret should not have to wait 30 days. Attachments and turns cascade, so
+    the uploaded file goes with it -- which is what pressing this means.
+    """
+    if not conversation_store.delete_conversation(
+        conversation_id=conversation_id,
+        org_id=session.org_id,
+        user_id=session.user_id,
+        workspace_id=workspace_id,
+    ):
+        raise HTTPException(status_code=404, detail="No such conversation")
+    return {"deleted": True}
 
 
 @router.post("/conversations")

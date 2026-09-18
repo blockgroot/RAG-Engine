@@ -714,6 +714,118 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 }
 .attach-remove:hover { color: var(--ink); }
 .attach-note { font-size: 0.82rem; color: var(--ink-muted); }
+/* A link, not a button: "start a new chat" is an escape hatch beside a
+   sentence, and drawing it as a control would compete with the composer. */
+.attach-newchat {
+  border: none;
+  background: transparent;
+  padding: 0 0 0 0.4rem;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.attach-newchat:hover { color: var(--accent-strong); }
+
+/* Chat history. A column beside Ask, not a drawer: the whole point is that a
+   chat you uploaded a file into is VISIBLE, and a list behind a toggle is one
+   the person has to already know to look for. */
+.chat-with-history {
+  display: grid;
+  grid-template-columns: 15rem minmax(0, 1fr);
+  gap: 1.5rem;
+  align-items: start;
+}
+/* Under 1000px the column would take half the width from the thing it is a
+   sidebar for. Ask stays whole; `sessionStorage` still resumes the last chat,
+   so nothing on a phone becomes unreachable -- only unlisted. */
+@media (max-width: 1000px) {
+  .chat-with-history { grid-template-columns: minmax(0, 1fr); }
+  .chat-history { display: none; }
+}
+.chat-history {
+  position: sticky;
+  top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.chat-history-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.chat-history-title {
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+.chat-history-new {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-size: 0.82rem;
+  color: var(--accent);
+  cursor: pointer;
+}
+.chat-history-new:hover { color: var(--accent-strong); }
+.chat-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.chat-history-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.42rem 0.5rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font: inherit;
+  font-size: 0.87rem;
+  color: var(--ink-muted);
+  text-align: left;
+  cursor: pointer;
+}
+.chat-history-item:hover { background: var(--surface-muted); color: var(--ink); }
+.chat-history-item.is-active { background: var(--surface-muted); color: var(--ink); }
+.chat-history-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-history-clip { flex: none; font-size: 0.7rem; color: var(--accent); }
+/* Revealed on hover/focus so a row of x's does not read as the main action,
+   but always present for keyboard users. */
+.chat-history-del {
+  flex: none;
+  opacity: 0;
+  color: var(--ink-muted);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.chat-history-item:hover .chat-history-del,
+.chat-history-del:focus { opacity: 1; }
+.chat-history-del:hover { color: var(--danger, #b42318); }
+.chat-history-retention {
+  margin: 0.2rem 0 0;
+  font-size: 0.75rem;
+  color: var(--ink-muted);
+}
 .attach-error { font-size: 0.82rem; color: var(--danger, #b42318); }
 
 /* Model picker. Still a native <select> — free keyboard nav, free mobile
@@ -7592,53 +7704,77 @@ a.people-card:hover { color: inherit; }
 .bell {
   position: relative;
 }
-.bell-btn {
+/* The brand row: name on the left, bell on the right. */
+.rail-top {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 0.5rem;
-  width: 100%;
-  padding: 0.5rem 0.7rem;
-  border-radius: 14px;
+}
+.rail-top .brand { min-width: 0; }
+
+/* Icon-only and square now it sits beside the brand rather than filling a
+   nav row -- a full-width button up here would read as another nav item. */
+.bell-btn {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  padding: 0;
+  border-radius: 50%;
   border: 1px solid transparent;
   background: transparent;
-  color: var(--text-muted, #5b6472);
+  color: var(--ink-muted);
   cursor: pointer;
   font: inherit;
-  text-align: left;
 }
+/* Real tokens. This was `rgba(255,255,255,.7)` on `var(--ink)` --
+   left over from when the rail was dark. Against today's white rail that is
+   white on white, so the button had no hover state at all. */
 .bell-btn:hover,
 .bell-btn[aria-expanded="true"] {
-  background: rgba(255, 255, 255, 0.7);
-  border-color: color-mix(in srgb, var(--border) 75%, white);
-  color: var(--text, #1b2230);
+  background: var(--surface-muted);
+  border-color: var(--border);
+  color: var(--ink);
 }
+/* Overlaid on the icon, because the button no longer has a row to sit in. */
 .bell-count {
-  min-width: 1.25rem;
-  padding: 0 0.35rem;
+  position: absolute;
+  top: -0.1rem;
+  right: -0.1rem;
+  min-width: 1.05rem;
+  padding: 0 0.25rem;
   border-radius: 999px;
-  font-size: 0.7rem;
+  border: 2px solid var(--bg-rail, #fff);
+  font-size: 0.65rem;
   font-weight: 650;
-  line-height: 1.25rem;
+  line-height: 1.05rem;
   text-align: center;
   color: #fff;
-  background: var(--text-muted, #5b6472);
+  background: var(--ink-muted);
 }
 /* An expired token and an unconfigured picker are not the same urgency, and
    one colour for both makes the badge stop meaning anything. */
 .bell-count[data-urgent="true"] {
   background: #c2413a;
 }
+/* FIXED, not absolute. `.app-rail` is `overflow-y: auto`, which computes
+   `overflow-x` from visible to auto, so the rail clips horizontally and an
+   absolute panel wider than the rail is cut off at its edge -- which is
+   exactly what happened. `top`/`left` come from the button's measured rect
+   (NotificationBell.tsx), recomputed on scroll and resize. */
 .bell-panel {
-  position: absolute;
-  bottom: calc(100% + 0.5rem);
-  left: 0;
-  width: min(22rem, 78vw);
+  position: fixed;
+  width: min(22rem, calc(100vw - 1.5rem));
   max-height: min(26rem, 60vh);
   overflow-y: auto;
   padding: 0.75rem;
   border-radius: 16px;
-  background: var(--surface, #fff);
-  border: 1px solid var(--border, #e3e7ee);
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
   box-shadow: var(--shadow-soft);
   z-index: 40;
 }
@@ -7648,12 +7784,12 @@ a.people-card:hover { color: inherit; }
   font-weight: 650;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--text-muted, #5b6472);
+  color: var(--ink-muted);
 }
 .bell-empty {
   margin: 0;
   font-size: 0.85rem;
-  color: var(--text-muted, #5b6472);
+  color: var(--ink-muted);
 }
 .bell-list {
   list-style: none;
@@ -7669,7 +7805,7 @@ a.people-card:hover { color: inherit; }
   padding: 0.6rem 0.15rem;
 }
 .bell-item + .bell-item {
-  border-top: 1px solid var(--border, #e3e7ee);
+  border-top: 1px solid var(--border);
 }
 .bell-dot {
   flex: none;
@@ -7691,15 +7827,15 @@ a.people-card:hover { color: inherit; }
 .bell-item-title {
   font-size: 0.87rem;
   font-weight: 600;
-  color: var(--text, #1b2230);
+  color: var(--ink);
 }
 .bell-item-scope {
   font-size: 0.72rem;
-  color: var(--text-muted, #5b6472);
+  color: var(--ink-muted);
 }
 .bell-item-detail {
   font-size: 0.8rem;
-  color: var(--text-muted, #5b6472);
+  color: var(--ink-muted);
 }
 .bell-item-action {
   align-self: flex-start;

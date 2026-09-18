@@ -72,9 +72,14 @@ def test_summary_updates_incrementally_after_every_turn_past_the_window():
         "expected one incremental summary update per turn once the window is full, "
         "not a single bulk summarization"
     )
-    # The verbatim window never exceeds its size — older turns were folded away.
-    assert len(memory.get_turns(cid)) == WINDOW
+    # Folded turns are KEPT, not deleted: the transcript is the person's
+    # record and the summary is the model's working memory, and one table was
+    # doing both. `get_context` bounds what the LLM sees on its own.
+    assert len(memory.get_turns(cid)) == 8
     assert memory.get_summary(cid) is not None
+    # The marker is what stops the fold re-reading folded turns. Indices 0..7,
+    # window 3, so everything up to index 4 is in the summary.
+    assert memory.get_folded_through(cid) == 8 - WINDOW - 1
 
 
 def test_each_summary_update_folds_exactly_one_turn_and_input_does_not_grow():
@@ -103,3 +108,18 @@ def test_no_summary_before_the_window_fills():
     assert llm.summary_prompts == []
     assert memory.get_summary(cid) is None
     assert len(memory.get_turns(cid)) == WINDOW
+
+
+def test_a_long_conversation_keeps_every_turn_for_the_transcript():
+    """The reason the fold stopped deleting: history has to be readable.
+
+    With a window of 3, a ten-turn chat used to keep its last three messages
+    and lose the other seven -- so a history page would have drawn a
+    conversation that looks complete and is not.
+    """
+    _, memory, cid = _drive(10)
+
+    turns = memory.get_turns(cid)
+    assert [t.turn_index for t in turns] == list(range(10))
+    # ...and the fold still knows where it got to, so it never re-folds.
+    assert memory.get_folded_through(cid) == 10 - WINDOW - 1

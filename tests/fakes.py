@@ -167,6 +167,7 @@ class InMemoryConversationStore(ConversationStore):
 
     def __init__(self) -> None:
         self._summaries: dict[str, str | None] = {}
+        self._folded: dict[str, int] = {}
         self._turns: dict[str, list[Turn]] = {}
         self._last: dict[str, list[RetrievedChunkRecord]] = {}
         self._seq = 0
@@ -203,12 +204,17 @@ class InMemoryConversationStore(ConversationStore):
             summary=self._summaries.get(conversation_id), recent_turns=list(recent)
         )
 
-    def set_summary_and_prune(
-        self, conversation_id: str, summary: str, keep_recent: int
+    def get_folded_through(self, conversation_id: str) -> int | None:
+        return self._folded.get(conversation_id)
+
+    def set_summary_folded_through(
+        self, conversation_id: str, summary: str, folded_through: int
     ) -> None:
+        # Turns are KEPT, matching pg_store: the marker is what the fold reads.
         self._summaries[conversation_id] = summary
-        turns = self._turns[conversation_id]
-        self._turns[conversation_id] = turns[-keep_recent:] if keep_recent > 0 else []
+        self._folded[conversation_id] = max(
+            self._folded.get(conversation_id, -1), folded_through
+        )
 
     def set_last_retrieval(
         self, conversation_id: str, org_id: str, chunks: list[RetrievedChunkRecord]

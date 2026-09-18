@@ -149,13 +149,20 @@ export function AppShell({
           <span className="rail-glow rail-glow-a" />
           <span className="rail-glow rail-glow-b" />
         </div>
-        <Link href={homeHref} className="brand">
-          <BrandMark />
-          <span className="brand-text">
-            <span className="brand-name">Handbook</span>
-            <span className="brand-tag">Work answers, grounded</span>
-          </span>
-        </Link>
+        {/* The bell rides the BRAND row, not the foot. Two reasons: a status
+            indicator belongs where the eye starts, not below the navigation
+            it is telling you to use; and the foot is the account area, where
+            a connection warning reads as an account warning. */}
+        <div className="rail-top">
+          <Link href={homeHref} className="brand">
+            <BrandMark />
+            <span className="brand-text">
+              <span className="brand-name">Handbook</span>
+              <span className="brand-tag">Work answers, grounded</span>
+            </span>
+          </Link>
+          {me && showMainNav && <NotificationBell />}
+        </div>
 
         {showMainNav && (
           <nav className="rail-nav" aria-label="Primary">
@@ -263,9 +270,6 @@ export function AppShell({
 
         {me && (
           <div className="rail-foot">
-            {/* In the rail, not a top bar: there is no top bar, and the rail is
-                the one thing on screen for every page of the app. */}
-            {showMainNav && <NotificationBell />}
             <div className="rail-user" aria-label="Signed-in account">
               <span className="rail-avatar" aria-hidden>
                 {initial}

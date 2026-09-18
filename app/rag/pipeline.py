@@ -1573,7 +1573,27 @@ class RagPipeline:
         if len(turns) <= window:
             return
 
-        falling_out = turns[:-window] if window > 0 else turns
+        # Turns are KEPT now, not deleted, so "what has already been folded"
+        # is read from the marker rather than inferred from what survives.
+        # Without this the fold would re-read the whole conversation every
+        # turn and re-summarise turns the summary already contains -- the
+        # constant cost this method promises comes from the marker, which is
+        # exactly the job deletion used to do.
+        folded_through = self._memory.get_folded_through(conversation_id)
+        newest_to_fold = turns[-window].turn_index - 1 if window > 0 else turns[-1].turn_index
+        falling_out = [
+            t
+            for t in turns
+            if t.turn_index <= newest_to_fold
+            and (folded_through is None or t.turn_index > folded_through)
+        ]
+        if not falling_out:
+            # Everything outside the window is already in the summary. The
+            # common case once a conversation is long: nothing to do, no LLM
+            # call. (Before the marker this was unreachable -- the rows were
+            # gone, so `len(turns) <= window` caught it instead.)
+            return
+
         existing = self._memory.get_summary(conversation_id)
         prompt = build_summary_prompt(
             existing, [(t.question, t.answer) for t in falling_out]
@@ -1587,7 +1607,9 @@ class RagPipeline:
         except LLMProviderError:
             return
         if summary:
-            self._memory.set_summary_and_prune(conversation_id, summary, window)
+            self._memory.set_summary_folded_through(
+                conversation_id, summary, falling_out[-1].turn_index
+            )
 
     @staticmethod
     def _is_refusal(text: str, fallback_response: str) -> bool:

@@ -376,6 +376,17 @@ def run_external_tick() -> dict[str, int]:
     except Exception:  # noqa: BLE001
         logger.exception("External tick: attachment purge failed")
 
+    # Retention. Attachments, turns and the last-retrieval row cascade, so this
+    # is the one sweep that fully removes a chat -- the attachment purge above
+    # stays as the shorter clock for a file whose conversation is still alive.
+    conversations_purged = 0
+    try:
+        from ..memory.conversations import purge_expired_conversations
+
+        conversations_purged = purge_expired_conversations()
+    except Exception:  # noqa: BLE001
+        logger.exception("External tick: conversation purge failed")
+
     scheduler_settings = SchedulerSettings.from_env()
     schedulers_ran = (
         run_scheduler_tick(scheduler_settings) if scheduler_settings.enabled else 0
@@ -387,6 +398,7 @@ def run_external_tick() -> dict[str, int]:
         "facts_recorded": facts,
         "facts_backfilled": backfilled,
         "attachments_purged": attachments_purged,
+        "conversations_purged": conversations_purged,
         "schedulers_ran": schedulers_ran,
     }
 

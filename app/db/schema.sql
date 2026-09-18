@@ -310,6 +310,22 @@ CREATE INDEX IF NOT EXISTS idx_conversations_workspace ON conversations (workspa
 -- read the history. NULL = a row predating this column: still resumable by
 -- anyone in scope (we cannot invent an owner for it), never silently reassigned.
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users (id) ON DELETE CASCADE;
+
+-- How far the running `summary` has folded, as a `conversation_turns.turn_index`.
+-- NULL = nothing folded yet.
+--
+-- This REPLACES deleting folded turns. The fold has to know which turns are
+-- already in the summary or it would re-fold the whole history every turn, and
+-- deletion used to be how it knew -- cheap, and it made the transcript the
+-- model's working memory rather than the person's record. Those are two
+-- different jobs: `get_context` already bounds what the LLM sees with its own
+-- `ORDER BY turn_index DESC LIMIT`, so nothing ever needed the rows GONE.
+--
+-- Marking instead of deleting is what makes chat history possible at all: with
+-- MEMORY_RECENT_TURNS=3, a ten-turn conversation kept its last three messages
+-- and silently lost the rest, so a history page would have drawn a transcript
+-- that looks complete and is not.
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS folded_through INT;
 CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations (org_id, user_id);
 
 ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
@@ -780,7 +796,7 @@ CREATE INDEX IF NOT EXISTS idx_conversation_attachments_owner
 --
 -- The question/answer text is SNAPSHOTTED rather than joined, for the same
 -- reason `scheduler_reports` snapshots its labels: `conversation_turns` rows
--- are DELETEd by `set_summary_and_prune` once folded into a summary, and the
+-- may be swept with their conversation at the retention horizon, and the
 -- GitHub/Insights/Slack paths never write a turn row at all. A foreign key to
 -- a turn would therefore be NULL in most rows and dangling in the rest.
 --

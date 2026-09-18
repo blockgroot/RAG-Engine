@@ -104,25 +104,29 @@ class PgConversationStore(ConversationStore):
         recent = [Turn(turn_index=r[0], question=r[1], answer=r[2]) for r in reversed(rows)]
         return ConversationContext(summary=summary, recent_turns=recent)
 
-    def set_summary_and_prune(
-        self, conversation_id: str, summary: str, keep_recent: int
+    def get_folded_through(self, conversation_id: str) -> int | None:
+        with get_connection(self._settings) as conn:
+            row = conn.execute(
+                "SELECT folded_through FROM conversations WHERE id = %s::uuid",
+                (conversation_id,),
+            ).fetchone()
+        return row[0] if row else None
+
+    def set_summary_folded_through(
+        self, conversation_id: str, summary: str, folded_through: int
     ) -> None:
+        """One UPDATE: the summary and how far it reaches are one fact.
+
+        `folded_through` only ever moves FORWARD (`GREATEST`). Two folds can
+        overlap if one is retried, and a marker that could move backwards would
+        re-fold turns already in the summary -- duplicating them in it.
+        """
         with get_connection(self._settings) as conn:
             conn.execute(
-                "UPDATE conversations SET summary = %s WHERE id = %s::uuid",
-                (summary, conversation_id),
-            )
-            # Keep only the most recent `keep_recent` turns; delete the rest.
-            conn.execute(
-                """
-                DELETE FROM conversation_turns
-                WHERE conversation_id = %s::uuid
-                  AND turn_index <= (
-                      SELECT COALESCE(MAX(turn_index), -1) - %s
-                      FROM conversation_turns WHERE conversation_id = %s::uuid
-                  )
-                """,
-                (conversation_id, keep_recent, conversation_id),
+                "UPDATE conversations SET summary = %s, "
+                "folded_through = GREATEST(coalesce(folded_through, -1), %s) "
+                "WHERE id = %s::uuid",
+                (summary, folded_through, conversation_id),
             )
 
     # -- Phase 8: last-turn retrieval, for the cheap retrieval-reuse check ----
