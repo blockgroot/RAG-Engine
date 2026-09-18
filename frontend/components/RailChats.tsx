@@ -112,11 +112,16 @@ export function RailChats() {
   }, [workspaceId]);
 
   function handleOpen(id: string) {
-    if (isCurrentChatPath) {
-      window.dispatchEvent(new CustomEvent("open-conversation", { detail: { id } }));
-    } else {
-      router.push(`${targetChatPath}?c=${encodeURIComponent(id)}`);
-    }
+    // ALWAYS through the URL, including when already on the chat page. The
+    // in-place branch that used to live here fired a window event instead, so
+    // switching chats left the address bar reading "/chat" — no back button
+    // between conversations, nothing to bookmark or paste to a colleague, and
+    // a refresh that could not restore the thread. `?c=` is now the single
+    // source of truth and the page's existing param effect opens it.
+    //
+    // `push`, not `replace`: moving from one chat to another IS somewhere you
+    // came from, so Back should return you to it.
+    router.push(`${targetChatPath}?c=${encodeURIComponent(id)}`);
   }
 
   async function handleDelete(id: string, title: string) {

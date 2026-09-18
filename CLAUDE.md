@@ -553,6 +553,29 @@ conversion lives *inside* the adapter. Thin SDKs, never frameworks.
   would make the people list unreachable and bounce any link back out.
 - **Recent chats sit in the left rail under Explore** (`RailChats.tsx`, top-5 most recent, 1-click access, Handbook light-mode tokens); popping sidebar and redundant topbar buttons removed. Connection expirations sanitize raw HTTP/GraphQL/Mozilla errors via `formatReauthReason` and `sanitize_reauth_reason`, with a compact structured `.connection-reauth-box` on `ConnectionCard` suppressing the misleading failed retry badge.
 
+**The URL carries WHICH chat is open** (`?c=<conversation_id>`). `RailChats`
+used to fire a `window` event instead of navigating whenever you were already
+on `/chat`, so switching conversations left the address bar reading `/chat`:
+no Back between chats, nothing to bookmark or paste to a colleague, and a
+refresh that could not restore the thread (patched with `sessionStorage`,
+which is a cache, not an address). `?c=` is now the single source of truth —
+`push` on open (moving between chats IS somewhere you came from), `replace`
+when a chat is born mid-question or cleared by New. The `open-conversation`
+listener is DELETED: a second, invisible way to change which chat is showing
+is exactly how the address bar and the transcript drifted apart.
+- **"Ask" is a DESTINATION, not a second New button.** Its `onClick`
+  dispatched `new-chat` when already on `/chat`, making it identical to the
+  "+ New" control a few pixels below — two affordances, one action, and no way
+  to simply return to the chat you had open.
+- **Recent chats sits BELOW the destinations, in its own band, with no card.**
+  Wedged between Ask and Spaces it split one list of places-to-go in half with
+  a list of things-already-done; and a bordered tinted box inside the rail
+  panel was a card inside a card, so nothing receded. Bands are separated by
+  whitespace and type scale; `#nav-company ~` rows are deliberately recessive,
+  because Sources/Model/People are administration and Ask is the product.
+  The list is `max-height` bounded rather than `flex: 1` — `.rail-nav` owns the
+  rail's scrolling and moving that responsibility cannot be verified here.
+
 **Ask: two layout fixes worth not repeating.**
 - **`.chat-page` MUST carry `width: 100%`.** `.app-body:has(.chat-page)` is a
   flex column and `margin: 0 auto` is an auto margin on the CROSS axis, which

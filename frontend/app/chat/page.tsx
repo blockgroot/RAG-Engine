@@ -2,7 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useParams, useSearchParams } from "next/navigation";
+import { usePathname, useParams, useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { AskHeroArt } from "@/components/AskHeroArt";
 import { ChatMessageView, Message } from "@/components/ChatMessage";
@@ -88,6 +88,8 @@ export default function ChatPage() {
 
 function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
   const { me, loading, refresh } = useMe({ enforceSetupFlow: !workspaceId });
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
@@ -386,6 +388,10 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     setAttachments([]);
     setActiveConversation(null);
     setUploadError(null);
+    // Drop ?c= or the param effect re-opens the chat we just left. `replace`,
+    // not `push`: "new chat" is not a place to go back to — it is an empty
+    // state that the previous chat's entry already covers.
+    if (searchParams.get("c")) router.replace(pathname);
   }
 
   // Handle URL query parameter: ?c={conversation_id}
@@ -397,23 +403,17 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     }
   }, [conversationParam, openConversation]);
 
-  // Listen for navigation and control events from RailChats
+  // Only "new chat" is an event now. Opening a conversation goes through the
+  // URL (`?c=`), so the `open-conversation` listener that used to live here
+  // had no dispatcher left — a second, invisible way to change which chat is
+  // showing, which is exactly how the address bar and the transcript drifted
+  // apart in the first place.
   useEffect(() => {
-    function onOpen(e: Event) {
-      const custom = e as CustomEvent<{ id: string }>;
-      if (custom.detail?.id) {
-        void openConversation(custom.detail.id);
-      }
-    }
     function onNew() {
       startNewChat();
     }
-    window.addEventListener("open-conversation", onOpen);
     window.addEventListener("new-chat", onNew);
-    return () => {
-      window.removeEventListener("open-conversation", onOpen);
-      window.removeEventListener("new-chat", onNew);
-    };
+    return () => window.removeEventListener("new-chat", onNew);
   }, [openConversation]);
 
   // Notify RailChats whenever the active conversation changes
@@ -438,6 +438,12 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       const { conversation_id } = await api.createConversation(workspaceId);
       conversationId.current = conversation_id;
       setActiveConversation(conversation_id);
+      // The URL is the source of truth for WHICH chat is open, so a chat born
+      // from typing a question has to appear there too -- otherwise a refresh
+      // lands on an empty chat while the transcript sits one id away.
+      // `replace`: the empty state before the first question is not a place
+      // worth a back-button entry.
+      router.replace(`${pathname}?c=${encodeURIComponent(conversation_id)}`);
       try {
         sessionStorage.setItem(convKey, conversation_id);
       } catch {

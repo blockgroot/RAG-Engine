@@ -172,16 +172,16 @@ export function AppShell({
             </p>
             {(setupDone || me?.role === "member") && (
               <>
+                {/* A DESTINATION, not a second "new chat" button. This used
+                    to dispatch `new-chat` when you were already on /chat,
+                    which made it behave identically to the "+ New" control a
+                    few pixels below it — two affordances, one action, and no
+                    way to simply return to the chat you had open. */}
                 <Link
                   href="/chat"
                   className="rail-link"
                   data-active={pathname.startsWith("/chat") ? "true" : "false"}
                   aria-current={pathname.startsWith("/chat") ? "page" : undefined}
-                  onClick={() => {
-                    if (pathname.startsWith("/chat")) {
-                      window.dispatchEvent(new CustomEvent("new-chat"));
-                    }
-                  }}
                 >
                   <span className="rail-ico">
                     <IconAsk />
@@ -191,7 +191,6 @@ export function AppShell({
                     <span className="rail-link-hint">Company-wide</span>
                   </span>
                 </Link>
-                <RailChats />
               </>
             )}
             <Link
@@ -222,6 +221,13 @@ export function AppShell({
                 <span className="rail-link-hint">Emailed on a schedule</span>
               </span>
             </Link>
+
+            {/* Below the destinations, not inside them. Sitting between "Ask"
+                and "Spaces" it split one list of PLACES TO GO in half with a
+                list of things already done, which is most of why the rail read
+                as cluttered — three kinds of thing in one undifferentiated
+                stack. */}
+            {(setupDone || me?.role === "member") && <RailChats />}
 
             {showAdmin && (
               <>

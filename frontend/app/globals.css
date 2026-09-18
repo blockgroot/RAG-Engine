@@ -258,22 +258,44 @@ button { font-family: inherit; }
 }
 
 /* Rail Chats: Top-5 recent chats under Explore (clean, minimalist light-theme) */
+/* NO card. The rail already sits inside a panel, so a bordered, tinted box
+   around Recent chats was a card inside a card — and once every section is a
+   card, nothing recedes and the eye has no order to follow. Separation here
+   is whitespace and a change of type scale, which is what lets the chat list
+   read as the working area and "Company" read as administration. */
 .rail-chats {
-  margin: 0.2rem 0 0.55rem;
-  padding: 0.4rem 0.45rem;
-  border-radius: 12px;
-  background: rgba(15, 118, 110, 0.03);
-  border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  margin: 0.35rem 0 0.9rem;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 0.3rem;
+}
+
+/* Bounded rather than flex-grown: `.rail-nav` owns the rail's scrolling, and
+   giving this section `flex: 1` would move that responsibility without any
+   way to check the result in a browser. A max-height keeps a long list from
+   pushing Sources/Model/People out of view and changes nothing else. */
+.rail-chats-list {
+  max-height: 13rem;
+  overflow-y: auto;
+  min-height: 0;
 }
 .rail-chats-head {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.4rem;
+  padding: 0.1rem 0.25rem 0.35rem;
+}
+.rail-chats-head .rail-chats-title-row {
   justify-content: space-between;
-  gap: 0.35rem;
-  padding: 0.1rem 0.25rem 0.25rem;
+}
+/* Full width, under the header rather than beside it. Inline with the title
+   it read as a twin of the "Ask" row a few pixels above — two controls that
+   looked alike and, until this pass, also DID the same thing. */
+.rail-chats-new-btn {
+  justify-content: center;
+  width: 100%;
 }
 .rail-chats-title-row {
   display: flex;
@@ -8134,4 +8156,26 @@ a.people-card:hover { color: inherit; }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* A section header for Recent chats, matching `.rail-label`'s weight so the
+   rail reads as three bands of equal grammar — destinations, chats, company —
+   rather than as one stack of unrelated rows. */
+.rail-chats-title {
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+
+/* The COMPANY band is administration, not the product. Recessive on purpose:
+   a first-time user should be able to tell at a glance that Ask and their
+   chats are what this is for, and that Sources / Model / People are settings
+   they will visit rarely. */
+#nav-company ~ .rail-link .rail-link-title {
+  font-weight: 550;
+}
+#nav-company ~ .rail-link .rail-ico {
+  opacity: 0.72;
 }
