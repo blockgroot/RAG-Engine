@@ -256,9 +256,15 @@ def test_a_retry_delivery_is_dropped(client, monkeypatch):
     assert len(called) == 1, "a retry must not queue a second answer"
 
 
-def _capture_post(monkeypatch) -> list:
-    """Like ``_capture_scope`` but records where the reply was posted."""
+def _capture_post(monkeypatch, *, update_ok: bool = True) -> tuple[list, list]:
+    """Record posts AND edits.
+
+    The bot posts a placeholder first and edits it into the answer, so a test
+    that only records posts cannot tell "answered in the channel" from
+    "answered twice".
+    """
     posted: list = []
+    edited: list = []
     monkeypatch.setattr(slack_events, "_org_for_team", lambda team: ("org-1", None))
     monkeypatch.setattr(slack_events, "get_live_connection_token", lambda *a, **k: "tok")
     monkeypatch.setattr(slack_events, "_slack_email", lambda t, u: "a@b.com")
@@ -268,32 +274,56 @@ def _capture_post(monkeypatch) -> list:
     )
     monkeypatch.setattr(slack_events, "_scope_for_channel", lambda *a: None)
     monkeypatch.setattr(slack_events, "_answer", lambda *a, **k: "the answer")
-    monkeypatch.setattr(
-        slack_events, "post_message",
-        lambda tok, ch, text, ts=None: posted.append((ch, text, ts)),
-    )
-    return posted
+
+    def _post(tok, ch, text, ts=None):
+        posted.append((ch, text, ts))
+        return "msg-1"
+
+    def _update(tok, ch, ts, text):
+        edited.append((ch, ts, text))
+        return update_ok
+
+    monkeypatch.setattr(slack_events, "post_message", _post)
+    monkeypatch.setattr(slack_events, "update_message", _update)
+    return posted, edited
 
 
 def test_a_top_level_question_is_answered_in_the_channel(monkeypatch):
     """Not threaded: a "1 reply" link is a second place to look for one answer."""
-    posted = _capture_post(monkeypatch)
+    posted, edited = _capture_post(monkeypatch)
     slack_events._handle(
         {"type": "app_mention", "channel": "C1", "user": "U1", "text": "q", "ts": "111"},
         "T1",
     )
-    assert posted == [("C1", "the answer", None)]
+    # One post (the placeholder, in the channel, unthreaded) then one edit.
+    assert posted == [("C1", slack_events._SEARCHING, None)]
+    assert edited == [("C1", "msg-1", "the answer")]
 
 
 def test_a_question_inside_a_thread_is_answered_in_that_thread(monkeypatch):
     """The conversation already lives there; answering outside would split it."""
-    posted = _capture_post(monkeypatch)
+    posted, edited = _capture_post(monkeypatch)
     slack_events._handle(
         {"type": "app_mention", "channel": "C1", "user": "U1", "text": "q",
          "ts": "222", "thread_ts": "111"},
         "T1",
     )
-    assert posted == [("C1", "the answer", "111")]
+    # The PLACEHOLDER carries the thread, because it is the message that
+    # becomes the answer -- posting it outside the thread would move the reply.
+    assert posted == [("C1", slack_events._SEARCHING, "111")]
+    assert edited == [("C1", "msg-1", "the answer")]
+
+
+def test_the_answer_still_arrives_when_the_edit_fails(monkeypatch):
+    """Leaving "Searching…" up and dropping a grounded answer is the worst of
+    both outcomes, so a failed edit falls back to posting."""
+    posted, edited = _capture_post(monkeypatch, update_ok=False)
+    slack_events._handle(
+        {"type": "app_mention", "channel": "C1", "user": "U1", "text": "q", "ts": "111"},
+        "T1",
+    )
+    assert edited, "an edit was never attempted"
+    assert posted[-1] == ("C1", "the answer", None)
 
 
 def _capture_answer_scope(monkeypatch) -> list:

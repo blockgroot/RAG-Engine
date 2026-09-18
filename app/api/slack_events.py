@@ -52,7 +52,7 @@ from ..auth.users import get_user_by_email
 from ..config.settings import SlackSettings
 from ..core.exceptions import ProviderError
 from ..db.connection import get_connection
-from ..sources.slack_utils import channel_tag, post_message
+from ..sources.slack_utils import channel_tag, post_message, update_message
 from .deps import get_slack_agent
 
 logger = logging.getLogger(__name__)
@@ -372,6 +372,13 @@ def _with_chart_values(response) -> str:
     return f"{response.answer}\n" + "\n".join(lines) + more
 
 
+#: Shown while the answer is being built, then REPLACED by it. Italic because
+#: it is the bot talking about itself rather than answering; "your connected
+#: tools" rather than naming one, because which source answers is decided
+#: inside `_answer` and has not been measured yet at this point.
+_SEARCHING = "_Searching your connected tools…_"
+
+
 def _handle(event: dict, team_id: str) -> None:
     """Resolve who asked, answer, and post back. Runs AFTER Slack was acked."""
     channel = event.get("channel")
@@ -460,6 +467,18 @@ def _handle(event: dict, team_id: str) -> None:
         # answer could have come from, so naming it is noise.
         scope_label = None
 
+    # A grounded answer is ~6 LLM calls and routinely takes 10-30 seconds. Slack
+    # shows nothing at all in that window, so the bot reads as broken or
+    # ignored -- people re-ask, which costs another six calls. A placeholder
+    # posted FIRST and then edited in place is the whole indicator: the answer
+    # lands in the message the asker is already watching, rather than arriving
+    # underneath a "thinking..." line that stays there forever.
+    #
+    # Slack's own status API (`assistant.threads.setStatus`) is deliberately
+    # not used -- see `slack_utils.update_message` for why it cannot apply to
+    # a bot that answers in channels and plain DMs.
+    placeholder_ts = post_message(token, channel, _SEARCHING, thread_ts)
+
     try:
         answer = _answer(
             text, org_id, answer_workspace_id, tags, scope_label, user_id=user.id
@@ -467,6 +486,12 @@ def _handle(event: dict, team_id: str) -> None:
     except Exception as exc:  # noqa: BLE001 - a failed answer must still reply
         logger.warning("slack.bot answer failed for org %s: %s", org_id, exc, exc_info=True)
         answer = _ERROR
+
+    # Edit the placeholder when we have one, post fresh when we do not. A
+    # failed edit must still deliver the answer: leaving "Searching..." in
+    # place and dropping a grounded reply is the worst of both.
+    if placeholder_ts and update_message(token, channel, placeholder_ts, answer):
+        return
     post_message(token, channel, answer, thread_ts)
 
 

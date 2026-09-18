@@ -11,6 +11,7 @@ import { useMe } from "@/lib/useMe";
 import { streamChat } from "@/lib/sse";
 import { api, ApiError, Attachment, ModelChoice } from "@/lib/api";
 import { JOB_POLL_MS } from "@/lib/jobPoll";
+import { fileKind } from "@/lib/fileKind";
 import {
   getCachedSuggestions,
   setCachedSuggestions,
@@ -131,6 +132,10 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const [historyKey, setHistoryKey] = useState(0);
   const [activeConversation, setActiveConversation] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  // The names of files currently in flight. A boolean is enough to disable
+  // a button but not to tell someone WHICH of the four files they picked is
+  // still going, which is the only question they have while waiting.
+  const [pending, setPending] = useState<string[]>([]);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const codeAvailable = workspaceId ? workspaceGithub : Boolean(me?.github_connected);
@@ -448,12 +453,14 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     if (!files?.length || uploading) return;
     setUploadError(null);
     setUploading(true);
+    setPending(Array.from(files).map((f) => f.name));
     // A conversation must exist before a file can hang off it -- the row is
     // what scopes the attachment to this chat and this person.
     const convId = await ensureConversation();
     if (!convId) {
       setUploadError("Couldn't start a chat to attach that to.");
       setUploading(false);
+      setPending([]);
       return;
     }
     try {
@@ -475,6 +482,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       );
     }
     setUploading(false);
+    setPending([]);
     if (fileInput.current) fileInput.current.value = "";
   }
 
@@ -759,11 +767,25 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
           )}
         </div>
 
-        {(attachments.length > 0 || uploadError) && (
+        {(attachments.length > 0 || uploadError || pending.length > 0) && (
           <div className="attach-row">
+            {pending.map((name) => (
+              <span key={`pending-${name}`} className="attach-chip is-pending">
+                <span className="attach-spinner" aria-hidden />
+                <span className="attach-kind">{fileKind(name)}</span>
+                <span className="attach-name" title={name}>
+                  {name}
+                </span>
+                <span className="attach-cut">uploading…</span>
+              </span>
+            ))}
             {attachments.map((a) => (
               <span key={a.id} className="attach-chip">
-                <PaperclipIcon />
+                {/* The FORMAT, not a paperclip. A clip repeats what the row
+                    already says ("there is a file"); the format says what kind
+                    of file the answer is built on, which is the thing worth
+                    checking. */}
+                <span className="attach-kind">{fileKind(a.filename)}</span>
                 <span className="attach-name" title={a.filename}>
                   {a.filename}
                 </span>
@@ -785,9 +807,14 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                 </button>
               </span>
             ))}
-            {attachments.length > 0 && (
+            {pending.length > 0 && (
+              <span className="attach-note" role="status" aria-live="polite">
+                Uploading — your question will use {pending.length === 1 ? "this file" : "these files"} once it finishes.
+              </span>
+            )}
+            {attachments.length > 0 && pending.length === 0 && (
               <span className="attach-note">
-                Answering from {attachments.length === 1 ? "this file" : "these files"}, not your connected tools.
+                Answers can use {attachments.length === 1 ? "this file" : "these files"} and your connected tools together.
               </span>
             )}
             {uploadError && <span className="attach-error">{uploadError}</span>}
@@ -858,8 +885,13 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
           <button
             className="chat-composer-send"
             type="submit"
-            disabled={busy || !input.trim()}
+            disabled={busy || uploading || !input.trim()}
             aria-label="Send question"
+            title={
+              uploading
+                ? "Waiting for the upload to finish — otherwise this question wouldn't see the file"
+                : undefined
+            }
           >
             {busy ? (
               <span className="composer-spinner" aria-hidden />

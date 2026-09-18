@@ -48,7 +48,12 @@ export function ChatMessageView({
   return (
     <div className="chat-bubble chat-bubble-assistant" data-thinking={thinking || undefined}>
       {message.done && (
-        <ProvenanceStripe source={message.done.source} agent={message.done.agent} />
+        <ProvenanceStripe
+          source={message.done.source}
+          agent={message.done.agent}
+          attachments={message.done.attachments}
+          citations={message.done.citations?.length}
+        />
       )}
       {thinking ? (
         <div className="chat-thinking" role="status" aria-live="polite">

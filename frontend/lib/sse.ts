@@ -35,6 +35,9 @@ export interface ChatDonePayload {
     | "google"
     | "forms"
     | "insights";
+  /** Filenames that were in this prompt. Present only when the asker had files
+   *  attached; the pill names them instead of claiming the routed source. */
+  attachments?: string[];
   /** Why that agent was picked — "best-match", "repo-named", "code-intent",
    *  "only-source", "weak-best-match", "requested", "no-sources". Surfaced so
    *  a misroute is distinguishable from a source genuinely lacking the answer. */

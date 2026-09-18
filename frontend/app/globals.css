@@ -8069,3 +8069,69 @@ a.people-card:hover { color: inherit; }
   .rail-chat-del { opacity: 1; pointer-events: auto; }
   .rail-chat-row .rail-chat-time { opacity: 1; }
 }
+
+/* ---- A file that is still uploading ------------------------------------
+   The same chip shape as a landed attachment, deliberately: the row does not
+   reflow when the upload finishes, it just stops spinning. Dashed and dimmed
+   so "on its way" and "attached" are never confused at a glance. */
+.attach-chip.is-pending {
+  border-style: dashed;
+  color: var(--ink-muted);
+  background: transparent;
+}
+
+.attach-spinner {
+  flex: none;
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 999px;
+  border: 2px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-top-color: var(--accent);
+  animation: spin 0.7s linear infinite;
+}
+
+/* Parsing a PDF and pushing it to the object store takes seconds, so a
+   reduced-motion user still needs to know something is happening -- the
+   spinner becomes a pulse rather than nothing at all. */
+@media (prefers-reduced-motion: reduce) {
+  .attach-spinner {
+    animation: none;
+    border-top-color: color-mix(in srgb, var(--accent) 25%, transparent);
+    background: var(--accent);
+    opacity: 0.6;
+  }
+}
+
+/* ---- File format badges ------------------------------------------------
+   The same badge in two places — the composer chip and the provenance pill —
+   because they name the same file and two different renderings read as two
+   different facts. */
+.attach-kind {
+  flex: none;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent-strong);
+  /* Tabular so PDF / DOCX / CSV all sit on the same baseline in a row of
+     chips rather than jostling by a pixel each. */
+  font-variant-numeric: tabular-nums;
+}
+
+.attach-chip.is-pending .attach-kind {
+  background: color-mix(in srgb, var(--ink-muted) 14%, transparent);
+  color: var(--ink-muted);
+}
+
+/* The filename beside the format in the pill. Bounded, because a real upload
+   is called Photosynthesis_Complete_Lifecycle_and_Working.pdf and an
+   unbounded pill would push the answer down the card. The full name is on the
+   title attribute. */
+.provenance-file {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

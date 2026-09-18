@@ -1,3 +1,5 @@
+import { fileKindLabel } from "@/lib/fileKind";
+
 const LABELS: Record<string, string> = {
   policy: "Company documents",
   workspace: "Workspace content",
@@ -59,10 +61,48 @@ const AGENT_NAMES: Record<string, string> = {
 export function ProvenanceStripe({
   source,
   agent,
+  attachments,
+  citations,
 }: {
   source: string;
   agent?: string;
+  /** Files that were in this prompt. */
+  attachments?: string[];
+  /** How many corpus chunks were also in it. */
+  citations?: number;
 }) {
+  // A file the asker attached OUTRANKS the routed agent as the pill's
+  // identity, and that is a correctness fix rather than a preference. With
+  // blending, a PDF question routes to whichever source scores best and the
+  // pill was printing that source's name -- "Notion" above an answer built
+  // from an uploaded PDF, which is the one thing this pill exists not to do.
+  //
+  // What we can honestly distinguish is whether the CORPUS also contributed:
+  // citations come from retrieved chunks, so an empty list means the answer
+  // had only the file to work with. We do not claim to know which sentence
+  // came from where — only what was in front of the model.
+  if (attachments && attachments.length > 0 && source !== "none") {
+    const kind = fileKindLabel(attachments);
+    const alsoCorpus = (citations ?? 0) > 0;
+    const color = COLORS.attachment;
+    const detail = alsoCorpus
+      ? LABELS[agent || source] || LABELS.policy
+      : attachments.length === 1
+        ? attachments[0]
+        : `${attachments.length} files`;
+    return (
+      <span
+        className="provenance-pill"
+        style={{ color, background: `color-mix(in srgb, ${color} 14%, transparent)` }}
+        title={attachments.join(", ")}
+      >
+        <span className="provenance-dot" style={{ background: color }} />
+        {kind}
+        <span className="provenance-agent provenance-file">{detail}</span>
+      </span>
+    );
+  }
+
   // A refusal ("none") names no source, and neither should the pill: the
   // routed agent is a diagnostic, not a provenance claim, when nothing was
   // grounded.

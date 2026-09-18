@@ -47,12 +47,18 @@ def channel_tag(channel_id: str) -> str:
     return f"{_CHANNEL_TAG_PREFIX}{channel_id}"
 
 
-def post_message(token: str, channel: str, text: str, thread_ts: str | None = None) -> None:
+def post_message(
+    token: str, channel: str, text: str, thread_ts: str | None = None
+) -> str | None:
     """Post one message, optionally into a thread. Never raises.
 
     A failed post costs the reply, never the request that triggered it: the
     caller is a background task started AFTER Slack was already acknowledged,
     so raising here could only produce an unhandled task error nobody sees.
+
+    Returns the message ``ts`` so a placeholder can later be REPLACED by the
+    real answer (`update_message`); ``None`` when the post failed, which the
+    caller must read as "there is nothing to update".
     """
     payload: dict = {"channel": channel, "text": text}
     if thread_ts:
@@ -67,8 +73,42 @@ def post_message(token: str, channel: str, text: str, thread_ts: str | None = No
         body = response.json()
         if not body.get("ok"):
             logger.warning("slack.chat_postMessage failed: %s", body.get("error"))
+            return None
+        return body.get("ts")
     except Exception as exc:  # noqa: BLE001 - a failed reply is never fatal
         logger.warning("slack.chat_postMessage error: %s", exc)
+        return None
+
+
+def update_message(token: str, channel: str, ts: str, text: str) -> bool:
+    """Replace the text of a message we posted. Never raises.
+
+    This is how the bot shows progress. Slack's purpose-built status API
+    (`assistant.threads.setStatus`) is NOT usable here: it only applies inside
+    an assistant-thread container, which requires the app to be configured as
+    an AI assistant and to handle `assistant_thread_started`. This bot answers
+    `app_mention` in ordinary channels and plain DMs, where no such thread
+    exists. It is also mid-deprecation toward `agents.sessions.setStatus`,
+    whose status is a closed enum with no free text.
+
+    Editing our own placeholder needs only `chat:write`, which every tenant
+    already granted -- so progress costs no new scope and no reconnect.
+    """
+    try:
+        response = httpx.post(
+            f"{_API_BASE}/chat.update",
+            json={"channel": channel, "ts": ts, "text": text},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=_TIMEOUT,
+        )
+        body = response.json()
+        if not body.get("ok"):
+            logger.warning("slack.chat_update failed: %s", body.get("error"))
+            return False
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("slack.chat_update error: %s", exc)
+        return False
 
 
 def _get(token: str, method: str, params: dict, *, timeout: float = _TIMEOUT) -> dict:

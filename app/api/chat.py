@@ -767,6 +767,11 @@ def _stream_attachment_answer(
             # Names the routed source AND the files, because with both in one
             # prompt "where did this come from?" has two answers.
             "routing_reason": reason,
+            # The files that were actually in this prompt. Without it the pill
+            # can only name the ROUTED agent -- so a PDF question answered from
+            # the PDF displayed "Notion", a provenance claim about a source
+            # that may not have contributed a word.
+            "attachments": [name for name, _, _ in attached],
             "model": _answering_model(),
             "chart": None,
             "chart_period": None,

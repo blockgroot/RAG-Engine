@@ -310,6 +310,23 @@ guarantee.
   (`<channel>:<thread_ts>`), so one idempotent UPDATE needs no API call and no
   name lookup. Waiting for re-ingest would leave a quiet channel unanswerable
   forever, since a thread that never changes is never re-fetched.
+- **A placeholder is posted FIRST, then edited into the answer**
+  (`_SEARCHING` -> `slack_utils.update_message`). A grounded answer is ~6 LLM
+  calls and routinely takes 10-30s, during which Slack shows nothing at all —
+  the bot reads as broken or ignored and people re-ask, which costs another six
+  calls. Edited in place rather than posted underneath, so the answer lands in
+  the message the asker is already watching and no "thinking…" line is left
+  behind. **Slack's own status API is NOT usable here**:
+  `assistant.threads.setStatus` applies only inside an assistant-thread
+  container (the app must be configured as an AI assistant and handle
+  `assistant_thread_started`), and this bot answers `app_mention` in ordinary
+  channels and plain DMs where no such thread exists; it is also
+  mid-deprecation toward `agents.sessions.setStatus`, whose status is a closed
+  enum with no free text. Editing our own message needs only `chat:write`,
+  already granted — so progress costs no new scope and **no tenant reconnect**.
+  `post_message` returns the `ts` for this (None = nothing to edit), and a
+  failed edit falls back to posting: leaving "Searching…" up while dropping a
+  grounded answer is the worst of both.
 - **Ack in 3s, answer in a `BackgroundTask`.** Slack retries on timeout and one
   answer is ~6 LLM calls, so inline work would deliver the SAME answer several
   times, not merely slowly.
