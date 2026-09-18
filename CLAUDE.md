@@ -573,6 +573,16 @@ which is a cache, not an address). `?c=` is now the single source of truth —
 when a chat is born mid-question or cleared by New. The `open-conversation`
 listener is DELETED: a second, invisible way to change which chat is showing
 is exactly how the address bar and the transcript drifted apart.
+- **The `?c=` effect MUST skip a conversation that is already open**, and
+  omitting that guard white-screened production. `ensureConversation` writes
+  the new id into the URL, which bounced back into the effect and re-opened the
+  chat that was mid-answer; `openConversation` replaces `messages` with the
+  SERVER's turns, the answer is not stored yet, so the transcript emptied —
+  question and streaming bubble with it — and the next token indexed
+  `messages[-1]` of an empty array and threw. A TypeError inside a React
+  updater takes the whole page, not one token, so the three stream handlers
+  also return `prev` unchanged on an empty transcript. Fix the emptying at its
+  source; never let it cost the app.
 - **THREE controls started a chat; now Ask is the one in the rail.** The
   rail's "Ask" link, the rail's "+ New" button and the chat page's own header
   button all did the same thing. "+ New" is DELETED; **Ask starts a chat** and
@@ -582,6 +592,17 @@ is exactly how the address bar and the transcript drifted apart.
   present — so without it the address bar would lose the id while the old
   transcript stayed on screen. `.rail-chats-new-btn` is now dead CSS, left for
   a by-hand pass (§3 "do NOT script-delete dead CSS").
+- **The chat list is CACHED across remounts** (`lib/chatsCache.ts`, the
+  `suggestionsCache` shape). `AppShell` is rendered by each PAGE, not by a
+  shared layout, so every navigation remounts `RailChats`: `loaded` reset to
+  false, the component returned `null`, and the whole section vanished and
+  re-fetched on each click — a rail that flickers away while you use the app
+  reads as the app reloading itself. Initial state is seeded from the cache and
+  `loaded` starts true when there is one, so a remount shows the previous list
+  while the refetch happens behind it. A delete writes through to the cache, or
+  changing page resurrects the row; a failed refetch keeps what is on screen,
+  because the list is NAVIGATION and emptying it over a blip takes away the way
+  back to a chat.
 - **Recent chats sits BELOW the destinations, in its own band, with no card.**
   Wedged between Ask and Spaces it split one list of places-to-go in half with
   a list of things-already-done; and a bordered tinted box inside the rail

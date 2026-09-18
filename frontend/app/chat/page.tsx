@@ -398,7 +398,17 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const conversationParam = searchParams.get("c");
 
   useEffect(() => {
-    if (conversationParam) {
+    // Only open a conversation that is not ALREADY open. Without this guard,
+    // `ensureConversation` writing the new id into the URL bounced straight
+    // back here and re-opened the chat that was mid-answer: `openConversation`
+    // replaces `messages` with the server's turns, the answer is not stored
+    // yet, so the transcript emptied — taking the question and the streaming
+    // bubble with it — and the next token indexed `messages[-1]` of an empty
+    // array and threw. The screen reset, then went white.
+    //
+    // `conversationId.current` is assigned before the `router.replace`, so by
+    // the time this runs the ids already match and it correctly does nothing.
+    if (conversationParam && conversationParam !== conversationId.current) {
       void openConversation(conversationParam);
     }
   }, [conversationParam, openConversation]);
@@ -524,6 +534,11 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       {
         onToken: (chunk) => {
           setMessages((prev) => {
+            // Spreading `prev[-1]` throws, and a TypeError inside a React
+            // updater takes the whole page white rather than dropping one
+            // token. Anything that empties the transcript mid-stream is a bug
+            // worth fixing at its source, but it must not cost the app.
+            if (prev.length === 0) return prev;
             const next = [...prev];
             const last = next[next.length - 1];
             next[next.length - 1] = { ...last, text: last.text + chunk };
@@ -532,6 +547,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
         },
         onDone: (payload) => {
           setMessages((prev) => {
+            if (prev.length === 0) return prev;
             const next = [...prev];
             const last = next[next.length - 1];
             next[next.length - 1] = { ...last, streaming: false, done: payload };
@@ -544,6 +560,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
         },
         onError: (message) => {
           setMessages((prev) => {
+            if (prev.length === 0) return [{ role: "assistant", text: message }];
             const next = [...prev];
             next[next.length - 1] = { role: "assistant", text: message };
             return next;

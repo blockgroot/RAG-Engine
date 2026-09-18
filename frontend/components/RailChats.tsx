@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams, usePathname, useRouter } from "next/navigation";
 import { api, ConversationSummary } from "@/lib/api";
+import { chatsCacheKey, getCachedChats, setCachedChats } from "@/lib/chatsCache";
 
 function TrashIco() {
   return (
@@ -66,15 +67,26 @@ export function RailChats() {
     pathname === "/chat" ||
     (Boolean(workspaceId) && pathname === `/workspaces/${workspaceId}/ask`);
 
-  const [items, setItems] = useState<ConversationSummary[]>([]);
+  // Seeded from the cache so a remount renders the list it already had rather
+  // than blanking and re-fetching. `loaded` starts true when there IS a cached
+  // list, because there is nothing to wait for.
+  const cacheKey = chatsCacheKey(workspaceId);
+  const cached = getCachedChats(cacheKey);
+  const [items, setItems] = useState<ConversationSummary[]>(cached ?? []);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  const [loaded, setLoaded] = useState(cached !== undefined);
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const load = useCallback(() => {
     api
       .listConversations(workspaceId)
-      .then(({ conversations }) => setItems(conversations))
+      .then(({ conversations }) => {
+        setItems(conversations);
+        setCachedChats(chatsCacheKey(workspaceId), conversations);
+      })
+      // A failed refetch keeps whatever is on screen. The list is navigation,
+      // not content: emptying it because one poll failed would take away the
+      // way back to a chat over a blip.
       .catch(() => undefined)
       .finally(() => setLoaded(true));
   }, [workspaceId]);
@@ -138,7 +150,13 @@ export function RailChats() {
     setBusyId(id);
     try {
       await api.deleteConversation(id, workspaceId);
-      setItems((prev) => prev.filter((c) => c.id !== id));
+      setItems((prev) => {
+        const next = prev.filter((c) => c.id !== id);
+        // The cache is what a remount renders, so a delete that does not
+        // reach it brings the row back the moment you change page.
+        setCachedChats(chatsCacheKey(workspaceId), next);
+        return next;
+      });
       // Deleting the chat you are READING has to clear the transcript too --
       // otherwise the page goes on showing messages that no longer exist and
       // the next question posts to a conversation the server 404s.
