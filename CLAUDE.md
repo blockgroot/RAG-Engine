@@ -413,7 +413,22 @@ conversion lives *inside* the adapter. Thin SDKs, never frameworks.
   "streaming" chunks an **already-decided** answer — recovery or the web path
   can still discard a gate-passing generation.
 - `frontend/` keeps the session only in the httpOnly cookie. No
-  Tailwind/UI-kit — plain CSS vars and global classes. **A space member
+  Tailwind/UI-kit — plain CSS vars and global classes.
+- **Ask is a THREE-BAND shell — navigate (rail) / recall (chat history) /
+  converse — separated by a hairline and a tonal step, never a gap.** The
+  history column shipped as a card floating in a `gap`-separated grid with
+  `align-items: start`, which broke the height chain it sat in:
+  `.chat-page`'s `height: 100%` resolved against an auto-height grid item, so
+  `#ask-panel`/`.chat-log` lost their bound and the composer stopped being
+  pinned — the whole page scrolled as one sheet. The wrapper now carries
+  `height: 100%` + `stretch`, which is what keeps the scroll inside the
+  transcript. The column is also **never unmounted**: returning `null` on an
+  empty list moved Ask sideways the moment the first chat saved, a layout jump
+  on the one interaction the column exists for, and hid "New" from the person
+  with no chats. `.rail-top` had to join the `z-index: 1` list beside
+  `.brand`/`.rail-nav`/`.rail-foot` — `.rail-atmosphere` is positioned at
+  `z-index: 0` and paints over static in-flow content, so moving the bell into
+  a new row put the brand under the blurred glows. **A space member
   opens on Ask, an owner on management** — the space page is invite/connect/
   delete, all disabled for a member. Deliberately not a redirect: that
   would make the people list unreachable and bounce any link back out.

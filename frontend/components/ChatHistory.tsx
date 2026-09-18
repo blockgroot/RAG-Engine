@@ -67,16 +67,21 @@ export function ChatHistory({
     if (id === activeId) onNew();
   }
 
-  if (loaded && items.length === 0) return null;
-
+  // Always rendered, even empty. Unmounting it moved Ask sideways the moment
+  // the first chat was saved -- a layout jump on the one interaction this
+  // column exists for -- and it took "New chat" away from the person with no
+  // chats, who is exactly who needs it.
   return (
     <aside className="chat-history" aria-label="Your chats">
       <div className="chat-history-head">
         <span className="chat-history-title">Your chats</span>
         <button type="button" className="chat-history-new" onClick={onNew}>
-          New
+          + New
         </button>
       </div>
+      {loaded && items.length === 0 && (
+        <p className="chat-history-empty">Chats you start show up here.</p>
+      )}
       <ul className="chat-history-list">
         {items.map((c) => (
           <li key={c.id}>

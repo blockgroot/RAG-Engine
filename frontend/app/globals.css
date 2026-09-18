@@ -727,79 +727,118 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 }
 .attach-newchat:hover { color: var(--accent-strong); }
 
-/* Chat history. A column beside Ask, not a drawer: the whole point is that a
-   chat you uploaded a file into is VISIBLE, and a list behind a toggle is one
-   the person has to already know to look for. */
+/* Chat history. A COLUMN of the shell, not a card floating beside Ask.
+   The shell now reads left-to-right as three bands with one job each --
+   navigate (rail) / recall (chats) / converse (Ask) -- separated by a hairline
+   and one tonal step, never by a gap. A gap made the list read as a widget
+   that had been dropped onto the page; an edge makes it read as part of it.
+
+   It also OWNS its height. The wrapper used to be an auto-height grid with
+   `align-items: start`, so `.chat-page`'s `height: 100%` resolved against
+   nothing: the flex column collapsed, `.chat-log` lost its bound, and the
+   composer stopped being pinned to the bottom -- the whole page scrolled as
+   one sheet instead. Stretch + a real height is what puts the scroll back
+   inside the transcript, which is the only place it belongs. */
 .chat-with-history {
+  height: 100%;
+  min-height: 0;
   display: grid;
-  grid-template-columns: 15rem minmax(0, 1fr);
-  gap: 1.5rem;
-  align-items: start;
+  grid-template-columns: 16.5rem minmax(0, 1fr);
+  align-items: stretch;
 }
 /* Under 1000px the column would take half the width from the thing it is a
    sidebar for. Ask stays whole; `sessionStorage` still resumes the last chat,
    so nothing on a phone becomes unreachable -- only unlisted. */
 @media (max-width: 1000px) {
-  .chat-with-history { grid-template-columns: minmax(0, 1fr); }
+  .chat-with-history { grid-template-columns: minmax(0, 1fr); height: auto; }
   .chat-history { display: none; }
 }
 .chat-history {
-  position: sticky;
-  top: 1rem;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  min-width: 0;
+  /* The tonal step is what separates the two bands at a glance; the hairline
+     is what makes the edge deliberate rather than a rendering seam. */
+  background: var(--surface-elevated);
+  border-right: 1px solid var(--border);
+  padding: var(--space-3) 0.75rem var(--space-2);
 }
 .chat-history-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
+  padding: 0 0.35rem 0.6rem;
 }
 .chat-history-title {
-  font-size: 0.78rem;
-  letter-spacing: 0.06em;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--ink-muted);
 }
+/* A real button, not a text link: starting a chat is the one ACTION in this
+   column and every other row in it is a destination. */
 .chat-history-new {
-  border: none;
-  background: transparent;
-  padding: 0;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.22rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-elevated);
   font: inherit;
-  font-size: 0.82rem;
-  color: var(--accent);
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--ink-muted);
   cursor: pointer;
+  transition: color 0.18s var(--ease), border-color 0.18s var(--ease);
 }
-.chat-history-new:hover { color: var(--accent-strong); }
+.chat-history-new:hover {
+  color: var(--accent-strong);
+  border-color: var(--accent);
+}
 .chat-history-list {
   list-style: none;
   margin: 0;
+  /* The list is the only thing here that may scroll; the head and the
+     retention line stay put, so "New" is reachable from anywhere in a long
+     history. */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
-  max-height: 60vh;
-  overflow-y: auto;
+  gap: 0.1rem;
 }
 .chat-history-item {
   width: 100%;
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0.4rem;
-  padding: 0.42rem 0.5rem;
+  padding: 0.46rem 0.5rem 0.46rem 0.6rem;
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
   font: inherit;
-  font-size: 0.87rem;
+  font-size: 0.86rem;
   color: var(--ink-muted);
   text-align: left;
   cursor: pointer;
+  transition: background 0.16s var(--ease), color 0.16s var(--ease);
 }
 .chat-history-item:hover { background: var(--surface-muted); color: var(--ink); }
-.chat-history-item.is-active { background: var(--surface-muted); color: var(--ink); }
+/* The open chat carries an accent EDGE, not just a fill: hover already uses a
+   fill, and "where am I" must not look like "where is my cursor". */
+.chat-history-item.is-active {
+  background: var(--surface-elevated);
+  color: var(--ink);
+  font-weight: 600;
+  box-shadow: inset 2px 0 0 var(--accent);
+}
 .chat-history-label {
   flex: 1;
   min-width: 0;
@@ -812,18 +851,34 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
    but always present for keyboard users. */
 .chat-history-del {
   flex: none;
+  display: grid;
+  place-items: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  border-radius: 50%;
   opacity: 0;
   color: var(--ink-muted);
-  font-size: 1rem;
+  font-size: 0.95rem;
   line-height: 1;
   cursor: pointer;
 }
 .chat-history-item:hover .chat-history-del,
 .chat-history-del:focus { opacity: 1; }
-.chat-history-del:hover { color: var(--danger, #b42318); }
+.chat-history-del:hover { color: var(--danger, #b42318); background: var(--surface-muted); }
+/* Shown instead of hiding the whole column. Unmounting it moved Ask sideways
+   the moment someone's first chat was saved, which is a layout jump on the
+   one interaction this feature exists for. */
+.chat-history-empty {
+  margin: 0.4rem 0.6rem;
+  font-size: 0.82rem;
+  color: var(--ink-muted);
+}
 .chat-history-retention {
-  margin: 0.2rem 0 0;
-  font-size: 0.75rem;
+  flex: none;
+  margin: 0.55rem 0 0;
+  padding: 0.55rem 0.6rem 0;
+  border-top: 1px solid var(--border);
+  font-size: 0.72rem;
   color: var(--ink-muted);
 }
 .attach-error { font-size: 0.82rem; color: var(--danger, #b42318); }
@@ -1485,7 +1540,7 @@ table .role-chip.role-admin,
   .brand-tag { display: none; }
   .panel-grid-2 { grid-template-columns: 1fr; }
   .page-header { flex-direction: column; align-items: flex-start; }
-  .chat-page { height: calc(100vh - 7.5rem); min-height: 24rem; }
+  .chat-page { height: calc(100vh - 7.5rem); min-height: 24rem; padding-inline: var(--space-3); }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1553,6 +1608,7 @@ table .role-chip.role-admin,
   from { transform: translate3d(0, 0, 0); }
   to { transform: translate3d(8px, -10px, 0); }
 }
+.app-rail > .rail-top,
 .app-rail > .brand,
 .app-rail > .rail-nav,
 .app-rail > .rail-foot {
@@ -1790,13 +1846,24 @@ table .role-chip.role-admin,
 .chat-page {
   max-width: 880px;
   position: relative;
+  /* Wider inline padding than the default page: Ask now sits directly against
+     the history column's hairline, and a transcript starting 1.25rem from an
+     edge reads as crowded rather than as a column. */
+  padding-inline: var(--space-4);
 }
+/* The header is a BAND, not a floating title: it carries the scope you are
+   asking in, so it must stay put and it must be separated from the answers by
+   an edge. Without one, "Company-wide / Ask" read as the first message in the
+   log. */
 .chat-topbar {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  margin-bottom: 1.1rem;
+  padding-bottom: 0.85rem;
+  margin-bottom: 0.2rem;
+  border-bottom: 1px solid var(--border);
   animation: rise-in 0.45s var(--ease) both;
 }
 .chat-topbar-copy { min-width: 0; }
