@@ -393,8 +393,7 @@ stopped updating and the asker could not tell a stale answer from a current one.
   reports "Linked" while indexing zero documents, the §5 Sources bug class).
   An expired connection is NOT also reported as unscoped: one connection is one
   problem, and reconnecting is what unblocks the rest.
-- The panel opens UPWARD — the bell sits at the bottom of a full-height rail —
-  and a bell that cannot load is silent, never an error on every page it is on.
+- The panel portals to document.body (z-index 1000) so it escapes `.app-rail`'s transform and overflow clipping, opening downward from the brand row; a bell that cannot load is silent, never an error on every page it is on.
 
 **Sources (`app/sources/`)** — one `SourceAdapter` per source; format
 conversion lives *inside* the adapter. Thin SDKs, never frameworks.
@@ -432,6 +431,7 @@ conversion lives *inside* the adapter. Thin SDKs, never frameworks.
   opens on Ask, an owner on management** — the space page is invite/connect/
   delete, all disabled for a member. Deliberately not a redirect: that
   would make the people list unreachable and bounce any link back out.
+- **Chat history recall column** aligns with Handbook design tokens (mint active gradient, indicator pill, soft wash), date grouping (Today/Yesterday/7d/older), title search, collapsible focus mode (`chat.historyCollapsed`), and non-blocking inline delete confirmation.
 
 **Marketing pages** — the two have DIFFERENT JOBS and must not share
 paragraphs. `/` states what Handbook does, one short benefit per item, and

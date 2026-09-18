@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api, Notification } from "@/lib/api";
 
 /**
@@ -20,15 +21,20 @@ import { api, Notification } from "@/lib/api";
 export function NotificationBell() {
   const [items, setItems] = useState<Notification[]>([]);
   const [open, setOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const btn = useRef<HTMLButtonElement>(null);
-  // Measured screen position for the panel. `position: fixed`, because the
-  // panel CANNOT be absolutely positioned here: `.app-rail` sets
-  // `overflow-y: auto`, and CSS computes the other axis from `visible` to
-  // `auto` when one axis is not visible -- so the rail clips horizontally and
-  // cut the panel off at its edge. Fixed positioning escapes every ancestor's
-  // overflow; nothing else does.
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // Measured screen position for the panel. Portaled directly to document.body
+  // so it reliably escapes `.app-rail`'s `transform` and `overflow-y: auto`,
+  // floating cleanly above the whole page rather than being clipped or trapped
+  // behind other layers.
   const [at, setAt] = useState<{ top: number; left: number } | null>(null);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const place = useCallback(() => {
     const r = btn.current?.getBoundingClientRect();
@@ -70,7 +76,11 @@ export function NotificationBell() {
   useEffect(() => {
     if (!open) return;
     function away(e: MouseEvent) {
-      if (!root.current?.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (root.current?.contains(target) || panelRef.current?.contains(target)) {
+        return;
+      }
+      setOpen(false);
     }
     function esc(e: KeyboardEvent) {
       if (e.key === "Escape") setOpen(false);
@@ -113,14 +123,25 @@ export function NotificationBell() {
         )}
       </button>
 
-      {open && at && (
+      {open && at && mounted && typeof document !== "undefined" && createPortal(
         <div
+          ref={panelRef}
           className="bell-panel"
           role="dialog"
           aria-label="Needs attention"
           style={{ top: at.top, left: at.left }}
         >
-          <p className="bell-head">Needs attention</p>
+          <div className="bell-head-row">
+            <p className="bell-head">Needs attention</p>
+            <button
+              type="button"
+              className="bell-close-btn"
+              onClick={() => setOpen(false)}
+              aria-label="Close notifications"
+            >
+              ×
+            </button>
+          </div>
           {items.length === 0 ? (
             /* Not an empty box: "nothing is broken" is the answer they opened
                this for, and it has to be stated to be believed. */
@@ -142,7 +163,8 @@ export function NotificationBell() {
               ))}
             </ul>
           )}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

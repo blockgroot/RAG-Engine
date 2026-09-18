@@ -126,6 +126,29 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // a reload; the list is otherwise loaded once per scope.
   const [historyKey, setHistoryKey] = useState(0);
   const [activeConversation, setActiveConversation] = useState<string | null>(null);
+  const [historyCollapsed, setHistoryCollapsed] = useState(false);
+
+  useEffect(() => {
+    try {
+      if (localStorage.getItem("chat.historyCollapsed") === "true") {
+        setHistoryCollapsed(true);
+      }
+    } catch {
+      /* storage blocked */
+    }
+  }, []);
+
+  function toggleHistoryCollapse() {
+    setHistoryCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("chat.historyCollapsed", String(next));
+      } catch {
+        /* storage blocked */
+      }
+      return next;
+    });
+  }
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -583,13 +606,15 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
 
   return (
     <AppShell me={me} variant="app">
-      <div className="chat-with-history">
+      <div className={`chat-with-history${historyCollapsed ? " is-history-collapsed" : ""}`}>
       <ChatHistory
         workspaceId={workspaceId}
         activeId={activeConversation}
         onOpen={openConversation}
         onNew={startNewChat}
         reloadKey={historyKey}
+        collapsed={historyCollapsed}
+        onToggleCollapse={toggleHistoryCollapse}
       />
       <div className="chat-page">
         {justSynced && (
@@ -601,7 +626,24 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
         )}
 
         <div className="chat-topbar">
-          <div className="chat-topbar-copy">
+          <div className="chat-topbar-start">
+            {historyCollapsed && (
+              <button
+                type="button"
+                className="chat-history-reopen-btn"
+                onClick={toggleHistoryCollapse}
+                title="Show chats"
+                aria-label="Show chats"
+              >
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <rect x="3" y="3" width="18" height="18" rx="2.5" stroke="currentColor" strokeWidth="1.75" />
+                  <line x1="9" y1="3" x2="9" y2="21" stroke="currentColor" strokeWidth="1.75" />
+                  <path d="m13 10 2 2-2 2" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                <span>Chats</span>
+              </button>
+            )}
+            <div className="chat-topbar-copy">
             {/* The space name OPENS the details panel rather than navigating
                 away — the Slack pattern, where a channel's people and settings
                 sit behind its name and the conversation stays put. Plain text
@@ -623,6 +665,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                 per ANSWER (see ChatMessageView) rather than per page: it is a
                 property of the reply, not of the box you typed into. */}
             <h1>Ask</h1>
+          </div>
           </div>
           {workspaceId && (
             <button
