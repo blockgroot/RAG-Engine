@@ -54,7 +54,7 @@ from ..llm.stages import (
 from ..llm.routed import default_model_only
 from .query_signals import log_query_signal
 from ..memory.base import ConversationContext, ConversationStore, RetrievedChunkRecord
-from ..vectorstore.base import DateRange, RetrievedChunk, VectorStore
+from ..vectorstore.base import DateRange, RetrievedChunk, VectorStore, Viewer
 from ..websearch.base import SearchResult, WebSearchProvider
 from .attachment_tools import (
     READ_FILE_TOOL,
@@ -62,6 +62,7 @@ from .attachment_tools import (
     build_preview_block,
     run_reads,
 )
+from .access_notice import restricted_notice
 from .audit import parse_audit_verdict
 from .retrieval import HybridRetriever, RetrievalResult
 from .context_assemble import assemble_context_texts, describe_hit
@@ -107,6 +108,26 @@ _MODE_TAG_RE = re.compile(r"^\s*MODE:\s*([ABC])\s*\n+(.*)", re.IGNORECASE | re.D
 
 
 logger = logging.getLogger(__name__)
+
+def _is_cacheable(result: "RagResult") -> bool:
+    """May this answer be served to the NEXT person who asks the same thing?
+
+    `query_answer_cache` is keyed on the scope, never on the asker — a
+    deliberate choice, because per-user keys would only cost hit rate while the
+    scope check had already passed. Document-level access filtering breaks that
+    premise for exactly two kinds of answer, so those two are simply not
+    written rather than the whole cache being re-keyed (which would cost every
+    scope-wide question its hit for the sake of a few restricted ones):
+
+    * an answer built from a document that is NOT readable by the whole scope —
+      it would be served verbatim to a member who cannot open that document;
+    * a "these documents are not shared with you" notice, which is a statement
+      about ONE person's access and is wrong for everybody else.
+    """
+    if not all(getattr(hit, "doc_is_public", True) for hit in result.sources):
+        return False
+    return not getattr(result, "access_restricted", False)
+
 
 def _tone_retry_addendum(mode: str) -> str:
     """Appended on the one bounded meta-language tone-compliance retry."""
@@ -221,6 +242,14 @@ class RagResult:
     audit_used: bool = False
     audit_downgraded: bool = False
     audit_reason: str | None = None
+    # True when this refusal is "documents matched but are not shared with
+    # you" rather than "nothing matched". Carried on the result because the
+    # answer TEXT is the only other place it appears, and matching on text is
+    # how a message becomes load-bearing: the API needs it to keep the
+    # documentation-gap log honest (a withheld document is not a gap in the
+    # company's documentation) and the cache needs it to not serve one
+    # person's access situation to everyone else.
+    access_restricted: bool = False
 
 
 @dataclass(frozen=True)
@@ -332,7 +361,12 @@ class RagPipeline:
         return self._settings.fallback_response
 
     def recent_chunks_for_recap(
-        self, org_id: str, *, workspace_id: str | None = None, limit: int = 40
+        self,
+        org_id: str,
+        *,
+        workspace_id: str | None = None,
+        limit: int = 40,
+        viewer: Viewer | None = None,
     ) -> list[RetrievedChunk]:
         """Recency-selected chunks from this pipeline's own pinned corpus.
 
@@ -345,6 +379,7 @@ class RagPipeline:
         return self._store.recent_chunks(
             org_id,
             self._source_provider,
+            viewer=viewer,
             workspace_id=workspace_id,
             limit=limit,
         )
@@ -372,6 +407,7 @@ class RagPipeline:
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
         attachments: list[tuple[str, str, bool]] | None = None,
+        viewer: Viewer | None = None,
     ) -> RagResult:
         """Answer ``question`` using only ``org_id``'s chunks (with optional memory).
 
@@ -441,9 +477,10 @@ class RagPipeline:
             tags=tags,
             user_question=question,
             attachments=attachments,
+            viewer=viewer,
         )
 
-        if conversation_id is None and not result.cache_hit:
+        if conversation_id is None and not result.cache_hit and _is_cacheable(result):
             self._query_cache.put(
                 org_id,
                 resolved,
@@ -474,6 +511,7 @@ class RagPipeline:
         workspace_id: str | None = None,
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
+        viewer: Viewer | None = None,
     ) -> tuple[Iterator[str], RagResult]:
         """Answer first, then stream the already-final text in chunks."""
         result = self.answer(
@@ -483,6 +521,7 @@ class RagPipeline:
             workspace_id=workspace_id,
             date_range=date_range,
             tags=tags,
+            viewer=viewer,
         )
 
         return chunk_answer(result.answer, chunk_chars), result
@@ -501,6 +540,7 @@ class RagPipeline:
         tags: list[str] | None = None,
         user_question: str | None = None,
         attachments: list[tuple[str, str, bool]] | None = None,
+        viewer: Viewer | None = None,
     ) -> RagResult:
         """First retrieve as today; recover at most once if evidence is insufficient.
 
@@ -566,6 +606,7 @@ class RagPipeline:
                 workspace_id=workspace_id,
                 date_range=date_range,
                 tags=tags,
+                viewer=viewer,
                 known_vectors={retrieval_question: query_vec},
             )
 
@@ -613,6 +654,7 @@ class RagPipeline:
                     workspace_id=workspace_id,
                     date_range=date_range,
                     tags=tags,
+                    viewer=viewer,
                 )
                 recovery_used = True
                 recovery_reason = RECOVERY_REASON_GATE_MISS
@@ -644,6 +686,9 @@ class RagPipeline:
                         budget=budget,
                         conversation_id=conversation_id,
                         org_id=org_id,
+                        workspace_id=workspace_id,
+                        viewer=viewer,
+                        query_vec=query_vec,
                     )
                 )
 
@@ -678,6 +723,7 @@ class RagPipeline:
                     workspace_id=workspace_id,
                     date_range=date_range,
                     tags=tags,
+                    viewer=viewer,
                 )
             recovery_used = True
             recovery_reason = RECOVERY_REASON_INSUFFICIENT_EVIDENCE
@@ -707,6 +753,9 @@ class RagPipeline:
                         budget=budget,
                         conversation_id=conversation_id,
                         org_id=org_id,
+                        workspace_id=workspace_id,
+                        viewer=viewer,
+                        query_vec=query_vec,
                     )
                 )
             result = self._generate(
@@ -737,6 +786,9 @@ class RagPipeline:
                     budget=budget,
                     conversation_id=conversation_id,
                     org_id=org_id,
+                    workspace_id=workspace_id,
+                    viewer=viewer,
+                    query_vec=query_vec,
                 )
             )
 
@@ -773,6 +825,7 @@ class RagPipeline:
         workspace_id: str | None = None,
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
+        viewer: Viewer | None = None,
     ) -> tuple[list[RetrievedChunk], float | None]:
         if self._retriever is not None:
             retrieval = self._retriever.retrieve(
@@ -782,6 +835,7 @@ class RagPipeline:
                 workspace_id=workspace_id,
                 date_range=date_range,
                 tags=tags,
+                viewer=viewer,
             )
             return retrieval.hits, retrieval.gate_score
         hits = self._store.query(
@@ -792,6 +846,7 @@ class RagPipeline:
             source_provider=self._source_provider,
             date_range=date_range,
             tags=tags,
+            viewer=viewer,
         )
         top_score = hits[0].score if hits else None
         return hits, top_score
@@ -831,6 +886,7 @@ class RagPipeline:
         workspace_id: str | None = None,
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
+        viewer: Viewer | None = None,
         known_vectors: dict[str, list[float]] | None = None,
     ) -> tuple[list[RetrievedChunk], float | None]:
         """Retrieve for one or more sub-questions."""
@@ -848,6 +904,7 @@ class RagPipeline:
                 workspace_id=workspace_id,
                 date_range=date_range,
                 tags=tags,
+                viewer=viewer,
             )
 
         missing = [s for s in sub_questions if s not in known]
@@ -868,6 +925,7 @@ class RagPipeline:
                 workspace_id=workspace_id,
                 date_range=date_range,
                 tags=tags,
+                viewer=viewer,
             )
             return retrieval.hits, retrieval.gate_score
 
@@ -881,6 +939,7 @@ class RagPipeline:
                 source_provider=self._source_provider,
                 date_range=date_range,
                 tags=tags,
+                viewer=viewer,
             ):
                 key = (hit.document_id, hit.chunk_index)
                 prev = merged.get(key)
@@ -1335,6 +1394,7 @@ class RagPipeline:
         workspace_id: str | None = None,
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
+        viewer: Viewer | None = None,
     ) -> _RecoveryAttempt:
         """One bounded recovery: expand retrieval expressions → re-retrieve → fuse.
 
@@ -1374,6 +1434,7 @@ class RagPipeline:
                     workspace_id=workspace_id,
                     date_range=date_range,
                     tags=tags,
+                    viewer=viewer,
                 )
             except Exception:
                 continue
@@ -1448,8 +1509,15 @@ class RagPipeline:
         budget: RequestBudget,
         org_id: str | None = None,
         conversation_id: str | None = None,
+        workspace_id: str | None = None,
+        viewer: Viewer | None = None,
+        query_vec: list[float] | None = None,
     ) -> RagResult:
-        """Internal evidence insufficient: try web search (if enabled), else fallback."""
+        """Internal evidence insufficient: try web search (if enabled), else fallback.
+
+        The single funnel every refusal passes through, which is why the
+        withheld-documents check lives here and not at the three call sites.
+        """
         min_stage = self._budget_settings.min_stage_seconds
         if (
             self._web_search is not None
@@ -1464,13 +1532,64 @@ class RagPipeline:
             )
             if web is not None:
                 return web
+
+        # Checked AFTER web search and only on the way to a refusal: this
+        # never replaces an answer, it only replaces "I don't know" with the
+        # true reason for it. One extra query, on refusals only.
+        answer = self._settings.fallback_response
+        access_restricted = False
+        if org_id and query_vec is not None and viewer is not None:
+            notice = self._withheld_notice(
+                org_id, query_vec, workspace_id=workspace_id, viewer=viewer
+            )
+            if notice is not None:
+                answer = notice
+                access_restricted = True
+
         return RagResult(
-            answer=self._settings.fallback_response,
+            answer=answer,
             answered=False,
             source=SOURCE_NONE,
             sources=hits,
             top_score=top_score,
             budget_exhausted=not budget.can_spend(min_stage),
+            access_restricted=access_restricted,
+        )
+
+    def _withheld_notice(
+        self,
+        org_id: str,
+        query_vec: list[float],
+        *,
+        workspace_id: str | None,
+        viewer: Viewer,
+    ) -> str | None:
+        """"Not shared with you" instead of "I don't know" — when that is TRUE.
+
+        Gated on the same ``similarity_threshold`` the answer path uses, so the
+        claim is exactly "a document that would have PASSED the gate was
+        removed because you cannot read it". A lower bar would send people to
+        ask for access to documents that would have been refused anyway.
+
+        Never raises: a diagnostic must cost the wording of a refusal, never
+        the refusal itself.
+        """
+        try:
+            match = self._store.restricted_match(
+                org_id,
+                query_vec,
+                workspace_id=workspace_id,
+                source_provider=self._source_provider,
+                viewer=viewer,
+                min_score=self._settings.similarity_threshold,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("restricted_match failed; falling back to the fixed refusal")
+            return None
+        if match is None:
+            return None
+        return restricted_notice(
+            match.source_provider, org_id=org_id, workspace_id=workspace_id
         )
 
     # -- Phase 8: retrieval reuse (a cheap, deterministic, non-LLM check) ---

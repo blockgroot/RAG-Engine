@@ -24,6 +24,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 from ..core.answer_sources import SOURCE_POLICY
+from ..vectorstore.base import Viewer
 
 
 @dataclass(frozen=True)
@@ -95,6 +96,13 @@ class AgentResponse:
     response_mode: str | None = None
     tone_retry_used: bool = False
     question_tone: str | None = None
+    #: True when this ungrounded answer is "documents matched but are not
+    #: shared with you", not "nothing matched". Carried so callers can tell the
+    #: two apart WITHOUT matching on the answer text: `/chat` must not log a
+    #: withheld document as a documentation gap (the document exists and is
+    #: written -- the company is not missing it), and the answer cache must not
+    #: serve one person's access situation to the next asker.
+    access_restricted: bool = False
     #: Set only by InsightsAgent. SQL points + shape; never model-drawn SVG.
     chart: dict | None = None
     chart_period: str | None = None
@@ -117,8 +125,16 @@ class Agent(ABC):
         *,
         conversation_id: str | None = None,
         workspace_id: str | None = None,
+        viewer: "Viewer | None" = None,
     ) -> AgentResponse:
         """Answer ``question`` for ``org_id`` (optionally within a conversation).
+
+        ``viewer`` (document-level access): WHO is asking, so retrieval can
+        drop documents the source itself did not share with them. ``None``
+        reads every document in scope — correct for evaluation and CLI reads,
+        never for a member's question. An agent with no corpus (GitHub,
+        Insights) may ignore it: it reads live or from SQL, so there is no
+        indexed document whose sharing could be narrower than the scope.
 
         ``workspace_id`` (Workspace-within-a-Workspace): ``None`` (default)
         answers from the org-wide space; a non-``None`` value scopes the

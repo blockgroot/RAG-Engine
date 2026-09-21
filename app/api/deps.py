@@ -9,6 +9,7 @@ router downstream must take it from here, never from client input.
 
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 
 from fastapi import Depends, HTTPException, Request
@@ -33,7 +34,11 @@ from ..agent.slack_agent import SlackAgent
 from ..agent.workspace_agent import WorkspaceAgent
 from ..auth.session import SessionClaims, decode_session_token
 from ..core.exceptions import AuthError
+from ..auth.users import get_user
 from ..db.connection import get_connection
+from ..vectorstore.base import Viewer
+
+logger = logging.getLogger(__name__)
 
 SESSION_COOKIE_NAME = "session"
 # First-party cookie. Safe because the browser talks to the frontend origin
@@ -211,3 +216,34 @@ def require_workspace_owner(role: str = Depends(get_workspace_role)) -> str:
     if role != "owner":
         raise HTTPException(status_code=403, detail="Workspace owner role required")
     return role
+
+
+def viewer_for(session) -> Viewer:
+    """The ``Viewer`` for a signed-in session — WHO may read which documents.
+
+    Resolved HERE, from the session, for the same reason ``org_id`` is: the API
+    is the only place identity enters a request, and everything downstream
+    receives it rather than looking it up. A graph node or an agent resolving
+    its own asker is how one path ends up reading as somebody else.
+
+    The email comes from the ``users`` row rather than the JWT so that a
+    session issued before this existed still resolves, with no re-login and no
+    token migration. One indexed primary-key lookup on a path that already
+    spends ~6 LLM calls.
+
+    Falls back to ``Viewer.unrestricted()`` only when there is no session at
+    all (internal and CLI callers). A SIGNED-IN user whose row cannot be read
+    gets ``public_only``, which fails CLOSED: they see scope-public documents
+    and nothing else. The two must not share a value -- "no email" meaning
+    "no filter" is exactly how an identity failure turns into a leak.
+    """
+    if session is None:
+        return Viewer.unrestricted()
+    try:
+        user = get_user(session.user_id)
+    except Exception:  # noqa: BLE001 - never fail a question over an identity read
+        logger.exception("Could not resolve viewer for user %s", session.user_id)
+        return Viewer.public_only_viewer()
+    if user is None or not user.email:
+        return Viewer.public_only_viewer()
+    return Viewer(email=user.email)

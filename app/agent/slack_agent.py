@@ -47,6 +47,7 @@ from ..core.answer_sources import SOURCE_SLACK
 from ..core.streaming import chunk_answer
 from ..rag.prompts import build_slack_recap_prompt
 from .base import AgentResponse
+from ..vectorstore.base import Viewer
 from .rag_pipeline_agent import RagPipelineAgent
 
 logger = logging.getLogger(__name__)
@@ -103,16 +104,18 @@ class SlackAgent(RagPipelineAgent):
         *,
         conversation_id: str | None = None,
         workspace_id: str | None = None,
+        viewer: Viewer | None = None,
     ) -> AgentResponse:
         response = super().answer(
             question,
             org_id,
             conversation_id=conversation_id,
             workspace_id=workspace_id,
+            viewer=viewer,
         )
         if response.grounded:
             return response
-        return self._recap(question, org_id, workspace_id=workspace_id) or response
+        return self._recap(question, org_id, workspace_id=workspace_id, viewer=viewer) or response
 
     def answer_stream(
         self,
@@ -121,16 +124,18 @@ class SlackAgent(RagPipelineAgent):
         *,
         conversation_id: str | None = None,
         workspace_id: str | None = None,
+        viewer: Viewer | None = None,
     ) -> tuple[Iterator[str], AgentResponse]:
         chunks, response = super().answer_stream(
             question,
             org_id,
             conversation_id=conversation_id,
             workspace_id=workspace_id,
+            viewer=viewer,
         )
         if response.grounded:
             return chunks, response
-        recap = self._recap(question, org_id, workspace_id=workspace_id)
+        recap = self._recap(question, org_id, workspace_id=workspace_id, viewer=viewer)
         if recap is None:
             return chunks, response
         # The similarity answer is discarded, so its chunk iterator must be
@@ -139,7 +144,12 @@ class SlackAgent(RagPipelineAgent):
         return chunk_answer(recap.answer), recap
 
     def _recap(
-        self, question: str, org_id: str, *, workspace_id: str | None
+        self,
+        question: str,
+        org_id: str,
+        *,
+        workspace_id: str | None,
+        viewer: Viewer | None = None,
     ) -> AgentResponse | None:
         """One recency-selected retry. ``None`` means "keep the original answer".
 
@@ -152,7 +162,10 @@ class SlackAgent(RagPipelineAgent):
         pipeline = self.pipeline
         try:
             chunks = pipeline.recent_chunks_for_recap(
-                org_id, workspace_id=workspace_id, limit=_RECAP_CHUNK_LIMIT
+                org_id,
+                workspace_id=workspace_id,
+                limit=_RECAP_CHUNK_LIMIT,
+                viewer=viewer,
             )
         except NotImplementedError:
             return None

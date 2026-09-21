@@ -10,7 +10,15 @@ from ..core.exceptions import EmbeddingProviderError, ProviderError
 from ..db.connection import get_connection
 from datetime import datetime
 
-from .base import DateRange, OrganizationRef, RetrievedChunk, StoredSourceDocument, VectorStore
+from .base import (
+    DateRange,
+    OrganizationRef,
+    RestrictedMatch,
+    RetrievedChunk,
+    StoredSourceDocument,
+    VectorStore,
+    Viewer,
+)
 from .bm25_ranking import bm25_rank
 
 def _to_db_vector(embedding: list[float] | np.ndarray) -> Vector:
@@ -19,6 +27,40 @@ def _to_db_vector(embedding: list[float] | np.ndarray) -> Vector:
     if arr.size == 0:
         raise EmbeddingProviderError("embedding is empty")
     return Vector(arr.tolist())
+
+
+# The one place the document-level access predicate is spelled. Both retrieval
+# queries and `restricted_match` splice THIS fragment, so the read side cannot
+# drift from itself: a filter written out twice is a filter that is wrong in
+# one of the two places. The ACL array is a BOUND parameter, never formatted
+# in -- an entry is a user-supplied email.
+_VIEWER_SQL = "({alias}.doc_is_public OR {alias}.doc_viewers && %s::text[])"
+
+
+def _normalize_viewers(viewers: list[str] | None) -> list[str] | None:
+    """Lowercase, de-duplicate and drop blanks -- the write side of ``Viewer.acl``.
+
+    Both sides must agree on spelling or a real grant silently stops matching,
+    which fails CLOSED (the person is locked out) rather than open. That is the
+    safe direction, and also the one nobody reports as a security bug -- so it
+    is normalized in exactly one place.
+    """
+    if not viewers:
+        return None
+    seen = {entry.strip().lower() for entry in viewers if entry and entry.strip()}
+    return sorted(seen) or None
+
+
+def _viewer_clause(viewer: "Viewer | None", alias: str = "d") -> tuple[str, list[list[str]]]:
+    """Return ``(sql_fragment, params)`` for ``viewer``.
+
+    An unrestricted viewer yields ``("", [])`` -- the literal ABSENCE of a
+    clause, not a clause that happens to match everything, so every read that
+    predates document-level access is byte-identical at the SQL level.
+    """
+    if viewer is None or viewer.is_unrestricted:
+        return "", []
+    return " AND " + _VIEWER_SQL.format(alias=alias), [viewer.acl()]
 
 
 class PgVectorStore(VectorStore):
@@ -107,6 +149,7 @@ class PgVectorStore(VectorStore):
         source_provider: str | None = None,
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
+        viewer: Viewer | None = None,
     ) -> list[RetrievedChunk]:
         if not query_embedding:
             raise EmbeddingProviderError("query_embedding is empty")
@@ -114,9 +157,10 @@ class PgVectorStore(VectorStore):
         vector = _to_db_vector(query_embedding)
         after = date_range.after if date_range else None
         before = date_range.before if date_range else None
+        viewer_sql, viewer_params = _viewer_clause(viewer)
         with get_connection(self._settings) as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT c.content,
                        1 - (c.embedding <=> %s) AS score,
                        c.document_id::text,
@@ -125,7 +169,8 @@ class PgVectorStore(VectorStore):
                        d.title,
                        d.source_provider,
                        d.source_last_editor,
-                       d.source_last_modified
+                       d.source_last_modified,
+                       coalesce(d.doc_is_public, TRUE)
                 FROM chunks c
                 LEFT JOIN documents d ON d.id = c.document_id
                 WHERE c.org_id = %s::uuid
@@ -134,6 +179,7 @@ class PgVectorStore(VectorStore):
                   AND (%s::timestamptz IS NULL OR d.source_last_modified >= %s::timestamptz)
                   AND (%s::timestamptz IS NULL OR d.source_last_modified <= %s::timestamptz)
                   AND (%s::text[] IS NULL OR d.tags && %s::text[])
+                  {viewer_sql.lstrip()}
                 ORDER BY c.embedding <=> %s
                 LIMIT %s
                 """,
@@ -149,6 +195,7 @@ class PgVectorStore(VectorStore):
                     before,
                     tags,
                     tags,
+                    *viewer_params,
                     vector,
                     top_k,
                 ),
@@ -165,6 +212,7 @@ class PgVectorStore(VectorStore):
                 source_provider=row[6],
                 last_editor=(str(row[7]).strip() if row[7] else None),
                 last_modified=row[8],
+                doc_is_public=bool(row[9]),
             )
             for row in rows
         ]
@@ -188,6 +236,7 @@ class PgVectorStore(VectorStore):
         source_provider: str | None = None,
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
+        viewer: Viewer | None = None,
     ) -> list[RetrievedChunk]:
         """Full-text keyword search within one org."""
         if not query_embedding:
@@ -198,12 +247,17 @@ class PgVectorStore(VectorStore):
         vector = _to_db_vector(query_embedding)
         after = date_range.after if date_range else None
         before = date_range.before if date_range else None
+        # The access filter goes INSIDE the candidate CTE, i.e. before BM25
+        # re-ranks in Python: a document the asker cannot open must never
+        # reach the ranking stage, let alone the prompt.
+        viewer_sql, viewer_params = _viewer_clause(viewer, alias="fd")
         params: list = [
             source_provider, source_provider, after, after, before, before, tags, tags,
+            *viewer_params,
         ]
         with get_connection(self._settings) as conn:
             rows = conn.execute(
-                """
+                f"""
                 WITH matched AS (
                     SELECT c.content,
                            c.document_id,
@@ -219,6 +273,7 @@ class PgVectorStore(VectorStore):
                       AND (%s::timestamptz IS NULL OR fd.source_last_modified >= %s::timestamptz)
                       AND (%s::timestamptz IS NULL OR fd.source_last_modified <= %s::timestamptz)
                       AND (%s::text[] IS NULL OR fd.tags && %s::text[])
+                      {viewer_sql.lstrip()}
                     ORDER BY ts_rank(
                         c.content_tsv, websearch_to_tsquery('english', %s)
                     ) DESC
@@ -232,7 +287,8 @@ class PgVectorStore(VectorStore):
                        d.title,
                        d.source_provider,
                        d.source_last_editor,
-                       d.source_last_modified
+                       d.source_last_modified,
+                       coalesce(d.doc_is_public, TRUE)
                 FROM matched m
                 LEFT JOIN documents d ON d.id = m.document_id
                 """,
@@ -269,6 +325,7 @@ class PgVectorStore(VectorStore):
                     source_provider=row[6],
                     last_editor=(str(row[7]).strip() if row[7] else None),
                     last_modified=row[8],
+                    doc_is_public=bool(row[9]),
                 )
             )
         return out
@@ -280,8 +337,14 @@ class PgVectorStore(VectorStore):
         *,
         workspace_id: str | None = None,
         limit: int = 40,
+        viewer: Viewer | None = None,
     ) -> list[RetrievedChunk]:
         """Newest chunks first, by the document's own source timestamp.
+
+        Carries the same ``viewer`` filter as ``query``: "catch me up on the
+        last few days" reads content the same way a question does, so a recap
+        that skipped the access filter would hand over exactly the documents
+        every other path withholds.
 
         Orders on ``source_last_modified`` (when the thread last had a reply)
         rather than ``documents.created_at`` (when we happened to ingest it) —
@@ -293,9 +356,10 @@ class PgVectorStore(VectorStore):
         in reading order, so the summarizer sees a conversation rather than
         shuffled fragments.
         """
+        viewer_sql, viewer_params = _viewer_clause(viewer)
         with get_connection(self._settings) as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT c.content, c.document_id::text, c.chunk_index,
                        c.org_id::text, d.title, d.source_external_id
                 FROM chunks c
@@ -303,12 +367,13 @@ class PgVectorStore(VectorStore):
                 WHERE c.org_id = %s::uuid
                   AND c.workspace_id IS NOT DISTINCT FROM %s::uuid
                   AND d.source_provider = %s
+                  {viewer_sql.lstrip()}
                 ORDER BY d.source_last_modified DESC NULLS LAST,
                          d.created_at DESC,
                          c.chunk_index ASC
                 LIMIT %s
                 """,
-                (org_id, workspace_id, provider, limit),
+                (org_id, workspace_id, provider, *viewer_params, limit),
             ).fetchall()
         return [
             RetrievedChunk(
@@ -322,6 +387,61 @@ class PgVectorStore(VectorStore):
             )
             for r in rows
         ]
+
+    def restricted_match(
+        self,
+        org_id: str,
+        query_embedding: list[float],
+        *,
+        workspace_id: str | None = None,
+        source_provider: str | None = None,
+        viewer: Viewer | None = None,
+        min_score: float = 0.0,
+    ) -> RestrictedMatch | None:
+        """Best-scoring chunk in scope that ``viewer`` may NOT read, if any.
+
+        The predicate is the exact NEGATION of `_VIEWER_SQL`, so "withheld"
+        can only ever mean "what the retrieval filter removed" -- the two
+        cannot disagree about a document. Returns the provider and the score
+        and nothing else; the content, title and id of a restricted document
+        never leave this method.
+        """
+        if viewer is None or viewer.is_unrestricted:
+            return None
+        if not query_embedding:
+            return None
+
+        vector = _to_db_vector(query_embedding)
+        acl = viewer.acl()
+        with get_connection(self._settings) as conn:
+            row = conn.execute(
+                f"""
+                SELECT 1 - (c.embedding <=> %s) AS score, d.source_provider
+                FROM chunks c
+                JOIN documents d ON d.id = c.document_id
+                WHERE c.org_id = %s::uuid
+                  AND c.workspace_id IS NOT DISTINCT FROM %s::uuid
+                  AND (%s::text IS NULL OR d.source_provider = %s::text)
+                  AND NOT {_VIEWER_SQL.format(alias="d")}
+                  AND 1 - (c.embedding <=> %s) >= %s
+                ORDER BY c.embedding <=> %s
+                LIMIT 1
+                """,
+                (
+                    vector,
+                    org_id,
+                    workspace_id,
+                    source_provider,
+                    source_provider,
+                    acl,
+                    vector,
+                    min_score,
+                    vector,
+                ),
+            ).fetchone()
+        if row is None:
+            return None
+        return RestrictedMatch(score=float(row[0]), source_provider=row[1])
 
     def list_source_documents(
         self, org_id: str, provider: str, workspace_id: str | None = None
@@ -365,6 +485,8 @@ class PgVectorStore(VectorStore):
         workspace_id: str | None = None,
         tags: list[str] | None = None,
         last_editor: str | None = None,
+        is_public: bool = True,
+        viewers: list[str] | None = None,
     ) -> str:
         if len(chunks) != len(embeddings):
             raise ProviderError(
@@ -407,9 +529,10 @@ class PgVectorStore(VectorStore):
                 """
                 INSERT INTO documents (
                     org_id, title, source_uri, source_provider, source_external_id,
-                    source_last_modified, workspace_id, tags, source_last_editor
+                    source_last_modified, workspace_id, tags, source_last_editor,
+                    doc_is_public, doc_viewers
                 )
-                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid, %s, %s)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -422,6 +545,8 @@ class PgVectorStore(VectorStore):
                     workspace_id,
                     tags,
                     last_editor,
+                    is_public,
+                    _normalize_viewers(viewers),
                 ),
             ).fetchone()
             document_id = doc_row[0]
@@ -459,6 +584,8 @@ class PgVectorStore(VectorStore):
         workspace_id: str | None = None,
         tags: list[str] | None = None,
         last_editor: str | None = None,
+        is_public: bool = True,
+        viewers: list[str] | None = None,
     ) -> str:
         """Upsert metadata-only row so empty pages are not forever "new"."""
         if not external_id:
@@ -493,9 +620,10 @@ class PgVectorStore(VectorStore):
                 """
                 INSERT INTO documents (
                     org_id, title, source_uri, source_provider, source_external_id,
-                    source_last_modified, workspace_id, tags, source_last_editor
+                    source_last_modified, workspace_id, tags, source_last_editor,
+                    doc_is_public, doc_viewers
                 )
-                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid, %s, %s)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -508,9 +636,44 @@ class PgVectorStore(VectorStore):
                     workspace_id,
                     tags,
                     last_editor,
+                    is_public,
+                    _normalize_viewers(viewers),
                 ),
             ).fetchone()
         return str(row[0])
+
+    def set_source_document_access(
+        self,
+        org_id: str,
+        *,
+        provider: str,
+        entries: list[tuple[str, bool, list[str] | None]],
+        workspace_id: str | None = None,
+    ) -> int:
+        """Replace the stored access set for documents already in the index."""
+        if not entries:
+            return 0
+        rows = [
+            (is_public, _normalize_viewers(viewers), org_id, provider, workspace_id, external_id)
+            for external_id, is_public, viewers in entries
+            if external_id
+        ]
+        if not rows:
+            return 0
+        with get_connection(self._settings) as conn:
+            cursor = conn.cursor()
+            cursor.executemany(
+                """
+                UPDATE documents
+                SET doc_is_public = %s, doc_viewers = %s
+                WHERE org_id = %s::uuid
+                  AND source_provider = %s
+                  AND workspace_id IS NOT DISTINCT FROM %s::uuid
+                  AND source_external_id = %s
+                """,
+                rows,
+            )
+            return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else len(rows)
 
     def delete_source_documents(
         self,

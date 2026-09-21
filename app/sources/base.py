@@ -21,6 +21,44 @@ from datetime import datetime
 
 
 @dataclass(frozen=True)
+class DocAccess:
+    """WHO may read one document, as the SOURCE itself reports it.
+
+    Document-level access filtering: the smallest private unit used to be a
+    SPACE, because we sync with one admin's token and stored no per-document
+    ACL — so a Drive file shared with two people became readable by everyone
+    in the scope that indexed it. This is the adapter's answer to "and who was
+    it actually shared with?".
+
+    ``is_public`` means public *within the scope that indexed it* — a Drive
+    "anyone with the link" file, or any provider that cannot report sharing at
+    all. It is NOT a claim that the document is public to the internet.
+
+    ``viewers`` are ACL ENTRIES, and their spelling is a contract with
+    ``vectorstore.base.Viewer.acl``: a lowercased email, or ``domain:<host>``.
+    An entry no ``Viewer`` can ever produce (``group:<address>``, which needs
+    a directory we do not have) fails CLOSED — the document is withheld rather
+    than shown to the wrong person.
+
+    ``None`` — the absence of a ``DocAccess`` — is NOT "public". It means the
+    adapter could not determine sharing, and for an ACL-capable provider the
+    ingestion pipeline skips that document rather than indexing it readable.
+    """
+
+    is_public: bool
+    viewers: tuple[str, ...] = ()
+
+    @classmethod
+    def scope_public(cls) -> "DocAccess":
+        """Readable by everyone in the scope — today's behaviour, spelled out."""
+        return cls(is_public=True, viewers=())
+
+    @classmethod
+    def restricted(cls, viewers: list[str]) -> "DocAccess":
+        return cls(is_public=False, viewers=tuple(viewers))
+
+
+@dataclass(frozen=True)
 class SourceRef:
     """A lightweight pointer to one document, returned by ``list_documents``.
 
@@ -36,6 +74,13 @@ class SourceRef:
     # would need an extra request per document should leave this None rather
     # than turning one listing into N calls.
     last_editor: str | None = None
+    # Who may read it, when the LISTING already knows. Drive's per-file
+    # `permissions` ride in the `files.list` we already make, which is what
+    # makes revocation free: an unshared file is re-stamped on the next sync
+    # even though its content never changed and is never re-fetched
+    # (see ingestion.pipeline._plan_refs). ``None`` = this adapter does not
+    # report sharing from a listing.
+    access: "DocAccess | None" = None
 
 
 @dataclass(frozen=True)
@@ -56,6 +101,10 @@ class SourceDocument:
     # a Slack channel rename moves no message id, so a name-based tag would
     # silently stop matching (see slack_utils.refresh_channel_names).
     tags: list[str] | None = None
+    # Who may read this document (see ``DocAccess``). ``None`` means the
+    # adapter reports no sharing information — which for an ACL-capable
+    # provider means the document is SKIPPED, never indexed readable.
+    access: "DocAccess | None" = None
 
 
 class SourceAdapter(ABC):

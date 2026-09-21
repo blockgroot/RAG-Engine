@@ -123,11 +123,15 @@ def wiring(monkeypatch):
 
 def _set_activity(monkeypatch, text="alice: shipped it", fail=False, notes=(), url="https://slack/1"):
     """Stub fetch_activity with a digest (items + notes), not a bare string."""
-    def _fetch(provider, org_id, since, *, workspace_id=None):
+    def _fetch(provider, org_id, since, *, workspace_id=None, viewer=None):
         if fail:
             raise ProviderError("slack is down")
         _fetch.since = since
         _fetch.workspace_id = workspace_id
+        # A scheduler is personal, so the digest must be read as its owner --
+        # otherwise a weekly digest mails someone the contents of every
+        # document in scope they were never shared on.
+        _fetch.viewer = viewer
         items = (ActivityItem(summary=text, url=url),) if text else ()
         return ActivityDigest(items=items, notes=tuple(notes), text=text)
 
@@ -277,7 +281,7 @@ def test_the_rows_space_reaches_the_fetcher(monkeypatch, wiring):
     """
     seen: dict = {}
 
-    def _fetch(provider, org_id, since, *, workspace_id=None):
+    def _fetch(provider, org_id, since, *, workspace_id=None, viewer=None):
         seen["workspace_id"] = workspace_id
         return ActivityDigest(items=(ActivityItem("a: hi"),), text="a: hi")
 
@@ -439,7 +443,7 @@ def test_the_prompt_forbids_claiming_coverage_it_did_not_have():
 
 def test_a_digest_with_only_notes_counts_as_no_activity(monkeypatch, wiring):
     """"Channels checked: …" is not activity — the LLM must stay unused."""
-    def _fetch(provider, org_id, since, *, workspace_id=None):
+    def _fetch(provider, org_id, since, *, workspace_id=None, viewer=None):
         return ActivityDigest(items=(), notes=("Channels checked: #quiet.",), text="")
 
     monkeypatch.setattr(runner, "fetch_activity", _fetch)

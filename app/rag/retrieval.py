@@ -24,7 +24,7 @@ from dataclasses import dataclass
 
 from ..config.settings import RagSettings, RetrievalSettings
 from ..reranker.base import Reranker
-from ..vectorstore.base import DateRange, RetrievedChunk, VectorStore
+from ..vectorstore.base import DateRange, RetrievedChunk, VectorStore, Viewer
 
 
 # Ceiling on concurrent first-stage searches for ONE question. Each in-flight
@@ -81,6 +81,7 @@ class HybridRetriever:
         workspace_id: str | None = None,
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
+        viewer: Viewer | None = None,
     ) -> RetrievalResult:
         """Retrieve for ``query_text``; optionally fuse extra (sub-)queries first.
 
@@ -97,6 +98,12 @@ class HybridRetriever:
         ``tags``: an optional hard filter (e.g. department labels), same
         no-op-when-``None`` and pass-through-to-both-legs behaviour as
         ``date_range``.
+
+        ``viewer`` (document-level access): WHO is asking, passed to both legs
+        so a document the asker cannot open cannot reach them through either.
+        ``None`` reads every document in scope, which is what ingestion,
+        evaluation and the CLI want and what every member-facing path must NOT
+        pass — see ``tests/test_doc_access.py``.
         """
         top_k = self._rag_settings.top_k
         pool = self._settings.candidate_pool
@@ -113,6 +120,7 @@ class HybridRetriever:
             workspace_id=workspace_id,
             date_range=date_range,
             tags=tags,
+            viewer=viewer,
         )
 
         if len(ranked_lists) == 1:
@@ -142,6 +150,7 @@ class HybridRetriever:
         workspace_id: str | None = None,
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
+        viewer: Viewer | None = None,
     ) -> list[list[RetrievedChunk]]:
         """Run every first-stage search concurrently, one ranked list per query.
 
@@ -174,6 +183,7 @@ class HybridRetriever:
                     source_provider=self._source_provider,
                     date_range=date_range,
                     tags=tags,
+                    viewer=viewer,
                 )
             else:
                 try:
@@ -186,6 +196,7 @@ class HybridRetriever:
                         source_provider=self._source_provider,
                         date_range=date_range,
                         tags=tags,
+                        viewer=viewer,
                     )
                 except NotImplementedError:
                     hits = []

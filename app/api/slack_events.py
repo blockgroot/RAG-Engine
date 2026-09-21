@@ -49,6 +49,7 @@ from ..agent.routing import _NO_MATCH, choose_agent, choose_scope
 from ..feedback import record_gap
 from ..auth.credentials import get_live_connection_token
 from ..auth.users import get_user_by_email
+from ..vectorstore.base import Viewer
 from ..config.settings import SlackSettings
 from ..core.exceptions import ProviderError
 from ..db.connection import get_connection
@@ -223,6 +224,7 @@ def _answer(
     tags: list[str] | None,
     scope_label: str | None = None,
     user_id: str | None = None,
+    viewer: Viewer | None = None,
 ) -> str:
     """Run the existing pipeline. ``tags`` set => channel-scoped Slack only.
 
@@ -237,15 +239,29 @@ def _answer(
     COUNT(DISTINCT user_id). Slack has no thumbs yet, so this surface writes
     gaps and never ratings.
     """
+    # A CHANNEL reply is read by everyone in the room, so it may only ever be
+    # built from documents the whole scope can read. Answering a channel as the
+    # ASKER would publish their private documents to every other member --
+    # the widest hole this feature could have, and one the asker never chose.
+    # `scope_label is None` is exactly the channel case (a DM always names its
+    # scope), and it is decided HERE rather than at the call site so a future
+    # caller cannot forget it.
+    if scope_label is None:
+        viewer = Viewer.public_only_viewer()
+
     if tags:
         # Pinned to Slack and filtered to one channel. Goes through the agent's
         # pipeline rather than the routing graph because `Agent.answer` has no
         # tag argument -- and it must not gain one: a tag filter is meaningful
         # for exactly this caller, and every other agent would have to ignore it.
         result = get_slack_agent().pipeline.answer(
-            question, org_id=org_id, workspace_id=workspace_id, tags=tags
+            question,
+            org_id=org_id,
+            workspace_id=workspace_id,
+            tags=tags,
+            viewer=viewer,
         )
-        if not result.answered:
+        if not result.answered and not result.access_restricted:
             record_gap(
                 org_id=org_id,
                 question=question,
@@ -295,6 +311,12 @@ def _answer(
             # so the people they are collected on cannot read them. Answering
             # "member" keeps the floor here and can only ever omit a panel.
             "role": "member",
+            # The asker was already resolved to a Handbook account above (we
+            # refuse outright without one), so document-level access applies
+            # here exactly as it does in the app -- a bot that answered from
+            # documents the asker cannot open would be the widest hole of all,
+            # since a channel reply is read by everyone in the room.
+            "viewer": viewer,
         }
     )
     response = state["response"]
@@ -307,7 +329,9 @@ def _answer(
     # diagnostic field must cost the gap log, never the answer. Absent =>
     # treated as grounded, so a gap is only ever recorded when we KNOW there
     # was one.
-    if not getattr(response, "grounded", True):
+    if not getattr(response, "grounded", True) and not getattr(
+        response, "access_restricted", False
+    ):
         record_gap(
             org_id=org_id,
             question=question,
@@ -485,7 +509,17 @@ def _handle(event: dict, team_id: str) -> None:
 
     try:
         answer = _answer(
-            text, org_id, answer_workspace_id, tags, scope_label, user_id=user.id
+            text,
+            org_id,
+            answer_workspace_id,
+            tags,
+            scope_label,
+            user_id=user.id,
+            # `user` is the Handbook account this Slack identity resolved to,
+            # so their document access here is the same as in the app. Built
+            # from the resolved row, not from the Slack profile email, so the
+            # two surfaces can never disagree about who is asking.
+            viewer=Viewer(email=user.email),
         )
     except Exception as exc:  # noqa: BLE001 - a failed answer must still reply
         logger.warning("slack.bot answer failed for org %s: %s", org_id, exc, exc_info=True)

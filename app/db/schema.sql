@@ -85,6 +85,36 @@ UPDATE documents
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_last_editor TEXT;
 CREATE INDEX IF NOT EXISTS idx_documents_tags ON documents USING gin (tags);
 
+-- Document-level access filtering. The smallest private unit used to be a
+-- SPACE: we sync with one admin's token, so a Drive file shared with two
+-- people became readable by everyone in the scope that indexed it. These two
+-- columns are the whole mechanism -- who may retrieve this row, captured at
+-- sync from the source's own sharing rules.
+--
+-- `doc_is_public` DEFAULTS TRUE, and that default is the migration: every row
+-- written before this shipped keeps exactly its old meaning ("readable by the
+-- scope that indexed it"), so nothing goes dark at deploy and no backfill is
+-- needed. It also stays TRUE for every provider that cannot report an ACL
+-- (see sources.factory.ACL_CAPABLE) -- Notion has no per-page permission API,
+-- so pretending otherwise would be a claim we cannot keep.
+--
+-- `doc_viewers` holds ACL ENTRIES, not user ids: a lowercased email, or
+-- `domain:<host>`. Emails rather than `users.id` because a file is routinely
+-- shared with someone who has not signed up yet -- storing the id would mean
+-- inventing an account at sync time, and the entry starts matching by itself
+-- the day they log in. Ignored entirely when `doc_is_public`.
+--
+-- Fail-closed lives at WRITE time, not here: an ACL-capable provider that
+-- cannot read a file's permissions skips the document rather than indexing it
+-- public (app/ingestion/pipeline.py). A NULL `doc_viewers` with
+-- `doc_is_public = FALSE` is therefore "nobody but the connecting admin",
+-- which is the correct reading of "we could not determine sharing".
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS doc_is_public BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS doc_viewers TEXT[];
+-- GIN, because the retrieval predicate is an array OVERLAP (`&&`) evaluated
+-- per candidate row inside the same WHERE clause that already pins org_id.
+CREATE INDEX IF NOT EXISTS idx_documents_viewers ON documents USING gin (doc_viewers);
+
 
 -- Chunks of a document + their embedding vector. Org-scoped (denormalized org_id
 -- so every retrieval query can filter by tenant without a join).

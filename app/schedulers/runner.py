@@ -33,6 +33,7 @@ from ..core.exceptions import ConfigurationError
 from ..llm import build_llm_provider
 from ..llm.routed import default_model_only
 from ..llm.base import LLMProvider
+from ..vectorstore.base import Viewer
 from ..workspaces.store import get_workspace_name
 from . import reports
 from .activity import fetch_activity
@@ -148,8 +149,16 @@ def run_scheduler_once(
     # A scheduler created against a sub-workspace's connection must keep
     # reading that connection, never silently fall back to the org-wide one —
     # a space sees ONLY its own rows (CLAUDE.md §3).
+    # A scheduler is PERSONAL, so the digest reads the index as the person who
+    # created it: document-level access applies here exactly as it does to a
+    # question they type. Without this, a weekly Drive digest would mail them
+    # the contents of every file in the folder they were never shared on.
     digest = fetch_activity(
-        scheduler.provider, scheduler.org_id, since, workspace_id=scope_id
+        scheduler.provider,
+        scheduler.org_id,
+        since,
+        workspace_id=scope_id,
+        viewer=Viewer(email=user.email),
     )
     notes = list(digest.notes)
     if scheduler.last_run_at is None:

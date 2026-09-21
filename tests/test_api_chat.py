@@ -221,7 +221,7 @@ def test_chat_stream_emits_error_event_when_llm_is_rate_limited(client_and_sessi
     client, cookies, _org_id, _ = client_and_session
 
     class _BoomAgent:
-        def answer_stream(self, question, org_id, conversation_id=None, workspace_id=None):
+        def answer_stream(self, question, org_id, conversation_id=None, workspace_id=None, viewer=None):
             raise LLMProviderError(
                 "LLM API error: Error code: 429 - All models exhausted"
             )

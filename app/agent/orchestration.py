@@ -30,6 +30,7 @@ from typing import Any, Callable, Iterator, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+from ..vectorstore.base import Viewer
 from .base import AgentResponse
 
 # Keys a caller may pass as ``requested_agent`` — anything else (including
@@ -57,6 +58,11 @@ class AgentState(TypedDict, total=False):
     chart_refusal: str | None
     user_id: str | None
     role: str | None
+    # WHO is asking, for document-level access filtering. Carried on the state
+    # rather than resolved in a node: the email comes from the signed session
+    # at the API edge, and a graph node is exactly the wrong place to look up
+    # an identity (see api/deps -- org_id follows the same rule).
+    viewer: "Viewer | None"
 
 
 def route_agent_key(workspace_id: str | None, requested_agent: str | None) -> str:
@@ -97,6 +103,7 @@ def _agent_node(getter: Callable[[], Any]) -> Callable[[AgentState], dict]:
                 state["org_id"],
                 conversation_id=state.get("conversation_id"),
                 workspace_id=state.get("workspace_id"),
+                viewer=state.get("viewer"),
             )
             return {"chunks": chunks, "response": response}
         response = agent.answer(
@@ -104,6 +111,7 @@ def _agent_node(getter: Callable[[], Any]) -> Callable[[AgentState], dict]:
             state["org_id"],
             conversation_id=state.get("conversation_id"),
             workspace_id=state.get("workspace_id"),
+            viewer=state.get("viewer"),
         )
         return {"response": response}
 
@@ -118,6 +126,7 @@ def _insights_node(getter: Callable[[], Any]) -> Callable[[AgentState], dict]:
         kwargs = {
             "conversation_id": state.get("conversation_id"),
             "workspace_id": state.get("workspace_id"),
+            "viewer": state.get("viewer"),
             "spec": state.get("chart_spec"),
             "refusal": state.get("chart_refusal"),
             "user_id": state.get("user_id"),

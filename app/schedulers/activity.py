@@ -28,6 +28,8 @@ whole-workspace coverage it never had.
 
 from __future__ import annotations
 
+from ..vectorstore.base import Viewer
+
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -215,8 +217,15 @@ def fetch_indexed_activity(
     *,
     provider: str,
     workspace_id: str | None = None,
+    viewer: "Viewer | None" = None,
 ) -> ActivityDigest:
     """Documents that CHANGED since ``since``, read from our own index.
+
+    ``viewer`` applies document-level access exactly as retrieval does. A
+    scheduler is PERSONAL (``(org_id, user_id)``), so a digest is one person
+    reading the index on a timer -- and a digest that skipped the filter would
+    be the widest hole in the feature: it would email them the contents of
+    every document they are not allowed to open, unprompted.
 
     Why the index rather than the service's API
     ------------------------------------------
@@ -256,6 +265,12 @@ def fetch_indexed_activity(
 
     from ..db.connection import get_connection
 
+    viewer_sql = ""
+    viewer_params: list = []
+    if viewer is not None and not viewer.is_unrestricted:
+        viewer_sql = "AND (d.doc_is_public OR d.doc_viewers && %s::text[])"
+        viewer_params = [viewer.acl()]
+
     with get_connection() as conn:
         rows = conn.execute(
             f"""
@@ -271,11 +286,12 @@ def fetch_indexed_activity(
               AND d.source_provider = %s
               AND d.workspace_id IS NOT DISTINCT FROM %s
               AND d.source_last_modified > %s
+              {viewer_sql}
             GROUP BY d.id, d.title, d.source_uri, d.source_last_modified
             ORDER BY d.source_last_modified DESC
             LIMIT {MAX_INDEXED_DOCS + 1}
             """,
-            (org_id, org_id, provider, workspace_id, since),
+            (org_id, org_id, provider, workspace_id, since, *viewer_params),
         ).fetchall()
 
     # One extra row was requested purely to detect the cap without a second
@@ -318,6 +334,7 @@ def fetch_github_activity(
     since: datetime,
     *,
     workspace_id: str | None = None,
+    viewer: "Viewer | None" = None,
 ) -> ActivityDigest:
     """Commits pushed across this connection's authorized repos since ``since``.
 
@@ -330,6 +347,10 @@ def fetch_github_activity(
     repo should not cost the user every other repo's activity, and it must
     not silently make the report look complete either.
     """
+    # Accepted and ignored: GitHub embeds nothing, so there is no indexed
+    # document whose sharing could be narrower than the connection's own.
+    del viewer
+
     from ..githublive import build_github_reader
     from ..githublive.scope import load_scope
 
@@ -418,9 +439,10 @@ def _indexed_fetcher(provider: str):
         since: datetime,
         *,
         workspace_id: str | None = None,
+        viewer: "Viewer | None" = None,
     ) -> ActivityDigest:
         return fetch_indexed_activity(
-            org_id, since, provider=provider, workspace_id=workspace_id
+            org_id, since, provider=provider, workspace_id=workspace_id, viewer=viewer
         )
 
     fetch.__name__ = f"fetch_{provider}_activity"
@@ -460,8 +482,13 @@ def fetch_activity(
     since: datetime,
     *,
     workspace_id: str | None = None,
+    viewer: "Viewer | None" = None,
 ) -> ActivityDigest:
     """Activity digest for one provider since ``since``.
+
+    ``viewer`` is passed to the indexed fetchers only. GitHub reads live
+    through the installation's own token and embeds nothing, so it has no
+    stored document whose sharing could be narrower than the scope.
 
     Raises ``ConfigurationError`` for a provider with no fetcher rather than
     returning empty: a scheduler that silently reports "no activity" every
@@ -474,4 +501,7 @@ def fetch_activity(
             f"No activity fetcher for provider {provider!r} — "
             f"supported: {sorted(_FETCHERS)}."
         )
-    return fetcher(org_id, since, workspace_id=workspace_id)
+    # Every fetcher takes ``viewer`` so this dispatch needs no special case.
+    # GitHub accepts and ignores it: it reads live through the installation's
+    # own token and stores no document whose sharing could be narrower.
+    return fetcher(org_id, since, workspace_id=workspace_id, viewer=viewer)

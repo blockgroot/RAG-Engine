@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from app.ingestion.pipeline import ChangeReport, _plan_refs, detect_source_changes, ingest_source
-from app.sources.base import SourceDocument, SourceRef
+from app.sources.base import DocAccess, SourceDocument, SourceRef
 from app.vectorstore.base import StoredSourceDocument
 
 from .conftest import requires_db
@@ -151,6 +151,12 @@ class _FakeAdapter:
             content=self._text,
             source_uri=f"https://example.com/{self._external_id}",
             last_modified=_dt("2026-01-01T00:00:00"),
+            # An ACL-capable provider that reports NO sharing has its documents
+            # skipped (fail-closed, `pipeline._doc_access`), so a fake standing
+            # in for Drive has to answer the question a real adapter answers.
+            # These tests are about provider-partitioned sync, not about who
+            # may read a file, so the honest answer here is "the whole scope".
+            access=DocAccess.scope_public(),
         )
 
     def get_last_modified(self, external_id: str):

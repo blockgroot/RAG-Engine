@@ -56,7 +56,9 @@ def test_graph_dispatches_to_the_requested_agent():
         {"question": "q", "org_id": "org-1", "requested_agent": "notion", "stream": False}
     )
     assert state["response"].source == "notion"
-    assert agents["notion"].calls == [("answer", "q", "org-1", None, None, {})]
+    assert agents["notion"].calls == [
+        ("answer", "q", "org-1", None, None, {"viewer": None})
+    ]
     assert agents["google"].calls == []  # never touched — no cross-agent leakage
 
 
@@ -72,7 +74,9 @@ def test_graph_dispatches_to_workspace_agent_when_no_direct_request():
         }
     )
     assert state["response"].source == "workspace"
-    assert agents["workspace"].calls == [("answer", "q", "org-1", None, "ws-1", {})]
+    assert agents["workspace"].calls == [
+        ("answer", "q", "org-1", None, "ws-1", {"viewer": None})
+    ]
 
 
 def test_graph_streaming_path_calls_answer_stream():
@@ -132,3 +136,23 @@ def test_graph_dispatches_insights_with_the_validated_spec():
     assert kwargs["user_id"] == "u1"
     assert kwargs["role"] == "admin"
     assert agents["linear"].calls == []
+
+
+def test_the_viewer_reaches_the_routed_agent():
+    """Document-level access is decided at the API edge and carried on the
+    state. If it stops reaching the agent, every answer silently goes back to
+    reading the whole scope — and nothing else in the graph would notice."""
+    from app.vectorstore.base import Viewer
+
+    graph, agents = _graph_and_agents()
+    viewer = Viewer(email="ada@example.com")
+    graph.invoke(
+        {
+            "question": "q",
+            "org_id": "org-1",
+            "requested_agent": "notion",
+            "stream": False,
+            "viewer": viewer,
+        }
+    )
+    assert agents["notion"].calls[0][-1] == {"viewer": viewer}

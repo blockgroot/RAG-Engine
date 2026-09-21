@@ -165,7 +165,10 @@ def test_document_chips_never_quote_a_slack_thread(store, embedder, org_cleanup)
         "No - it's intentionally limited, so it doesn't pull the entire history.",
     )
 
-    titles = _document_titles_for_scope(org_id, None)
+    # The helper now takes the asker's ACL entries -- a starter chip is a
+    # document TITLE, so it carries the same access filter answers do. These
+    # rows are scope-public, so an empty ACL still sees them.
+    titles = _document_titles_for_scope(org_id, None, [])
 
     assert "Leave Policy" in titles
     assert not any(t.startswith("No - it's") for t in titles)

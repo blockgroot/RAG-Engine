@@ -13,7 +13,7 @@ from collections.abc import Iterator
 
 from ..rag import RagPipeline
 from ..rag.pipeline import RagResult
-from ..vectorstore.base import RetrievedChunk
+from ..vectorstore.base import RetrievedChunk, Viewer
 from .base import Agent, AgentResponse, Citation
 
 
@@ -40,12 +40,14 @@ class RagPipelineAgent(Agent):
         *,
         conversation_id: str | None = None,
         workspace_id: str | None = None,
+        viewer: Viewer | None = None,
     ) -> AgentResponse:
         result = self._pipeline.answer(
             question,
             org_id=org_id,
             conversation_id=conversation_id,
             workspace_id=workspace_id,
+            viewer=viewer,
         )
         return self._to_response(result)
 
@@ -56,6 +58,7 @@ class RagPipelineAgent(Agent):
         *,
         conversation_id: str | None = None,
         workspace_id: str | None = None,
+        viewer: Viewer | None = None,
     ) -> tuple[Iterator[str], AgentResponse]:
         """Like ``answer``, but the text arrives as a chunk iterator.
 
@@ -67,7 +70,11 @@ class RagPipelineAgent(Agent):
         through the gate/recovery/tone-retry logic.
         """
         chunks, result = self._pipeline.answer_stream(
-            question, org_id, conversation_id=conversation_id, workspace_id=workspace_id
+            question,
+            org_id,
+            conversation_id=conversation_id,
+            workspace_id=workspace_id,
+            viewer=viewer,
         )
         return chunks, self._to_response(result)
 
@@ -79,6 +86,7 @@ class RagPipelineAgent(Agent):
             source=result.source,
             citations=[RagPipelineAgent._to_citation(c) for c in result.sources],
             resolved_question=result.resolved_question,
+            access_restricted=result.access_restricted,
             top_score=result.top_score,
             retrieval_reused=result.retrieval_reused,
             recovery_used=result.recovery_used,

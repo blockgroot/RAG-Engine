@@ -10,7 +10,7 @@ import httpx
 
 from ..config.settings import GoogleSettings
 from ..core.exceptions import ConfigurationError, SourceError
-from .base import SourceAdapter, SourceDocument, SourceRef
+from .base import DocAccess, SourceAdapter, SourceDocument, SourceRef
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +22,15 @@ _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.doc
 _SUPPORTED_MIMES = {_DOC_MIME, _PDF_MIME, _DOCX_MIME}
 # `lastModifyingUser` costs nothing here: it rides along in the files.list
 # request we already make, which is why "top editors" needs no extra call.
+# `permissions` is the document-level ACL, and like `lastModifyingUser` it
+# costs NOTHING extra: Drive returns it in the `files.list` request we already
+# make on every sync. That is also what makes revocation work without a second
+# sync loop -- an unshared file is re-stamped on the next listing even though
+# its content never changed and is therefore never re-fetched.
+_PERMISSION_FIELDS = "permissions(type,emailAddress,domain,deleted)"
 _LIST_FIELDS = (
     "nextPageToken,files(id,name,mimeType,modifiedTime,trashed,parents,"
-    "lastModifyingUser(displayName))"
+    f"lastModifyingUser(displayName),{_PERMISSION_FIELDS})"
 )
 _MAX_WALK_DEPTH = 20  # guard against pathological trees; Drive's own limit is ~100.
 
@@ -40,6 +46,59 @@ def _editor_name(file: dict) -> str | None:
     user = file.get("lastModifyingUser") or {}
     name = (user.get("displayName") or "").strip()
     return name or None
+
+
+def _file_access(file: dict) -> DocAccess | None:
+    """Translate Drive's `permissions` array into a `DocAccess`.
+
+    Returns ``None`` when Drive did not tell us who the file is shared with --
+    which happens for real and is not an error: reading a file's sharing list
+    needs more than read access to the file, so a connecting account that is
+    merely a viewer (or a Workspace with "viewers can see who else has access"
+    switched off) gets the field omitted. ``None`` makes the pipeline SKIP the
+    document; indexing it readable would publish a file whose sharing we
+    demonstrably could not read.
+
+    Drive's four grant types map as:
+      * ``anyone``  -> public within the scope ("anyone with the link")
+      * ``user``    -> that person's email
+      * ``domain``  -> ``domain:<host>``, matched against the asker's own host
+      * ``group``   -> ``group:<address>``, which NO viewer can satisfy
+
+    ponytail: a `group` grant is stored and never matches, so a file shared
+    only with a Google Group is withheld from everyone but the connecting
+    admin. Fail-closed on purpose -- the alternative is showing it to the whole
+    scope, which is the bug this exists to fix. Upgrade path is the Admin SDK
+    (`groups.members.list`), the same directory a real `domain:` check wants.
+    """
+    permissions = file.get("permissions")
+    if permissions is None:
+        return None
+
+    is_public = False
+    viewers: list[str] = []
+    for permission in permissions:
+        if permission.get("deleted"):
+            continue
+        kind = permission.get("type")
+        if kind == "anyone":
+            is_public = True
+        elif kind == "user":
+            email = (permission.get("emailAddress") or "").strip().lower()
+            if email:
+                viewers.append(email)
+        elif kind == "domain":
+            domain = (permission.get("domain") or "").strip().lower()
+            if domain:
+                viewers.append(f"domain:{domain}")
+        elif kind == "group":
+            address = (permission.get("emailAddress") or "").strip().lower()
+            if address:
+                viewers.append(f"group:{address}")
+
+    if is_public:
+        return DocAccess.scope_public()
+    return DocAccess.restricted(viewers)
 
 
 def _extract_pdf_text(data: bytes) -> str:
@@ -120,6 +179,7 @@ class GoogleDriveAdapter(SourceAdapter):
                 last_modified=_parse_dt(file.get("modifiedTime")),
                 source_uri=_file_uri(file["id"], file.get("mimeType", "")),
                 last_editor=_editor_name(file),
+                access=_file_access(file),
             )
             for file in files
         ]
@@ -128,7 +188,10 @@ class GoogleDriveAdapter(SourceAdapter):
         try:
             meta = self._get_file_metadata(
                 external_id,
-                fields="name,mimeType,modifiedTime,lastModifyingUser(displayName)",
+                fields=(
+                    "name,mimeType,modifiedTime,lastModifyingUser(displayName),"
+                    f"{_PERMISSION_FIELDS}"
+                ),
             )
             mime = meta.get("mimeType")
             if mime == _DOC_MIME:
@@ -153,6 +216,7 @@ class GoogleDriveAdapter(SourceAdapter):
             source_uri=_file_uri(external_id, mime or ""),
             last_modified=_parse_dt(meta.get("modifiedTime")),
             last_editor=_editor_name(meta),
+            access=_file_access(meta),
         )
 
     def get_last_modified(self, external_id: str) -> datetime | None:

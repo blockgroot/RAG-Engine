@@ -62,6 +62,7 @@ from ..rag.prompts import (
     build_github_decision_prompt,
     format_repo_catalog,
 )
+from ..vectorstore.base import Viewer
 from .base import Agent, AgentResponse, Citation
 
 ReaderBuilder = Callable[..., GitHubReader]
@@ -122,7 +123,13 @@ class GitHubAgent(Agent):
         *,
         conversation_id: str | None = None,
         workspace_id: str | None = None,
+        viewer: Viewer | None = None,
     ) -> AgentResponse:
+        # `viewer` is accepted and ignored on purpose: this agent embeds
+        # nothing and reads GitHub live through the installation's own token,
+        # so there is no indexed document whose sharing could be narrower than
+        # the scope. Access here is what the App was granted, not what we store.
+        del viewer
         # A tenant with no GitHub connection costs zero LLM calls: there is
         # nothing a model could usefully decide without repos to read.
         try:
@@ -268,6 +275,7 @@ class GitHubAgent(Agent):
         *,
         conversation_id: str | None = None,
         workspace_id: str | None = None,
+        viewer: Viewer | None = None,
         chunk_chars: int = 40,
     ) -> tuple[Iterator[str], AgentResponse]:
         """Like ``answer``, but the text arrives as a chunk iterator.
@@ -280,7 +288,11 @@ class GitHubAgent(Agent):
         every agent identically at the transport layer.
         """
         result = self.answer(
-            question, org_id, conversation_id=conversation_id, workspace_id=workspace_id
+            question,
+            org_id,
+            conversation_id=conversation_id,
+            workspace_id=workspace_id,
+            viewer=viewer,
         )
 
         return chunk_answer(result.answer, chunk_chars), result

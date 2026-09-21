@@ -42,6 +42,7 @@ class _RecordingStore(VectorStore):
         source_provider=None,
         date_range=None,
         tags=None,
+        viewer=None,
     ):
         self.query_tags.append(tags)
         return [
@@ -60,6 +61,7 @@ class _RecordingStore(VectorStore):
         source_provider=None,
         date_range=None,
         tags=None,
+        viewer=None,
     ):
         self.keyword_tags.append(tags)
         return []

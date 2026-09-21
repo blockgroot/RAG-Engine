@@ -22,6 +22,7 @@ from ..core.streaming import chunk_answer
 from ..insights import registry, scopes, store
 from ..insights.facts import DOCUMENT_PROVIDERS, record_document_facts
 from ..insights.resolve import ChartSpec, CannotChart
+from ..vectorstore.base import Viewer
 from .base import Agent, AgentResponse
 
 logger = logging.getLogger(__name__)
@@ -37,11 +38,17 @@ class InsightsAgent(Agent):
         *,
         conversation_id: str | None = None,
         workspace_id: str | None = None,
+        viewer: Viewer | None = None,
         spec: ChartSpec | dict | None = None,
         refusal: str | None = None,
         user_id: str | None = None,
         role: str | None = None,
     ) -> AgentResponse:
+        # Accepted and ignored: a chart counts rows in `activity_facts`, not
+        # indexed documents, so there is no per-document ACL to apply here.
+        # That is a KNOWN gap, not an oversight -- counts and hover rows stay
+        # scope-level while retrieval is per-document (see CLAUDE.md).
+        del viewer
         del conversation_id, question  # Spec is already resolved; question is untrusted.
         if refusal:
             return AgentResponse(
@@ -109,6 +116,7 @@ class InsightsAgent(Agent):
         *,
         conversation_id: str | None = None,
         workspace_id: str | None = None,
+        viewer: Viewer | None = None,
         spec: ChartSpec | dict | None = None,
         refusal: str | None = None,
         user_id: str | None = None,
@@ -119,6 +127,7 @@ class InsightsAgent(Agent):
             org_id,
             conversation_id=conversation_id,
             workspace_id=workspace_id,
+            viewer=viewer,
             spec=spec,
             refusal=refusal,
             user_id=user_id,

@@ -19,6 +19,20 @@ function TrashIco() {
   );
 }
 
+function ChevronIco() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M6 9l6 6 6-6"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function ChatIco() {
   return (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -52,6 +66,11 @@ function formatRelativeTime(dateStr: string): string {
   }
 }
 
+// One key for every scope: "do I want this section open?" is a preference
+// about the RAIL, not about which space you are standing in, and keying it per
+// workspace would make the section collapse and reappear as you move around.
+const COLLAPSED_KEY = "rail.chats.collapsed";
+
 /**
  * Minimalist recent chats list in the left rail under Explore.
  * Displays only the user's top-5 conversations with 1-click access.
@@ -76,6 +95,33 @@ export function RailChats() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(cached !== undefined);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Collapsed is a per-viewer CONVENIENCE, so it lives in localStorage rather
+  // than on the server: it is not content, nobody else needs to see it, and
+  // losing it costs one click. Read lazily so the first paint is already in
+  // the remembered state -- initialising to `false` and correcting in an
+  // effect would make the list flash open on every navigation, and this
+  // component remounts on each one (`AppShell` is rendered per page).
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(COLLAPSED_KEY) === "1";
+    } catch {
+      // Private window, blocked site data, or SSR: an unreadable preference
+      // is not a collapsed rail. Default to showing the list.
+      return false;
+    }
+  });
+
+  const toggleCollapsed = useCallback(() => {
+    setCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(COLLAPSED_KEY, next ? "1" : "0");
+      } catch {
+        /* storage blocked -- the toggle still works for this session */
+      }
+      return next;
+    });
+  }, []);
 
   const load = useCallback(() => {
     api
@@ -194,50 +240,80 @@ export function RailChats() {
           header, in the place you are already looking when you want one —
           this rail had a third button for that same action, beside an "Ask"
           row that also did it. The rail's job is getting BACK to a chat. */}
+      {/* The whole header row is the collapse control, not just the arrow:
+          a 12px chevron is a small target in a narrow rail, and the title and
+          count are the obvious things to click when you want the section out
+          of the way. The arrow is what SAYS it collapses -- it points down
+          when open and right when shut, so the shape alone tells you which
+          state you are in without reading the list. */}
       <div className="rail-chats-head">
-        <div className="rail-chats-title-row">
+        <button
+          type="button"
+          className="rail-chats-toggle"
+          onClick={toggleCollapsed}
+          aria-expanded={!collapsed}
+          // Named only while the list exists: aria-controls pointing at an
+          // unmounted node is a broken reference, not a hint.
+          aria-controls={collapsed ? undefined : "rail-chats-list"}
+          title={collapsed ? "Show recent chats" : "Hide recent chats"}
+        >
+          <span
+            className={`rail-chats-chevron${collapsed ? " is-collapsed" : ""}`}
+            aria-hidden
+          >
+            <ChevronIco />
+          </span>
           <span className="rail-chats-title">Recent Chats</span>
+          {/* The count stays visible while collapsed -- otherwise the section
+              shrinks to a bare label that says nothing about whether there is
+              anything behind it. */}
           <span className="rail-chats-badge">{top5.length}</span>
-        </div>
+        </button>
       </div>
 
-      <ul className="rail-chats-list" role="list">
-        {top5.map((c) => {
-          const isActive = isCurrentChatPath && c.id === activeId;
-          const timeLabel = formatRelativeTime(c.last_activity_at || c.created_at);
-          const title = c.title || "Untitled chat";
+      {/* Unmounted rather than hidden: a collapsed list is not scrolled past,
+          tabbed into or read by a screen reader, and `.rail-chats-list` is a
+          `max-height` scroll container that would otherwise still occupy the
+          rail's scroll calculations. */}
+      {!collapsed && (
+        <ul className="rail-chats-list" id="rail-chats-list" role="list">
+          {top5.map((c) => {
+            const isActive = isCurrentChatPath && c.id === activeId;
+            const timeLabel = formatRelativeTime(c.last_activity_at || c.created_at);
+            const title = c.title || "Untitled chat";
 
-          return (
-            <li key={c.id} className="rail-chat-row">
-              {/* Two SIBLING buttons, not a button inside a button: nesting
-                  them is invalid HTML and the inner one stops being
-                  independently clickable. */}
-              <button
-                type="button"
-                className={`rail-chat-item${isActive ? " is-active" : ""}`}
-                onClick={() => handleOpen(c.id)}
-                title={title}
-              >
-                <span className="rail-chat-ico" aria-hidden>
-                  <ChatIco />
-                </span>
-                <span className="rail-chat-label">{title}</span>
-                {timeLabel && <span className="rail-chat-time">{timeLabel}</span>}
-              </button>
-              <button
-                type="button"
-                className="rail-chat-del"
-                onClick={() => handleDelete(c.id, title)}
-                disabled={busyId === c.id}
-                title={`Delete ${title}`}
-                aria-label={`Delete ${title}`}
-              >
-                <TrashIco />
-              </button>
-            </li>
-          );
-        })}
-      </ul>
+            return (
+              <li key={c.id} className="rail-chat-row">
+                {/* Two SIBLING buttons, not a button inside a button: nesting
+                    them is invalid HTML and the inner one stops being
+                    independently clickable. */}
+                <button
+                  type="button"
+                  className={`rail-chat-item${isActive ? " is-active" : ""}`}
+                  onClick={() => handleOpen(c.id)}
+                  title={title}
+                >
+                  <span className="rail-chat-ico" aria-hidden>
+                    <ChatIco />
+                  </span>
+                  <span className="rail-chat-label">{title}</span>
+                  {timeLabel && <span className="rail-chat-time">{timeLabel}</span>}
+                </button>
+                <button
+                  type="button"
+                  className="rail-chat-del"
+                  onClick={() => handleDelete(c.id, title)}
+                  disabled={busyId === c.id}
+                  title={`Delete ${title}`}
+                  aria-label={`Delete ${title}`}
+                >
+                  <TrashIco />
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }

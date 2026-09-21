@@ -251,6 +251,7 @@ class RecordingVectorStore(VectorStore):
         source_provider: str | None = None,
         date_range=None,
         tags=None,
+        viewer=None,
     ) -> list[RetrievedChunk]:
         self.query_calls += 1
         return [
@@ -307,6 +308,7 @@ class TopicAwareVectorStore(VectorStore):
         source_provider: str | None = None,
         date_range=None,
         tags=None,
+        viewer=None,
     ) -> list[RetrievedChunk]:
         self.query_calls += 1
         self.query_texts_via_embedding.append(list(query_embedding))

@@ -19,6 +19,7 @@ from ..ingestion.preprocessing import preprocess
 from ..llm import build_aux_llm_provider
 from ..llm.base import LLMProvider
 from ..sources.base import SourceAdapter, SourceRef
+from ..sources.factory import ACL_CAPABLE
 from ..vectorstore import build_vector_store
 from ..vectorstore.base import VectorStore
 
@@ -222,6 +223,66 @@ def _doc_tags(doc, run_tags: list[str] | None) -> list[str] | None:
     return list(dict.fromkeys(merged)) or None
 
 
+def _doc_access(doc, ref: SourceRef, provider: str) -> tuple[bool, list[str] | None] | None:
+    """Resolve the access set to store, or ``None`` meaning SKIP this document.
+
+    The fetched document wins over the listing when both report sharing (it is
+    the fresher read), and either is accepted -- Drive answers from the listing
+    for free, and an adapter that can only answer on fetch is still supported.
+
+    The whole fail-closed rule lives here: for a provider in
+    ``sources.factory.ACL_CAPABLE``, "no access reported" means the source
+    refused to tell us who a file is shared with (a viewer-only connecting
+    account, or a Workspace that hides its sharing lists). Indexing it anyway
+    would publish, to the whole scope, precisely the file whose sharing we
+    could not read. Everything else keeps scope-level visibility, which is what
+    it had before document-level filtering existed.
+    """
+    access = getattr(doc, "access", None) or getattr(ref, "access", None)
+    if access is None:
+        if provider in ACL_CAPABLE:
+            return None
+        return True, None
+    return access.is_public, list(access.viewers) or None
+
+
+def _restamp_unchanged_access(
+    store,
+    refs: list[SourceRef],
+    handled: set[str],
+    *,
+    org_id: str,
+    provider: str,
+    workspace_id: str | None,
+) -> int:
+    """Refresh the ACL of documents this sync did NOT re-fetch.
+
+    A permission change moves no content, so an unshared file never reaches
+    the fetch/upsert path above -- without this, revocation would take effect
+    only if someone happened to also edit the file. Costs nothing: the sharing
+    is already in the listing that just ran.
+    """
+    if provider not in ACL_CAPABLE:
+        return 0
+    entries = [
+        (ref.external_id, ref.access.is_public, list(ref.access.viewers) or None)
+        for ref in refs
+        if ref.external_id not in handled and getattr(ref, "access", None) is not None
+    ]
+    if not entries:
+        return 0
+    try:
+        return store.set_source_document_access(
+            org_id, provider=provider, entries=entries, workspace_id=workspace_id
+        )
+    except Exception:  # noqa: BLE001 - never fail a good ingest over a re-stamp
+        logger.exception(
+            "Failed to refresh document access for %s docs (org=%s provider=%s)",
+            len(entries), org_id, provider,
+        )
+        return 0
+
+
 def _plan_refs(
     refs: list[SourceRef],
     stored: dict,
@@ -379,6 +440,21 @@ def ingest_source(
     for done, (ref, is_update) in enumerate(work, start=1):
         report("preparing", done - 1, total_work)
         doc = adapter.fetch_document(ref.external_id)
+        access = _doc_access(doc, ref, provider)
+        if access is None:
+            # Fail CLOSED: the source would not tell us who this file is shared
+            # with, so it is left out of the index entirely rather than made
+            # readable by the whole scope. Counted as skipped and logged, since
+            # silence here looks identical to a source with nothing in it.
+            logger.warning(
+                "Skipping %s/%s: %s reports no sharing information for it "
+                "(the connecting account may not be able to read its permissions)",
+                provider, ref.external_id, provider,
+            )
+            skipped += 1
+            report("indexing", done, total_work)
+            continue
+        is_public, viewers = access
         clean = preprocess(sanitize_ingest_text(doc.content))
         chunks = chunk_text(clean, chunking)
         raw_chunks = chunks
@@ -393,6 +469,8 @@ def ingest_source(
                 workspace_id=workspace_id,
                 tags=_doc_tags(doc, tags),
                 last_editor=doc.last_editor or ref.last_editor,
+                is_public=is_public,
+                viewers=viewers,
             )
             skipped += 1
             report("indexing", done, total_work)
@@ -438,6 +516,8 @@ def ingest_source(
             workspace_id=workspace_id,
             tags=_doc_tags(doc, tags),
             last_editor=doc.last_editor or ref.last_editor,
+            is_public=is_public,
+            viewers=viewers,
         )
         doc_ids.append(document_id)
         ingested_external_ids.append(doc.external_id)
@@ -447,6 +527,18 @@ def ingest_source(
         else:
             added_n += 1
         report("indexing", done, total_work)
+
+    # Revocation: every ref this run did NOT re-fetch still gets its access set
+    # refreshed from the listing. Without it, losing access in the source would
+    # only ever reach us if someone also happened to edit the file.
+    _restamp_unchanged_access(
+        store,
+        refs,
+        {r.external_id for r, _ in work},
+        org_id=org_id,
+        provider=provider,
+        workspace_id=workspace_id,
+    )
 
     return IngestResult(
         documents_ingested=added_n + updated_n,

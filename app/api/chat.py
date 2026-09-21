@@ -63,6 +63,7 @@ from .deps import (
     get_session,
     get_slack_agent,
     get_workspace_agent,
+    viewer_for,
 )
 
 from .suggestions import (
@@ -268,6 +269,7 @@ def _combined_suggestions(
     chips, never the whole empty state. Suggestions are a convenience, and a
     500 here would make Ask look broken when it works fine.
     """
+    acl = viewer_for(session).acl()
     per_provider: dict[str, list[str]] = {}
 
     def _try(key: str, build) -> None:
@@ -284,14 +286,14 @@ def _combined_suggestions(
     _try(
         "notion",
         lambda: build_policy_suggestions(
-            _titles_for_scope_by_provider(org_id, workspace_id, "notion"),
+            _titles_for_scope_by_provider(org_id, workspace_id, "notion", acl),
             workspace=in_space,
         ),
     )
     _try(
         "google",
         lambda: build_policy_suggestions(
-            _titles_for_scope_by_provider(org_id, workspace_id, "google"),
+            _titles_for_scope_by_provider(org_id, workspace_id, "google", acl),
             workspace=in_space,
         ),
     )
@@ -303,7 +305,7 @@ def _combined_suggestions(
     )
     _try(
         "linear",
-        lambda: build_linear_suggestions(_linear_titles_for_scope(org_id, workspace_id)),
+        lambda: build_linear_suggestions(_linear_titles_for_scope(org_id, workspace_id, acl)),
     )
     _try(
         "github",
@@ -322,7 +324,7 @@ def _combined_suggestions(
         _try(
             "policy",
             lambda: build_policy_suggestions(
-                _document_titles_for_scope(org_id, workspace_id),
+                _document_titles_for_scope(org_id, workspace_id, acl),
                 workspace=in_space,
             ),
         )
@@ -370,6 +372,9 @@ def list_suggestions(
         return _combined_suggestions(session.org_id, workspace_id, session)
 
     requested = agent.strip().lower()
+    # Chips are built from document titles, so they carry the same access
+    # filter the answers do (see `_TITLE_ACCESS_SQL`).
+    acl = viewer_for(session).acl()
     if requested == AGENT_GITHUB:
         repos = _github_repos_for_scope(session.org_id, workspace_id)
         return {"agent": AGENT_GITHUB, "questions": build_github_suggestions(repos)}
@@ -379,24 +384,24 @@ def list_suggestions(
         return {"agent": AGENT_SLACK, "questions": build_slack_suggestions(channels)}
 
     if requested == AGENT_LINEAR:
-        titles = _linear_titles_for_scope(session.org_id, workspace_id)
+        titles = _linear_titles_for_scope(session.org_id, workspace_id, acl)
         return {"agent": AGENT_LINEAR, "questions": build_linear_suggestions(titles)}
 
     if requested == AGENT_NOTION:
-        titles = _titles_for_scope_by_provider(session.org_id, workspace_id, "notion")
+        titles = _titles_for_scope_by_provider(session.org_id, workspace_id, "notion", acl)
         return {
             "agent": AGENT_NOTION,
             "questions": build_policy_suggestions(titles, workspace=workspace_id is not None),
         }
 
     if requested == AGENT_GOOGLE:
-        titles = _titles_for_scope_by_provider(session.org_id, workspace_id, "google")
+        titles = _titles_for_scope_by_provider(session.org_id, workspace_id, "google", acl)
         return {
             "agent": AGENT_GOOGLE,
             "questions": build_policy_suggestions(titles, workspace=workspace_id is not None),
         }
 
-    titles = _document_titles_for_scope(session.org_id, workspace_id)
+    titles = _document_titles_for_scope(session.org_id, workspace_id, acl)
     return {
         "agent": AGENT_POLICY,
         "questions": build_policy_suggestions(
@@ -473,8 +478,22 @@ def _slack_channel_names_for_scope(
     return [str(cid) for cid in channel_ids]
 
 
-def _document_titles_for_scope(org_id: str, workspace_id: str | None) -> list[str]:
-    """Newest legacy-doc titles for this org or workspace."""
+# A starter chip is built from a document TITLE, so these reads carry the same
+# access filter retrieval does. "What does Q3 Redundancies say?" offered to
+# someone who cannot open that file discloses the one thing the filter exists
+# to withhold — and the chip would then answer with a refusal, which reads as
+# a broken product on top of it.
+#
+# `acl` is REQUIRED and an empty list means "scope-public only", never
+# "everything": both call sites are member-facing, so there is no correct
+# unrestricted default to offer them.
+_TITLE_ACCESS_SQL = "AND (doc_is_public OR doc_viewers && %s::text[]) "
+
+
+def _document_titles_for_scope(
+    org_id: str, workspace_id: str | None, acl: list[str]
+) -> list[str]:
+    """Newest legacy-doc titles for this org or workspace, as ``acl`` may read."""
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT title FROM documents "
@@ -483,32 +502,36 @@ def _document_titles_for_scope(org_id: str, workspace_id: str | None) -> list[st
             "AND source_provider IS DISTINCT FROM 'linear' "
             "AND source_provider IS DISTINCT FROM 'notion' "
             "AND source_provider IS DISTINCT FROM 'google' "
+            + _TITLE_ACCESS_SQL +
             "ORDER BY created_at DESC NULLS LAST "
             "LIMIT 12",
-            (org_id, workspace_id),
+            (org_id, workspace_id, acl),
         ).fetchall()
     return [str(r[0]) for r in rows if r and r[0]]
 
 
 def _titles_for_scope_by_provider(
-    org_id: str, workspace_id: str | None, provider: str
+    org_id: str, workspace_id: str | None, provider: str, acl: list[str]
 ) -> list[str]:
-    """Newest titles for one provider within this org or workspace."""
+    """Newest titles for one provider in this scope, as ``acl`` may read."""
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT title FROM documents "
             "WHERE org_id = %s AND workspace_id IS NOT DISTINCT FROM %s "
             "AND source_provider = %s "
+            + _TITLE_ACCESS_SQL +
             "ORDER BY created_at DESC NULLS LAST "
             "LIMIT 12",
-            (org_id, workspace_id, provider),
+            (org_id, workspace_id, provider, acl),
         ).fetchall()
     return [str(r[0]) for r in rows if r and r[0]]
 
 
-def _linear_titles_for_scope(org_id: str, workspace_id: str | None) -> list[str]:
+def _linear_titles_for_scope(
+    org_id: str, workspace_id: str | None, acl: list[str]
+) -> list[str]:
     """Ingested Linear issue titles for this org (or one workspace), newest first."""
-    return _titles_for_scope_by_provider(org_id, workspace_id, "linear")
+    return _titles_for_scope_by_provider(org_id, workspace_id, "linear", acl)
 
 
 @router.get("/conversations")
@@ -723,6 +746,7 @@ def _stream_attachment_answer(
                 conversation_id=conversation_id,
                 workspace_id=workspace_id,
                 attachments=attached,
+                viewer=viewer_for(session),
             )
             reason = f"{decision.reason} · with attached file(s): {names}"
             agent_key = decision.agent_key
@@ -738,7 +762,7 @@ def _stream_attachment_answer(
         if delay:
             time.sleep(delay)
 
-    if not response.grounded:
+    if not response.grounded and not response.access_restricted:
         record_gap(
             org_id=org_id,
             question=question,
@@ -857,6 +881,7 @@ def _stream_answer(
                 "chart_refusal": getattr(decision, "chart_refusal", None),
                 "user_id": session.user_id if session else None,
                 "role": session.role if session else None,
+                "viewer": viewer_for(session),
             }
         )
         result = state["response"]
@@ -879,7 +904,11 @@ def _stream_answer(
     # audit downgrading an answer, and GitHubAgent/InsightsAgent refusing with
     # no gate at all are the others). `grounded=False` is the union of them,
     # and this is also the only place `user_id` exists.
-    if not result.grounded:
+    # A withheld document is NOT a documentation gap: the company wrote it,
+    # this person simply has not been given access. Logging it would put
+    # "how much leave do I have left?" on the admin's list of things nobody
+    # has documented, which is the one thing that list must not contain.
+    if not result.grounded and not result.access_restricted:
         record_gap(
             org_id=org_id,
             question=question,

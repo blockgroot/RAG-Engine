@@ -23,6 +23,24 @@ from .slack import SlackAdapter
 #: Linear stayed fully indexed and answerable.
 INDEXED_PROVIDERS: tuple[str, ...] = ("notion", "google", "slack", "linear")
 
+#: Providers whose adapter reports a per-document ACL (`base.DocAccess`).
+#: Document-level access filtering applies to these and ONLY these — every
+#: other provider keeps scope-level visibility, which is what it had before.
+#:
+#: Membership is what switches on FAIL-CLOSED ingestion: a provider in here
+#: that hands back a document with `access is None` has told us it could not
+#: read the sharing, and the pipeline skips that document rather than indexing
+#: it readable. A provider NOT in here never reports access, so an unconditional
+#: skip would silently empty every Notion corpus.
+#:
+#: Notion is absent because its API exposes no per-page permissions at all
+#: (Onyx does not sync Notion permissions either). Slack and Linear are absent
+#: for now — channel membership and team membership are both readable, they are
+#: simply not wired yet — so a space mixing Drive with Slack enforces per-file
+#: access on the Drive half and scope access on the Slack half. Say that in the
+#: UI; a half-enforced guarantee that reads as whole is worse than none.
+ACL_CAPABLE: frozenset[str] = frozenset({"google"})
+
 
 def build_source_adapter(
     source_type: str = DEFAULT_SOURCE_TYPE,

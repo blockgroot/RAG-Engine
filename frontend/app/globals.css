@@ -296,6 +296,59 @@ button { font-family: inherit; }
   align-items: center;
   gap: 0.35rem;
 }
+
+/* The whole header row is the collapse control. Styled as a bare row rather
+   than a button so the rail keeps reading as three bands of labels -- a
+   bordered or tinted control here would be a card inside the rail panel,
+   which is the thing this section was rebuilt to stop doing. */
+.rail-chats-toggle {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  padding: 0.1rem 0.2rem;
+  margin: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.16s var(--ease);
+}
+.rail-chats-toggle:hover {
+  background: color-mix(in srgb, var(--ink-muted) 10%, transparent);
+}
+.rail-chats-toggle:hover .rail-chats-title {
+  color: var(--ink);
+}
+/* Keyboard users need to see where they are: the row has no border of its own,
+   so the focus ring is the only thing that marks it. */
+.rail-chats-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Points DOWN when the list is open and RIGHT when it is shut, so the shape
+   alone says which state you are in. Rotating the same glyph rather than
+   swapping two icons keeps the two states obviously the same control. */
+.rail-chats-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-muted);
+  transition: transform 0.18s var(--ease);
+}
+.rail-chats-chevron.is-collapsed {
+  transform: rotate(-90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .rail-chats-chevron {
+    transition: none;
+  }
+}
 .rail-chats-title {
   font-size: 0.65rem;
   font-weight: 700;

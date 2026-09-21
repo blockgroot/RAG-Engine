@@ -49,21 +49,86 @@ hook, and every process boundary must `close_pool()`.
   workspace sees ONLY its own rows, never also org-wide ones — otherwise a
   meeting-notes space blending in HR policy makes membership meaningless.
   `workspaces/store.py::assert_member` is the one place it's validated.
-- **The smallest private unit is a SPACE, never a document** — and that is the
-  permission contract, not an oversight. We sync with ONE admin's token per
-  connection and store no per-document ACL (`documents` has no viewer column;
-  `SourceRef`/`SourceDocument` carry no permission fields), so a source's own
-  sharing rules are dropped at ingest: a Drive file shared with two people
-  becomes readable by everyone in the scope that indexed it. The only controls
-  are **what the token can reach** (Drive `folder_id`, Slack channel list,
-  GitHub authorized repos, Notion's explicit share, Forms `form_ids`) and
-  **who is in the scope**. Two consequences worth stating out loud: adding a
-  member to a space grants RETROACTIVE access to everything it ever indexed
-  (the invite panel says so), and losing access *in the source* never reaches
-  us — nothing re-checks permissions after the first sync, and
-  `_sanitize_removals` actively REFUSES a mass unshare as a bad listing. Real
-  parity would need per-document viewers captured at sync, a source-identity →
-  `users` mapping and a filter at retrieval; it is a feature, not a patch.
+- **Document-level access filtering: a space is the corpus boundary, a
+  DOCUMENT's own sharing decides who may retrieve it — where the source tells
+  us.** `documents.doc_is_public` + `doc_viewers TEXT[]` (GIN) carry the
+  source's sharing list, captured at sync; retrieval adds ONE conjunct,
+  `AND (d.doc_is_public OR d.doc_viewers && acl)`, in the same WHERE clause
+  that already pins `org_id` — before ranking, on the vector leg, inside the
+  keyword CTE (before BM25 re-ranks in Python) and on `recent_chunks`. Modelled
+  on Onyx (`backend/onyx/access/`) minus its propagation machinery: their ACL
+  is denormalized onto every Vespa chunk, which forces a metadata sync queue, a
+  Celery fence and a `weightedSet` builder; ours is a JOIN every retrieval
+  query already pays for.
+  - **Entries are EMAILS, not `users.id`** — a file is routinely shared with
+    someone who has not signed up, and the entry starts matching by itself the
+    day they log in. `Viewer.acl()` (read) and `_normalize_viewers` (write) are
+    the only two formatters and must agree; a mis-spelled entry fails CLOSED
+    (the person is locked out), which is the safe direction.
+  - **`Viewer` has THREE states and collapsing any two is the leak.**
+    `unrestricted()` = no filter (ingest, eval, CLI); a real email = that
+    person; `public_only_viewer()` = scope-public only, whose empty ACL array
+    makes `&&` false for every row. A signed-in session whose `users` row
+    cannot be read gets `public_only`, never unrestricted (`deps.viewer_for`).
+  - **Capture is per adapter and FAILS CLOSED** (`sources.factory.ACL_CAPABLE`,
+    `{"google"}` today). Drive's `permissions(type,emailAddress,domain,deleted)`
+    rides in the `files.list` we already make — zero extra calls, the
+    `lastModifyingUser` trick again. `anyone` ⇒ scope-public, `user` ⇒ email,
+    `domain` ⇒ `domain:<host>`, `group` ⇒ `group:<addr>` which NO viewer can
+    satisfy (no directory; the Admin SDK is the upgrade). An ACL-capable
+    provider that reports NO sharing (a viewer-only connecting account, or a
+    Workspace that hides sharing lists) has its document SKIPPED — indexing it
+    would publish exactly the file whose sharing we could not read.
+  - **Revocation rides the LISTING, not change detection**
+    (`_restamp_unchanged_access` → `set_source_document_access`). A permission
+    change moves no `modifiedTime`, so an unshared file is "unchanged" and is
+    never re-fetched; Drive reports sharing in the listing that just ran, so
+    the new set is in hand for free. REPLACES the set, never unions — a union
+    can only add viewers, which makes removal inexpressible. Distinct from
+    `_sanitize_removals`, which guards DELETION on a bad listing.
+  - **A withheld document says so** (`rag/access_notice.py`, reached only
+    through `_gate_failed`, the one funnel every refusal passes). "I don't
+    know" is indistinguishable from "nobody wrote that down" and sends people
+    to write a document that already exists. Confirmed by a SECOND query
+    (`restricted_match`, the exact NEGATION of the retrieval predicate, gated
+    on the same 0.35) so the claim is never invented, run on refusals only and
+    after web search so it replaces a refusal and never an answer. It names the
+    CONNECTOR and the connected folder — already visible to every member via
+    `GET /workspaces/{id}/connections` — and NEVER the document title, which is
+    the thing being withheld; `restricted_match` returns only a score and a
+    provider so there is nothing else to leak.
+  - **`access_restricted` rides the result, so nothing matches on the message
+    text.** It keeps the withheld case out of `feedback_and_gaps` (the company
+    documented it; this person lacks access — not a gap) and out of
+    `query_answer_cache`.
+  - **The cache write is GATED, the key is unchanged** (`_is_cacheable`):
+    `query_answer_cache` is keyed on the scope, not the asker, and re-keying
+    per user would cost every scope-wide question its hit for the sake of a few
+    restricted ones. Instead an answer is not stored when any hit was
+    non-public (`RetrievedChunk.doc_is_public`) or when it is an access notice.
+  - **A Slack CHANNEL reply is `public_only`, decided inside `_answer`** — the
+    room reads it, so answering as the ASKER would publish their private
+    documents to everyone else. A DM answers as the person.
+  - **A scheduler reads the index as its owner** (`fetch_indexed_activity`
+    takes the viewer) — a digest is one person reading on a timer, and without
+    it a weekly Drive report would MAIL them every file they were never shared
+    on. Starter chips filter on the same predicate (`_TITLE_ACCESS_SQL`): a
+    chip is a document title.
+  - **Coverage is honest and partial.** Drive enforces per-file; **Notion has
+    no per-page permission API at all** (Onyx does not sync Notion permissions
+    either), Slack (channel membership) and Linear (team membership) are
+    readable but NOT wired yet, so they stay scope-level. GitHub/Insights
+    accept the viewer and ignore it, with the reason at the call site: GitHub
+    reads live through the installation's token, and charts count
+    `activity_facts` rows, not documents — **chart counts and hover rows remain
+    scope-level**, a known gap. Say which sources enforce it in the UI: a
+    half-enforced guarantee that reads as whole is worse than none.
+  - Unchanged and still true: the controls are **what the token can reach**
+    (Drive `folder_id`, Slack channel list, GitHub authorized repos, Notion's
+    explicit share, Forms `form_ids`) and **who is in the scope**; a space
+    member still gets RETROACTIVE access to everything scope-public that space
+    ever indexed. `doc_is_public DEFAULT TRUE` is the migration — every
+    pre-existing row keeps its old meaning, so nothing goes dark at deploy.
 - **A conversation is PERSONAL** (`conversations.user_id`, checked in
   `chat.py::_conversation_belongs_to_scope`). It was the one personal surface
   scoped by org alone while `schedulers`/`insight_pins`/`scheduler_reports` all
@@ -74,6 +139,8 @@ hook, and every process boundary must `close_pool()`.
   invent an owner, and refusing would strand every conversation open at deploy.
   `query_answer_cache` deliberately does NOT key on user — it is keyed on the
   scope whose check already passed, so per-user keys would only cost hit rate.
+  Document-level access filtering broke that premise for two kinds of answer,
+  and the fix is a gated WRITE (`_is_cacheable`), not a re-keyed cache.
 
 **Retrieved context carries its provenance** (`rag/context_assemble.py::describe_hit`)
 — every chunk reaches the prompt behind one line naming the document, the app,
@@ -1384,7 +1451,8 @@ app/{llm,embeddings,reranker,vectorstore,websearch}/  base + impls + factory
 app/llm/      + routed.py (per-request model) + catalog.py (the 5 offered)
 app/db/       schema.sql, connection.py (pool), migrate.py
 app/ingestion/ preprocess, chunk, contextualize, pipeline  (orchestrator)
-app/rag/      pipeline, prompts, retrieval, query_normalize, summary_fold, …
+app/rag/      pipeline, prompts, retrieval, query_normalize, summary_fold,
+              access_notice (the "not shared with you" refusal), …
 app/memory/   org-scoped conversation history + last-retrieval
 app/sources/  SourceAdapter: notion, google_drive, slack, linear + factory
               + google_forms.py (live reads, NOT an adapter — never indexed)
@@ -1410,6 +1478,17 @@ frontend/ Next.js 15 portal · tests/ pytest
 ## 5. Gotchas — each of these cost real debugging time
 
 **Grounding / retrieval**
+- **A store fake without a `viewer` kwarg is a TypeError, not a skipped
+  filter.** `retrieval.py` always passes `viewer=` to `query`/`keyword_search`,
+  so every fake in `tests/` had to grow the parameter. That is the intended
+  blast radius: a fake that does not know about access filtering cannot catch
+  an access bug. `def keyword_search(self, *a, **kw)` is fine; a positional
+  signature is not.
+- **`doc_viewers && '{}'` is FALSE, which is what makes `public_only` work.**
+  An empty ACL array reduces the predicate to `doc_is_public` rather than
+  matching everything — the opposite reading would turn an identity failure
+  into a full leak. `Viewer(email=None)` means UNRESTRICTED; the flag means
+  public-only. Never conflate the two.
 - **A successful ingest clears that org's `query_answer_cache`** (`worker.py`).
   Without it new content is invisible for the 300s TTL — the same question
   returns its pre-sync answer, which reads as "the sync did nothing".
@@ -1655,7 +1734,8 @@ frontend/ Next.js 15 portal · tests/ pytest
 ## 6. Tables (`app/db/schema.sql`)
 
 `organizations` · `documents` (unique on `(org_id, source_provider,
-source_external_id)`) · `chunks` (`vector(1024)` + generated `content_tsv`) ·
+source_external_id)`; `doc_is_public` DEFAULT TRUE + `doc_viewers TEXT[]` GIN
+carry document-level access, see §3) · `chunks` (`vector(1024)` + generated `content_tsv`) ·
 `conversations` / `conversation_turns` / `conversation_last_retrieval` ·
 `users` · `oauth_connections` (encrypted tokens, `source_config` JSONB, two
 partial unique indexes: org-wide vs workspace; `sync_requested_at` webhook flag
@@ -1690,7 +1770,10 @@ RAGAS); identity/OAuth/admin/ingestion queue/HTTP API/streaming chat; Next.js
 portal; Workspace-within-a-Workspace; signup-approval queue; injection,
 latency, security and eval hardening; the Activity Scheduler; Multi-Model
 Selection (OpenRouter, ~5 models, per-request routing); automatic freshness (interval + webhook-flag sync, external tick, LLM pacing);
-in-chat file attachments (Cloudinary object store, Onyx's FileStore shape); the needs-attention bell (derived, owner/admin-scoped); feedback & documentation-gap tracking (automatic refusal logging on web + Slack, thumbs with three reasons, `/admin/feedback`); Visual Representation, **all five phases** — `activity_facts`, metric registry
+in-chat file attachments (Cloudinary object store, Onyx's FileStore shape);
+document-level access filtering (Drive only: per-file viewers captured from the
+listing, one WHERE conjunct on every retrieval leg, revocation on re-listing,
+"not shared with you" refusal, `tests/test_doc_access.py`); the needs-attention bell (derived, owner/admin-scoped); feedback & documentation-gap tracking (automatic refusal logging on web + Slack, thumbs with three reasons, `/admin/feedback`); Visual Representation, **all five phases** — `activity_facts`, metric registry
 + panels, charts **in Ask** (no Visualizations tab; `/visualizations` redirects
 to `/chat`; `InsightsAgent` + `classify_question` rather than a keyword regex), editor capture at sync time, GitHub PR/merge/review facts on a
 facts-only sync branch (PRs plus commits), Linear completion-by-team on the ingest job, Slack
@@ -1701,6 +1784,18 @@ tenants that predate charts get `activity_facts` from `backfill_all_document_fac
 when the model says qa.
 
 **Pending / known gaps**
+- Document-level access: **the Drive `permissions` path has never run against a
+  live folder** — the field list, the grant-type mapping and the
+  omitted-permissions case are written from the documented shapes and tested
+  against fixtures only. Walk it through live before trusting it, and watch for
+  the case that will bite first: a connecting account that is only a VIEWER on
+  some files gets `permissions` omitted, so those documents are SKIPPED and
+  read as a sync that quietly indexed less. Also unwired: Slack and Linear
+  (membership is readable, nothing captures it), `group:` grants (no directory,
+  so a file shared only with a Google Group is withheld from everyone but the
+  connecting admin), and charts (`activity_facts` counts and hover rows stay
+  scope-level). **The migration must be applied to prod** — three additive
+  `IF NOT EXISTS` statements, verified against a throwaway local database.
 - Charts: Forms is now REACHABLE from the product (picker + chips), but **the
   Google Forms path has still never run against a real form.** The
   Forms API calls, the `mimeType` listing and the scope behaviour are written
