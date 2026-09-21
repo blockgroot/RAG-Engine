@@ -49,6 +49,7 @@ from ..agent.routing import _NO_MATCH, choose_agent, choose_scope
 from ..feedback import record_gap
 from ..auth.credentials import get_live_connection_token
 from ..auth.users import get_user_by_email
+from ..sources.google_groups import viewer_for_person
 from ..vectorstore.base import Viewer
 from ..config.settings import SlackSettings
 from ..core.exceptions import ProviderError
@@ -519,7 +520,7 @@ def _handle(event: dict, team_id: str) -> None:
             # so their document access here is the same as in the app. Built
             # from the resolved row, not from the Slack profile email, so the
             # two surfaces can never disagree about who is asking.
-            viewer=Viewer(email=user.email),
+            viewer=viewer_for_person(org_id, user.email),
         )
     except Exception as exc:  # noqa: BLE001 - a failed answer must still reply
         logger.warning("slack.bot answer failed for org %s: %s", org_id, exc, exc_info=True)

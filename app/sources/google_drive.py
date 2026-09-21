@@ -65,11 +65,13 @@ def _file_access(file: dict) -> DocAccess | None:
       * ``domain``  -> ``domain:<host>``, matched against the asker's own host
       * ``group``   -> ``group:<address>``, which NO viewer can satisfy
 
-    ponytail: a `group` grant is stored and never matches, so a file shared
-    only with a Google Group is withheld from everyone but the connecting
-    admin. Fail-closed on purpose -- the alternative is showing it to the whole
-    scope, which is the bug this exists to fix. Upgrade path is the Admin SDK
-    (`groups.members.list`), the same directory a real `domain:` check wants.
+    A `group` grant is stored as the GROUP, never expanded into its members:
+    `sources.google_groups` resolves the asker's own memberships at query time
+    instead, so the stored row keeps saying what Drive actually said and a new
+    joiner is covered without touching a document. With GOOGLE_GROUPS_ENABLED
+    off (the default) no viewer can satisfy a `group:` entry, so such a file
+    stays withheld -- fail-closed on purpose, since the alternative is showing
+    it to the whole scope, which is the bug this exists to fix.
     """
     permissions = file.get("permissions")
     if permissions is None:

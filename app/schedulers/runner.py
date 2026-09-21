@@ -33,7 +33,7 @@ from ..core.exceptions import ConfigurationError
 from ..llm import build_llm_provider
 from ..llm.routed import default_model_only
 from ..llm.base import LLMProvider
-from ..vectorstore.base import Viewer
+from ..sources.google_groups import viewer_for_person
 from ..workspaces.store import get_workspace_name
 from . import reports
 from .activity import fetch_activity
@@ -158,7 +158,7 @@ def run_scheduler_once(
         scheduler.org_id,
         since,
         workspace_id=scope_id,
-        viewer=Viewer(email=user.email),
+        viewer=viewer_for_person(scheduler.org_id, user.email),
     )
     notes = list(digest.notes)
     if scheduler.last_run_at is None:

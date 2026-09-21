@@ -35,10 +35,13 @@ class DocAccess:
     all. It is NOT a claim that the document is public to the internet.
 
     ``viewers`` are ACL ENTRIES, and their spelling is a contract with
-    ``vectorstore.base.Viewer.acl``: a lowercased email, or ``domain:<host>``.
-    An entry no ``Viewer`` can ever produce (``group:<address>``, which needs
-    a directory we do not have) fails CLOSED — the document is withheld rather
-    than shown to the wrong person.
+    ``vectorstore.base.Viewer.acl``: a lowercased email, ``domain:<host>``, or
+    ``group:<address>``. A group is stored as the GROUP and expanded on the
+    READ side from the asker's own memberships (``sources.google_groups``), so
+    the entry survives a change in who is in that group. An entry no ``Viewer``
+    can currently produce — a ``group:`` one while group expansion is switched
+    off — fails CLOSED: the document is withheld rather than shown to the
+    wrong person.
 
     ``None`` — the absence of a ``DocAccess`` — is NOT "public". It means the
     adapter could not determine sharing, and for an ACL-capable provider the

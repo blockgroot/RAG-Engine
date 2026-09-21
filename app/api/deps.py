@@ -36,6 +36,7 @@ from ..auth.session import SessionClaims, decode_session_token
 from ..core.exceptions import AuthError
 from ..auth.users import get_user
 from ..db.connection import get_connection
+from ..sources.google_groups import viewer_for_person
 from ..vectorstore.base import Viewer
 
 logger = logging.getLogger(__name__)
@@ -246,4 +247,7 @@ def viewer_for(session) -> Viewer:
         return Viewer.public_only_viewer()
     if user is None or not user.email:
         return Viewer.public_only_viewer()
-    return Viewer(email=user.email)
+    # Through `viewer_for_person`, never `Viewer(email=...)`: that is what
+    # attaches the asker's Google Group memberships, and a `group:` grant is
+    # satisfied by nothing else.
+    return viewer_for_person(session.org_id, user.email)

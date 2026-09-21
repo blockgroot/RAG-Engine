@@ -51,9 +51,31 @@ class Viewer:
     A person is matched by EMAIL rather than ``users.id`` because a file is
     routinely shared with someone who has not signed up yet -- the entry starts
     matching the day they log in, with nothing to reconcile.
+
+    ``groups`` carries the same person's Google Group memberships, which is how
+    a ``group:`` grant is satisfied. Build a viewer for a real person through
+    ``sources.google_groups.viewer_for_person`` rather than constructing one
+    here, so no call site can silently drop them.
     """
 
     email: str | None = None
+    #: Google Group addresses this person belongs to, lowercased and WITHOUT
+    #: the ``group:`` prefix (``acl`` adds it). Drive reports a group share as
+    #: one opaque ``group:<address>`` grant and never expands it, so without
+    #: this a file shared only with ``engineering@corp.com`` matches nobody.
+    #:
+    #: Expanded on the READ side -- the asker's own groups -- rather than at
+    #: ingest, exactly as ``domain:`` already is. The stored grant stays what
+    #: Drive actually said, it is one directory call per PERSON instead of one
+    #: per group, and a membership change takes effect with no re-stamp and no
+    #: re-embed. Expanding at ingest would reintroduce the revocation problem
+    #: ``_restamp_unchanged_access`` exists to solve, except worse: a group
+    #: edit moves no Drive metadata at all, so nothing would signal it.
+    #:
+    #: Empty is the fail-closed default and means exactly what shipped before
+    #: group support: a group-shared document is withheld. See
+    #: ``sources.google_groups``.
+    groups: tuple[str, ...] = ()
     #: Restrict to scope-public documents with no person attached. Needed
     #: because "no email" has TWO meanings that must not share a value: an
     #: internal caller with no filter at all, and a caller who may read only
@@ -92,10 +114,22 @@ class Viewer:
         if not email:
             # An empty ACL is not "match everything": `doc_viewers && '{}'` is
             # false for every row, so the predicate reduces to `doc_is_public`.
+            # Groups are deliberately ignored here too: a viewer with no
+            # identity has no memberships to honour, so `public_only` cannot be
+            # widened by handing it a group list.
             return []
         entries = [email]
         if "@" in email:
             entries.append(f"domain:{email.split('@', 1)[1]}")
+        # Spelled to match `google_drive._file_access`, which is the only
+        # writer of a `group:` entry. Deduplicated because a directory that
+        # lists the same group twice must not change the query's meaning.
+        seen = set(entries)
+        for group in self.groups:
+            entry = f"group:{group.strip().lower()}"
+            if group.strip() and entry not in seen:
+                seen.add(entry)
+                entries.append(entry)
         return entries
 
 

@@ -618,3 +618,267 @@ def test_the_preflight_ignores_subfolders_but_admits_it_stopped_at_them():
     assert out["checked"] == 2 and out["unreadable"] == 1
     assert out["files"] == ["Hidden"]
     assert out["truncated"] is True  # a subfolder was not looked into
+
+
+# -- Google Group grants ----------------------------------------------------
+#
+# Drive reports a group share as ONE opaque `group:<address>` grant. These pin
+# the two halves that make it mean something: the entry's spelling agrees with
+# what the adapter writes, and it is expanded from the ASKER's memberships so
+# the stored row never has to be re-written when the group's membership moves.
+
+
+def test_a_group_grant_is_stored_as_the_group_not_its_members():
+    """The whole reason expansion is a read-side concern. Storing the members
+    would make every group edit a re-stamp of every document it touches -- and
+    a group edit moves no Drive metadata, so nothing would signal one is due."""
+    from app.sources.google_drive import _file_access
+
+    access = _file_access(
+        {"permissions": [{"type": "group", "emailAddress": "Engineering@Corp.com"}]}
+    )
+    assert access is not None
+    assert access.is_public is False
+    assert access.viewers == ("group:engineering@corp.com",)
+
+
+def test_the_two_sides_spell_a_group_entry_identically():
+    """The same contract `test_read_and_write_spell_an_entry_the_same_way` pins
+    for people. A mis-spelled group entry fails closed, which is safe and also
+    completely silent -- so it is pinned rather than noticed."""
+    from app.sources.google_drive import _file_access
+
+    written = _file_access(
+        {"permissions": [{"type": "group", "emailAddress": "eng@corp.com"}]}
+    )
+    read = Viewer(email="ada@corp.com", groups=("eng@corp.com",)).acl()
+    assert written is not None
+    assert written.viewers[0] in read
+
+
+def test_a_member_of_the_group_satisfies_the_grant():
+    assert Viewer(email="ada@corp.com", groups=("eng@corp.com",)).acl() == [
+        "ada@corp.com",
+        "domain:corp.com",
+        "group:eng@corp.com",
+    ]
+
+
+def test_group_entries_are_lowercased_and_deduplicated():
+    """A directory that lists the same group twice, or in a different case,
+    must not change what the query means."""
+    acl = Viewer(
+        email="ada@corp.com", groups=("Eng@Corp.com", "eng@corp.com", "  ", "ops@corp.com")
+    ).acl()
+    assert acl.count("group:eng@corp.com") == 1
+    assert "group:ops@corp.com" in acl
+    assert all(entry.strip() == entry for entry in acl)
+
+
+def test_groups_never_widen_a_public_only_viewer():
+    """`public_only` is the fail-closed state an unresolvable identity gets.
+    Handing it memberships must not turn it into a viewer of private documents
+    -- the empty ACL is what makes `doc_viewers && '{}'` false for every row."""
+    viewer = Viewer(email=None, public_only=True, groups=("eng@corp.com",))
+    assert viewer.acl() == []
+    assert _viewer_clause(viewer)[1] == [[]]
+
+
+def test_group_expansion_is_off_unless_the_flag_is_on(monkeypatch):
+    """It needs an extra OAuth scope, so switching it on forces every tenant to
+    reconnect Google. Off, a group-shared document stays withheld -- which is
+    the behaviour that shipped, not a regression."""
+    from app.sources import google_groups
+
+    google_groups.clear_cache()
+    monkeypatch.delenv("GOOGLE_GROUPS_ENABLED", raising=False)
+
+    def _boom(*a, **k):  # the directory must not even be reached
+        raise AssertionError("looked up groups while the flag was off")
+
+    monkeypatch.setattr(google_groups, "_fetch_groups", _boom)
+    assert google_groups.groups_for("org", "ada@corp.com") == ()
+
+
+def test_a_directory_failure_is_not_cached_as_an_answer(monkeypatch):
+    """Caching "no groups" for the TTL because the directory blipped would lock
+    someone out of every group-shared document for that window."""
+    from app.sources import google_groups
+
+    google_groups.clear_cache()
+    monkeypatch.setenv("GOOGLE_GROUPS_ENABLED", "true")
+    monkeypatch.setattr(
+        "app.auth.credentials.get_live_connection_token", lambda *a, **k: "tok"
+    )
+
+    calls: list[str] = []
+
+    def _fetch(token, email, **kwargs):
+        calls.append(email)
+        return None if len(calls) == 1 else ("eng@corp.com",)
+
+    monkeypatch.setattr(google_groups, "_fetch_groups", _fetch)
+
+    assert google_groups.groups_for("org", "ada@corp.com") == ()
+    assert google_groups.groups_for("org", "ada@corp.com") == ("eng@corp.com",)
+    # ...and the success IS cached, so a chat does not spend a call per question.
+    assert google_groups.groups_for("org", "ada@corp.com") == ("eng@corp.com",)
+    assert len(calls) == 2
+    google_groups.clear_cache()
+
+
+def test_memberships_are_cached_per_org(monkeypatch):
+    """The token that answered belongs to one org's connection, so one tenant's
+    directory must never answer for another's."""
+    from app.sources import google_groups
+
+    google_groups.clear_cache()
+    monkeypatch.setenv("GOOGLE_GROUPS_ENABLED", "true")
+    monkeypatch.setattr(
+        "app.auth.credentials.get_live_connection_token", lambda *a, **k: "tok"
+    )
+    seen: list[tuple[str, str]] = []
+
+    def _fetch(token, email, **kwargs):
+        seen.append((token, email))
+        return ("eng@corp.com",)
+
+    monkeypatch.setattr(google_groups, "_fetch_groups", _fetch)
+    google_groups.groups_for("org-a", "ada@corp.com")
+    google_groups.groups_for("org-b", "ada@corp.com")
+    google_groups.groups_for("org-a", "ada@corp.com")
+    assert len(seen) == 2  # once per org, then cached
+    google_groups.clear_cache()
+
+
+def test_no_google_connection_means_no_groups(monkeypatch):
+    """Most orgs will never switch this on. An org with no Google connection at
+    all must keep answering questions, not fail one over a directory it has no
+    token for."""
+    from app.core.exceptions import ConfigurationError
+    from app.sources import google_groups
+
+    google_groups.clear_cache()
+    monkeypatch.setenv("GOOGLE_GROUPS_ENABLED", "true")
+
+    def _no_token(*a, **k):
+        raise ConfigurationError("not connected")
+
+    monkeypatch.setattr("app.auth.credentials.get_live_connection_token", _no_token)
+    assert google_groups.groups_for("org", "ada@corp.com") == ()
+
+
+def test_a_non_admin_connection_reports_no_groups(monkeypatch):
+    """The EXPECTED failure: the Directory API needs a Workspace admin, and most
+    connected accounts are not one. It must degrade to today's behaviour."""
+    import httpx
+
+    from app.sources import google_groups
+
+    class _Resp:
+        status_code = 403
+
+        @staticmethod
+        def json():
+            return {}
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp())
+    assert google_groups._fetch_groups("tok", "ada@corp.com") is None
+
+
+def test_an_address_outside_the_directory_is_a_real_empty_answer(monkeypatch):
+    """404 means this person genuinely has no Workspace groups (an external
+    collaborator), which is different from "we could not find out" -- and only
+    the first may be cached."""
+    import httpx
+
+    from app.sources import google_groups
+
+    class _Resp:
+        status_code = 404
+
+        @staticmethod
+        def json():
+            return {}
+
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp())
+    assert google_groups._fetch_groups("tok", "outsider@other.com") == ()
+
+
+def test_the_directory_walk_is_bounded(monkeypatch):
+    """CLAUDE.md §2: bound every external walk. Stopping early can only DROP
+    memberships, which locks someone out rather than letting them in."""
+    import httpx
+
+    from app.sources import google_groups
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"groups": [{"email": "eng@corp.com"}], "nextPageToken": "more"}
+
+    pages = {"n": 0}
+
+    def _get(*a, **k):
+        pages["n"] += 1
+        return _Resp()
+
+    monkeypatch.setattr(httpx, "get", _get)
+    assert google_groups._fetch_groups("tok", "ada@corp.com") == ("eng@corp.com",)
+    assert pages["n"] == google_groups.MAX_PAGES
+
+
+def test_an_identified_person_is_built_through_one_constructor(monkeypatch):
+    """Every surface that answers AS someone -- the app, a Slack DM, a scheduled
+    digest -- goes through `viewer_for_person`, so a surface added later cannot
+    quietly ship without group expansion."""
+    from app.sources import google_groups
+
+    monkeypatch.setattr(google_groups, "groups_for", lambda *a: ("eng@corp.com",))
+    viewer = google_groups.viewer_for_person("org", "Ada@Corp.com")
+    assert viewer.groups == ("eng@corp.com",)
+    assert "group:eng@corp.com" in viewer.acl()
+    # No address at all still fails CLOSED, never to unrestricted.
+    assert google_groups.viewer_for_person("org", None).acl() == []
+    assert google_groups.viewer_for_person("org", "  ").is_unrestricted is False
+
+
+def test_the_directory_call_names_the_domain(monkeypatch):
+    """`groups.list` requires `domain` or `customer`, and `customer` may not be
+    combined with `userKey` -- so `userKey` alone is not a valid request. Taken
+    from the ASKER's address, so a secondary domain resolves to itself."""
+    import httpx
+
+    from app.sources import google_groups
+
+    sent: dict = {}
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"groups": [{"email": "eng@corp.com"}]}
+
+    def _get(url, **kwargs):
+        sent.update(kwargs.get("params") or {})
+        return _Resp()
+
+    monkeypatch.setattr(httpx, "get", _get)
+    assert google_groups._fetch_groups("tok", "ada@eu.corp.com") == ("eng@corp.com",)
+    assert sent["domain"] == "eu.corp.com"
+    assert sent["userKey"] == "ada@eu.corp.com"
+    assert "customer" not in sent  # combining it with userKey is an API error
+
+
+def test_an_address_with_no_domain_asks_nothing(monkeypatch):
+    import httpx
+
+    from app.sources import google_groups
+
+    monkeypatch.setattr(
+        httpx, "get", lambda *a, **k: (_ for _ in ()).throw(AssertionError("called"))
+    )
+    assert google_groups._fetch_groups("tok", "not-an-email") == ()

@@ -74,11 +74,31 @@ hook, and every process boundary must `close_pool()`.
     `{"google"}` today). Drive's `permissions(type,emailAddress,domain,deleted)`
     rides in the `files.list` we already make — zero extra calls, the
     `lastModifyingUser` trick again. `anyone` ⇒ scope-public, `user` ⇒ email,
-    `domain` ⇒ `domain:<host>`, `group` ⇒ `group:<addr>` which NO viewer can
-    satisfy (no directory; the Admin SDK is the upgrade). An ACL-capable
+    `domain` ⇒ `domain:<host>`, `group` ⇒ `group:<addr>`. An ACL-capable
     provider that reports NO sharing (a viewer-only connecting account, or a
     Workspace that hides sharing lists) has its document SKIPPED — indexing it
     would publish exactly the file whose sharing we could not read.
+  - **A `group:` grant is expanded on the READ side, never at ingest**
+    (`sources.google_groups`, `Viewer.groups` → `acl()`). Drive reports a group
+    share as ONE opaque address and never expands it, so the choice is where to
+    resolve it. Storing the MEMBERS would reintroduce exactly the problem
+    `_restamp_unchanged_access` solves, except worse — a group edit moves no
+    Drive metadata at all, so nothing would even signal a re-stamp is due — and
+    it would flatten "shared with eng" into forty emails, so a new joiner needs
+    every document rewritten. Resolving the ASKER's memberships instead is one
+    Directory call per PERSON (not per group), leaves the stored row saying
+    what Drive actually said, needs NO re-embed, and changes `_VIEWER_SQL` not
+    at all: it only adds entries to the asker's side of the `&&`, exactly as
+    `domain:<host>` already does. Cached per `(org_id, email)` for 10 min —
+    tighter than the hour a Drive revocation already costs, so it is not the
+    weakest link — and a directory FAILURE is never cached as an answer, or one
+    blip locks someone out of every group-shared document for the TTL.
+    `viewer_for_person` is the ONE constructor for an identified viewer (app,
+    Slack DM, scheduled digest) so a surface added later cannot ship without
+    it. Off by default (`GOOGLE_GROUPS_ENABLED`, the Forms posture): it needs
+    `admin.directory.group.readonly`, so every tenant reconnects Google, AND a
+    Workspace-ADMIN connection — a non-admin 403s. Every failure degrades to
+    `()`, i.e. the fail-closed behaviour that shipped.
   - **Revocation rides the LISTING, not change detection**
     (`_restamp_unchanged_access` → `set_source_document_access`). A permission
     change moves no `modifiedTime`, so an unshared file is "unchanged" and is
@@ -1484,6 +1504,7 @@ app/rag/      pipeline, prompts, retrieval, query_normalize, summary_fold,
 app/memory/   org-scoped conversation history + last-retrieval
 app/sources/  SourceAdapter: notion, google_drive, slack, linear + factory
               + google_forms.py (live reads, NOT an adapter — never indexed)
+              + google_groups.py (asker's Group memberships → Viewer.groups)
 app/githublive/ GitHub's whole data path — live reads, no vectors
 app/agent/    Agent + per-source agents + orchestration (LangGraph) + routing
 app/security/ crypto, untrusted (scrub), rate_limit, client_ip
@@ -1803,8 +1824,9 @@ latency, security and eval hardening; the Activity Scheduler; Multi-Model
 Selection (OpenRouter, ~5 models, per-request routing); automatic freshness (interval + webhook-flag sync, external tick, LLM pacing);
 in-chat file attachments (Cloudinary object store, Onyx's FileStore shape);
 document-level access filtering (Drive only: per-file viewers captured from the
-listing, one WHERE conjunct on every retrieval leg, revocation on re-listing,
-"not shared with you" refusal, `tests/test_doc_access.py`); the needs-attention bell (derived, owner/admin-scoped); feedback & documentation-gap tracking (automatic refusal logging on web + Slack, thumbs with three reasons, `/admin/feedback`); Visual Representation, **all five phases** — `activity_facts`, metric registry
+listing, one WHERE conjunct on every retrieval leg, revocation on re-listing, read-side Google
+Group expansion behind GOOGLE_GROUPS_ENABLED, "not shared with you" refusal,
+`tests/test_doc_access.py`); the needs-attention bell (derived, owner/admin-scoped); feedback & documentation-gap tracking (automatic refusal logging on web + Slack, thumbs with three reasons, `/admin/feedback`); Visual Representation, **all five phases** — `activity_facts`, metric registry
 + panels, charts **in Ask** (no Visualizations tab; `/visualizations` redirects
 to `/chat`; `InsightsAgent` + `classify_question` rather than a keyword regex), editor capture at sync time, GitHub PR/merge/review facts on a
 facts-only sync branch (PRs plus commits), Linear completion-by-team on the ingest job, Slack
@@ -1822,10 +1844,13 @@ when the model says qa.
   the case that will bite first: a connecting account that is only a VIEWER on
   some files gets `permissions` omitted, so those documents are SKIPPED and
   read as a sync that quietly indexed less. Also unwired: Slack and Linear
-  (membership is readable, nothing captures it), `group:` grants (no directory,
-  so a file shared only with a Google Group is withheld from everyone but the
-  connecting admin), and charts (`activity_facts` counts and hover rows stay
-  scope-level). **The migration must be applied to prod** — three additive
+  (membership is readable, nothing captures it) and charts (`activity_facts`
+  counts and hover rows stay scope-level). **Group expansion has never run
+  against a live directory** — `GOOGLE_GROUPS_ENABLED` is off, no tenant has
+  the scope, and the Admin SDK needs a Workspace-admin connection nobody has
+  confirmed they have; `groups.list?userKey=` also returns DIRECT memberships
+  only, so a nested group is still withheld. `prior_emails` aliasing (Onyx has
+  it) is still missing: change your email and every grant stops matching. **The migration must be applied to prod** — three additive
   `IF NOT EXISTS` statements, verified against a throwaway local database.
 - Charts: Forms is now REACHABLE from the product (picker + chips), but **the
   Google Forms path has still never run against a real form.** The

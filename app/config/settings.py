@@ -613,6 +613,16 @@ DEFAULT_GOOGLE_OAUTH_SCOPES = (
 # `drive.readonly` already covers FINDING the forms (the Forms API has no
 # listing endpoint), so this is the only addition needed.
 GOOGLE_FORMS_SCOPE = "https://www.googleapis.com/auth/forms.responses.readonly"
+# Expanding a Drive `group:` grant into the people actually in that group needs
+# the Admin SDK Directory API, which has its own scope and its own hard
+# requirement: the CONNECTED account must be a Google Workspace admin (or hold
+# a delegated role with group-read privilege). A non-admin connection simply
+# 403s, which is why this fails closed to "no groups" rather than erroring.
+#
+# Out of the default for the same reason as Forms: an already-connected tenant
+# does not have it, so defaulting it on would force every tenant to reconnect
+# Google. Opt in with GOOGLE_GROUPS_ENABLED=true, then reconnect once.
+GOOGLE_GROUPS_SCOPE = "https://www.googleapis.com/auth/admin.directory.group.readonly"
 # Ceilings on the Drive folder crawl (see GoogleSettings). 500 folders is far
 # more than a policy folder needs while still bounding the number of sequential
 # Google API calls a single request can issue; 2000 native Docs likewise. Both
@@ -651,22 +661,33 @@ class GoogleSettings:
     #: default because turning it on requires every tenant to reconnect
     #: Google, which is a deploy decision rather than a code one.
     forms_enabled: bool = False
+    #: Whether a Drive ``group:`` grant is expanded into its members for
+    #: document-level access filtering. Off by default: it needs an extra OAuth
+    #: scope (so every tenant reconnects) AND a Workspace-admin connection, so
+    #: switching it on is a deploy decision rather than a code one. Off, a
+    #: group-shared file stays withheld from everyone but the connecting
+    #: account -- fail-closed, which is the behaviour that shipped.
+    groups_enabled: bool = False
 
     @classmethod
     def from_env(cls) -> "GoogleSettings":
         forms_enabled = env_bool("GOOGLE_FORMS_ENABLED", False)
+        groups_enabled = env_bool("GOOGLE_GROUPS_ENABLED", False)
         scopes = os.getenv("GOOGLE_OAUTH_SCOPES", DEFAULT_GOOGLE_OAUTH_SCOPES)
         # Appended rather than replacing the default, and only when asked, so
         # an explicit GOOGLE_OAUTH_SCOPES override still gets Forms access if
         # the flag is on -- otherwise the two settings would silently disagree.
         if forms_enabled and GOOGLE_FORMS_SCOPE not in scopes:
             scopes = f"{scopes} {GOOGLE_FORMS_SCOPE}"
+        if groups_enabled and GOOGLE_GROUPS_SCOPE not in scopes:
+            scopes = f"{scopes} {GOOGLE_GROUPS_SCOPE}"
         return cls(
             client_id=os.getenv("GOOGLE_CLIENT_ID"),
             client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
             redirect_uri=os.getenv("GOOGLE_REDIRECT_URI"),
             scopes=scopes,
             forms_enabled=forms_enabled,
+            groups_enabled=groups_enabled,
             max_walk_folders=int(
                 os.getenv("GOOGLE_MAX_WALK_FOLDERS") or DEFAULT_GOOGLE_MAX_WALK_FOLDERS
             ),
