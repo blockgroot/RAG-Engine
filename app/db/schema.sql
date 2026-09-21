@@ -509,6 +509,14 @@ ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS attempts INT NOT NULL DEFAUL
 -- number was real, it just wasn't the number that answers the question.
 ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS progress_at TIMESTAMPTZ;
 
+-- How many files this run could not read the SHARING of (document-level
+-- access filtering). Stored on the JOB rather than the connection because it
+-- is the outcome of one sync, and reading only the LATEST job per connection
+-- is what keeps the notification derived: the moment a later sync reports 0,
+-- the bell item disappears on its own. A notification that outlives its cause
+-- is why people stop reading them (app/api/notifications.py).
+ALTER TABLE ingestion_jobs ADD COLUMN IF NOT EXISTS permission_unreadable_documents INT NOT NULL DEFAULT 0;
+
 -- At most one queued/running job per connection. Without this, two parallel
 -- POST /ingest calls can both pass has_active_job() and enqueue twice — the
 -- second run often re-embeds the same pages and makes Update look "stuck".

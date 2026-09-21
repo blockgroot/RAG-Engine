@@ -63,6 +63,16 @@ class IngestResult:
     documents_unchanged: int = 0
     chunks_stored: int = 0
     documents_skipped: int = 0  # fetched but had no usable text
+    # Files whose SHARING the source would not report this run. Counted apart
+    # from `documents_skipped` because the cause and the fix are different: an
+    # empty document is a document with nothing in it, while this is a document
+    # we are not allowed to know the audience of. Two outcomes are summed here
+    # because the remedy is identical (give the connected account rights to see
+    # sharing): a NEW file is left out of the index entirely, and an
+    # ALREADY-INDEXED one keeps the access set it last had. Surfaced on the
+    # notification bell -- silence here looks exactly like a source with less
+    # in it than you thought.
+    documents_permission_unreadable: int = 0
     document_ids: list[str] = field(default_factory=list)
     # External ids written this run — used by deferred contextual enrich.
     ingested_external_ids: list[str] = field(default_factory=list)
@@ -257,6 +267,9 @@ def _restamp_unchanged_access(
 ) -> int:
     """Refresh the ACL of documents this sync did NOT re-fetch.
 
+    Returns how many of them could NOT be refreshed because the source stopped
+    reporting their sharing -- those keep the viewers they already had.
+
     A permission change moves no content, so an unshared file never reaches
     the fetch/upsert path above -- without this, revocation would take effect
     only if someone happened to also edit the file. Costs nothing: the sharing
@@ -264,15 +277,30 @@ def _restamp_unchanged_access(
     """
     if provider not in ACL_CAPABLE:
         return 0
+    pending = [ref for ref in refs if ref.external_id not in handled]
     entries = [
         (ref.external_id, ref.access.is_public, list(ref.access.viewers) or None)
-        for ref in refs
-        if ref.external_id not in handled and getattr(ref, "access", None) is not None
+        for ref in pending
+        if getattr(ref, "access", None) is not None
     ]
+    # FROZEN, not locked down: a document already in the index whose sharing we
+    # can no longer read keeps the access set it last had. It is never widened,
+    # and the alternative -- blanking it the moment a read fails -- makes a
+    # transient Drive error or one changed Workspace setting silently empty a
+    # corpus. The cost is that a viewer removed during that window keeps access
+    # until sharing is readable again, which is why the count is reported
+    # rather than only logged.
+    frozen = len(pending) - len(entries)
+    if frozen:
+        logger.warning(
+            "Access for %s already-indexed %s document(s) could not be refreshed "
+            "(sharing not reported); keeping their existing viewers (org=%s)",
+            frozen, provider, org_id,
+        )
     if not entries:
-        return 0
+        return frozen
     try:
-        return store.set_source_document_access(
+        store.set_source_document_access(
             org_id, provider=provider, entries=entries, workspace_id=workspace_id
         )
     except Exception:  # noqa: BLE001 - never fail a good ingest over a re-stamp
@@ -280,7 +308,7 @@ def _restamp_unchanged_access(
             "Failed to refresh document access for %s docs (org=%s provider=%s)",
             len(entries), org_id, provider,
         )
-        return 0
+    return frozen
 
 
 def _plan_refs(
@@ -428,6 +456,7 @@ def ingest_source(
 
     chunks_total = 0
     skipped = 0
+    permission_unreadable = 0
     doc_ids: list[str] = []
     ingested_external_ids: list[str] = []
     added_n = 0
@@ -452,6 +481,7 @@ def ingest_source(
                 provider, ref.external_id, provider,
             )
             skipped += 1
+            permission_unreadable += 1
             report("indexing", done, total_work)
             continue
         is_public, viewers = access
@@ -531,7 +561,7 @@ def ingest_source(
     # Revocation: every ref this run did NOT re-fetch still gets its access set
     # refreshed from the listing. Without it, losing access in the source would
     # only ever reach us if someone also happened to edit the file.
-    _restamp_unchanged_access(
+    permission_unreadable += _restamp_unchanged_access(
         store,
         refs,
         {r.external_id for r, _ in work},
@@ -548,6 +578,7 @@ def ingest_source(
         documents_unchanged=unchanged,
         chunks_stored=chunks_total,
         documents_skipped=skipped,
+        documents_permission_unreadable=permission_unreadable,
         document_ids=doc_ids,
         ingested_external_ids=ingested_external_ids,
     )

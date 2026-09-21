@@ -63,6 +63,12 @@ class IngestionJob:
     # Bounds `requeue_interrupted_running` so a job that kills the worker
     # process cannot be retried forever.
     attempts: int = 0
+    # Files this run could not read the SHARING of, so they were left out of
+    # the index (new) or kept the viewers they already had (already indexed).
+    # Surfaced on the Sources card rather than as a notification: a folder
+    # whose sharing we cannot read belongs to whoever administers that folder,
+    # and that is who is looking at the card.
+    permission_unreadable_documents: int = 0
 
 
 def _row_to_job(row) -> IngestionJob:
@@ -81,13 +87,15 @@ def _row_to_job(row) -> IngestionJob:
         total_documents=row[11],
         processed_documents=row[12] or 0,
         attempts=row[13] or 0,
+        permission_unreadable_documents=row[14] or 0,
     )
 
 
 _SELECT_COLUMNS = (
     "id::text, org_id::text, connection_id::text, status, doc_count, error, "
     "started_at, finished_at, created_at, workspace_id::text, "
-    "phase, total_documents, processed_documents, attempts"
+    "phase, total_documents, processed_documents, attempts, "
+    "permission_unreadable_documents"
 )
 
 
@@ -214,12 +222,19 @@ def update_progress(
         return
 
 
-def mark_succeeded(job_id: str, doc_count: int) -> None:
+def mark_succeeded(
+    job_id: str, doc_count: int, permission_unreadable: int = 0
+) -> None:
+    """Mark the job done. ``permission_unreadable`` is how many files this run
+    could not read the sharing of -- written even on a successful sync, because
+    that is exactly the case it describes: everything worked, and some files
+    were left out anyway. Defaults to 0 so existing callers are unchanged."""
     with get_connection() as conn:
         conn.execute(
             "UPDATE ingestion_jobs SET status = 'succeeded', doc_count = %s, "
+            "permission_unreadable_documents = %s, "
             "finished_at = now() WHERE id = %s",
-            (doc_count, job_id),
+            (doc_count, permission_unreadable, job_id),
         )
 
 

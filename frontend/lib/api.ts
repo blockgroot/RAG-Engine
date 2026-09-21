@@ -241,6 +241,20 @@ export interface FormsSelection {
   selected: string[];
 }
 
+/** Files in the chosen folder whose sharing Google will not report, so they
+ *  cannot be indexed. Returned by the folder-save routes and shown to whoever
+ *  picked the folder, right there — `null` when there is nothing to say. */
+export interface SharingWarning {
+  kind: "permissions";
+  count: number;
+  checked: number;
+  files: string[];
+  truncated: boolean;
+  title: string;
+  detail: string;
+  fix: string;
+}
+
 export interface ConnectionConfigResponse {
   connection_id: string;
   provider: string;
@@ -248,6 +262,7 @@ export interface ConnectionConfigResponse {
   folder_changed?: boolean;
   channels_changed?: boolean;
   documents_purged?: number;
+  sharing?: SharingWarning | null;
 }
 
 export interface DriveFolder {
@@ -264,6 +279,9 @@ export interface JobRecord {
   phase: string | null;
   total_documents: number | null;
   processed_documents: number;
+  /** Files the last sync could not read the sharing of, so they were left out
+   *  (new) or kept the viewers they already had (already indexed). */
+  permission_unreadable_documents?: number;
   started_at: string | null;
   finished_at: string | null;
   created_at: string;

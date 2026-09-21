@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { api, ConnectionSourceConfig, DriveFolder } from "@/lib/api";
+import { api, ConnectionSourceConfig, DriveFolder, SharingWarning } from "@/lib/api";
 
 const FOLDER_SEARCH_DEBOUNCE_MS = 450;
 
@@ -24,7 +24,15 @@ export function DriveFolderPicker({
   currentFolderName?: string | null;
   onSaved: (
     config: ConnectionSourceConfig,
-    meta?: { folder_changed?: boolean; documents_purged?: number }
+    meta?: {
+      folder_changed?: boolean;
+      documents_purged?: number;
+      // Files in this folder Handbook cannot index because Google will not say
+      // who they are shared with. Passed UP rather than rendered here: the
+      // picker closes on save, and this is the thing the person needs to keep
+      // reading after it does.
+      sharing?: SharingWarning | null;
+    }
   ) => void;
   onError?: (message: string) => void;
   onCancel?: () => void;
@@ -102,6 +110,7 @@ export function DriveFolderPicker({
       onSaved(result.config, {
         folder_changed: result.folder_changed,
         documents_purged: result.documents_purged,
+        sharing: result.sharing ?? null,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Could not save folder.";

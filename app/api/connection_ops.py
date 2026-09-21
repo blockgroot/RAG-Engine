@@ -20,6 +20,7 @@ from ..core.exceptions import ConfigurationError, OAuthReauthRequiredError, Sour
 from ..db.connection import get_connection
 from ..rag.query_cache import delete_org_entries
 from ..sources.factory import INDEXED_PROVIDERS
+from ..sources.google_drive_utils import preflight_folder_sharing
 from ..vectorstore import build_vector_store
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,53 @@ def disconnect_connection(
     except Exception:  # noqa: BLE001 - a stale cache entry, never a failed disconnect
         logger.warning("Could not clear the answer cache after a disconnect", exc_info=True)
     return {"provider": provider, "documents_purged": purged}
+
+
+def drive_sharing_report(token: str, folder_id: str) -> dict | None:
+    """A ready-to-render warning if this folder has files we cannot index.
+
+    Returned by BOTH folder-save routes so the person who picked the folder --
+    an admin for the company, a space's OWNER for their own space -- is told at
+    the moment they pick it, by the same code. The alternative we started with
+    was a notification after the fact, which reaches only admins and only once
+    someone opens the bell; a problem with a folder belongs to whoever is
+    choosing that folder, while they are choosing it.
+
+    ``None`` when there is nothing to say: every file's sharing was readable,
+    the folder holds no files yet, or the check itself could not run. A warning
+    box that appears on a healthy folder teaches people to dismiss it.
+    """
+    report = preflight_folder_sharing(token, folder_id)
+    if report["failed"] or not report["unreadable"]:
+        return None
+
+    n, checked = report["unreadable"], report["checked"]
+    files = "file" if n == 1 else "files"
+    scope = f"{n} of the {checked} files" if n < checked else (
+        "The file" if n == 1 else f"All {n} files"
+    )
+    more = " We only checked the top of this folder, so there may be more." if report["truncated"] else ""
+    return {
+        "kind": "permissions",
+        "count": n,
+        "checked": checked,
+        "files": report["files"],
+        "truncated": report["truncated"],
+        "title": f"{n} {files} in this folder won\u2019t be added",
+        # States the consequence before the fix, because the consequence is
+        # what makes the fix worth doing. No jargon: not "ACL", not "indexed".
+        "detail": (
+            f"{scope} we looked at don\u2019t tell us who they\u2019re shared with, so "
+            "Handbook will leave them out rather than risk showing them to the "
+            f"wrong people.{more}"
+        ),
+        "fix": (
+            "Google only shares that with an owner or editor. Ask the file\u2019s owner "
+            "to make the connected Google account an editor of the folder, or turn on "
+            "\u201cViewers and commenters can see who else has access\u201d in the sharing "
+            "settings. Then save the folder again."
+        ),
+    }
 
 
 def folder_id_changed(

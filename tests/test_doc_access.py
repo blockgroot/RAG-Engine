@@ -170,10 +170,11 @@ def test_unchanged_documents_have_their_access_refreshed():
         SourceRef(external_id="kept", title="A", access=DocAccess.restricted(["a@x.com"])),
         SourceRef(external_id="fetched", title="B", access=DocAccess.scope_public()),
     ]
-    n = _restamp_unchanged_access(
+    frozen = _restamp_unchanged_access(
         store, refs, {"fetched"}, org_id="o", provider="google", workspace_id=None
     )
-    assert n == 1
+    # Nothing was frozen: every un-refetched ref reported its sharing.
+    assert frozen == 0
     assert store.calls[0]["entries"] == [("kept", False, ["a@x.com"])]
 
 
@@ -485,3 +486,135 @@ def test_a_starter_chip_never_names_a_document_you_cannot_open():
     finally:
         with get_connection() as conn:
             conn.execute("DELETE FROM organizations WHERE id = %s::uuid", (org_id,))
+
+
+# -- a skipped file is SAID, not just logged -------------------------------
+
+
+def test_a_file_whose_sharing_is_unreadable_is_counted_apart_from_an_empty_one():
+    """Two different failures with two different fixes. `documents_skipped`
+    means "nothing in it"; this means "we are not allowed to know who may read
+    it", and only the second sends someone to change a Drive permission."""
+    from app.ingestion.pipeline import IngestResult
+
+    result = IngestResult()
+    assert result.documents_permission_unreadable == 0
+    assert IngestResult(documents_skipped=3).documents_permission_unreadable == 0
+
+
+def test_an_indexed_document_whose_sharing_goes_dark_is_frozen_and_counted():
+    """FREEZE, not lock down: it keeps the viewers it already had, so a
+    transient Drive error cannot silently empty a corpus. The count is what
+    stops that freeze being invisible."""
+    from app.ingestion.pipeline import _restamp_unchanged_access
+
+    store = _RecordingStore()
+    refs = [
+        SourceRef(external_id="ok", title="A", access=DocAccess.restricted(["a@x.com"])),
+        SourceRef(external_id="dark", title="B"),  # sharing no longer reported
+    ]
+    frozen = _restamp_unchanged_access(
+        store, refs, set(), org_id="o", provider="google", workspace_id=None
+    )
+    assert frozen == 1
+    # The readable one is still refreshed; the dark one is simply left alone,
+    # never rewritten to "nobody".
+    assert store.calls[0]["entries"] == [("ok", False, ["a@x.com"])]
+
+
+# -- the person picking the folder is told, then and there ------------------
+
+
+def _report(**over):
+    """Run the real message builder over a stubbed Drive preflight."""
+    from app.api import connection_ops
+
+    base = {"checked": 5, "unreadable": 2, "files": ["Q3 Planning"], "truncated": False, "failed": False}
+    base.update(over)
+    original = connection_ops.preflight_folder_sharing
+    connection_ops.preflight_folder_sharing = lambda t, f: base
+    try:
+        return connection_ops.drive_sharing_report("tok", "folder")
+    finally:
+        connection_ops.preflight_folder_sharing = original
+
+
+def test_a_healthy_folder_says_nothing():
+    """A warning box that appears on a folder with no problem teaches people to
+    dismiss the box."""
+    assert _report(unreadable=0, files=[]) is None
+
+
+def test_a_preflight_that_could_not_run_says_nothing():
+    """Never claim files are unindexable on the strength of a failed check."""
+    assert _report(failed=True) is None
+
+
+def test_the_warning_states_the_consequence_and_the_fix():
+    report = _report()
+    assert report is not None
+    assert "won\u2019t be added" in report["title"]
+    assert "wrong people" in report["detail"]          # why we leave them out
+    assert "owner or editor" in report["fix"]          # the one thing to do
+    assert report["count"] == 2 and report["checked"] == 5
+
+
+def test_a_partial_check_admits_it_is_partial():
+    """One `files.list` page, so a big or nested folder may hold more. Saying
+    "2 files" when we only looked at the top is a number that reads as total."""
+    assert "may be more" in _report(truncated=True)["detail"]
+    assert "may be more" not in _report(truncated=False)["detail"]
+
+
+def test_the_warning_names_the_files():
+    """Unlike the notification we replaced, this one CAN name them: whoever is
+    choosing the folder can already open it in Drive, so listing what is in it
+    discloses nothing they do not have in front of them."""
+    assert _report(files=["Q3 Planning", "Budget"])["files"] == ["Q3 Planning", "Budget"]
+
+
+def test_the_preflight_never_raises_on_a_dead_drive():
+    """It runs inside the save that the folder depends on: a diagnostic that
+    can fail the save it precedes is an outage, not a diagnostic."""
+    import httpx
+
+    from app.sources import google_drive_utils
+
+    original = httpx.get
+    httpx.get = lambda *a, **k: (_ for _ in ()).throw(httpx.ConnectError("down"))
+    try:
+        out = google_drive_utils.preflight_folder_sharing("tok", "folder")
+    finally:
+        httpx.get = original
+    assert out["failed"] is True and out["unreadable"] == 0
+
+
+def test_the_preflight_ignores_subfolders_but_admits_it_stopped_at_them():
+    """A subfolder is not a document. The files inside it are, and they are a
+    deeper walk than a check someone is waiting on should make."""
+    import httpx
+
+    from app.sources import google_drive_utils
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "files": [
+                    {"name": "Sub", "mimeType": "application/vnd.google-apps.folder"},
+                    {"name": "Readable", "permissions": [{"type": "user"}]},
+                    {"name": "Hidden"},
+                ]
+            }
+
+    original = httpx.get
+    httpx.get = lambda *a, **k: _Resp()
+    try:
+        out = google_drive_utils.preflight_folder_sharing("tok", "folder")
+    finally:
+        httpx.get = original
+    assert out["checked"] == 2 and out["unreadable"] == 1
+    assert out["files"] == ["Hidden"]
+    assert out["truncated"] is True  # a subfolder was not looked into

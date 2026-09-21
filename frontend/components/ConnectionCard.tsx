@@ -1,5 +1,12 @@
 import { useEffect, useState } from "react";
-import { api, ApiError, ConnectionRecord, JobRecord, SyncChanges } from "@/lib/api";
+import {
+  api,
+  ApiError,
+  ConnectionRecord,
+  JobRecord,
+  SharingWarning,
+  SyncChanges,
+} from "@/lib/api";
 import { syncPagesDetail, syncPercent, syncPhaseHeadline } from "@/lib/syncProgress";
 import { formatReauthReason } from "@/lib/reauthReason";
 import { DriveFolderPicker } from "./DriveFolderPicker";
@@ -178,6 +185,10 @@ export function ConnectionCard({
   const [changingChannels, setChangingChannels] = useState(false);
   const [invitingMembers, setInvitingMembers] = useState(false);
   const [folderHint, setFolderHint] = useState<string | null>(null);
+  // Files in the saved folder Handbook cannot index because Google will not
+  // say who they are shared with. Held on the CARD rather than in the picker
+  // because the picker closes on save and this has to outlive it.
+  const [sharing, setSharing] = useState<SharingWarning | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
   const [disconnectError, setDisconnectError] = useState<string | null>(null);
 
@@ -461,9 +472,10 @@ export function ConnectionCard({
             connectionId={connection.id}
             workspaceId={workspaceId}
             inputId={`folder-${provider}`}
-            onSaved={(config) => {
+            onSaved={(config, meta) => {
               setConfigError(null);
               setFolderHint(null);
+              setSharing(meta?.sharing ?? null);
               onConfigSaved?.({ ...connection, source_config: config });
             }}
             onError={(message) => setConfigError(message || null)}
@@ -662,6 +674,79 @@ export function ConnectionCard({
             <p className="connection-reauth-desc">
               {formatReauthReason(provider, connection.reauth_reason)}
             </p>
+          </div>
+        </div>
+      )}
+      {/* Shown the moment the folder is saved, to the person who saved it --
+          an admin for the company, a space's OWNER for their own space. A
+          folder whose sharing Handbook cannot read is that person's problem to
+          fix, and this is the one moment they are looking at it. Same shape as
+          the expired-access box because it is the same kind of thing: a
+          working connection with something in it that needs a human. */}
+      {/* The same box, from the last SYNC rather than the folder picker.
+          Sharing can be tightened long after someone chose the folder, and the
+          preflight structurally cannot see that happen — so the count the sync
+          recorded is what covers the drift. Shown only when the picker has not
+          just said the same thing, so one problem is stated once. */}
+      {!sharing &&
+        lastJob?.status === "succeeded" &&
+        (lastJob.permission_unreadable_documents ?? 0) > 0 && (
+          <div className="connection-reauth-box" role="alert">
+            <span className="connection-reauth-ico" aria-hidden>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+                <path
+                  d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </span>
+            <div className="connection-reauth-body">
+              <span className="connection-reauth-title">
+                {lastJob.permission_unreadable_documents}{" "}
+                {lastJob.permission_unreadable_documents === 1 ? "file" : "files"} couldn’t
+                be added
+              </span>
+              <p className="connection-reauth-desc">
+                The last sync couldn’t see who they’re shared with, so Handbook left them
+                out rather than risk showing them to the wrong people. Make the connected
+                account an owner or editor of the folder, then run Update.
+              </p>
+            </div>
+          </div>
+        )}
+
+      {sharing && (
+        <div className="connection-reauth-box" role="alert">
+          <span className="connection-reauth-ico" aria-hidden>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+              <path
+                d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </span>
+          <div className="connection-reauth-body">
+            <span className="connection-reauth-title">{sharing.title}</span>
+            <p className="connection-reauth-desc">{sharing.detail}</p>
+            {sharing.files.length > 0 && (
+              // Named on purpose, unlike the notification bell: whoever is
+              // choosing this folder can already open it in Drive, so listing
+              // what is in it discloses nothing -- and "which ones?" is the
+              // immediate next question.
+              <p className="connection-reauth-desc">
+                {sharing.files.join(", ")}
+                {sharing.count > sharing.files.length
+                  ? ` and ${sharing.count - sharing.files.length} more`
+                  : ""}
+              </p>
+            )}
+            <p className="connection-reauth-desc">{sharing.fix}</p>
           </div>
         </div>
       )}

@@ -295,6 +295,13 @@ def test_worker_run_once_marks_job_succeeded(_connected_org, monkeypatch):
 
     class FakeIngestResult:
         documents_ingested = 3
+        # The worker reads these off the real `IngestResult`. They were missing
+        # here, which is why these three worker tests were long-standing
+        # failures rather than a regression: the fake did not keep up with the
+        # contract it stands in for.
+        documents_removed = 0
+        ingested_external_ids: list[str] = []
+        documents_permission_unreadable = 0
 
     monkeypatch.setattr(worker, "get_live_connection_token", lambda org, provider, **kw: "ntn_fake")
     monkeypatch.setattr(
@@ -367,6 +374,9 @@ def test_worker_google_job_passes_folder_config(store, org_cleanup, monkeypatch)
 
     class FakeIngestResult:
         documents_ingested = 2
+        documents_removed = 0
+        ingested_external_ids: list[str] = []
+        documents_permission_unreadable = 0
 
     monkeypatch.setattr(worker, "get_live_connection_token", lambda org, provider, **kw: "goog_live")
     monkeypatch.setattr(worker, "build_source_adapter", fake_build)
@@ -494,6 +504,9 @@ def test_worker_run_once_scopes_ingestion_to_job_workspace(store, org_cleanup, m
 
     class FakeIngestResult:
         documents_ingested = 1
+        documents_removed = 0
+        ingested_external_ids: list[str] = []
+        documents_permission_unreadable = 0
 
     monkeypatch.setattr(
         worker, "get_live_connection_token", lambda org, provider, **kw: "ntn_worker_fake"

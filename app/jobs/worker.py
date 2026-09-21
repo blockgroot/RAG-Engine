@@ -191,7 +191,11 @@ def run_once() -> queue.IngestionJob | None:
             on_progress=report,
             contextual=contextual,
         )
-        queue.mark_succeeded(job.id, result.documents_ingested)
+        queue.mark_succeeded(
+            job.id,
+            result.documents_ingested,
+            result.documents_permission_unreadable,
+        )
         clear_needs_reauth(job.org_id, provider, job.workspace_id)
 
         # New content must not sit behind a cached answer: without this the

@@ -43,6 +43,7 @@ from ..sources import (
 from .connection_ops import (
     refresh_slack_channel_names,
     disconnect_connection,
+    drive_sharing_report,
     find_slack_channel_conflict,
     folder_id_changed,
     list_google_forms,
@@ -414,6 +415,11 @@ def put_connection_config(
             "config": config,
             "folder_changed": swapped,
             "documents_purged": purged,
+            # Told HERE, to whoever just picked the folder, rather than to
+            # admins later via the bell: a folder whose sharing we cannot read
+            # is that person's problem to fix, and this is the one moment they
+            # are looking at it. `None` when there is nothing to say.
+            "sharing": drive_sharing_report(token, config["folder_id"]),
         }
 
     # provider == "slack"

@@ -29,6 +29,11 @@ def job_payload(job: IngestionJob) -> dict:
         "phase": job.phase,
         "total_documents": job.total_documents,
         "processed_documents": job.processed_documents,
+        # Files this run could not read the sharing of. Exposed so the Sources
+        # card can say so AFTER a sync as well as at the moment the folder is
+        # picked: sharing can be tightened long after someone chose the folder,
+        # and the preflight structurally cannot see that happen.
+        "permission_unreadable_documents": job.permission_unreadable_documents,
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
         "created_at": job.created_at.isoformat(),

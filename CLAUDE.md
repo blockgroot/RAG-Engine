@@ -86,6 +86,23 @@ hook, and every process boundary must `close_pool()`.
     the new set is in hand for free. REPLACES the set, never unions — a union
     can only add viewers, which makes removal inexpressible. Distinct from
     `_sanitize_removals`, which guards DELETION on a bad listing.
+  - **The check runs at FOLDER-PICK time, not after the fact**
+    (`google_drive_utils.preflight_folder_sharing`, one bounded `files.list`
+    page, never raises). It NAMES the files, unlike anything derived later:
+    whoever is choosing the folder can already open it in Drive, so listing
+    what is in it discloses nothing they do not have in front of them, and
+    "which ones?" is the immediate next question. A healthy folder says
+    NOTHING — a warning that appears when nothing is wrong teaches people to
+    dismiss the warning.
+  - **An already-indexed document whose sharing goes dark is FROZEN, not
+    locked down** (`_restamp_unchanged_access`). It keeps the viewers it last
+    had: never widened, and the alternative — blanking it the moment one read
+    fails — lets a transient Drive error or one changed Workspace setting
+    silently empty a corpus. The cost is that a viewer removed during that
+    window keeps access until sharing is readable again, which is exactly why
+    the count is REPORTED (bell, `permission_unreadable_documents`) rather than
+    only logged. Counted apart from `documents_skipped`: "nothing in it" and
+    "we may not know who reads it" have different fixes.
   - **A withheld document says so** (`rag/access_notice.py`, reached only
     through `_gate_failed`, the one funnel every refusal passes). "I don't
     know" is indistinguishable from "nobody wrote that down" and sends people
@@ -590,6 +607,17 @@ stopped updating and the asker could not tell a stale answer from a current one.
   reports "Linked" while indexing zero documents, the §5 Sources bug class).
   An expired connection is NOT also reported as unscoped: one connection is one
   problem, and reconnecting is what unblocks the rest.
+- **A folder whose SHARING we cannot read is deliberately NOT a bell item.**
+  It was built as one and taken back out: the bell reaches admins, on their
+  next visit, about a folder somebody else chose. That problem belongs to
+  whoever is choosing the folder, at the moment they choose it — so it is
+  returned by the folder-save routes instead (`connection_ops.drive_sharing_
+  report` → `sharing` on the response → the warning box on `ConnectionCard`),
+  which reaches a space's OWNER for their own space and not just org admins.
+  The same box renders again after a sync from
+  `ingestion_jobs.permission_unreadable_documents`, because sharing can be
+  tightened long after the folder was picked and a preflight structurally
+  cannot see that happen.
 - The panel portals to document.body (z-index 1000) so it escapes `.app-rail`'s transform and overflow clipping, opening downward from the brand row; a bell that cannot load is silent, never an error on every page it is on.
 
 **Sources (`app/sources/`)** — one `SourceAdapter` per source; format
@@ -1722,8 +1750,11 @@ frontend/ Next.js 15 portal · tests/ pytest
   one (a fresh bucket per request).
 
 **Tests**
-- Three `test_jobs.py` worker tests are **pre-existing-broken** (their
-  `FakeIngestResult` lacks `ingested_external_ids`) — not a regression.
+- The three long-broken `test_jobs.py` worker tests now PASS: their
+  `FakeIngestResult` was missing fields the worker reads off the real one
+  (`ingested_external_ids`, `documents_removed`, and later
+  `documents_permission_unreadable`). A fake standing in for a dataclass has to
+  keep up with it — the failure looked environmental for months and was not.
 - The Phase 3 `rag` fixture disables memory + web search on purpose.
 - Tests asserting on a **real** LLM's free-form output are marked `live_llm`
   and deselected in CI (`-m "not network and not live_llm"`); the golden-set
@@ -1740,7 +1771,7 @@ carry document-level access, see §3) · `chunks` (`vector(1024)` + generated `c
 `users` · `oauth_connections` (encrypted tokens, `source_config` JSONB, two
 partial unique indexes: org-wide vs workspace; `sync_requested_at` webhook flag
 + `last_sync_at` poll floor, see §3 Automatic freshness) · `ingestion_jobs`
-(+`phase`/`attempts`/`progress_at`) · `magic_link_tokens` · `oauth_states` ·
+(+`phase`/`attempts`/`progress_at`/`permission_unreadable_documents`) · `magic_link_tokens` · `oauth_states` ·
 `github_install_pending` · `query_answer_cache` · `api_rate_counters` ·
 `workspaces` / `workspace_members` · `org_signup_requests` · `schedulers`
 (scoped by `org_id` **and** `user_id`, unlike every other tenant table; `model` NULL = the configured default) ·

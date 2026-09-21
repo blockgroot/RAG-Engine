@@ -141,6 +141,88 @@ def validate_drive_folder(token: str, folder_id: str, *, timeout: float = 15.0) 
     }
 
 
+#: How many files a preflight looks at. This is a check run while someone
+#: waits on a button, not a sync -- one `files.list` page is enough to tell
+#: "this folder's sharing is readable" from "none of it is", which is the only
+#: question being asked.
+PREFLIGHT_SAMPLE = 25
+
+
+def preflight_folder_sharing(
+    token: str, folder_id: str, *, limit: int = PREFLIGHT_SAMPLE, timeout: float = 15.0
+) -> dict:
+    """Can we read WHO the files in this folder are shared with?
+
+    Document-level access filtering only indexes a file when Drive tells us its
+    audience. Drive omits `permissions` when the connected account is not
+    entitled to see a file's sharing -- typically when it is merely a reader or
+    commenter on a file it does not own, or the Workspace has switched off
+    "viewers and commenters can see who else has access". Those files are left
+    out of the index rather than shown to the wrong people.
+
+    Asked HERE, while the person is still standing on the folder picker, rather
+    than reported after the fact: this is the one moment they are thinking
+    about this folder, and the fix ("make the connected account an owner or
+    editor") is one they can act on immediately. Waiting until after a sync
+    means the first they learn of it is a question that will not answer.
+
+    Unlike the notification bell, this NAMES the files: whoever is choosing the
+    folder can already open it in Drive, so listing what is in it discloses
+    nothing they do not have in front of them, and "which ones?" is the
+    immediate next question.
+
+    Never raises. A preflight that can fail the save it precedes would turn a
+    diagnostic into an outage; an unknown answer is reported as "we could not
+    check", which is honest and costs nothing.
+
+    Returns ``{checked, unreadable, files, truncated, failed}``.
+    """
+    empty = {"checked": 0, "unreadable": 0, "files": [], "truncated": False, "failed": False}
+    try:
+        response = httpx.get(
+            _DRIVE_FILES_URL,
+            headers={"Authorization": f"Bearer {token}"},
+            params={
+                "q": f"'{_escape_drive_query_value(folder_id)}' in parents and trashed = false",
+                "fields": "nextPageToken,files(id,name,mimeType,permissions(type))",
+                "supportsAllDrives": "true",
+                "includeItemsFromAllDrives": "true",
+                "pageSize": max(1, min(limit, 100)),
+            },
+            timeout=timeout,
+        )
+        if response.status_code >= 400:
+            logger.warning(
+                "Drive sharing preflight for folder %s returned HTTP %s",
+                folder_id, response.status_code,
+            )
+            return {**empty, "failed": True}
+        payload = response.json()
+    except Exception:  # noqa: BLE001 - a preflight must never fail the save
+        logger.warning("Drive sharing preflight failed for folder %s", folder_id, exc_info=True)
+        return {**empty, "failed": True}
+
+    # Subfolders are not documents and carry no sharing question of their own
+    # here -- the files inside them do, and those are a deeper walk than a
+    # preflight should make. `truncated` is what says the answer is partial.
+    files = [
+        f for f in payload.get("files", []) if f.get("mimeType") != _FOLDER_MIME
+    ]
+    unreadable = [f for f in files if f.get("permissions") is None]
+    has_subfolders = any(
+        f.get("mimeType") == _FOLDER_MIME for f in payload.get("files", [])
+    )
+    return {
+        "checked": len(files),
+        "unreadable": len(unreadable),
+        # A handful is enough to recognise the pattern; a wall of filenames in
+        # a warning box is not read.
+        "files": [str(f.get("name") or "Untitled") for f in unreadable[:5]],
+        "truncated": bool(payload.get("nextPageToken")) or has_subfolders,
+        "failed": False,
+    }
+
+
 def _escape_drive_query_value(value: str) -> str:
     """Escape a value embedded in a Drive API ``q`` string literal."""
     return value.replace("\\", "\\\\").replace("'", "\\'")
