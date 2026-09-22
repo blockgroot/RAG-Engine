@@ -58,6 +58,10 @@ def _file(id, name, mime, modified="2026-01-15T10:30:00.000Z", parents=None, tra
         "modifiedTime": modified,
         "trashed": trashed,
         "parents": parents or [],
+        # Real listings carry this now that we request the field, and it is what
+        # keeps a healthy folder from spending an `about.get` on the
+        # unreadable-sharing fallback -- which is what these call counts guard.
+        "permissions": [{"type": "user", "emailAddress": "owner@example.com"}],
     }
 
 

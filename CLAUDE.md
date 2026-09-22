@@ -76,8 +76,36 @@ hook, and every process boundary must `close_pool()`.
     `lastModifyingUser` trick again. `anyone` ⇒ scope-public, `user` ⇒ email,
     `domain` ⇒ `domain:<host>`, `group` ⇒ `group:<addr>`. An ACL-capable
     provider that reports NO sharing (a viewer-only connecting account, or a
-    Workspace that hides sharing lists) has its document SKIPPED — indexing it
-    would publish exactly the file whose sharing we could not read.
+    Workspace that hides sharing lists) falls back to **OWNER-ONLY**
+    (`DocAccess.owner_only`, Onyx's `ee/.../google_drive/doc_sync.py` "falling
+    back to granting access to retriever user"): indexed, readable by the
+    CONNECTED ACCOUNT alone, never by the scope. It shipped as a SKIP and that
+    was worse twice over — the person who connected the folder lost their own
+    document, and a skipped row does not exist, so `restricted_match` could not
+    see it and the one case where nobody can read a file got the bare "I don't
+    know" instead of the honest refusal. Still fail-closed, and Onyx says so in
+    the same words: other people may genuinely have access and are NOT granted
+    it. Skipping survives only as the LAST resort, when `about.get` cannot even
+    name the connected account. Onyx's retry ladder (`permissions.list` via a
+    retriever, a fallback user, then an admin) is deliberately NOT copied: it
+    pays off only because they impersonate three identities, and we have one —
+    a retry with the same token fails for the same reason the field was omitted.
+    The fallback address (`about.get`, once per adapter) is passed as a
+    CALLABLE and resolved only on the unreadable branch, so a healthy folder
+    spends no extra request — `tests/test_google_drive_source.py` counts a
+    listing's calls for exactly that reason (the Slack `users.info` lesson, §5).
+  - **The fallback is for a NEW document only; both ALREADY-INDEXED paths
+    FREEZE.** A document that is unchanged (`_restamp_unchanged_access` skips
+    an `unreadable` entry) and one that was EDITED in the window its sharing
+    went dark (the ingest loop `continue`s, content update included) each keep
+    the access set they had. The fallback is a guess and they already hold a
+    reading; writing the guess over either narrows an established corpus to one
+    person because a Workspace setting changed — the failure the freeze exists
+    to prevent — and it would report as zero frozen documents while doing it.
+  - **`DocAccess.unreadable` rides the tuple, never inferred from the viewer
+    list.** "Shared with exactly one person" and "we could only prove one
+    person" are indistinguishable once the list is built, and they are a
+    healthy sync and a reportable one respectively.
   - **A `group:` grant is expanded on the READ side, never at ingest**
     (`sources.google_groups`, `Viewer.groups` → `acl()`). Drive reports a group
     share as ONE opaque address and never expands it, so the choice is where to
@@ -113,16 +141,26 @@ hook, and every process boundary must `close_pool()`.
     what is in it discloses nothing they do not have in front of them, and
     "which ones?" is the immediate next question. A healthy folder says
     NOTHING — a warning that appears when nothing is wrong teaches people to
-    dismiss the warning.
+    dismiss the warning. Its copy says "only you will see these", NOT "these
+    won't be added": once unreadable sharing falls back to owner-only, "left
+    out" sends someone hunting for a document that is in fact there and
+    answering — for one person.
   - **An already-indexed document whose sharing goes dark is FROZEN, not
     locked down** (`_restamp_unchanged_access`). It keeps the viewers it last
     had: never widened, and the alternative — blanking it the moment one read
     fails — lets a transient Drive error or one changed Workspace setting
     silently empty a corpus. The cost is that a viewer removed during that
     window keeps access until sharing is readable again, which is exactly why
-    the count is REPORTED (bell, `permission_unreadable_documents`) rather than
-    only logged. Counted apart from `documents_skipped`: "nothing in it" and
-    "we may not know who reads it" have different fixes.
+    the count is REPORTED (`permission_unreadable_documents`) rather than only
+    logged. Counted apart from `documents_skipped`: "nothing in it" and "we may
+    not know who reads it" have different fixes. ONE counter covers both the
+    owner-only fallback and the frozen case, deliberately — the fix is
+    identical (make the connected account an owner or editor), so a second
+    column would carry a number that changes no action. The card therefore
+    states BOTH consequences: new files are account-only, already-indexed ones
+    keep possibly-stale sharing. Its old copy said "couldn't be added / left
+    them out", which described neither and rounded the risky half off to the
+    reassuring one.
   - **A withheld document says so** (`rag/access_notice.py`, reached only
     through `_gate_failed`, the one funnel every refusal passes). "I don't
     know" is indistinguishable from "nobody wrote that down" and sends people

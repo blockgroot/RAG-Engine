@@ -19,6 +19,7 @@ the write-side, spelling and decision tests run anywhere.
 from __future__ import annotations
 
 import os
+import uuid
 
 import pytest
 
@@ -93,6 +94,7 @@ def test_a_provider_that_cannot_report_sharing_keeps_scope_visibility():
     assert _access_for(_doc(), SourceRef(external_id="f1", title="T"), "notion") == (
         True,
         None,
+        False,
     )
 
 
@@ -101,14 +103,14 @@ def test_sharing_from_the_listing_is_used_when_the_fetch_has_none():
     ref = SourceRef(
         external_id="f1", title="T", access=DocAccess.restricted(["ada@example.com"])
     )
-    assert _access_for(_doc(), ref, "google") == (False, ["ada@example.com"])
+    assert _access_for(_doc(), ref, "google") == (False, ["ada@example.com"], False)
 
 
 def test_the_fetched_document_wins_over_the_listing():
     """Both may report; the fetch is the fresher read."""
     ref = SourceRef(external_id="f1", title="T", access=DocAccess.scope_public())
     doc = _doc(access=DocAccess.restricted(["ada@example.com"]))
-    assert _access_for(doc, ref, "google") == (False, ["ada@example.com"])
+    assert _access_for(doc, ref, "google") == (False, ["ada@example.com"], False)
 
 
 def test_drive_permissions_are_translated_by_grant_type():
@@ -553,8 +555,11 @@ def test_a_preflight_that_could_not_run_says_nothing():
 def test_the_warning_states_the_consequence_and_the_fix():
     report = _report()
     assert report is not None
-    assert "won\u2019t be added" in report["title"]
-    assert "wrong people" in report["detail"]          # why we leave them out
+    assert "Only you will see" in report["title"]
+    # The consequence, in the reader's terms: the document IS added, for one
+    # person, and everybody else is told so rather than left guessing.
+    assert "connected Google account only" in report["detail"]
+    assert "isn\u2019t shared with them" in report["detail"]
     assert "owner or editor" in report["fix"]          # the one thing to do
     assert report["count"] == 2 and report["checked"] == 5
 
@@ -882,3 +887,254 @@ def test_an_address_with_no_domain_asks_nothing(monkeypatch):
         httpx, "get", lambda *a, **k: (_ for _ in ()).throw(AssertionError("called"))
     )
     assert google_groups._fetch_groups("tok", "not-an-email") == ()
+
+
+# -- unreadable sharing: Onyx's owner-only fallback -------------------------
+#
+# The first version of this feature SKIPPED a document whose sharing Drive
+# would not report. Onyx indexes it for the one account that could see it
+# (`ee/onyx/external_permissions/google_drive/doc_sync.py`, "falling back to
+# granting access to retriever user"), which is strictly better: the person who
+# connected the folder can use their own document, and -- because the row now
+# EXISTS -- `restricted_match` can see it, so a colleague gets "not shared with
+# you" instead of a bare "I don't know".
+
+
+def test_unreadable_sharing_falls_back_to_the_connected_account():
+    from app.sources.google_drive import _file_access
+
+    access = _file_access({"name": "Q3"}, lambda: "admin@corp.com")
+    assert access is not None
+    assert access.is_public is False
+    assert access.viewers == ("admin@corp.com",)
+    assert access.unreadable is True
+
+
+def test_the_fallback_grants_NOBODY_else_even_if_they_have_access():
+    """Onyx says this in the same words: other people may genuinely be able to
+    read the file and they are still not granted it. An under-shared document
+    is a complaint; an over-shared one is a leak."""
+    from app.sources.google_drive import _file_access
+
+    access = _file_access({"name": "Q3"}, lambda: "admin@corp.com")
+    assert access is not None and len(access.viewers) == 1
+    assert Viewer(email="someone@corp.com").acl()[0] not in access.viewers
+
+
+def test_with_no_account_to_fall_back_to_the_document_is_still_skipped():
+    """The last resort has to stay. With nobody we can prove may read it, there
+    is no one to index it for."""
+    from app.sources.google_drive import _file_access
+
+    assert _file_access({"name": "Q3"}, lambda: None) is None
+    assert _file_access({"name": "Q3"}, None) is None
+    assert _file_access({"name": "Q3"}) is None
+
+
+def test_a_readable_file_is_never_marked_unreadable():
+    """`unreadable` must not become a synonym for "restricted" -- a file shared
+    with exactly one person is a healthy sync, not a reportable one."""
+    from app.sources.google_drive import _file_access
+
+    access = _file_access(
+        {"permissions": [{"type": "user", "emailAddress": "ada@corp.com"}]},
+        lambda: "admin@corp.com",
+    )
+    assert access is not None
+    assert access.unreadable is False
+    assert access.viewers == ("ada@corp.com",)
+
+
+def test_the_fallback_is_indexed_and_counted_not_dropped():
+    """The behaviour change that closes the hole: it reaches the store."""
+    from app.ingestion.pipeline import _doc_access
+
+    ref = SourceRef(external_id="x", title="Q3")
+    doc = SourceDocument(
+        external_id="x", title="Q3", content="c", access=DocAccess.owner_only("admin@corp.com")
+    )
+    resolved = _doc_access(doc, ref, "google")
+    assert resolved is not None  # NOT skipped
+    is_public, viewers, unreadable = resolved
+    assert (is_public, viewers, unreadable) == (False, ["admin@corp.com"], True)
+
+
+def test_a_provider_that_cannot_report_sharing_is_not_flagged_unreadable():
+    """Notion has no per-page permission API at all. That is a known ceiling,
+    not a broken sync, and it must not light up a warning on every card."""
+    from app.ingestion.pipeline import _doc_access
+
+    ref = SourceRef(external_id="x", title="Page")
+    doc = SourceDocument(external_id="x", title="Page", content="c")
+    assert _doc_access(doc, ref, "notion") == (True, None, False)
+
+
+def test_the_connected_account_is_resolved_once_for_the_whole_walk(monkeypatch):
+    """It is the same answer for every file, and the fallback path would
+    otherwise spend an API call per unreadable document."""
+    import httpx
+
+    from app.sources.google_drive import GoogleDriveAdapter
+
+    calls = {"n": 0}
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"user": {"emailAddress": "Admin@Corp.com"}}
+
+    def _get(*a, **k):
+        calls["n"] += 1
+        return _Resp()
+
+    monkeypatch.setattr(httpx, "get", _get)
+    adapter = GoogleDriveAdapter("tok", "folder")
+    assert adapter._account_email() == "admin@corp.com"
+    assert adapter._account_email() == "admin@corp.com"
+    assert calls["n"] == 1
+
+
+def test_a_failed_account_lookup_degrades_to_the_skip(monkeypatch):
+    """Never raises, and is not retried per file: without an account we fall
+    all the way back to leaving the document out, which is what shipped."""
+    import httpx
+
+    from app.sources.google_drive import GoogleDriveAdapter
+
+    calls = {"n": 0}
+
+    def _boom(*a, **k):
+        calls["n"] += 1
+        raise httpx.ConnectError("down")
+
+    monkeypatch.setattr(httpx, "get", _boom)
+    adapter = GoogleDriveAdapter("tok", "folder")
+    assert adapter._account_email() is None
+    assert adapter._account_email() is None
+    assert calls["n"] == 1
+
+
+def test_the_preflight_no_longer_claims_files_are_left_out(monkeypatch):
+    """The wording had to move with the behaviour: telling someone a document
+    was left out when it is in fact indexed -- for one person -- sends them
+    hunting for a file that is there and answering."""
+    from app.api import connection_ops
+
+    monkeypatch.setattr(
+        connection_ops,
+        "preflight_folder_sharing",
+        lambda *a, **k: {
+            "checked": 5, "unreadable": 2, "files": ["A", "B"],
+            "truncated": False, "failed": False,
+        },
+    )
+    report = connection_ops.drive_sharing_report("tok", "folder")
+    assert report is not None
+    blob = f"{report['title']} {report['detail']}".lower()
+    assert "left" not in blob and "won't" not in blob and "won’t" not in blob
+    assert "connected google account only" in blob
+
+
+def test_an_indexed_document_is_FROZEN_not_narrowed_to_the_owner():
+    """The owner-only fallback is right for a NEW document and wrong for one
+    already in the index: applying it on a re-listing would narrow an
+    established corpus to one person the moment a Workspace setting changed --
+    the exact failure the freeze exists to prevent -- and would report as zero
+    frozen documents while doing it."""
+    from app.ingestion.pipeline import _restamp_unchanged_access
+
+    class _Store:
+        def __init__(self):
+            self.written = []
+
+        def set_source_document_access(self, org_id, *, provider, entries, workspace_id):
+            self.written.extend(entries)
+            return len(entries)
+
+    store = _Store()
+    refs = [
+        SourceRef(external_id="known", title="A", access=DocAccess.restricted(["ada@x.com"])),
+        SourceRef(external_id="dark", title="B", access=DocAccess.owner_only("admin@x.com")),
+    ]
+    frozen = _restamp_unchanged_access(
+        store, refs, set(), org_id="o", provider="google", workspace_id=None
+    )
+    assert frozen == 1                                   # the dark one is counted
+    assert [e[0] for e in store.written] == ["known"]    # and NOT rewritten
+
+
+def test_an_edited_document_whose_sharing_went_dark_is_frozen_not_narrowed():
+    """The other already-indexed path. A document EDITED in the window its
+    sharing went dark must behave like one that was not touched: both are
+    already in the index with a real access set, and the owner-only fallback is
+    a guess. Writing the guess over either narrows an established corpus
+    because a Workspace setting changed -- and the content update waits with
+    it, because re-indexing a document whose audience we cannot determine is
+    exactly the thing we are declining to do."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from app.ingestion.pipeline import ingest_source
+    from app.vectorstore.base import StoredSourceDocument
+
+    old = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    new = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    dark = DocAccess.owner_only("admin@corp.com")
+    upserts: list[str] = []
+
+    class _Adapter:
+        def list_documents(self):
+            return [SourceRef("dark", "Edited", last_modified=new, access=dark)]
+
+        def fetch_document(self, external_id):
+            return SourceDocument("dark", "Edited", "new body", last_modified=new, access=dark)
+
+        def get_last_modified(self, external_id):
+            return new
+
+    class _Store:
+        def list_source_documents(self, org_id, provider, workspace_id=None):
+            return [StoredSourceDocument("d1", "google", "dark", "Edited", None, old)]
+
+        def upsert_source_document(self, org_id, **kw):
+            upserts.append(kw["external_id"])
+            return "d1"
+
+        def acknowledge_source_document(self, org_id, **kw):
+            return "d1"
+
+        def set_source_document_access(self, org_id, **kw):
+            raise AssertionError("a document handled this run must not be re-stamped")
+
+        def delete_source_documents(self, org_id, provider, external_ids, workspace_id=None):
+            return 0
+
+    result = ingest_source(
+        _Adapter(),
+        str(uuid.uuid4()),
+        provider="google",
+        embedder=SimpleNamespace(embed_documents=lambda texts: [[0.1]] * len(texts)),
+        store=_Store(),
+        contextual=SimpleNamespace(enabled=False),
+    )
+    assert upserts == []                               # the good ACL survives
+    assert result.documents_permission_unreadable == 1  # and it is reported
+    assert result.documents_ingested == 0
+
+
+def test_a_readable_folder_never_looks_up_the_connected_account():
+    """The fallback's cost must land only on the case that needs it. A healthy
+    folder is the normal one, and `test_google_drive_source.py` counts the calls
+    a listing makes precisely so an extra per-sync request cannot creep in
+    unnoticed (the Slack `users.info` lesson, CLAUDE.md §5)."""
+    from app.sources.google_drive import _file_access
+
+    def _must_not_run():
+        raise AssertionError("resolved the account for a file whose sharing we could read")
+
+    access = _file_access(
+        {"permissions": [{"type": "anyone"}]}, _must_not_run
+    )
+    assert access is not None and access.is_public is True

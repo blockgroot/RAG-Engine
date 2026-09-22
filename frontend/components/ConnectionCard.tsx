@@ -705,14 +705,23 @@ export function ConnectionCard({
             </span>
             <div className="connection-reauth-body">
               <span className="connection-reauth-title">
+                Handbook can’t see who{" "}
                 {lastJob.permission_unreadable_documents}{" "}
-                {lastJob.permission_unreadable_documents === 1 ? "file" : "files"} couldn’t
-                be added
+                {lastJob.permission_unreadable_documents === 1 ? "file is" : "files are"}{" "}
+                shared with
               </span>
+              {/* One number, two consequences, and the old copy only described
+                  a third that no longer happens ("left them out"). New files
+                  are added for the connected account alone; files already in
+                  the index keep the sharing they last had, which is the half
+                  that can go STALE -- so it is said plainly rather than
+                  rounded off to the reassuring case. The fix is the same for
+                  both, which is why one number is enough. */}
               <p className="connection-reauth-desc">
-                The last sync couldn’t see who they’re shared with, so Handbook left them
-                out rather than risk showing them to the wrong people. Make the connected
-                account an owner or editor of the folder, then run Update.
+                New ones are added for the connected Google account only. Ones already
+                indexed keep the sharing they last had, so someone removed from a file
+                may still reach it until this is fixed. Make the connected account an
+                owner or editor of the folder, then run Update.
               </p>
             </div>
           </div>

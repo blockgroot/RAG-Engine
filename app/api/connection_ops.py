@@ -98,13 +98,20 @@ def drive_sharing_report(token: str, folder_id: str) -> dict | None:
         "checked": checked,
         "files": report["files"],
         "truncated": report["truncated"],
-        "title": f"{n} {files} in this folder won\u2019t be added",
+        "title": f"Only you will see {n} {files} in this folder",
         # States the consequence before the fix, because the consequence is
         # what makes the fix worth doing. No jargon: not "ACL", not "indexed".
+        #
+        # It says "only you" rather than "left out" because that is what now
+        # happens: a file whose sharing Drive will not report is added for the
+        # connected account ALONE (`DocAccess.owner_only`). Saying "left out"
+        # would send someone hunting for a missing document that is in fact
+        # there and answering -- for one person.
         "detail": (
             f"{scope} we looked at don\u2019t tell us who they\u2019re shared with, so "
-            "Handbook will leave them out rather than risk showing them to the "
-            f"wrong people.{more}"
+            "Handbook adds them for the connected Google account only. Anyone "
+            "else in this space will be told the document isn\u2019t shared with "
+            f"them.{more}"
         ),
         "fix": (
             "Google only shares that with an owner or editor. Ask the file\u2019s owner "

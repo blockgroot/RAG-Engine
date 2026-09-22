@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime
 from io import BytesIO
 
@@ -32,6 +33,9 @@ _LIST_FIELDS = (
     "nextPageToken,files(id,name,mimeType,modifiedTime,trashed,parents,"
     f"lastModifyingUser(displayName),{_PERMISSION_FIELDS})"
 )
+#: Sentinel for "the connected account has not been looked up yet", which is
+#: not the same as "looked up and Drive would not name it".
+_UNSET = object()
 _MAX_WALK_DEPTH = 20  # guard against pathological trees; Drive's own limit is ~100.
 
 
@@ -48,16 +52,21 @@ def _editor_name(file: dict) -> str | None:
     return name or None
 
 
-def _file_access(file: dict) -> DocAccess | None:
+def _file_access(
+    file: dict, fallback_email: "Callable[[], str | None] | None" = None
+) -> DocAccess | None:
     """Translate Drive's `permissions` array into a `DocAccess`.
 
-    Returns ``None`` when Drive did not tell us who the file is shared with --
-    which happens for real and is not an error: reading a file's sharing list
-    needs more than read access to the file, so a connecting account that is
-    merely a viewer (or a Workspace with "viewers can see who else has access"
-    switched off) gets the field omitted. ``None`` makes the pipeline SKIP the
-    document; indexing it readable would publish a file whose sharing we
-    demonstrably could not read.
+    Drive omits `permissions` for real and it is not an error: reading a file's
+    sharing list needs more than read access to the file, so a connecting
+    account that is merely a viewer (or a Workspace with "viewers can see who
+    else has access" switched off) gets the field left out.
+
+    That case falls back to ``DocAccess.owner_only(fallback_email)`` -- indexed,
+    but readable by the connected account alone. Without a ``fallback_email``
+    there is nobody we can prove may read it, so this returns ``None`` and the
+    pipeline SKIPS the document: indexing it readable would publish a file whose
+    sharing we demonstrably could not read.
 
     Drive's four grant types map as:
       * ``anyone``  -> public within the scope ("anyone with the link")
@@ -75,7 +84,18 @@ def _file_access(file: dict) -> DocAccess | None:
     """
     permissions = file.get("permissions")
     if permissions is None:
-        return None
+        # Onyx's fallback: index it for the ONE account that could see the file
+        # rather than dropping it. Retrying with `permissions.list` would be
+        # pointless for us -- Drive omits the field precisely because this token
+        # is not entitled to the sharing, and we have exactly one identity.
+        # (Onyx's retry ladder pays off only because they impersonate a
+        # retriever user, a fallback user and a Workspace admin in turn.)
+        # A CALLABLE, resolved only here: a folder whose sharing is readable --
+        # the normal case -- must not pay an `about.get` it never needs, and
+        # `tests/test_google_drive_source.py` counts the calls a listing makes
+        # for exactly this reason (the Slack `users.info` lesson, CLAUDE.md §5).
+        account = fallback_email() if fallback_email else None
+        return DocAccess.owner_only(account) if account else None
 
     is_public = False
     viewers: list[str] = []
@@ -163,6 +183,10 @@ class GoogleDriveAdapter(SourceAdapter):
         limits = settings or GoogleSettings.from_env()
         self._max_walk_folders = max(1, limits.max_walk_folders)
         self._max_documents = max(1, limits.max_documents)
+        #: Lazily resolved connected-account address, for the unreadable-sharing
+        #: fallback. `_UNSET` distinguishes "not looked up yet" from "looked up
+        #: and Drive would not say", so a failed lookup is not retried per file.
+        self._account: str | None | object = _UNSET
 
     # -- interface ---------------------------------------------------------
 
@@ -181,7 +205,7 @@ class GoogleDriveAdapter(SourceAdapter):
                 last_modified=_parse_dt(file.get("modifiedTime")),
                 source_uri=_file_uri(file["id"], file.get("mimeType", "")),
                 last_editor=_editor_name(file),
-                access=_file_access(file),
+                access=_file_access(file, self._account_email),
             )
             for file in files
         ]
@@ -218,7 +242,7 @@ class GoogleDriveAdapter(SourceAdapter):
             source_uri=_file_uri(external_id, mime or ""),
             last_modified=_parse_dt(meta.get("modifiedTime")),
             last_editor=_editor_name(meta),
-            access=_file_access(meta),
+            access=_file_access(meta, self._account_email),
         )
 
     def get_last_modified(self, external_id: str) -> datetime | None:
@@ -233,6 +257,37 @@ class GoogleDriveAdapter(SourceAdapter):
         return _parse_dt(meta.get("modifiedTime"))
 
     # -- HTTP helpers --------------------------------------------------------
+
+    def _account_email(self) -> str | None:
+        """The address this connection authenticates as, or ``None``.
+
+        Resolved ONCE per adapter and reused, because it is the same answer for
+        every file in the walk and the fallback path would otherwise spend a
+        call per unreadable document. Never raises: failing to name the account
+        only costs the fallback, which degrades to the skip that shipped first.
+        """
+        if self._account is not _UNSET:
+            return self._account  # type: ignore[return-value]
+        self._account = None
+        try:
+            response = httpx.get(
+                f"{_API_BASE}/about",
+                params={"fields": "user(emailAddress)"},
+                headers=self._headers(),
+                timeout=self._timeout,
+            )
+            if response.status_code < 400:
+                email = ((response.json().get("user") or {}).get("emailAddress") or "").strip()
+                self._account = email.lower() or None
+            else:
+                logger.warning(
+                    "Google Drive about.get returned HTTP %s; files whose sharing "
+                    "cannot be read will be skipped rather than indexed privately",
+                    response.status_code,
+                )
+        except Exception:  # noqa: BLE001 - a missing fallback must not fail a sync
+            logger.warning("Google Drive about.get failed", exc_info=True)
+        return self._account  # type: ignore[return-value]
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}"}

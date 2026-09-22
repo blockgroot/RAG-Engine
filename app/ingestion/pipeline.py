@@ -233,8 +233,10 @@ def _doc_tags(doc, run_tags: list[str] | None) -> list[str] | None:
     return list(dict.fromkeys(merged)) or None
 
 
-def _doc_access(doc, ref: SourceRef, provider: str) -> tuple[bool, list[str] | None] | None:
-    """Resolve the access set to store, or ``None`` meaning SKIP this document.
+def _doc_access(
+    doc, ref: SourceRef, provider: str
+) -> tuple[bool, list[str] | None, bool] | None:
+    """Resolve ``(is_public, viewers, unreadable)``, or ``None`` meaning SKIP.
 
     The fetched document wins over the listing when both report sharing (it is
     the fresher read), and either is accepted -- Drive answers from the listing
@@ -242,18 +244,24 @@ def _doc_access(doc, ref: SourceRef, provider: str) -> tuple[bool, list[str] | N
 
     The whole fail-closed rule lives here: for a provider in
     ``sources.factory.ACL_CAPABLE``, "no access reported" means the source
-    refused to tell us who a file is shared with (a viewer-only connecting
-    account, or a Workspace that hides its sharing lists). Indexing it anyway
-    would publish, to the whole scope, precisely the file whose sharing we
-    could not read. Everything else keeps scope-level visibility, which is what
-    it had before document-level filtering existed.
+    refused to tell us who a file is shared with AND could not name anyone who
+    demonstrably can (an adapter reporting ``DocAccess.owner_only`` has already
+    handled the ordinary case). Indexing it anyway would publish, to the whole
+    scope, precisely the file whose sharing we could not read. Everything else
+    keeps scope-level visibility, which is what it had before document-level
+    filtering existed.
+
+    ``unreadable`` rides the tuple rather than being inferred from the viewer
+    list, because "shared with exactly one person" and "we could only prove one
+    person" are indistinguishable once the list is built, and they are a
+    healthy sync and a reportable one respectively.
     """
     access = getattr(doc, "access", None) or getattr(ref, "access", None)
     if access is None:
         if provider in ACL_CAPABLE:
             return None
-        return True, None
-    return access.is_public, list(access.viewers) or None
+        return True, None, False
+    return access.is_public, list(access.viewers) or None, bool(access.unreadable)
 
 
 def _restamp_unchanged_access(
@@ -278,10 +286,16 @@ def _restamp_unchanged_access(
     if provider not in ACL_CAPABLE:
         return 0
     pending = [ref for ref in refs if ref.external_id not in handled]
+    # An `unreadable` access is a FALLBACK, not a reading, so it must never be
+    # written over a document that already has a real one. The owner-only
+    # fallback is right for a NEW document (something beats nothing); applying
+    # it here would narrow an established corpus to one person the moment a
+    # Workspace setting changed -- which is the very failure the freeze exists
+    # to prevent, and it would also report as zero frozen documents.
     entries = [
         (ref.external_id, ref.access.is_public, list(ref.access.viewers) or None)
         for ref in pending
-        if getattr(ref, "access", None) is not None
+        if getattr(ref, "access", None) is not None and not ref.access.unreadable
     ]
     # FROZEN, not locked down: a document already in the index whose sharing we
     # can no longer read keeps the access set it last had. It is never widened,
@@ -471,20 +485,48 @@ def ingest_source(
         doc = adapter.fetch_document(ref.external_id)
         access = _doc_access(doc, ref, provider)
         if access is None:
-            # Fail CLOSED: the source would not tell us who this file is shared
-            # with, so it is left out of the index entirely rather than made
-            # readable by the whole scope. Counted as skipped and logged, since
-            # silence here looks identical to a source with nothing in it.
+            # Fail CLOSED, and this is now the LAST resort: the adapter could
+            # not read the sharing AND could not name an account that can, so
+            # there is nobody it could be indexed for. Counted as skipped and
+            # logged, since silence here looks identical to a source with
+            # nothing in it.
             logger.warning(
-                "Skipping %s/%s: %s reports no sharing information for it "
-                "(the connecting account may not be able to read its permissions)",
+                "Skipping %s/%s: %s reports no sharing information for it and no "
+                "account we could fall back to",
                 provider, ref.external_id, provider,
             )
             skipped += 1
             permission_unreadable += 1
             report("indexing", done, total_work)
             continue
-        is_public, viewers = access
+        is_public, viewers, unreadable = access
+        if unreadable and is_update:
+            # ALREADY INDEXED, so freeze exactly as `_restamp_unchanged_access`
+            # does: it has a real access set and the fallback is a guess, so
+            # writing the guess over it would narrow an established corpus to
+            # one person because a file happened to be edited in the window its
+            # sharing went dark. The content update waits too -- re-indexing a
+            # document whose audience we cannot determine is the thing we are
+            # declining to do.
+            logger.warning(
+                "%s/%s changed but its sharing is no longer reported; keeping the "
+                "access set and the content it already had",
+                provider, ref.external_id,
+            )
+            permission_unreadable += 1
+            report("indexing", done, total_work)
+            continue
+        if unreadable:
+            # NEW, so something beats nothing: indexed for the one account that
+            # could see the file. Counted so the connection card can say so --
+            # people it is genuinely shared with cannot reach it until sharing
+            # is readable.
+            logger.info(
+                "%s/%s: sharing not reported; indexing it for the connected "
+                "account only (%s)",
+                provider, ref.external_id, ", ".join(viewers or []) or "nobody",
+            )
+            permission_unreadable += 1
         clean = preprocess(sanitize_ingest_text(doc.content))
         chunks = chunk_text(clean, chunking)
         raw_chunks = chunks

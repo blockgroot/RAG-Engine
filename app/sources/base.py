@@ -44,12 +44,20 @@ class DocAccess:
     wrong person.
 
     ``None`` — the absence of a ``DocAccess`` — is NOT "public". It means the
-    adapter could not determine sharing, and for an ACL-capable provider the
-    ingestion pipeline skips that document rather than indexing it readable.
+    adapter could not determine sharing AND could not name anyone who
+    demonstrably can read it, so for an ACL-capable provider the ingestion
+    pipeline skips that document rather than indexing it readable.
     """
 
     is_public: bool
     viewers: tuple[str, ...] = ()
+    #: True when this is a FALLBACK: the source refused to say who the document
+    #: is shared with, so ``viewers`` names only the account that could see it
+    #: rather than its real audience. The document is still indexed (see
+    #: ``owner_only``) but the fact is carried through to the ingest counters,
+    #: because "we know who reads this" and "we guessed conservatively" must not
+    #: report as the same sync.
+    unreadable: bool = False
 
     @classmethod
     def scope_public(cls) -> "DocAccess":
@@ -59,6 +67,27 @@ class DocAccess:
     @classmethod
     def restricted(cls, viewers: list[str]) -> "DocAccess":
         return cls(is_public=False, viewers=tuple(viewers))
+
+    @classmethod
+    def owner_only(cls, account_email: str) -> "DocAccess":
+        """Sharing is unreadable: grant ONLY the account that could see the file.
+
+        Onyx's fallback (`ee/onyx/external_permissions/google_drive/doc_sync.py`,
+        "falling back to granting access to retriever user"), and it is better
+        than the skip that shipped here first, for two reasons:
+
+        * the document becomes USABLE by the one person we can prove may read
+          it, instead of vanishing from a corpus they chose to connect;
+        * it EXISTS in the index, so `VectorStore.restricted_match` can see it
+          and a colleague who asks gets "this is not shared with you" instead of
+          "I don't know" — a skipped document has no rows at all, so the honest
+          refusal could never fire for the one case where nobody can see it.
+
+        Still fail-closed, and Onyx says so in the same words: other people may
+        genuinely have access to this file and they are NOT granted it here. An
+        under-shared document is a complaint; an over-shared one is a leak.
+        """
+        return cls(is_public=False, viewers=(account_email.strip().lower(),), unreadable=True)
 
 
 @dataclass(frozen=True)
