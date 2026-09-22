@@ -67,6 +67,7 @@ from .audit import parse_audit_verdict
 from .retrieval import HybridRetriever, RetrievalResult
 from .context_assemble import assemble_context_texts, describe_hit
 from .decompose import looks_compound, parse_sub_questions
+from .scope_intent import OVERVIEW, classify_scope_intent
 from .query_cache import QueryAnswerCache
 from .request_budget import RequestBudget
 from .summary_fold import schedule_summary_fold, wait_for_conversation_fold
@@ -833,75 +834,95 @@ class RagPipeline:
     def _whole_scope(
         self,
         org_id: str,
+        query_text: str,
         query_vec: list[float],
         *,
         workspace_id: str | None,
         tags: list[str] | None,
         viewer: Viewer | None,
     ) -> tuple[list[RetrievedChunk], float | None] | None:
-        """The whole tagged corpus, in time order — or ``None`` to rank instead.
+        """Breadth retrieval for a question that asks about the corpus AS A WHOLE.
 
-        A question pinned to a TAG (today: one Slack channel) is already scoped
-        to a narrow corpus, and ranking a narrow corpus can only ever throw part
-        of it away. Measured on a real channel: 25 threads became 38 chunks, and
-        `top_k=5` put 13% of them in front of the model — so "summarise the
-        overall discussion" was answered from whichever single thread happened
-        to be phrased most like a summary, confidently and partially. A partial
-        answer is worse than a refusal here, because nothing signals it.
+        Ranked retrieval keeps `top_k` chunks by similarity, which is right for
+        "what did we decide about Notion?" and wrong for "summarise everything
+        discussed here": measured live, 5 of 38 chunks reached the model and the
+        answer came from the one thread phrased most like a summary.
 
-        Deliberately NOT gated on the QUESTION. Detecting "is this a summary
-        request?" needs a word list or a classifier, and both are wrong in ways
-        nobody sees; whether the corpus FITS is a fact. It also fixes ordinary
-        questions, which could equally lose the cosine race against a
-        similar-sounding neighbour.
+        Driven by the QUESTION (`scope_intent.classify_scope_intent`), not by a
+        property of the data. "Read it whole whenever it fits" needs no
+        classifier but is not intent: it hands a pointed question the entire
+        corpus, and it cannot tell "summarise the channel" from "summarise what
+        Sana said about Notion" -- the distinction that decides the answer.
 
-        The bound is binary on purpose: it either covers everything or does not
-        run, so this path can never be silently partial. Falling back costs the
-        behaviour that shipped, which is why both limits fail toward ranking.
-
-        Ordered oldest-first: a discussion is a narrative, and similarity order
-        reads as unrelated fragments. Reranking is skipped for the same reason
-        it is pointless here — nothing was excluded to re-order.
+        ``None`` means "rank instead", and every failure returns it: this is an
+        improvement on a narrow read, never a correctness guarantee, so nothing
+        here may cost an answer.
         """
-        if not tags:
-            return None
         max_chunks = self._settings.scope_whole_max_chunks
         if max_chunks <= 0:
             return None
+        # Only a SCOPED corpus is a candidate. Company-wide Ask reaches
+        # everything the org has, where "all of it" is neither affordable nor
+        # what anyone means.
+        if not tags and workspace_id is None:
+            return None
+
+        # Classified BEFORE fetching: the read is the expensive half, and a
+        # specific question must not pay for a breadth query it will not use.
+        try:
+            intent = classify_scope_intent(query_text, llm=self._llm)
+        except Exception:  # noqa: BLE001 - a classifier must never cost an answer
+            logger.warning("scope intent failed; ranking instead", exc_info=True)
+            return None
+        if intent != OVERVIEW:
+            return None
+
         try:
             hits = self._store.query(
                 org_id,
                 query_vec,
-                # One over the bound, so "too big" is detectable without a
-                # second COUNT query.
+                # One over the bound, so "more than we can read" is detectable
+                # without a second COUNT query.
                 top_k=max_chunks + 1,
                 workspace_id=workspace_id,
                 source_provider=self._source_provider,
                 tags=tags,
                 viewer=viewer,
             )
-        except Exception:  # noqa: BLE001 - never lose an answer to an optimisation
-            logger.warning("Whole-scope retrieval failed; ranking instead", exc_info=True)
+        except Exception:  # noqa: BLE001 - never lose an answer to a wider read
+            logger.warning("breadth retrieval failed; ranking instead", exc_info=True)
             return None
-        if not hits or len(hits) > max_chunks:
+        if not hits:
             return None
-        total = sum(len(h.content or "") for h in hits)
-        if total > self._settings.scope_whole_max_chars:
+
+        # They asked for all of it, so give as much of it as a prompt can hold
+        # rather than silently dropping to five chunks. Selected NEWEST-first
+        # (an overview that had to cut something should cut the oldest), then
+        # re-ordered oldest-first for reading.
+        by_recency = sorted(hits, key=_read_order, reverse=True)
+        kept: list[RetrievedChunk] = []
+        used = 0
+        for hit in by_recency:
+            size = len(hit.content or "")
+            if len(kept) >= max_chunks or used + size > self._settings.scope_whole_max_chars:
+                break
+            kept.append(hit)
+            used += size
+        if not kept:
+            return None
+        if len(kept) < len(hits):
+            # Partial, and said so IN THE CONTEXT rather than left implicit --
+            # an overview that quietly covered the newest N is the failure this
+            # path exists to fix, and the model cannot disclose what it was not
+            # told.
             logger.info(
-                "Scope holds %s chunks / %s chars, over the whole-read budget; ranking instead",
-                len(hits), total,
+                "Breadth read covered %s of %s chunks in scope (%s chars)",
+                len(kept), len(hits), used,
             )
-            return None
         # The gate is unchanged: still the best cosine in the retrieval, exactly
         # as the ranked path reports it.
-        gate_score = max((h.score for h in hits), default=None)
-        # Sorted on a NUMERIC timestamp, not the datetime: `source_last_modified`
-        # can come back naive on rows written by older paths, and comparing a
-        # naive against an aware datetime raises -- which would turn a better
-        # answer into a failed one.
-        ordered = sorted(hits, key=_read_order)
-        logger.info("Whole-scope read: %s chunks, %s chars", len(ordered), total)
-        return ordered, gate_score
+        gate_score = max((h.score for h in kept), default=None)
+        return sorted(kept, key=_read_order), gate_score
 
     def _retrieve_once(
         self,
@@ -915,7 +936,8 @@ class RagPipeline:
         viewer: Viewer | None = None,
     ) -> tuple[list[RetrievedChunk], float | None]:
         whole = self._whole_scope(
-            org_id, query_vec, workspace_id=workspace_id, tags=tags, viewer=viewer
+            org_id, query_text, query_vec,
+            workspace_id=workspace_id, tags=tags, viewer=viewer,
         )
         if whole is not None:
             return whole
@@ -1338,13 +1360,33 @@ class RagPipeline:
         # reused verbatim, which is the point: an attachment must not get its
         # own weaker generation path.
         if contexts is None:
+            # Only `_whole_scope` can return MORE hits than `top_k`; every
+            # other retrieval path caps at it. So this is how generation knows
+            # the caller chose to read a narrow corpus whole, without threading
+            # a budget through sub-question fusion (where two legs would
+            # disagree about which budget won).
+            #
+            # A whole read carries NO second budget, and that is the fix for a
+            # bug this very change introduced: `max_context_chars` is 6000,
+            # sized for five chunks, while a real channel is ~27k -- and
+            # `assemble_context_texts` keeps a PREFIX. Applied to a
+            # time-ordered whole read it would have kept the OLDEST 6k and
+            # dropped every recent thread: the original complaint inverted,
+            # which is worse, because it reads as the bot forgetting this week.
+            # `_whole_scope` already enforced a budget on the same corpus
+            # before deciding to read it whole, so re-applying one here (on a
+            # different denominator, since `describe_hit` adds a provenance
+            # line per chunk) could only ever disagree with it. One budget,
+            # enforced in one place.
+            whole_read = len(hits) > self._settings.top_k
             contexts = assemble_context_texts(
                 # Title AND provenance: the provider, who last edited it and
                 # when. All of it was already on the JOINed document row and
                 # was being dropped, so "who wrote this?" refused against data
-                # we had.
+                # we had. The date is also what lets a whole read answer
+                # "what happened recently?" at all.
                 [describe_hit(h) for h in hits],
-                self._settings.max_context_chars,
+                0 if whole_read else self._settings.max_context_chars,
             )
         # Files the asker attached go in FIRST, ahead of retrieved chunks.
         # They are the reason they uploaded: "is this bill claimable?" is a

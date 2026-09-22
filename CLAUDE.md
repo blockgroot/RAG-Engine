@@ -1646,27 +1646,57 @@ frontend/ Next.js 15 portal · tests/ pytest
   is frozen till Monday", 28 chars) was dropped from ingestion *and* from
   change detection, so the Sources check truthfully said "up to date" while the
   channel had new content. A filter that hides content also hides changes.
-- **A TAG-scoped question reads its whole corpus, not the top 5**
-  (`rag/pipeline._whole_scope`). Measured live: #rag-updates held 25 threads =
-  38 chunks, `RAG_TOP_K=5` put 13% of them in front of the model, and
-  "summarise the overall discussion" was answered confidently from the ONE
-  thread titled "Phase 1: High-Impact UX Parity" — a partial answer with
-  nothing to signal it, which is worse than a refusal. Ranking a corpus that is
-  already narrow can only ever throw part of it away. Gated on whether the
-  corpus FITS (`RAG_SCOPE_WHOLE_MAX_CHUNKS=120`, `..._CHARS=60000`), never on
-  the QUESTION: "is this a summary request?" needs a word list that misses
-  "what's been going on here" or a classifier that costs a call and fails
-  silently, while fitting is a fact — and it fixes ordinary questions too,
-  which could equally lose the cosine race to a similar-sounding neighbour.
-  BINARY on purpose: it covers everything or does not run, so the path can
-  never be silently partial, and both limits fail toward the ranked behaviour
-  that shipped. Ordered oldest-first (a discussion is a narrative; similarity
-  order reads as unrelated fragments) and reranking is skipped because nothing
-  was excluded to re-order. The gate is UNCHANGED — `gate_score` is still the
-  best cosine. Note `SlackAgent._recap` never ran on the channel path at all:
-  `slack_events._answer` calls `pipeline.answer` directly when `tags` are set,
-  bypassing the agent, and recap only fires on an UNGROUNDED answer — the one
-  condition an aggregate question never meets.
+- **Breadth vs precision is decided by the QUESTION'S INTENT**
+  (`rag/scope_intent.classify_scope_intent` -> `pipeline._whole_scope`).
+  Ranked retrieval keeps `RAG_TOP_K=5` chunks, which is right for "what did we
+  decide about Notion?" and wrong for "summarise everything discussed here":
+  measured live on #rag-updates, 5 of 38 chunks reached the model and the
+  answer came confidently from the ONE thread phrased most like a summary,
+  twice, with nothing to signal it was a fragment.
+  - **Two rejected triggers, and why.** A WORD LIST ("overall", "summarise")
+    misses "what's been going on here" and fires on "summarise what Sana said
+    about Notion", which is a specific question wearing a summary verb.
+    "READ IT WHOLE WHENEVER IT FITS" needs no classifier and was built first,
+    but fitting is a property of the DATA, not the request: it hands a pointed
+    question the whole corpus, stops scaling the moment a channel gets busy,
+    and cannot tell those two "summarise" questions apart -- which is the
+    distinction that decides the answer.
+  - **Closed output set, validated, fail-open** — the `classify_question`
+    posture. The model picks a LABEL; it never picks the chunks, the query or
+    the count. Anything outside `{specific, overview}` reads as `specific`, a
+    reply naming both loses the tie to `specific` (widening on a maybe is the
+    change with a cost), and a dead classifier returns `specific` — a breadth
+    read is an improvement on a narrow one, never a correctness guarantee, so
+    an outage must not be able to take an answer.
+  - **Only a SCOPED corpus is a candidate** (a tag, or a workspace). Company
+    Ask reaches everything the org has, where "all of it" is neither
+    affordable nor what anyone means — and it does not even pay for the
+    classifier call. Classification runs BEFORE the fetch, so a specific
+    question never pays for a breadth query it will not use.
+  - **Over budget gives as much as FITS, never a silent drop to five.** They
+    asked for all of it. Selected newest-first (an overview that must cut
+    something cuts the oldest), then re-ordered oldest-first for reading, and
+    the shortfall is logged. Bounded by BOTH
+    `RAG_SCOPE_WHOLE_MAX_CHUNKS=120` and `..._CHARS=60000`, because a hundred
+    short threads and three long ones fail for different reasons.
+  - **A breadth read carries NO context budget** (`_generate` passes `0`).
+    `RAG_MAX_CONTEXT_CHARS` is 6000, sized for five chunks, while a real
+    channel is ~27k, and `assemble_context_texts` keeps a PREFIX — applied to
+    a time-ordered breadth read it would have kept the OLDEST 6k and dropped
+    every recent thread, which reads as the bot forgetting this week. The
+    budget is enforced once, at retrieval. Generation infers the breadth read
+    from `len(hits) > top_k`, which only `_whole_scope` can produce, avoiding
+    a budget threaded through sub-question fusion where two legs would
+    disagree.
+  - Ordered oldest-first (a discussion is a narrative; similarity order reads
+    as unrelated fragments), reranking skipped (nothing was excluded to
+    re-order), and the gate UNCHANGED — `gate_score` is still the best cosine.
+    Each chunk still carries its date via `describe_hit`, which is what lets a
+    breadth read answer "what happened recently?" at all.
+  - Note `SlackAgent._recap` never ran on the channel path: `slack_events.
+    _answer` calls `pipeline.answer` directly when `tags` are set, bypassing
+    the agent, and recap only fires on an UNGROUNDED answer — the one
+    condition an aggregate question never meets.
 - **Retrieval has no recency preference** — "what was discussed recently?"
   ranks by cosine only, so an older, wordier thread outranks yesterday's
   message and the answer *looks* stale even when the new content is indexed.
