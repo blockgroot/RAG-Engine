@@ -504,16 +504,21 @@ guarantee.
   `post_message` returns the `ts` for this (None = nothing to edit), and a
   failed edit falls back to posting: leaving "Searching…" up while dropping a
   grounded answer is the worst of both.
-- **Every answer goes in a THREAD** — an existing one, else a new thread off
-  the question (`thread_ts = event["thread_ts"] or event["ts"]`). This reverses
-  the earlier in-channel rule, whose reasoning was that a "1 reply" link is a
-  second place to look for one answer. In a real channel the opposite cost
-  dominates: a grounded answer is long, and several posted straight into the
-  channel bury the conversation people were actually having. One rule for DMs
-  and channels alike — a DM has nothing to bury, and a second code path is a
-  second thing to get wrong. The PLACEHOLDER carries the thread, since it is
-  the message that becomes the answer; the failed-edit fallback must post into
-  the same thread or a retry moves the answer out into the channel.
+- **A CHANNEL answer goes in a THREAD; a DM answers in the chat.** In a real
+  channel a grounded answer is long, and several posted straight in bury the
+  conversation people were actually having — so it threads under the question
+  that earned it. A DM has nothing to bury (the conversation IS the bot), so a
+  thread there only adds a "1 reply" link to click before you can read your own
+  answer, which is exactly the cost the original in-channel rule named. This
+  replaces "one rule for both", which traded that away to avoid a second code
+  path; the branch is one line. An EXISTING thread still wins on both surfaces
+  — answering outside it drops the reply where the asker is not looking — so
+  the DM rule is `event["thread_ts"]` alone, not `or event["ts"]`.
+  `channel_type` is ABSENT on a channel `app_mention`, so anything not
+  explicitly `"im"` keeps threading: burying a channel is the cost that
+  motivated threading, so that is the safe default. The PLACEHOLDER carries the
+  thread, since it is the message that becomes the answer; the failed-edit
+  fallback must post into the same thread or a retry moves the answer out.
 - **Ack in 3s, answer in a `BackgroundTask`.** Slack retries on timeout and one
   answer is ~6 LLM calls, so inline work would deliver the SAME answer several
   times, not merely slowly.
@@ -1641,6 +1646,27 @@ frontend/ Next.js 15 portal · tests/ pytest
   is frozen till Monday", 28 chars) was dropped from ingestion *and* from
   change detection, so the Sources check truthfully said "up to date" while the
   channel had new content. A filter that hides content also hides changes.
+- **A TAG-scoped question reads its whole corpus, not the top 5**
+  (`rag/pipeline._whole_scope`). Measured live: #rag-updates held 25 threads =
+  38 chunks, `RAG_TOP_K=5` put 13% of them in front of the model, and
+  "summarise the overall discussion" was answered confidently from the ONE
+  thread titled "Phase 1: High-Impact UX Parity" — a partial answer with
+  nothing to signal it, which is worse than a refusal. Ranking a corpus that is
+  already narrow can only ever throw part of it away. Gated on whether the
+  corpus FITS (`RAG_SCOPE_WHOLE_MAX_CHUNKS=120`, `..._CHARS=60000`), never on
+  the QUESTION: "is this a summary request?" needs a word list that misses
+  "what's been going on here" or a classifier that costs a call and fails
+  silently, while fitting is a fact — and it fixes ordinary questions too,
+  which could equally lose the cosine race to a similar-sounding neighbour.
+  BINARY on purpose: it covers everything or does not run, so the path can
+  never be silently partial, and both limits fail toward the ranked behaviour
+  that shipped. Ordered oldest-first (a discussion is a narrative; similarity
+  order reads as unrelated fragments) and reranking is skipped because nothing
+  was excluded to re-order. The gate is UNCHANGED — `gate_score` is still the
+  best cosine. Note `SlackAgent._recap` never ran on the channel path at all:
+  `slack_events._answer` calls `pipeline.answer` directly when `tags` are set,
+  bypassing the agent, and recap only fires on an UNGROUNDED answer — the one
+  condition an aggregate question never meets.
 - **Retrieval has no recency preference** — "what was discussed recently?"
   ranks by cosine only, so an older, wordier thread outranks yesterday's
   message and the answer *looks* stale even when the new content is indexed.

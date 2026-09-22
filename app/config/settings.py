@@ -19,6 +19,15 @@ DEFAULT_MAX_CHUNK_CHARS = 4000
 DEFAULT_VECTOR_STORE_BACKEND = "pgvector"
 
 DEFAULT_RAG_TOP_K = 5
+# When a question is pinned to a TAG (today: one Slack channel), the corpus is
+# already narrow, and ranking it can only ever throw part of it away. These
+# bound "small enough to read whole". Both must hold or the ordinary ranked
+# retrieval runs instead, so the whole-scope read is never PARTIAL -- a summary
+# that silently covered the newest N is the failure it exists to fix.
+# Measured against a real channel: 25 threads = 38 chunks = ~27k chars, so the
+# defaults leave roughly 2x headroom before a tenant falls off the path.
+DEFAULT_RAG_SCOPE_WHOLE_MAX_CHUNKS = 120
+DEFAULT_RAG_SCOPE_WHOLE_MAX_CHARS = 60000
 DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.35
 DEFAULT_RAG_MAX_CONTEXT_CHARS = 6000
 DEFAULT_RAG_MAX_ANSWER_TOKENS = 700
@@ -356,6 +365,8 @@ class RagSettings:
     fallback_response: str = DEFAULT_RAG_FALLBACK_RESPONSE
     max_context_chars: int = DEFAULT_RAG_MAX_CONTEXT_CHARS
     max_answer_tokens: int | None = DEFAULT_RAG_MAX_ANSWER_TOKENS
+    scope_whole_max_chunks: int = DEFAULT_RAG_SCOPE_WHOLE_MAX_CHUNKS
+    scope_whole_max_chars: int = DEFAULT_RAG_SCOPE_WHOLE_MAX_CHARS
 
     @classmethod
     def from_env(cls) -> "RagSettings":
@@ -368,6 +379,12 @@ class RagSettings:
             max_answer_tokens = int(raw_answer_tokens)
         return cls(
             top_k=int(os.getenv("RAG_TOP_K") or DEFAULT_RAG_TOP_K),
+            scope_whole_max_chunks=int(
+                os.getenv("RAG_SCOPE_WHOLE_MAX_CHUNKS") or DEFAULT_RAG_SCOPE_WHOLE_MAX_CHUNKS
+            ),
+            scope_whole_max_chars=int(
+                os.getenv("RAG_SCOPE_WHOLE_MAX_CHARS") or DEFAULT_RAG_SCOPE_WHOLE_MAX_CHARS
+            ),
             similarity_threshold=float(
                 os.getenv("RAG_SIMILARITY_THRESHOLD") or DEFAULT_RAG_SIMILARITY_THRESHOLD
             ),

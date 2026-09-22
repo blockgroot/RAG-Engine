@@ -109,6 +109,20 @@ _MODE_TAG_RE = re.compile(r"^\s*MODE:\s*([ABC])\s*\n+(.*)", re.IGNORECASE | re.D
 
 logger = logging.getLogger(__name__)
 
+def _read_order(hit) -> tuple[float, str, int]:
+    """Oldest first, then stable within a document.
+
+    A missing timestamp sorts first rather than raising: a thread we cannot
+    date still belongs in the transcript, and dropping it to make sorting
+    simple would silently shrink the very corpus this path exists to deliver.
+    """
+    when = getattr(hit, "last_modified", None)
+    try:
+        stamp = when.timestamp() if when is not None else 0.0
+    except Exception:  # noqa: BLE001 - an undatable row still belongs in the read
+        stamp = 0.0
+    return (stamp, hit.document_id or "", hit.chunk_index or 0)
+
 def _is_cacheable(result: "RagResult") -> bool:
     """May this answer be served to the NEXT person who asks the same thing?
 
@@ -816,6 +830,79 @@ class RagPipeline:
             result.answer, self._settings.fallback_response
         )
 
+    def _whole_scope(
+        self,
+        org_id: str,
+        query_vec: list[float],
+        *,
+        workspace_id: str | None,
+        tags: list[str] | None,
+        viewer: Viewer | None,
+    ) -> tuple[list[RetrievedChunk], float | None] | None:
+        """The whole tagged corpus, in time order — or ``None`` to rank instead.
+
+        A question pinned to a TAG (today: one Slack channel) is already scoped
+        to a narrow corpus, and ranking a narrow corpus can only ever throw part
+        of it away. Measured on a real channel: 25 threads became 38 chunks, and
+        `top_k=5` put 13% of them in front of the model — so "summarise the
+        overall discussion" was answered from whichever single thread happened
+        to be phrased most like a summary, confidently and partially. A partial
+        answer is worse than a refusal here, because nothing signals it.
+
+        Deliberately NOT gated on the QUESTION. Detecting "is this a summary
+        request?" needs a word list or a classifier, and both are wrong in ways
+        nobody sees; whether the corpus FITS is a fact. It also fixes ordinary
+        questions, which could equally lose the cosine race against a
+        similar-sounding neighbour.
+
+        The bound is binary on purpose: it either covers everything or does not
+        run, so this path can never be silently partial. Falling back costs the
+        behaviour that shipped, which is why both limits fail toward ranking.
+
+        Ordered oldest-first: a discussion is a narrative, and similarity order
+        reads as unrelated fragments. Reranking is skipped for the same reason
+        it is pointless here — nothing was excluded to re-order.
+        """
+        if not tags:
+            return None
+        max_chunks = self._settings.scope_whole_max_chunks
+        if max_chunks <= 0:
+            return None
+        try:
+            hits = self._store.query(
+                org_id,
+                query_vec,
+                # One over the bound, so "too big" is detectable without a
+                # second COUNT query.
+                top_k=max_chunks + 1,
+                workspace_id=workspace_id,
+                source_provider=self._source_provider,
+                tags=tags,
+                viewer=viewer,
+            )
+        except Exception:  # noqa: BLE001 - never lose an answer to an optimisation
+            logger.warning("Whole-scope retrieval failed; ranking instead", exc_info=True)
+            return None
+        if not hits or len(hits) > max_chunks:
+            return None
+        total = sum(len(h.content or "") for h in hits)
+        if total > self._settings.scope_whole_max_chars:
+            logger.info(
+                "Scope holds %s chunks / %s chars, over the whole-read budget; ranking instead",
+                len(hits), total,
+            )
+            return None
+        # The gate is unchanged: still the best cosine in the retrieval, exactly
+        # as the ranked path reports it.
+        gate_score = max((h.score for h in hits), default=None)
+        # Sorted on a NUMERIC timestamp, not the datetime: `source_last_modified`
+        # can come back naive on rows written by older paths, and comparing a
+        # naive against an aware datetime raises -- which would turn a better
+        # answer into a failed one.
+        ordered = sorted(hits, key=_read_order)
+        logger.info("Whole-scope read: %s chunks, %s chars", len(ordered), total)
+        return ordered, gate_score
+
     def _retrieve_once(
         self,
         org_id: str,
@@ -827,6 +914,11 @@ class RagPipeline:
         tags: list[str] | None = None,
         viewer: Viewer | None = None,
     ) -> tuple[list[RetrievedChunk], float | None]:
+        whole = self._whole_scope(
+            org_id, query_vec, workspace_id=workspace_id, tags=tags, viewer=viewer
+        )
+        if whole is not None:
+            return whole
         if self._retriever is not None:
             retrieval = self._retriever.retrieve(
                 org_id,

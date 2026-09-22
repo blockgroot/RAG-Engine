@@ -551,3 +551,49 @@ def test_a_genuinely_fractional_value_keeps_its_decimals():
         _Resp("Average", {"points": [{"bucket": "b", "group": "Mean", "value": 2.5}]})
     )
     assert "Mean: 2.5" in text
+
+
+# -- where the answer lands ---------------------------------------------------
+#
+# Two surfaces, two rules, and the asymmetry is the point. A CHANNEL answer is
+# long and would bury the conversation people were already having, so it goes
+# in a thread. A DM has nothing to bury -- the conversation IS the bot -- so a
+# thread there only adds a "1 reply" link to click before you can read your own
+# answer, which is exactly the cost the original in-channel rule named.
+
+
+def test_a_dm_is_answered_in_the_chat_not_in_a_thread(monkeypatch):
+    posted, edited = _capture_post(monkeypatch)
+    slack_events._handle(
+        {"type": "message", "channel": "D1", "user": "U1", "text": "q",
+         "ts": "111", "channel_type": "im"},
+        "T1",
+    )
+    # `thread_ts=None` -> the placeholder (and so the answer it becomes) lands
+    # in the DM itself.
+    assert posted == [("D1", slack_events._SEARCHING, None)]
+    assert edited == [("D1", "msg-1", "the answer")]
+
+
+def test_a_dm_asked_inside_a_thread_stays_in_that_thread(monkeypatch):
+    """An existing thread wins on BOTH surfaces: answering outside it drops the
+    reply somewhere the asker is not looking."""
+    posted, edited = _capture_post(monkeypatch)
+    slack_events._handle(
+        {"type": "message", "channel": "D1", "user": "U1", "text": "q",
+         "ts": "222", "thread_ts": "111", "channel_type": "im"},
+        "T1",
+    )
+    assert posted == [("D1", slack_events._SEARCHING, "111")]
+
+
+def test_an_app_mention_without_channel_type_still_threads(monkeypatch):
+    """`channel_type` is absent on a channel `app_mention`, so anything not
+    EXPLICITLY a DM keeps threading -- burying a channel is the cost that
+    motivated threading, so that is the safe default."""
+    posted, _ = _capture_post(monkeypatch)
+    slack_events._handle(
+        {"type": "app_mention", "channel": "C1", "user": "U1", "text": "q", "ts": "111"},
+        "T1",
+    )
+    assert posted == [("C1", slack_events._SEARCHING, "111")]

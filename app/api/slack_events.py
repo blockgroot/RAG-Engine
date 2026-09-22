@@ -426,13 +426,28 @@ def _handle(event: dict, team_id: str) -> None:
     #
     # This reverses an earlier call to reply in-channel for top-level
     # questions, whose reasoning was that a "1 reply" link is a second place to
-    # look for one answer. In a real channel the opposite cost dominates: a
+    # look for one answer. In a real CHANNEL the opposite cost dominates: a
     # grounded answer is long, and posting several of them straight into the
     # channel buries whatever else people were discussing. Threading keeps the
     # answer attached to the question that earned it and leaves the channel
-    # readable. A DM has nothing to bury, but threading there is harmless and
-    # keeping ONE rule means there is no second code path to get wrong.
-    thread_ts = event.get("thread_ts") or event.get("ts")
+    # readable.
+    #
+    # A DM is the opposite case and now gets the opposite rule. There is
+    # nothing to bury -- the conversation IS the bot -- so a thread only adds a
+    # "1 reply" link to click before you can read your own answer, which is
+    # exactly the cost the original in-channel reasoning named. The earlier
+    # "one rule for both" note traded that away for having no second code
+    # path; the branch is one line, and a DM that reads like a chat is worth
+    # more than the line it costs.
+    #
+    # An existing thread still wins in BOTH surfaces: if the question was asked
+    # inside a thread, answering outside it drops the answer somewhere the
+    # asker is not looking. `channel_type` is absent on a channel
+    # `app_mention`, so anything that is not explicitly a DM keeps threading.
+    is_dm = event.get("channel_type") == "im"
+    thread_ts = event.get("thread_ts") if is_dm else (
+        event.get("thread_ts") or event.get("ts")
+    )
     if not channel or not slack_user or not text:
         return
 
@@ -468,8 +483,9 @@ def _handle(event: dict, team_id: str) -> None:
     #   indexed org-wide (publishing it to the whole company) just to make the
     #   bot answer in it.
     #
-    # `channel_type == "im"` is how Slack marks a direct message.
-    if event.get("channel_type") == "im":
+    # `channel_type == "im"` is how Slack marks a direct message (resolved once,
+    # above, because the reply's SHAPE depends on it too).
+    if is_dm:
         # A DM is the PERSON's surface, not a space's: they legitimately see
         # org-wide content and every space they belong to, so answering only
         # org-wide would refuse questions whose answer they can read in the
