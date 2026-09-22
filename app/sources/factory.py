@@ -39,7 +39,7 @@ INDEXED_PROVIDERS: tuple[str, ...] = ("notion", "google", "slack", "linear")
 #: simply not wired yet — so a space mixing Drive with Slack enforces per-file
 #: access on the Drive half and scope access on the Slack half. Say that in the
 #: UI; a half-enforced guarantee that reads as whole is worse than none.
-ACL_CAPABLE: frozenset[str] = frozenset({"google"})
+ACL_CAPABLE: frozenset[str] = frozenset({"google", "slack"})
 
 
 def build_source_adapter(

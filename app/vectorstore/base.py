@@ -76,6 +76,15 @@ class Viewer:
     #: group support: a group-shared document is withheld. See
     #: ``sources.google_groups``.
     groups: tuple[str, ...] = ()
+    #: Slack channel ids this viewer may read the documents OF, regardless of
+    #: whether they are a named viewer on them. It is not a person: it names a
+    #: ROOM, and it exists because the bot answering inside a private channel
+    #: must be able to quote that channel -- everyone who can read the reply is
+    #: already a member of it, so the disclosure is to people who already have
+    #: the content in front of them. Deliberately NOT the asker's whole channel
+    #: list: a reply carries exactly the one channel it is posted in, so a
+    #: private channel can never leak into another room.
+    channels: tuple[str, ...] = ()
     #: Restrict to scope-public documents with no person attached. Needed
     #: because "no email" has TWO meanings that must not share a value: an
     #: internal caller with no filter at all, and a caller who may read only
@@ -110,15 +119,21 @@ class Viewer:
         a directory. Onyx populates its domain group from the real Workspace
         roster for exactly this reason; upgrade when we have the Admin SDK.
         """
+        entries: list[str] = []
         email = (self.email or "").strip().lower()
         if not email:
             # An empty ACL is not "match everything": `doc_viewers && '{}'` is
             # false for every row, so the predicate reduces to `doc_is_public`.
-            # Groups are deliberately ignored here too: a viewer with no
-            # identity has no memberships to honour, so `public_only` cannot be
-            # widened by handing it a group list.
-            return []
-        entries = [email]
+            # Groups are deliberately ignored here: a viewer with no identity
+            # has no memberships to honour, so `public_only` cannot be widened
+            # by handing it a group list.
+            #
+            # `channels` IS still honoured, and the difference is the point: a
+            # group says "this PERSON belongs to X" and needs an identity to
+            # mean anything, while a channel says "this REPLY is being read by
+            # the members of X" and needs none.
+            return [f"channel:{c.strip()}" for c in self.channels if c.strip()]
+        entries.append(email)
         if "@" in email:
             entries.append(f"domain:{email.split('@', 1)[1]}")
         # Spelled to match `google_drive._file_access`, which is the only
@@ -128,6 +143,12 @@ class Viewer:
         for group in self.groups:
             entry = f"group:{group.strip().lower()}"
             if group.strip() and entry not in seen:
+                seen.add(entry)
+                entries.append(entry)
+        # Spelled to match `sources.slack._channel_entry`, the only writer.
+        for channel in self.channels:
+            entry = f"channel:{channel.strip()}"
+            if channel.strip() and entry not in seen:
                 seen.add(entry)
                 entries.append(entry)
         return entries

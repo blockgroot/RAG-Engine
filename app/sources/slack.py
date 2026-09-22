@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 from datetime import datetime, timezone
 
@@ -10,8 +11,10 @@ import httpx
 
 from ..config.settings import SlackSettings
 from ..core.exceptions import ConfigurationError, SourceError
-from .base import SourceAdapter, SourceDocument, SourceRef
-from .slack_utils import channel_tag
+from .base import DocAccess, SourceAdapter, SourceDocument, SourceRef
+from .slack_utils import channel_tag, list_channel_members, list_slack_channels
+
+logger = logging.getLogger(__name__)
 
 _API_BASE = "https://slack.com/api"
 _TIMEOUT = 15.0
@@ -54,6 +57,17 @@ def _ts_to_dt(ts: str | None) -> datetime | None:
         return datetime.fromtimestamp(float(ts), tz=timezone.utc)
     except (TypeError, ValueError):
         return None
+
+
+def _channel_entry(channel_id: str) -> str:
+    """The ACL entry naming a CHANNEL rather than a person.
+
+    The write half of the contract `vectorstore.base.Viewer.acl` reads. Kept
+    beside the adapter that writes it, in one function, for the reason the
+    email/domain/group entries are: two spellings of one grant fail closed and
+    silently.
+    """
+    return f"channel:{channel_id}"
 
 
 def _thread_uri(channel_id: str, thread_ts: str) -> str:
@@ -100,6 +114,86 @@ class SlackAdapter(SourceAdapter):
         self._timeout = timeout
         self._settings = settings or SlackSettings.from_env()
         self._user_names: dict[str, str] = {}
+        #: Per-channel access, resolved at most ONCE per adapter. A sync lists
+        #: many threads per channel and their audience is a property of the
+        #: channel, so resolving per document would multiply the cost by the
+        #: corpus size for an answer that cannot differ.
+        self._channel_access: dict[str, DocAccess | None] = {}
+        self._channels_meta: dict[str, dict] | None = None
+
+    def _channel_meta(self) -> dict[str, dict]:
+        """`conversations.list` ONCE per adapter, not once per channel.
+
+        It answers for every channel at once, so calling it per channel turns
+        one bounded request into one per connected channel on a path that is
+        also change detection.
+        """
+        if self._channels_meta is None:
+            self._channels_meta = {c["id"]: c for c in list_slack_channels(self._token)}
+        return self._channels_meta
+
+    def _access_for(self, channel_id: str) -> DocAccess | None:
+        """Who may read the threads in this channel. ``None`` = could not tell.
+
+        A PUBLIC channel is scope-public, and costs nothing to decide: everyone
+        the connected scope already admits can read the room, so there is no
+        narrower audience to record. Onyx reaches the same conclusion for the
+        same reason (`ee/.../slack/channel_access.py`), and it is what keeps
+        this feature's blast radius to private channels only.
+
+        A PRIVATE channel's audience IS its membership, so that is the viewer
+        list -- plus a `channel:<id>` entry, which is what lets the bot answer
+        INSIDE that channel without being a person (see `Viewer.channels`).
+
+        Resolved on the LISTING despite `list_documents` also being the change
+        detection path, and that is deliberate rather than an oversight of the
+        `users.info` lesson (CLAUDE.md §5): the cost here is per CHANNEL, not
+        per document or per author, and the channel list is small and picked by
+        hand. It has to be here, because revocation rides the listing --
+        `_restamp_unchanged_access` reads `SourceRef.access`, and a membership
+        change moves no message `ts`, so a thread is "unchanged" forever.
+
+        ponytail: one `users.info` per member (`list_channel_members`). Onyx
+        builds one bulk `users.list` map instead and looks members up in it;
+        worth copying if a connected channel is ever large enough to notice.
+        """
+        if channel_id in self._channel_access:
+            return self._channel_access[channel_id]
+
+        access: DocAccess | None = None
+        try:
+            channel = self._channel_meta().get(channel_id)
+            if channel is None:
+                # Slack does not list a private channel the bot cannot see at
+                # all, so "missing" means we have no basis to describe its
+                # audience -- not that it is public.
+                logger.warning(
+                    "slack: channel %s is not visible to this token; its sharing "
+                    "cannot be read", channel_id,
+                )
+            elif not channel["is_private"]:
+                access = DocAccess.scope_public()
+            else:
+                members = list_channel_members(self._token, channel_id)
+                emails = [m["email"] for m in members if m.get("email")]
+                if emails:
+                    access = DocAccess.restricted(emails + [_channel_entry(channel_id)])
+                else:
+                    # Every member unresolvable (no `users.read.email`, or a
+                    # channel of bots). Recording an empty audience would hide
+                    # the channel from everyone including its members, so we
+                    # say "unknown" and let the pipeline decide.
+                    logger.warning(
+                        "slack: no member emails resolved for private channel %s",
+                        channel_id,
+                    )
+        except SourceError:
+            logger.warning(
+                "slack: could not resolve access for channel %s", channel_id, exc_info=True
+            )
+
+        self._channel_access[channel_id] = access
+        return access
 
     def _channel_label(self, channel_id: str) -> str:
         return self._channel_names.get(channel_id) or channel_id
@@ -218,6 +312,7 @@ class SlackAdapter(SourceAdapter):
         oldest = time.time() - (self._settings.backfill_days * 86400)
         refs: list[SourceRef] = []
         for channel_id in self._channel_ids:
+            channel_access = self._access_for(channel_id)
             cursor = None
             while True:
                 if len(refs) >= self._settings.max_documents_per_sync:
@@ -241,6 +336,7 @@ class SlackAdapter(SourceAdapter):
                             title=self._thread_title(channel_id, text),
                             last_modified=_ts_to_dt(last_ts),
                             source_uri=_thread_uri(channel_id, ts),
+                            access=channel_access,
                             # No `last_editor` here on purpose. Resolving a
                             # name costs a `users.info` call, and this listing
                             # is also the CHANGE DETECTION path -- which made

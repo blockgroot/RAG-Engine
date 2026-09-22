@@ -1138,3 +1138,158 @@ def test_a_readable_folder_never_looks_up_the_connected_account():
         {"permissions": [{"type": "anyone"}]}, _must_not_run
     )
     assert access is not None and access.is_public is True
+
+
+# -- Slack: a channel's membership IS its ACL --------------------------------
+#
+# Onyx's model (`ee/.../slack/channel_access.py`) with one addition they do not
+# have: a private channel's documents also carry a `channel:<id>` entry, so the
+# bot can answer INSIDE that channel without being a person. Everyone who can
+# read that reply is already a member of the channel, so it discloses nothing
+# they cannot scroll up and read -- and without it the bot goes silent in the
+# very channel whose threads it is sitting on.
+
+
+def _slack_adapter(channels, members=None, monkeypatch=None):
+    from app.sources import slack as slack_mod
+
+    monkeypatch.setattr(slack_mod, "list_slack_channels", lambda token: channels)
+    monkeypatch.setattr(
+        slack_mod, "list_channel_members", lambda token, cid: (members or {}).get(cid, [])
+    )
+    return slack_mod.SlackAdapter("tok", [c["id"] for c in channels])
+
+
+def test_a_public_channel_stays_scope_public(monkeypatch):
+    """Everyone the scope admits can already read the room, so there is no
+    narrower audience to record -- and it costs no API call to decide."""
+    adapter = _slack_adapter(
+        [{"id": "C1", "name": "general", "is_private": False, "is_member": True}],
+        monkeypatch=monkeypatch,
+    )
+    access = adapter._access_for("C1")
+    assert access is not None
+    assert access.is_public is True and access.viewers == ()
+
+
+def test_a_private_channel_is_its_members_plus_the_channel_itself(monkeypatch):
+    from app.sources.slack import _channel_entry
+
+    adapter = _slack_adapter(
+        [{"id": "C2", "name": "secret", "is_private": True, "is_member": True}],
+        members={"C2": [{"email": "ada@x.com"}, {"email": "bob@x.com"}]},
+        monkeypatch=monkeypatch,
+    )
+    access = adapter._access_for("C2")
+    assert access is not None
+    assert access.is_public is False
+    assert set(access.viewers) == {"ada@x.com", "bob@x.com", _channel_entry("C2")}
+
+
+def test_channel_access_is_resolved_once_per_channel(monkeypatch):
+    """A sync lists many threads per channel and their audience cannot differ
+    between them, so resolving per document would multiply the cost by the
+    corpus size for the same answer."""
+    from app.sources import slack as slack_mod
+
+    calls = {"n": 0}
+
+    def _members(token, cid):
+        calls["n"] += 1
+        return [{"email": "ada@x.com"}]
+
+    monkeypatch.setattr(
+        slack_mod, "list_slack_channels",
+        lambda token: [{"id": "C2", "name": "s", "is_private": True, "is_member": True}],
+    )
+    monkeypatch.setattr(slack_mod, "list_channel_members", _members)
+    adapter = slack_mod.SlackAdapter("tok", ["C2"])
+    for _ in range(5):
+        adapter._access_for("C2")
+    assert calls["n"] == 1
+
+
+def test_an_invisible_channel_is_not_treated_as_public(monkeypatch):
+    """Slack does not list a private channel the bot cannot see, so "missing"
+    means we have no basis to describe its audience -- the one reading that
+    would turn a lost invite into a corpus-wide disclosure."""
+    from app.sources import slack as slack_mod
+
+    # The connection still names C9; Slack simply does not return it.
+    monkeypatch.setattr(slack_mod, "list_slack_channels", lambda token: [])
+    adapter = slack_mod.SlackAdapter("tok", ["C9"])
+    assert adapter._access_for("C9") is None
+
+
+def test_a_private_channel_with_no_resolvable_emails_is_unknown(monkeypatch):
+    """Recording an empty audience would hide the channel from everyone
+    INCLUDING its members. `None` lets the pipeline fail closed instead."""
+    adapter = _slack_adapter(
+        [{"id": "C2", "name": "s", "is_private": True, "is_member": True}],
+        members={"C2": []},
+        monkeypatch=monkeypatch,
+    )
+    assert adapter._access_for("C2") is None
+
+
+def test_slack_capture_fails_closed():
+    """With slack in ACL_CAPABLE, an unreadable channel is skipped rather than
+    indexed readable by the whole space."""
+    from app.ingestion.pipeline import _doc_access
+
+    assert "slack" in ACL_CAPABLE
+    ref = SourceRef(external_id="C2:1.0", title="#s: hi")
+    doc = SourceDocument(external_id="C2:1.0", title="#s: hi", content="hi")
+    assert _doc_access(doc, ref, "slack") is None
+
+
+def test_the_bot_may_read_the_channel_it_is_replying_in():
+    """The rule that keeps the bot useful. A reply into private channel X may
+    retrieve X's threads and nothing else private."""
+    from app.sources.slack import _channel_entry
+
+    in_channel = Viewer(public_only=True, channels=("C2",))
+    assert in_channel.acl() == [_channel_entry("C2")]
+    # It is not a person: no email, no domain, no other channel.
+    assert not any("@" in entry for entry in in_channel.acl())
+
+
+def test_a_channel_reply_cannot_reach_another_private_channel():
+    """Exactly ONE channel rides the viewer -- the one being replied in. A
+    viewer carrying the asker's whole channel list would let #secret's content
+    be quoted into #general."""
+    from app.sources.slack import _channel_entry
+
+    acl = Viewer(public_only=True, channels=("C_general",)).acl()
+    assert _channel_entry("C_secret") not in acl
+
+
+def test_a_dm_reaches_a_private_channel_through_MEMBERSHIP_not_the_room():
+    """The other half: in a DM there is no room, so the person's own email is
+    what matches -- which is why both entry kinds are stored."""
+    access_viewers = {"ada@x.com", "bob@x.com", "channel:C2"}
+    assert set(Viewer(email="ada@x.com").acl()) & access_viewers == {"ada@x.com"}
+    assert not set(Viewer(email="mallory@x.com").acl()) & access_viewers
+
+
+def test_the_channel_listing_is_fetched_once_for_the_whole_sync(monkeypatch):
+    """`conversations.list` answers for every channel at once, so calling it
+    per channel turns one bounded request into one per connected channel -- on
+    a path that is also change detection (CLAUDE.md §5 Sources)."""
+    from app.sources import slack as slack_mod
+
+    calls = {"n": 0}
+
+    def _list(token):
+        calls["n"] += 1
+        return [
+            {"id": "C1", "name": "a", "is_private": False, "is_member": True},
+            {"id": "C2", "name": "b", "is_private": False, "is_member": True},
+            {"id": "C3", "name": "c", "is_private": False, "is_member": True},
+        ]
+
+    monkeypatch.setattr(slack_mod, "list_slack_channels", _list)
+    adapter = slack_mod.SlackAdapter("tok", ["C1", "C2", "C3"])
+    for cid in ("C1", "C2", "C3", "C1"):
+        adapter._access_for(cid)
+    assert calls["n"] == 1

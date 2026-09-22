@@ -69,6 +69,8 @@ def test_empty_channel_ids_raises_configuration_error():
 
 
 def test_list_documents_returns_one_ref_per_thread(monkeypatch):
+    calls: list[str] = []
+
     def fake_get(url, *, params=None, headers=None, timeout=None):
         assert headers["Authorization"] == "Bearer xoxb-abc"
         if url.endswith("conversations.history"):
@@ -79,6 +81,16 @@ def test_list_documents_returns_one_ref_per_thread(monkeypatch):
                         _msg("100.000001", "Question about the handbook?", reply_count=3, latest_reply="100.000050"),
                     ],
                 }
+            )
+        # Document-level access filtering needs to know whether the channel is
+        # private. ONE bounded call for the whole sync (see
+        # `test_a_public_channel_costs_no_extra_call` below for the bound) --
+        # deliberately still not a per-author or per-document lookup, which is
+        # what this fake exists to forbid.
+        if url.endswith("conversations.list"):
+            calls.append(url)
+            return FakeResponse(
+                {"ok": True, "channels": [{"id": "C1", "name": "general", "is_private": False}]}
             )
         raise AssertionError(f"unexpected call to {url}")
 
@@ -308,11 +320,18 @@ def test_list_documents_retries_ratelimited_then_succeeds(monkeypatch):
 
 def test_an_empty_update_listing_reuses_the_check_snapshot(monkeypatch):
     """The live bug: Check finds threads, Update's re-list comes back empty."""
-    state = {"n": 0}
+    # Dispatched on URL, not on call ORDER: access filtering added a bounded
+    # `conversations.list` to the listing, and an ordinal-counting fake silently
+    # hands the history payload to whichever call happens to be first.
+    state = {"history": 0}
 
     def fake_get(url, *, params=None, headers=None, timeout=None):
-        state["n"] += 1
-        if state["n"] == 1:
+        if url.endswith("conversations.list"):
+            return FakeResponse(
+                {"ok": True, "channels": [{"id": "C1", "name": "general", "is_private": False}]}
+            )
+        state["history"] += 1
+        if state["history"] == 1:
             return FakeResponse(
                 {
                     "ok": True,

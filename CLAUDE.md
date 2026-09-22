@@ -71,7 +71,7 @@ hook, and every process boundary must `close_pool()`.
     makes `&&` false for every row. A signed-in session whose `users` row
     cannot be read gets `public_only`, never unrestricted (`deps.viewer_for`).
   - **Capture is per adapter and FAILS CLOSED** (`sources.factory.ACL_CAPABLE`,
-    `{"google"}` today). Drive's `permissions(type,emailAddress,domain,deleted)`
+    `{"google", "slack"}` today). Drive's `permissions(type,emailAddress,domain,deleted)`
     rides in the `files.list` we already make — zero extra calls, the
     `lastModifyingUser` trick again. `anyone` ⇒ scope-public, `user` ⇒ email,
     `domain` ⇒ `domain:<host>`, `group` ⇒ `group:<addr>`. An ACL-capable
@@ -106,6 +106,41 @@ hook, and every process boundary must `close_pool()`.
     list.** "Shared with exactly one person" and "we could only prove one
     person" are indistinguishable once the list is built, and they are a
     healthy sync and a reportable one respectively.
+  - **A Slack CHANNEL's membership IS its ACL** (`sources.slack._access_for`,
+    Onyx's `ee/.../slack/channel_access.py`). A PUBLIC channel is scope-public
+    and costs no call to decide — everyone the scope admits can read the room,
+    so there is no narrower audience — which keeps the blast radius to private
+    channels only. A PRIVATE channel's viewers are its member emails PLUS a
+    `channel:<id>` entry. Slack needs NO group machinery: Slack flattens a
+    usergroup into channel membership at invite time, so `conversations.members`
+    already contains them — Onyx's `slack/group_sync.py` exists, says so in
+    capitals, and is not registered in their config.
+  - **`channel:<id>` is an ACL entry that names a ROOM, not a person**
+    (`Viewer.channels`, written by `slack._channel_entry`). It is the one entry
+    an identity-less viewer may still carry, and the asymmetry with `group:` is
+    the point: a group says "this PERSON belongs to X" and is meaningless
+    without an identity, while a channel says "this REPLY is being read by the
+    members of X" and needs none. It exists because a channel reply is
+    `public_only`, so once a private channel's threads go non-public the bot
+    would refuse in the very channel it is sitting in — the only Slack channel
+    most tenants connect. Everyone who can read that reply is already a member,
+    so quoting it discloses nothing they cannot scroll up and read. EXACTLY ONE
+    channel rides the viewer, the one being replied in: the asker's whole
+    channel list would let #secret's content be quoted into #general. Onyx
+    solves this with ephemeral replies instead (`handle_regular_answer`: an
+    ephemeral reply or a DM answers as the real user, anything posted to a room
+    answers as an anonymous user) — a good rule we do not need, because ours
+    costs no new posting mode and keeps the answer visible to the room.
+  - **Slack access is resolved on the LISTING, per CHANNEL, once**
+    (`_channel_meta` caches `conversations.list` for the whole sync;
+    `_channel_access` caches per channel). It must be the listing, because
+    revocation rides `SourceRef.access` and a membership change moves no
+    message `ts`. This is a deliberate exception to §5's "adding a call to
+    Slack's listing is not free": that lesson was about a per-AUTHOR call whose
+    cost scaled with the corpus; this is per connected channel, a hand-picked
+    list. `tests/test_slack_source.py`'s fake rejects unexpected URLs and
+    caught both the new call AND a bug where `conversations.list` ran once per
+    channel — keep that guard.
   - **A `group:` grant is expanded on the READ side, never at ingest**
     (`sources.google_groups`, `Viewer.groups` → `acl()`). Drive reports a group
     share as ONE opaque address and never expands it, so the choice is where to

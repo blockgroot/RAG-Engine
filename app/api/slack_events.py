@@ -226,6 +226,7 @@ def _answer(
     scope_label: str | None = None,
     user_id: str | None = None,
     viewer: Viewer | None = None,
+    channel_id: str | None = None,
 ) -> str:
     """Run the existing pipeline. ``tags`` set => channel-scoped Slack only.
 
@@ -248,7 +249,18 @@ def _answer(
     # scope), and it is decided HERE rather than at the call site so a future
     # caller cannot forget it.
     if scope_label is None:
-        viewer = Viewer.public_only_viewer()
+        # ...but it MAY read that channel's own documents. Everyone who can see
+        # this reply is already a member of the channel it is posted in, so
+        # quoting it discloses nothing they cannot scroll up and read -- while
+        # without this the bot goes silent in a private channel about the very
+        # threads it is sitting in, which is the whole reason anyone connected
+        # it. Exactly ONE channel, the one being replied in: a viewer carrying
+        # the asker's whole channel list could carry a private channel's
+        # content into a different room.
+        viewer = Viewer(
+            public_only=True,
+            channels=(channel_id,) if channel_id else (),
+        )
 
     if tags:
         # Pinned to Slack and filtered to one channel. Goes through the agent's
@@ -521,6 +533,9 @@ def _handle(event: dict, team_id: str) -> None:
             # from the resolved row, not from the Slack profile email, so the
             # two surfaces can never disagree about who is asking.
             viewer=viewer_for_person(org_id, user.email),
+            # The room the reply lands in, so a channel answer may read that
+            # channel's own threads without being anybody.
+            channel_id=channel,
         )
     except Exception as exc:  # noqa: BLE001 - a failed answer must still reply
         logger.warning("slack.bot answer failed for org %s: %s", org_id, exc, exc_info=True)
