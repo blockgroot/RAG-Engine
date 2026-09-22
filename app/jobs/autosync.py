@@ -223,12 +223,69 @@ def _stamp_attempted(connection_id: str) -> None:
         )
 
 
-#: Providers whose ingestion needs a SCOPE the admin picks after connecting.
-#: Their adapters raise without one (``GoogleDriveAdapter`` on an empty
-#: ``folder_id``, ``SlackAdapter`` on empty ``channel_ids``), so connecting is
-#: not yet the moment to ingest — saving the scope is, and that is where
-#: ``sync_now`` is called from instead.
-SCOPED_PROVIDERS = ("google", "slack")
+#: Providers whose ingestion needs a SCOPE the admin picks after connecting,
+#: and the ``source_config`` key that holds it. Their adapters raise without one
+#: (``GoogleDriveAdapter`` on an empty ``folder_id``, ``SlackAdapter`` on empty
+#: ``channel_ids``), so a FIRST connect is not yet the moment to ingest --
+#: saving the scope is, and that is where ``sync_now`` is called from instead.
+#:
+#: One dict rather than a set plus a hand-kept copy of the keys: `api/
+#: notifications.py` needed exactly this mapping to report "connected but
+#: indexing nothing", and two lists of the same fact drift.
+SCOPE_KEYS: dict[str, str] = {"google": "folder_id", "slack": "channel_ids"}
+SCOPED_PROVIDERS = tuple(SCOPE_KEYS)
+
+
+def scope_is_configured(
+    org_id: str, provider: str, workspace_id: str | None = None
+) -> bool:
+    """Does this connection already know WHAT to read?
+
+    True for any provider that needs no scope at all. Never raises: an
+    unreadable config means we simply do not claim the scope is there.
+    """
+    key = SCOPE_KEYS.get(provider)
+    if key is None:
+        return True
+    try:
+        from ..auth.credentials import get_connection_config
+
+        return bool((get_connection_config(org_id, provider, workspace_id) or {}).get(key))
+    except Exception:  # noqa: BLE001 - never fail a connect over a lookup
+        logger.warning("Could not read %s scope config for org %s", provider, org_id)
+        return False
+
+
+def sync_after_connect(
+    org_id: str,
+    connection_id: str,
+    *,
+    provider: str,
+    workspace_id: str | None = None,
+) -> str | None:
+    """Queue the ingest an OAuth callback should trigger, if any.
+
+    RECONNECTING is not the same event as connecting, and treating them alike
+    is what this exists to fix. ``save_connection`` upserts the tokens and
+    deliberately leaves ``source_config`` alone, so a Drive folder or a Slack
+    channel list SURVIVES a reconnect -- which means the reason
+    ``SCOPED_PROVIDERS`` skip the callback ("the adapter raises without a
+    scope") is true on a first connect and false on every one after it.
+
+    The cost of the old blanket skip was the case people actually hit: a token
+    expires, the connector stops syncing, someone reconnects to fix exactly
+    that, and nothing happens for up to an interval -- on the one screen where
+    they are watching for it to. Linear reconnected and immediately indexed
+    because it is not scoped; Drive sat silent, and the difference read as Drive
+    being broken.
+    """
+    if provider in SCOPE_KEYS and not scope_is_configured(org_id, provider, workspace_id):
+        logger.info(
+            "Connect: %s has no scope saved yet; the scope-save route will queue it",
+            provider,
+        )
+        return None
+    return sync_now(org_id, connection_id, provider=provider, workspace_id=workspace_id)
 
 
 def sync_now(

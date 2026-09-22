@@ -1048,6 +1048,19 @@ elapsed).
   `AUTO_SYNC_BATCH_SIZE`, never the interval. Render instance-hours are
   unaffected — the tick cadence, not the sync interval, is what keeps the box
   awake.
+- **A RECONNECT is not a first connect** (`autosync.sync_after_connect`). The
+  callback used to skip `SCOPED_PROVIDERS` wholesale, on the reasoning that
+  Drive/Slack adapters raise without a scope — true on a first connect and
+  FALSE on every one after it, because `save_connection`'s `DO UPDATE SET`
+  deliberately leaves `source_config` alone, so the folder and channel list
+  SURVIVE. The cost was the case people actually hit: a token expires, the
+  connector stops syncing, someone reconnects to fix exactly that, and nothing
+  happens for up to an interval — on the one screen where they are watching for
+  it. Observed in prod as "Linear reindexed instantly, Drive sat silent", which
+  reads as Drive being broken; Linear simply is not scoped. The card's job badge,
+  phase headline and progress bar already existed and never fired, so the fix is
+  one condition, not new UI. `SCOPE_KEYS` (one dict, `SCOPED_PROVIDERS` derived
+  from it) is shared with `api/notifications.py`, which needed the same mapping.
 - **The FIRST ingest happens on connect, not on the next tick**
   (`autosync.sync_now`, called from the OAuth callback and both scope-save
   routes). A connection whose content is invisible for up to an interval reads
@@ -1328,6 +1341,16 @@ facts, a space's Ask reads that space only — no separate company dashboard.
   from "not supported". Discovery is three fixed chips gated on the SAME
   `may_see_metric` the chart route uses — a chip leading to "can't chart that
   here" would tell a member sentiment is being collected on them.
+- **An optional scope that the account cannot consent to FAILS THE WHOLE
+  CONNECT** (`google_oauth._verify_granted_scopes`). Google may grant a subset,
+  and we treat a partial grant as a hard `OAuthError` — so `GOOGLE_GROUPS_ENABLED`
+  on a tenant whose connecting account is not a Workspace ADMIN does not merely
+  lose group expansion, it breaks their Google reconnect, Drive included. Easy to
+  get wrong because the RUNTIME lookup is soft-fail (`groups_for` returns `()` on
+  a 403); the CONSENT step is not. Verify the admin rights BEFORE switching the
+  flag on, and keep both flags out of a test's ambient env
+  (`tests/test_google_oauth.py` pins them off, or a developer's own `.env`
+  fails the fixed-scope fixture).
 - **The Forms OAuth scope is opt-in** (`GOOGLE_FORMS_ENABLED` appends
   `forms.responses.readonly` in `GoogleSettings.from_env`). Not in the default:
   an already-connected tenant does not have it, so defaulting it on would force

@@ -22,6 +22,12 @@ def _google_oauth_settings(monkeypatch):
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "client-123.apps.googleusercontent.com")
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "secret-456")
     monkeypatch.setenv("GOOGLE_REDIRECT_URI", "https://portal.example.com/auth/google/callback")
+    # Pinned OFF rather than inherited: both flags APPEND to the requested scope
+    # string, so a developer with either set in their own .env would fail
+    # `_verify_granted_scopes` against this file's fixed REQUESTED_SCOPES. The
+    # flags' own effect is asserted separately, below.
+    monkeypatch.delenv("GOOGLE_FORMS_ENABLED", raising=False)
+    monkeypatch.delenv("GOOGLE_GROUPS_ENABLED", raising=False)
     return GoogleSettings.from_env()
 
 
@@ -193,3 +199,42 @@ def test_refresh_raises_on_invalid_grant(_google_oauth_settings, monkeypatch):
     provider = GoogleOAuthProvider(settings=_google_oauth_settings)
     with pytest.raises(OAuthError, match="invalid_grant"):
         provider.refresh("1//dead-refresh-token")
+
+
+def test_an_ungranted_optional_scope_FAILS_the_whole_connect(monkeypatch):
+    """The cost of switching on a scope the connecting account cannot consent to.
+
+    `admin.directory.group.readonly` needs a Google Workspace ADMIN. With
+    GOOGLE_GROUPS_ENABLED on, that scope is REQUESTED of everyone -- and
+    `_verify_granted_scopes` treats a partial grant as a hard failure, so a
+    non-admin does not merely lose group expansion: their Google connect fails
+    outright, Drive included.
+
+    Pinned because the runtime lookup degrades quietly (`groups_for` returns
+    `()` on a 403) and that makes it easy to assume the whole feature is
+    soft-fail. The CONSENT step is not."""
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "client-123.apps.googleusercontent.com")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "secret-456")
+    monkeypatch.setenv("GOOGLE_REDIRECT_URI", "https://portal.example.com/cb")
+    monkeypatch.setenv("GOOGLE_GROUPS_ENABLED", "true")
+    monkeypatch.delenv("GOOGLE_FORMS_ENABLED", raising=False)
+    settings = GoogleSettings.from_env()
+    assert "admin.directory.group.readonly" in settings.scopes
+
+    def fake_post(url, **kwargs):
+        # Google hands back only what the account could actually consent to.
+        return FakeResponse(
+            {
+                "access_token": "ya29.access-xyz",
+                "refresh_token": "1//refresh-xyz",
+                "expires_in": 3599,
+                "scope": REQUESTED_SCOPES,
+                "token_type": "Bearer",
+            }
+        )
+
+    monkeypatch.setattr("app.auth.google_oauth.httpx.post", fake_post)
+    provider = GoogleOAuthProvider(settings=settings)
+    with pytest.raises(OAuthError) as exc:
+        provider.exchange_code("code-abc")
+    assert "admin.directory.group.readonly" in str(exc.value)

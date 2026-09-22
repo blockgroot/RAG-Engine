@@ -33,7 +33,7 @@ from ..auth import (
 from ..config.settings import ApiSettings, AuthSettings, EmailSettings, RateLimitSettings
 from ..core.exceptions import AuthError, ConfigurationError, OAuthError, SourceError
 from ..githublive import refresh_installation_scope
-from ..jobs.autosync import SCOPED_PROVIDERS, sync_now
+from ..jobs.autosync import sync_after_connect
 from ..security.client_ip import resolve_client_ip
 from ..security.rate_limit import check_rate_limit
 from ..vectorstore import build_vector_store
@@ -513,16 +513,15 @@ def callback(
             connection_id = save_connection(
                 org_id, provider, tokens, workspace_id=workspace_id
             )
-            # Connecting IS the request to index, so the first ingest happens
-            # here rather than on the next tick. Providers that still need a
-            # scope (Drive's folder, Slack's channels) are queued when that
-            # scope is saved instead -- their adapters raise without one, so
-            # queueing here would only manufacture a failed job.
-            if provider not in SCOPED_PROVIDERS:
-                sync_now(
-                    org_id, connection_id, provider=provider,
-                    workspace_id=workspace_id,
-                )
+            # Connecting IS the request to index, so the ingest happens here
+            # rather than on the next tick. `sync_after_connect` owns the one
+            # exception -- a provider that does not yet know WHAT to read -- and
+            # that is a first connect only: a RECONNECT keeps its saved folder
+            # or channel list, so it must sync immediately like everything else.
+            sync_after_connect(
+                org_id, connection_id, provider=provider,
+                workspace_id=workspace_id,
+            )
     except (OAuthError, ConfigurationError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

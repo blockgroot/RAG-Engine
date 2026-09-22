@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends
 
 from ..auth.credentials import list_connections, sanitize_reauth_reason
 from ..auth.session import SessionClaims
+from ..jobs.autosync import SCOPE_KEYS
 from ..workspaces.store import list_my_workspaces
 from .deps import get_session
 
@@ -35,7 +36,10 @@ router = APIRouter(prefix="/notifications", tags=["notifications"])
 #: `source_config` key that says they have. Drive without a folder and Slack
 #: without channels both report "Linked" while holding zero documents, which
 #: reads as a working connection (CLAUDE.md §5 Sources).
-_SCOPE_KEYS: dict[str, str] = {"google": "folder_id", "slack": "channel_ids"}
+#:
+#: Imported rather than restated: `autosync` needs the same mapping to decide
+#: whether a reconnect can ingest immediately, and two copies of one fact drift.
+_SCOPE_KEYS = SCOPE_KEYS
 
 _PROVIDER_NAMES: dict[str, str] = {
     "google": "Google Drive",
