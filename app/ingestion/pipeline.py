@@ -8,7 +8,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
 
-from ..config.settings import ChunkingSettings, ContextualSettings, KeywordExtractionSettings
+from ..config.settings import (
+    ChunkingSettings,
+    ContextualSettings,
+    GraphSettings,
+    KeywordExtractionSettings,
+)
 from ..embeddings import build_embedding_provider
 from ..embeddings.base import EmbeddingProvider
 from ..ingestion.chunking import chunk_text
@@ -20,6 +25,7 @@ from ..llm import build_aux_llm_provider
 from ..llm.base import LLMProvider
 from ..sources.base import SourceAdapter, SourceRef
 from ..sources.factory import ACL_CAPABLE
+from ..sources.meta import editor_key, extract_links, merge_meta
 from ..vectorstore import build_vector_store
 from ..vectorstore.base import VectorStore
 
@@ -233,8 +239,21 @@ def _doc_tags(doc, run_tags: list[str] | None) -> list[str] | None:
     return list(dict.fromkeys(merged)) or None
 
 
+def _doc_meta(doc) -> tuple[dict, str | None]:
+    """``(source_meta, source_editor_key)`` for one fetched document.
+
+    The adapter's own record plus every resolvable link in the BODY: a URL to a
+    Linear issue or a pull request sits in a Drive doc's text just as often as
+    in a structured field, and the text is already in hand. Never ``None`` —
+    ``{}`` marks "captured, nothing found", so the metadata refresh does not
+    pick the same document up again every job.
+    """
+    meta = merge_meta(getattr(doc, "meta", None), links=extract_links(doc.content)) or {}
+    return meta, editor_key(meta)
+
+
 def _doc_access(
-    doc, ref: SourceRef, provider: str
+    doc, ref: SourceRef | None, provider: str
 ) -> tuple[bool, list[str] | None, bool] | None:
     """Resolve ``(is_public, viewers, unreadable)``, or ``None`` meaning SKIP.
 
@@ -527,6 +546,7 @@ def ingest_source(
                 provider, ref.external_id, ", ".join(viewers or []) or "nobody",
             )
             permission_unreadable += 1
+        meta, meta_editor = _doc_meta(doc)
         clean = preprocess(sanitize_ingest_text(doc.content))
         chunks = chunk_text(clean, chunking)
         raw_chunks = chunks
@@ -543,6 +563,8 @@ def ingest_source(
                 last_editor=doc.last_editor or ref.last_editor,
                 is_public=is_public,
                 viewers=viewers,
+                source_meta=meta,
+                editor_key=meta_editor,
             )
             skipped += 1
             report("indexing", done, total_work)
@@ -590,6 +612,8 @@ def ingest_source(
             last_editor=doc.last_editor or ref.last_editor,
             is_public=is_public,
             viewers=viewers,
+            source_meta=meta,
+            editor_key=meta_editor,
         )
         doc_ids.append(document_id)
         ingested_external_ids.append(doc.external_id)
@@ -612,6 +636,16 @@ def ingest_source(
         workspace_id=workspace_id,
     )
 
+    refresh_missing_meta(
+        adapter,
+        store,
+        org_id=org_id,
+        provider=provider,
+        workspace_id=workspace_id,
+        skip_ids={r.external_id for r, _ in work},
+        live_ids={r.external_id for r in refs},
+    )
+
     return IngestResult(
         documents_ingested=added_n + updated_n,
         documents_added=added_n,
@@ -624,6 +658,67 @@ def ingest_source(
         document_ids=doc_ids,
         ingested_external_ids=ingested_external_ids,
     )
+
+
+def refresh_missing_meta(
+    adapter: SourceAdapter,
+    store: VectorStore,
+    *,
+    org_id: str,
+    provider: str,
+    workspace_id: str | None = None,
+    skip_ids: set[str] | None = None,
+    live_ids: set[str] | None = None,
+    batch: int | None = None,
+) -> int:
+    """Capture ``source_meta`` for already-indexed documents, a bounded batch per run.
+
+    An UNCHANGED document is never re-fetched (``_plan_refs``), so every row
+    indexed before Second Brain 1.1 would otherwise stay invisible to the graph
+    forever. This re-fetches up to ``GRAPH_META_REFRESH_BATCH`` of them per job
+    and writes the metadata ONLY — no re-chunking, no re-embedding, access
+    untouched. Newest first, so the documents questions are about go first.
+
+    Never raises: it rides a sync that has already succeeded, and one document
+    the source now refuses must not turn that into a failure. A document that
+    fails is left NULL and retried on a later job. ``live_ids`` (the listing
+    this run just made) keeps a document the source no longer has from
+    occupying a slot, and failing, on every job forever.
+    """
+    limit = GraphSettings.from_env().meta_refresh_batch if batch is None else batch
+    if limit <= 0:
+        return 0
+    skip_ids = skip_ids or set()
+    try:
+        candidates = store.list_source_documents_missing_meta(
+            org_id, provider=provider, workspace_id=workspace_id,
+            limit=limit + len(skip_ids) + 50,
+        )
+    except Exception:  # noqa: BLE001 - see docstring
+        logger.warning("refresh_missing_meta: listing failed for %s", provider, exc_info=True)
+        return 0
+    entries: list[tuple[str, dict, str | None]] = []
+    eligible = [
+        c for c in candidates
+        if c not in skip_ids and (live_ids is None or c in live_ids)
+    ]
+    for external_id in eligible[:limit]:
+        try:
+            doc = adapter.fetch_document(external_id)
+        except Exception:  # noqa: BLE001 - see docstring
+            logger.info("refresh_missing_meta: could not fetch %s/%s", provider, external_id)
+            continue
+        meta, meta_editor = _doc_meta(doc)
+        entries.append((external_id, meta, meta_editor))
+    if not entries:
+        return 0
+    try:
+        return store.set_source_document_meta(
+            org_id, provider=provider, entries=entries, workspace_id=workspace_id
+        )
+    except Exception:  # noqa: BLE001 - see docstring
+        logger.warning("refresh_missing_meta: write failed for %s", provider, exc_info=True)
+        return 0
 
 
 def enrich_source_contextual(
@@ -667,6 +762,16 @@ def enrich_source_contextual(
     for i, external_id in enumerate(external_ids, start=1):
         try:
             doc = adapter.fetch_document(external_id)
+            access = _doc_access(doc, None, provider)
+            if access is None:
+                # The re-fetch could not say who may read it. The row ingest
+                # just wrote carries a real answer; rewriting it with a guess
+                # (or, as this path used to, with the scope-public DEFAULT) is
+                # the leak. Keep the plain chunks.
+                report("enriching", i, total)
+                continue
+            is_public, viewers, _unreadable = access
+            meta, meta_editor = _doc_meta(doc)
             clean = preprocess(sanitize_ingest_text(doc.content))
             chunks = chunk_text(clean, chunking)
             if not chunks:
@@ -707,7 +812,17 @@ def enrich_source_contextual(
                 source_uri=doc.source_uri,
                 last_modified=doc.last_modified,
                 workspace_id=workspace_id,
-                tags=tags,
+                # EVERY field ingest wrote, because this REPLACES the row. It
+                # used to pass only the run tags, so each deferred enrich (on by
+                # default) re-published a restricted Drive file to the whole
+                # scope, dropped a Slack thread's channel tag and its editor --
+                # and would now also drop the Second Brain metadata.
+                tags=_doc_tags(doc, tags),
+                last_editor=doc.last_editor,
+                is_public=is_public,
+                viewers=viewers,
+                source_meta=meta,
+                editor_key=meta_editor,
             )
             enriched += 1
         except Exception:  # noqa: BLE001 - one bad page must not abort enrich

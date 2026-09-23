@@ -257,6 +257,16 @@ hook, and every process boundary must `close_pool()`.
   Document-level access filtering broke that premise for two kinds of answer,
   and the fix is a gated WRITE (`_is_cacheable`), not a re-keyed cache.
 
+**Second Brain capture (`sources/meta.py`, plan `docs/plans/2026-09-23-second-brain.md`)**
+— each adapter records the people, links and containers it already saw into
+`SourceDocument.meta` → `documents.source_meta` (+ `source_editor_key`;
+`activity_facts.actor_key` for facts), with ZERO extra API calls — the fakes
+pin it. Identity keys are `<provider>:<id>` or `email:<addr>`, **never a
+display name**; a name alone is dropped. `{}` = captured/empty, NULL = not yet
+captured (bounded `refresh_missing_meta` per job). **Deferred enrichment
+REPLACES the row, so it must pass every field ingest passes** — it passed only
+run tags and re-published restricted Drive files scope-wide until 1.1.
+
 **Retrieved context carries its provenance** (`rag/context_assemble.py::describe_hit`)
 — every chunk reaches the prompt behind one line naming the document, the app,
 who last edited it and when. All of it was already on the `documents` row each

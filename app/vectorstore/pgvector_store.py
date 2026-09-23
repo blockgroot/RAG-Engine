@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 from pgvector import Vector
 
@@ -21,6 +23,11 @@ from .base import (
     Viewer,
 )
 from .bm25_ranking import bm25_rank
+
+def _jsonb(value: dict | None) -> str | None:
+    """A JSONB parameter (bound as text and cast), or SQL NULL."""
+    return json.dumps(value) if value is not None else None
+
 
 def _to_db_vector(embedding: list[float] | np.ndarray) -> Vector:
     """Bind an embedding as a pgvector ``Vector`` value."""
@@ -461,6 +468,8 @@ class PgVectorStore(VectorStore):
         last_editor: str | None = None,
         is_public: bool = True,
         viewers: list[str] | None = None,
+        source_meta: dict | None = None,
+        editor_key: str | None = None,
     ) -> str:
         if len(chunks) != len(embeddings):
             raise ProviderError(
@@ -504,9 +513,9 @@ class PgVectorStore(VectorStore):
                 INSERT INTO documents (
                     org_id, title, source_uri, source_provider, source_external_id,
                     source_last_modified, workspace_id, tags, source_last_editor,
-                    doc_is_public, doc_viewers
+                    doc_is_public, doc_viewers, source_meta, source_editor_key
                 )
-                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid, %s, %s, %s, %s)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid, %s, %s, %s, %s, %s::jsonb, %s)
                 RETURNING id
                 """,
                 (
@@ -521,6 +530,8 @@ class PgVectorStore(VectorStore):
                     last_editor,
                     is_public,
                     _normalize_viewers(viewers),
+                    _jsonb(source_meta),
+                    editor_key,
                 ),
             ).fetchone()
             document_id = doc_row[0]
@@ -560,6 +571,8 @@ class PgVectorStore(VectorStore):
         last_editor: str | None = None,
         is_public: bool = True,
         viewers: list[str] | None = None,
+        source_meta: dict | None = None,
+        editor_key: str | None = None,
     ) -> str:
         """Upsert metadata-only row so empty pages are not forever "new"."""
         if not external_id:
@@ -595,9 +608,9 @@ class PgVectorStore(VectorStore):
                 INSERT INTO documents (
                     org_id, title, source_uri, source_provider, source_external_id,
                     source_last_modified, workspace_id, tags, source_last_editor,
-                    doc_is_public, doc_viewers
+                    doc_is_public, doc_viewers, source_meta, source_editor_key
                 )
-                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid, %s, %s, %s, %s)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid, %s, %s, %s, %s, %s::jsonb, %s)
                 RETURNING id
                 """,
                 (
@@ -612,6 +625,8 @@ class PgVectorStore(VectorStore):
                     last_editor,
                     is_public,
                     _normalize_viewers(viewers),
+                    _jsonb(source_meta),
+                    editor_key,
                 ),
             ).fetchone()
         return str(row[0])
@@ -648,6 +663,68 @@ class PgVectorStore(VectorStore):
                 rows,
             )
             return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else len(rows)
+
+    def list_source_documents_missing_meta(
+        self,
+        org_id: str,
+        *,
+        provider: str,
+        workspace_id: str | None = None,
+        limit: int = 25,
+    ) -> list[str]:
+        """External ids of stored documents whose ``source_meta`` was never captured."""
+        if limit <= 0:
+            return []
+        with get_connection(self._settings) as conn:
+            rows = conn.execute(
+                """
+                SELECT source_external_id FROM documents
+                WHERE org_id = %s::uuid
+                  AND source_provider = %s
+                  AND workspace_id IS NOT DISTINCT FROM %s::uuid
+                  AND source_external_id IS NOT NULL
+                  AND source_meta IS NULL
+                ORDER BY source_last_modified DESC NULLS LAST
+                LIMIT %s
+                """,
+                (org_id, provider, workspace_id, limit),
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    def set_source_document_meta(
+        self,
+        org_id: str,
+        *,
+        provider: str,
+        entries: list[tuple[str, dict | None, str | None]],
+        workspace_id: str | None = None,
+    ) -> int:
+        """Write ``source_meta``/``source_editor_key`` only — chunks untouched.
+
+        A document with nothing to capture is stored as ``{}`` rather than
+        left NULL, so the refresh does not pick the same row up every tick.
+        """
+        rows = [
+            (json.dumps(meta or {}), key, org_id, provider, workspace_id, external_id)
+            for external_id, meta, key in entries
+            if external_id
+        ]
+        if not rows:
+            return 0
+        with get_connection(self._settings) as conn:
+            cursor = conn.cursor()
+            cursor.executemany(
+                """
+                UPDATE documents
+                SET source_meta = %s::jsonb, source_editor_key = %s
+                WHERE org_id = %s::uuid
+                  AND source_provider = %s
+                  AND workspace_id IS NOT DISTINCT FROM %s::uuid
+                  AND source_external_id = %s
+                """,
+                rows,
+            )
+        return len(rows)
 
     def delete_source_documents(
         self,

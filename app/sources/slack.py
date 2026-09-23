@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import time
 from datetime import datetime, timezone
 
@@ -12,6 +13,7 @@ import httpx
 from ..config.settings import SlackSettings
 from ..core.exceptions import ConfigurationError, SourceError
 from .base import DocAccess, SourceAdapter, SourceDocument, SourceRef
+from .meta import build_meta, container, link, person
 from .slack_utils import channel_tag, list_channel_members, list_slack_channels
 
 logger = logging.getLogger(__name__)
@@ -25,6 +27,11 @@ _RETRYABLE_SLACK_ERRORS = frozenset({"ratelimited", "internal_error", "fatal_err
 # Upgrade: persist refs on the ingestion job row.
 _LISTING_CACHE_TTL_SECONDS = 180
 _LISTING_CACHE: dict[tuple, tuple[float, list[SourceRef]]] = {}
+
+
+#: `<@U123>` / `<@U123|ada>` and `<#C123>` / `<#C123|general>` in RAW text.
+_USER_MENTION = re.compile(r"<@([UW][A-Z0-9]+)(?:\|([^>]+))?>")
+_CHANNEL_MENTION = re.compile(r"<#([CG][A-Z0-9]+)(?:\|[^>]*)?>")
 
 
 def _plain_text(text: str) -> str:
@@ -114,6 +121,9 @@ class SlackAdapter(SourceAdapter):
         self._timeout = timeout
         self._settings = settings or SlackSettings.from_env()
         self._user_names: dict[str, str] = {}
+        #: Filled by `_display_name` from the `users.info` reply it already
+        #: fetches; never looked up on its own.
+        self._user_emails: dict[str, str] = {}
         #: Per-channel access, resolved at most ONCE per adapter. A sync lists
         #: many threads per channel and their audience is a property of the
         #: channel, so resolving per document would multiply the cost by the
@@ -290,6 +300,12 @@ class SlackAdapter(SourceAdapter):
                 or profile.get("name")
                 or user_id
             )
+            # Same response, no extra call: `users:read.email` is already
+            # required for private-channel ACLs, and the email is what links a
+            # Slack author to a Handbook account (Second Brain 1.1).
+            email = (profile.get("profile", {}).get("email") or "").strip().lower()
+            if email:
+                self._user_emails[user_id] = email
         except SourceError:
             name = user_id  # Best-effort: a bad lookup shouldn't fail the whole sync.
         self._user_names[user_id] = name
@@ -501,6 +517,56 @@ class SlackAdapter(SourceAdapter):
             # that channel ONLY -- everyone in the room can already scroll up
             # and read it, so a channel-scoped answer widens nothing.
             tags=[channel_tag(channel_id)],
+            meta=self._thread_meta(channel_id, messages),
+        )
+
+    def _thread_meta(self, channel_id: str, messages: list[dict]) -> dict | None:
+        """Authors, participants and mentions of one thread — no new calls.
+
+        Authors were already resolved by `_display_name` while the body was
+        built, so their names and emails come from its cache. A MENTIONED user
+        is recorded by id only (plus the label Slack sometimes inlines):
+        resolving each one would be a `users.info` per mention, the per-author
+        cost §5 already warns against. The id alone is a stable key.
+
+        Read from the RAW message text: `<@U…>`/`<#C…>` are the only place the
+        ids exist, and `_plain_text` rewrites them to bare names.
+        """
+        people = []
+        for index, message in enumerate(messages):
+            user_id = message.get("user")
+            if not user_id:
+                continue
+            people.append(
+                person(
+                    "slack",
+                    role="author" if index == 0 else "participant",
+                    external_id=user_id,
+                    email=self._user_emails.get(user_id),
+                    name=self._user_names.get(user_id),
+                )
+            )
+        links = []
+        for message in messages:
+            raw = message.get("text") or ""
+            for user_id, label in _USER_MENTION.findall(raw):
+                people.append(
+                    person(
+                        "slack",
+                        role="mentioned",
+                        external_id=user_id,
+                        email=self._user_emails.get(user_id),
+                        name=self._user_names.get(user_id) or label or None,
+                    )
+                )
+            for mentioned_channel in _CHANNEL_MENTION.findall(raw):
+                links.append(link("slack", f"channel:{mentioned_channel}"))
+        return build_meta(
+            people=people,
+            links=links,
+            containers=[
+                container("slack", "channel", channel_id, self._channel_label(channel_id))
+            ],
         )
 
     def get_last_modified(self, external_id: str) -> datetime | None:

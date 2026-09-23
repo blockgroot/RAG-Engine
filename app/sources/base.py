@@ -137,6 +137,12 @@ class SourceDocument:
     # adapter reports no sharing information — which for an ACL-capable
     # provider means the document is SKIPPED, never indexed readable.
     access: "DocAccess | None" = None
+    # People, links and containers the adapter saw while fetching (see
+    # ``sources.meta``). Built ONLY from payloads already in hand -- this field
+    # must never be the reason an adapter makes another call. ``None`` = the
+    # adapter captured nothing, which the graph reads as "no edges", not "none
+    # exist".
+    meta: dict | None = None
 
 
 class SourceAdapter(ABC):

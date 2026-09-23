@@ -1655,3 +1655,29 @@ class LLMPacingSettings:
                 or DEFAULT_LLM_PACING_MAX_WAIT_SECONDS
             ),
         )
+
+
+DEFAULT_GRAPH_META_REFRESH_BATCH = 25
+
+
+@dataclass(frozen=True)
+class GraphSettings:
+    """Second Brain knowledge-graph settings (docs/plans/2026-09-23-second-brain.md).
+
+    ``meta_refresh_batch`` bounds the metadata-only refresh each ingest job runs
+    for documents indexed before people/links were captured (1.1). An unchanged
+    document is never re-fetched, so without it those rows would stay invisible
+    to the graph forever; the bound is what keeps it from turning one sync into
+    a full re-fetch of the corpus. ``0`` switches the refresh off.
+    """
+
+    meta_refresh_batch: int = DEFAULT_GRAPH_META_REFRESH_BATCH
+
+    @classmethod
+    def from_env(cls) -> "GraphSettings":
+        raw = os.getenv("GRAPH_META_REFRESH_BATCH")
+        try:
+            batch = int(raw) if raw not in (None, "") else DEFAULT_GRAPH_META_REFRESH_BATCH
+        except ValueError:
+            batch = DEFAULT_GRAPH_META_REFRESH_BATCH
+        return cls(meta_refresh_batch=max(0, batch))

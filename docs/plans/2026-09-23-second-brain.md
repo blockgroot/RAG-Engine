@@ -273,6 +273,26 @@ email, display name, role), `links` (target provider + external id or URL),
 - **Done when:** adapter fakes (Slack's rejects unexpected URLs) prove no new
   calls; mentions survive into `meta`.
 
+**Status: done** (`app/sources/meta.py`, `tests/test_source_meta.py`).
+Differences from the sketch above, each for a reason:
+
+- Links are also read from the document BODY (`meta.extract_links`, in the
+  pipeline, so every adapter gets it): a Linear or PR URL sits in a Drive
+  doc's text as often as in a field. Only URL shapes that resolve to an id an
+  adapter stores are kept.
+- A MENTIONED Slack user and a Notion page's CREATOR are keyed by id with no
+  lookup — resolving each would be the per-person call §5 warns about.
+- A commit's `actor_key` is written only from a real login: `author` falls
+  back to the git display name, which must never become an identity.
+- `source_meta = {}` means "captured, nothing found"; NULL means "not captured
+  yet", which is what the refresh (`refresh_missing_meta`,
+  `GRAPH_META_REFRESH_BATCH=25` per job, `0` = off) looks for.
+- **Found and fixed on the way:** deferred enrichment (on by default) rewrote
+  every freshly synced row with only the run tags, so a restricted Drive file
+  came back SCOPE-PUBLIC, a Slack thread lost its channel tag and its editor.
+  It now writes the same access/tags/editor/meta as ingest and skips a
+  document whose sharing it cannot read.
+
 ### 1.2 Identity
 
 - Table `person_identities`, upserted by the builder from `source_meta.people`.

@@ -115,6 +115,20 @@ ALTER TABLE documents ADD COLUMN IF NOT EXISTS doc_viewers TEXT[];
 -- per candidate row inside the same WHERE clause that already pins org_id.
 CREATE INDEX IF NOT EXISTS idx_documents_viewers ON documents USING gin (doc_viewers);
 
+-- Second Brain 1.1: the people, links and containers an adapter saw while
+-- fetching (`sources.meta`), captured with ZERO extra API calls. The knowledge
+-- graph is rebuilt from these rows and never by re-calling a provider, so a
+-- field not stored here does not exist for it. NULL = nothing captured yet
+-- (every row written before this shipped, until the bounded metadata refresh
+-- in `ingestion.pipeline` reaches it).
+--
+-- `source_editor_key` is the IDENTITY behind `source_last_editor`
+-- (`slack:U123`, `email:ada@x.com`), never a display name: two people called
+-- Priya are two people. `source_last_editor` stays exactly as it was for
+-- provenance lines and charts.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_meta JSONB;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_editor_key TEXT;
+
 
 -- Chunks of a document + their embedding vector. Org-scoped (denormalized org_id
 -- so every retrieval query can filter by tenant without a join).
@@ -735,6 +749,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_activity_facts_org
 CREATE UNIQUE INDEX IF NOT EXISTS uq_activity_facts_space
     ON activity_facts (org_id, workspace_id, provider, kind, external_id)
     WHERE workspace_id IS NOT NULL AND external_id IS NOT NULL;
+
+-- The stable identity of `actor` (`github:<login>`, `slack:U123`), for the
+-- Second Brain graph. `actor` stays the display value charts group by; this
+-- is what lets the graph join a GitHub reviewer to the same person's Slack
+-- threads without ever matching on a name. NULL where the source gave none.
+ALTER TABLE activity_facts ADD COLUMN IF NOT EXISTS actor_key TEXT;
 
 -- A chart a member asked for and kept. Personal, scoped `(org_id, user_id)`
 -- like `schedulers` and unlike every other tenant table -- a pin is one
