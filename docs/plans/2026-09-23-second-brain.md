@@ -32,7 +32,7 @@ same retrieval path and the same fail-open posture.
    `documents`. A copy outlives a revocation.
 2. **One definition of "who may see what".** The graph, live tools and
    retrieval use the same `Viewer` (unrestricted / a person / public_only) and
-   the **same SQL predicate** as `_VIEWER_SQL` (`pgvector_store.py:37`).
+   the **same SQL predicate**, `security/visibility.py::visibility_predicate`.
 3. **Scope is storage, not a filter.** Every new row carries `org_id` +
    `workspace_id`. A walk never crosses a scope; a Slack DM *picks* one scope,
    it never blends two.
