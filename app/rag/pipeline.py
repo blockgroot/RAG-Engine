@@ -121,6 +121,7 @@ logger = logging.getLogger(__name__)
 # per-request timeout on `LLMProvider.generate` is the upgrade.
 _INTENT_TIMEOUT_SECONDS = 5.0
 _INTENT_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="query-intent")
+_TONE_GRACE_SECONDS = 1.0
 # Side calls that overlap the main generation (question tone).
 _AUX_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="rag-aux")
 
@@ -1608,7 +1609,12 @@ class RagPipeline:
             retry_mode, retry_text = _parse_tagged_mode(retry_raw)
             mode, text = retry_mode, retry_text
 
-        question_tone = tone_future.result()
+        # Tone only decorates (an empathy opener), so it may cost at most a
+        # second past the answer; a slower classifier reads as "no opener".
+        try:
+            question_tone = tone_future.result(timeout=_TONE_GRACE_SECONDS)
+        except FutureTimeout:
+            question_tone = None
         opener: str | None = None
         if question_tone == "supportive":
             opener = self._empathy_opener(

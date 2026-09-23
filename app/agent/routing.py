@@ -40,14 +40,18 @@ refusal, never a wrong answer from the wrong source.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 
 from ..config.settings import EmbeddingSettings, RagSettings
 from .orchestration import DIRECT_AGENT_KEYS, INSIGHTS_KEY, POLICY_KEY, WORKSPACE_KEY
+
+_ROUTING_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="routing-probe")
 
 logger = logging.getLogger(__name__)
 
@@ -688,6 +692,18 @@ def choose_agent(
     if not connected:
         return RoutingDecision(default_key, "no-sources")
 
+    embedded = connected & set(EMBEDDED_PROVIDERS)
+    # The cosine probe (an embedding + one query) runs WHILE the chart
+    # classifier's model call is in flight rather than after it -- the two are
+    # independent, and serially they were the whole of routing's latency. A
+    # chart or named-repo answer simply discards it.
+    probe = None
+    if embedded and not (len(embedded) == 1 and "github" not in connected):
+        probe = _ROUTING_POOL.submit(
+            contextvars.copy_context().run,
+            _probe_scores, question, org_id, workspace_id, connected,
+        )
+
     visual = _try_insights_route(question, connected, org_id, workspace_id)
     if visual is not None:
         return visual
@@ -698,11 +714,13 @@ def choose_agent(
             logger.info("Agent routing: %r names repo %s", question[:60], named)
             return RoutingDecision("github", "repo-named")
 
-    embedded = connected & set(EMBEDDED_PROVIDERS)
     if len(embedded) == 1 and "github" not in connected:
         return RoutingDecision(next(iter(embedded)), "only-source")
 
-    scores = _probe_scores(question, org_id, workspace_id, connected)
+    scores = (
+        probe.result() if probe is not None
+        else _probe_scores(question, org_id, workspace_id, connected)
+    )
     threshold = RagSettings.from_env().similarity_threshold
     best = max(scores, key=scores.get) if scores else None
 

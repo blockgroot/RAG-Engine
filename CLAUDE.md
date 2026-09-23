@@ -1651,7 +1651,15 @@ frontend/ Next.js 15 portal · tests/ pytest
   chunks). Already-indexed echo is NOT removed by a sync when it exceeds the 50%
   `_sanitize_removals` guard — purge it by hand.
 - **Question tone runs ALONGSIDE generation** (`_AUX_POOL` in `_generate`), not
-  before it — the grounded prompt never used it, only the empathy opener after.
+  before it — the grounded prompt never used it, only the empathy opener after —
+  and may cost at most `_TONE_GRACE_SECONDS`=1 past the answer. The routing cosine
+  probe likewise runs WHILE `classify_question` is in flight (`_ROUTING_POOL`).
+- **Latency is the MODEL, measured**: the same call took 3.8-12.5s on free
+  Gemini and ~0.55s on Groq `openai/gpt-oss-20b`; a warm request's non-LLM work
+  is ~2s (two remote embeds, retrieval, rerank). Count serial model calls first.
+- **Prompt rule 5 asks for the follow-up details** (owner, priority, latest
+  progress; who decided and why). "One or two plain sentences" produced "The
+  status of SYV-5 is In Progress." with the assignee and priority in CONTEXT.
 - **`SLACK_MIN_THREAD_CHARS` was 40, now 15.** At 40 a real one-liner ("Deploy
   is frozen till Monday", 28 chars) was dropped from ingestion *and* from
   change detection, so the Sources check truthfully said "up to date" while the
