@@ -268,7 +268,8 @@ grounded generate → `RagResult`.
   threshold can't separate "answers" from "on-topic but doesn't" (§5).
 - **Retrieval** = contextual chunks + hybrid vector/BM25 fused with RRF
   (k=60, rank-based so no score normalization) + cross-encoder rerank of a
-  30-candidate pool. **The gate is unchanged** — `gate_score` is still the
+  30-candidate pool, + a recency leg when the question asks about recent
+  activity (§5). **The gate is unchanged** — `gate_score` is still the
   best cosine, so these only reorder.
 - **Memory**: a follow-up is rewritten standalone *before* retrieval, leaving
   the gate/prompt path untouched. The summary folds one turn at a time, off
@@ -1697,10 +1698,30 @@ frontend/ Next.js 15 portal · tests/ pytest
     _answer` calls `pipeline.answer` directly when `tags` are set, bypassing
     the agent, and recap only fires on an UNGROUNDED answer — the one
     condition an aggregate question never meets.
-- **Retrieval has no recency preference** — "what was discussed recently?"
-  ranks by cosine only, so an older, wordier thread outranks yesterday's
-  message and the answer *looks* stale even when the new content is indexed.
-  `DateRange` filtering exists but nothing infers recency intent yet.
+- **Breadth AND time are read from the question by ONE model call**
+  (`rag/query_intent.classify_query_intent` → `pipeline._classify_intent`).
+  Cosine alone let an older, wordier thread outrank yesterday's message, and a
+  word list cannot read intent: "the latest leave policy" wants a policy, "the
+  latest on deploys" wants what is new, and "since the offsite" has no time word
+  at all. The model returns closed labels (`specific|overview`,
+  `none|recent|range`) plus at most two dates; everything is VALIDATED — an
+  unknown label reads as `specific`/`none`, a future, inverted or unparseable
+  window degrades to a boost, never a wrong filter. `range` is a hard `DateRange`
+  (+1 day slack each side; an end of today is open) that WIDENS instead of
+  refusing when empty and never overrides a caller's range; `recent` only BOOSTS
+  (one extra vector leg over `RETRIEVAL_RECENCY_DEFAULT_DAYS`=30, RRF, then the
+  reranked pool fused with newest-first). "Summarise everything from the start"
+  is `overview` + `none`: the whole scope, no date narrowing. The same intent
+  feeds `_whole_scope`, so a scoped question costs ONE call as before; company
+  Ask now pays one small call; no call at all when nothing downstream uses it.
+  A dead classifier or no budget falls back to `rag/recency_intent.py` — a
+  narrow regex FLOOR, never consulted while the model answers (the routing
+  keyword-floor posture). `gate_score` untouched; reuse skipped on a time ask.
+  `RETRIEVAL_RECENCY_ENABLED=false` drops the time half
+  (`tests/test_query_intent.py`, `tests/test_recency_retrieval.py`).
+  **Known gap:** an overview over budget (120 chunks / 60k chars) keeps the
+  NEWEST and drops the oldest, and only LOGS it — the model is not told its
+  context is partial, despite the comment in `_whole_scope` saying otherwise.
 - **A content-destroying scrub is invisible until you measure it.** A 2,004-char
   Slack post reached the LLM as 196 chars because `\bSYSTEM\b` matched the word
   "system"; the report summarised a detailed post as one sentence and looked
