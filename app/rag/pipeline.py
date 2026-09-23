@@ -67,6 +67,7 @@ from .audit import parse_audit_verdict
 from .retrieval import HybridRetriever, RetrievalResult
 from .context_assemble import assemble_context_texts, describe_hit
 from .decompose import looks_compound, parse_sub_questions
+from .recency_intent import RecencyIntent, detect_recency
 from .scope_intent import OVERVIEW, classify_scope_intent
 from .query_cache import QueryAnswerCache
 from .request_budget import RequestBudget
@@ -595,9 +596,14 @@ class RagPipeline:
         sub_questions: list[str] = [retrieval_question]
         question_decomposed = False
 
+        recency = self._detect_recency(question)
+        retrieval_range = date_range
+
+        # A recency ask must not reuse the previous turn's chunks: they were
+        # chosen without regard to date, which is the defect being fixed.
         reused = (
             None
-            if date_range is not None or tags is not None
+            if date_range is not None or tags is not None or recency is not None
             else self._try_reuse(retrieval_question, org_id, query_vec, conversation_id)
         )
         if reused is not None:
@@ -614,7 +620,7 @@ class RagPipeline:
                 ]
             else:
                 sub_questions = [retrieval_question]
-            hits, top_score = self._retrieve_for_subquestions(
+            hits, top_score, retrieval_range = self._retrieve_in_window(
                 org_id,
                 question,
                 sub_questions,
@@ -623,6 +629,7 @@ class RagPipeline:
                 tags=tags,
                 viewer=viewer,
                 known_vectors={retrieval_question: query_vec},
+                recency=recency,
             )
 
         top_score_before = top_score
@@ -667,9 +674,10 @@ class RagPipeline:
                     budget=budget,
                     conversation_id=conversation_id,
                     workspace_id=workspace_id,
-                    date_range=date_range,
+                    date_range=retrieval_range,
                     tags=tags,
                     viewer=viewer,
+                    recency=recency,
                 )
                 recovery_used = True
                 recovery_reason = RECOVERY_REASON_GATE_MISS
@@ -736,9 +744,10 @@ class RagPipeline:
                     budget=budget,
                     conversation_id=conversation_id,
                     workspace_id=workspace_id,
-                    date_range=date_range,
+                    date_range=retrieval_range,
                     tags=tags,
                     viewer=viewer,
+                    recency=recency,
                 )
             recovery_used = True
             recovery_reason = RECOVERY_REASON_INSUFFICIENT_EVIDENCE
@@ -831,6 +840,82 @@ class RagPipeline:
             result.answer, self._settings.fallback_response
         )
 
+    def _retrieve_in_window(
+        self,
+        org_id: str,
+        question: str,
+        sub_questions: list[str],
+        *,
+        workspace_id: str | None,
+        date_range: DateRange | None,
+        tags: list[str] | None,
+        viewer: Viewer | None,
+        known_vectors: dict[str, list[float]],
+        recency: RecencyIntent | None,
+    ) -> tuple[list[RetrievedChunk], float | None, DateRange | None]:
+        """First retrieval, inside the question's own time window when it names one.
+
+        "What changed this week?" -- an explicit window becomes a hard date
+        filter exactly like a caller's ``DateRange``, and never overrides one;
+        a vague "recently" only boosts inside the retriever. Returns the range
+        actually used, so recovery re-retrieves inside the same window.
+
+        When the inferred window matches NOTHING it widens to the caller's own
+        range and keeps the newest-first boost, rather than refusing: every
+        chunk still carries its date into the prompt, so the model can say
+        "nothing this week; the latest was ..." instead of the bare fallback.
+        """
+        window = date_range
+        if recency is not None and recency.window is not None and date_range is None:
+            window = recency.window
+        hits, top_score = self._retrieve_for_subquestions(
+            org_id,
+            question,
+            sub_questions,
+            workspace_id=workspace_id,
+            date_range=window,
+            tags=tags,
+            viewer=viewer,
+            known_vectors=known_vectors,
+            recency=recency,
+        )
+        if hits or window is date_range:
+            return hits, top_score, window
+        logger.info("Recency window %r matched nothing; widening", recency.phrase)
+        hits, top_score = self._retrieve_for_subquestions(
+            org_id,
+            question,
+            sub_questions,
+            workspace_id=workspace_id,
+            date_range=date_range,
+            tags=tags,
+            viewer=viewer,
+            known_vectors=known_vectors,
+            recency=recency,
+        )
+        return hits, top_score, date_range
+
+    def _detect_recency(self, question: str) -> RecencyIntent | None:
+        """The question's recency intent, when the retriever can act on it.
+
+        Deterministic and free (no LLM call), and still wrapped: a boost is an
+        improvement, never a reason to lose an answer.
+        """
+        if self._retriever is None or not self._retriever.recency_enabled:
+            return None
+        try:
+            intent = detect_recency(question)
+        except Exception:  # noqa: BLE001 - a boost must never cost an answer
+            logger.warning("recency detection failed; ranking as usual", exc_info=True)
+            return None
+        if intent is not None:
+            logger.info(
+                "Recency intent %r (%s)",
+                intent.phrase,
+                "hard window" if intent.window is not None else "boost only",
+            )
+        return intent
+
     def _whole_scope(
         self,
         org_id: str,
@@ -840,6 +925,7 @@ class RagPipeline:
         workspace_id: str | None,
         tags: list[str] | None,
         viewer: Viewer | None,
+        date_range: DateRange | None = None,
     ) -> tuple[list[RetrievedChunk], float | None] | None:
         """Breadth retrieval for a question that asks about the corpus AS A WHOLE.
 
@@ -857,6 +943,9 @@ class RagPipeline:
         ``None`` means "rank instead", and every failure returns it: this is an
         improvement on a narrow read, never a correctness guarantee, so nothing
         here may cost an answer.
+
+        ``date_range`` narrows "the whole corpus" to a period, so "summarise
+        this week's discussion" reads this week in full rather than everything.
         """
         max_chunks = self._settings.scope_whole_max_chunks
         if max_chunks <= 0:
@@ -886,6 +975,7 @@ class RagPipeline:
                 top_k=max_chunks + 1,
                 workspace_id=workspace_id,
                 source_provider=self._source_provider,
+                date_range=date_range,
                 tags=tags,
                 viewer=viewer,
             )
@@ -934,10 +1024,12 @@ class RagPipeline:
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
         viewer: Viewer | None = None,
+        recency: RecencyIntent | None = None,
     ) -> tuple[list[RetrievedChunk], float | None]:
         whole = self._whole_scope(
             org_id, query_text, query_vec,
             workspace_id=workspace_id, tags=tags, viewer=viewer,
+            date_range=date_range,
         )
         if whole is not None:
             return whole
@@ -950,6 +1042,7 @@ class RagPipeline:
                 date_range=date_range,
                 tags=tags,
                 viewer=viewer,
+                recency=recency,
             )
             return retrieval.hits, retrieval.gate_score
         hits = self._store.query(
@@ -1002,6 +1095,7 @@ class RagPipeline:
         tags: list[str] | None = None,
         viewer: Viewer | None = None,
         known_vectors: dict[str, list[float]] | None = None,
+        recency: RecencyIntent | None = None,
     ) -> tuple[list[RetrievedChunk], float | None]:
         """Retrieve for one or more sub-questions."""
         known = known_vectors or {}
@@ -1019,6 +1113,7 @@ class RagPipeline:
                 date_range=date_range,
                 tags=tags,
                 viewer=viewer,
+                recency=recency,
             )
 
         missing = [s for s in sub_questions if s not in known]
@@ -1040,6 +1135,7 @@ class RagPipeline:
                 date_range=date_range,
                 tags=tags,
                 viewer=viewer,
+                recency=recency,
             )
             return retrieval.hits, retrieval.gate_score
 
@@ -1529,6 +1625,7 @@ class RagPipeline:
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
         viewer: Viewer | None = None,
+        recency: RecencyIntent | None = None,
     ) -> _RecoveryAttempt:
         """One bounded recovery: expand retrieval expressions → re-retrieve → fuse.
 
@@ -1569,6 +1666,7 @@ class RagPipeline:
                     date_range=date_range,
                     tags=tags,
                     viewer=viewer,
+                    recency=recency,
                 )
             except Exception:
                 continue

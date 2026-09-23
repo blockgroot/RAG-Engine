@@ -268,7 +268,8 @@ grounded generate → `RagResult`.
   threshold can't separate "answers" from "on-topic but doesn't" (§5).
 - **Retrieval** = contextual chunks + hybrid vector/BM25 fused with RRF
   (k=60, rank-based so no score normalization) + cross-encoder rerank of a
-  30-candidate pool. **The gate is unchanged** — `gate_score` is still the
+  30-candidate pool, + a recency leg when the question asks about recent
+  activity (§5). **The gate is unchanged** — `gate_score` is still the
   best cosine, so these only reorder.
 - **Memory**: a follow-up is rewritten standalone *before* retrieval, leaving
   the gate/prompt path untouched. The summary folds one turn at a time, off
@@ -1697,10 +1698,20 @@ frontend/ Next.js 15 portal · tests/ pytest
     _answer` calls `pipeline.answer` directly when `tags` are set, bypassing
     the agent, and recap only fires on an UNGROUNDED answer — the one
     condition an aggregate question never meets.
-- **Retrieval has no recency preference** — "what was discussed recently?"
-  ranks by cosine only, so an older, wordier thread outranks yesterday's
-  message and the answer *looks* stale even when the new content is indexed.
-  `DateRange` filtering exists but nothing infers recency intent yet.
+- **Recency is inferred from the QUESTION, deterministically** (`rag/recency_intent.py`
+  → `HybridRetriever(recency=)` + `pipeline._retrieve_in_window`). Cosine alone
+  let an older, wordier thread outrank yesterday's message. A regex, not a
+  classifier: time expressions are a closed grammar (unlike "summarise"), so it
+  costs no LLM call on a 15 rpm budget. Bare "new"/"last" and "last day"/"last
+  week OF" never trigger. An EXPLICIT window ("this week", "past 3 days") is a
+  hard `DateRange` (lenient: +1 day, "last week" = 2 weeks, since the asker's
+  timezone is unknown) that WIDENS instead of refusing when empty and never
+  overrides a caller's range; a VAGUE ask ("recently", "latest") only BOOSTS —
+  one extra vector leg over `RETRIEVAL_RECENCY_DEFAULT_DAYS` (30) fused by RRF,
+  then the reranked pool fused with newest-first — because "the latest leave
+  policy" must still find a year-old policy. `gate_score` is untouched, reuse is
+  skipped on a recency ask, and `_whole_scope` now honours the window.
+  `RETRIEVAL_RECENCY_ENABLED=false` is the switch (`tests/test_recency_retrieval.py`).
 - **A content-destroying scrub is invisible until you measure it.** A 2,004-char
   Slack post reached the LLM as 196 chars because `\bSYSTEM\b` matched the word
   "system"; the report summarised a detailed post as one sentence and looked
