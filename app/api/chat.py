@@ -51,6 +51,7 @@ from ..llm.routed import answering_model, selected_model, use_model
 from ..db.connection import get_connection
 from ..feedback import record_gap
 from ..security.rate_limit import check_rate_limit
+from ..security.visibility import visibility_predicate
 from ..workspaces import assert_member
 from .deps import (
     SessionClaims,
@@ -487,7 +488,7 @@ def _slack_channel_names_for_scope(
 # `acl` is REQUIRED and an empty list means "scope-public only", never
 # "everything": both call sites are member-facing, so there is no correct
 # unrestricted default to offer them.
-_TITLE_ACCESS_SQL = "AND (doc_is_public OR doc_viewers && %s::text[]) "
+_TITLE_ACCESS_SQL = "AND " + visibility_predicate(alias=None) + " "
 
 
 def _document_titles_for_scope(

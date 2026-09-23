@@ -8,6 +8,7 @@ from pgvector import Vector
 from ..config.settings import DatabaseSettings
 from ..core.exceptions import EmbeddingProviderError, ProviderError
 from ..db.connection import get_connection
+from ..security.visibility import normalize_viewers, viewer_clause, visibility_predicate
 from datetime import datetime
 
 from .base import (
@@ -29,38 +30,11 @@ def _to_db_vector(embedding: list[float] | np.ndarray) -> Vector:
     return Vector(arr.tolist())
 
 
-# The one place the document-level access predicate is spelled. Both retrieval
-# queries and `restricted_match` splice THIS fragment, so the read side cannot
-# drift from itself: a filter written out twice is a filter that is wrong in
-# one of the two places. The ACL array is a BOUND parameter, never formatted
-# in -- an entry is a user-supplied email.
-_VIEWER_SQL = "({alias}.doc_is_public OR {alias}.doc_viewers && %s::text[])"
-
-
-def _normalize_viewers(viewers: list[str] | None) -> list[str] | None:
-    """Lowercase, de-duplicate and drop blanks -- the write side of ``Viewer.acl``.
-
-    Both sides must agree on spelling or a real grant silently stops matching,
-    which fails CLOSED (the person is locked out) rather than open. That is the
-    safe direction, and also the one nobody reports as a security bug -- so it
-    is normalized in exactly one place.
-    """
-    if not viewers:
-        return None
-    seen = {entry.strip().lower() for entry in viewers if entry and entry.strip()}
-    return sorted(seen) or None
-
-
-def _viewer_clause(viewer: "Viewer | None", alias: str = "d") -> tuple[str, list[list[str]]]:
-    """Return ``(sql_fragment, params)`` for ``viewer``.
-
-    An unrestricted viewer yields ``("", [])`` -- the literal ABSENCE of a
-    clause, not a clause that happens to match everything, so every read that
-    predates document-level access is byte-identical at the SQL level.
-    """
-    if viewer is None or viewer.is_unrestricted:
-        return "", []
-    return " AND " + _VIEWER_SQL.format(alias=alias), [viewer.acl()]
+# The access predicate and its two helpers live in `security/visibility.py`,
+# the one place they are spelled; these names are kept so existing callers and
+# tests read unchanged.
+_normalize_viewers = normalize_viewers
+_viewer_clause = viewer_clause
 
 
 class PgVectorStore(VectorStore):
@@ -400,7 +374,7 @@ class PgVectorStore(VectorStore):
     ) -> RestrictedMatch | None:
         """Best-scoring chunk in scope that ``viewer`` may NOT read, if any.
 
-        The predicate is the exact NEGATION of `_VIEWER_SQL`, so "withheld"
+        The predicate is the exact NEGATION of `visibility_predicate`, so "withheld"
         can only ever mean "what the retrieval filter removed" -- the two
         cannot disagree about a document. Returns the provider and the score
         and nothing else; the content, title and id of a restricted document
@@ -422,7 +396,7 @@ class PgVectorStore(VectorStore):
                 WHERE c.org_id = %s::uuid
                   AND c.workspace_id IS NOT DISTINCT FROM %s::uuid
                   AND (%s::text IS NULL OR d.source_provider = %s::text)
-                  AND NOT {_VIEWER_SQL.format(alias="d")}
+                  AND NOT {visibility_predicate("d")}
                   AND 1 - (c.embedding <=> %s) >= %s
                 ORDER BY c.embedding <=> %s
                 LIMIT 1

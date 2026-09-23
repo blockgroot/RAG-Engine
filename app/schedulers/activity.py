@@ -265,11 +265,9 @@ def fetch_indexed_activity(
 
     from ..db.connection import get_connection
 
-    viewer_sql = ""
-    viewer_params: list = []
-    if viewer is not None and not viewer.is_unrestricted:
-        viewer_sql = "AND (d.doc_is_public OR d.doc_viewers && %s::text[])"
-        viewer_params = [viewer.acl()]
+    from ..security.visibility import viewer_clause
+
+    viewer_sql, viewer_params = viewer_clause(viewer, alias="d")
 
     with get_connection() as conn:
         rows = conn.execute(
