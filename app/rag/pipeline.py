@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import re
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field, replace
 
 import numpy as np
@@ -110,6 +113,17 @@ _MODE_TAG_RE = re.compile(r"^\s*MODE:\s*([ABC])\s*\n+(.*)", re.IGNORECASE | re.D
 
 
 logger = logging.getLogger(__name__)
+
+# The intent call sits in front of retrieval, so its latency is the answer's.
+# Measured on the free Gemini endpoint the same 80-token call took 2.6s-25s;
+# past this cap the deterministic floor answers instead.
+# ponytail: a timed-out call still occupies a worker until the LLM timeout; a
+# per-request timeout on `LLMProvider.generate` is the upgrade.
+_INTENT_TIMEOUT_SECONDS = 5.0
+_INTENT_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="query-intent")
+# Side calls that overlap the main generation (question tone).
+_AUX_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="rag-aux")
+
 
 def _read_order(hit) -> tuple[float, str, int]:
     """Oldest first, then stable within a document.
@@ -914,9 +928,12 @@ class RagPipeline:
 
         Breadth only matters inside a scoped corpus (`_whole_scope`), time only
         when the retriever can act on it; if neither applies the call is not
-        made at all. With no budget left the deterministic floor answers
-        instead of the model. Never raises: intent improves an answer, it must
-        never be the reason one is lost.
+        made at all. The MODEL is asked only when breadth is in play -- company
+        Ask needs time alone, and the deterministic floor reads the common
+        phrasings for free, where a model call there added 3-25s to every
+        question. It is also capped at `_INTENT_TIMEOUT_SECONDS`, and with no
+        budget left the floor answers. Never raises: intent improves an
+        answer, it must never be the reason one is lost.
         """
         need_time = self._retriever is not None and self._retriever.recency_enabled
         need_breadth = (
@@ -924,9 +941,24 @@ class RagPipeline:
         ) and self._settings.scope_whole_max_chunks > 0
         if not (need_time or need_breadth):
             return None
-        use_model = budget is None or budget.can_spend(self._budget_settings.min_stage_seconds)
+        use_model = need_breadth and (
+            budget is None or budget.can_spend(self._budget_settings.min_stage_seconds)
+        )
         try:
-            intent = classify_query_intent(question, llm=self._llm, use_model=use_model)
+            intent = None
+            if use_model:
+                # copy_context: the per-request model choice is a ContextVar,
+                # which a worker thread would not otherwise see.
+                future = _INTENT_POOL.submit(
+                    contextvars.copy_context().run,
+                    classify_query_intent, question, llm=self._llm,
+                )
+                try:
+                    intent = future.result(timeout=_INTENT_TIMEOUT_SECONDS)
+                except FutureTimeout:
+                    logger.info("query intent exceeded %ss; using the floor", _INTENT_TIMEOUT_SECONDS)
+            if intent is None:
+                intent = classify_query_intent(question, llm=self._llm, use_model=False)
         except Exception:  # noqa: BLE001
             logger.warning("query intent failed; ranking as usual", exc_info=True)
             return None
@@ -1525,20 +1557,17 @@ class RagPipeline:
         if extra_contexts:
             contexts = list(extra_contexts) + contexts
         tone_source = user_question or question
-        question_tone = self._classify_question_tone(
+        # Tone runs ALONGSIDE generation, not in front of it: the grounded
+        # prompt does not use it, only the (rare) empathy opener composed
+        # afterwards does -- and serially it added 2-10s to every answer.
+        tone_future = _AUX_POOL.submit(
+            contextvars.copy_context().run,
+            self._classify_question_tone,
             tone_source,
             org_id=org_id,
             conversation_id=conversation_id,
             budget=budget,
         )
-        opener: str | None = None
-        if question_tone == "supportive":
-            opener = self._empathy_opener(
-                tone_source,
-                org_id=org_id,
-                conversation_id=conversation_id,
-                budget=budget,
-            )
 
         prompt = build_grounded_prompt(
             question=question,
@@ -1578,6 +1607,16 @@ class RagPipeline:
             tone_retry_used = True
             retry_mode, retry_text = _parse_tagged_mode(retry_raw)
             mode, text = retry_mode, retry_text
+
+        question_tone = tone_future.result()
+        opener: str | None = None
+        if question_tone == "supportive":
+            opener = self._empathy_opener(
+                tone_source,
+                org_id=org_id,
+                conversation_id=conversation_id,
+                budget=budget,
+            )
 
         answered = not self._is_refusal(text, self._settings.fallback_response)
         answer = text if answered else self._settings.fallback_response

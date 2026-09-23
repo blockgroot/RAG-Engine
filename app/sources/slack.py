@@ -25,6 +25,7 @@ _RETRYABLE_SLACK_ERRORS = frozenset({"ratelimited", "internal_error", "fatal_err
 # Upgrade: persist refs on the ingestion job row.
 _LISTING_CACHE_TTL_SECONDS = 180
 _LISTING_CACHE: dict[tuple, tuple[float, list[SourceRef]]] = {}
+_UNRESOLVED = object()
 
 
 def _plain_text(text: str) -> str:
@@ -120,6 +121,38 @@ class SlackAdapter(SourceAdapter):
         #: corpus size for an answer that cannot differ.
         self._channel_access: dict[str, DocAccess | None] = {}
         self._channels_meta: dict[str, dict] | None = None
+        self._bot_user: object = _UNRESOLVED
+
+    def _bot_user_id(self) -> str | None:
+        """Our own bot's user id (``auth.test``), resolved at most once, lazily.
+
+        Only asked for when a message actually @mentions someone, so a channel
+        nobody asks the bot in costs no extra call. A failure reads as "no bot
+        known": the thread is indexed as before rather than failing the sync.
+        """
+        if self._bot_user is _UNRESOLVED:
+            try:
+                self._bot_user = self._get("auth.test", {}).get("user_id") or None
+            except SourceError:
+                self._bot_user = None
+        return self._bot_user  # type: ignore[return-value]
+
+    def _is_bot_traffic(self, message: dict, bot_users: set[str] | None = None) -> bool:
+        """A message the BOT posted, or a question addressed TO it.
+
+        Neither is discussion. Indexing them made the channel's own Q&A the
+        corpus: the bot's summaries were re-ingested, then summarised again,
+        so "what was discussed yesterday?" answered with its own old answers.
+        """
+        if message.get("bot_id"):
+            return True
+        text = message.get("text") or ""
+        if "<@" not in text:
+            return False
+        if bot_users is None:
+            bot = self._bot_user_id()
+            bot_users = {bot} if bot else set()
+        return any(f"<@{u}>" in text for u in bot_users)
 
     def _channel_meta(self) -> dict[str, dict]:
         """`conversations.list` ONCE per adapter, not once per channel.
@@ -323,7 +356,7 @@ class SlackAdapter(SourceAdapter):
                 data = self._get("conversations.history", params)
                 for message in data.get("messages", []):
                     ts = message.get("ts")
-                    if not ts or message.get("subtype"):
+                    if not ts or message.get("subtype") or self._is_bot_traffic(message):
                         continue
                     reply_count = message.get("reply_count", 0)
                     text = (message.get("text") or "").strip()
@@ -414,6 +447,8 @@ class SlackAdapter(SourceAdapter):
                     # are noise in a report, not activity.
                     if not ts or message.get("subtype") or not text:
                         continue
+                    if self._is_bot_traffic(message):
+                        continue
                     if kept >= per_channel:
                         truncated.append(self._channel_label(channel_id))
                         break
@@ -470,10 +505,16 @@ class SlackAdapter(SourceAdapter):
 
         root_text = (messages[0].get("text") or "").strip()
         channel = self._channel_label(channel_id)
+        # The bot's replies name its own user id, so the thread identifies it
+        # without an extra call; one already resolved by the listing is added.
+        bot_users = {m["user"] for m in messages if m.get("bot_id") and m.get("user")}
+        if isinstance(self._bot_user, str):
+            bot_users.add(self._bot_user)
+        human = [m for m in messages if not self._is_bot_traffic(m, bot_users)]
         lines = [f"Channel: #{channel}"]
         if truncated:
             lines.append(_TRUNCATION_MARKER.strip())
-        for message in messages:
+        for message in human:
             ts = message.get("ts")
             when = _ts_to_dt(ts)
             stamp = when.strftime("%H:%M") if when else "??:??"
@@ -481,7 +522,9 @@ class SlackAdapter(SourceAdapter):
             text = (message.get("text") or "").strip()
             lines.append(f"[{stamp}] {name}: {text}")
 
-        content = "\n".join(lines)
+        # Nothing but bot traffic: an EMPTY document, so ingestion acknowledges
+        # it (no chunks) instead of indexing a bare channel header.
+        content = "\n".join(lines) if human else ""
         last_modified = _ts_to_dt(messages[-1].get("ts"))
         title = self._thread_title(channel_id, root_text)
 

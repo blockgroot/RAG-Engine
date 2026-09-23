@@ -1643,6 +1643,15 @@ frontend/ Next.js 15 portal · tests/ pytest
 - **A successful ingest clears that org's `query_answer_cache`** (`worker.py`).
   Without it new content is invisible for the 300s TTL — the same question
   returns its pre-sync answer, which reads as "the sync did nothing".
+- **The bot's own traffic is NOT indexed** (`slack._is_bot_traffic`): a
+  `bot_id` message, or one that @mentions our bot (`auth.test`, lazily, once per
+  adapter, only when a message mentions someone). #rag-updates was 18 of 29
+  threads bot Q&A, so "what was discussed yesterday?" summarised its own old
+  summaries. A thread of only bot traffic is an EMPTY document (acknowledged, no
+  chunks). Already-indexed echo is NOT removed by a sync when it exceeds the 50%
+  `_sanitize_removals` guard — purge it by hand.
+- **Question tone runs ALONGSIDE generation** (`_AUX_POOL` in `_generate`), not
+  before it — the grounded prompt never used it, only the empathy opener after.
 - **`SLACK_MIN_THREAD_CHARS` was 40, now 15.** At 40 a real one-liner ("Deploy
   is frozen till Monday", 28 chars) was dropped from ingestion *and* from
   change detection, so the Sources check truthfully said "up to date" while the
@@ -1710,10 +1719,17 @@ frontend/ Next.js 15 portal · tests/ pytest
   (+1 day slack each side; an end of today is open) that WIDENS instead of
   refusing when empty and never overrides a caller's range; `recent` only BOOSTS
   (one extra vector leg over `RETRIEVAL_RECENCY_DEFAULT_DAYS`=30, RRF, then the
-  reranked pool fused with newest-first). "Summarise everything from the start"
+  reranked pool fused with newest-first). **Newest-first fusion is for `recent`
+  ONLY and never displaces the top hit** — applied inside a `range` it pushed an
+  exact-title Linear match out of top_k because its batch-ingested siblings were
+  seconds newer, and the answer refused at gate 0.71. "Summarise everything from the start"
   is `overview` + `none`: the whole scope, no date narrowing. The same intent
-  feeds `_whole_scope`, so a scoped question costs ONE call as before; company
-  Ask now pays one small call; no call at all when nothing downstream uses it.
+  feeds `_whole_scope`, so a scoped question costs ONE call as before, capped at
+  `_INTENT_TIMEOUT_SECONDS`=5 (the free Gemini endpoint measured 2.6-25s for the
+  SAME 80-token call). **Company Ask makes NO model call** — only time matters
+  there and the floor reads it for free; the model call there was 20s of a 36s
+  answer. A date inside a NAME ("SYV-6 - [incident] 19 Aug: ...") is not a
+  period (said in the prompt): read as `range`, it hard-filtered on the title.
   A dead classifier or no budget falls back to `rag/recency_intent.py` — a
   narrow regex FLOOR, never consulted while the model answers (the routing
   keyword-floor posture). `gate_score` untouched; reuse skipped on a time ask.

@@ -155,17 +155,25 @@ class HybridRetriever:
         gate_score = max((c.score for c in candidates), default=None)
 
         pool_candidates = candidates[:pool]
-        # With a recency ask the reranker orders the WHOLE pool, so the
-        # newest-first fusion below chooses from every candidate rather than
-        # only the reranker's top_k -- otherwise a recent chunk it ranked sixth
-        # could never be promoted.
-        keep = len(pool_candidates) if recency is not None else top_k
+        # Newest-first fusion is for a VAGUE recency ask only. An explicit
+        # window is already a hard date filter, so inside it relevance decides:
+        # fusing by date there demoted an exact-title match out of the top_k
+        # because its batch-ingested siblings were a few seconds newer.
+        boost = recency is not None and recency.window is None
+        # With a boost the reranker orders the WHOLE pool, so the newest-first
+        # fusion chooses from every candidate rather than only the reranker's
+        # top_k -- otherwise a recent chunk it ranked sixth could never be
+        # promoted.
+        keep = len(pool_candidates) if boost else top_k
         if self._reranker is not None and self._settings.rerank_enabled:
             ordered = self._reranker.rerank(rerank_q, pool_candidates, keep)
         else:
             ordered = pool_candidates[:keep]
-        if recency is not None:
-            ordered = self._rrf_fuse([ordered, _newest_first(ordered)], self._settings.rrf_k)
+        if boost and ordered:
+            # The single most relevant chunk is never displaced by the date
+            # boost: "the latest on SYV-6" still has to see SYV-6.
+            best, rest = ordered[0], ordered[1:]
+            ordered = [best, *self._rrf_fuse([rest, _newest_first(rest)], self._settings.rrf_k)]
 
         return RetrievalResult(hits=ordered[:top_k], gate_score=gate_score)
 

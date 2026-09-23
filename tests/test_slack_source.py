@@ -373,3 +373,70 @@ def test_fetch_document_uses_human_channel_name_in_title(monkeypatch):
     doc = adapter.fetch_document("C1:100.0")
     assert doc.title.startswith("#handbook:")
     assert "Channel: #handbook" in doc.content
+
+
+# --- the bot's own traffic is not discussion ---------------------------------
+# Indexing it made the channel's Q&A the corpus: the bot's summaries were
+# re-ingested, so "what was discussed yesterday?" answered with its own answers.
+
+
+def test_listing_skips_bot_posts_and_questions_addressed_to_the_bot(monkeypatch):
+    calls: list[str] = []
+
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        if url.endswith("conversations.history"):
+            return FakeResponse({"ok": True, "messages": [
+                {**_msg("1.0", "The team has been discussing a lot of things"), "bot_id": "B1"},
+                _msg("2.0", "<@UBOT> summarise the channel please"),
+                _msg("3.0", "<@U7> can you review the deploy plan today?"),
+                _msg("4.0", "Deploy is frozen till Monday, no exceptions"),
+            ]})
+        if url.endswith("auth.test"):
+            calls.append(url)
+            return FakeResponse({"ok": True, "user_id": "UBOT"})
+        if url.endswith("conversations.list"):
+            return FakeResponse({"ok": True, "channels": [{"id": "C1", "is_private": False}]})
+        raise AssertionError(f"unexpected call to {url}")
+
+    monkeypatch.setattr("app.sources.slack.httpx.get", fake_get)
+    refs = SlackAdapter(token="xoxb-abc", channel_ids=["C1"]).list_documents()
+
+    assert [r.external_id for r in refs] == ["C1:3.0", "C1:4.0"]
+    assert len(calls) == 1  # resolved once per adapter, not per mention
+
+
+def test_fetch_document_drops_bot_replies_and_questions_to_it(monkeypatch):
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        if url.endswith("conversations.replies"):
+            return FakeResponse({"ok": True, "messages": [
+                _msg("100.0", "Should we move deploys to Tuesdays?", user="U1"),
+                _msg("101.0", "<@UBOT> what did we decide last time?", user="U2"),
+                {**_msg("102.0", "Earlier you decided Thursdays.", user="UBOT"), "bot_id": "B1"},
+                _msg("103.0", "Tuesdays it is.", user="U1"),
+            ]})
+        if url.endswith("users.info"):
+            return FakeResponse({"ok": True, "user": {"real_name": params["user"]}})
+        raise AssertionError(f"unexpected call to {url}")
+
+    monkeypatch.setattr("app.sources.slack.httpx.get", fake_get)
+    doc = SlackAdapter(token="xoxb-abc", channel_ids=["C1"]).fetch_document("C1:100.0")
+
+    assert "Tuesdays it is" in doc.content and "move deploys" in doc.content
+    assert "what did we decide" not in doc.content
+    assert "Earlier you decided" not in doc.content
+
+
+def test_a_thread_of_only_bot_traffic_is_an_empty_document(monkeypatch):
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        if url.endswith("conversations.replies"):
+            return FakeResponse({"ok": True, "messages": [
+                _msg("100.0", "<@UBOT> summarise everything", user="U1"),
+                {**_msg("101.0", "Here is a summary.", user="UBOT"), "bot_id": "B1"},
+            ]})
+        if url.endswith("users.info"):
+            return FakeResponse({"ok": True, "user": {"real_name": params["user"]}})
+        raise AssertionError(f"unexpected call to {url}")
+
+    monkeypatch.setattr("app.sources.slack.httpx.get", fake_get)
+    doc = SlackAdapter(token="xoxb-abc", channel_ids=["C1"]).fetch_document("C1:100.0")
+    assert doc.content == ""

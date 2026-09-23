@@ -295,3 +295,83 @@ def test_a_vague_ask_does_not_filter_at_the_pipeline():
         intent=QueryIntent(time=TIME_RECENT, source="model"), **_KW
     )
     assert calls == [None]
+
+
+# -- 4. regressions from the live tenant --------------------------------------
+
+
+def _batch():
+    # One Linear batch ingested seconds apart: the exact-title match happened
+    # to be the OLDEST, and date fusion pushed it out of the top_k.
+    return [
+        _chunk("exact", 0.71, days_ago=4),
+        _chunk("s1", 0.45, days_ago=3),
+        _chunk("s2", 0.44, days_ago=2),
+        _chunk("s3", 0.43, days_ago=1),
+    ]
+
+
+def test_inside_an_explicit_window_relevance_decides():
+    window = DateRange(after=datetime.now(timezone.utc) - timedelta(days=10))
+    result = _retriever(_Store(_batch())).retrieve(
+        "o", "q", [0.1], date_range=window, recency=RecencyIntent(window, "range")
+    )
+    assert [h.document_id for h in result.hits] == ["exact", "s1"]
+
+
+def test_a_vague_boost_never_displaces_the_best_match():
+    result = _retriever(_Store(_batch())).retrieve(
+        "o", "q", [0.1], recency=RecencyIntent(None, "latest")
+    )
+    assert result.hits[0].document_id == "exact"
+
+
+class _Budgetless:
+    min_stage_seconds = 0.0
+
+
+def _intent_pipeline(llm):
+    from app.config.settings import RagSettings as _RS
+
+    p = RagPipeline.__new__(RagPipeline)
+    p._retriever = _retriever(_Store([]))
+    p._settings = _RS()
+    p._budget_settings = _Budgetless()
+    p._llm = llm
+    return p
+
+
+def test_company_ask_reads_time_without_a_model_call():
+    """A model call there added 3-25s to every question for a signal the
+    floor reads for free."""
+
+    class _NoCall:
+        def generate(self, *a, **kw):
+            raise AssertionError("company Ask must not call the model for intent")
+
+    intent = _intent_pipeline(_NoCall())._classify_intent(
+        "what changed this week?", workspace_id=None, tags=None, budget=None
+    )
+    assert intent is not None and intent.source == "fallback" and intent.window is not None
+
+
+def test_a_slow_intent_call_falls_back_to_the_floor(monkeypatch):
+    import threading
+
+    import app.rag.pipeline as pl
+
+    monkeypatch.setattr(pl, "_INTENT_TIMEOUT_SECONDS", 0.05)
+    release = threading.Event()
+
+    class _Slow:
+        def generate(self, *a, **kw):
+            release.wait(2)
+            return '{"scope": "overview", "time": "none"}'
+
+    try:
+        intent = _intent_pipeline(_Slow())._classify_intent(
+            "anything new here?", workspace_id="w", tags=None, budget=None
+        )
+    finally:
+        release.set()
+    assert intent is not None and intent.source == "fallback" and not intent.overview

@@ -78,6 +78,9 @@ time:
   "range"  - names or implies a period ("this week", "in March", "since the
              offsite on Monday", "last quarter"). Give start and end as calendar
              dates; end may be null for "until now".
+A date that is part of a NAME -- a document, issue, ticket or incident title
+such as "SYV-6 - [incident] 19 Aug: search latency" -- identifies the thing
+being asked about and is NOT a period: use "none" for it.
 
 Question: {question}
 
