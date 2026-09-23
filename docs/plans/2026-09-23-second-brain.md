@@ -239,6 +239,9 @@ In scope: steps 1.0–1.7. Out of scope: the cache tier (1c), LLM extraction
 
 ### 1.0 One shared visibility predicate (refactor, no behaviour change)
 
+**Status: done** (`app/security/visibility.py`, `tests/test_visibility.py`). Three copies
+found, not one: the vector store, starter chips and the scheduler digest.
+
 - **Move** `_VIEWER_SQL` / `_viewer_clause` out of
   `app/vectorstore/pgvector_store.py` into `app/security/visibility.py`.
 - **Why:** the graph must decide "can this viewer see this document?" with the

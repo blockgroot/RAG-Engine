@@ -60,6 +60,11 @@ hook, and every process boundary must `close_pool()`.
   is denormalized onto every Vespa chunk, which forces a metadata sync queue, a
   Celery fence and a `weightedSet` builder; ours is a JOIN every retrieval
   query already pays for.
+  - **The predicate has ONE spelling** (`security/visibility.py::visibility_predicate`
+    / `viewer_clause`). It was hand-written in the vector store, starter chips
+    (`api/chat.py`) and the scheduler digest (`schedulers/activity.py`); all now
+    splice the shared fragment, and `tests/test_visibility.py` fails if a copy
+    reappears anywhere in `app/`. The Second Brain graph walk must use it too.
   - **Entries are EMAILS, not `users.id`** — a file is routinely shared with
     someone who has not signed up, and the entry starts matching by itself the
     day they log in. `Viewer.acl()` (read) and `_normalize_viewers` (write) are
@@ -1609,7 +1614,8 @@ app/sources/  SourceAdapter: notion, google_drive, slack, linear + factory
               + google_groups.py (asker's Group memberships → Viewer.groups)
 app/githublive/ GitHub's whole data path — live reads, no vectors
 app/agent/    Agent + per-source agents + orchestration (LangGraph) + routing
-app/security/ crypto, untrusted (scrub), rate_limit, client_ip
+app/security/ crypto, untrusted (scrub), rate_limit, client_ip,
+              visibility (the ONE doc-access predicate)
 app/auth/     OAuth providers, credentials, users, magic_link, session, email
 app/jobs/     ingestion queue + worker + scheduler_queue + autosync
 app/llm/      + pacing.py (rate-limit headroom for interactive calls)
