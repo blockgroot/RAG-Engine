@@ -5,8 +5,8 @@ outranked yesterday's message and the answer read as stale even though the new
 content was indexed. Three layers are pinned here, all without a database or a
 model -- the store is a fake that records what it was asked:
 
-1. ``detect_recency`` -- which questions carry a recency intent, and which
-   words must NOT trigger one;
+1. ``detect_recency`` -- the outage FLOOR (the model reads intent first, see
+   ``test_query_intent.py``): which phrases it acts on and which it must not;
 2. ``HybridRetriever`` -- the recent leg and newest-first fusion reorder, and
    never move the confidence gate;
 3. ``RagPipeline._retrieve_in_window`` -- an explicit window is a hard filter
@@ -21,6 +21,7 @@ import pytest
 
 from app.config.settings import RagSettings, RetrievalSettings
 from app.rag.pipeline import RagPipeline
+from app.rag.query_intent import TIME_RANGE, TIME_RECENT, QueryIntent
 from app.rag.recency_intent import RecencyIntent, detect_recency
 from app.rag.retrieval import HybridRetriever
 from app.vectorstore.base import DateRange, RetrievedChunk
@@ -33,7 +34,7 @@ def _days_back(intent: RecencyIntent) -> float:
     return (NOW - intent.window.after) / timedelta(days=1)
 
 
-# -- 1. detection -------------------------------------------------------------
+# -- 1. the outage floor ------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -230,6 +231,10 @@ def test_the_switch_turns_it_off():
 # -- 3. the pipeline's window -------------------------------------------------
 
 
+def _range(window):
+    return QueryIntent(time=TIME_RANGE, window=window, source="model")
+
+
 def _pipeline(results):
     """A pipeline whose sub-question retrieval is replaced by a recorder."""
     p = RagPipeline.__new__(RagPipeline)
@@ -251,7 +256,7 @@ def test_an_explicit_window_becomes_the_retrieval_range():
     p, calls = _pipeline([([hit], 0.6)])
     window = DateRange(after=NOW - timedelta(days=8))
     hits, gate, used = p._retrieve_in_window(
-        "o", "q", ["q"], date_range=None, recency=RecencyIntent(window, "this week"), **_KW
+        "o", "q", ["q"], date_range=None, intent=_range(window), **_KW
     )
     assert calls == [window]
     assert used == window and hits == [hit] and gate == 0.6
@@ -264,7 +269,7 @@ def test_an_empty_window_widens_instead_of_refusing():
     p, calls = _pipeline([([], None), ([old], 0.6)])
     window = DateRange(after=NOW - timedelta(days=8))
     hits, _, used = p._retrieve_in_window(
-        "o", "q", ["q"], date_range=None, recency=RecencyIntent(window, "this week"), **_KW
+        "o", "q", ["q"], date_range=None, intent=_range(window), **_KW
     )
     assert calls == [window, None]
     assert used is None and hits == [old]
@@ -276,7 +281,7 @@ def test_a_callers_range_is_never_overridden():
     _, _, used = p._retrieve_in_window(
         "o", "q", ["q"],
         date_range=caller,
-        recency=RecencyIntent(DateRange(after=NOW - timedelta(days=8)), "this week"),
+        intent=_range(DateRange(after=NOW - timedelta(days=8))),
         **_KW,
     )
     assert calls == [caller]      # one call, no widening past a hard filter
@@ -286,6 +291,7 @@ def test_a_callers_range_is_never_overridden():
 def test_a_vague_ask_does_not_filter_at_the_pipeline():
     p, calls = _pipeline([([_chunk("a", 0.5, 3)], 0.5)])
     p._retrieve_in_window(
-        "o", "q", ["q"], date_range=None, recency=RecencyIntent(None, "recently"), **_KW
+        "o", "q", ["q"], date_range=None,
+        intent=QueryIntent(time=TIME_RECENT, source="model"), **_KW
     )
     assert calls == [None]

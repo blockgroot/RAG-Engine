@@ -1,19 +1,16 @@
-"""Does this question ask about what happened RECENTLY?
+"""The deterministic FLOOR for a question's time intent.
 
-Retrieval ranks by similarity alone, so "what was discussed recently?" is
-answered from whichever thread is phrased most like the question -- an older,
-wordier one routinely outranks yesterday's message, and the answer reads as
-stale even though the new content is indexed. Every chunk already carries its
-date (`documents.source_last_modified`); nothing asked for it.
+The primary reader of time intent is the model (`query_intent.classify_query_intent`),
+because intent is not a word list: "the latest leave policy" asks for a policy
+while "the latest on deploys" asks for what is new, and every phrasing a list
+does not contain is a silent miss. This module answers only when that call
+cannot -- a dead or rate-limited classifier, or a request with no budget left
+-- the same posture the routing keyword rules take under `classify_question`.
 
-Deterministic on purpose, unlike `scope_intent`. A word list failed there
-because "summarise" is ambiguous -- "summarise what Sana said about Notion" is
-a specific question wearing a summary verb. Time expressions are a closed,
-unambiguous grammar ("this week", "past 3 days", "recently"), so a regex costs
-no LLM call on a 15 rpm budget, cannot fail open or closed on an outage, and is
-testable to the phrase. The words that WOULD be ambiguous are excluded rather
-than guessed at: bare "new" (a "new joiner" is not a recency ask) and bare
-"last" ("last name", "last resort") only count with a time unit after them.
+As a floor it is deliberately narrow. Time expressions like "this week" or
+"past 3 days" are unambiguous enough to act on without a model; the words that
+are not ("new", "last") only count with a time unit after them, so an outage
+degrades to ranked retrieval rather than to a wrong filter.
 
 Two outcomes, and the split decides how hard retrieval leans on the date:
 

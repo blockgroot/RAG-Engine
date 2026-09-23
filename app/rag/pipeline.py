@@ -67,7 +67,7 @@ from .audit import parse_audit_verdict
 from .retrieval import HybridRetriever, RetrievalResult
 from .context_assemble import assemble_context_texts, describe_hit
 from .decompose import looks_compound, parse_sub_questions
-from .recency_intent import RecencyIntent, detect_recency
+from .query_intent import TIME_NONE, QueryIntent, classify_query_intent
 from .scope_intent import OVERVIEW, classify_scope_intent
 from .query_cache import QueryAnswerCache
 from .request_budget import RequestBudget
@@ -596,14 +596,20 @@ class RagPipeline:
         sub_questions: list[str] = [retrieval_question]
         question_decomposed = False
 
-        recency = self._detect_recency(question)
+        # What the QUESTION needs from retrieval -- breadth and time -- read
+        # once by the model and validated (rag/query_intent.py).
+        intent = self._classify_intent(
+            question, workspace_id=workspace_id, tags=tags, budget=budget
+        )
         retrieval_range = date_range
 
-        # A recency ask must not reuse the previous turn's chunks: they were
-        # chosen without regard to date, which is the defect being fixed.
+        # A time-sensitive ask must not reuse the previous turn's chunks: they
+        # were chosen without regard to date, which is the defect being fixed.
         reused = (
             None
-            if date_range is not None or tags is not None or recency is not None
+            if date_range is not None
+            or tags is not None
+            or (intent is not None and intent.recency is not None)
             else self._try_reuse(retrieval_question, org_id, query_vec, conversation_id)
         )
         if reused is not None:
@@ -629,7 +635,7 @@ class RagPipeline:
                 tags=tags,
                 viewer=viewer,
                 known_vectors={retrieval_question: query_vec},
-                recency=recency,
+                intent=intent,
             )
 
         top_score_before = top_score
@@ -677,7 +683,7 @@ class RagPipeline:
                     date_range=retrieval_range,
                     tags=tags,
                     viewer=viewer,
-                    recency=recency,
+                    intent=intent,
                 )
                 recovery_used = True
                 recovery_reason = RECOVERY_REASON_GATE_MISS
@@ -747,7 +753,7 @@ class RagPipeline:
                     date_range=retrieval_range,
                     tags=tags,
                     viewer=viewer,
-                    recency=recency,
+                    intent=intent,
                 )
             recovery_used = True
             recovery_reason = RECOVERY_REASON_INSUFFICIENT_EVIDENCE
@@ -851,7 +857,7 @@ class RagPipeline:
         tags: list[str] | None,
         viewer: Viewer | None,
         known_vectors: dict[str, list[float]],
-        recency: RecencyIntent | None,
+        intent: QueryIntent | None,
     ) -> tuple[list[RetrievedChunk], float | None, DateRange | None]:
         """First retrieval, inside the question's own time window when it names one.
 
@@ -865,6 +871,7 @@ class RagPipeline:
         chunk still carries its date into the prompt, so the model can say
         "nothing this week; the latest was ..." instead of the bare fallback.
         """
+        recency = intent.recency if intent is not None else None
         window = date_range
         if recency is not None and recency.window is not None and date_range is None:
             window = recency.window
@@ -877,7 +884,7 @@ class RagPipeline:
             tags=tags,
             viewer=viewer,
             known_vectors=known_vectors,
-            recency=recency,
+            intent=intent,
         )
         if hits or window is date_range:
             return hits, top_score, window
@@ -891,29 +898,45 @@ class RagPipeline:
             tags=tags,
             viewer=viewer,
             known_vectors=known_vectors,
-            recency=recency,
+            intent=intent,
         )
         return hits, top_score, date_range
 
-    def _detect_recency(self, question: str) -> RecencyIntent | None:
-        """The question's recency intent, when the retriever can act on it.
+    def _classify_intent(
+        self,
+        question: str,
+        *,
+        workspace_id: str | None,
+        tags: list[str] | None,
+        budget: RequestBudget | None,
+    ) -> QueryIntent | None:
+        """Read what this question needs from retrieval, when anything would use it.
 
-        Deterministic and free (no LLM call), and still wrapped: a boost is an
-        improvement, never a reason to lose an answer.
+        Breadth only matters inside a scoped corpus (`_whole_scope`), time only
+        when the retriever can act on it; if neither applies the call is not
+        made at all. With no budget left the deterministic floor answers
+        instead of the model. Never raises: intent improves an answer, it must
+        never be the reason one is lost.
         """
-        if self._retriever is None or not self._retriever.recency_enabled:
+        need_time = self._retriever is not None and self._retriever.recency_enabled
+        need_breadth = (
+            bool(tags) or workspace_id is not None
+        ) and self._settings.scope_whole_max_chunks > 0
+        if not (need_time or need_breadth):
             return None
+        use_model = budget is None or budget.can_spend(self._budget_settings.min_stage_seconds)
         try:
-            intent = detect_recency(question)
-        except Exception:  # noqa: BLE001 - a boost must never cost an answer
-            logger.warning("recency detection failed; ranking as usual", exc_info=True)
+            intent = classify_query_intent(question, llm=self._llm, use_model=use_model)
+        except Exception:  # noqa: BLE001
+            logger.warning("query intent failed; ranking as usual", exc_info=True)
             return None
-        if intent is not None:
-            logger.info(
-                "Recency intent %r (%s)",
-                intent.phrase,
-                "hard window" if intent.window is not None else "boost only",
-            )
+        if not need_time:
+            intent = replace(intent, time=TIME_NONE, window=None)
+        logger.info(
+            "Query intent (%s): breadth=%s time=%s window=%s",
+            intent.source, intent.breadth, intent.time,
+            intent.window.after.date().isoformat() if intent.window and intent.window.after else None,
+        )
         return intent
 
     def _whole_scope(
@@ -926,6 +949,7 @@ class RagPipeline:
         tags: list[str] | None,
         viewer: Viewer | None,
         date_range: DateRange | None = None,
+        intent: QueryIntent | None = None,
     ) -> tuple[list[RetrievedChunk], float | None] | None:
         """Breadth retrieval for a question that asks about the corpus AS A WHOLE.
 
@@ -946,6 +970,9 @@ class RagPipeline:
 
         ``date_range`` narrows "the whole corpus" to a period, so "summarise
         this week's discussion" reads this week in full rather than everything.
+
+        ``intent`` is the question's already-classified breadth; without one
+        (a direct caller) the breadth classifier runs here as it always did.
         """
         max_chunks = self._settings.scope_whole_max_chunks
         if max_chunks <= 0:
@@ -958,13 +985,17 @@ class RagPipeline:
 
         # Classified BEFORE fetching: the read is the expensive half, and a
         # specific question must not pay for a breadth query it will not use.
-        try:
-            intent = classify_scope_intent(query_text, llm=self._llm)
-        except Exception:  # noqa: BLE001 - a classifier must never cost an answer
-            logger.warning("scope intent failed; ranking instead", exc_info=True)
-            return None
-        if intent != OVERVIEW:
-            return None
+        if intent is not None:
+            if not intent.overview:
+                return None
+        else:
+            try:
+                breadth = classify_scope_intent(query_text, llm=self._llm)
+            except Exception:  # noqa: BLE001 - a classifier must never cost an answer
+                logger.warning("scope intent failed; ranking instead", exc_info=True)
+                return None
+            if breadth != OVERVIEW:
+                return None
 
         try:
             hits = self._store.query(
@@ -1024,12 +1055,12 @@ class RagPipeline:
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
         viewer: Viewer | None = None,
-        recency: RecencyIntent | None = None,
+        intent: QueryIntent | None = None,
     ) -> tuple[list[RetrievedChunk], float | None]:
         whole = self._whole_scope(
             org_id, query_text, query_vec,
             workspace_id=workspace_id, tags=tags, viewer=viewer,
-            date_range=date_range,
+            date_range=date_range, intent=intent,
         )
         if whole is not None:
             return whole
@@ -1042,7 +1073,7 @@ class RagPipeline:
                 date_range=date_range,
                 tags=tags,
                 viewer=viewer,
-                recency=recency,
+                recency=intent.recency if intent is not None else None,
             )
             return retrieval.hits, retrieval.gate_score
         hits = self._store.query(
@@ -1095,7 +1126,7 @@ class RagPipeline:
         tags: list[str] | None = None,
         viewer: Viewer | None = None,
         known_vectors: dict[str, list[float]] | None = None,
-        recency: RecencyIntent | None = None,
+        intent: QueryIntent | None = None,
     ) -> tuple[list[RetrievedChunk], float | None]:
         """Retrieve for one or more sub-questions."""
         known = known_vectors or {}
@@ -1113,7 +1144,7 @@ class RagPipeline:
                 date_range=date_range,
                 tags=tags,
                 viewer=viewer,
-                recency=recency,
+                intent=intent,
             )
 
         missing = [s for s in sub_questions if s not in known]
@@ -1135,7 +1166,7 @@ class RagPipeline:
                 date_range=date_range,
                 tags=tags,
                 viewer=viewer,
-                recency=recency,
+                recency=intent.recency if intent is not None else None,
             )
             return retrieval.hits, retrieval.gate_score
 
@@ -1625,7 +1656,7 @@ class RagPipeline:
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
         viewer: Viewer | None = None,
-        recency: RecencyIntent | None = None,
+        intent: QueryIntent | None = None,
     ) -> _RecoveryAttempt:
         """One bounded recovery: expand retrieval expressions → re-retrieve → fuse.
 
@@ -1666,7 +1697,7 @@ class RagPipeline:
                     date_range=date_range,
                     tags=tags,
                     viewer=viewer,
-                    recency=recency,
+                    intent=intent,
                 )
             except Exception:
                 continue
