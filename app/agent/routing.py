@@ -637,14 +637,36 @@ def _try_insights_route(
     return None
 
 
+# ponytail: calibrated on four live pairs (follow-ups 0.01-0.03 apart, new
+# topics 0.24-0.28); log `scores` and re-fit if follow-ups start misrouting.
+_FOLLOW_UP_MARGIN = 0.1
+
+
+def _no_clear_winner(scores: dict[str, float]) -> bool:
+    """True when the best source leads the runner-up by less than the margin."""
+    top = sorted(scores.values(), reverse=True)
+    return not top or (len(top) > 1 and top[0] - top[1] < _FOLLOW_UP_MARGIN)
+
+
 def choose_agent(
     question: str,
     org_id: str,
     *,
     workspace_id: str | None = None,
     requested_agent: str | None = None,
+    context: str | None = None,
 ) -> RoutingDecision:
     """Decide which agent answers ``question``. Never raises.
+
+    ``context`` is the conversation's previous question. A follow-up such as
+    "elaborate and describe in detail" names no source, so it scores about
+    the SAME everywhere (measured: top two within 0.03, all above the gate)
+    and landed on whichever corpus edged it -- a Drive answer followed up from
+    Notion. When no source clearly wins on the question alone, it is
+    re-probed together with the turn it follows. A new topic in the same chat
+    has a clear winner (0.73 vs 0.45) and is routed on its own words, because
+    always blending the previous turn sent "what is our leave policy?" after
+    a Linear question to Linear.
 
     Precedence, and the reason for each step:
 
@@ -723,6 +745,12 @@ def choose_agent(
     )
     threshold = RagSettings.from_env().similarity_threshold
     best = max(scores, key=scores.get) if scores else None
+
+    if context and _no_clear_winner(scores):
+        follow = _probe_scores(f"{context}\n{question}", org_id, workspace_id, connected)
+        follow_best = max(follow, key=follow.get) if follow else None
+        if follow_best is not None and follow[follow_best] >= threshold:
+            return RoutingDecision(follow_best, "follow-up", follow)
 
     if best is not None and scores[best] >= threshold:
         return RoutingDecision(best, "best-match", scores)

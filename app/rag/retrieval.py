@@ -1,7 +1,7 @@
 """Hybrid retrieval + reranking (Phase 6), sitting under the Phase 3 gate.
 
 Plain top-k vector search ranks each chunk independently and can leave a genuinely
-relevant chunk just outside the cutoff. This retriever addresses that from three
+relevant chunk just outside the cutoff. This retriever addresses that from two
 angles at query time:
 
 1. **Hybrid search** — run vector (semantic) *and* keyword (Okapi BM25) search,
@@ -10,11 +10,6 @@ angles at query time:
    (which live on totally different scales) — the settled default for hybrid RAG.
 2. **Cross-encoder reranking** — over-retrieve a wider ``candidate_pool`` then
    rerank it with a cross-encoder, selecting the final ``top_k``.
-3. **Recency** — when the question asks about what happened recently
-   (``recency_intent.detect_recency``), a third first-stage list searches only
-   recently-modified documents, and the final order is fused with a
-   newest-first order. Rank-based like everything else here, so it reorders
-   and never touches ``gate_score``.
 
 Crucially this only changes *which chunks, in what order* reach the prompt. The
 **confidence gate is unchanged**: ``gate_score`` is the best cosine similarity
@@ -26,12 +21,10 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 
 from ..config.settings import RagSettings, RetrievalSettings
 from ..reranker.base import Reranker
 from ..vectorstore.base import DateRange, RetrievedChunk, VectorStore, Viewer
-from .recency_intent import RecencyIntent
 
 
 # Ceiling on concurrent first-stage searches for ONE question. Each in-flight
@@ -77,10 +70,6 @@ class HybridRetriever:
         # sites the way a per-request argument could be.
         self._source_provider = source_provider
 
-    @property
-    def recency_enabled(self) -> bool:
-        return self._settings.recency_enabled
-
     def retrieve(
         self,
         org_id: str,
@@ -93,7 +82,6 @@ class HybridRetriever:
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
         viewer: Viewer | None = None,
-        recency: RecencyIntent | None = None,
     ) -> RetrievalResult:
         """Retrieve for ``query_text``; optionally fuse extra (sub-)queries first.
 
@@ -116,16 +104,8 @@ class HybridRetriever:
         ``None`` reads every document in scope, which is what ingestion,
         evaluation and the CLI want and what every member-facing path must NOT
         pass — see ``tests/test_doc_access.py``.
-
-        ``recency``: the question asked about what happened recently. Adds a
-        first-stage leg restricted to recent documents and fuses the final
-        order with a newest-first one. Old documents are never EXCLUDED here --
-        "the latest leave policy" still wants a policy edited a year ago; an
-        explicit window is the caller's hard ``date_range``, not this.
         """
         top_k = self._rag_settings.top_k
-        if recency is not None and not self._settings.recency_enabled:
-            recency = None
         pool = self._settings.candidate_pool
         rerank_q = rerank_query or query_text
 
@@ -141,7 +121,6 @@ class HybridRetriever:
             date_range=date_range,
             tags=tags,
             viewer=viewer,
-            recent_range=self._recent_range(recency, date_range),
         )
 
         if len(ranked_lists) == 1:
@@ -155,52 +134,12 @@ class HybridRetriever:
         gate_score = max((c.score for c in candidates), default=None)
 
         pool_candidates = candidates[:pool]
-        # Newest-first fusion is for a VAGUE recency ask only. An explicit
-        # window is already a hard date filter, so inside it relevance decides:
-        # fusing by date there demoted an exact-title match out of the top_k
-        # because its batch-ingested siblings were a few seconds newer.
-        boost = recency is not None and recency.window is None
-        # With a boost the reranker orders the WHOLE pool, so the newest-first
-        # fusion chooses from every candidate rather than only the reranker's
-        # top_k -- otherwise a recent chunk it ranked sixth could never be
-        # promoted.
-        keep = len(pool_candidates) if boost else top_k
         if self._reranker is not None and self._settings.rerank_enabled:
-            ordered = self._reranker.rerank(rerank_q, pool_candidates, keep)
+            final = self._reranker.rerank(rerank_q, pool_candidates, top_k)
         else:
-            ordered = pool_candidates[:keep]
-        if boost and ordered:
-            # The single most relevant chunk is never displaced by the date
-            # boost: "the latest on SYV-6" still has to see SYV-6.
-            best, rest = ordered[0], ordered[1:]
-            ordered = [best, *self._rrf_fuse([rest, _newest_first(rest)], self._settings.rrf_k)]
+            final = pool_candidates[:top_k]
 
-        return RetrievalResult(hits=ordered[:top_k], gate_score=gate_score)
-
-    def _recent_range(
-        self, recency: RecencyIntent | None, date_range: DateRange | None
-    ) -> DateRange | None:
-        """The window the recency leg searches, or ``None`` for no such leg.
-
-        An explicit window is used as-is; a vague ask looks back
-        ``recency_default_days``. Always intersected with the caller's own
-        ``date_range`` -- a leg that searched OUTSIDE a hard filter would
-        smuggle excluded documents back in through the fusion.
-        """
-        if recency is None:
-            return None
-        window = recency.window or DateRange(
-            after=datetime.now(timezone.utc)
-            - timedelta(days=self._settings.recency_default_days)
-        )
-        if date_range is None:
-            return window
-        afters = [d for d in (window.after, date_range.after) if d is not None]
-        befores = [d for d in (window.before, date_range.before) if d is not None]
-        return DateRange(
-            after=max(afters) if afters else None,
-            before=min(befores) if befores else None,
-        )
+        return RetrievalResult(hits=final, gate_score=gate_score)
 
     def _first_stage_all(
         self,
@@ -212,7 +151,6 @@ class HybridRetriever:
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
         viewer: Viewer | None = None,
-        recent_range: DateRange | None = None,
     ) -> list[list[RetrievedChunk]]:
         """Run every first-stage search concurrently, one ranked list per query.
 
@@ -225,33 +163,25 @@ class HybridRetriever:
 
         Ordering is preserved by index, not completion, because RRF fusion is
         order-sensitive across lists.
-
-        ``recent_range`` adds ONE more vector search, for the primary query
-        only, restricted to that window. A recent chunk then appears in two
-        lists and RRF lifts it; an old one is still in the others, so nothing
-        is excluded. One extra round trip, run concurrently with the rest.
         """
         tasks: list[tuple[int, str, str, list[float]]] = []
         for i, (q_text, q_vec) in enumerate(query_pairs):
             tasks.append((i, "vector", q_text, q_vec))
             if self._settings.hybrid_enabled:
                 tasks.append((i, "keyword", q_text, q_vec))
-        if recent_range is not None and query_pairs:
-            q_text, q_vec = query_pairs[0]
-            tasks.append((0, "recent", q_text, q_vec))
 
         results: dict[tuple[int, str], list[RetrievedChunk]] = {}
 
         def run(task) -> tuple[tuple[int, str], list[RetrievedChunk]]:
             i, kind, q_text, q_vec = task
-            if kind in ("vector", "recent"):
+            if kind == "vector":
                 hits = self._store.query(
                     org_id,
                     q_vec,
                     top_k=pool,
                     workspace_id=workspace_id,
                     source_provider=self._source_provider,
-                    date_range=recent_range if kind == "recent" else date_range,
+                    date_range=date_range,
                     tags=tags,
                     viewer=viewer,
                 )
@@ -283,12 +213,12 @@ class HybridRetriever:
 
         ranked: list[list[RetrievedChunk]] = []
         for i in range(len(query_pairs)):
-            legs = [results.get((i, "vector"), [])]
+            vec_hits = results.get((i, "vector"), [])
             if self._settings.hybrid_enabled:
-                legs.append(results.get((i, "keyword"), []))
-            if (i, "recent") in results:
-                legs.append(results[(i, "recent")])
-            ranked.append(legs[0] if len(legs) == 1 else self._rrf_fuse(legs, self._settings.rrf_k))
+                kw_hits = results.get((i, "keyword"), [])
+                ranked.append(self._rrf_fuse([vec_hits, kw_hits], self._settings.rrf_k))
+            else:
+                ranked.append(vec_hits)
         return ranked
 
     @staticmethod
@@ -312,18 +242,3 @@ class HybridRetriever:
 
         ordered = sorted(rrf_scores, key=lambda key: rrf_scores[key], reverse=True)
         return [chunk_by_key[key] for key in ordered]
-
-
-def _newest_first(hits: list[RetrievedChunk]) -> list[RetrievedChunk]:
-    """``hits`` by the document's own modification date, newest first.
-
-    Undated chunks (a manual ingest) go last rather than being guessed at, and
-    the sort is stable so equal dates keep their relevance order.
-    """
-    return sorted(
-        hits,
-        key=lambda h: (
-            h.last_modified is None,
-            -(h.last_modified.timestamp() if h.last_modified is not None else 0.0),
-        ),
-    )
