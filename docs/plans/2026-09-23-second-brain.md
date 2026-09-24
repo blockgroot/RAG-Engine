@@ -329,6 +329,21 @@ Differences from the sketch above, each for a reason:
 `pg_trgm` — per the schema above. Person key = `user:<id>` when linked, else
 `identity:<provider>:<id>`.
 
+**Status: done** (`app/db/schema.sql`, `tests/test_graph_builder.py`). Changes
+from the sketch, each for a reason:
+
+- Entities are unique on `(org_id[, workspace_id], key)`: the key already
+  encodes provider and kind, so `kind` in the index adds nothing.
+- A document entity's `document_id` is `ON DELETE SET NULL`, not CASCADE, and
+  the KEY is `<provider>:<external id>`: an updated document is deleted and
+  re-inserted with a new id, and the entity must survive that.
+- **People are keyed per connector identity, always** (`identity:<provider>:<id>`);
+  a linked member gets a `user:<id>` entity joined to each identity by a
+  `same_person` edge. Linking or unlinking then rewrites only those edges
+  (`rebuild_people`), instead of re-keying every edge the person has.
+- `kg_evidence.chunk_id` is not created yet — nothing in Phase 1 produces
+  chunk-level evidence (that is tier-3 extraction, Phase 1d).
+
 ### 1.4 The builder (`app/graph/builder.py`)
 
 `app/graph/` is an orchestrator over one store, so no `base.py` (CLAUDE.md §2):
@@ -358,6 +373,19 @@ For each document an ingest job touched (`IngestResult.ingested_external_ids`):
   a SQL rebuild of that person's edges.
 - **Done when:** running twice is idempotent; deleting a document removes its
   edges; a cross-scope reference is never created; disconnect purges.
+
+**Status: done** (`app/graph/builder.py`). Notes:
+
+- A reference target that ingests AFTER the page pointing at it is joined up
+  when the target builds: the builder re-links documents in scope whose
+  `source_meta.links` name it (≤200 per batch).
+- A Linear link carries the IDENTIFIER (`ENG-142`), which resolves through the
+  issue entity's `aliases`.
+- Documents re-fetched by the metadata refresh are built too
+  (`IngestResult.meta_refreshed_external_ids`).
+- `member_of` (private-channel membership) is NOT built in Phase 1: membership
+  is only stored as the threads' `doc_viewers`, and it is sensitive enough to
+  wait for evidence rows that carry the channel's own ACL.
 
 ### 1.5 Linking and walking (`linking.py`, `walk.py`)
 

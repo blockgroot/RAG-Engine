@@ -82,6 +82,9 @@ class IngestResult:
     document_ids: list[str] = field(default_factory=list)
     # External ids written this run — used by deferred contextual enrich.
     ingested_external_ids: list[str] = field(default_factory=list)
+    # Already-indexed documents whose `source_meta` was captured this run by
+    # the bounded metadata refresh -- the knowledge graph builds these too.
+    meta_refreshed_external_ids: list[str] = field(default_factory=list)
 
 
 _MAX_REMOVAL_FRACTION = 0.5
@@ -636,9 +639,11 @@ def ingest_source(
         workspace_id=workspace_id,
     )
 
+    meta_refreshed: list[str] = []
     refresh_missing_meta(
         adapter,
         store,
+        refreshed=meta_refreshed,
         org_id=org_id,
         provider=provider,
         workspace_id=workspace_id,
@@ -657,6 +662,7 @@ def ingest_source(
         documents_permission_unreadable=permission_unreadable,
         document_ids=doc_ids,
         ingested_external_ids=ingested_external_ids,
+        meta_refreshed_external_ids=meta_refreshed,
     )
 
 
@@ -670,6 +676,7 @@ def refresh_missing_meta(
     skip_ids: set[str] | None = None,
     live_ids: set[str] | None = None,
     batch: int | None = None,
+    refreshed: list[str] | None = None,
 ) -> int:
     """Capture ``source_meta`` for already-indexed documents, a bounded batch per run.
 
@@ -713,9 +720,12 @@ def refresh_missing_meta(
     if not entries:
         return 0
     try:
-        return store.set_source_document_meta(
+        written = store.set_source_document_meta(
             org_id, provider=provider, entries=entries, workspace_id=workspace_id
         )
+        if refreshed is not None:
+            refreshed.extend(e[0] for e in entries)
+        return written
     except Exception:  # noqa: BLE001 - see docstring
         logger.warning("refresh_missing_meta: write failed for %s", provider, exc_info=True)
         return 0

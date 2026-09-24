@@ -949,3 +949,76 @@ CREATE INDEX IF NOT EXISTS idx_person_identities_user
     ON person_identities (org_id, user_id) WHERE user_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_person_identities_email
     ON person_identities (org_id, email) WHERE email IS NOT NULL;
+
+-- Second Brain 1.3: the knowledge graph (docs/plans/2026-09-23-second-brain.md).
+-- One graph per SCOPE (org-wide = workspace_id NULL, or one space), filtered
+-- per viewer at read time. It stores IDs and relationships only -- document
+-- text stays in `chunks` and sharing stays on `documents`, so nothing here can
+-- outlive a revocation: an edge is visible only through its evidence, and
+-- document evidence is checked against `documents` with the ONE visibility
+-- predicate (`security/visibility.py`) on every walk.
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- `key` is stable across re-syncs, which is why a document entity is keyed by
+-- `<provider>:<external id>` and NOT by `documents.id`: an updated document is
+-- deleted and re-inserted with a new id. `document_id` is refreshed by the
+-- builder and SET NULL when the row goes, so the entity survives a re-ingest.
+-- People are keyed per CONNECTOR identity (`identity:<provider>:<id>`); a
+-- member linked to several identities gets a `user:<id>` entity joined to each
+-- by a `same_person` edge, so linking or unlinking rewrites only those edges.
+CREATE TABLE IF NOT EXISTS kg_entities (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE,
+    kind         TEXT NOT NULL,
+    key          TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    aliases      TEXT[],
+    document_id  UUID REFERENCES documents (id) ON DELETE SET NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_kg_entities_org
+    ON kg_entities (org_id, key) WHERE workspace_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_kg_entities_space
+    ON kg_entities (org_id, workspace_id, key) WHERE workspace_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_kg_entities_name_trgm
+    ON kg_entities USING gin (name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_kg_entities_aliases ON kg_entities USING gin (aliases);
+CREATE INDEX IF NOT EXISTS idx_kg_entities_document ON kg_entities (document_id);
+
+-- `valid_to` NULL = current. An assignment that changes is CLOSED, not deleted,
+-- so "who owned this before?" stays answerable; walks read current edges only.
+-- One current edge per (src, dst, relation): re-running the builder upserts
+-- instead of stacking duplicates.
+CREATE TABLE IF NOT EXISTS kg_edges (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE,
+    src_id       UUID NOT NULL REFERENCES kg_entities (id) ON DELETE CASCADE,
+    dst_id       UUID NOT NULL REFERENCES kg_entities (id) ON DELETE CASCADE,
+    relation     TEXT NOT NULL,
+    valid_from   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    valid_to     TIMESTAMPTZ,
+    last_seen    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_kg_edges_current
+    ON kg_edges (src_id, dst_id, relation) WHERE valid_to IS NULL;
+CREATE INDEX IF NOT EXISTS idx_kg_edges_src ON kg_edges (org_id, src_id);
+CREATE INDEX IF NOT EXISTS idx_kg_edges_dst ON kg_edges (org_id, dst_id);
+
+-- WHY an edge exists, and therefore WHO may see it. Exactly one kind per row:
+--   document_id -- the edge came from that document; visible iff the viewer
+--                  may open it (checked live, so a revocation hides it at once);
+--   fact_id     -- from an `activity_facts` row (GitHub), scope-level like charts;
+--   neither     -- `is_public`/`viewers` carry the rule (a `same_person` link).
+-- A NULL `is_public` on non-document evidence is NOT public: fail closed.
+CREATE TABLE IF NOT EXISTS kg_evidence (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    edge_id     UUID NOT NULL REFERENCES kg_edges (id) ON DELETE CASCADE,
+    document_id UUID REFERENCES documents (id) ON DELETE CASCADE,
+    fact_id     UUID REFERENCES activity_facts (id) ON DELETE CASCADE,
+    is_public   BOOLEAN,
+    viewers     TEXT[]
+);
+CREATE INDEX IF NOT EXISTS idx_kg_evidence_edge ON kg_evidence (edge_id);
+CREATE INDEX IF NOT EXISTS idx_kg_evidence_document ON kg_evidence (document_id);
+CREATE INDEX IF NOT EXISTS idx_kg_evidence_fact ON kg_evidence (fact_id);
