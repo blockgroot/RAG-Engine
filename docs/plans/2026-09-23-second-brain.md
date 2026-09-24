@@ -466,6 +466,16 @@ SELECT DISTINCT ... LIMIT %(cap)s;
 - Run the eval with the flag off and on; log `graph_hits` in query signals.
 - Enable in prod only if answers improve and nothing else regresses.
 
+**Status: measurement built; the switch is NOT thrown** (`evaluation/graph_eval.py`,
+`tests/test_graph_eval.py`). The multi-hop questions live in their own seeded
+corpus rather than the policy golden set, because they need people, links and
+facts the policy corpus does not have; the policy corpus rides along as
+distractors. `python -m evaluation.graph_eval` runs every case with the graph
+list off and on and prints a verdict: **enable only on a gain with no loss**.
+With a stand-in hashing embedder it reports +1 case, nothing lost — that proves
+the machinery, not the value. Run it with the real embedder before switching
+`GRAPH_RETRIEVAL_ENABLED` on in production.
+
 ---
 
 ## Phase 1c: cache tier (can run in parallel with 1b)

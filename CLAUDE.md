@@ -270,6 +270,38 @@ Drive files scope-wide and dropping Slack channel tags. Never re-read sharing
 from a re-fetch there — Slack reports it only on the LISTING, and ingest has
 already applied skip / owner-only / freeze to that exact row.
 
+**Second Brain graph (`app/graph/`: `identities`, `builder`, `linking`, `walk`)**
+— Phase 1 of the plan, built and **OFF for answers** (`GRAPH_RETRIEVAL_ENABLED`).
+- **Identity is linked on PROOF only** (`person_identities.user_id`): the
+  connector's email equals a member's login email IN THE SAME ORG
+  (`auto_link_by_email`, which also un-links when the email stops matching), or
+  the member signed in to GitHub ("Linked accounts", `/account`). Never by name.
+  The GitHub link reuses `/auth/github/callback` (one registered URL per App),
+  routed by the STATE's provider `github_link`; the person comes from
+  `oauth_states.user_id`, never the request; the token is read once and dropped.
+- **The builder reads only the database** (`source_meta`, `activity_facts`,
+  `person_identities`), per SCOPE, never across. People are keyed per connector
+  identity; a member is one `user:<id>` entity joined by `same_person` edges,
+  so link/unlink rewrites only those (`rebuild_people`). A document entity is
+  keyed `<provider>:<external_id>` because re-ingest changes `documents.id`.
+  Rebuild = delete that document's evidence, re-derive, GC edges left with
+  none; a lost `assigned_to` is CLOSED, not deleted. Hooked into the worker,
+  GitHub facts, disconnect and the tick backfill — all best-effort.
+- **Filter at every hop** (`walk.py`): an edge is crossed only with visible
+  evidence (document evidence through `visibility_predicate`, live; other
+  evidence through `evidence_predicate`, NULL = hidden), and a DOCUMENT entity
+  is entered only if the viewer may open it — edge visibility alone leaked a
+  hidden page's title through a `references` edge evidenced by the linking
+  page. ≤2 hops, ≤50 edges, `same_person` costs no hop, `truncated` honest,
+  three round trips. No DISTINCT/ORDER on the outer query, so the LIMIT stops
+  the recursive CTE itself.
+- **In retrieval it is ONE more RRF list** (`retrieval._graph_documents`): a
+  vector search restricted to the walk's evidence documents, viewer-filtered
+  AGAIN, so the gate is untouched. Any failure drops only its candidates.
+  Signals on the `rag.graph_signals` logger. **Switch it on only when
+  `python -m evaluation.graph_eval` says "enable"** (gain somewhere, loss nowhere)
+  with the REAL embedder.
+
 **Retrieved context carries its provenance** (`rag/context_assemble.py::describe_hit`)
 — every chunk reaches the prompt behind one line naming the document, the app,
 who last edited it and when. All of it was already on the `documents` row each
@@ -1637,6 +1669,7 @@ app/feedback/ answer ratings + documentation gaps (one table, two writers)
 app/api/notifications.py  what needs attention, derived from connection rows
 app/insights/  registry + panels + store (SQL) + facts + github_facts +
               linear_facts + sentiment + scopes + resolve (ask box) + pins
+app/graph/     Second Brain: identities, builder, linking, walk (+ evaluation/graph_eval.py)
 app/workspaces/ sub-workspace CRUD + membership (assert_member)
 app/schedulers/ store, activity (live "since T"), prompts, runner, worker
 app/api/      FastAPI — deps (session/org_id), auth, admin, chat, workspaces,
@@ -1990,7 +2023,11 @@ partial unique indexes: org-wide vs workspace; `sync_requested_at` webhook flag
 (scoped by `org_id` **and** `user_id`, unlike every other tenant table; `model` NULL = the configured default) ·
 `conversation_attachments` (metadata + `storage_key` only — the bytes and the extracted text are Cloudinary objects, `content` NULL on every row written since) · `feedback_and_gaps` (refusals + thumbs in one table; `user_id` is `ON DELETE SET NULL`, the only tenant table that does not cascade from a person) · `activity_facts` (the ONLY numeric substrate for charts; two partial unique
 indexes on `external_id`, org-wide vs workspace) · `insight_pins` (personal,
-`(org_id, user_id)`; stores the spec, never the numbers) · `scheduler_reports` (same `(org_id, user_id)` scoping; snapshots its labels
+`(org_id, user_id)`; stores the spec, never the numbers) · `person_identities`
+(one row per person per connector; `user_id` only on proof, `ON DELETE SET NULL`) ·
+`kg_entities` / `kg_edges` / `kg_evidence` (the graph: IDs and relationships only,
+partial unique indexes org-wide vs space; an edge is visible only through its
+evidence) · `scheduler_reports` (same `(org_id, user_id)` scoping; snapshots its labels
 rather than joining, so an archived report survives a rename or a deleted
 space — it cascades only from the scheduler, org and user).
 
@@ -2026,9 +2063,19 @@ conversations from the index, the constrained resolver + personal pins API, and
 Forms sentiment (never indexed, owners-only, 5-response floor). Indexed
 tenants that predate charts get `activity_facts` from `backfill_all_document_facts`
 (tick + lazy on an empty Ask chart). "Show a pie of files…" recovers a spec
-when the model says qa.
+when the model says qa. Second Brain Phase 1 (`app/graph/`): capture at sync,
+identity linking + "Linked accounts", the graph builder, the access-safe walk,
+and the graph as a retrieval list — **built, OFF for answers**.
 
 **Pending / known gaps**
+- Second Brain: **`GRAPH_RETRIEVAL_ENABLED` stays off until
+  `python -m evaluation.graph_eval` runs with the real embedder and says
+  "enable"** (the stand-in embedder in `tests/test_graph_eval.py` only proves the
+  machinery). The "Linked accounts" page is `tsc`-checked only, never rendered.
+  `member_of` (private-channel membership) is not built. Deploy needs the
+  additive schema (graph tables, `pg_trgm`, `person_identities`,
+  `oauth_states.user_id`); existing documents fill in over ticks
+  (`refresh_missing_meta` 25/job, `graph.builder.backfill` 200/tick).
 - Document-level access: **the Drive `permissions` path has never run against a
   live folder** — the field list, the grant-type mapping and the
   omitted-permissions case are written from the documented shapes and tested
