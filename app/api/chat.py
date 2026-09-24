@@ -804,6 +804,31 @@ def _stream_attachment_answer(
     )
 
 
+def _previous_question(
+    org_id: str,
+    conversation_id: str | None,
+    workspace_id: str | None,
+    session: SessionClaims | None,
+) -> str | None:
+    """The last question asked in this conversation, for routing a follow-up.
+
+    Never raises: without it a follow-up is routed on its own words, as before.
+    """
+    if not conversation_id or session is None:
+        return None
+    try:
+        turns = conversation_store.get_conversation_turns(
+            conversation_id=conversation_id,
+            org_id=org_id,
+            user_id=session.user_id,
+            workspace_id=workspace_id,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("could not read the previous turn for routing", exc_info=True)
+        return None
+    return turns[-1].question if turns else None
+
+
 def _stream_answer(
     question: str,
     org_id: str,
@@ -842,7 +867,11 @@ def _stream_answer(
     # key is honoured, and "workspace"/"policy" fall through to the same
     # default `_route` already computed.
     decision = choose_agent(
-        question, org_id, workspace_id=workspace_id, requested_agent=requested_agent
+        question,
+        org_id,
+        workspace_id=workspace_id,
+        requested_agent=requested_agent,
+        context=_previous_question(org_id, conversation_id, workspace_id, session),
     )
     logger.info(
         "Chat routing: agent=%s reason=%s scores=%s",

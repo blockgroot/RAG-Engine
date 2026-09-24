@@ -40,14 +40,18 @@ refusal, never a wrong answer from the wrong source.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 
 from ..config.settings import EmbeddingSettings, RagSettings
 from .orchestration import DIRECT_AGENT_KEYS, INSIGHTS_KEY, POLICY_KEY, WORKSPACE_KEY
+
+_ROUTING_POOL = ThreadPoolExecutor(max_workers=8, thread_name_prefix="routing-probe")
 
 logger = logging.getLogger(__name__)
 
@@ -633,14 +637,36 @@ def _try_insights_route(
     return None
 
 
+# ponytail: calibrated on four live pairs (follow-ups 0.01-0.03 apart, new
+# topics 0.24-0.28); log `scores` and re-fit if follow-ups start misrouting.
+_FOLLOW_UP_MARGIN = 0.1
+
+
+def _no_clear_winner(scores: dict[str, float]) -> bool:
+    """True when the best source leads the runner-up by less than the margin."""
+    top = sorted(scores.values(), reverse=True)
+    return not top or (len(top) > 1 and top[0] - top[1] < _FOLLOW_UP_MARGIN)
+
+
 def choose_agent(
     question: str,
     org_id: str,
     *,
     workspace_id: str | None = None,
     requested_agent: str | None = None,
+    context: str | None = None,
 ) -> RoutingDecision:
     """Decide which agent answers ``question``. Never raises.
+
+    ``context`` is the conversation's previous question. A follow-up such as
+    "elaborate and describe in detail" names no source, so it scores about
+    the SAME everywhere (measured: top two within 0.03, all above the gate)
+    and landed on whichever corpus edged it -- a Drive answer followed up from
+    Notion. When no source clearly wins on the question alone, it is
+    re-probed together with the turn it follows. A new topic in the same chat
+    has a clear winner (0.73 vs 0.45) and is routed on its own words, because
+    always blending the previous turn sent "what is our leave policy?" after
+    a Linear question to Linear.
 
     Precedence, and the reason for each step:
 
@@ -688,6 +714,18 @@ def choose_agent(
     if not connected:
         return RoutingDecision(default_key, "no-sources")
 
+    embedded = connected & set(EMBEDDED_PROVIDERS)
+    # The cosine probe (an embedding + one query) runs WHILE the chart
+    # classifier's model call is in flight rather than after it -- the two are
+    # independent, and serially they were the whole of routing's latency. A
+    # chart or named-repo answer simply discards it.
+    probe = None
+    if embedded and not (len(embedded) == 1 and "github" not in connected):
+        probe = _ROUTING_POOL.submit(
+            contextvars.copy_context().run,
+            _probe_scores, question, org_id, workspace_id, connected,
+        )
+
     visual = _try_insights_route(question, connected, org_id, workspace_id)
     if visual is not None:
         return visual
@@ -698,13 +736,21 @@ def choose_agent(
             logger.info("Agent routing: %r names repo %s", question[:60], named)
             return RoutingDecision("github", "repo-named")
 
-    embedded = connected & set(EMBEDDED_PROVIDERS)
     if len(embedded) == 1 and "github" not in connected:
         return RoutingDecision(next(iter(embedded)), "only-source")
 
-    scores = _probe_scores(question, org_id, workspace_id, connected)
+    scores = (
+        probe.result() if probe is not None
+        else _probe_scores(question, org_id, workspace_id, connected)
+    )
     threshold = RagSettings.from_env().similarity_threshold
     best = max(scores, key=scores.get) if scores else None
+
+    if context and _no_clear_winner(scores):
+        follow = _probe_scores(f"{context}\n{question}", org_id, workspace_id, connected)
+        follow_best = max(follow, key=follow.get) if follow else None
+        if follow_best is not None and follow[follow_best] >= threshold:
+            return RoutingDecision(follow_best, "follow-up", follow)
 
     if best is not None and scores[best] >= threshold:
         return RoutingDecision(best, "best-match", scores)

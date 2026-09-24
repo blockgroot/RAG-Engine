@@ -579,3 +579,39 @@ def test_a_document_question_is_not_pulled_to_github(monkeypatch):
     decision = routing.choose_agent("what is our parental leave policy?", ORG)
     assert decision.agent_key == "notion"
     assert decision.reason == "best-match"
+
+
+def test_a_weak_follow_up_is_routed_with_the_turn_it_follows(monkeypatch):
+    """"Elaborate and describe in detail" after a Drive answer landed on
+    Notion: it names no source, so alone it scores under the gate everywhere."""
+    _stub(monkeypatch, connected={"notion", "google"})
+
+    def probe(text, *a, **k):
+        if "AI Development Ecosystem" in text:
+            return {"google": 0.62, "notion": 0.30}
+        return {"google": 0.53, "notion": 0.56}   # flat, and above the gate
+
+    monkeypatch.setattr(routing, "_probe_scores", probe)
+    monkeypatch.setattr(routing, "_try_insights_route", lambda *a, **k: None)
+
+    decision = routing.choose_agent(
+        "Elaborate and describe in detail.", ORG,
+        context='What are the key rules in "AI Development Ecosystem"?',
+    )
+    assert (decision.agent_key, decision.reason) == ("google", "follow-up")
+    # Without a previous turn nothing changes.
+    assert routing.choose_agent("Elaborate and describe in detail.", ORG).agent_key == "notion"
+
+
+def test_a_new_topic_in_the_same_chat_is_routed_on_its_own_words(monkeypatch):
+    _stub(monkeypatch, connected={"notion", "linear"})
+    monkeypatch.setattr(routing, "_try_insights_route", lambda *a, **k: None)
+    monkeypatch.setattr(
+        routing, "_probe_scores",
+        lambda text, *a, **k: {"linear": 0.75, "notion": 0.63} if "SYV-5" in text
+        else {"linear": 0.45, "notion": 0.73},
+    )
+    decision = routing.choose_agent(
+        "What is our leave policy?", ORG, context="What's the status of SYV-5?"
+    )
+    assert (decision.agent_key, decision.reason) == ("notion", "best-match")

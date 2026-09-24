@@ -85,10 +85,6 @@ DEFAULT_RETRIEVAL_HYBRID_ENABLED = True
 DEFAULT_RETRIEVAL_RERANK_ENABLED = True
 DEFAULT_RETRIEVAL_CANDIDATE_POOL = 16
 DEFAULT_RETRIEVAL_RRF_K = 60
-# Recency-aware retrieval (rag/recency_intent.py). The default window is what a
-# VAGUE ask ("what's new?") boosts toward; an explicit "past 3 days" sets its own.
-DEFAULT_RETRIEVAL_RECENCY_ENABLED = True
-DEFAULT_RETRIEVAL_RECENCY_DEFAULT_DAYS = 30
 DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
 
 DEFAULT_RETRIEVAL_REUSE_ENABLED = True
@@ -1315,8 +1311,6 @@ class RetrievalSettings:
     rerank_enabled: bool = DEFAULT_RETRIEVAL_RERANK_ENABLED
     candidate_pool: int = DEFAULT_RETRIEVAL_CANDIDATE_POOL
     rrf_k: int = DEFAULT_RETRIEVAL_RRF_K
-    recency_enabled: bool = DEFAULT_RETRIEVAL_RECENCY_ENABLED
-    recency_default_days: int = DEFAULT_RETRIEVAL_RECENCY_DEFAULT_DAYS
 
     @classmethod
     def from_env(cls) -> "RetrievalSettings":
@@ -1327,13 +1321,6 @@ class RetrievalSettings:
                 os.getenv("RETRIEVAL_CANDIDATE_POOL") or DEFAULT_RETRIEVAL_CANDIDATE_POOL
             ),
             rrf_k=int(os.getenv("RETRIEVAL_RRF_K") or DEFAULT_RETRIEVAL_RRF_K),
-            recency_enabled=env_bool(
-                "RETRIEVAL_RECENCY_ENABLED", DEFAULT_RETRIEVAL_RECENCY_ENABLED
-            ),
-            recency_default_days=int(
-                os.getenv("RETRIEVAL_RECENCY_DEFAULT_DAYS")
-                or DEFAULT_RETRIEVAL_RECENCY_DEFAULT_DAYS
-            ),
         )
 
 
