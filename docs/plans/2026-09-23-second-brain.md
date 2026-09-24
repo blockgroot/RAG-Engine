@@ -290,8 +290,9 @@ Differences from the sketch above, each for a reason:
 - **Found and fixed on the way:** deferred enrichment (on by default) rewrote
   every freshly synced row with only the run tags, so a restricted Drive file
   came back SCOPE-PUBLIC, a Slack thread lost its channel tag and its editor.
-  It now writes the same access/tags/editor/meta as ingest and skips a
-  document whose sharing it cannot read.
+  It now replaces the CHUNKS only (`replace_source_document_chunks`) and leaves
+  the row as ingest wrote it; re-reading sharing from its re-fetch would have
+  skipped every Slack thread, whose sharing exists only on the listing.
 
 ### 1.2 Identity
 

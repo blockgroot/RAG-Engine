@@ -263,9 +263,12 @@ hook, and every process boundary must `close_pool()`.
 `activity_facts.actor_key` for facts), with ZERO extra API calls — the fakes
 pin it. Identity keys are `<provider>:<id>` or `email:<addr>`, **never a
 display name**; a name alone is dropped. `{}` = captured/empty, NULL = not yet
-captured (bounded `refresh_missing_meta` per job). **Deferred enrichment
-REPLACES the row, so it must pass every field ingest passes** — it passed only
-run tags and re-published restricted Drive files scope-wide until 1.1.
+captured (bounded `refresh_missing_meta` per job). **Deferred enrichment swaps
+CHUNKS ONLY** (`replace_source_document_chunks`): it used to re-save the whole
+row via `upsert_source_document` with only run tags, re-publishing restricted
+Drive files scope-wide and dropping Slack channel tags. Never re-read sharing
+from a re-fetch there — Slack reports it only on the LISTING, and ingest has
+already applied skip / owner-only / freeze to that exact row.
 
 **Retrieved context carries its provenance** (`rag/context_assemble.py::describe_hit`)
 — every chunk reaches the prompt behind one line naming the document, the app,

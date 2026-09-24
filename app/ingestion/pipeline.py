@@ -762,16 +762,6 @@ def enrich_source_contextual(
     for i, external_id in enumerate(external_ids, start=1):
         try:
             doc = adapter.fetch_document(external_id)
-            access = _doc_access(doc, None, provider)
-            if access is None:
-                # The re-fetch could not say who may read it. The row ingest
-                # just wrote carries a real answer; rewriting it with a guess
-                # (or, as this path used to, with the scope-public DEFAULT) is
-                # the leak. Keep the plain chunks.
-                report("enriching", i, total)
-                continue
-            is_public, viewers, _unreadable = access
-            meta, meta_editor = _doc_meta(doc)
             clean = preprocess(sanitize_ingest_text(doc.content))
             chunks = chunk_text(clean, chunking)
             if not chunks:
@@ -802,29 +792,23 @@ def enrich_source_contextual(
                     for stored, raw in zip(chunks, raw_chunks)
                 ]
             embeddings = embedder.embed(chunks)
-            store.upsert_source_document(
+            # CHUNKS ONLY -- the documents row stays exactly as ingest wrote it.
+            # This used to call `upsert_source_document`, which deletes and
+            # re-inserts the row, with only the run tags: every deferred enrich
+            # (on by default) re-published a restricted Drive file to the whole
+            # scope and dropped a Slack thread's channel tag and editor.
+            # Re-reading the sharing from this re-fetch is NOT a fix: Slack
+            # reports sharing only on the listing, and ingest has already
+            # applied the skip / owner-only / freeze rules to this very row.
+            if store.replace_source_document_chunks(
                 org_id,
                 provider=provider,
                 external_id=doc.external_id,
-                title=doc.title,
                 chunks=chunks,
                 embeddings=embeddings,
-                source_uri=doc.source_uri,
-                last_modified=doc.last_modified,
                 workspace_id=workspace_id,
-                # EVERY field ingest wrote, because this REPLACES the row. It
-                # used to pass only the run tags, so each deferred enrich (on by
-                # default) re-published a restricted Drive file to the whole
-                # scope, dropped a Slack thread's channel tag and its editor --
-                # and would now also drop the Second Brain metadata.
-                tags=_doc_tags(doc, tags),
-                last_editor=doc.last_editor,
-                is_public=is_public,
-                viewers=viewers,
-                source_meta=meta,
-                editor_key=meta_editor,
-            )
-            enriched += 1
+            ) is not None:
+                enriched += 1
         except Exception:  # noqa: BLE001 - one bad page must not abort enrich
             pass
         report("enriching", i, total)

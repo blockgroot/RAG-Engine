@@ -504,6 +504,30 @@ class VectorStore(ABC):
             "this vector store does not support source document acknowledge"
         )
 
+    def replace_source_document_chunks(
+        self,
+        org_id: str,
+        *,
+        provider: str,
+        external_id: str,
+        chunks: list[str],
+        embeddings: list[list[float]],
+        workspace_id: str | None = None,
+    ) -> str | None:
+        """Swap a stored document's chunks, leaving its ``documents`` row untouched.
+
+        For deferred enrichment, which only improves chunk TEXT. The row's
+        access set, tags, editor and Second Brain metadata were decided by the
+        ingest that wrote it moments earlier, under every rule that path applies
+        (skip, owner-only fallback, freeze). Re-deriving them from a re-fetch
+        cannot reproduce that: Slack reports sharing only on the LISTING, so a
+        fetched thread carries none. Returns the document id, or ``None`` when
+        the row no longer exists (removed since ingest) — nothing is written.
+        """
+        raise NotImplementedError(
+            "this vector store does not support replacing source document chunks"
+        )
+
     def set_source_document_access(
         self,
         org_id: str,

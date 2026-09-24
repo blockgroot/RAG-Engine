@@ -631,6 +631,51 @@ class PgVectorStore(VectorStore):
             ).fetchone()
         return str(row[0])
 
+    def replace_source_document_chunks(
+        self,
+        org_id: str,
+        *,
+        provider: str,
+        external_id: str,
+        chunks: list[str],
+        embeddings: list[list[float]],
+        workspace_id: str | None = None,
+    ) -> str | None:
+        if len(chunks) != len(embeddings):
+            raise ProviderError(
+                f"chunks ({len(chunks)}) and embeddings ({len(embeddings)}) "
+                "must be the same length"
+            )
+        if not chunks:
+            raise ProviderError("Cannot replace a document's chunks with none")
+        with get_connection(self._settings) as conn:
+            row = conn.execute(
+                """
+                SELECT id FROM documents
+                WHERE org_id = %s::uuid
+                  AND source_provider = %s
+                  AND workspace_id IS NOT DISTINCT FROM %s::uuid
+                  AND source_external_id = %s
+                FOR UPDATE
+                """,
+                (org_id, provider, workspace_id, external_id),
+            ).fetchone()
+            if row is None:
+                return None
+            document_id = row[0]
+            conn.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
+            conn.cursor().executemany(
+                """
+                INSERT INTO chunks (org_id, document_id, chunk_index, content, embedding, workspace_id)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s::uuid)
+                """,
+                [
+                    (org_id, document_id, index, content, _to_db_vector(embedding), workspace_id)
+                    for index, (content, embedding) in enumerate(zip(chunks, embeddings))
+                ],
+            )
+        return str(document_id)
+
     def set_source_document_access(
         self,
         org_id: str,

@@ -360,6 +360,8 @@ class _Store:
         self.acks: list[dict] = []
         self.meta_writes: list[tuple] = []
         self.missing = list(missing or [])
+        self.chunk_replacements: list[dict] = []
+        self.row_exists = True
 
     def list_source_documents(self, *a, **k):
         return []
@@ -376,6 +378,12 @@ class _Store:
 
     def acknowledge_source_document(self, org_id, **kw):
         self.acks.append(kw)
+        return "doc-id"
+
+    def replace_source_document_chunks(self, org_id, **kw):
+        if not self.row_exists:
+            return None
+        self.chunk_replacements.append(kw)
         return "doc-id"
 
     def list_source_documents_missing_meta(self, org_id, *, provider, workspace_id=None, limit=25):
@@ -434,46 +442,52 @@ def test_a_document_with_nothing_to_capture_is_stored_as_empty_not_null(monkeypa
     assert store.upserts[0]["source_meta"] == {}
 
 
-def test_deferred_enrichment_keeps_access_tags_editor_and_meta():
-    """Regression: enrichment REPLACES the row, and it used to pass only the run
-    tags — every restricted Drive file came back scope-public after a sync."""
+class _LLM:
+    def generate(self, prompt):
+        return "Context."
+
+
+def test_deferred_enrichment_replaces_chunks_and_never_rewrites_the_row():
+    """Regression: enrichment used to re-save the whole row with only the run
+    tags, so every restricted Drive file came back scope-public after a sync.
+    It now swaps chunks only, so there is nothing about access to get wrong."""
     store = _Store()
-    restricted = _doc(
-        access=DocAccess.restricted(["ada@x.com"]), tags=["slack-channel:C1"], editor="Ada"
-    )
-
-    class _LLM:
-        def generate(self, prompt):
-            return "Context."
-
+    restricted = _doc(access=DocAccess.restricted(["ada@x.com"]), tags=["t"], editor="Ada")
     n = enrich_source_contextual(
         _Adapter({"d1": restricted}), "org", provider="google", external_ids=["d1"],
         embedder=_Embedder(), store=store, llm=_LLM(),
         contextual=ContextualSettings(enabled=True, defer=True, concurrency=1),
     )
     assert n == 1
-    [written] = store.upserts
-    assert written["is_public"] is False
-    assert written["viewers"] == ["ada@x.com"]
-    assert written["tags"] == ["slack-channel:C1"]
-    assert written["last_editor"] == "Ada"
-    assert written["editor_key"] == "slack:U1"
+    assert store.upserts == [] and store.acks == []
+    [replaced] = store.chunk_replacements
+    assert replaced["external_id"] == "d1"
+    assert replaced["chunks"][0].startswith("Context.")
+    assert set(replaced) == {"provider", "external_id", "chunks", "embeddings", "workspace_id"}
 
 
-def test_enrichment_leaves_a_document_whose_sharing_it_cannot_read():
+def test_a_slack_thread_is_still_enriched_though_its_fetch_carries_no_sharing():
+    """Slack reports sharing only on the LISTING. A fix that re-read sharing
+    from this re-fetch would skip every Slack thread."""
     store = _Store()
-    no_access = _doc(access=None)  # google is ACL-capable: None means "unknown"
-
-    class _LLM:
-        def generate(self, prompt):
-            return "Context."
-
+    thread = _doc(access=None)
     n = enrich_source_contextual(
-        _Adapter({"d1": no_access}), "org", provider="google", external_ids=["d1"],
+        _Adapter({"d1": thread}), "org", provider="slack", external_ids=["d1"],
         embedder=_Embedder(), store=store, llm=_LLM(),
         contextual=ContextualSettings(enabled=True, defer=True, concurrency=1),
     )
-    assert n == 0 and store.upserts == []
+    assert n == 1 and len(store.chunk_replacements) == 1
+
+
+def test_enrichment_does_not_count_a_document_removed_since_ingest():
+    store = _Store()
+    store.row_exists = False
+    n = enrich_source_contextual(
+        _Adapter({"d1": _doc()}), "org", provider="notion", external_ids=["d1"],
+        embedder=_Embedder(), store=store, llm=_LLM(),
+        contextual=ContextualSettings(enabled=True, defer=True, concurrency=1),
+    )
+    assert n == 0
 
 
 def test_meta_refresh_is_bounded_and_skips_documents_this_run_fetched():
@@ -555,6 +569,37 @@ def test_meta_round_trips_through_postgres():
             ).fetchone()[0]
         assert rows == {"new": "slack:U1", "old": None}
         assert stored["people"][0]["key"] == "slack:U1"
+
+        # Enrichment's chunks-only swap keeps the row, its id and its access.
+        store.upsert_source_document(
+            org_id, provider="google", external_id="drv", title="Private",
+            chunks=["raw"], embeddings=[vector], tags=["t"], last_editor="Ada",
+            is_public=False, viewers=["ada@x.com"], source_meta=meta, editor_key="slack:U1",
+        )
+        with get_connection() as conn:
+            before = conn.execute(
+                "SELECT id, doc_is_public, doc_viewers, tags, source_last_editor, "
+                "source_editor_key FROM documents WHERE org_id = %s::uuid AND source_external_id = 'drv'",
+                (org_id,),
+            ).fetchone()
+        returned = store.replace_source_document_chunks(
+            org_id, provider="google", external_id="drv",
+            chunks=["Context. raw", "second"], embeddings=[vector, vector],
+        )
+        with get_connection() as conn:
+            after = conn.execute(
+                "SELECT id, doc_is_public, doc_viewers, tags, source_last_editor, "
+                "source_editor_key FROM documents WHERE org_id = %s::uuid AND source_external_id = 'drv'",
+                (org_id,),
+            ).fetchone()
+            contents = [r[0] for r in conn.execute(
+                "SELECT content FROM chunks WHERE document_id = %s ORDER BY chunk_index", (before[0],)
+            ).fetchall()]
+        assert after == before and returned == str(before[0])
+        assert contents == ["Context. raw", "second"]
+        assert store.replace_source_document_chunks(
+            org_id, provider="google", external_id="missing", chunks=["x"], embeddings=[vector],
+        ) is None
     finally:
         with get_connection() as conn:
             conn.execute("DELETE FROM organizations WHERE id = %s::uuid", (org_id,))
