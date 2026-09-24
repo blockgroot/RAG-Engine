@@ -458,7 +458,8 @@ def build_facts(org_id: str, workspace_id: str | None) -> int:
             login = actor_key.split(":", 1)[1]
             pkey = batch.entity(identity_key("github", login), "person", actor or login)
             people.append({"provider": "github", "key": actor_key, "name": actor})
-            rkey = batch.entity(repo_key(repo), "repo", repo)
+            # The short name is how people say it ("the api repo").
+            rkey = batch.entity(repo_key(repo), "repo", repo, aliases=[repo.split("/")[-1].lower()])
             if kind == "commit":
                 batch.edge(pkey, rkey, "committed_to", fact_id=fact_id, is_public=True)
                 continue

@@ -417,6 +417,24 @@ SELECT DISTINCT ... LIMIT %(cap)s;
   edges on the next walk; a `public_only` viewer sees public evidence only; a
   walk costs a known, bounded number of round trips.
 
+**Status: done** (`app/graph/linking.py`, `app/graph/walk.py`,
+`tests/test_graph_walk.py`). Beyond the sketch:
+
+- A DOCUMENT entity is entered only if the viewer may open that document, as
+  well as the edge being visible. Edge visibility alone was not enough: a
+  `references` edge is evidenced by the document that CONTAINS the link, so a
+  readable page linking to an unreadable one would have revealed the second's
+  title and led past it.
+- Non-document evidence (GitHub facts, `same_person`) has its own rule in
+  `security/visibility.py::evidence_predicate`, `is_public IS TRUE` so NULL
+  fails closed. All access SQL still lives in that one file.
+- `same_person` edges cost no hop, so a member's identities across tools
+  count as one person.
+- The outer query has no DISTINCT/ORDER: Postgres evaluates a recursive CTE
+  only as far as the parent fetches, so the LIMIT stops the walk itself
+  (breadth-first). `truncated` is set when the cap is what ended it.
+- Three round trips per walk: seeds (`link_question`, one query), walk, evidence.
+
 ### 1.6 The graph as a retrieval list
 
 - In `app/rag/retrieval.py::_first_stage_all`, add a ranked list next to

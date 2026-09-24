@@ -41,6 +41,22 @@ def visibility_predicate(alias: str | None = "d") -> str:
     return _PREDICATE.format(prefix=prefix)
 
 
+_EVIDENCE_PREDICATE = "({prefix}is_public IS TRUE OR {prefix}viewers && %s::text[])"
+
+
+def evidence_predicate(alias: str = "ev") -> str:
+    """The rule for knowledge-graph evidence that is NOT a document.
+
+    A graph edge backed by a document is checked with ``visibility_predicate``
+    against that document, live. Evidence with no document -- a GitHub fact, a
+    ``same_person`` link -- carries its own ``is_public``/``viewers`` instead.
+    Same shape and the same two rules as the document predicate, and one more:
+    ``is_public IS TRUE``, so a NULL (never set) is NOT public -- fail closed.
+    ONE ``%s`` for the ACL array.
+    """
+    return _EVIDENCE_PREDICATE.format(prefix=f"{alias}.")
+
+
 def viewer_clause(viewer: "Viewer | None", alias: str | None = "d") -> tuple[str, list[list[str]]]:
     """Return ``(" AND <predicate>", [acl])`` for ``viewer``, or ``("", [])``.
 
