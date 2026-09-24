@@ -131,6 +131,7 @@ class PgVectorStore(VectorStore):
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
         viewer: Viewer | None = None,
+        document_ids: list[str] | None = None,
     ) -> list[RetrievedChunk]:
         if not query_embedding:
             raise EmbeddingProviderError("query_embedding is empty")
@@ -160,6 +161,7 @@ class PgVectorStore(VectorStore):
                   AND (%s::timestamptz IS NULL OR d.source_last_modified >= %s::timestamptz)
                   AND (%s::timestamptz IS NULL OR d.source_last_modified <= %s::timestamptz)
                   AND (%s::text[] IS NULL OR d.tags && %s::text[])
+                  AND (%s::uuid[] IS NULL OR c.document_id = ANY(%s::uuid[]))
                   {viewer_sql.lstrip()}
                 ORDER BY c.embedding <=> %s
                 LIMIT %s
@@ -176,6 +178,8 @@ class PgVectorStore(VectorStore):
                     before,
                     tags,
                     tags,
+                    document_ids,
+                    document_ids,
                     *viewer_params,
                     vector,
                     top_k,

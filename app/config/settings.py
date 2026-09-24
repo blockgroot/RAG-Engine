@@ -1672,6 +1672,11 @@ class GraphSettings:
     """
 
     meta_refresh_batch: int = DEFAULT_GRAPH_META_REFRESH_BATCH
+    #: Whether ANSWERS use the graph (step 1.6). OFF by default and kept off
+    #: until the eval shows a gain (step 1.7): the builder always runs so the
+    #: graph fills either way, and this flag only decides whether retrieval
+    #: adds the graph's ranked list.
+    retrieval_enabled: bool = False
 
     @classmethod
     def from_env(cls) -> "GraphSettings":
@@ -1680,4 +1685,7 @@ class GraphSettings:
             batch = int(raw) if raw not in (None, "") else DEFAULT_GRAPH_META_REFRESH_BATCH
         except ValueError:
             batch = DEFAULT_GRAPH_META_REFRESH_BATCH
-        return cls(meta_refresh_batch=max(0, batch))
+        return cls(
+            meta_refresh_batch=max(0, batch),
+            retrieval_enabled=env_bool("GRAPH_RETRIEVAL_ENABLED", False),
+        )

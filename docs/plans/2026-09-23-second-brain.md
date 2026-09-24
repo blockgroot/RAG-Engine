@@ -447,6 +447,18 @@ SELECT DISTINCT ... LIMIT %(cap)s;
   default**. The builder always runs so the graph fills; the flag only decides
   whether answers use it.
 
+**Status: done, OFF** (`app/rag/retrieval.py::_graph_documents`,
+`VectorStore.query(document_ids=...)`, `tests/test_graph_retrieval.py`).
+
+- One vector search, primary query only, restricted to the walk's evidence
+  documents and filtered by the viewer AGAIN; fused by the existing RRF.
+  Each hit carries a real cosine, so `gate_score` is unchanged.
+- Linking + walk run before the first stage (three round trips) only when the
+  flag is on; any failure drops the graph list and nothing else.
+- Signals go to their own logger, `rag.graph_signals` (`graph_signal`: seeds,
+  exact seeds, documents, edges, truncated; `graph_hits`: chunks it added),
+  rather than being threaded through every `RagResult` path.
+
 ### 1.7 Measure before switching it on
 
 - Add multi-hop questions to the golden set ("who reviewed the PR that fixed

@@ -285,8 +285,13 @@ class VectorStore(ABC):
         date_range: "DateRange | None" = None,
         tags: list[str] | None = None,
         viewer: "Viewer | None" = None,
+        document_ids: list[str] | None = None,
     ) -> list[RetrievedChunk]:
         """Return the ``top_k`` most similar chunks *within ``org_id`` only*.
+
+        ``document_ids``: restrict to these documents (the knowledge graph's
+        evidence, Second Brain 1.6). An ADDITIONAL filter -- every other one,
+        the viewer's included, still applies. ``None`` (default) is a no-op.
 
         ``viewer`` (document-level access filtering): ``None`` (default) reads
         every document in scope, exactly as before this existed. A ``Viewer``
