@@ -129,6 +129,22 @@ export interface Attachment {
   truncated: boolean;
 }
 
+/** One of the member's own accounts in a connected tool, linked to them. */
+export interface LinkedIdentity {
+  id: string;
+  provider: string;
+  account: string;
+  email: string | null;
+  display_name: string | null;
+  verified_by: "provider_email" | "oauth" | null;
+  can_unlink: boolean;
+}
+
+export interface LinkedIdentities {
+  identities: LinkedIdentity[];
+  github_link_available: boolean;
+}
+
 export interface Me {
   user_id: string;
   org_id: string;
@@ -750,6 +766,16 @@ export const api = {
         comment: input.comment ?? null,
         ...(input.workspaceId ? { workspace_id: input.workspaceId } : {}),
       }),
+    }),
+
+  linkedIdentities: () => request<LinkedIdentities>("/account/identities"),
+
+  /** A full-page navigation, not a fetch: it ends on GitHub's consent screen. */
+  githubLinkUrl: () => `${API_BASE_URL}/account/identities/github/link`,
+
+  unlinkIdentity: (identityId: string) =>
+    request<{ ok: boolean }>(`/account/identities/${encodeURIComponent(identityId)}`, {
+      method: "DELETE",
     }),
 
   feedbackSummary: (days = 30) =>

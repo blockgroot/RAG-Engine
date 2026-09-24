@@ -174,6 +174,17 @@ def record_github_facts(
     return GitHubFactsResult(written=written, repos=seen_repos, truncated=truncated)
 
 
+def actor_key(login: str | None) -> str | None:
+    """``github:<login>`` — the identity the Second Brain graph joins on.
+
+    Lowercased because GitHub logins are case-insensitive, so ``Ada`` in a
+    review and ``ada`` on a pull request are one account. Only ever built from
+    a LOGIN; a caller holding a display name passes None.
+    """
+    login = (login or "").strip()
+    return f"github:{login.lower()}" if login else None
+
+
 def _pull_rows(org_id, workspace_id, pull) -> list[tuple]:
     """One row for raising it, and one for merging it if it merged.
 
@@ -185,6 +196,7 @@ def _pull_rows(org_id, workspace_id, pull) -> list[tuple]:
         pull.author, pull.repo, pull.state,
         pull.created_at, None, pull.url,
         f"{pull.repo}#{pull.number}",
+        actor_key(pull.author),
     )]
     if pull.merged_at:
         # `merged_by` may be None (a deleted account, an automation). The merge
@@ -195,6 +207,7 @@ def _pull_rows(org_id, workspace_id, pull) -> list[tuple]:
             pull.merged_by, pull.repo, "merged",
             pull.merged_at, pull.lead_time_seconds, pull.url,
             f"{pull.repo}#{pull.number}",
+            actor_key(pull.merged_by),
         ))
     return rows
 
@@ -214,6 +227,7 @@ def _review_rows(org_id, workspace_id, pull, reviews) -> list[tuple]:
             review.reviewer, pull.repo, review.state,
             review.submitted_at or pull.created_at, None, pull.url,
             f"{pull.repo}#{pull.number}:{review.reviewer}",
+            actor_key(review.reviewer),
         ))
     return rows
 
@@ -228,6 +242,8 @@ def _commit_rows(org_id, workspace_id, commit) -> list[tuple]:
         commit.author, commit.repo, None,
         commit.date, None, commit.url,
         f"{commit.repo}:{commit.sha}",
+        # Only a real login: `author` may be the git display name.
+        actor_key(getattr(commit, "author_login", None)),
     )]
 
 
@@ -255,10 +271,11 @@ def _write(rows: list[tuple], workspace_id: str | None) -> int:
     sql = f"""
         INSERT INTO activity_facts
             (org_id, workspace_id, provider, kind, actor, subject, state,
-             occurred_at, value, url, external_id)
-        VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             occurred_at, value, url, external_id, actor_key)
+        VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         {conflict}
         DO UPDATE SET actor       = EXCLUDED.actor,
+                      actor_key   = EXCLUDED.actor_key,
                       state       = EXCLUDED.state,
                       occurred_at = EXCLUDED.occurred_at,
                       value       = EXCLUDED.value,

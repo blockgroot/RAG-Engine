@@ -185,6 +185,12 @@ def record_due_facts(settings: AutoSyncSettings | None = None) -> int:
         try:
             result = record_github_facts(org_id, workspace_id=workspace_id)
             ran += 1
+            try:
+                from ..graph.builder import build_facts
+
+                build_facts(org_id, workspace_id)
+            except Exception:  # noqa: BLE001 - a stale graph, never lost facts
+                logger.warning("Auto-sync: graph build failed for %s", connection_id, exc_info=True)
             logger.info(
                 "Auto-sync: recorded %s GitHub facts for org %s (%s)",
                 result.written, org_id, why,

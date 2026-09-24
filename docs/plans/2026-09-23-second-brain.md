@@ -32,7 +32,7 @@ same retrieval path and the same fail-open posture.
    `documents`. A copy outlives a revocation.
 2. **One definition of "who may see what".** The graph, live tools and
    retrieval use the same `Viewer` (unrestricted / a person / public_only) and
-   the **same SQL predicate** as `_VIEWER_SQL` (`pgvector_store.py:37`).
+   the **same SQL predicate**, `security/visibility.py::visibility_predicate`.
 3. **Scope is storage, not a filter.** Every new row carries `org_id` +
    `workspace_id`. A walk never crosses a scope; a Slack DM *picks* one scope,
    it never blends two.
@@ -239,6 +239,9 @@ In scope: steps 1.0–1.7. Out of scope: the cache tier (1c), LLM extraction
 
 ### 1.0 One shared visibility predicate (refactor, no behaviour change)
 
+**Status: done** (`app/security/visibility.py`, `tests/test_visibility.py`). Three copies
+found, not one: the vector store, starter chips and the scheduler digest.
+
 - **Move** `_VIEWER_SQL` / `_viewer_clause` out of
   `app/vectorstore/pgvector_store.py` into `app/security/visibility.py`.
 - **Why:** the graph must decide "can this viewer see this document?" with the
@@ -270,6 +273,27 @@ email, display name, role), `links` (target provider + external id or URL),
 - **Done when:** adapter fakes (Slack's rejects unexpected URLs) prove no new
   calls; mentions survive into `meta`.
 
+**Status: done** (`app/sources/meta.py`, `tests/test_source_meta.py`).
+Differences from the sketch above, each for a reason:
+
+- Links are also read from the document BODY (`meta.extract_links`, in the
+  pipeline, so every adapter gets it): a Linear or PR URL sits in a Drive
+  doc's text as often as in a field. Only URL shapes that resolve to an id an
+  adapter stores are kept.
+- A MENTIONED Slack user and a Notion page's CREATOR are keyed by id with no
+  lookup — resolving each would be the per-person call §5 warns about.
+- A commit's `actor_key` is written only from a real login: `author` falls
+  back to the git display name, which must never become an identity.
+- `source_meta = {}` means "captured, nothing found"; NULL means "not captured
+  yet", which is what the refresh (`refresh_missing_meta`,
+  `GRAPH_META_REFRESH_BATCH=25` per job, `0` = off) looks for.
+- **Found and fixed on the way:** deferred enrichment (on by default) rewrote
+  every freshly synced row with only the run tags, so a restricted Drive file
+  came back SCOPE-PUBLIC, a Slack thread lost its channel tag and its editor.
+  It now replaces the CHUNKS only (`replace_source_document_chunks`) and leaves
+  the row as ingest wrote it; re-reading sharing from its re-fetch would have
+  skipped every Slack thread, whose sharing exists only on the listing.
+
 ### 1.2 Identity
 
 - Table `person_identities`, upserted by the builder from `source_meta.people`.
@@ -285,11 +309,40 @@ email, display name, role), `links` (target provider + external id or URL),
   in another org never links; nothing links without OAuth or a verified email;
   unlinking moves edges back to the unlinked identity.
 
+**Status: done** (`app/graph/identities.py`, `app/api/account.py`,
+`frontend/app/account/page.tsx`, `tests/test_identities.py`).
+
+- The GitHub link REUSES `/auth/github/callback` (a GitHub App registers one
+  callback URL, so a new route would need an App settings change). The
+  callback routes on the STATE's provider (`github_link`) and finishes by
+  consuming it under that provider, so neither flow can complete the other.
+- The person comes from `oauth_states.user_id` on the consumed state, never
+  the request: a forwarded callback URL links only whoever clicked.
+- `GET /user` once, then the token is DISCARDED — linking needs proof, not access.
+- Re-proving an already-linked GitHub account MOVES the link (logged).
+- An email link is not unlinkable (the next sync would re-create it); it
+  un-links itself when the connector's email stops matching.
+
 ### 1.3 Graph tables
 
 `kg_entities`, `kg_edges` (with `valid_from`/`valid_to`), `kg_evidence`,
 `pg_trgm` — per the schema above. Person key = `user:<id>` when linked, else
 `identity:<provider>:<id>`.
+
+**Status: done** (`app/db/schema.sql`, `tests/test_graph_builder.py`). Changes
+from the sketch, each for a reason:
+
+- Entities are unique on `(org_id[, workspace_id], key)`: the key already
+  encodes provider and kind, so `kind` in the index adds nothing.
+- A document entity's `document_id` is `ON DELETE SET NULL`, not CASCADE, and
+  the KEY is `<provider>:<external id>`: an updated document is deleted and
+  re-inserted with a new id, and the entity must survive that.
+- **People are keyed per connector identity, always** (`identity:<provider>:<id>`);
+  a linked member gets a `user:<id>` entity joined to each identity by a
+  `same_person` edge. Linking or unlinking then rewrites only those edges
+  (`rebuild_people`), instead of re-keying every edge the person has.
+- `kg_evidence.chunk_id` is not created yet — nothing in Phase 1 produces
+  chunk-level evidence (that is tier-3 extraction, Phase 1d).
 
 ### 1.4 The builder (`app/graph/builder.py`)
 
@@ -321,6 +374,19 @@ For each document an ingest job touched (`IngestResult.ingested_external_ids`):
 - **Done when:** running twice is idempotent; deleting a document removes its
   edges; a cross-scope reference is never created; disconnect purges.
 
+**Status: done** (`app/graph/builder.py`). Notes:
+
+- A reference target that ingests AFTER the page pointing at it is joined up
+  when the target builds: the builder re-links documents in scope whose
+  `source_meta.links` name it (≤200 per batch).
+- A Linear link carries the IDENTIFIER (`ENG-142`), which resolves through the
+  issue entity's `aliases`.
+- Documents re-fetched by the metadata refresh are built too
+  (`IngestResult.meta_refreshed_external_ids`).
+- `member_of` (private-channel membership) is NOT built in Phase 1: membership
+  is only stored as the threads' `doc_viewers`, and it is sensitive enough to
+  wait for evidence rows that carry the channel's own ACL.
+
 ### 1.5 Linking and walking (`linking.py`, `walk.py`)
 
 - **Linking:** exact identifiers in the question (`ENG-12`, `#14`, repo names)
@@ -351,6 +417,24 @@ SELECT DISTINCT ... LIMIT %(cap)s;
   edges on the next walk; a `public_only` viewer sees public evidence only; a
   walk costs a known, bounded number of round trips.
 
+**Status: done** (`app/graph/linking.py`, `app/graph/walk.py`,
+`tests/test_graph_walk.py`). Beyond the sketch:
+
+- A DOCUMENT entity is entered only if the viewer may open that document, as
+  well as the edge being visible. Edge visibility alone was not enough: a
+  `references` edge is evidenced by the document that CONTAINS the link, so a
+  readable page linking to an unreadable one would have revealed the second's
+  title and led past it.
+- Non-document evidence (GitHub facts, `same_person`) has its own rule in
+  `security/visibility.py::evidence_predicate`, `is_public IS TRUE` so NULL
+  fails closed. All access SQL still lives in that one file.
+- `same_person` edges cost no hop, so a member's identities across tools
+  count as one person.
+- The outer query has no DISTINCT/ORDER: Postgres evaluates a recursive CTE
+  only as far as the parent fetches, so the LIMIT stops the walk itself
+  (breadth-first). `truncated` is set when the cap is what ended it.
+- Three round trips per walk: seeds (`link_question`, one query), walk, evidence.
+
 ### 1.6 The graph as a retrieval list
 
 - In `app/rag/retrieval.py::_first_stage_all`, add a ranked list next to
@@ -363,12 +447,34 @@ SELECT DISTINCT ... LIMIT %(cap)s;
   default**. The builder always runs so the graph fills; the flag only decides
   whether answers use it.
 
+**Status: done, OFF** (`app/rag/retrieval.py::_graph_documents`,
+`VectorStore.query(document_ids=...)`, `tests/test_graph_retrieval.py`).
+
+- One vector search, primary query only, restricted to the walk's evidence
+  documents and filtered by the viewer AGAIN; fused by the existing RRF.
+  Each hit carries a real cosine, so `gate_score` is unchanged.
+- Linking + walk run before the first stage (three round trips) only when the
+  flag is on; any failure drops the graph list and nothing else.
+- Signals go to their own logger, `rag.graph_signals` (`graph_signal`: seeds,
+  exact seeds, documents, edges, truncated; `graph_hits`: chunks it added),
+  rather than being threaded through every `RagResult` path.
+
 ### 1.7 Measure before switching it on
 
 - Add multi-hop questions to the golden set ("who reviewed the PR that fixed
   ENG-142?").
 - Run the eval with the flag off and on; log `graph_hits` in query signals.
 - Enable in prod only if answers improve and nothing else regresses.
+
+**Status: measurement built; the switch is NOT thrown** (`evaluation/graph_eval.py`,
+`tests/test_graph_eval.py`). The multi-hop questions live in their own seeded
+corpus rather than the policy golden set, because they need people, links and
+facts the policy corpus does not have; the policy corpus rides along as
+distractors. `python -m evaluation.graph_eval` runs every case with the graph
+list off and on and prints a verdict: **enable only on a gain with no loss**.
+With a stand-in hashing embedder it reports +1 case, nothing lost — that proves
+the machinery, not the value. Run it with the real embedder before switching
+`GRAPH_RETRIEVAL_ENABLED` on in production.
 
 ---
 

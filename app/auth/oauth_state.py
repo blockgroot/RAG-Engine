@@ -20,21 +20,31 @@ _STATE_TTL_MINUTES = 10
 _STATE_BYTES = 32
 
 
-def create_state(org_id: str, provider: str, workspace_id: str | None = None) -> str:
+def create_state(
+    org_id: str,
+    provider: str,
+    workspace_id: str | None = None,
+    *,
+    user_id: str | None = None,
+) -> str:
     """Create a state value for a connect flow.
 
     ``workspace_id`` (Workspace-within-a-Workspace): ``None`` (default) is
     today's org-wide admin connect flow, unchanged. Non-``None`` records
     which sub-workspace this personal connection is for, so the callback
     knows to save it scoped to that workspace instead of the org.
+
+    ``user_id`` binds the flow to the PERSON who started it, for flows that
+    attach something to a person rather than a scope (``LINK_GITHUB``). Read
+    back only by ``consume_link_state``.
     """
     state = secrets.token_urlsafe(_STATE_BYTES)
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=_STATE_TTL_MINUTES)
     with get_connection() as conn:
         conn.execute(
-            "INSERT INTO oauth_states (state, org_id, provider, expires_at, workspace_id) "
-            "VALUES (%s, %s, %s, %s, %s)",
-            (state, org_id, provider, expires_at, workspace_id),
+            "INSERT INTO oauth_states (state, org_id, provider, expires_at, workspace_id, user_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s)",
+            (state, org_id, provider, expires_at, workspace_id, user_id),
         )
     return state
 
@@ -90,3 +100,42 @@ def peek_state_workspace(state: str, *, provider: str) -> str | None:
     except Exception:  # noqa: BLE001 - a nicer redirect must never raise
         return None
     return row[0] if row else None
+
+
+#: The state ``provider`` of "Link your GitHub account" (Second Brain 1.2). A
+#: separate value from ``"github"`` so a link state can never complete a
+#: connect flow, nor a connect state a link -- ``consume_state`` is scoped by it.
+LINK_GITHUB = "github_link"
+
+
+def peek_state_provider(state: str) -> str | None:
+    """The provider recorded on ``state``, WITHOUT consuming or validating it.
+
+    Routing only: GitHub has ONE registered callback URL, so the callback must
+    tell a link flow from a connect flow before choosing how to finish it.
+    Like ``peek_state_workspace`` it authorizes nothing -- whichever branch is
+    chosen still has to ``consume_*`` the state, scoped to that provider.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT provider FROM oauth_states WHERE state = %s", (state,)
+        ).fetchone()
+    return row[0] if row else None
+
+
+def consume_link_state(state: str, *, provider: str) -> tuple[str, str]:
+    """Consume a person-bound state; returns ``(org_id, user_id)``.
+
+    Raises like ``consume_state``, and also when the row carries no user --
+    a link that cannot name the person who asked for it binds to nobody.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            "UPDATE oauth_states SET consumed_at = now() "
+            "WHERE state = %s AND provider = %s AND consumed_at IS NULL AND expires_at > now() "
+            "RETURNING org_id::text, user_id::text",
+            (state, provider),
+        ).fetchone()
+    if not row or not row[1]:
+        raise OAuthError("Invalid, expired, or already-used OAuth state")
+    return row[0], row[1]

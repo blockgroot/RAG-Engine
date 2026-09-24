@@ -235,6 +235,10 @@ class _FakeStore:
     def acknowledge_source_document(self, org_id, **kwargs):
         return None
 
+    def replace_source_document_chunks(self, org_id, **kwargs):
+        self.last_chunks = list(kwargs.get("chunks") or [])
+        return "doc-id"
+
     def delete_source_documents(self, org_id, provider, ids, workspace_id=None):
         return 0
 

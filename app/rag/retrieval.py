@@ -19,12 +19,19 @@ pipeline's threshold logic behaves exactly as before.
 
 from __future__ import annotations
 
+import json
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
-from ..config.settings import RagSettings, RetrievalSettings
+from ..config.settings import GraphSettings, RagSettings, RetrievalSettings
 from ..reranker.base import Reranker
 from ..vectorstore.base import DateRange, RetrievedChunk, VectorStore, Viewer
+
+logger = logging.getLogger(__name__)
+#: Beside `rag.query_signals`: one line per question the graph list ran for,
+#: so step 1.7 can measure how often it links and what it contributes.
+_graph_log = logging.getLogger("rag.graph_signals")
 
 
 # Ceiling on concurrent first-stage searches for ONE question. Each in-flight
@@ -41,6 +48,9 @@ class RetrievalResult:
 
     hits: list[RetrievedChunk]  # final top_k, best-first (fused + reranked)
     gate_score: float | None    # best cosine similarity among candidates (gate signal)
+    # Chunks the knowledge graph contributed to the first stage (0 when the
+    # graph list is off or found nothing) -- logged so step 1.7 can measure it.
+    graph_hits: int = 0
 
 
 class HybridRetriever:
@@ -58,8 +68,10 @@ class HybridRetriever:
         settings: RetrievalSettings | None = None,
         rag_settings: RagSettings | None = None,
         source_provider: str | None = None,
+        graph_settings: GraphSettings | None = None,
     ) -> None:
         self._store = store
+        self._graph_settings = graph_settings or GraphSettings.from_env()
         self._reranker = reranker
         self._settings = settings or RetrievalSettings.from_env()
         self._rag_settings = rag_settings or RagSettings.from_env()
@@ -113,6 +125,8 @@ class HybridRetriever:
         if extra_queries:
             query_pairs.extend(extra_queries)
 
+        graph_documents = self._graph_documents(org_id, workspace_id, query_text, viewer)
+        graph_counter: list[int] = []
         ranked_lists = self._first_stage_all(
             org_id,
             query_pairs,
@@ -121,7 +135,12 @@ class HybridRetriever:
             date_range=date_range,
             tags=tags,
             viewer=viewer,
+            graph_documents=graph_documents,
+            graph_counter=graph_counter,
         )
+        graph_hits = sum(graph_counter)
+        if graph_documents:
+            _graph_log.info(json.dumps({"event": "graph_hits", "org_id": org_id, "graph_hits": graph_hits}))
 
         if len(ranked_lists) == 1:
             candidates = ranked_lists[0]
@@ -129,7 +148,7 @@ class HybridRetriever:
             candidates = self._rrf_fuse(ranked_lists, self._settings.rrf_k)
 
         if not candidates:
-            return RetrievalResult(hits=[], gate_score=None)
+            return RetrievalResult(hits=[], gate_score=None, graph_hits=graph_hits)
 
         gate_score = max((c.score for c in candidates), default=None)
 
@@ -139,7 +158,43 @@ class HybridRetriever:
         else:
             final = pool_candidates[:top_k]
 
-        return RetrievalResult(hits=final, gate_score=gate_score)
+        return RetrievalResult(hits=final, gate_score=gate_score, graph_hits=graph_hits)
+
+    def _graph_documents(
+        self, org_id: str, workspace_id: str | None, query_text: str, viewer: Viewer | None
+    ) -> list[str]:
+        """Documents the knowledge graph connects to this question (Second Brain 1.6).
+
+        Link the question to at most three entities, walk ≤2 hops as THIS
+        viewer, return the visible evidence documents. Empty when the flag is
+        off (the default), when nothing links, or on ANY failure: the graph can
+        only ever add candidates, so losing it must cost nothing but them.
+        """
+        if not self._graph_settings.retrieval_enabled:
+            return []
+        try:
+            from ..graph.linking import link_question
+            from ..graph.walk import walk
+
+            seeds = link_question(org_id, workspace_id, query_text, viewer)
+            result = walk(org_id, workspace_id, [s.id for s in seeds], viewer) if seeds else None
+            _graph_log.info(
+                json.dumps(
+                    {
+                        "event": "graph_signal",
+                        "org_id": org_id,
+                        "seeds": len(seeds),
+                        "exact_seeds": sum(1 for s in seeds if s.exact),
+                        "documents": len(result.document_ids) if result else 0,
+                        "edges": result.edges if result else 0,
+                        "truncated": bool(result and result.truncated),
+                    }
+                )
+            )
+            return result.document_ids if result else []
+        except Exception:  # noqa: BLE001 - see docstring
+            logger.warning("retrieval: graph list skipped", exc_info=True)
+            return []
 
     def _first_stage_all(
         self,
@@ -151,6 +206,8 @@ class HybridRetriever:
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
         viewer: Viewer | None = None,
+        graph_documents: list[str] | None = None,
+        graph_counter: list[int] | None = None,
     ) -> list[list[RetrievedChunk]]:
         """Run every first-stage search concurrently, one ranked list per query.
 
@@ -163,18 +220,39 @@ class HybridRetriever:
 
         Ordering is preserved by index, not completion, because RRF fusion is
         order-sensitive across lists.
+
+        ``graph_documents`` adds the knowledge graph's list: one vector search,
+        primary query only, restricted to the walk's evidence documents and
+        filtered by the viewer AGAIN (the walk already checked, but retrieval
+        never trusts an upstream filter). Ranked by cosine, so each hit carries
+        a real cosine ``score`` and the gate is unchanged.
         """
         tasks: list[tuple[int, str, str, list[float]]] = []
         for i, (q_text, q_vec) in enumerate(query_pairs):
             tasks.append((i, "vector", q_text, q_vec))
             if self._settings.hybrid_enabled:
                 tasks.append((i, "keyword", q_text, q_vec))
+        if graph_documents and query_pairs:
+            q_text, q_vec = query_pairs[0]
+            tasks.append((0, "graph", q_text, q_vec))
 
         results: dict[tuple[int, str], list[RetrievedChunk]] = {}
 
         def run(task) -> tuple[tuple[int, str], list[RetrievedChunk]]:
             i, kind, q_text, q_vec = task
-            if kind == "vector":
+            if kind == "graph":
+                hits = self._store.query(
+                    org_id,
+                    q_vec,
+                    top_k=pool,
+                    workspace_id=workspace_id,
+                    source_provider=self._source_provider,
+                    date_range=date_range,
+                    tags=tags,
+                    viewer=viewer,
+                    document_ids=list(graph_documents or []),
+                )
+            elif kind == "vector":
                 hits = self._store.query(
                     org_id,
                     q_vec,
@@ -211,14 +289,17 @@ class HybridRetriever:
                 for key, hits in ex.map(run, tasks):
                     results[key] = hits
 
+        # Per CALL, not on self: one retriever serves concurrent requests.
+        if graph_counter is not None:
+            graph_counter.append(len(results.get((0, "graph"), [])))
         ranked: list[list[RetrievedChunk]] = []
         for i in range(len(query_pairs)):
-            vec_hits = results.get((i, "vector"), [])
+            legs = [results.get((i, "vector"), [])]
             if self._settings.hybrid_enabled:
-                kw_hits = results.get((i, "keyword"), [])
-                ranked.append(self._rrf_fuse([vec_hits, kw_hits], self._settings.rrf_k))
-            else:
-                ranked.append(vec_hits)
+                legs.append(results.get((i, "keyword"), []))
+            if (i, "graph") in results:
+                legs.append(results[(i, "graph")])
+            ranked.append(legs[0] if len(legs) == 1 else self._rrf_fuse(legs, self._settings.rrf_k))
         return ranked
 
     @staticmethod
