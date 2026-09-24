@@ -572,6 +572,11 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 -- which workspace so the callback knows to save the resulting connection
 -- scoped to it (NULL = today's org-wide connect flow, unchanged).
 ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
+-- Second Brain 1.2: the PERSON who started a flow, for flows that bind to a
+-- person rather than a scope ("Link your GitHub account"). NULL for every
+-- connect flow. The callback reads the user from HERE, never from the request,
+-- so a captured link can only ever attach an account to whoever clicked.
+ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users (id) ON DELETE CASCADE;
 
 -- GitHub connect: after user OAuth, the callback lists every App installation
 -- this user can see and parks the user token here so the frontend can prompt
@@ -912,3 +917,35 @@ CREATE INDEX IF NOT EXISTS idx_feedback_org_question
 -- `load_attachment_texts` falls back to it precisely so that cannot happen.
 ALTER TABLE conversation_attachments ADD COLUMN IF NOT EXISTS storage_key TEXT;
 ALTER TABLE conversation_attachments ALTER COLUMN content DROP NOT NULL;
+
+-- Second Brain 1.2: one row per person as each CONNECTOR knows them -- a Slack
+-- member, a Drive editor, a GitHub login -- upserted from `documents.source_meta`
+-- and `activity_facts.actor_key`. `user_id` says which Handbook member it is,
+-- and is set ONLY on proof (docs/plans/2026-09-23-second-brain.md, D4):
+--   provider_email -- the connector's email equals a member's login email IN
+--                     THE SAME ORG (magic-link login makes that email verified);
+--   oauth          -- the member signed in to that account themselves.
+-- NEVER by display name: two people called Priya stay two rows. A link changes
+-- attribution in the graph only, never what anyone may read.
+--
+-- `external_id` is the connector's stable id (Slack U123, a GitHub login
+-- lowercased), or `email:<addr>` when the connector gave only an email.
+-- `user_id` is SET NULL on delete: the identity is still a fact about who did
+-- the work after the member's account is gone.
+CREATE TABLE IF NOT EXISTS person_identities (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    provider     TEXT NOT NULL,
+    external_id  TEXT NOT NULL,
+    email        TEXT,
+    display_name TEXT,
+    user_id      UUID REFERENCES users (id) ON DELETE SET NULL,
+    verified_by  TEXT,
+    first_seen   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (org_id, provider, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_person_identities_user
+    ON person_identities (org_id, user_id) WHERE user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_person_identities_email
+    ON person_identities (org_id, email) WHERE email IS NOT NULL;

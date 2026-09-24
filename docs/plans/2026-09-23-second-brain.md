@@ -309,6 +309,20 @@ Differences from the sketch above, each for a reason:
   in another org never links; nothing links without OAuth or a verified email;
   unlinking moves edges back to the unlinked identity.
 
+**Status: done** (`app/graph/identities.py`, `app/api/account.py`,
+`frontend/app/account/page.tsx`, `tests/test_identities.py`).
+
+- The GitHub link REUSES `/auth/github/callback` (a GitHub App registers one
+  callback URL, so a new route would need an App settings change). The
+  callback routes on the STATE's provider (`github_link`) and finishes by
+  consuming it under that provider, so neither flow can complete the other.
+- The person comes from `oauth_states.user_id` on the consumed state, never
+  the request: a forwarded callback URL links only whoever clicked.
+- `GET /user` once, then the token is DISCARDED — linking needs proof, not access.
+- Re-proving an already-linked GitHub account MOVES the link (logged).
+- An email link is not unlinkable (the next sync would re-create it); it
+  un-links itself when the connector's email stops matching.
+
 ### 1.3 Graph tables
 
 `kg_entities`, `kg_edges` (with `valid_from`/`valid_to`), `kg_evidence`,
