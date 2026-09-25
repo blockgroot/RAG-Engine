@@ -16,8 +16,10 @@ gate. It is built in the background from data sync already fetches. Nobody
 sees the graph; people just get better answers.
 
 **Tech stack:** Postgres + pgvector (Supabase), `pg_trgm`, psycopg, the
-existing ingest worker, LangGraph (later phases). **No Neo4j.** Redis/Valkey
-arrives only as a disposable cache tier (Phase 1c), never as a source of truth.
+existing ingest worker, LangGraph (later phases). **No Neo4j. No Redis for
+now:** the cache tier (Phase 1c) is deferred (2026-09-25) and nothing in the
+current phases depends on it; the existing Postgres `query_answer_cache` stays
+as it is.
 
 **Prerequisite, shipped:** retrieval intent read from the question by the model
 (breadth + time, `app/rag/query_intent.py`, PR #36). The graph builds on the
@@ -86,7 +88,7 @@ same retrieval path and the same fail-open posture.
 | D4 | **Identity: merge only on proof.** Auto-link when a connector's email equals a Handbook user's verified login email in the same org; otherwise the member links their own account through OAuth (GitHub first). **Never merge by display name. No admin-confirmation flow in v1**; an unproven identity simply stays unlinked. | Same pattern as Glean (directory + per-user GitHub OAuth). Two "Rahul"s must never become one person. Linking changes attribution only, never access. |
 | D5 | **The graph is invisible.** No graph UI; the only new screen is "Linked accounts" in settings. | People care about the right answer, not the graph. |
 | D6 | **Extraction in tiers, cheapest first, and LLM extraction only after measuring.** Tier 1 structured fields, tier 2 native mentions/links, tier 3 LLM extraction on changed chunks. | Regex alone is nearly useless: prod has only **23** chunks containing a Linear-style ID. Onyx built an LLM KG pipeline and deleted it as unused (onyx-dot-app/onyx#14780); value must be measured before paying for it. |
-| D7 | **Postgres is the source of truth; Redis/Valkey is a disposable hot tier.** Conversations stay durable in Postgres; active conversation context, answers and walk results may be cached in Redis. | Free Redis tiers are small or non-persistent; conversations back history, `?c=` links, the ownership check and the 30-day purge. A cache must be cheap to lose. |
+| D7 | **Postgres is the source of truth and, for now, the only store.** A Redis/Valkey hot tier is **deferred** (not in focus, 2026-09-25); if it is ever added it stays disposable. Conversations stay durable in Postgres; answers keep using the existing Postgres `query_answer_cache`. | Nothing in Phase 1 or 1d needs a cache, and a second store is one more service to host for every company deployment. Free Redis tiers are small or non-persistent; conversations back history, `?c=` links, the ownership check and the 30-day purge. |
 | D8 | **Internal tool registry first, MCP later.** Handbook as an MCP *server* is a thin adapter over the registry, off by default per org. Handbook as a *client* of vendor MCP servers is not planned. | Vendor servers act with one shared token and apply no per-viewer filter, so a Drive search would return the connecting admin's whole Drive. |
 
 ### Open (answer before the phase that needs them)
@@ -94,7 +96,7 @@ same retrieval path and the same fail-open posture.
 | # | Question | Needed by |
 |---|---|---|
 | O1 | Is a separate background LLM endpoint (`LLM_AUX_BASE_URL` + key) available? Without it, tier-3 extraction stays parked. | 1d |
-| O2 | Redis host: Upstash (Singapore) or Render Key Value for hosted; Valkey in `docker-compose` for self-hosted. Is tenant text on a third-party cache acceptable? | 1c |
+| O2 | ~~Redis host~~ — **parked with 1c** (deferred). Reopen only if 1c comes back. | 1c (deferred) |
 | O3 | Include Google Workspace directory aliases in identity linking (needs a Workspace-admin connection, off by default)? | 1a (optional) |
 | O4 | Does each tenant's Notion integration have the "read user information including email" capability? If not, Notion people stay unlinked nodes. | 1a |
 | O5 | Deep research LLM-call budget per run (proposed ≤5). | deep research |
@@ -156,8 +158,9 @@ same retrieval path and the same fail-open posture.
 - **Counts:** degrees and neighbour counts are computed over visible edges.
 - **Aliases:** v0 takes aliases only from structured fields; model-derived
   aliases (tier 3) carry evidence like edges.
-- **Cache:** keys include a hash of `viewer.acl()`; answers with non-public
-  evidence are never cached (the existing `_is_cacheable` rule).
+- **Cache:** the only cache is the existing Postgres `query_answer_cache`;
+  answers with non-public evidence are never stored there (the existing
+  `_is_cacheable` rule). The ACL-hashed key scheme belongs to the deferred 1c.
 
 ---
 
@@ -234,8 +237,9 @@ Size estimate: 10k documents → ~5k entities, 100–200k edges; tens of MB.
 
 ## Phase 1: identity + structured knowledge graph in normal Ask
 
-In scope: steps 1.0–1.7. Out of scope: the cache tier (1c), LLM extraction
-(1d), personal memory, live tools, deep research, MCP.
+In scope: steps 1.0–1.7. Out of scope: the cache tier (1c, **deferred** —
+not in focus), LLM extraction (1d), personal memory, live tools, deep research,
+MCP.
 
 ### 1.0 One shared visibility predicate (refactor, no behaviour change)
 
@@ -478,7 +482,15 @@ the machinery, not the value. Run it with the real embedder before switching
 
 ---
 
-## Phase 1c: cache tier (can run in parallel with 1b)
+## Phase 1c: cache tier — DEFERRED (not in focus)
+
+**Decision (2026-09-25): skip the cache tier for now.** Nothing in Phase 1 or
+1d depends on it, the existing Postgres `query_answer_cache` already covers
+repeated answers, and adding Redis would mean one more service to host for
+every company deployment. The design below is kept only so it does not have to
+be re-derived if latency measurements later justify it; do not build it as
+part of the current work. **Next after Phase 1 is 1.7's measurement, then 1d.**
+
 
 - `app/cache/`: `base.py` + `redis` + `null` + `factory.py` (two real backends,
   so the package is justified). No `REDIS_URL` → cache **off**, never a fallback
@@ -571,7 +583,7 @@ govern.
 - [ ] Slack channel reply: `public_only` graph, no personal memory
 - [ ] Disconnecting a source purges its graph rows
 - [ ] Same display name never merges two identities; cross-org email never links
-- [ ] Cache keys include the viewer ACL hash; non-public answers never cached
+- [ ] Non-public answers are never written to `query_answer_cache` (`_is_cacheable`); ACL-hashed keys only if 1c is revived
 - [ ] Personal memory never contains document-derived text, never visible to another user
 
 ---
@@ -579,6 +591,7 @@ govern.
 ## Deliberately not built
 
 - Neo4j or any second database; Redis as a source of truth.
+- A Redis/Valkey cache tier, for now (Phase 1c deferred, 2026-09-25).
 - A graph built from conversations; per-user copies of the graph.
 - Chunks as graph nodes (they are evidence pointers only).
 - A graph UI.
