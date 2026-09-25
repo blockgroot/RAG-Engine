@@ -149,39 +149,66 @@ def test_pipeline_keeps_the_answer_when_the_checker_is_down(endpoint):
 
 # -- Jev ------------------------------------------------------------------------
 
-JEV = AuditSettings(enabled=True, backend="jev", jev_api_key="ts_x", jev_threshold=0.5)
+def _jev_settings(gateway="vercel"):
+    return AuditSettings(enabled=True, backend="jev", jev_api_key="key_x",
+                         jev_gateway=gateway, jev_threshold=0.5)
 
 
-def _jev(**kw):
+def _jev(gateway="vercel", **kw):
     args = dict(question="How much leave?", contexts=["Leave is 25 days. Sick leave is 10 days."],
                 answer="You get 25 days of leave. Sick leave is 30 days.")
     args.update(kw)
-    return audit.jev_verdict(JEV, **args)
+    return audit.jev_verdict(_jev_settings(gateway), **args)
 
 
-def test_jev_sends_one_request_with_a_question_per_sentence(endpoint):
-    endpoint.reply = {"answers": {"s0": {"noul": 0.97}, "s1": {"noul": 0.08}}}
-    v = _jev()
+def _answers(gateway, *probs):
+    field = audit.JEV_GATEWAYS[gateway][3]
+    return {"answers": {f"s{i}": {field: p} for i, p in enumerate(probs)}}
+
+
+@pytest.mark.parametrize("gateway", ["vercel", "typesafe"])
+def test_jev_sends_one_request_with_a_question_per_sentence(endpoint, gateway):
+    endpoint.reply = _answers(gateway, 0.97, 0.08)
+    v = _jev(gateway)
     assert v.grounded is False
     assert "Sick leave is 30 days." in v.reason  # the WEAKEST sentence is named
     (call,) = endpoint.calls
-    assert call["url"] == audit.JEV_URL
-    assert call["headers"] == {"Authorization": "Bearer ts_x"}
+    url, model, qtype, _ = audit.JEV_GATEWAYS[gateway]
+    assert call["url"] == url
+    assert call["headers"] == {"Authorization": "Bearer key_x"}
     body = call["json"]
-    assert body["model"] == audit.JEV_MODEL
+    assert body["model"] == model
     assert set(body["questions"]) == {"s0", "s1"}
-    assert all(q["type"] == "noul" for q in body["questions"].values())
+    assert all(q["type"] == qtype for q in body["questions"].values())
     assert body["state"]["passages"] == ["Leave is 25 days. Sick leave is 10 days."]
 
 
+def test_vercel_route_demands_zero_retention_on_typesafes_own_endpoint(endpoint):
+    # The gateway's other Jev provider is not ZDR; pinning `only` is what makes
+    # zeroDataRetention a guarantee instead of a preference.
+    endpoint.reply = _answers("vercel", 0.9, 0.9)
+    _jev("vercel")
+    assert endpoint.calls[0]["json"]["providerOptions"] == {
+        "gateway": {"zeroDataRetention": True, "only": ["typesafe-ai"]}
+    }
+
+
+def test_direct_typesafe_route_sends_no_gateway_options(endpoint):
+    endpoint.reply = _answers("typesafe", 0.9, 0.9)
+    _jev("typesafe")
+    assert "providerOptions" not in endpoint.calls[0]["json"]
+
+
 def test_jev_every_sentence_supported_is_grounded(endpoint):
-    endpoint.reply = {"answers": {"s0": {"noul": 0.97}, "s1": {"noul": 0.61}}}
+    endpoint.reply = _answers("vercel", 0.97, 0.61)
     assert _jev().grounded is True
 
 
 @pytest.mark.parametrize("reply", [
-    httpx.ReadTimeout("slow"), 401, 429, 529, {"answers": {"s0": {"noul": 0.9}}},  # s1 missing
-    {"answers": {"s0": {"noul": "yes"}, "s1": {"noul": 0.9}}},
+    httpx.ReadTimeout("slow"), 401, 403, 429, 529,
+    {"answers": {"s0": {"probability": 0.9}}},  # s1 missing
+    {"answers": {"s0": {"probability": "yes"}, "s1": {"probability": 0.9}}},
+    {"answers": {"s0": {"noul": 0.9}, "s1": {"noul": 0.9}}},  # wrong gateway's field
 ])
 def test_jev_every_failure_skips_the_audit(endpoint, reply):
     endpoint.reply = reply
@@ -200,8 +227,14 @@ def test_long_answers_merge_the_tail_instead_of_dropping_it():
     assert "Claim number 29." in parts[-1]
 
 
-def test_jev_backend_needs_a_key(monkeypatch):
+def test_jev_backend_needs_a_key_and_a_known_gateway(monkeypatch):
     monkeypatch.setenv("RAG_AUDIT_BACKEND", "jev")
     monkeypatch.delenv("RAG_AUDIT_JEV_API_KEY", raising=False)
     with pytest.raises(ConfigurationError):
         AuditSettings.from_env()
+    monkeypatch.setenv("RAG_AUDIT_JEV_API_KEY", "k")
+    monkeypatch.setenv("RAG_AUDIT_JEV_GATEWAY", "openrouter")
+    with pytest.raises(ConfigurationError):
+        AuditSettings.from_env()
+    monkeypatch.delenv("RAG_AUDIT_JEV_GATEWAY")
+    assert AuditSettings.from_env().jev_gateway == "vercel"

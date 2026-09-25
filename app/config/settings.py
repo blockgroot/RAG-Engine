@@ -96,6 +96,7 @@ DEFAULT_RECOVERY_MAX_QUERIES = 2
 
 DEFAULT_AUDIT_ENABLED = False
 AUDIT_BACKENDS = ("llm", "lettuce", "jev")
+JEV_GATEWAYS = ("vercel", "typesafe")
 # Best balanced-accuracy cutoff measured on 60 RAGTruth-QA examples
 # (scripts/bench_answer_check.py) was 0.61; re-measure on your own labels.
 DEFAULT_AUDIT_LETTUCE_THRESHOLD = 0.6
@@ -997,9 +998,10 @@ class AuditSettings:
     - ``lettuce_threshold``  a flagged span at or above this confidence
       downgrades the answer.
     - ``jev`` backend: TypeSafe's hosted Jev, one call per answer, one yes/no
-      per sentence. Nothing to deploy, ~$0.0001 per check, but tenant chunks
-      leave for TypeSafe: they commit to no training, and zero retention is
-      enterprise-only — an explicit decision, not a default.
+      per sentence. Nothing to deploy, ~$0.0001 per check. ``jev_gateway``
+      ``vercel`` (default) goes through Vercel AI Gateway, whose free monthly
+      credit covers it and which REQUIRES zero data retention per request;
+      ``typesafe`` calls TypeSafe directly, where ZDR is enterprise-only.
       ``jev_threshold``: the lowest sentence's P(supported) under it downgrades.
     - ``timeout``  both HTTP backends; a timeout skips the audit.
     """
@@ -1010,6 +1012,7 @@ class AuditSettings:
     lettuce_token: str | None = None
     lettuce_threshold: float = DEFAULT_AUDIT_LETTUCE_THRESHOLD
     jev_api_key: str | None = None
+    jev_gateway: str = "vercel"
     jev_threshold: float = DEFAULT_AUDIT_JEV_THRESHOLD
     timeout: float = DEFAULT_AUDIT_TIMEOUT
 
@@ -1028,6 +1031,11 @@ class AuditSettings:
         jev_key = (os.getenv("RAG_AUDIT_JEV_API_KEY") or "").strip() or None
         if backend == "jev" and not jev_key:
             raise ConfigurationError("RAG_AUDIT_BACKEND=jev needs RAG_AUDIT_JEV_API_KEY")
+        jev_gateway = (os.getenv("RAG_AUDIT_JEV_GATEWAY") or "vercel").strip().lower()
+        if jev_gateway not in JEV_GATEWAYS:
+            raise ConfigurationError(
+                f"RAG_AUDIT_JEV_GATEWAY={jev_gateway!r} is not one of {', '.join(JEV_GATEWAYS)}"
+            )
         return cls(
             enabled=env_bool("RAG_AUDIT_ENABLED", DEFAULT_AUDIT_ENABLED),
             backend=backend,
@@ -1037,6 +1045,7 @@ class AuditSettings:
                 os.getenv("RAG_AUDIT_LETTUCE_THRESHOLD") or DEFAULT_AUDIT_LETTUCE_THRESHOLD
             ),
             jev_api_key=jev_key,
+            jev_gateway=jev_gateway,
             jev_threshold=float(os.getenv("RAG_AUDIT_JEV_THRESHOLD") or DEFAULT_AUDIT_JEV_THRESHOLD),
             timeout=float(os.getenv("RAG_AUDIT_TIMEOUT") or DEFAULT_AUDIT_TIMEOUT),
         )
