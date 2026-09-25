@@ -296,13 +296,9 @@ grounded generate → `RagResult`.
   0.89 vs 0.77) and spends no LLM quota. Laya (a "System 1" decision model) was
   0.78 and cannot tell "25 days" from "30 days". **Jev** is the zero-ops
   option: one hosted call per answer, one yes/no PER SENTENCE (so one invented
-  sentence cannot be averaged away), ~$0.0001 a check. It goes through **Vercel
-  AI Gateway by default** (`RAG_AUDIT_JEV_GATEWAY=vercel`): the monthly $5 free
-  credit covers it, and every request carries `zeroDataRetention: true` +
-  `only: ["typesafe-ai"]` — pinned, because the gateway's other Jev host
-  (DigitalOcean) is not ZDR, and an unsatisfiable ZDR request fails and SKIPS
-  rather than falling back. TypeSafe direct has ZDR for enterprise only. Still
-  UNMEASURED here (no key). The
+  sentence cannot be averaged away), ~$0.0001 a check — but tenant chunks leave
+  for TypeSafe (no training; zero retention is enterprise-only), so choosing it
+  is a data decision, and it is UNMEASURED here (no key). The
   checker runs on OUR private HF Space (`deploy/lettucedetect-space/`), never a
   public demo: every call carries retrieved chunks. Same contract as the LLM
   path — downgrade only, any failure SKIPS — and a context over

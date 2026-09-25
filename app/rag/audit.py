@@ -115,20 +115,10 @@ def lettuce_verdict(settings, question: str, contexts: list[str], answer: str) -
 # invented sentence in a long answer cannot be averaged away — and so the
 # reason can name it. Nothing to deploy; tenant chunks DO leave for TypeSafe.
 
-# Two ways in, same model, slightly different wire shapes:
-# - vercel (default): Vercel AI Gateway's /v1/evaluate. Its monthly $5 free
-#   credit covers Jev (~$0.0001/check), and it can REQUIRE zero data retention
-#   per request — pinned to TypeSafe's own endpoint, because the gateway's other
-#   Jev provider (DigitalOcean) is not ZDR. A request that cannot be served
-#   under ZDR fails, and a failure skips the audit: never a silent fallback to
-#   a retaining provider.
-# - typesafe: TypeSafe's own API. No ZDR (enterprise-only there).
-# ponytail: both use floating aliases; pin a version once a threshold is
+JEV_URL = "https://api.typesafe.ai/v1/systemone"
+# ponytail: floating alias; pin a version (jev-1.13.0) once a threshold is
 # calibrated on our labels, since a model update moves every probability.
-JEV_GATEWAYS = {
-    "vercel": ("https://ai-gateway.vercel.sh/v1/evaluate", "typesafe-ai/jev", "boolean", "probability"),
-    "typesafe": ("https://api.typesafe.ai/v1/systemone", "jev-latest", "noul", "noul"),
-}
+JEV_MODEL = "jev-latest"
 # Jev's request budget is ~32k tokens; stay well under it rather than let the
 # service reject or truncate the state.
 JEV_MAX_CONTEXT_CHARS = 90_000
@@ -159,10 +149,9 @@ def jev_score(
     sentences = split_sentences(answer)
     if not context or not sentences or sum(len(c) for c in context) > JEV_MAX_CONTEXT_CHARS:
         return None
-    url, model, qtype, field = JEV_GATEWAYS[settings.jev_gateway]
     questions = {
         f"s{i}": {
-            "type": qtype,
+            "type": "noul",
             "instructions": (
                 "Is this sentence from the answer fully supported by the passages? "
                 f"Sentence: {s}"
@@ -170,23 +159,17 @@ def jev_score(
         }
         for i, s in enumerate(sentences)
     }
-    body = {
-        "model": model,
-        "state": {"question": question, "passages": context, "answer": answer},
-        "questions": questions,
-    }
-    if settings.jev_gateway == "vercel":
-        body["providerOptions"] = {"gateway": {"zeroDataRetention": True, "only": ["typesafe-ai"]}}
+    state = {"question": question, "passages": context, "answer": answer}
     try:
         response = httpx.post(
-            url,
-            json=body,
+            JEV_URL,
+            json={"model": JEV_MODEL, "state": state, "questions": questions},
             headers={"Authorization": f"Bearer {settings.jev_api_key}"},
             timeout=settings.timeout,
         )
         response.raise_for_status()
         answers = response.json()["answers"]
-        probs = [float(answers[f"s{i}"][field]) for i in range(len(sentences))]
+        probs = [float(answers[f"s{i}"]["noul"]) for i in range(len(sentences))]
     except (httpx.HTTPError, ValueError, KeyError, TypeError):
         return None
     worst = min(range(len(probs)), key=probs.__getitem__)
