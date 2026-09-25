@@ -288,6 +288,19 @@ grounded generate → `RagResult`.
   miss. Never answers the question; never weakens grounding.
 - **Web fallback**: on gate miss the model may call `web_search` for real
   *external* entities — one search, no loop, labelled `source="web"`.
+- **The answer audit has two backends, and the LLM one is the WORSE one**
+  (`RAG_AUDIT_BACKEND=llm|lettuce`, `rag/audit.py::lettuce_verdict`). Measured
+  on 60 RAGTruth-QA examples (`scripts/bench_answer_check.py`): the LLM audit
+  on gemini-3.1-flash-lite rejected **12/30 grounded answers** — each one a good
+  answer turned into "I don't know" — where LettuceDetect rejected 1/30 (AUROC
+  0.89 vs 0.77) and spends no LLM quota. Laya (a "System 1" decision model) was
+  0.78 and cannot tell "25 days" from "30 days"; Jev has no free tier and
+  zero-retention is enterprise-only, so tenant chunks cannot go there. The
+  checker runs on OUR private HF Space (`deploy/lettucedetect-space/`), never a
+  public demo: every call carries retrieved chunks. Same contract as the LLM
+  path — downgrade only, any failure SKIPS — and a context over
+  `LETTUCE_MAX_CONTEXT_CHARS` is not audited, because ModernBERT truncates at 8k
+  tokens and a cut context makes every claim from the missing part look invented.
 - **Untrusted input is fenced + scrubbed** (`app/security/untrusted.py`) — a
   partial mitigation; measure with multi-run probes. The `SYSTEM` block marker
   must be **uppercase AND decorated** (`***SYSTEM***`, `[SYSTEM]`, `SYSTEM:`,
@@ -2117,6 +2130,12 @@ when the model says qa.
 - Production secrets (`AUTH_JWT_SECRET`, `AUTH_ENCRYPTION_KEYS`,
   `GITHUB_APP_PRIVATE_KEY`, `OPENROUTER_API_KEY`) are a config surface, not
   provisioned.
+- **The LettuceDetect Space is not deployed yet** — the endpoint code is
+  tested against a fake only. Its CPU latency on the free tier, the 0.6 cutoff
+  on OUR data (it was picked on RAGTruth, general web QA), and the 48h
+  sleep (a sleeping Space times out and skips the audit) are all unmeasured.
+  Re-run `bench_answer_check.py --checkers lettuce` against it before turning
+  `RAG_AUDIT_ENABLED` on in prod.
 - **The 5 catalogued models are UNVERIFIED against a live key** — run
   `scripts/verify_models.py` before trusting the picker; a model
   that fails the MODE-tag check must be replaced, not shipped.

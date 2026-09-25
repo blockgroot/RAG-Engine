@@ -95,6 +95,11 @@ DEFAULT_RECOVERY_ENABLED = True
 DEFAULT_RECOVERY_MAX_QUERIES = 2
 
 DEFAULT_AUDIT_ENABLED = False
+AUDIT_BACKENDS = ("llm", "lettuce")
+# Best balanced-accuracy cutoff measured on 60 RAGTruth-QA examples
+# (scripts/bench_answer_check.py) was 0.61; re-measure on your own labels.
+DEFAULT_AUDIT_LETTUCE_THRESHOLD = 0.6
+DEFAULT_AUDIT_LETTUCE_TIMEOUT = 8.0
 
 DEFAULT_DECOMPOSE_ENABLED = True
 
@@ -980,13 +985,47 @@ class AuditSettings:
 
     - ``enabled``  kill-switch; off means byte-identical behaviour to before
       this existed.
+    - ``backend``  ``llm`` (the prompt above, the default) or ``lettuce`` — a
+      LettuceDetect span classifier behind our own HTTP endpoint
+      (``deploy/lettucedetect-space/``). Measured on RAGTruth-QA it rejected
+      1/30 grounded answers where the LLM audit rejected 12/30, and it spends
+      none of the 15 rpm LLM quota. The endpoint receives tenant chunks, so it
+      must be one WE run (a private Space), never a public demo.
+    - ``lettuce_threshold``  a flagged span at or above this confidence
+      downgrades the answer.
     """
 
     enabled: bool = DEFAULT_AUDIT_ENABLED
+    backend: str = "llm"
+    lettuce_url: str | None = None
+    lettuce_token: str | None = None
+    lettuce_threshold: float = DEFAULT_AUDIT_LETTUCE_THRESHOLD
+    lettuce_timeout: float = DEFAULT_AUDIT_LETTUCE_TIMEOUT
 
     @classmethod
     def from_env(cls) -> "AuditSettings":
-        return cls(enabled=env_bool("RAG_AUDIT_ENABLED", DEFAULT_AUDIT_ENABLED))
+        from ..core.exceptions import ConfigurationError
+
+        backend = (os.getenv("RAG_AUDIT_BACKEND") or "llm").strip().lower()
+        if backend not in AUDIT_BACKENDS:
+            raise ConfigurationError(
+                f"RAG_AUDIT_BACKEND={backend!r} is not one of {', '.join(AUDIT_BACKENDS)}"
+            )
+        url = (os.getenv("RAG_AUDIT_LETTUCE_URL") or "").strip() or None
+        if backend == "lettuce" and not url:
+            raise ConfigurationError("RAG_AUDIT_BACKEND=lettuce needs RAG_AUDIT_LETTUCE_URL")
+        return cls(
+            enabled=env_bool("RAG_AUDIT_ENABLED", DEFAULT_AUDIT_ENABLED),
+            backend=backend,
+            lettuce_url=url,
+            lettuce_token=os.getenv("RAG_AUDIT_LETTUCE_TOKEN") or None,
+            lettuce_threshold=float(
+                os.getenv("RAG_AUDIT_LETTUCE_THRESHOLD") or DEFAULT_AUDIT_LETTUCE_THRESHOLD
+            ),
+            lettuce_timeout=float(
+                os.getenv("RAG_AUDIT_LETTUCE_TIMEOUT") or DEFAULT_AUDIT_LETTUCE_TIMEOUT
+            ),
+        )
 
 
 @dataclass(frozen=True)
