@@ -83,7 +83,7 @@ def lettuce_score(
             settings.lettuce_url.rstrip("/") + "/check",
             json={"context": context, "question": question, "answer": answer},
             headers=headers,
-            timeout=settings.timeout,
+            timeout=settings.lettuce_timeout,
         )
         response.raise_for_status()
         spans = response.json()["spans"]
@@ -104,84 +104,3 @@ def lettuce_verdict(settings, question: str, contexts: list[str], answer: str) -
     if confidence < settings.lettuce_threshold:
         return AuditVerdict(grounded=True, reason=None)
     return AuditVerdict(grounded=False, reason=f"Unsupported ({confidence:.2f}): {span}" if span else None)
-
-
-# -- Jev backend (RAG_AUDIT_BACKEND=jev) -----------------------------------------
-#
-# TypeSafe's hosted "System One" model: no text out, a probability per typed
-# question. One request per answer: the state is the passages plus the answer,
-# and each answer SENTENCE is its own yes/no, all scored in parallel against
-# that state. Per-sentence, not one question for the whole answer, so a single
-# invented sentence in a long answer cannot be averaged away — and so the
-# reason can name it. Nothing to deploy; tenant chunks DO leave for TypeSafe.
-
-JEV_URL = "https://api.typesafe.ai/v1/systemone"
-# ponytail: floating alias; pin a version (jev-1.13.0) once a threshold is
-# calibrated on our labels, since a model update moves every probability.
-JEV_MODEL = "jev-latest"
-# Jev's request budget is ~32k tokens; stay well under it rather than let the
-# service reject or truncate the state.
-JEV_MAX_CONTEXT_CHARS = 90_000
-JEV_MAX_SENTENCES = 20
-
-
-def split_sentences(text: str, limit: int = JEV_MAX_SENTENCES) -> list[str]:
-    """Crude sentence split: enough to give each claim its own question.
-
-    Over ``limit`` sentences the TAIL is merged into the last question rather
-    than dropped — an unchecked sentence would be an unaudited claim.
-    """
-    parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+|\n+", text) if len(p.strip()) > 3]
-    if len(parts) > limit:
-        parts = parts[: limit - 1] + [" ".join(parts[limit - 1 :])]
-    return parts or ([text.strip()] if text.strip() else [])
-
-
-def jev_score(
-    settings, question: str, contexts: list[str], answer: str
-) -> tuple[float, str | None] | None:
-    """Lowest per-sentence P(supported) and that sentence; ``None`` = cannot check."""
-    import httpx
-
-    from ..security.untrusted import scrub_untrusted_text
-
-    context = [c for c in (scrub_untrusted_text(x) for x in contexts) if c]
-    sentences = split_sentences(answer)
-    if not context or not sentences or sum(len(c) for c in context) > JEV_MAX_CONTEXT_CHARS:
-        return None
-    questions = {
-        f"s{i}": {
-            "type": "noul",
-            "instructions": (
-                "Is this sentence from the answer fully supported by the passages? "
-                f"Sentence: {s}"
-            ),
-        }
-        for i, s in enumerate(sentences)
-    }
-    state = {"question": question, "passages": context, "answer": answer}
-    try:
-        response = httpx.post(
-            JEV_URL,
-            json={"model": JEV_MODEL, "state": state, "questions": questions},
-            headers={"Authorization": f"Bearer {settings.jev_api_key}"},
-            timeout=settings.timeout,
-        )
-        response.raise_for_status()
-        answers = response.json()["answers"]
-        probs = [float(answers[f"s{i}"]["noul"]) for i in range(len(sentences))]
-    except (httpx.HTTPError, ValueError, KeyError, TypeError):
-        return None
-    worst = min(range(len(probs)), key=probs.__getitem__)
-    return probs[worst], sentences[worst][:160]
-
-
-def jev_verdict(settings, question: str, contexts: list[str], answer: str) -> AuditVerdict | None:
-    """``jev_score`` against ``settings.jev_threshold``; ``None`` = skip."""
-    scored = jev_score(settings, question, contexts, answer)
-    if scored is None:
-        return None
-    supported, sentence = scored
-    if supported >= settings.jev_threshold:
-        return AuditVerdict(grounded=True, reason=None)
-    return AuditVerdict(grounded=False, reason=f"Unsupported ({supported:.2f}): {sentence}")

@@ -6,7 +6,6 @@ each checker is an HTTP endpoint — so nothing is loaded on this machine.
 
 Checkers (``--checkers``, comma-separated):
   lettuce       OUR endpoint (RAG_AUDIT_LETTUCE_URL), via app.rag.audit.lettuce_score
-  jev           TypeSafe's hosted Jev (RAG_AUDIT_JEV_API_KEY), via app.rag.audit.jev_score
   lettuce_demo  the public LettuceDetect demo Space (public data ONLY — never tenant data)
   laya_demo     the public Laya demo Space; one 3-way choice per sentence per passage
   llm           today's audit: build_audit_prompt on the configured LLM
@@ -104,19 +103,6 @@ def check_lettuce(ex):
     return scored[0]
 
 
-def check_jev(ex):
-    from app.config.settings import AuditSettings
-    from app.rag.audit import jev_score
-
-    settings = AuditSettings.from_env()
-    if not settings.jev_api_key:
-        raise RuntimeError("set RAG_AUDIT_JEV_API_KEY")
-    scored = jev_score(settings, ex["question"], ex["passages"], ex["answer"])
-    if scored is None:
-        raise RuntimeError("Jev unavailable or context over budget")
-    return 1.0 - scored[0]  # p_halluc = 1 - weakest sentence's P(supported)
-
-
 def check_lettuce_demo(ex):
     out = gradio("tonic-hallucination-test", "evaluate_hallucination",
                  ["\n\n".join(ex["passages"]), ex["question"], ex["answer"]])
@@ -157,7 +143,7 @@ def check_llm(ex, _cache={}):
     return 0.0 if verdict.grounded else 1.0
 
 
-CHECKERS = {"lettuce": check_lettuce, "jev": check_jev, "lettuce_demo": check_lettuce_demo,
+CHECKERS = {"lettuce": check_lettuce, "lettuce_demo": check_lettuce_demo,
             "laya_demo": check_laya_demo, "llm": check_llm}
 
 

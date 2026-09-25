@@ -1,4 +1,4 @@
-"""RAG_AUDIT_BACKEND=lettuce|jev — the remote answer checks (no network, no LLM).
+"""RAG_AUDIT_BACKEND=lettuce — the LettuceDetect answer check (no network, no LLM).
 
 Pins the contract it shares with the LLM audit: a flagged span over the
 threshold downgrades, anything under it stands, and every way the endpoint can
@@ -98,7 +98,7 @@ def test_over_budget_context_is_not_audited_at_all(endpoint):
 
 
 def test_settings_reject_unknown_backend_and_missing_url(monkeypatch):
-    monkeypatch.setenv("RAG_AUDIT_BACKEND", "laya")
+    monkeypatch.setenv("RAG_AUDIT_BACKEND", "jev")
     with pytest.raises(ConfigurationError):
         AuditSettings.from_env()
     monkeypatch.setenv("RAG_AUDIT_BACKEND", "lettuce")
@@ -145,63 +145,3 @@ def test_pipeline_keeps_the_answer_when_the_checker_is_down(endpoint):
     assert result.answered is True
     assert result.audit_used is False
     assert result.answer == "Employees get 25 days of paid annual leave."
-
-
-# -- Jev ------------------------------------------------------------------------
-
-JEV = AuditSettings(enabled=True, backend="jev", jev_api_key="ts_x", jev_threshold=0.5)
-
-
-def _jev(**kw):
-    args = dict(question="How much leave?", contexts=["Leave is 25 days. Sick leave is 10 days."],
-                answer="You get 25 days of leave. Sick leave is 30 days.")
-    args.update(kw)
-    return audit.jev_verdict(JEV, **args)
-
-
-def test_jev_sends_one_request_with_a_question_per_sentence(endpoint):
-    endpoint.reply = {"answers": {"s0": {"noul": 0.97}, "s1": {"noul": 0.08}}}
-    v = _jev()
-    assert v.grounded is False
-    assert "Sick leave is 30 days." in v.reason  # the WEAKEST sentence is named
-    (call,) = endpoint.calls
-    assert call["url"] == audit.JEV_URL
-    assert call["headers"] == {"Authorization": "Bearer ts_x"}
-    body = call["json"]
-    assert body["model"] == audit.JEV_MODEL
-    assert set(body["questions"]) == {"s0", "s1"}
-    assert all(q["type"] == "noul" for q in body["questions"].values())
-    assert body["state"]["passages"] == ["Leave is 25 days. Sick leave is 10 days."]
-
-
-def test_jev_every_sentence_supported_is_grounded(endpoint):
-    endpoint.reply = {"answers": {"s0": {"noul": 0.97}, "s1": {"noul": 0.61}}}
-    assert _jev().grounded is True
-
-
-@pytest.mark.parametrize("reply", [
-    httpx.ReadTimeout("slow"), 401, 429, 529, {"answers": {"s0": {"noul": 0.9}}},  # s1 missing
-    {"answers": {"s0": {"noul": "yes"}, "s1": {"noul": 0.9}}},
-])
-def test_jev_every_failure_skips_the_audit(endpoint, reply):
-    endpoint.reply = reply
-    assert _jev() is None
-
-
-def test_jev_over_budget_context_is_not_sent(endpoint):
-    assert _jev(contexts=["x" * (audit.JEV_MAX_CONTEXT_CHARS + 1)]) is None
-    assert endpoint.calls == []
-
-
-def test_long_answers_merge_the_tail_instead_of_dropping_it():
-    text = " ".join(f"Claim number {i}." for i in range(30))
-    parts = audit.split_sentences(text)
-    assert len(parts) == audit.JEV_MAX_SENTENCES
-    assert "Claim number 29." in parts[-1]
-
-
-def test_jev_backend_needs_a_key(monkeypatch):
-    monkeypatch.setenv("RAG_AUDIT_BACKEND", "jev")
-    monkeypatch.delenv("RAG_AUDIT_JEV_API_KEY", raising=False)
-    with pytest.raises(ConfigurationError):
-        AuditSettings.from_env()
