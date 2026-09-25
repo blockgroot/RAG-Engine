@@ -22,10 +22,24 @@ from app.core.exceptions import ProviderError
 from app.db import apply_schema, close_pool
 
 
+def _redact(url: str | None) -> str:
+    """``postgresql://user:***@host/db`` — the URL minus its password."""
+    from urllib.parse import urlsplit
+
+    if not url:
+        return "(unset)"
+    parts = urlsplit(url)
+    if parts.password is None:
+        return url
+    netloc = parts.netloc.replace(f":{parts.password}@", ":***@", 1)
+    return parts._replace(netloc=netloc).geturl()
+
+
 def main() -> int:
     load_dotenv()
     settings = DatabaseSettings.from_env()
-    print(f"Applying schema to: {settings.url}")
+    # Never print the password: this line lands in the deploy log.
+    print(f"Applying schema to: {_redact(settings.url)}")
     try:
         apply_schema(settings)
     except ProviderError as exc:
