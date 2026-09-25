@@ -66,7 +66,7 @@ from .attachment_tools import (
     run_reads,
 )
 from .access_notice import restricted_notice
-from .audit import parse_audit_verdict
+from .audit import lettuce_verdict, parse_audit_verdict
 from .retrieval import HybridRetriever, RetrievalResult
 from .context_assemble import assemble_context_texts, describe_hit
 from .decompose import looks_compound, parse_sub_questions
@@ -1523,6 +1523,8 @@ class RagPipeline:
         conversation_id: str | None,
     ):
         """One bounded groundedness check. ``None`` on any failure (skip audit)."""
+        if self._audit_settings.backend == "lettuce":
+            return lettuce_verdict(self._audit_settings, question, contexts, answer)
         try:
             raw = self._generate_text(
                 STAGE_AUDIT,

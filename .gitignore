@@ -31,3 +31,4 @@ env/
 .DS_Store
 .idea/
 .vscode/
+bench_answer_check.jsonl
