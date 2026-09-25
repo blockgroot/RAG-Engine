@@ -58,6 +58,15 @@ def disconnect_connection(
     """
     provider = delete_connection(org_id, connection_id, workspace_id=workspace_id)
     purged = purge_provider_documents(org_id, provider, workspace_id=workspace_id)
+    # The graph holds no text, but its entities still NAME things from this
+    # source (channels, folders, repos, PRs); disconnecting must leave nothing
+    # that can still answer, or be walked through.
+    try:
+        from ..graph.builder import purge_provider
+
+        purge_provider(org_id, workspace_id, provider)
+    except Exception:  # noqa: BLE001 - logged; the documents are already gone
+        logger.warning("Could not purge graph rows after a disconnect", exc_info=True)
     # The same reason an ingest clears it: a cached answer outlives the content
     # it was built from, so for up to the TTL a disconnected source keeps
     # answering. Org-wide because the provider is folded into the question hash.

@@ -306,6 +306,11 @@ export function AppShell({
                   </span>
                 </span>
                 {me.org_name && <span className="org-chip">{me.org_name}</span>}
+                {/* Styled as the sign-out link on purpose: both are about YOUR account,
+                    not destinations in the product, so they sit together, quietly. */}
+                <Link href="/account" className="rail-sign-out">
+                  Linked accounts
+                </Link>
                 <button type="button" className="rail-sign-out" onClick={handleSignOut}>
                   Sign out
                 </button>

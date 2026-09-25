@@ -39,6 +39,31 @@ def _clear_answer_cache(org_id: str, job_id: str) -> None:
         logger.warning("Job %s: could not clear the answer cache: %s", job_id, exc)
 
 
+def _build_graph(org_id: str, provider: str, workspace_id: str | None, result) -> None:
+    """Fold what this job wrote into the knowledge graph. Best-effort, always.
+
+    Built from the rows the job just stored, so it costs no provider call.
+    Removed documents need nothing: their evidence cascades with the row, and
+    the build's garbage collection drops the edges left without any. Its own
+    try/except for the ``_record_insight_facts`` reason -- a stale graph is a
+    stale graph, and failing a finished job would turn it into a retry loop.
+    """
+    external_ids = list(getattr(result, "ingested_external_ids", None) or []) + list(
+        getattr(result, "meta_refreshed_external_ids", None) or []
+    )
+    try:
+        from ..graph.builder import build_documents, collect_garbage
+
+        if external_ids:
+            build_documents(org_id, workspace_id, provider, external_ids)
+        elif getattr(result, "documents_removed", 0):
+            collect_garbage(org_id, workspace_id)
+    except Exception:  # noqa: BLE001 - see docstring
+        logger.warning(
+            "graph: could not build %s for org %s", provider, org_id, exc_info=True
+        )
+
+
 def _record_insight_facts(
     org_id: str, provider: str, workspace_id: str | None, adapter=None
 ) -> None:
@@ -206,6 +231,7 @@ def run_once() -> queue.IngestionJob | None:
             _clear_answer_cache(job.org_id, job.id)
 
         _record_insight_facts(job.org_id, provider, job.workspace_id, adapter)
+        _build_graph(job.org_id, provider, job.workspace_id, result)
 
         if (
             contextual.enabled
@@ -366,6 +392,15 @@ def run_external_tick() -> dict[str, int]:
         backfilled = backfill_all_document_facts()
     except Exception:  # noqa: BLE001 - a missing chart, never a failed tick
         logger.exception("External tick: document-fact backfill failed")
+
+    # Knowledge-graph entities for documents synced before the graph existed.
+    # Bounded per tick (`graph.builder.BACKFILL_BATCH`), so it converges.
+    try:
+        from ..graph.builder import backfill as backfill_graph
+
+        backfill_graph()
+    except Exception:  # noqa: BLE001 - a thinner graph, never a failed tick
+        logger.exception("External tick: graph backfill failed")
 
     # Expire in-chat attachment text. Nothing in this codebase deletes a
     # conversation, so the ON DELETE CASCADE that attachments hang off never

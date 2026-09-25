@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 from pgvector import Vector
 
 from ..config.settings import DatabaseSettings
 from ..core.exceptions import EmbeddingProviderError, ProviderError
 from ..db.connection import get_connection
+from ..security.visibility import normalize_viewers, viewer_clause, visibility_predicate
 from datetime import datetime
 
 from .base import (
@@ -21,6 +24,11 @@ from .base import (
 )
 from .bm25_ranking import bm25_rank
 
+def _jsonb(value: dict | None) -> str | None:
+    """A JSONB parameter (bound as text and cast), or SQL NULL."""
+    return json.dumps(value) if value is not None else None
+
+
 def _to_db_vector(embedding: list[float] | np.ndarray) -> Vector:
     """Bind an embedding as a pgvector ``Vector`` value."""
     arr = np.asarray(embedding, dtype=np.float32).reshape(-1)
@@ -29,38 +37,11 @@ def _to_db_vector(embedding: list[float] | np.ndarray) -> Vector:
     return Vector(arr.tolist())
 
 
-# The one place the document-level access predicate is spelled. Both retrieval
-# queries and `restricted_match` splice THIS fragment, so the read side cannot
-# drift from itself: a filter written out twice is a filter that is wrong in
-# one of the two places. The ACL array is a BOUND parameter, never formatted
-# in -- an entry is a user-supplied email.
-_VIEWER_SQL = "({alias}.doc_is_public OR {alias}.doc_viewers && %s::text[])"
-
-
-def _normalize_viewers(viewers: list[str] | None) -> list[str] | None:
-    """Lowercase, de-duplicate and drop blanks -- the write side of ``Viewer.acl``.
-
-    Both sides must agree on spelling or a real grant silently stops matching,
-    which fails CLOSED (the person is locked out) rather than open. That is the
-    safe direction, and also the one nobody reports as a security bug -- so it
-    is normalized in exactly one place.
-    """
-    if not viewers:
-        return None
-    seen = {entry.strip().lower() for entry in viewers if entry and entry.strip()}
-    return sorted(seen) or None
-
-
-def _viewer_clause(viewer: "Viewer | None", alias: str = "d") -> tuple[str, list[list[str]]]:
-    """Return ``(sql_fragment, params)`` for ``viewer``.
-
-    An unrestricted viewer yields ``("", [])`` -- the literal ABSENCE of a
-    clause, not a clause that happens to match everything, so every read that
-    predates document-level access is byte-identical at the SQL level.
-    """
-    if viewer is None or viewer.is_unrestricted:
-        return "", []
-    return " AND " + _VIEWER_SQL.format(alias=alias), [viewer.acl()]
+# The access predicate and its two helpers live in `security/visibility.py`,
+# the one place they are spelled; these names are kept so existing callers and
+# tests read unchanged.
+_normalize_viewers = normalize_viewers
+_viewer_clause = viewer_clause
 
 
 class PgVectorStore(VectorStore):
@@ -150,6 +131,7 @@ class PgVectorStore(VectorStore):
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
         viewer: Viewer | None = None,
+        document_ids: list[str] | None = None,
     ) -> list[RetrievedChunk]:
         if not query_embedding:
             raise EmbeddingProviderError("query_embedding is empty")
@@ -179,6 +161,7 @@ class PgVectorStore(VectorStore):
                   AND (%s::timestamptz IS NULL OR d.source_last_modified >= %s::timestamptz)
                   AND (%s::timestamptz IS NULL OR d.source_last_modified <= %s::timestamptz)
                   AND (%s::text[] IS NULL OR d.tags && %s::text[])
+                  AND (%s::uuid[] IS NULL OR c.document_id = ANY(%s::uuid[]))
                   {viewer_sql.lstrip()}
                 ORDER BY c.embedding <=> %s
                 LIMIT %s
@@ -195,6 +178,8 @@ class PgVectorStore(VectorStore):
                     before,
                     tags,
                     tags,
+                    document_ids,
+                    document_ids,
                     *viewer_params,
                     vector,
                     top_k,
@@ -400,7 +385,7 @@ class PgVectorStore(VectorStore):
     ) -> RestrictedMatch | None:
         """Best-scoring chunk in scope that ``viewer`` may NOT read, if any.
 
-        The predicate is the exact NEGATION of `_VIEWER_SQL`, so "withheld"
+        The predicate is the exact NEGATION of `visibility_predicate`, so "withheld"
         can only ever mean "what the retrieval filter removed" -- the two
         cannot disagree about a document. Returns the provider and the score
         and nothing else; the content, title and id of a restricted document
@@ -422,7 +407,7 @@ class PgVectorStore(VectorStore):
                 WHERE c.org_id = %s::uuid
                   AND c.workspace_id IS NOT DISTINCT FROM %s::uuid
                   AND (%s::text IS NULL OR d.source_provider = %s::text)
-                  AND NOT {_VIEWER_SQL.format(alias="d")}
+                  AND NOT {visibility_predicate("d")}
                   AND 1 - (c.embedding <=> %s) >= %s
                 ORDER BY c.embedding <=> %s
                 LIMIT 1
@@ -487,6 +472,8 @@ class PgVectorStore(VectorStore):
         last_editor: str | None = None,
         is_public: bool = True,
         viewers: list[str] | None = None,
+        source_meta: dict | None = None,
+        editor_key: str | None = None,
     ) -> str:
         if len(chunks) != len(embeddings):
             raise ProviderError(
@@ -530,9 +517,9 @@ class PgVectorStore(VectorStore):
                 INSERT INTO documents (
                     org_id, title, source_uri, source_provider, source_external_id,
                     source_last_modified, workspace_id, tags, source_last_editor,
-                    doc_is_public, doc_viewers
+                    doc_is_public, doc_viewers, source_meta, source_editor_key
                 )
-                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid, %s, %s, %s, %s)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid, %s, %s, %s, %s, %s::jsonb, %s)
                 RETURNING id
                 """,
                 (
@@ -547,6 +534,8 @@ class PgVectorStore(VectorStore):
                     last_editor,
                     is_public,
                     _normalize_viewers(viewers),
+                    _jsonb(source_meta),
+                    editor_key,
                 ),
             ).fetchone()
             document_id = doc_row[0]
@@ -586,6 +575,8 @@ class PgVectorStore(VectorStore):
         last_editor: str | None = None,
         is_public: bool = True,
         viewers: list[str] | None = None,
+        source_meta: dict | None = None,
+        editor_key: str | None = None,
     ) -> str:
         """Upsert metadata-only row so empty pages are not forever "new"."""
         if not external_id:
@@ -621,9 +612,9 @@ class PgVectorStore(VectorStore):
                 INSERT INTO documents (
                     org_id, title, source_uri, source_provider, source_external_id,
                     source_last_modified, workspace_id, tags, source_last_editor,
-                    doc_is_public, doc_viewers
+                    doc_is_public, doc_viewers, source_meta, source_editor_key
                 )
-                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid, %s, %s, %s, %s)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s, %s::uuid, %s, %s, %s, %s, %s::jsonb, %s)
                 RETURNING id
                 """,
                 (
@@ -638,9 +629,56 @@ class PgVectorStore(VectorStore):
                     last_editor,
                     is_public,
                     _normalize_viewers(viewers),
+                    _jsonb(source_meta),
+                    editor_key,
                 ),
             ).fetchone()
         return str(row[0])
+
+    def replace_source_document_chunks(
+        self,
+        org_id: str,
+        *,
+        provider: str,
+        external_id: str,
+        chunks: list[str],
+        embeddings: list[list[float]],
+        workspace_id: str | None = None,
+    ) -> str | None:
+        if len(chunks) != len(embeddings):
+            raise ProviderError(
+                f"chunks ({len(chunks)}) and embeddings ({len(embeddings)}) "
+                "must be the same length"
+            )
+        if not chunks:
+            raise ProviderError("Cannot replace a document's chunks with none")
+        with get_connection(self._settings) as conn:
+            row = conn.execute(
+                """
+                SELECT id FROM documents
+                WHERE org_id = %s::uuid
+                  AND source_provider = %s
+                  AND workspace_id IS NOT DISTINCT FROM %s::uuid
+                  AND source_external_id = %s
+                FOR UPDATE
+                """,
+                (org_id, provider, workspace_id, external_id),
+            ).fetchone()
+            if row is None:
+                return None
+            document_id = row[0]
+            conn.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
+            conn.cursor().executemany(
+                """
+                INSERT INTO chunks (org_id, document_id, chunk_index, content, embedding, workspace_id)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s::uuid)
+                """,
+                [
+                    (org_id, document_id, index, content, _to_db_vector(embedding), workspace_id)
+                    for index, (content, embedding) in enumerate(zip(chunks, embeddings))
+                ],
+            )
+        return str(document_id)
 
     def set_source_document_access(
         self,
@@ -674,6 +712,68 @@ class PgVectorStore(VectorStore):
                 rows,
             )
             return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else len(rows)
+
+    def list_source_documents_missing_meta(
+        self,
+        org_id: str,
+        *,
+        provider: str,
+        workspace_id: str | None = None,
+        limit: int = 25,
+    ) -> list[str]:
+        """External ids of stored documents whose ``source_meta`` was never captured."""
+        if limit <= 0:
+            return []
+        with get_connection(self._settings) as conn:
+            rows = conn.execute(
+                """
+                SELECT source_external_id FROM documents
+                WHERE org_id = %s::uuid
+                  AND source_provider = %s
+                  AND workspace_id IS NOT DISTINCT FROM %s::uuid
+                  AND source_external_id IS NOT NULL
+                  AND source_meta IS NULL
+                ORDER BY source_last_modified DESC NULLS LAST
+                LIMIT %s
+                """,
+                (org_id, provider, workspace_id, limit),
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    def set_source_document_meta(
+        self,
+        org_id: str,
+        *,
+        provider: str,
+        entries: list[tuple[str, dict | None, str | None]],
+        workspace_id: str | None = None,
+    ) -> int:
+        """Write ``source_meta``/``source_editor_key`` only — chunks untouched.
+
+        A document with nothing to capture is stored as ``{}`` rather than
+        left NULL, so the refresh does not pick the same row up every tick.
+        """
+        rows = [
+            (json.dumps(meta or {}), key, org_id, provider, workspace_id, external_id)
+            for external_id, meta, key in entries
+            if external_id
+        ]
+        if not rows:
+            return 0
+        with get_connection(self._settings) as conn:
+            cursor = conn.cursor()
+            cursor.executemany(
+                """
+                UPDATE documents
+                SET source_meta = %s::jsonb, source_editor_key = %s
+                WHERE org_id = %s::uuid
+                  AND source_provider = %s
+                  AND workspace_id IS NOT DISTINCT FROM %s::uuid
+                  AND source_external_id = %s
+                """,
+                rows,
+            )
+        return len(rows)
 
     def delete_source_documents(
         self,

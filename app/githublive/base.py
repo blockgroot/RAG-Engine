@@ -80,6 +80,10 @@ class CommitSummary:
     author: str | None
     date: datetime | None
     url: str
+    # The GitHub LOGIN when GitHub matched the commit to an account, else None
+    # -- `author` falls back to the git display name, which must never become
+    # an identity key (Second Brain: people are never merged by name).
+    author_login: str | None = None
 
 
 @dataclass(frozen=True)

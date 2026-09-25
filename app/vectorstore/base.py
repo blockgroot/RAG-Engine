@@ -285,8 +285,13 @@ class VectorStore(ABC):
         date_range: "DateRange | None" = None,
         tags: list[str] | None = None,
         viewer: "Viewer | None" = None,
+        document_ids: list[str] | None = None,
     ) -> list[RetrievedChunk]:
         """Return the ``top_k`` most similar chunks *within ``org_id`` only*.
+
+        ``document_ids``: restrict to these documents (the knowledge graph's
+        evidence, Second Brain 1.6). An ADDITIONAL filter -- every other one,
+        the viewer's included, still applies. ``None`` (default) is a no-op.
 
         ``viewer`` (document-level access filtering): ``None`` (default) reads
         every document in scope, exactly as before this existed. A ``Viewer``
@@ -461,6 +466,8 @@ class VectorStore(ABC):
         last_editor: str | None = None,
         is_public: bool = True,
         viewers: list[str] | None = None,
+        source_meta: dict | None = None,
+        editor_key: str | None = None,
     ) -> str:
         """Replace any prior copy of this source page, then store the new chunks.
 
@@ -490,6 +497,8 @@ class VectorStore(ABC):
         last_editor: str | None = None,
         is_public: bool = True,
         viewers: list[str] | None = None,
+        source_meta: dict | None = None,
+        editor_key: str | None = None,
     ) -> str:
         """Record a source page with no chunks (empty / index-only after fetch).
 
@@ -498,6 +507,30 @@ class VectorStore(ABC):
         """
         raise NotImplementedError(
             "this vector store does not support source document acknowledge"
+        )
+
+    def replace_source_document_chunks(
+        self,
+        org_id: str,
+        *,
+        provider: str,
+        external_id: str,
+        chunks: list[str],
+        embeddings: list[list[float]],
+        workspace_id: str | None = None,
+    ) -> str | None:
+        """Swap a stored document's chunks, leaving its ``documents`` row untouched.
+
+        For deferred enrichment, which only improves chunk TEXT. The row's
+        access set, tags, editor and Second Brain metadata were decided by the
+        ingest that wrote it moments earlier, under every rule that path applies
+        (skip, owner-only fallback, freeze). Re-deriving them from a re-fetch
+        cannot reproduce that: Slack reports sharing only on the LISTING, so a
+        fetched thread carries none. Returns the document id, or ``None`` when
+        the row no longer exists (removed since ingest) — nothing is written.
+        """
+        raise NotImplementedError(
+            "this vector store does not support replacing source document chunks"
         )
 
     def set_source_document_access(
@@ -520,6 +553,37 @@ class VectorStore(ABC):
         Each entry is ``(external_id, is_public, viewers)`` and REPLACES the
         stored set, never unions with it: a union can only ever add viewers,
         which makes removal impossible to express.
+
+        Optional capability: the default is a no-op.
+        """
+        return 0
+
+    def list_source_documents_missing_meta(
+        self,
+        org_id: str,
+        *,
+        provider: str,
+        workspace_id: str | None = None,
+        limit: int = 25,
+    ) -> list[str]:
+        """Stored documents whose ``source_meta`` has never been captured.
+
+        Feeds the bounded metadata-only refresh: an UNCHANGED document is never
+        re-fetched, so without it every row indexed before Second Brain 1.1
+        would stay invisible to the graph forever. Newest first, because recent
+        documents are the ones questions are about. Optional: default is none.
+        """
+        return []
+
+    def set_source_document_meta(
+        self,
+        org_id: str,
+        *,
+        provider: str,
+        entries: list[tuple[str, dict | None, str | None]],
+        workspace_id: str | None = None,
+    ) -> int:
+        """Store ``(external_id, meta, editor_key)`` WITHOUT re-chunking or re-embedding.
 
         Optional capability: the default is a no-op.
         """
