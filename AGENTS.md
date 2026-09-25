@@ -21,6 +21,13 @@ entire feature's section), which is exactly the failure this avoids.
   orchestrator that only composes existing interfaces skips `base.py`.
 - **All config** is a `from_env()` dataclass in `app/config/settings.py`.
   Nothing else reads the environment.
+- **Every prompt that carries outside text includes the shared
+  prompt-injection rules.** Fence the text in `<<<UNTRUSTED_…>>>` markers, put
+  `UNTRUSTED_POLICY` before it and `UNTRUSTED_REMINDER` after it
+  (`app/security/untrusted.py`). The rules themselves are plain words in
+  `app/security/agents.md`, which the app sends to the model. That file, not
+  this one, is what the production model reads.
+  `tests/test_untrusted_policy.py` fails if a prompt skips them.
 - **Bound every external walk and mark truncation.** A partial result that
   looks complete is the failure that matters.
 - **Update CLAUDE.md at the end of each phase** — one dense line, not a

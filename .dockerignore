@@ -17,6 +17,10 @@ docs/
 .code-review-graph/
 graphify-out/
 *.md
+# The prompt-injection rules must ship: the running app reads this file and
+# sends it to the model (security/untrusted.py). A bare `*.md` only matches the
+# context root, so this is insurance against a later `**/*.md`.
+!app/security/agents.md
 
 # Python / tooling
 __pycache__/

@@ -295,6 +295,17 @@ grounded generate → `RagResult`.
   plain "…RAG system…" sentence), deleting everything after it. Scrubbing to
   empty now returns empty, **not the original** — the old fallback fail-OPENed
   on the one input that is certainly an attack.
+- **The model-side rule has ONE spelling, in a markdown file the model gets**
+  (`app/security/agents.md` → `untrusted.UNTRUSTED_POLICY`, loaded once at
+  import; missing/empty raises `ConfigurationError` so a prompt can never
+  silently lose it). Regex scrubbing cannot catch a reworded or translated
+  attack, so every prompt that fences outside text (grounded, paging, recovery,
+  web, GitHub, Slack recap, audit, contextualize, sentiment, scheduler report,
+  chart resolver) carries the policy BEFORE the fence and `UNTRUSTED_REMINDER`
+  AFTER it; `tests/test_untrusted_policy.py` pins placement and fails on any
+  new fence without them. Each prompt used to word the rule itself and they
+  drifted. The ROOT `AGENTS.md` is for coding assistants and never reaches the
+  model — rules only work through the prompt.
 
 **Agents (`app/agent/`)** — `Agent.answer(...) -> AgentResponse`,
 source-agnostic on purpose.
