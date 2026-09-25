@@ -33,8 +33,17 @@ employees get answers grounded in *their own* data.
 
 ## 3. Architecture — the load-bearing decisions
 
-**Providers & storage** — plain OpenAI-compatible client, not LiteLLM
-(switching LLM is `LLM_MODEL`/`LLM_BASE_URL`/key, no code change). Local
+**Providers & storage** — plain OpenAI-compatible client, not LiteLLM.
+Switching LLM is env only: **`LLM_ADAPTER` names the provider from a FIXED list**
+(`llm/adapters.py` = `org_model.PRESETS` + `custom`) and supplies its base URL;
+`LLM_MODEL` is only a parameter to it. The provider used to be IMPLIED by a
+free-text URL + model name, so a typo shipped and failed as answers.
+`scripts/check_llm_config.py` runs in the entrypoint and fails the DEPLOY only
+on proof — unknown adapter, a `*_BASE_URL` conflicting with the adapter's (an
+error, never an override), a model the provider's `/models` omits, a 401 —
+never on an unreachable list, and never on an unset `LLM_ADAPTER` (legacy: the
+URL as-is, warned), so an unmigrated prod keeps deploying. `Adapter.kind` is the
+seam for a native (non-OpenAI-wire) adapter. Local
 BGE-M3 embeddings by default with a `remote` backend behind the same
 interface for deploys; same for `app/reranker/`. Postgres + pgvector via a
 pool — `register_vector` runs once per physical connection in the `configure`
@@ -1598,6 +1607,7 @@ app/config/   typed settings — the ONLY place env is read
 app/core/     ProviderError hierarchy
 app/{llm,embeddings,reranker,vectorstore,websearch}/  base + impls + factory
 app/llm/      + routed.py (per-request model) + catalog.py (the 5 offered)
+              + adapters.py (LLM_ADAPTER registry + boot model check)
 app/db/       schema.sql, connection.py (pool), migrate.py
 app/ingestion/ preprocess, chunk, contextualize, pipeline  (orchestrator)
 app/rag/      pipeline, prompts, retrieval, query_normalize, summary_fold,

@@ -177,21 +177,38 @@ class LLMSettings:
     #: can only approximate: separate endpoints cannot contend at all.
     aux_base_url: str | None = None
     aux_api_key: str | None = None
+    #: WHICH provider the model is served by, named from a fixed list
+    #: (``app/llm/adapters.py``). The adapter owns the base URL, so the
+    #: provider is a validated choice rather than something implied by a
+    #: free-text URL + model name. ``None`` = legacy: ``LLM_BASE_URL`` is used
+    #: as-is, exactly as before this field existed, so an unmigrated deploy
+    #: keeps working (with a startup warning).
+    adapter: str | None = None
+    #: The same for background work; with ``LLM_AUX_API_KEY`` it replaces
+    #: ``LLM_AUX_BASE_URL``.
+    aux_adapter: str | None = None
+    #: What the boot-time config check does (``scripts/check_llm_config.py``):
+    #: ``strict`` refuses to start on a config it can PROVE is wrong (unknown
+    #: adapter, a model the provider does not list), ``warn`` only logs,
+    #: ``off`` skips it. An unreachable model list is never a failure.
+    config_check: str = "strict"
 
     @property
     def aux_has_own_endpoint(self) -> bool:
         """True when background work draws from a different rate limit.
 
-        Requires BOTH a base_url and a key: a base_url with the main key would
-        send the wrong credential to the wrong host (a 401 on every
-        contextualization, degrading silently to un-prefixed chunks), and a key
-        with no base_url would send a foreign key to the main endpoint. Half-
-        configured therefore means "not configured", never "partly applied".
+        Requires BOTH an endpoint (a base_url or an adapter, which supplies
+        one) and a key: an endpoint with the main key would send the wrong
+        credential to the wrong host (a 401 on every contextualization,
+        degrading silently to un-prefixed chunks), and a key with no endpoint
+        would send a foreign key to the main endpoint. Half-configured
+        therefore means "not configured", never "partly applied".
         """
-        return bool(self.aux_base_url and self.aux_api_key)
+        return bool((self.aux_base_url or self.aux_adapter) and self.aux_api_key)
 
     @classmethod
     def from_env(cls) -> "LLMSettings":
+        check = (os.getenv("LLM_CONFIG_CHECK") or "strict").strip().lower()
         return cls(
             model=os.getenv("LLM_MODEL"),
             aux_model=os.getenv("LLM_AUX_MODEL") or None,
@@ -200,6 +217,9 @@ class LLMSettings:
             timeout=float(os.getenv("LLM_TIMEOUT") or DEFAULT_TIMEOUT),
             aux_base_url=os.getenv("LLM_AUX_BASE_URL") or None,
             aux_api_key=os.getenv("LLM_AUX_API_KEY") or None,
+            adapter=(os.getenv("LLM_ADAPTER") or "").strip().lower() or None,
+            aux_adapter=(os.getenv("LLM_AUX_ADAPTER") or "").strip().lower() or None,
+            config_check=check if check in ("strict", "warn", "off") else "strict",
         )
 
 

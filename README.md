@@ -129,7 +129,7 @@ for the full list with inline documentation. The essentials:
 
 | Variable            | Purpose                                    |
 | ------------------- | ------------------------------------------- |
-| `LLM_MODEL` / `LLM_API_KEY` / `LLM_BASE_URL` | LLM provider selection |
+| `LLM_ADAPTER` / `LLM_MODEL` / `LLM_API_KEY` | LLM provider (fixed list, supplies the URL) + model; `LLM_BASE_URL` only for `custom`; checked at boot (`LLM_CONFIG_CHECK`) |
 | `EMBEDDING_BACKEND` | `local` (default) or `remote`               |
 | `DATABASE_URL`      | Postgres connection string                  |
 | `AUTH_JWT_SECRET`   | Session signing key                         |
