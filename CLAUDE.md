@@ -288,14 +288,17 @@ grounded generate → `RagResult`.
   miss. Never answers the question; never weakens grounding.
 - **Web fallback**: on gate miss the model may call `web_search` for real
   *external* entities — one search, no loop, labelled `source="web"`.
-- **The answer audit has two backends, and the LLM one is the WORSE one**
-  (`RAG_AUDIT_BACKEND=llm|lettuce`, `rag/audit.py::lettuce_verdict`). Measured
+- **The answer audit has three backends, and the LLM one is the WORSE one**
+  (`RAG_AUDIT_BACKEND=llm|lettuce|jev`, `rag/audit.py`). Measured
   on 60 RAGTruth-QA examples (`scripts/bench_answer_check.py`): the LLM audit
   on gemini-3.1-flash-lite rejected **12/30 grounded answers** — each one a good
   answer turned into "I don't know" — where LettuceDetect rejected 1/30 (AUROC
   0.89 vs 0.77) and spends no LLM quota. Laya (a "System 1" decision model) was
-  0.78 and cannot tell "25 days" from "30 days"; Jev has no free tier and
-  zero-retention is enterprise-only, so tenant chunks cannot go there. The
+  0.78 and cannot tell "25 days" from "30 days". **Jev** is the zero-ops
+  option: one hosted call per answer, one yes/no PER SENTENCE (so one invented
+  sentence cannot be averaged away), ~$0.0001 a check — but tenant chunks leave
+  for TypeSafe (no training; zero retention is enterprise-only), so choosing it
+  is a data decision, and it is UNMEASURED here (no key). The
   checker runs on OUR private HF Space (`deploy/lettucedetect-space/`), never a
   public demo: every call carries retrieved chunks. Same contract as the LLM
   path — downgrade only, any failure SKIPS — and a context over
@@ -2135,7 +2138,9 @@ when the model says qa.
   on OUR data (it was picked on RAGTruth, general web QA), and the 48h
   sleep (a sleeping Space times out and skips the audit) are all unmeasured.
   Re-run `bench_answer_check.py --checkers lettuce` against it before turning
-  `RAG_AUDIT_ENABLED` on in prod.
+  `RAG_AUDIT_ENABLED` on in prod. Same for Jev: `JEV_MODEL` floats on
+  `jev-latest` and `RAG_AUDIT_JEV_THRESHOLD=0.5` is a placeholder until
+  `--checkers jev` has run.
 - **The 5 catalogued models are UNVERIFIED against a live key** — run
   `scripts/verify_models.py` before trusting the picker; a model
   that fails the MODE-tag check must be replaced, not shipped.

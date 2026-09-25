@@ -95,11 +95,14 @@ DEFAULT_RECOVERY_ENABLED = True
 DEFAULT_RECOVERY_MAX_QUERIES = 2
 
 DEFAULT_AUDIT_ENABLED = False
-AUDIT_BACKENDS = ("llm", "lettuce")
+AUDIT_BACKENDS = ("llm", "lettuce", "jev")
 # Best balanced-accuracy cutoff measured on 60 RAGTruth-QA examples
 # (scripts/bench_answer_check.py) was 0.61; re-measure on your own labels.
 DEFAULT_AUDIT_LETTUCE_THRESHOLD = 0.6
-DEFAULT_AUDIT_LETTUCE_TIMEOUT = 8.0
+# Jev: the LOWEST per-sentence P(supported) under this downgrades. Not yet
+# measured on any labelled set — run scripts/bench_answer_check.py --checkers jev.
+DEFAULT_AUDIT_JEV_THRESHOLD = 0.5
+DEFAULT_AUDIT_TIMEOUT = 8.0
 
 DEFAULT_DECOMPOSE_ENABLED = True
 
@@ -993,6 +996,12 @@ class AuditSettings:
       must be one WE run (a private Space), never a public demo.
     - ``lettuce_threshold``  a flagged span at or above this confidence
       downgrades the answer.
+    - ``jev`` backend: TypeSafe's hosted Jev, one call per answer, one yes/no
+      per sentence. Nothing to deploy, ~$0.0001 per check, but tenant chunks
+      leave for TypeSafe: they commit to no training, and zero retention is
+      enterprise-only — an explicit decision, not a default.
+      ``jev_threshold``: the lowest sentence's P(supported) under it downgrades.
+    - ``timeout``  both HTTP backends; a timeout skips the audit.
     """
 
     enabled: bool = DEFAULT_AUDIT_ENABLED
@@ -1000,7 +1009,9 @@ class AuditSettings:
     lettuce_url: str | None = None
     lettuce_token: str | None = None
     lettuce_threshold: float = DEFAULT_AUDIT_LETTUCE_THRESHOLD
-    lettuce_timeout: float = DEFAULT_AUDIT_LETTUCE_TIMEOUT
+    jev_api_key: str | None = None
+    jev_threshold: float = DEFAULT_AUDIT_JEV_THRESHOLD
+    timeout: float = DEFAULT_AUDIT_TIMEOUT
 
     @classmethod
     def from_env(cls) -> "AuditSettings":
@@ -1014,6 +1025,9 @@ class AuditSettings:
         url = (os.getenv("RAG_AUDIT_LETTUCE_URL") or "").strip() or None
         if backend == "lettuce" and not url:
             raise ConfigurationError("RAG_AUDIT_BACKEND=lettuce needs RAG_AUDIT_LETTUCE_URL")
+        jev_key = (os.getenv("RAG_AUDIT_JEV_API_KEY") or "").strip() or None
+        if backend == "jev" and not jev_key:
+            raise ConfigurationError("RAG_AUDIT_BACKEND=jev needs RAG_AUDIT_JEV_API_KEY")
         return cls(
             enabled=env_bool("RAG_AUDIT_ENABLED", DEFAULT_AUDIT_ENABLED),
             backend=backend,
@@ -1022,9 +1036,9 @@ class AuditSettings:
             lettuce_threshold=float(
                 os.getenv("RAG_AUDIT_LETTUCE_THRESHOLD") or DEFAULT_AUDIT_LETTUCE_THRESHOLD
             ),
-            lettuce_timeout=float(
-                os.getenv("RAG_AUDIT_LETTUCE_TIMEOUT") or DEFAULT_AUDIT_LETTUCE_TIMEOUT
-            ),
+            jev_api_key=jev_key,
+            jev_threshold=float(os.getenv("RAG_AUDIT_JEV_THRESHOLD") or DEFAULT_AUDIT_JEV_THRESHOLD),
+            timeout=float(os.getenv("RAG_AUDIT_TIMEOUT") or DEFAULT_AUDIT_TIMEOUT),
         )
 
 
