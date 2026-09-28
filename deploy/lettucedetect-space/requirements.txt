@@ -1,0 +1,6 @@
+# CPU-only torch: the default wheel drags in ~2GB of CUDA the free tier cannot use.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+lettucedetect
+fastapi
+uvicorn

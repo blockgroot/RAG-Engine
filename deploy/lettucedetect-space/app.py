@@ -1,6 +1,8 @@
 """LettuceDetect answer check behind one HTTP route — the RAG_AUDIT_BACKEND=lettuce endpoint.
 
-Runs as a PRIVATE Hugging Face Docker Space (free CPU tier: 2 vCPU, 16GB RAM),
+Runs as a PRIVATE Hugging Face Space (Gradio SDK, free CPU basic: 2 vCPU, 16GB
+RAM) -- Docker Spaces are paid, and a Gradio Space only runs ``python app.py``,
+so this starts uvicorn itself on 7860 and never imports Gradio. Runs there
 because the app's own Render box (512MB) cannot hold the model and the laptop
 should not have to. Stateless: it never logs or stores what it is sent, which
 matters because every request carries a tenant's retrieved chunks.
@@ -43,3 +45,10 @@ def check(req: CheckRequest) -> dict:
 @app.get("/health")
 def health() -> dict:
     return {"ok": True, "model": MODEL}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    # access_log off: request bodies are tenant data; keep even paths out of the log.
+    uvicorn.run(app, host="0.0.0.0", port=7860, access_log=False)
