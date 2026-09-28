@@ -68,7 +68,8 @@ from .attachment_tools import (
 )
 from .access_notice import restricted_notice
 from ..security.links import enforce_link_provenance, strip_links
-from ..security.untrusted import scrub_untrusted_text
+from ..security.outbound import user_worded_query
+from ..security.untrusted import leaks_canary, scrub_untrusted_text
 from .audit import lettuce_verdict, parse_audit_verdict
 from .retrieval import HybridRetriever, RetrievalResult
 from .context_assemble import assemble_context_texts, describe_hit
@@ -150,7 +151,14 @@ def _is_cacheable(result: "RagResult") -> bool:
       it would be served verbatim to a member who cannot open that document;
     * a "these documents are not shared with you" notice, which is a statement
       about ONE person's access and is wrong for everybody else.
+
+    Web answers are never written either. Their sources are pages anyone can
+    publish, `sources=[]` made the check above vacuously true, and a cached
+    one is served to the whole scope for the TTL: one poisoned search result
+    would have become everybody's answer.
     """
+    if result.source == SOURCE_WEB:
+        return False
     if not all(getattr(hit, "doc_is_public", True) for hit in result.sources):
         return False
     return not getattr(result, "access_restricted", False)
@@ -717,6 +725,7 @@ class RagPipeline:
                         workspace_id=workspace_id,
                         viewer=viewer,
                         query_vec=query_vec,
+                        user_question=tone_question,
                     )
                 )
 
@@ -784,6 +793,7 @@ class RagPipeline:
                         workspace_id=workspace_id,
                         viewer=viewer,
                         query_vec=query_vec,
+                        user_question=tone_question,
                     )
                 )
             result = self._generate(
@@ -817,6 +827,7 @@ class RagPipeline:
                     workspace_id=workspace_id,
                     viewer=viewer,
                     query_vec=query_vec,
+                    user_question=tone_question,
                 )
             )
 
@@ -1477,6 +1488,11 @@ class RagPipeline:
 
         answered = not self._is_refusal(text, self._settings.fallback_response)
         answer = text if answered else self._settings.fallback_response
+        if answered and leaks_canary(answer):
+            # The model repeated its own instructions: what an injection asking
+            # for "your system prompt" gets. Nothing of it ships.
+            logger.warning("security.canary_leak stage=generate org=%s", org_id)
+            answered, answer = False, self._settings.fallback_response
         if answered:
             # Before the audit, so the audit judges the text that will ship.
             answer = enforce_link_provenance(answer, contexts, self._link_allowlist)
@@ -1503,6 +1519,9 @@ class RagPipeline:
                     answer = self._settings.fallback_response
 
         if answered and opener:
+            # Composed after the link rule ran, so it gets its own pass: it is
+            # written from the question alone and never needs a link.
+            opener = enforce_link_provenance(opener, [], ())
             answer = compose_supportive_answer(opener, answer)
 
         return RagResult(
@@ -1674,6 +1693,7 @@ class RagPipeline:
         workspace_id: str | None = None,
         viewer: Viewer | None = None,
         query_vec: list[float] | None = None,
+        user_question: str | None = None,
     ) -> RagResult:
         """Internal evidence insufficient: try web search (if enabled), else fallback.
 
@@ -1691,6 +1711,7 @@ class RagPipeline:
                 top_score,
                 org_id=org_id,
                 conversation_id=conversation_id,
+                user_question=user_question,
             )
             if web is not None:
                 return web
@@ -1846,6 +1867,7 @@ class RagPipeline:
         *,
         org_id: str | None = None,
         conversation_id: str | None = None,
+        user_question: str | None = None,
     ) -> RagResult | None:
         """One decision call + at most one search + one answer call.
 
@@ -1878,7 +1900,13 @@ class RagPipeline:
         if not decision.tool_calls:
             return None  # model judged the question internal -> fixed fallback
 
-        query = self._extract_query(decision.tool_calls[0].arguments, question)
+        query = user_worded_query(
+            self._extract_query(decision.tool_calls[0].arguments, question),
+            self._user_texts(user_question or question, conversation_id),
+        )
+        if query is None:
+            logger.info("security.web_query_dropped: mostly words the user never typed")
+            return None
 
         try:
             results = self._web_search.search(
@@ -1906,6 +1934,9 @@ class RagPipeline:
 
         # The Sources list is appended by us from the search results, never by
         # the model; only the model's own prose is checked.
+        if leaks_canary(raw):
+            logger.warning("security.canary_leak stage=web org=%s", org_id)
+            return None
         raw = enforce_link_provenance(raw, [results_block], self._link_allowlist)
         return RagResult(
             answer=self._format_web_answer(raw, results),
@@ -1914,6 +1945,21 @@ class RagPipeline:
             sources=[],
             top_score=top_score,
         )
+
+    def _user_texts(self, latest: str, conversation_id: str | None) -> list[str]:
+        """The asker's own words in this conversation: the web query's word list.
+
+        Earlier QUESTIONS only -- never answers, the summary or documents --
+        so a follow-up ("and their CEO?") can still search for the company the
+        user named two turns ago. One memory read, on the rare web path only.
+        """
+        texts = [latest]
+        if conversation_id and self._memory is not None:
+            try:
+                texts += [t.question for t in self._memory.get_turns(conversation_id)]
+            except Exception:  # noqa: BLE001 - fewer words, never a failed answer
+                logger.warning("web query: could not read earlier questions", exc_info=True)
+        return texts
 
     @staticmethod
     def _extract_query(arguments: str, default: str) -> str:

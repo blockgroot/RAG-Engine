@@ -32,7 +32,10 @@ REMOVED = "[link removed]"
 # (EchoLeak's bypass), images `![a](url)` and bare links are all covered by the
 # one pattern: every form contains the URL.
 URL_PATTERN = re.compile(
-    r"(?i)\b(?:https?://|www\.|mailto:|javascript:|data:)[^\s<>()\[\]{}\"'`]+"
+    # `javascript:`/`data:` carry code, and their arguments (parens, quotes) are
+    # part of them, so they run to the next whitespace.
+    r"(?i)\b(?:javascript|data):\S+"
+    r"|\b(?:https?://|www\.|mailto:)[^\s<>()\[\]{}\"'`]+"
     # Slack links a bare `host.tld/path` too, so a scheme-less URL with a path
     # or query counts. A dotted host with no path ("e.g." or "v1.2") does not.
     r"|\b(?:[a-z0-9-]+\.)+[a-z]{2,}[/?][^\s<>()\[\]{}\"'`]*"

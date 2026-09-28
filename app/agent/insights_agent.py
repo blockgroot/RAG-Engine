@@ -24,6 +24,7 @@ from ..insights.facts import DOCUMENT_PROVIDERS, record_document_facts
 from ..insights.resolve import ChartSpec, CannotChart
 from ..vectorstore.base import Viewer
 from .base import Agent, AgentResponse
+from ..security.links import enforce_link_provenance
 
 logger = logging.getLogger(__name__)
 
@@ -282,13 +283,16 @@ def _resolve_focus(spec, metric, *, org_id, workspace_id, days) -> str | None:
     ]
     if len(partial) == 1:
         return partial[0]
+    # The name is repeated back on purpose (see the docstring), but it is
+    # model-extracted text, so it never carries a link back to the reader.
+    named = enforce_link_provenance(spec.focus, [], ())
     if len(partial) > 1:
         raise CannotChart(
-            f"\"{spec.focus}\" matches more than one: "
+            f"\"{named}\" matches more than one: "
             f"{_listed(partial)}. Which one?"
         )
     raise CannotChart(
-        f"I have no {metric.label.lower()} for \"{spec.focus}\" in the last "
+        f"I have no {metric.label.lower()} for \"{named}\" in the last "
         f"{days} days. What I do have: {_listed(subjects)}."
     )
 

@@ -319,6 +319,45 @@ grounded generate → `RagResult`.
   new fence without them. Each prompt used to word the rule itself and they
   drifted. The ROOT `AGENTS.md` is for coding assistants and never reaches the
   model — rules only work through the prompt.
+- **Prompt-injection defense assumes the model WILL be fooled and makes that
+  harmless** (`docs/plans/2026-09-28-prompt-injection-defense.md`; Phase 1 =
+  deterministic, no model calls). Every published detector falls to adaptive
+  attacks (arXiv 2510.09023), and every real RAG leak (EchoLeak, Slack AI,
+  ChatGPT, Bard) went out through a URL, so the guarantees are in code:
+  - **Link provenance** (`security/links.py`, on all four answer paths —
+    `_generate`, web, GitHub `_compose`, Slack recap): a URL survives only if it
+    appeared VERBATIM in the text the model was shown; `SECURITY_LINK_ALLOWLIST`
+    hosts keep scheme+host+path with the query CUT (a prefilled Google Form is
+    an exfil sink). One regex covers inline, reference-style (EchoLeak's
+    bypass), image, bare, scheme-less, mailto and javascript forms because
+    every form contains the URL.
+  - **Slack** escapes `& < >` in model text before mrkdwn (a model-written
+    `<url|click here>` was the Slack AI leak; `<!channel>` pings the room) and
+    sends `unfurl_links/unfurl_media: false` on every post and update.
+  - **`normalize_untrusted` runs first in the scrubber**: NFKC plus dropping
+    tag characters, zero-width, soft hyphen, bidi and variation selectors —
+    the published 100%-evasion tricks. Forged `<<<…UNTRUSTED…>>>` markers are
+    cut (bare names uppercase-only, so `untrusted_input` in prose survives).
+    Safe because every builder scrubs FIRST and fences AFTER.
+  - **Stored model text is untrusted text we would persist**: the ingest
+    context line is refused (chunk stored bare) over 700 chars, if the
+    scrubber would cut anything, or if it holds a link/mention; the running
+    summary is scrubbed and link-stripped before `set_summary_folded_through`.
+    Memory prompts (rewrite, fold) fence the WHOLE history — the rewrite's
+    output becomes the trusted QUESTION.
+  - **The web query carries only words the user typed** (`security/outbound.py`,
+    this and earlier QUESTIONS, never answers/summary/docs); over half foreign
+    ⇒ no search. Web answers are never cached scope-wide (`sources=[]` made the
+    public check vacuously true). `WebSearchError` no longer logs the query.
+  - **Canary** (`untrusted.CANARY`, per process, appended to the policy): an
+    answer repeating it — spaced, URL- or base64-encoded — becomes the fallback.
+  - Skipped on purpose: the per-request fence NONCE (forged markers are already
+    stripped; revisit only if Phase 4 evals show fence confusion), a `Context:`
+    label on stored prefixes (no reader), and hiding an unmatched chart `focus`
+    (the by-name refusal is deliberate; it is link-stripped instead).
+  - The answer AUDIT is not a security layer: an injected claim is literally in
+    a chunk, so it counts as grounded. `tests/test_exfil_channels.py` assumes a
+    FULLY compromised model and asserts chat and Slack are inert anyway.
 
 **Agents (`app/agent/`)** — `Agent.answer(...) -> AgentResponse`,
 source-agnostic on purpose.
@@ -2130,6 +2169,11 @@ when the model says qa.
 - Production secrets (`AUTH_JWT_SECRET`, `AUTH_ENCRYPTION_KEYS`,
   `GITHUB_APP_PRIVATE_KEY`, `OPENROUTER_API_KEY`) are a config surface, not
   provisioned.
+- **Prompt-injection defense: Phase 1 (deterministic) is built; Phases 2–4
+  are not** — no chunk is scored for injection, questions and uploads are not
+  classified, and no answer moderation runs. The first real gap after Phase 1
+  is a poisoned chunk whose injected link is VERBATIM in it (the golden-set
+  phishing case): provenance allows it until Phase 2's score can veto it.
 - **The LettuceDetect Space is not deployed yet** — the endpoint code is
   tested against a fake only. Its CPU latency on the free tier, the 0.6 cutoff
   on OUR data (it was picked on RAGTruth, general web QA), and the 48h

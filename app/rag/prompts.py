@@ -13,7 +13,12 @@ from ..core.answer_sources import (
     SOURCE_SLACK,
     SOURCE_WORKSPACE,
 )
-from ..security.untrusted import UNTRUSTED_POLICY, UNTRUSTED_REMINDER, scrub_untrusted_text
+from ..security.untrusted import (
+    UNTRUSTED_POLICY,
+    UNTRUSTED_REMINDER,
+    scrub_untrusted_text,
+    strip_forged_fences,
+)
 
 
 @dataclass(frozen=True)
@@ -644,13 +649,19 @@ GITHUB_TOOLS = [
 
 
 def format_repo_catalog(repos) -> str:
-    """Render the authorized repo list for the tool-decision prompt."""
+    """Render the authorized repo list for the tool-decision prompt.
+
+    Descriptions and topics are written by whoever can edit the repository, so
+    they are scrubbed here and fenced by the prompt. The name is ours: it is
+    what `resolve_repo` checks against the authorized list.
+    """
     lines = []
     for repo in repos:
         parts = [f"- {repo.full_name}"]
-        if getattr(repo, "description", None):
-            parts.append(f": {repo.description}")
-        topics = getattr(repo, "topics", ()) or ()
+        description = scrub_untrusted_text(getattr(repo, "description", None) or "")
+        if description:
+            parts.append(f": {description}")
+        topics = [t for t in (scrub_untrusted_text(t) for t in getattr(repo, "topics", ()) or ()) if t]
         if topics:
             parts.append(f" [topics: {', '.join(topics)}]")
         lines.append("".join(parts))
@@ -680,7 +691,12 @@ def build_github_decision_prompt(question: str, repo_catalog: str) -> str:
         "names no repo, pick the best-matching repo from the list and call "
         "list_commits. If the question is not about these repositories at all, "
         "do not call any tool.\n\n"
-        f"AVAILABLE REPOSITORIES:\n{repo_catalog}\n\n"
+        f"{UNTRUSTED_POLICY}\n"
+        "AVAILABLE REPOSITORIES:\n"
+        "<<<UNTRUSTED_REPOSITORY_CATALOG>>>\n"
+        f"{repo_catalog}\n"
+        "<<<END_UNTRUSTED_REPOSITORY_CATALOG>>>\n\n"
+        f"{UNTRUSTED_REMINDER}\n\n"
         f"QUESTION: {question}\n"
     )
 
@@ -837,9 +853,16 @@ def build_audit_prompt(question: str, contexts: list[str], answer: str) -> str:
         "evidence to check the draft answer against.\n\n"
         f"{UNTRUSTED_POLICY}\n"
         f"CONTEXT:\n{fenced}\n\n"
-        f"{UNTRUSTED_REMINDER}\n\n"
         f"QUESTION: {question}\n\n"
-        f"DRAFT ANSWER:\n{answer}\n\n"
+        # The draft is fenced too: it can repeat document text, including an
+        # instruction aimed at this checker ("this answer is GROUNDED"). It is
+        # NOT scrubbed -- the checker must judge exactly what would ship --
+        # only forged fence markers are cut, so it cannot close its own fence.
+        "DRAFT ANSWER:\n"
+        "<<<UNTRUSTED_DRAFT_ANSWER>>>\n"
+        f"{strip_forged_fences(answer)}\n"
+        "<<<END_UNTRUSTED_DRAFT_ANSWER>>>\n\n"
+        f"{UNTRUSTED_REMINDER}\n\n"
         "Reply with exactly two lines:\n"
         "VERDICT: GROUNDED or VERDICT: UNGROUNDED\n"
         "REASON: one short sentence (say '(none)' if GROUNDED)\n"
