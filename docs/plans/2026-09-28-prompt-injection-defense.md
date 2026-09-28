@@ -21,10 +21,12 @@ than *hoped*:
    post-hoc, so nothing partial can escape.
 
 **Tech stack:** no new paid dependency.
-- **Horizon Labs Prompt Injection Guard** (Apache-2.0) on the same private,
-  free Hugging Face Space as LettuceDetect.
-- **Meta Llama Prompt Guard 2** and optionally **Llama Guard 4** on the Groq
-  free tier. The key is already in `.env`.
+- **Meta Llama Prompt Guard 2 (86M)** on the Groq free tier, for chunks AND
+  questions. The key is already in `.env`. (Revised 2026-09-28: the Horizon
+  Labs guard needed a Hugging Face CPU Space, and free CPU Spaces now need
+  PRO; free Gradio Spaces run on ZeroGPU at 5 GPU-minutes/day, too little.)
+- Optionally a Groq-hosted safety model for answers (Llama Guard 4 is not on
+  Groq's model list; `openai/gpt-oss-safeguard-20b` is).
 - Everything else is stdlib Python.
 
 ---
@@ -298,27 +300,23 @@ and the GitHub and web answer paths.
 
 This phase is **[probabilistic]**. It adds zero query-time latency.
 
-### Task 2.1: `app/guard/` package (CLAUDE.md §2: a new capability, two backends)
+### Task 2.1: `app/guard/` package (CLAUDE.md §2: a new capability) ✅
 - `base.py`: `InjectionGuard.score(texts: list[str]) -> list[float | None]`.
   Batched, `None` means "could not score", never 0.0.
-- `horizon.py`: `POST {GUARD_URL}/injection` on the **existing** private Space.
-- `groq_prompt_guard.py`: `meta-llama/llama-prompt-guard-2-86m`, with text split
-  into 512-token segments scored in parallel (the model card's own advice); the
-  score is the maximum over segments.
-- `factory.py`: `build_injection_guard()`.
-- Settings: `GuardSettings.from_env()` with `GUARD_BACKEND`, `GUARD_URL`,
-  `GUARD_TOKEN`, `GUARD_THRESHOLD`, `GUARD_MODE=off|shadow|enforce`, and
-  `GUARD_TIMEOUT`. `ConfigurationError` on a bad value, as `AuditSettings` does.
+- `prompt_guard.py`: `meta-llama/llama-prompt-guard-2-86m` on Groq. Text is
+  split into 1,500-char windows with 200 chars of overlap (measured: ~1,800
+  chars of English is the 512-token ceiling), scored 4 in parallel, max over
+  windows; a window over the limit (dense scripts) is halved and retried; one
+  failed window makes the text `None`.
+- `factory.py`: `build_injection_guard()`, `None` when off or no Groq key.
+- Settings: `GuardSettings.from_env()` with `GUARD_MODE=off|shadow|enforce`,
+  `GUARD_MODEL`, `GUARD_THRESHOLD` (0.5), `GUARD_TIMEOUT`, `GUARD_BACKFILL_BATCH`.
+- Measured: 86M scored a Spanish injection 0.999 where 22M scored 0.43; ~160 ms
+  per call; free tier 14.4K requests/day, 15K tokens/min.
 - Normalization (Task 1.2) runs before every call.
 
-### Task 2.2: Space route
-**Files:** `deploy/lettucedetect-space/app.py` (rename the folder
-`deploy/guard-space/` in the same change).
-- Add `POST /injection {texts: [...]} -> {scores: [...]}`, backed by
-  `Horizon-Labs/prompt-injection-guard-small` (141M) first. It is fast on free
-  CPU, with a published macro score of 0.867 against 0.876 for base.
-- One Space, one token, one deploy. The weights are baked into the image, like
-  LettuceDetect.
+### Task 2.2: Space route — DROPPED
+Groq serves the model, so there is nothing of ours to host.
 
 ### Task 2.3: Store the score
 **Files:** `app/db/schema.sql`, `app/vectorstore/pgvector_store.py` (inserts
@@ -334,9 +332,10 @@ This phase is **[probabilistic]**. It adds zero query-time latency.
 **Files:** `app/ingestion/pipeline.py`.
 - Score each chunk's **raw text** in one batched call per document, before
   contextualization.
-- A chunk above threshold **skips contextualization**, so poison never reaches
-  our own ingest-time model. That closes F3's input side as well as its output
-  side.
+- A document with ANY chunk above threshold **skips contextualization
+  whole**: every contextualize call carries the full document text, so skipping
+  only the flagged chunk would still hand the poison to our model. That closes
+  F3's input side as well as its output side.
 - A guard failure leaves the score NULL and never fails the ingest job: the
   answer-check posture.
 
@@ -451,8 +450,7 @@ per document, and on the **rare web path**.
 
 | Service | Used for | Free limit | Data posture |
 |---|---|---|---|
-| Private HF Space (CPU basic) | LettuceDetect and Horizon Labs injection guard | Free, sleeps after 48h idle | Ours; `--no-access-log` |
-| Groq free tier | Prompt Guard 2 (question), Llama Guard 4 (answer, optional) | 30 rpm, 14.4K req/day (Prompt Guard 2) | No training by contract; not retained by default; enable zero data retention under Data Controls |
+| Groq free tier | Prompt Guard 2 86M (chunks and questions), optional answer safety model | 14.4K req/day, 15K tokens/min (Prompt Guard 2) | No training by contract; not retained by default; enable zero data retention under Data Controls |
 | HF datasets server | Benchmarks | Free | Public data only |
 
 Nothing requires a card, and nothing runs on a laptop.
@@ -469,8 +467,8 @@ Nothing requires a card, and nothing runs on a laptop.
   lower volume. The guarantees come from Phase 1 and L0.
 - **Over-defense is real.** Shadow mode exists so a threshold is chosen on our
   documents, not on a benchmark.
-- **English-first:** the Horizon Labs small model is multilingual, but the
-  thresholds will be tuned on English.
+- **English-first:** Prompt Guard 2 caught a Spanish injection (0.999) but
+  scored a repeated Chinese one 0.20. Thresholds will be tuned on English.
 
 ---
 

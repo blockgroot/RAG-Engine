@@ -476,6 +476,24 @@ class VectorStore(ABC):
         """
         raise NotImplementedError("this vector store does not support source document upsert")
 
+    def set_injection_scores(
+        self, document_id: str, scores: list[float | None], model: str
+    ) -> None:
+        """Store one injection score per chunk of ``document_id``, by chunk index.
+
+        A ``None`` score leaves that chunk NULL (unscored), so the backfill
+        retries it. Optional capability; default raises.
+        """
+        raise NotImplementedError("this vector store does not store injection scores")
+
+    def list_unscored_chunks(self, model: str, limit: int) -> list[tuple[str, int, str]]:
+        """``(document_id, chunk_index, content)`` never scored by ``model``, in random order.
+
+        Cross-tenant on purpose: it feeds the tick's backfill, which writes a
+        score back to the same row and returns nothing to anyone.
+        """
+        raise NotImplementedError("this vector store does not store injection scores")
+
     def acknowledge_source_document(
         self,
         org_id: str,

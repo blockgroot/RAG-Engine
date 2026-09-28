@@ -146,6 +146,13 @@ ALTER TABLE chunks ADD COLUMN IF NOT EXISTS
     content_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED;
 CREATE INDEX IF NOT EXISTS idx_chunks_content_tsv ON chunks USING gin (content_tsv);
 
+-- Prompt-injection score of the chunk (app/guard/, Llama Prompt Guard 2). The
+-- RAW probability, so a threshold change needs no rescan; the model name, so a
+-- model change does. NULL = unscored (guard off, or a rate-limited call the
+-- tick's backfill will retry) -- never read as clean or as flagged.
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS injection_score REAL;
+ALTER TABLE chunks ADD COLUMN IF NOT EXISTS injection_model TEXT;
+
 -- Conversations (Phase 5): group a sequence of question/answer turns so a
 -- follow-up can be resolved against prior context. Org-scoped like everything
 -- else, so one tenant's conversation history is isolated from another's.

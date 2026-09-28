@@ -998,6 +998,54 @@ class SecuritySettings:
         return cls(link_allowlist=hosts)
 
 
+GUARD_MODES = ("off", "shadow", "enforce")
+DEFAULT_GUARD_MODEL = "meta-llama/llama-prompt-guard-2-86m"
+
+
+@dataclass(frozen=True)
+class GuardSettings:
+    """Injection scoring of untrusted text (Phase 2+ of the injection plan).
+
+    Llama Prompt Guard 2 (86M) on Groq's free tier, with the ``GROQ_API_KEY``
+    the model picker already uses. 86M, not 22M: measured, 22M scored a
+    Spanish injection 0.43 where 86M scored 0.999. Free-tier limits are 14.4K
+    requests/day and 15K tokens/min — a big first sync overflows the minute
+    budget, which leaves those chunks unscored for the backfill, never fails
+    the ingest.
+
+    - ``mode``  ``off`` (default: no calls at all), ``shadow`` (score, store,
+      log — never change an answer), ``enforce`` (Phase 3).
+    - ``threshold``  a chunk scoring at or above this is "flagged". The RAW
+      score is stored, so changing this needs no rescan.
+    - ``backfill_batch``  chunks scored per tick for rows ingest left NULL.
+    """
+
+    mode: str = "off"
+    model: str = DEFAULT_GUARD_MODEL
+    threshold: float = 0.5
+    timeout: float = 5.0
+    backfill_batch: int = 40
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode != "off"
+
+    @classmethod
+    def from_env(cls) -> "GuardSettings":
+        from ..core.exceptions import ConfigurationError
+
+        mode = (os.getenv("GUARD_MODE") or "off").strip().lower()
+        if mode not in GUARD_MODES:
+            raise ConfigurationError(f"GUARD_MODE={mode!r} is not one of {', '.join(GUARD_MODES)}")
+        return cls(
+            mode=mode,
+            model=os.getenv("GUARD_MODEL") or DEFAULT_GUARD_MODEL,
+            threshold=float(os.getenv("GUARD_THRESHOLD") or 0.5),
+            timeout=float(os.getenv("GUARD_TIMEOUT") or 5.0),
+            backfill_batch=int(os.getenv("GUARD_BACKFILL_BATCH") or 40),
+        )
+
+
 @dataclass(frozen=True)
 class AuditSettings:
     """Post-generation groundedness audit — the validation-layer gap (CLAUDE.md

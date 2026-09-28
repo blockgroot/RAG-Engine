@@ -572,6 +572,38 @@ class PgVectorStore(VectorStore):
 
         return str(document_id)
 
+    def set_injection_scores(
+        self, document_id: str, scores: list[float | None], model: str
+    ) -> None:
+        rows = [(score, model, document_id, i) for i, score in enumerate(scores) if score is not None]
+        if not rows:
+            return
+        with get_connection(self._settings) as conn:
+            conn.cursor().executemany(
+                """
+                UPDATE chunks SET injection_score = %s, injection_model = %s
+                WHERE document_id = %s::uuid AND chunk_index = %s
+                """,
+                rows,
+            )
+
+    def list_unscored_chunks(self, model: str, limit: int) -> list[tuple[str, int, str]]:
+        # Random, not oldest-first: a chunk that fails every time (a dead
+        # window) would otherwise sit at the head and starve the rest.
+        # ponytail: full scan + sort of chunks per tick; add a partial index
+        # WHERE injection_score IS NULL if the table gets large.
+        with get_connection(self._settings) as conn:
+            rows = conn.execute(
+                """
+                SELECT document_id, chunk_index, content FROM chunks
+                WHERE injection_model IS DISTINCT FROM %s
+                ORDER BY random()
+                LIMIT %s
+                """,
+                (model, limit),
+            ).fetchall()
+        return [(str(d), int(i), c) for d, i, c in rows]
+
     def acknowledge_source_document(
         self,
         org_id: str,
