@@ -150,7 +150,56 @@ def _is_cacheable(result: "RagResult") -> bool:
     """
     if not all(getattr(hit, "doc_is_public", True) for hit in result.sources):
         return False
+    # Graph facts are walked AS the asker (who wrote what, what links where),
+    # and a connected answer reads other tools the cache key does not name --
+    # either would be served verbatim to the next person on the same key.
+    if getattr(result, "graph_shaped", False):
+        return False
     return not getattr(result, "access_restricted", False)
+
+
+#: Heads the graph-facts context block. Named as what it is, so the model can
+#: say "Sana wrote the Leave Policy" and the reader can see where that came from.
+GRAPH_FACTS_HEADER = (
+    "Known connections (from the company's own tools: who wrote, edited, "
+    "commented on or links to what):"
+)
+
+
+def _graph_facts_block(org_id: str | None, routed: str | None) -> tuple[str | None, bool]:
+    """``(context_block, graph_shaped)`` for this request's graph plan.
+
+    Read from the plan the chat edge built -- never a second walk. A normal
+    answer gets only facts inside its own tool; a connected one gets the
+    tools it was widened to (``GraphPlan.facts``). ``graph_shaped`` is True
+    whenever the plan changed what this answer could see, so it is not cached.
+    """
+    try:
+        from ..graph.plan import current_plan
+
+        plan = current_plan()
+        if plan is None or plan.org_id != org_id:
+            return None, False
+        lines = plan.facts(routed)
+        shaped = bool(lines) or plan.cross is not None
+        if not lines:
+            return None, shaped
+        return GRAPH_FACTS_HEADER + "\n" + "\n".join(f"- {line}" for line in lines), shaped
+    except Exception:  # noqa: BLE001 - facts may only ever add
+        logger.warning("graph facts skipped", exc_info=True)
+        return None, False
+
+
+def _cross_plan_active() -> bool:
+    """A connected answer is running: its answer must not come FROM the cache
+    either, since the cache key names one tool and this answer reads several."""
+    try:
+        from ..graph.plan import current_plan
+
+        plan = current_plan()
+        return plan is not None and plan.cross is not None
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _tone_retry_addendum(mode: str) -> str:
@@ -274,6 +323,10 @@ class RagResult:
     # company's documentation) and the cache needs it to not serve one
     # person's access situation to everyone else.
     access_restricted: bool = False
+    # True when this request's knowledge-graph plan shaped the answer (facts
+    # in the context, or a connected answer reading other tools). Keeps it out
+    # of the scope-wide cache; see `_is_cacheable`.
+    graph_shaped: bool = False
 
 
 @dataclass(frozen=True)
@@ -473,7 +526,7 @@ class RagPipeline:
                     question, context, org_id=org_id, conversation_id=conversation_id
                 )
 
-        if conversation_id is None:
+        if conversation_id is None and not _cross_plan_active():
             cached = self._query_cache.get(
                 org_id,
                 resolved,
@@ -1347,12 +1400,26 @@ class RagPipeline:
         )
         return contexts
 
-    def _generate(
+    def _generate(self, question: str, hits: list[RetrievedChunk], top_score, **kw) -> RagResult:
+        """Grounded generation, plus the graph's facts when a plan is active.
+
+        Facts ride only on RETRIEVED answers with hits (never the attachment
+        path's own ``contexts``), go AFTER the chunks so the documents lead,
+        and never touch the gate: the caller already decided to generate.
+        """
+        facts, shaped = (None, False)
+        if kw.get("contexts") is None and hits:
+            facts, shaped = _graph_facts_block(kw.get("org_id"), self._source_provider)
+        result = self._generate_core(question, hits, top_score, graph_facts=facts, **kw)
+        return replace(result, graph_shaped=True) if shaped else result
+
+    def _generate_core(
         self,
         question: str,
         hits: list[RetrievedChunk],
         top_score: float | None,
         *,
+        graph_facts: str | None = None,
         retrieval_reused: bool,
         org_id: str | None = None,
         conversation_id: str | None = None,
@@ -1406,6 +1473,8 @@ class RagPipeline:
         # draw on both and still say where each sentence came from.
         if extra_contexts:
             contexts = list(extra_contexts) + contexts
+        if graph_facts:
+            contexts = list(contexts) + [graph_facts]
         tone_source = user_question or question
         # Tone runs ALONGSIDE generation, not in front of it: the grounded
         # prompt does not use it, only the (rare) empathy opener composed

@@ -1664,6 +1664,11 @@ class GraphSettings:
     #: graph fills either way, and this flag only decides whether retrieval
     #: adds the graph's ranked list.
     retrieval_enabled: bool = False
+    #: Whether a question may be answered from SEVERAL tools at once when the
+    #: graph proves they are connected (``graph/plan.py``). Only meaningful
+    #: with ``retrieval_enabled``; on by default there, so one switch turns
+    #: the graph on and this one alone can take the cross-tool part back off.
+    connected_enabled: bool = True
 
     @classmethod
     def from_env(cls) -> "GraphSettings":
@@ -1675,4 +1680,5 @@ class GraphSettings:
         return cls(
             meta_refresh_batch=max(0, batch),
             retrieval_enabled=env_bool("GRAPH_RETRIEVAL_ENABLED", False),
+            connected_enabled=env_bool("GRAPH_CONNECTED_ENABLED", True),
         )

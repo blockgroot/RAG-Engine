@@ -121,6 +121,38 @@ def get_conversation_turns(
     return [ConversationTurnRow(int(r[0]), r[1], r[2], r[3]) for r in rows]
 
 
+def delete_last_turn_if(
+    *, conversation_id: str, org_id: str, question: str, answer: str
+) -> bool:
+    """Remove the NEWEST turn when it is exactly ``(question, answer)``.
+
+    A connected answer is a retry of a refusal (``api/chat.py``): the refusal
+    was already appended as a turn, and leaving it in place would give the
+    chat two turns for one question -- and would hand the retry's own
+    follow-up rewrite a context that already contains the question it is
+    answering. Matching on the exact pair means a concurrent turn, or a
+    refusal someone else's code already replaced, is never the one deleted.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            DELETE FROM conversation_turns t
+            USING conversations c
+            WHERE c.id = t.conversation_id
+              AND t.conversation_id = %s::uuid
+              AND c.org_id = %s::uuid
+              AND t.question = %s AND t.answer = %s
+              AND t.turn_index = (
+                  SELECT MAX(turn_index) FROM conversation_turns
+                  WHERE conversation_id = %s::uuid
+              )
+            RETURNING 1
+            """,
+            (conversation_id, org_id, question, answer, conversation_id),
+        ).fetchone()
+    return row is not None
+
+
 def delete_conversation(
     *, conversation_id: str, org_id: str, user_id: str, workspace_id: str | None
 ) -> bool:

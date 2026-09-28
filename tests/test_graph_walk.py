@@ -215,3 +215,30 @@ def test_a_linear_id_in_the_question_links_exactly(pg, org):
     assert seed.exact and seed.name.startswith("ENG-142")
     fuzzy = link_question(org, None, "anything on the token refresh fails bug?", viewer(ADA))
     assert fuzzy and fuzzy[0].name.startswith("ENG-142")
+
+
+def test_links_and_document_tools_carry_nothing_the_walk_hid(chain):
+    """The plan's facts and its per-tool documents come from these two fields."""
+    seed = _entity(chain, "google:public")
+    for_bo = walk(chain, None, [seed], viewer(BO))
+    assert set(for_bo.document_providers) == set(for_bo.document_ids)
+    assert set(for_bo.document_providers.values()) == {"google"}
+    named = {n for link_ in for_bo.links for n in (link_.src_name, link_.dst_name)}
+    assert "Secret memo" not in named and "Beyond" not in named
+    assert for_bo.links and all(l.src_key and l.dst_key for l in for_bo.links)
+    for_ada = walk(chain, None, [seed], viewer(ADA))
+    assert "Secret memo" in {n for l in for_ada.links for n in (l.src_name, l.dst_name)}
+
+
+def test_a_built_plan_states_no_fact_about_a_hidden_document(chain):
+    from app.config.settings import GraphSettings
+    from app.graph.plan import build_plan
+
+    on = GraphSettings(retrieval_enabled=True)
+    bo = build_plan(chain, None, "what is in the Public plan", viewer(BO), settings=on)
+    ada = build_plan(chain, None, "what is in the Public plan", viewer(ADA), settings=on)
+    assert bo is not None and bo.facts("google")
+    assert not any("Secret memo" in f for f in bo.facts("google"))
+    assert any("Secret memo" in f for f in ada.facts("google"))
+    # Another tool's answer is told nothing from Drive.
+    assert bo.facts("notion") == [] and bo.documents_for("notion") == []

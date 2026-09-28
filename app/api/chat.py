@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextvars
+
 import json
 import logging
 import os
@@ -41,9 +43,11 @@ def _word_chunks(text: str) -> Iterator[str]:
 
 from ..agent.github_agent import GitHubAgent
 from ..agent.orchestration import build_agent_graph, route_agent_key
-from ..agent.routing import choose_agent
+from ..agent.routing import _ROUTING_POOL, choose_agent, named_provider
 from ..agent.rag_pipeline_agent import RagPipelineAgent
+from ..config.settings import GraphSettings
 from ..core.exceptions import AuthError, LLMProviderError, ProviderError
+from ..graph import plan as graph_plan
 from ..memory import conversations as conversation_store
 from ..llm import catalog
 from ..llm import org_model
@@ -829,6 +833,75 @@ def _previous_question(
     return turns[-1].question if turns else None
 
 
+def _start_graph_plan(org_id, workspace_id, question, session):
+    """Start this question's graph walk on the routing pool, or return None.
+
+    Needs a real viewer: a routing or retrieval choice informed by content the
+    asker cannot read is a leak, so no session means no graph at all.
+    """
+    if session is None:
+        return None
+    try:
+        settings = GraphSettings.from_env()
+        if not settings.retrieval_enabled:
+            return None
+        viewer = viewer_for(session)
+        return _ROUTING_POOL.submit(
+            contextvars.copy_context().run,
+            graph_plan.build_plan,
+            org_id,
+            workspace_id,
+            question,
+            viewer,
+            settings=settings,
+        )
+    except Exception:  # noqa: BLE001 - the graph may only ever add
+        logger.warning("graph plan not started", exc_info=True)
+        return None
+
+
+#: How long the chat edge waits for a plan still being built after routing.
+#: Past it, retrieval simply walks on its own, exactly as it did before plans.
+_GRAPH_PLAN_WAIT_SECONDS = 1.5
+
+
+def _graph_plan_result(future):
+    if future is None:
+        return None
+    try:
+        return future.result(timeout=_GRAPH_PLAN_WAIT_SECONDS)
+    except Exception:  # noqa: BLE001 - slow or failed: the answer goes on without it
+        logger.info("graph plan not ready; continuing without it")
+        return None
+
+
+def _graph_connected_enabled() -> bool:
+    try:
+        return GraphSettings.from_env().connected_enabled
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _invoke_with_plan(graph_input: dict, plan):
+    """Run the agent graph with ``plan`` as this request's graph plan."""
+    token = graph_plan.use_plan(plan)
+    try:
+        return _agent_graph().invoke(graph_input)["response"]
+    finally:
+        graph_plan.reset_plan(token)
+
+
+def _drop_refusal_turn(org_id, conversation_id, question, answer) -> None:
+    if not conversation_id:
+        return
+    try:
+        conversation_store.delete_last_turn_if(
+            conversation_id=conversation_id, org_id=org_id, question=question, answer=answer
+        )
+    except Exception:  # noqa: BLE001 - a duplicate turn beats a failed answer
+        logger.warning("could not drop the refused turn", exc_info=True)
+
+
 def _stream_answer(
     question: str,
     org_id: str,
@@ -866,13 +939,28 @@ def _stream_answer(
     # the decision back in as `requested_agent` needs no graph change: a direct
     # key is honoured, and "workspace"/"policy" fall through to the same
     # default `_route` already computed.
+    # The knowledge graph is walked ONCE, alongside routing rather than after
+    # it (app/graph/plan.py): routing reads its exact identifiers, retrieval
+    # reuses its documents instead of walking again, and the answer states its
+    # facts. None when GRAPH_RETRIEVAL_ENABLED is off -- then nothing below
+    # changes at all.
+    plan_future = _start_graph_plan(org_id, workspace_id, question, session)
     decision = choose_agent(
         question,
         org_id,
         workspace_id=workspace_id,
         requested_agent=requested_agent,
         context=_previous_question(org_id, conversation_id, workspace_id, session),
+        graph_plan=plan_future,
     )
+    plan = _graph_plan_result(plan_future)
+    connected: set[str] | None = None
+    if plan is not None and _graph_connected_enabled():
+        connected = graph_plan.connected_tools(
+            plan, decision.agent_key, named_provider(question, plan.providers)
+        )
+        if connected:
+            plan = plan.connected(connected)
     logger.info(
         "Chat routing: agent=%s reason=%s scores=%s",
         decision.agent_key,
@@ -898,23 +986,38 @@ def _stream_answer(
             "chart": spec.chart,
         }
 
+    graph_input = {
+        "question": question,
+        "org_id": org_id,
+        "conversation_id": conversation_id,
+        "workspace_id": workspace_id,
+        "requested_agent": decision.agent_key,
+        "stream": True,
+        "chart_spec": chart_spec,
+        "chart_refusal": getattr(decision, "chart_refusal", None),
+        "user_id": session.user_id if session else None,
+        "role": session.role if session else None,
+        "viewer": viewer_for(session),
+    }
     try:
-        state = _agent_graph().invoke(
-            {
-                "question": question,
-                "org_id": org_id,
-                "conversation_id": conversation_id,
-                "workspace_id": workspace_id,
-                "requested_agent": decision.agent_key,
-                "stream": True,
-                "chart_spec": chart_spec,
-                "chart_refusal": getattr(decision, "chart_refusal", None),
-                "user_id": session.user_id if session else None,
-                "role": session.role if session else None,
-                "viewer": viewer_for(session),
-            }
+        result = _invoke_with_plan(graph_input, plan)
+        # ESCALATION: the routed tool refused, and the graph already proved
+        # the question connects to documents the asker can open in OTHER
+        # tools. One retry, as a connected answer -- never a loop, and never
+        # on a withheld document (that refusal is about access, not about
+        # which tool was asked). The refusal turn is removed first so the chat
+        # keeps one turn per question and the retry's own follow-up rewrite
+        # does not read the question it is answering as history.
+        retry_tools = (
+            graph_plan.escalation_tools(plan, decision.agent_key)
+            if plan is not None and _graph_connected_enabled()
+            and not result.grounded and not result.access_restricted
+            else None
         )
-        result = state["response"]
+        if retry_tools:
+            _drop_refusal_turn(org_id, conversation_id, question, result.answer)
+            connected = retry_tools
+            result = _invoke_with_plan(graph_input, plan.connected(retry_tools))
     except LLMProviderError as exc:
         logger.warning("Chat LLM failure: %s", exc, exc_info=True)
         yield _sse_event("error", {"message": _user_facing_llm_error(exc)})
@@ -974,7 +1077,11 @@ def _stream_answer(
             # `reason` is exposed too: a misroute is otherwise indistinguishable
             # from a source genuinely not having the answer.
             "agent": decision.agent_key,
-            "routing_reason": decision.reason,
+            "routing_reason": "graph-connected" if connected else decision.reason,
+            # The tools a connected answer read, so the pill can name all of
+            # them: an answer drawn from Notion AND Slack labelled "Notion" is
+            # unattributable in exactly the way `agent` exists to prevent.
+            "connected_providers": sorted(connected) if connected else None,
             # What actually answered, resolved — never the word "auto".
             # Under a router or a provider fallback the served model differs
             # from the requested one, and "which model wrote this?" has to be

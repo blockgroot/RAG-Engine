@@ -125,7 +125,9 @@ class HybridRetriever:
         if extra_queries:
             query_pairs.extend(extra_queries)
 
-        graph_documents = self._graph_documents(org_id, workspace_id, query_text, viewer)
+        graph_documents, graph_cross = self._graph_documents(
+            org_id, workspace_id, query_text, viewer
+        )
         graph_counter: list[int] = []
         ranked_lists = self._first_stage_all(
             org_id,
@@ -137,6 +139,7 @@ class HybridRetriever:
             viewer=viewer,
             graph_documents=graph_documents,
             graph_counter=graph_counter,
+            graph_cross=graph_cross,
         )
         graph_hits = sum(graph_counter)
         if graph_documents:
@@ -153,25 +156,40 @@ class HybridRetriever:
         gate_score = max((c.score for c in candidates), default=None)
 
         pool_candidates = candidates[:pool]
+        # A connected answer ranks the WHOLE pool so another tool's best chunk
+        # can be reserved a slot; a normal answer is byte-identical to before.
+        keep = len(pool_candidates) if graph_cross else top_k
         if self._reranker is not None and self._settings.rerank_enabled:
-            final = self._reranker.rerank(rerank_q, pool_candidates, top_k)
+            final = self._reranker.rerank(rerank_q, pool_candidates, keep)
         else:
-            final = pool_candidates[:top_k]
+            final = pool_candidates[:keep]
+        if graph_cross:
+            final = _reserve_other_tools(final, top_k, self._source_provider)
 
         return RetrievalResult(hits=final, gate_score=gate_score, graph_hits=graph_hits)
 
     def _graph_documents(
         self, org_id: str, workspace_id: str | None, query_text: str, viewer: Viewer | None
-    ) -> list[str]:
+    ) -> tuple[list[str], bool]:
         """Documents the knowledge graph connects to this question (Second Brain 1.6).
 
-        Link the question to at most three entities, walk ≤2 hops as THIS
-        viewer, return the visible evidence documents. Empty when the flag is
-        off (the default), when nothing links, or on ANY failure: the graph can
-        only ever add candidates, so losing it must cost nothing but them.
+        ``(document_ids, cross)``. When the chat edge already built this
+        question's ``GraphPlan`` it is REUSED -- no second walk -- and its
+        ``cross`` flag says whether the documents may come from other tools
+        (a connected answer) or only from this retriever's own tool (every
+        normal question, exactly as before). Otherwise: link the question to at
+        most three entities, walk ≤2 hops as THIS viewer, return the visible
+        evidence documents. Empty when the flag is off (the default), when
+        nothing links, or on ANY failure: the graph can only ever add
+        candidates, so losing it must cost nothing but them.
         """
         if not self._graph_settings.retrieval_enabled:
-            return []
+            return [], False
+        from ..graph.plan import current_plan
+
+        plan = current_plan()
+        if plan is not None and plan.matches(org_id, workspace_id):
+            return plan.documents_for(self._source_provider), plan.cross is not None
         try:
             from ..graph.linking import link_question
             from ..graph.walk import walk
@@ -191,10 +209,10 @@ class HybridRetriever:
                     }
                 )
             )
-            return result.document_ids if result else []
+            return (result.document_ids if result else []), False
         except Exception:  # noqa: BLE001 - see docstring
             logger.warning("retrieval: graph list skipped", exc_info=True)
-            return []
+            return [], False
 
     def _first_stage_all(
         self,
@@ -208,6 +226,7 @@ class HybridRetriever:
         viewer: Viewer | None = None,
         graph_documents: list[str] | None = None,
         graph_counter: list[int] | None = None,
+        graph_cross: bool = False,
     ) -> list[list[RetrievedChunk]]:
         """Run every first-stage search concurrently, one ranked list per query.
 
@@ -241,12 +260,17 @@ class HybridRetriever:
         def run(task) -> tuple[tuple[int, str], list[RetrievedChunk]]:
             i, kind, q_text, q_vec = task
             if kind == "graph":
+                # A connected answer's graph documents were already limited to
+                # the tools that answer may use (GraphPlan.documents_for), so
+                # the pin is lifted for THIS leg only; the vector and keyword
+                # legs below stay on the routed tool whatever happens. The
+                # viewer is applied again either way.
                 hits = self._store.query(
                     org_id,
                     q_vec,
                     top_k=pool,
                     workspace_id=workspace_id,
-                    source_provider=self._source_provider,
+                    source_provider=None if graph_cross else self._source_provider,
                     date_range=date_range,
                     tags=tags,
                     viewer=viewer,
@@ -323,3 +347,37 @@ class HybridRetriever:
 
         ordered = sorted(rrf_scores, key=lambda key: rrf_scores[key], reverse=True)
         return [chunk_by_key[key] for key in ordered]
+
+
+#: Slots a connected answer reserves for tools other than the routed one.
+_CROSS_RESERVED_SLOTS = 2
+
+
+def _reserve_other_tools(
+    ordered: list[RetrievedChunk], top_k: int, routed: str | None
+) -> list[RetrievedChunk]:
+    """Top ``top_k``, but with the best chunk of each OTHER tool guaranteed a seat.
+
+    A connected answer exists because the question spans tools ("has the
+    author discussed it in Slack?"). With five slots and a corpus that is
+    mostly the routed tool's, plain relevance order routinely fills all five
+    from it, and the answer then says Slack has nothing when the graph PROVED
+    a thread exists. At most ``_CROSS_RESERVED_SLOTS`` swaps, each replacing
+    the routed tool's weakest kept chunk, so the routed tool keeps the rest.
+    """
+    final = list(ordered[:top_k])
+    present = {c.source_provider for c in final}
+    swaps = 0
+    for chunk in ordered[top_k:]:
+        if swaps >= _CROSS_RESERVED_SLOTS:
+            break
+        tool = chunk.source_provider
+        if not tool or tool == routed or tool in present:
+            continue
+        victims = [i for i, c in enumerate(final) if c.source_provider == routed]
+        if len(victims) <= 1:
+            break
+        final[victims[-1]] = chunk
+        present.add(tool)
+        swaps += 1
+    return final
