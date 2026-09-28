@@ -47,6 +47,7 @@ from ..core.answer_sources import SOURCE_SLACK
 from ..core.streaming import chunk_answer
 from ..config.settings import SecuritySettings
 from ..rag.prompts import build_slack_recap_prompt
+from ..guard.moderation import answer_is_unsafe
 from ..security.links import enforce_link_provenance
 from ..security.untrusted import leaks_canary
 from .base import AgentResponse
@@ -201,6 +202,8 @@ class SlackAgent(RagPipelineAgent):
         text = enforce_link_provenance(
             text, [c.content for c in chunks], SecuritySettings.from_env().link_allowlist
         )
+        if answer_is_unsafe(text, org_id=None, stage="slack_recap"):
+            return None
 
         return AgentResponse(
             answer=text,

@@ -409,11 +409,16 @@ prompt text, so every attachment path carries it.
 
 ## Phase 4: output moderation and continuous evaluation
 
-### Task 4.1: Llama Guard 4 on the final answer (optional) [probabilistic]
-- Classify the finished answer for harmful content, in parallel with the
-  LettuceDetect answer check and inside the same budget gate.
-- If Groq's free tier doesn't serve it (the free-tier table is unconfirmed),
-  skip it.
+### Task 4.1: Safety check on the final answer (optional) [probabilistic] ✅
+Llama Guard 4 is not on Groq, so this uses `openai/gpt-oss-safeguard-20b`,
+which follows a policy we write (`app/guard/moderation.py`). The policy
+targets what an injected answer DOES: ask for a credential, move money, send
+the reader to an outside "verifier", or leak our instructions, plus the usual
+harm categories. Measured 8/8 on hand-written cases, median 0.23 s. Opt-in
+(`GUARD_ANSWER_CHECK`), acts under enforce only, runs in parallel with the
+answer audit on the grounded path and after the link rule on the web, GitHub
+and Slack-recap paths. Free tier: 1,000 requests/day, 8K tokens/min; fails
+open.
 
 ### Task 4.2: Security evaluation that runs in CI
 **Files:** `scripts/bench_injection_guard.py` (the `bench_answer_check.py` shape,
@@ -429,11 +434,23 @@ all remote), `evaluation/golden_set.py`.
   - a memory-borne injection (turn 1 retrieves poison, turn 2 asks innocently)
   - a web-query exfiltration attempt
 - `scripts/probe_injection.py --fail-on-leak` gates the nightly run
-  (`.github/workflows/eval.yml`).
+  (`.github/workflows/eval.yml`) -- already wired; `--cases` added to run a
+  subset.
+- **Measured, company-doc set (14 cases):** Prompt Guard 2 at 0.9 caught 3/6
+  planted instructions and flagged 1/8 real sentences (a security-training
+  page quoting the phrase); it missed every ACTION injection. The safeguard
+  model with a document policy caught 6/6 with 0-1/8 false alarms, so it is
+  offered as `GUARD_BACKEND=safeguard` (1,000 requests/day).
+- ✅ Built: `scripts/bench_injection_guard.py` (deepset, NotInject, and a
+  hand-written company-doc set; BIPIA and PIArena not added yet), and golden
+  cases for the Slack link, reference image, tag characters and forged fence.
+  The memory-borne and web-query cases stay as unit tests
+  (`test_link_provenance`, `test_outbound_query`): the probe runs with memory
+  and web search off.
 - **Adaptive red team:** once a quarter, hand-write new payloads against the
   current stack. Static benchmarks overstate every defense.
 
-### Task 4.3: CLAUDE.md
+### Task 4.3: CLAUDE.md ✅
 - §3: one dense entry for "Prompt-injection defense" stating the invariant, the
   layers and what is structural versus probabilistic.
 - §5: the gotchas found along the way.

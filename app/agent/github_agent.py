@@ -41,6 +41,7 @@ import re
 from collections.abc import Callable, Iterator
 
 from ..config.settings import GitHubAgentSettings, SecuritySettings
+from ..guard.moderation import answer_is_unsafe
 from ..security.links import enforce_link_provenance
 from ..security.untrusted import leaks_canary
 from ..core.answer_sources import (
@@ -209,7 +210,7 @@ class GitHubAgent(Agent):
             return None
         if answer:
             answer = enforce_link_provenance(answer, [evidence_block], self._link_allowlist)
-        if not answer:
+        if not answer or answer_is_unsafe(answer, org_id=None, stage="github"):
             return None
         return mode, answer
 

@@ -70,6 +70,7 @@ from .attachment_tools import (
 )
 from .access_notice import restricted_notice
 from ..guard import build_injection_guard
+from ..guard.moderation import answer_is_unsafe
 from ..security.links import enforce_link_provenance, strip_links
 from ..security.outbound import user_worded_query
 from ..security.untrusted import leaks_canary, scrub_untrusted_text
@@ -1539,9 +1540,14 @@ class RagPipeline:
             # for "your system prompt" gets. Nothing of it ships.
             logger.warning("security.canary_leak stage=generate org=%s", org_id)
             answered, answer = False, self._settings.fallback_response
+        moderation = None
         if answered:
             # Before the audit, so the audit judges the text that will ship.
             answer = enforce_link_provenance(answer, contexts, self._link_allowlist)
+            # In parallel with the audit below (Task 4.1); a no-op when off.
+            moderation = _AUX_POOL.submit(
+                answer_is_unsafe, answer, org_id=org_id, stage="generate"
+            )
 
         audit_used = False
         audit_downgraded = False
@@ -1563,6 +1569,14 @@ class RagPipeline:
                     audit_reason = verdict.reason
                     answered = False
                     answer = self._settings.fallback_response
+
+        if answered and moderation is not None:
+            try:
+                unsafe = moderation.result(timeout=self._guard_settings.timeout + 1)
+            except Exception:  # noqa: BLE001 - fail open
+                unsafe = False
+            if unsafe:
+                answered, answer = False, self._settings.fallback_response
 
         if answered and opener:
             # Composed after the link rule ran, so it gets its own pass: it is
@@ -2011,6 +2025,8 @@ class RagPipeline:
             logger.warning("security.canary_leak stage=web org=%s", org_id)
             return None
         raw = enforce_link_provenance(raw, [results_block], self._link_allowlist)
+        if answer_is_unsafe(raw, org_id=org_id, stage="web"):
+            return None
         return RagResult(
             answer=self._format_web_answer(raw, results),
             answered=True,

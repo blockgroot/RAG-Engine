@@ -999,6 +999,7 @@ class SecuritySettings:
 
 
 GUARD_MODES = ("off", "shadow", "enforce")
+GUARD_BACKENDS = ("prompt_guard", "safeguard")
 DEFAULT_GUARD_MODEL = "meta-llama/llama-prompt-guard-2-86m"
 
 
@@ -1013,6 +1014,11 @@ class GuardSettings:
     budget, which leaves those chunks unscored for the backfill, never fails
     the ingest.
 
+    - ``backend``  ``prompt_guard`` (default: Llama Prompt Guard 2, 14.4K
+      requests/day, catches override WORDING) or ``safeguard``
+      (`gpt-oss-safeguard-20b` with our policy, 1,000/day, catches ACTION
+      injections Prompt Guard misses -- see ``guard/safeguard.py``). Each chunk
+      stores which model scored it, so switching rescans via the backfill.
     - ``mode``  ``off`` (default: no calls at all), ``shadow`` (score, store,
       log — never change an answer), ``enforce`` (Phase 3).
     - ``threshold``  a chunk scoring at or above this is "flagged". The RAW
@@ -1021,13 +1027,18 @@ class GuardSettings:
       portal") scored 0.70 while a planted "Note to AI assistants: ignore prior
       instructions" scored 0.999.
     - ``backfill_batch``  chunks scored per tick for rows ingest left NULL.
+    - ``answer_check``  `GUARD_ANSWER_CHECK`: also run the finished answer past
+      `gpt-oss-safeguard-20b` (`guard/moderation.py`). Off by default: its free
+      tier is 1,000 requests/day, one per answer.
     """
 
     mode: str = "off"
+    backend: str = "prompt_guard"
     model: str = DEFAULT_GUARD_MODEL
     threshold: float = 0.9
     timeout: float = 5.0
     backfill_batch: int = 40
+    answer_check: bool = False
 
     @property
     def enabled(self) -> bool:
@@ -1040,12 +1051,19 @@ class GuardSettings:
         mode = (os.getenv("GUARD_MODE") or "off").strip().lower()
         if mode not in GUARD_MODES:
             raise ConfigurationError(f"GUARD_MODE={mode!r} is not one of {', '.join(GUARD_MODES)}")
+        backend = (os.getenv("GUARD_BACKEND") or "prompt_guard").strip().lower()
+        if backend not in GUARD_BACKENDS:
+            raise ConfigurationError(
+                f"GUARD_BACKEND={backend!r} is not one of {', '.join(GUARD_BACKENDS)}"
+            )
         return cls(
             mode=mode,
+            backend=backend,
             model=os.getenv("GUARD_MODEL") or DEFAULT_GUARD_MODEL,
             threshold=float(os.getenv("GUARD_THRESHOLD") or 0.9),
             timeout=float(os.getenv("GUARD_TIMEOUT") or 5.0),
             backfill_batch=int(os.getenv("GUARD_BACKFILL_BATCH") or 40),
+            answer_check=env_bool("GUARD_ANSWER_CHECK", False),
         )
 
 

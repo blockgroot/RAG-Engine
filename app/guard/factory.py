@@ -5,6 +5,7 @@ from __future__ import annotations
 from ..config.settings import GroqSettings, GuardSettings
 from .base import InjectionGuard
 from .prompt_guard import GroqPromptGuard
+from .safeguard import GroqSafeguard
 
 
 def build_injection_guard(settings: GuardSettings | None = None) -> InjectionGuard | None:
@@ -17,6 +18,8 @@ def build_injection_guard(settings: GuardSettings | None = None) -> InjectionGua
     groq = GroqSettings.from_env()
     if not settings.enabled or not groq.api_key:
         return None
+    if settings.backend == "safeguard":
+        return GroqSafeguard(api_key=groq.api_key, base_url=groq.base_url, timeout=settings.timeout)
     return GroqPromptGuard(
         api_key=groq.api_key, base_url=groq.base_url, model=settings.model, timeout=settings.timeout
     )
