@@ -179,7 +179,14 @@ def _to_slack_mrkdwn(text: str) -> str:
     Markdown for the web UI, so converting here is right -- asking the model
     for a per-surface format would make the answer's shape depend on where it
     was asked, and it would forget.
+
+    Escaped FIRST, per Slack's own rule (`&` then `<` then `>`): in mrkdwn
+    `<https://evil?d=…|click here>` is a disguised link and `<!channel>` pings
+    the room, and the model's text is steerable by any document it read — the
+    Slack AI exfiltration (PromptArmor, 2024) was exactly a model-written
+    `<url|text>`. Escaped, both arrive as inert text.
     """
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     out: list[str] = []
     for line in text.split("\n"):
         stripped = line.lstrip()

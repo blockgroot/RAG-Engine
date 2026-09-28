@@ -15,6 +15,7 @@ prefix of our own prompts.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 # Drop whole blocks that look like planted system/override directives.
 #
@@ -74,11 +75,54 @@ _INJECTION_LINE = re.compile(
 )
 
 
+# Characters that render as nothing (or reorder what renders) and exist in an
+# injection only to hide it: from a regex, from a classifier, and from the
+# human reading the document. Zero-width space/joiners and word joiner, BOM,
+# soft hyphen (splits "ig<SOFT HYPHEN>nore" past a word regex), invisible math
+# operators, bidi embeddings/overrides/isolates and marks, variation
+# selectors (emoji smuggling encodes bytes in them), and the Unicode TAG block
+# (ASCII-in-disguise: invisible, yet models read it). Published evasions hit
+# 100% on guardrails with exactly these (arXiv 2504.11168).
+_INVISIBLE = dict.fromkeys(
+    [0x00AD, 0x061C, 0x200B, 0x200C, 0x200D, 0x200E, 0x200F, 0x2060, 0x2061,
+     0x2062, 0x2063, 0x2064, 0xFEFF,
+     *range(0x202A, 0x202F), *range(0x2066, 0x206A),
+     *range(0xFE00, 0xFE10), *range(0xE0000, 0xE0080), *range(0xE0100, 0xE01F0)]
+)
+
+
+def normalize_untrusted(text: str) -> str:
+    """Make untrusted text look to a filter the way it looks to a model.
+
+    NFKC folds lookalikes (fullwidth `＜＜＜`, math-bold `𝐢𝐠𝐧𝐨𝐫𝐞`) into the
+    plain characters every regex and classifier here is written against, then
+    the invisible characters above are dropped. Runs BEFORE any check. NFKC
+    also folds `m²` to `m2` and `ﬁ` to `fi` — a cosmetic loss in text that is
+    only ever read, never shown back verbatim.
+    """
+    return unicodedata.normalize("NFKC", text).translate(_INVISIBLE)
+
+
+# Our own fence markers, forged inside untrusted text. A chunk carrying
+# `<<<END_UNTRUSTED_DOCUMENT_CONTENT>>>` would otherwise make everything after
+# it read as if it sat OUTSIDE the fence. Untrusted text has no legitimate
+# reason to contain one, so any bracketed marker naming UNTRUSTED, and the bare
+# marker names, are removed. Runs after normalization, so fullwidth `＜＜＜`
+# lookalikes are already plain `<<<`. Nothing that holds our REAL fences is
+# ever scrubbed: every builder scrubs the text first and fences it after.
+_FORGED_FENCE = re.compile(
+    # bracketed: any casing (a model reads it either way); bare: only the
+    # uppercase spelling our markers use, so `untrusted_input` in prose survives.
+    r"(?i:<{2,}[^<>\n]*UNTRUSTED[^<>\n]*>{2,})|\b(?:END_)?UNTRUSTED_[A-Z][A-Z_]*\b"
+)
+
+
 def scrub_untrusted_text(text: str) -> str:
     """Remove common instruction-shaped spans from untrusted document/web text."""
     if not text:
         return text
-    cleaned = _SYSTEM_BLOCK.sub("", text)
+    cleaned = _FORGED_FENCE.sub("", normalize_untrusted(text))
+    cleaned = _SYSTEM_BLOCK.sub("", cleaned)
     cleaned = _ASSISTANT_DIRECTIVE_BLOCK.sub("", cleaned)
     kept = [
         line
