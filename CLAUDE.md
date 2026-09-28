@@ -393,6 +393,10 @@ grounded generate → `RagResult`.
     caught 6/6 there with 0–1/8 false alarms (it varies run to run), but its
     free tier is 1,000 requests/day vs 14.4K — one call per chunk, so it suits a
     small corpus. `injection_model` on each row makes a switch rescan by itself.
+    Public sets agree neither is a general detector: deepset (user-typed
+    role-play/jailbreaks) 14% vs 22% caught, NotInject 4% false alarms each —
+    the company-doc set is the one matching our threat. Prod has 247 chunks
+    (~27/week), so `safeguard` it is.
   - **Phase 4:** an optional answer check (`GUARD_ANSWER_CHECK`,
     `guard/moderation.py`, the same safeguard model with an ANSWER policy:
     credential/payment/"verify externally"/prompt-leak/harm), 8/8 on hand cases

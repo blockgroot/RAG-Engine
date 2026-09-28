@@ -13,6 +13,14 @@ Sets:
   company     hand-written RAG-shaped cases: real company-doc sentences that
               sound like instructions, and injections planted in doc text
 
+Measured 2026-09-28 (threshold 0.9; safeguard scores are 0/1):
+  company    prompt_guard caught 3/6, flagged 1/8 · safeguard caught 6/6, flagged 0-1/8
+  deepset    prompt_guard caught 14% (AUROC 0.92), 0% flagged · safeguard 22%, 0% flagged
+  notinject  prompt_guard flagged 4% · safeguard flagged 4%
+  deepset's attacks are mostly USER-typed role-play/jailbreaks ("act as an
+  interviewer", "generate SQL"), not text planted in a document -- the
+  company set is the one that matches this product's threat.
+
 Usage:
     .venv/bin/python scripts/bench_injection_guard.py
     .venv/bin/python scripts/bench_injection_guard.py --sets company --thresholds 0.5,0.9
