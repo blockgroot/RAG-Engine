@@ -24,6 +24,7 @@ from ..config.settings import (
     RecoverySettings,
     RequestBudgetSettings,
     ReuseSettings,
+    SecuritySettings,
     ToneSettings,
     WebSearchSettings,
 )
@@ -66,6 +67,8 @@ from .attachment_tools import (
     run_reads,
 )
 from .access_notice import restricted_notice
+from ..security.links import enforce_link_provenance, strip_links
+from ..security.untrusted import scrub_untrusted_text
 from .audit import lettuce_verdict, parse_audit_verdict
 from .retrieval import HybridRetriever, RetrievalResult
 from .context_assemble import assemble_context_texts, describe_hit
@@ -340,6 +343,7 @@ class RagPipeline:
         self._source_provider = source_provider
         self._prompt_profile = prompt_profile or POLICY_PROMPT_PROFILE
         self._audit_settings = audit_settings or AuditSettings.from_env()
+        self._link_allowlist = SecuritySettings.from_env().link_allowlist
 
     def _provider_for_stage(self, stage: str) -> LLMProvider:
         return self._llm_aux if stage in AUX_LLM_STAGES else self._llm
@@ -1473,6 +1477,9 @@ class RagPipeline:
 
         answered = not self._is_refusal(text, self._settings.fallback_response)
         answer = text if answered else self._settings.fallback_response
+        if answered:
+            # Before the audit, so the audit judges the text that will ship.
+            answer = enforce_link_provenance(answer, contexts, self._link_allowlist)
 
         audit_used = False
         audit_downgraded = False
@@ -1897,6 +1904,9 @@ class RagPipeline:
         except LLMProviderError:
             return None
 
+        # The Sources list is appended by us from the search results, never by
+        # the model; only the model's own prose is checked.
+        raw = enforce_link_provenance(raw, [results_block], self._link_allowlist)
         return RagResult(
             answer=self._format_web_answer(raw, results),
             answered=True,
@@ -2021,6 +2031,9 @@ class RagPipeline:
             ).strip()
         except LLMProviderError:
             return
+        # Model-written, from turns that may carry injected document text, and
+        # stored: cleaned the way any untrusted text is before it is kept.
+        summary = strip_links(scrub_untrusted_text(summary))
         if summary:
             self._memory.set_summary_folded_through(
                 conversation_id, summary, falling_out[-1].turn_index

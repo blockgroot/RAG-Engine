@@ -48,6 +48,9 @@ def _built_prompts() -> dict[str, str]:
             "summarise", ActivityDigest(text=ATTACK), "slack"
         ),
         "chart_resolver": resolve_prompt(ATTACK, []),
+        # Memory: earlier answers repeat document text, so they are fenced too.
+        "rewrite": prompts.build_rewrite_prompt("and them?", ATTACK, [("q?", ATTACK)]),
+        "summary_fold": prompts.build_summary_prompt(ATTACK, [("q?", ATTACK)]),
     }
 
 
@@ -112,3 +115,14 @@ def test_the_rules_file_is_not_excluded_from_the_docker_image():
     assert "*.md" in lines
     assert "!app/security/agents.md" in lines
     assert lines.index("!app/security/agents.md") > lines.index("*.md")  # later rule wins
+
+
+def test_the_latest_question_stays_outside_the_memory_fence():
+    prompt = prompts.build_rewrite_prompt("what about part-timers?", None, [("q?", ATTACK)])
+    close = list(_CLOSE.finditer(prompt))[-1].end()
+    assert prompt.index("LATEST QUESTION: what about part-timers?") > close
+
+
+def test_a_conversation_with_no_history_has_no_fence():
+    prompt = prompts.build_rewrite_prompt("q?", None, [])
+    assert "(no prior context)" in prompt and not _OPEN.search(prompt)

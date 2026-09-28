@@ -970,6 +970,34 @@ class RecoverySettings:
         )
 
 
+#: Hosts an answer may link to even when the link was not in its sources: the
+#: connected tools' own domains. Query strings are still cut (see
+#: `security/links.py`), so an allowlisted host cannot carry data out.
+DEFAULT_LINK_ALLOWLIST = (
+    "notion.so", "notion.site", "docs.google.com", "drive.google.com",
+    "slack.com", "linear.app", "github.com",
+)
+
+
+@dataclass(frozen=True)
+class SecuritySettings:
+    """Deterministic prompt-injection controls (docs/plans/2026-09-28-prompt-injection-defense.md).
+
+    - ``link_allowlist``  `SECURITY_LINK_ALLOWLIST`, comma-separated hosts;
+      empty string = only links that appear verbatim in the sources.
+    """
+
+    link_allowlist: tuple[str, ...] = DEFAULT_LINK_ALLOWLIST
+
+    @classmethod
+    def from_env(cls) -> "SecuritySettings":
+        raw = os.getenv("SECURITY_LINK_ALLOWLIST")
+        if raw is None:
+            return cls()
+        hosts = tuple(h.strip().lower().lstrip(".") for h in raw.split(",") if h.strip())
+        return cls(link_allowlist=hosts)
+
+
 @dataclass(frozen=True)
 class AuditSettings:
     """Post-generation groundedness audit — the validation-layer gap (CLAUDE.md

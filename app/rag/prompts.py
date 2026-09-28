@@ -291,7 +291,18 @@ def build_rewrite_prompt(question: str, summary: str | None, recent: list[tuple[
     if recent:
         history = "\n".join(f"User: {q}\nAssistant: {a}" for q, a in recent)
         lines.append(f"Recent turns:\n{history}")
-    context_block = "\n\n".join(lines) if lines else "(no prior context)"
+    # Earlier ANSWERS repeat document text, so an injection that reached one
+    # answer would otherwise reach the next prompt with no fence at all -- and
+    # this prompt's output becomes the trusted QUESTION of the grounded prompt.
+    # The whole history is fenced: resolving "what about that one?" needs no
+    # instruction from any earlier turn. Only the LATEST question stays outside.
+    context_block = (
+        "<<<UNTRUSTED_CONVERSATION_CONTENT>>>\n"
+        f"{scrub_untrusted_text(chr(10).join(lines)) or '(no prior context)'}\n"
+        "<<<END_UNTRUSTED_CONVERSATION_CONTENT>>>"
+        if lines
+        else "(no prior context)"
+    )
 
     return (
         "You rewrite a user's latest question into a single STANDALONE question "
@@ -305,7 +316,9 @@ def build_rewrite_prompt(question: str, summary: str | None, recent: list[tuple[
         "If the latest message is a follow-up, resolve references into a "
         "full standalone question; if it is already standalone, return it "
         "unchanged.\n\n"
+        f"{UNTRUSTED_POLICY}\n"
         f"CONVERSATION CONTEXT:\n{context_block}\n\n"
+        f"{UNTRUSTED_REMINDER}\n\n"
         f"LATEST QUESTION: {question}\n\n"
         "STANDALONE QUESTION:"
     )
@@ -315,14 +328,23 @@ def build_summary_prompt(existing_summary: str | None, turns: list[tuple[str, st
     """Build the prompt that compresses older turns into a running summary."""
     history = "\n".join(f"User: {q}\nAssistant: {a}" for q, a in turns)
     prior = f"EXISTING SUMMARY:\n{existing_summary}\n\n" if existing_summary else ""
+    # Fenced for the same reason as the rewrite prompt, and more so: this
+    # output is STORED (`conversations.summary`) and read back on every later
+    # turn, so an injection folded into it would outlive the turn it came from.
+    fenced = (
+        "<<<UNTRUSTED_CONVERSATION_CONTENT>>>\n"
+        f"{scrub_untrusted_text(prior + 'NEW TURNS:' + chr(10) + history)}\n"
+        "<<<END_UNTRUSTED_CONVERSATION_CONTENT>>>"
+    )
     return (
         "You maintain a concise running summary of a conversation, so later "
         "follow-up questions can still be understood after older turns are "
         "dropped. Merge the existing summary (if any) with the new turns into a "
         "single short summary. Keep concrete facts the user may refer back to "
         "(names, numbers, entities, their situation). Omit pleasantries.\n\n"
-        f"{prior}"
-        f"NEW TURNS:\n{history}\n\n"
+        f"{UNTRUSTED_POLICY}\n"
+        f"{fenced}\n\n"
+        f"{UNTRUSTED_REMINDER}\n\n"
         "UPDATED SUMMARY:"
     )
 

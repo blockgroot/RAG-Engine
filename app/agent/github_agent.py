@@ -39,7 +39,8 @@ import json
 import re
 from collections.abc import Callable, Iterator
 
-from ..config.settings import GitHubAgentSettings
+from ..config.settings import GitHubAgentSettings, SecuritySettings
+from ..security.links import enforce_link_provenance
 from ..core.answer_sources import (
     RECOVERY_REASON_INSUFFICIENT_EVIDENCE,
     SOURCE_GITHUB,
@@ -115,6 +116,7 @@ class GitHubAgent(Agent):
         self._build_reader = reader_builder
         self._fallback = fallback_response
         self._settings = settings or GitHubAgentSettings.from_env()
+        self._link_allowlist = SecuritySettings.from_env().link_allowlist
 
     def answer(
         self,
@@ -198,6 +200,8 @@ class GitHubAgent(Agent):
         except LLMProviderError:
             return None
         mode, answer = _split_mode_tag(raw)
+        if answer:
+            answer = enforce_link_provenance(answer, [evidence_block], self._link_allowlist)
         if not answer:
             return None
         return mode, answer
