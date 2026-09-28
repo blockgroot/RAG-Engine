@@ -433,6 +433,8 @@ def chat_edge(monkeypatch):
     monkeypatch.setattr(chat, "_drop_refusal_turn",
                         lambda *a: seen["dropped"].append(a))
     monkeypatch.setenv("GRAPH_CONNECTED_ENABLED", "true")
+    monkeypatch.setattr(chat, "_connected_providers",
+                        lambda *a, **k: {"notion", "slack", "linear", "google"})
 
     def run(question, plan):
         fut = None
@@ -500,3 +502,25 @@ def test_connected_off_keeps_normal_answers_only(chat_edge, monkeypatch):
     done = chat_edge.run("has the author discussed it in slack?", _plan())
     assert [p.cross for p in chat_edge.seen["plans"]] == [None]
     assert done["connected_providers"] is None
+
+
+def test_a_named_tool_connects_even_when_the_graph_never_reached_it(chat_edge):
+    """Staging: the label said "Notion" although Slack answered -- the edge
+    only counted tools the walk had reached. Naming a CONNECTED tool is enough."""
+    notion_only = gp.GraphPlan(ORG, None, (), WalkResult(
+        document_ids=["n1"], edges=1, document_providers={"n1": "notion"}))
+    chat_edge.responses.append(_response(True, "Yes, in #rag-updates."))
+    done = chat_edge.run("has the author discussed the scheduler in slack?", notion_only)
+    assert done["connected_providers"] == ["notion", "slack"]
+    assert chat_edge.seen["plans"][0].search == frozenset({"slack"})
+
+
+def test_a_named_tool_that_is_not_connected_changes_nothing(chat_edge, monkeypatch):
+    from app.api import chat
+
+    monkeypatch.setattr(chat, "_connected_providers", lambda *a, **k: {"notion"})
+    chat_edge.responses.append(_response(True, "An answer."))
+    done = chat_edge.run("was it discussed in slack?", _plan())
+    assert done["connected_providers"] is None
+    assert chat_edge.seen["plans"][0].cross is None
+
