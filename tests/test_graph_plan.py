@@ -93,6 +93,17 @@ def test_facts_are_bounded(monkeypatch):
     assert sum(len(f) for f in facts) <= gp.MAX_FACTS_CHARS
 
 
+def test_three_or_more_of_one_kind_become_one_grouped_fact():
+    links = [WalkedLink("Sana", "identity:slack:U1", "authored", f"#hr: thread {i}",
+                        f"slack:C:{i}", 2) for i in range(6)]
+    plan = gp.GraphPlan(ORG, None, (), WalkResult(document_ids=[], edges=6, links=links),
+                        cross=frozenset({"slack"}))
+    assert plan.facts("slack") == [
+        'Sana (Slack) wrote 6 Slack items found, including: "#hr: thread 0"; '
+        '"#hr: thread 1"; "#hr: thread 2"; "#hr: thread 3" and 2 more'
+    ]
+
+
 def test_build_plan_needs_the_flag_and_a_viewer(monkeypatch):
     on = GraphSettings(retrieval_enabled=True)
     off = GraphSettings(retrieval_enabled=False)
@@ -240,6 +251,49 @@ def test_a_normal_plan_runs_no_extra_search():
     assert [c["source_provider"] for c in store.calls] == ["notion"]
 
 
+def _cand(edge, tool, score, frm="hub"):
+    return {"edge_id": edge, "nx_id": edge, "key": f"{tool}:{edge}", "kind": "document",
+            "name": edge, "from_id": frm, "relation": "authored", "score": score,
+            "last_seen": None}
+
+
+def test_fair_pick_rotates_across_tools_and_caps_a_hub():
+    from app.graph.walk import _fair_pick
+
+    many = [_cand(f"n{i}", "notion", 1.0) for i in range(30)]
+    few = [_cand("s1", "slack", 0.1), _cand("s2", "slack", 0.0)]
+    picked, left = _fair_pick(many + few, 6, per_node=20, focus=frozenset())
+    tools = [c["key"].split(":")[0] for c in picked]
+    assert tools.count("slack") == 2 and left  # Slack seated despite lower scores
+    capped, left = _fair_pick(many, 50, per_node=5, focus=frozenset())
+    assert len(capped) == 5 and left  # the hub cap is a bound, reported
+
+
+def test_fair_pick_gives_a_named_tool_the_larger_share():
+    from app.graph.walk import _fair_pick
+
+    cands = [_cand(f"n{i}", "notion", 1.0) for i in range(10)] + \
+            [_cand(f"s{i}", "slack", 0.5) for i in range(10)]
+    picked, _ = _fair_pick(cands, 6, per_node=20, focus=frozenset({"slack"}))
+    assert [c["key"].split(":")[0] for c in picked].count("slack") == 4
+
+
+def test_fair_pick_prefers_the_best_match_within_a_tool():
+    from app.graph.walk import _fair_pick
+
+    picked, _ = _fair_pick([_cand("weak", "notion", 0.1), _cand("strong", "notion", 0.9)],
+                           1, per_node=20, focus=frozenset())
+    assert picked[0]["edge_id"] == "strong"
+
+
+def test_question_tsquery_is_plain_words_joined_by_or():
+    from app.graph.walk import question_tsquery
+
+    assert question_tsquery("Has Sana discussed it in Slack?") == "has | sana | discussed | slack"
+    assert question_tsquery("x'); DROP TABLE users; --") == "drop | table | users"
+    assert question_tsquery("") is None
+
+
 def _c(doc, tool):
     return RetrievedChunk(content=doc, score=0.5, document_id=doc, chunk_index=0, org_id=ORG,
                           source_provider=tool)
@@ -313,6 +367,26 @@ def test_facts_block_reads_the_plan_and_marks_the_answer():
     assert shaped and block.startswith(rag_pipeline.GRAPH_FACTS_HEADER)
     assert "Travel Policy" in block and "Slack" not in block
     assert rag_pipeline._graph_facts_block(ORG, "notion") == (None, False)  # no plan
+
+
+def test_a_connected_answer_is_told_what_was_searched():
+    plan = gp.replace(_plan(), coverage=(("slack", 11),)).connected({"notion", "slack"},
+                                                                    search={"slack"})
+    token = gp.use_plan(plan)
+    try:
+        block, shaped = rag_pipeline._graph_facts_block(ORG, "notion")
+    finally:
+        gp.reset_plan(token)
+    assert shaped
+    assert rag_pipeline.SEARCH_COVERAGE_HEADER in block
+    assert "Slack was searched for this question: 11 items" in block
+    # A normal answer is never told about a search it did not run.
+    token = gp.use_plan(gp.replace(_plan(), coverage=(("slack", 11),)))
+    try:
+        block, _ = rag_pipeline._graph_facts_block(ORG, "notion")
+    finally:
+        gp.reset_plan(token)
+    assert rag_pipeline.SEARCH_COVERAGE_HEADER not in block
 
 
 def test_graph_shaped_answers_are_never_cached():

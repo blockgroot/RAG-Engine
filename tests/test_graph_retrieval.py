@@ -57,7 +57,7 @@ def graph_finds(monkeypatch):
         calls["link_viewer"] = viewer
         return [Seed("e1", "issue", "ENG-1 - Fix", True, 1.0)]
 
-    def walk(org_id, workspace_id, seeds, viewer):
+    def walk(org_id, workspace_id, seeds, viewer, **kw):
         calls["walk_viewer"] = viewer
         return WalkResult(document_ids=["graph-doc"], edges=2)
 

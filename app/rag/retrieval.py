@@ -198,7 +198,10 @@ class HybridRetriever:
             from ..graph.walk import walk
 
             seeds = link_question(org_id, workspace_id, query_text, viewer)
-            result = walk(org_id, workspace_id, [s.id for s in seeds], viewer) if seeds else None
+            result = (
+                walk(org_id, workspace_id, [s.id for s in seeds], viewer, question=query_text)
+                if seeds else None
+            )
             _graph_log.info(
                 json.dumps(
                     {

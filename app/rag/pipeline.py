@@ -166,6 +166,12 @@ GRAPH_FACTS_HEADER = (
 )
 
 
+#: Heads the search-coverage lines: which named tools were searched, and how
+#: much they hold for this asker. Facts, not an instruction -- the strict
+#: prompt's own modes decide what to say about them.
+SEARCH_COVERAGE_HEADER = "Search coverage:"
+
+
 def _graph_facts_block(org_id: str | None, routed: str | None) -> tuple[str | None, bool]:
     """``(context_block, graph_shaped)`` for this request's graph plan.
 
@@ -181,10 +187,18 @@ def _graph_facts_block(org_id: str | None, routed: str | None) -> tuple[str | No
         if plan is None or plan.org_id != org_id:
             return None, False
         lines = plan.facts(routed)
-        shaped = bool(lines) or plan.cross is not None
-        if not lines:
+        # What was searched is stated only on a connected answer: that is
+        # the answer reading the tool the question named.
+        searched = plan.coverage_lines() if plan.cross is not None else []
+        shaped = bool(lines) or bool(searched) or plan.cross is not None
+        if not lines and not searched:
             return None, shaped
-        return GRAPH_FACTS_HEADER + "\n" + "\n".join(f"- {line}" for line in lines), shaped
+        parts = []
+        if lines:
+            parts.append(GRAPH_FACTS_HEADER + "\n" + "\n".join(f"- {line}" for line in lines))
+        if searched:
+            parts.append(SEARCH_COVERAGE_HEADER + "\n" + "\n".join(f"- {line}" for line in searched))
+        return "\n\n".join(parts), shaped
     except Exception:  # noqa: BLE001 - facts may only ever add
         logger.warning("graph facts skipped", exc_info=True)
         return None, False

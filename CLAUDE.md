@@ -292,9 +292,39 @@ already applied skip / owner-only / freeze to that exact row.
   evidence through `evidence_predicate`, NULL = hidden), and a DOCUMENT entity
   is entered only if the viewer may open it — edge visibility alone leaked a
   hidden page's title through a `references` edge evidenced by the linking
-  page. ≤2 hops, ≤50 edges, `same_person` costs no hop, `truncated` honest,
-  three round trips. No DISTINCT/ORDER on the outer query, so the LIMIT stops
-  the recursive CTE itself.
+  page. ≤2 hops, ≤50 edges, `same_person` costs no hop, `truncated` honest.
+- **The walk is RANKED and FAIR, one query per hop** (`walk._hop`,
+  `_fair_pick`). It was one recursive CTE stopped by a LIMIT, i.e. the first
+  50 rows Postgres happened to produce -- measured on staging, Sana alone had
+  ~60 edges across four tools, so Notion could spend the budget before any
+  Slack edge was read. Now: newest `_POOL_PER_NODE`=300 candidates per node,
+  scored against the QUESTION by full-text rank of the name and the document's
+  `chunks.content_tsv` (no model, no embedding -- it runs beside routing),
+  then picked round-robin ACROSS TOOLS (a NAMED tool gets two per round),
+  ≤`PER_NODE`=20 per node. Anything a bound left behind sets `truncated`,
+  including the per-node cap. 2,100 docs / 10 people: 73ms median locally.
+  The tsquery is OR over alphanumeric words, stop words dropped by Postgres'
+  own `english` config -- no word list in code.
+- **One plan per question** (`graph/plan.py`, `GraphPlan` in a ContextVar):
+  built at the chat edge IN PARALLEL with `choose_agent`, awaited ≤1.5s, and
+  REUSED by retrieval (no second walk) and generation. Needs a viewer.
+  Normal answer: graph documents + facts from the ROUTED tool only; an exact
+  identifier seed routes to its tool (`graph-named`, two tools = neither).
+  Facts are grouped per (who, relation, tool) from 3 items on, best match
+  first, ≤12 lines / 1500 chars. A graph-shaped answer is never cached.
+- **Connected answer = the routed agent reading a second tool, ONE LLM call**
+  (not N agents composing -- that is the deferred deep-research path).
+  Triggers: the question NAMES another indexed tool (its own vector+keyword
+  legs run beside the routed ones, no graph evidence needed -- staging showed
+  requiring evidence left Slack unreachable), or the routed tool REFUSED and
+  the graph proved visible documents elsewhere (one retry; the refused turn is
+  deleted first, `delete_last_turn_if`). Graph leg lifts the provider pin for
+  itself only; 2 slots reserved for the other tools; gate still best cosine.
+  The context gets `Search coverage:` lines (named tool + how many items the
+  asker can read there) so the strict prompt's own Mode A/B can say "no, not
+  in Slack" from evidence -- no canned reply, the prompt is unchanged.
+  `GRAPH_CONNECTED_ENABLED` switches it off; `done` carries
+  `connected_providers` and the pill names every tool.
 - **In retrieval it is ONE more RRF list** (`retrieval._graph_documents`): a
   vector search restricted to the walk's evidence documents, viewer-filtered
   AGAIN, so the gate is untouched. Any failure drops only its candidates.

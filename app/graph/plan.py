@@ -72,6 +72,11 @@ class GraphPlan:
     #: them ("...in Slack?"). Unlike ``cross`` this needs no graph evidence:
     #: the asker told us where to look. Viewer-filtered like every search.
     search: frozenset[str] = frozenset()
+    #: Tools the question NAMED -> how many documents in that tool this viewer
+    #: can open in this scope. Stated to the answer (``coverage_lines``) so a
+    #: "no" can be said from evidence -- "Slack was searched, here is what it
+    #: holds" -- rather than refused as if nothing had been looked at.
+    coverage: tuple[tuple[str, int], ...] = ()
 
     @property
     def document_providers(self) -> dict[str, str]:
@@ -109,24 +114,48 @@ class GraphPlan:
         answer states only Notion facts, so it never learns (or says) that a
         Slack thread exists. ``same_person`` joins are stated only in a
         connected answer, where crossing tools is the point.
+
+        Grouped per ``(who, relation, tool)``: someone who wrote forty pages is
+        ONE line naming how many were found and the best-matching few, not
+        forty lines that crowd out everyone else. Links arrive best match to
+        the question first (``walk``), so the few named are the relevant ones.
         """
         allowed = self.allowed(routed)
-        out: list[str] = []
-        size = 0
+        groups: dict[tuple, list] = {}
         for link in getattr(self.walk, "links", []) or []:
             if link.relation == "same_person" and self.cross is None:
                 continue
             touched = {p for p in (provider_of(link.src_key), provider_of(link.dst_key)) if p}
             if allowed is not None and touched and not touched <= allowed:
                 continue
-            line = _fact_line(link)
-            if line in out:
-                continue
-            if size + len(line) > MAX_FACTS_CHARS or len(out) >= MAX_FACTS:
+            key = (link.src_name, link.src_key, link.relation, provider_of(link.dst_key))
+            groups.setdefault(key, []).append(link)
+        out: list[str] = []
+        size = 0
+        full = False
+        for links in groups.values():
+            lines = ([_group_line(links)] if len(links) >= _GROUP_FROM
+                     else [_fact_line(link) for link in links])
+            for line in lines:
+                if line in out:
+                    continue
+                if size + len(line) > MAX_FACTS_CHARS or len(out) >= MAX_FACTS:
+                    full = True
+                    break
+                out.append(line)
+                size += len(line)
+            if full:
                 break
-            out.append(line)
-            size += len(line)
         return out
+
+    def coverage_lines(self) -> list[str]:
+        """What was searched in each tool the question named, as plain facts."""
+        return [
+            f"{_TOOL_NAMES.get(tool, tool)} was searched for this question: "
+            f"{count} item{'s' if count != 1 else ''} there are readable by the asker, "
+            "and the closest matches are included in this context."
+            for tool, count in self.coverage
+        ]
 
     def connected(self, providers: set[str], *, search: set[str] = frozenset()) -> "GraphPlan":
         return replace(self, cross=frozenset(providers), search=frozenset(search))
@@ -140,11 +169,35 @@ class GraphPlan:
         return {p for p in self.providers if p != routed and p in usable}
 
 
+_TOOL_NAMES = {"google": "Google Drive", "notion": "Notion", "slack": "Slack",
+               "linear": "Linear", "github": "GitHub"}
+#: A person's links of one kind into one tool are grouped from this many on.
+_GROUP_FROM = 3
+#: Items named in one grouped fact, and how much of each title is kept.
+_GROUP_SHOWN = 4
+_TITLE_CHARS = 90
+
+
 def _label(name: str, key: str) -> str:
     tool = provider_of(key)
-    names = {"google": "Google Drive", "notion": "Notion", "slack": "Slack",
-             "linear": "Linear", "github": "GitHub"}
-    return f"{name} ({names[tool]})" if tool in names else name
+    return f"{name} ({_TOOL_NAMES[tool]})" if tool in _TOOL_NAMES else name
+
+
+def _short(title: str) -> str:
+    title = " ".join((title or "").split())
+    return title if len(title) <= _TITLE_CHARS else title[: _TITLE_CHARS - 1] + "…"
+
+
+def _group_line(links) -> str:
+    """``Sana (Slack) wrote 13 Slack items found, including: "a"; "b"; …``"""
+    first = links[0]
+    verb = _PHRASES.get(first.relation, first.relation.replace("_", " "))
+    tool = _TOOL_NAMES.get(provider_of(first.dst_key) or "", "")
+    shown = "; ".join(f'"{_short(l.dst_name)}"' for l in links[:_GROUP_SHOWN])
+    more = f" and {len(links) - _GROUP_SHOWN} more" if len(links) > _GROUP_SHOWN else ""
+    where = f" {tool}" if tool else ""
+    return (f"{_label(first.src_name, first.src_key)} {verb} {len(links)}{where} "
+            f"items found, including: {shown}{more}")
 
 
 def _fact_line(link) -> str:
@@ -195,15 +248,55 @@ def build_plan(
     if not settings.retrieval_enabled or viewer is None:
         return None
     try:
+        from ..agent.routing import named_provider
         from .linking import link_question
         from .walk import walk
 
+        named = named_provider(question, _INDEXED)
+        focus = frozenset({named}) if named else frozenset()
         seeds = link_question(org_id, workspace_id, question, viewer)
-        result = walk(org_id, workspace_id, [s.id for s in seeds], viewer) if seeds else None
-        return GraphPlan(org_id, workspace_id, tuple(seeds), result)
+        result = (
+            walk(org_id, workspace_id, [s.id for s in seeds], viewer,
+                 question=question, focus=focus)
+            if seeds else None
+        )
+        coverage = _coverage(org_id, workspace_id, focus, viewer)
+        return GraphPlan(org_id, workspace_id, tuple(seeds), result, coverage=coverage)
     except Exception:  # noqa: BLE001 - the graph may only ever add; losing it costs nothing
         logger.warning("graph plan skipped", exc_info=True)
         return None
+
+
+def _coverage(org_id, workspace_id, tools, viewer) -> tuple[tuple[str, int], ...]:
+    """How many documents each NAMED tool holds for this viewer, in scope.
+
+    One grouped COUNT, run only when the question named a tool. The same
+    visibility predicate retrieval uses, so the number never counts a
+    document the asker could not have been shown.
+    """
+    if not tools:
+        return ()
+    from ..db.connection import get_connection
+    from ..security.visibility import visibility_predicate
+    from .walk import _acl
+
+    acl = _acl(viewer)
+    doc_ok, params = ("TRUE", []) if acl is None else (visibility_predicate("d"), [acl])
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT d.source_provider, count(*)
+              FROM documents d
+             WHERE d.org_id = %s::uuid
+               AND d.workspace_id IS NOT DISTINCT FROM %s::uuid
+               AND d.source_provider = ANY(%s)
+               AND {doc_ok}
+             GROUP BY 1
+            """,
+            [org_id, workspace_id, sorted(tools), *params],
+        ).fetchall()
+    found = {r[0]: int(r[1]) for r in rows}
+    return tuple((t, found.get(t, 0)) for t in sorted(tools))
 
 
 _CURRENT: contextvars.ContextVar[GraphPlan | None] = contextvars.ContextVar(
