@@ -355,6 +355,20 @@ grounded generate → `RagResult`.
     stripped; revisit only if Phase 4 evals show fence confusion), a `Context:`
     label on stored prefixes (no reader), and hiding an unmatched chart `focus`
     (the by-name refusal is deliberate; it is link-stripped instead).
+  - **Phase 2: every chunk carries an injection score** (`app/guard/`, Llama
+    Prompt Guard 2 86M on Groq's free tier, `GUARD_MODE=off|shadow|enforce`,
+    default off). Scored at ingest on RAW chunks before contextualization; a
+    document with ANY flagged chunk skips contextualization WHOLE, because every
+    contextualize call carries the full document. The RAW score and model name
+    live on `chunks` (`injection_score`, `injection_model`), so a threshold
+    change needs no rescan. Failure is `None` = unscored, never clean: one failed
+    window unscores the whole text, and the tick's `backfill_injection_scores`
+    retries NULL/old-model rows in RANDOM order (oldest-first would let a chunk
+    that always fails starve the rest). Shadow mode only LOGS a flagged hit
+    (`guard.flagged_hit`, ids + score, never text) — Phase 3 acts. Windows are
+    1,500 chars (measured ceiling ~1,800 English; a 400 halves and retries for
+    CJK). 86M not 22M: 22M scored a Spanish injection 0.43, 86M 0.999. The
+    Horizon Labs/HF Space route was dropped: free HF CPU Spaces now need PRO.
   - The answer AUDIT is not a security layer: an injected claim is literally in
     a chunk, so it counts as grounded. `tests/test_exfil_channels.py` assumes a
     FULLY compromised model and asserts chat and Slack are inert anyway.
@@ -2169,13 +2183,19 @@ when the model says qa.
 - Production secrets (`AUTH_JWT_SECRET`, `AUTH_ENCRYPTION_KEYS`,
   `GITHUB_APP_PRIVATE_KEY`, `OPENROUTER_API_KEY`) are a config surface, not
   provisioned.
-- **Prompt-injection defense: Phase 1 (deterministic) is built; Phases 2–4
-  are not** — no chunk is scored for injection, questions and uploads are not
-  classified, and no answer moderation runs. The first real gap after Phase 1
-  is a poisoned chunk whose injected link is VERBATIM in it (the golden-set
-  phishing case): provenance allows it until Phase 2's score can veto it.
-- **The LettuceDetect Space is not deployed yet** — the endpoint code is
-  tested against a fake only. Its CPU latency on the free tier, the 0.6 cutoff
+- **Prompt-injection defense: Phases 1–2 are built; 3–4 are not.** Chunks are
+  scored (shadow only, and only once `GUARD_MODE=shadow` is set in prod), but
+  nothing ACTS on the score yet, questions and uploads are not classified, and
+  no answer moderation runs — so a poisoned chunk whose link is VERBATIM in it
+  still passes provenance until Phase 3. Before shadow: enable Groq zero data
+  retention (chunks are tenant text). Run shadow a week and read
+  `guard.flagged_hit` for false positives before choosing the enforce
+  threshold. Known weak spot: a repeated Chinese injection scored 0.20.
+- **The LettuceDetect Space cannot be deployed free**: HF made CPU Spaces
+  PRO-only and Docker Spaces paid (free Gradio Spaces run on ZeroGPU at 5
+  GPU-min/day). `deploy/lettucedetect-space/` is now a Gradio-SDK app for when
+  a PRO/CPU Space exists; the audit stays off. The endpoint code is tested
+  against a fake only. Its CPU latency on the free tier, the 0.6 cutoff
   on OUR data (it was picked on RAGTruth, general web QA), and the 48h
   sleep (a sleeping Space times out and skips the audit) are all unmeasured.
   Re-run `bench_answer_check.py --checkers lettuce` against it before turning

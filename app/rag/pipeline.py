@@ -18,6 +18,7 @@ from ..config.settings import (
     AttachmentSettings,
     AuditSettings,
     DecomposeSettings,
+    GuardSettings,
     MemorySettings,
     QueryNormSettings,
     RagSettings,
@@ -296,6 +297,23 @@ class _RecoveryAttempt:
     queries: list[str]
 
 
+def _log_flagged_hits(hits, org_id: str | None, guard: GuardSettings) -> None:
+    """Shadow mode (injection plan Task 2.6): log a flagged chunk, change nothing.
+
+    Run for a week on the real corpus before Phase 3 acts on the score: the
+    false-positive rate on real company documents decides the threshold, not
+    a benchmark. Logs ids and the score only -- never the chunk text.
+    """
+    if not guard.enabled:
+        return
+    for h in hits:
+        if h.injection_score is not None and h.injection_score >= guard.threshold:
+            logger.warning(
+                "guard.flagged_hit mode=%s org=%s doc=%s chunk=%s score=%.3f",
+                guard.mode, org_id, h.document_id, h.chunk_index, h.injection_score,
+            )
+
+
 class RagPipeline:
     """Composes embeddings + vector store + LLM into grounded, org-scoped Q&A.
 
@@ -352,6 +370,7 @@ class RagPipeline:
         self._prompt_profile = prompt_profile or POLICY_PROMPT_PROFILE
         self._audit_settings = audit_settings or AuditSettings.from_env()
         self._link_allowlist = SecuritySettings.from_env().link_allowlist
+        self._guard_settings = GuardSettings.from_env()
 
     def _provider_for_stage(self, stage: str) -> LLMProvider:
         return self._llm_aux if stage in AUX_LLM_STAGES else self._llm
@@ -1403,6 +1422,7 @@ class RagPipeline:
             # line per chunk) could only ever disagree with it. One budget,
             # enforced in one place.
             whole_read = len(hits) > self._settings.top_k
+            _log_flagged_hits(hits, org_id, self._guard_settings)
             contexts = assemble_context_texts(
                 # Title AND provenance: the provider, who last edited it and
                 # when. All of it was already on the JOINed document row and

@@ -201,6 +201,8 @@ class RetrievedChunk:
     # its key, deliberately -- so the write is gated instead). Defaults True,
     # which is what a fake, a reuse hit or a legacy row honestly is.
     doc_is_public: bool = True
+    # Prompt-injection probability from ingest (`app/guard/`); None = unscored.
+    injection_score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -477,9 +479,9 @@ class VectorStore(ABC):
         raise NotImplementedError("this vector store does not support source document upsert")
 
     def set_injection_scores(
-        self, document_id: str, scores: list[float | None], model: str
+        self, document_id: str, scores: dict[int, float | None], model: str
     ) -> None:
-        """Store one injection score per chunk of ``document_id``, by chunk index.
+        """Store injection scores for chunks of ``document_id``, keyed by chunk index.
 
         A ``None`` score leaves that chunk NULL (unscored), so the backfill
         retries it. Optional capability; default raises.

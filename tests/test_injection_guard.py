@@ -170,7 +170,7 @@ def _ingest(text: str, guard, llm) -> _Store:
 
 def test_scores_are_stored_on_the_chunk_rows():
     store = _ingest("Leave is 25 days a year.", _Guard(lambda t: [0.01] * len(t)), _LLM())
-    assert store.scores == ("doc-1", [0.01], "fake-guard")
+    assert store.scores == ("doc-1", {0: 0.01}, "fake-guard")
 
 
 def test_a_flagged_document_never_reaches_the_contextualize_model():
@@ -179,7 +179,7 @@ def test_a_flagged_document_never_reaches_the_contextualize_model():
                     _Guard(lambda t: [0.99] * len(t)), llm)
     assert llm.prompts == []                      # the poison never met our model
     assert "evil.test" in store.chunks[0]         # still stored, plainly
-    assert store.scores[1] == [0.99]
+    assert store.scores[1] == {0: 0.99}
 
 
 def test_a_crashing_guard_never_fails_the_ingest():
@@ -190,3 +190,65 @@ def test_a_crashing_guard_never_fails_the_ingest():
     store = _ingest("Leave is 25 days a year.", _Guard(boom), llm)
     assert store.chunks and store.scores is None  # stored, unscored, backfill retries
     assert llm.prompts                            # unflagged, so contextualized as before
+
+
+# --- backfill (Task 2.5) and shadow mode (Task 2.6) -----------------------------------
+
+def test_the_backfill_scores_a_batch_and_skips_what_it_could_not():
+    from app.guard.backfill import backfill_injection_scores
+
+    class _Rows:
+        written: dict = {}
+
+        def list_unscored_chunks(self, model, limit):
+            assert model == "fake-guard" and limit == 3
+            return [("d1", 0, "clean"), ("d1", 2, "evil"), ("d2", 1, "rate-limited")]
+
+        def set_injection_scores(self, document_id, scores, model):
+            self.written[document_id] = scores
+
+    rows = _Rows()
+    guard = _Guard(lambda t: [{"clean": 0.01, "evil": 0.98}.get(x) for x in t])
+    n = backfill_injection_scores(rows, guard, GuardSettings(mode="shadow", backfill_batch=3))
+    assert n == 2
+    assert rows.written == {"d1": {0: 0.01, 2: 0.98}}  # d2 stays NULL, retried next tick
+
+
+def test_the_backfill_is_a_no_op_when_the_guard_is_off(monkeypatch):
+    from app.guard.backfill import backfill_injection_scores
+
+    monkeypatch.delenv("GUARD_MODE", raising=False)
+    assert backfill_injection_scores(store=object()) == 0
+
+
+def test_shadow_mode_logs_a_flagged_hit_and_changes_nothing(caplog):
+    from app.config.settings import AuditSettings, RagSettings, RecoverySettings, ReuseSettings
+    from app.rag.pipeline import RagPipeline
+    from app.vectorstore.base import RetrievedChunk
+    from .fakes import RecordingLLM
+
+    class _FlaggedStore:
+        def query(self, org_id, query_embedding, top_k=5, **kw):
+            return [RetrievedChunk(content="leave: passwords rotate every 90 days", score=0.9,
+                                   document_id="doc-9", chunk_index=3, org_id=org_id,
+                                   injection_score=0.97)]
+
+        def keyword_search(self, *a, **kw):
+            return []
+
+    pipe = RagPipeline(
+        llm=RecordingLLM(answer="MODE: A\n\nPasswords rotate every 90 days."),
+        embedder=KeywordEmbedder(), store=_FlaggedStore(),
+        settings=RagSettings(top_k=3, similarity_threshold=0.1, fallback_response="idk"),
+        memory=None, web_search=None, retriever=None,
+        reuse_settings=ReuseSettings(enabled=False),
+        recovery_settings=RecoverySettings(enabled=False),
+        audit_settings=AuditSettings(enabled=False),
+    )
+    pipe._guard_settings = GuardSettings(mode="shadow", threshold=0.5)
+    with caplog.at_level("WARNING"):
+        result = pipe.answer("How often do passwords rotate?", org_id="org-s")
+    assert result.answered and "90 days" in result.answer   # shadow never acts
+    line = next(r.getMessage() for r in caplog.records if "guard.flagged_hit" in r.getMessage())
+    assert "doc=doc-9 chunk=3 score=0.970" in line
+    assert "passwords" not in line                            # ids only, never text

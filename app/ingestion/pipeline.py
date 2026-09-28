@@ -416,7 +416,7 @@ def _store_scores(store: VectorStore, document_id: str, scores, guard: Injection
     if guard is None or scores is None:
         return
     try:
-        store.set_injection_scores(document_id, scores, guard.model)
+        store.set_injection_scores(document_id, dict(enumerate(scores)), guard.model)
     except Exception:  # noqa: BLE001 - a missing score is retried by the backfill
         logger.warning("Could not store injection scores for %s", document_id, exc_info=True)
 

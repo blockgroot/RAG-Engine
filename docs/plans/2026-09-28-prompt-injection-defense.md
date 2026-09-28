@@ -318,7 +318,7 @@ This phase is **[probabilistic]**. It adds zero query-time latency.
 ### Task 2.2: Space route — DROPPED
 Groq serves the model, so there is nothing of ours to host.
 
-### Task 2.3: Store the score
+### Task 2.3: Store the score ✅
 **Files:** `app/db/schema.sql`, `app/vectorstore/pgvector_store.py` (inserts
 `:135`, `:567`), `app/vectorstore/base.py` (`RetrievedChunk`).
 - `ALTER TABLE chunks ADD COLUMN IF NOT EXISTS injection_score REAL;` plus
@@ -328,7 +328,7 @@ Groq serves the model, so there is nothing of ours to host.
   Only a model change does, which is why `injection_model` is kept.
 - Every retrieval SELECT carries both columns onto `RetrievedChunk`.
 
-### Task 2.4: Score at ingest, before contextualize
+### Task 2.4: Score at ingest, before contextualize ✅
 **Files:** `app/ingestion/pipeline.py`.
 - Score each chunk's **raw text** in one batched call per document, before
   contextualization.
@@ -339,14 +339,15 @@ Groq serves the model, so there is nothing of ours to host.
 - A guard failure leaves the score NULL and never fails the ingest job: the
   answer-check posture.
 
-### Task 2.5: Backfill and rescan
+### Task 2.5: Backfill and rescan ✅
 **Files:** `app/jobs/autosync.py` (the tick).
 - A bounded, idempotent job scores chunks where
-  `injection_score IS NULL OR injection_model <> current`, oldest first,
+  `injection_model IS DISTINCT FROM current`, in RANDOM order (oldest-first
+  lets a chunk that always fails starve the rest),
   `GUARD_BACKFILL_BATCH` per tick. This is the same shape as
   `backfill_all_document_facts`.
 
-### Task 2.6: Shadow mode: log, never act
+### Task 2.6: Shadow mode: log, never act ✅
 - At retrieval, `GUARD_MODE=shadow` logs `(org, doc, chunk, score)` for hits
   above threshold and changes nothing.
 - Run it on the real corpus for a week. **Measure the false-positive rate on
