@@ -63,9 +63,12 @@ export function ProvenanceStripe({
   agent,
   attachments,
   citations,
+  connected,
 }: {
   source: string;
   agent?: string;
+  /** Tools a connected answer read; two or more are all named. */
+  connected?: string[];
   /** Files that were in this prompt. */
   attachments?: string[];
   /** How many corpus chunks were also in it. */
@@ -117,9 +120,13 @@ export function ProvenanceStripe({
         ? source
         : agent || source;
   const color = COLORS[identity] || COLORS.none;
-  const label = LABELS[identity] || LABELS.none;
-  const agentName =
-    grounded && source !== "web"
+  const crossTool = grounded && source !== "web" && (connected?.length ?? 0) > 1;
+  const label = crossTool
+    ? connected!.map((p) => LABELS[p] || p).join(" + ")
+    : LABELS[identity] || LABELS.none;
+  const agentName = crossTool
+    ? "Connected answer"
+    : grounded && source !== "web"
       ? agent === "insights"
         ? "Charts"
         : AGENT_NAMES[agent || ""]

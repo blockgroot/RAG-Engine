@@ -103,10 +103,12 @@ def test_build_plan_needs_the_flag_and_a_viewer(monkeypatch):
     assert gp.build_plan(ORG, None, "q", Viewer(email="a@x.io"), settings=on) is None
 
 
-def test_predictive_connection_needs_a_named_tool_with_graph_evidence():
+def test_predictive_connection_needs_a_named_indexed_tool():
     plan = _plan()
     assert gp.connected_tools(plan, "notion", "slack") == {"notion", "slack"}
-    assert gp.connected_tools(plan, "notion", "linear") is None  # no evidence there
+    # Naming the tool is enough: the asker said where to look.
+    assert gp.connected_tools(plan, "notion", "linear") == {"notion", "linear"}
+    assert gp.connected_tools(plan, "notion", "github") is None  # nothing indexed to search
     assert gp.connected_tools(plan, "notion", None) is None
     assert gp.connected_tools(plan, "notion", "notion") is None
     assert gp.connected_tools(plan, "github", "slack") is None  # no index to widen
@@ -201,6 +203,41 @@ def test_a_plan_for_another_scope_is_ignored(monkeypatch):
     finally:
         gp.reset_plan(token)
     assert walked == [1]
+
+
+def test_a_named_tool_runs_its_own_searches_beside_the_routed_ones(monkeypatch):
+    """No graph evidence at all, and Slack still answers -- because it was named."""
+    monkeypatch.setattr("app.graph.linking.link_question", lambda *a, **k: [])
+
+    class _ByTool(_Store):
+        def query(self, org_id, embedding, **kw):
+            self.calls.append(kw)
+            tool = kw.get("source_provider")
+            return [RetrievedChunk(content=tool, score=0.5 if tool == "slack" else 0.6,
+                                   document_id=f"{tool}-doc", chunk_index=0, org_id=org_id,
+                                   source_provider=tool)]
+
+    store = _ByTool()
+    asker = Viewer(email="a@x.io")
+    plan = gp.GraphPlan(ORG, None).connected({"notion", "slack"}, search={"slack"})
+    token = gp.use_plan(plan)
+    try:
+        result = _retriever(store).retrieve(ORG, "q", [1.0], viewer=asker)
+    finally:
+        gp.reset_plan(token)
+    assert sorted(c["source_provider"] for c in store.calls) == ["notion", "slack"]
+    assert all(c["viewer"] is asker for c in store.calls)
+    assert {h.source_provider for h in result.hits} == {"notion", "slack"}
+
+
+def test_a_normal_plan_runs_no_extra_search():
+    store = _Store()
+    token = gp.use_plan(gp.GraphPlan(ORG, None))
+    try:
+        _retriever(store).retrieve(ORG, "q", [1.0], viewer=Viewer(email="a@x.io"))
+    finally:
+        gp.reset_plan(token)
+    assert [c["source_provider"] for c in store.calls] == ["notion"]
 
 
 def _c(doc, tool):
@@ -357,6 +394,7 @@ def test_naming_another_tool_with_evidence_connects_up_front(chat_edge):
     done = chat_edge.run("has the author discussed it in slack?", _plan())
     (plan,) = chat_edge.seen["plans"]
     assert plan.cross == frozenset({"notion", "slack"})
+    assert plan.search == frozenset({"slack"})  # Slack's own search joins
     assert done["routing_reason"] == "graph-connected"
     assert done["connected_providers"] == ["notion", "slack"]
     assert chat_edge.seen["dropped"] == []

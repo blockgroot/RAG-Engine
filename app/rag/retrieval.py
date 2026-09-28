@@ -128,6 +128,8 @@ class HybridRetriever:
         graph_documents, graph_cross = self._graph_documents(
             org_id, workspace_id, query_text, viewer
         )
+        extra_tools = self._named_tools(org_id, workspace_id)
+        graph_cross = graph_cross or bool(extra_tools)
         graph_counter: list[int] = []
         ranked_lists = self._first_stage_all(
             org_id,
@@ -140,6 +142,7 @@ class HybridRetriever:
             graph_documents=graph_documents,
             graph_counter=graph_counter,
             graph_cross=graph_cross,
+            extra_tools=extra_tools,
         )
         graph_hits = sum(graph_counter)
         if graph_documents:
@@ -214,6 +217,25 @@ class HybridRetriever:
             logger.warning("retrieval: graph list skipped", exc_info=True)
             return [], False
 
+    def _named_tools(self, org_id: str, workspace_id: str | None) -> list[str]:
+        """Tools a connected answer searches besides this retriever's own.
+
+        Only ever the ones the question NAMED (``GraphPlan.search``); empty
+        for every normal answer, so their searches do not run at all.
+        """
+        if not self._graph_settings.retrieval_enabled:
+            return []
+        try:
+            from ..graph.plan import current_plan
+
+            plan = current_plan()
+            if plan is None or not plan.matches(org_id, workspace_id):
+                return []
+            return plan.search_tools(self._source_provider)
+        except Exception:  # noqa: BLE001 - a named tool may only ever add
+            logger.warning("retrieval: named-tool search skipped", exc_info=True)
+            return []
+
     def _first_stage_all(
         self,
         org_id: str,
@@ -227,6 +249,7 @@ class HybridRetriever:
         graph_documents: list[str] | None = None,
         graph_counter: list[int] | None = None,
         graph_cross: bool = False,
+        extra_tools: list[str] | None = None,
     ) -> list[list[RetrievedChunk]]:
         """Run every first-stage search concurrently, one ranked list per query.
 
@@ -254,11 +277,23 @@ class HybridRetriever:
         if graph_documents and query_pairs:
             q_text, q_vec = query_pairs[0]
             tasks.append((0, "graph", q_text, q_vec))
+        # A connected answer's NAMED tools: the same vector (+ keyword) search
+        # the routed tool runs, pinned to that tool, primary query only. Run in
+        # the same pool as everything else, so they add no wall-clock time.
+        for tool in extra_tools or []:
+            if not query_pairs:
+                break
+            q_text, q_vec = query_pairs[0]
+            tasks.append((0, f"vector:{tool}", q_text, q_vec))
+            if self._settings.hybrid_enabled:
+                tasks.append((0, f"keyword:{tool}", q_text, q_vec))
 
         results: dict[tuple[int, str], list[RetrievedChunk]] = {}
 
         def run(task) -> tuple[tuple[int, str], list[RetrievedChunk]]:
             i, kind, q_text, q_vec = task
+            kind, _, tool = kind.partition(":")
+            provider = tool or self._source_provider
             if kind == "graph":
                 # A connected answer's graph documents were already limited to
                 # the tools that answer may use (GraphPlan.documents_for), so
@@ -282,7 +317,7 @@ class HybridRetriever:
                     q_vec,
                     top_k=pool,
                     workspace_id=workspace_id,
-                    source_provider=self._source_provider,
+                    source_provider=provider,
                     date_range=date_range,
                     tags=tags,
                     viewer=viewer,
@@ -295,14 +330,14 @@ class HybridRetriever:
                         q_vec,
                         top_k=pool,
                         workspace_id=workspace_id,
-                        source_provider=self._source_provider,
+                        source_provider=provider,
                         date_range=date_range,
                         tags=tags,
                         viewer=viewer,
                     )
                 except NotImplementedError:
                     hits = []
-            return (i, kind), list(hits)
+            return (i, task[1]), list(hits)
 
         if len(tasks) == 1:
             key, hits = run(tasks[0])
@@ -323,6 +358,11 @@ class HybridRetriever:
                 legs.append(results.get((i, "keyword"), []))
             if (i, "graph") in results:
                 legs.append(results[(i, "graph")])
+            if i == 0:
+                for tool in extra_tools or []:
+                    legs.append(results.get((0, f"vector:{tool}"), []))
+                    if self._settings.hybrid_enabled:
+                        legs.append(results.get((0, f"keyword:{tool}"), []))
             ranked.append(legs[0] if len(legs) == 1 else self._rrf_fuse(legs, self._settings.rrf_k))
         return ranked
 

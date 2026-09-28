@@ -68,6 +68,10 @@ class GraphPlan:
     #: Tools this answer may draw graph documents and facts from. ``None`` =
     #: the routed tool only (normal); a set = a connected answer.
     cross: frozenset[str] | None = None
+    #: Tools whose OWN searches join this answer, because the question named
+    #: them ("...in Slack?"). Unlike ``cross`` this needs no graph evidence:
+    #: the asker told us where to look. Viewer-filtered like every search.
+    search: frozenset[str] = frozenset()
 
     @property
     def document_providers(self) -> dict[str, str]:
@@ -124,8 +128,12 @@ class GraphPlan:
             size += len(line)
         return out
 
-    def connected(self, providers: set[str]) -> "GraphPlan":
-        return replace(self, cross=frozenset(providers))
+    def connected(self, providers: set[str], *, search: set[str] = frozenset()) -> "GraphPlan":
+        return replace(self, cross=frozenset(providers), search=frozenset(search))
+
+    def search_tools(self, routed: str | None) -> list[str]:
+        """Named tools to search besides the routed one, in a stable order."""
+        return sorted(t for t in self.search if t != routed and t in _INDEXED)
 
     def other_providers(self, routed: str | None, usable: set[str]) -> set[str]:
         """Tools, besides the routed one, the graph found evidence in."""
@@ -151,15 +159,17 @@ _INDEXED = {"notion", "google", "slack", "linear"}
 def connected_tools(plan: GraphPlan | None, routed: str | None, named: str | None) -> set[str] | None:
     """The tools a PREDICTIVE connected answer should read, or ``None``.
 
-    Fires only when the question names a tool other than the one routing
-    picked AND the graph found a document the asker can open there -- "has
-    the author of the Leave Policy discussed it in Slack?" routed to Notion.
-    Naming a tool with no graph evidence stays a normal answer: widening on a
-    word alone would be the blended corpus the per-tool agents exist to avoid.
+    Fires when the question names an indexed tool other than the one routing
+    picked -- "has the author of the Leave Policy discussed it in Slack?"
+    routed to Notion. That named tool's own searches then run alongside the
+    routed one's (``GraphPlan.search``), with no graph evidence required: the
+    graph proving a connection is one way to know another tool matters, the
+    asker naming it is a stronger one. It is the NAMED tool only, never "all
+    of them", so this is two agents' corpora, never the blended one.
     """
     if plan is None or routed not in _INDEXED or not named or named == routed:
         return None
-    if named not in plan.providers or named not in _INDEXED:
+    if named not in _INDEXED:
         return None
     return {routed, named}
 

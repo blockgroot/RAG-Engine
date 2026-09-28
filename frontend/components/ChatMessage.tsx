@@ -51,6 +51,7 @@ export function ChatMessageView({
         <ProvenanceStripe
           source={message.done.source}
           agent={message.done.agent}
+          connected={message.done.connected_providers ?? undefined}
           attachments={message.done.attachments}
           citations={message.done.citations?.length}
         />

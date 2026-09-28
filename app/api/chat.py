@@ -960,7 +960,7 @@ def _stream_answer(
             plan, decision.agent_key, named_provider(question, plan.providers)
         )
         if connected:
-            plan = plan.connected(connected)
+            plan = plan.connected(connected, search=connected - {decision.agent_key})
     logger.info(
         "Chat routing: agent=%s reason=%s scores=%s",
         decision.agent_key,

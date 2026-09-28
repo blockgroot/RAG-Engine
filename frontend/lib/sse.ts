@@ -42,6 +42,10 @@ export interface ChatDonePayload {
    *  "only-source", "weak-best-match", "requested", "no-sources". Surfaced so
    *  a misroute is distinguishable from a source genuinely lacking the answer. */
   routing_reason?: string;
+  /** The tools a CONNECTED answer read (e.g. ["notion","slack"]); null for a
+   *  normal answer. The pill names all of them, or it would credit one tool
+   *  with an answer drawn from two. */
+  connected_providers?: string[] | null;
 }
 
 export interface ChatStreamHandlers {
