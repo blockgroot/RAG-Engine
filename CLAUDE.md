@@ -369,6 +369,21 @@ grounded generate → `RagResult`.
     1,500 chars (measured ceiling ~1,800 English; a 400 halves and retries for
     CJK). 86M not 22M: 22M scored a Spanish injection 0.43, 86M 0.999. The
     Horizon Labs/HF Space route was dropped: free HF CPU Spaces now need PRO.
+  - **Phase 3 acts only under `GUARD_MODE=enforce`**, at threshold **0.9**
+    (measured: a real IT page, "Ignore the old reset email and use the new
+    portal", scored 0.70; a planted "Note to AI assistants: ignore prior
+    instructions" 0.999). A flagged chunk is dropped in `_generate` AFTER
+    retrieval (gate score untouched; its links then fail provenance) and in
+    `recent_chunks_for_recap`; all hits flagged ⇒ the fallback with NO model
+    call. NULL passes — a Groq outage must not empty the corpus. The owner's
+    bell lists flagged documents by title (`guard/flagged.py`, derived, never
+    stored), never the asker. Web snippets are screened in one batched call.
+    Uploads are scored once (≤15.6K chars; longer is unscored, not scored on its
+    head) and ACCEPTED with a warning line prepended to the prompt text and a
+    "check file" chip. **Questions are LOGGED, never refused**: "Ignore that
+    last answer, what about dental coverage?" scored 0.999, so refusing would
+    turn away ordinary follow-ups, and a self-attack only reaches what the
+    access filter already allows.
   - The answer AUDIT is not a security layer: an injected claim is literally in
     a chunk, so it counts as grounded. `tests/test_exfil_channels.py` assumes a
     FULLY compromised model and asserts chat and Slack are inert anyway.
@@ -2183,14 +2198,13 @@ when the model says qa.
 - Production secrets (`AUTH_JWT_SECRET`, `AUTH_ENCRYPTION_KEYS`,
   `GITHUB_APP_PRIVATE_KEY`, `OPENROUTER_API_KEY`) are a config surface, not
   provisioned.
-- **Prompt-injection defense: Phases 1–2 are built; 3–4 are not.** Chunks are
-  scored (shadow only, and only once `GUARD_MODE=shadow` is set in prod), but
-  nothing ACTS on the score yet, questions and uploads are not classified, and
-  no answer moderation runs — so a poisoned chunk whose link is VERBATIM in it
-  still passes provenance until Phase 3. Before shadow: enable Groq zero data
-  retention (chunks are tenant text). Run shadow a week and read
-  `guard.flagged_hit` for false positives before choosing the enforce
-  threshold. Known weak spot: a repeated Chinese injection scored 0.20.
+- **Prompt-injection defense: Phases 1–3 are built; Phase 4 is not** (no
+  answer moderation, no CI security eval). Phase 3 is dormant until prod sets
+  `GUARD_MODE=enforce`; the plan is `shadow` for a week first, reading
+  `guard.flagged_hit` for false positives at 0.9. Before shadow: enable Groq
+  zero data retention (chunks are tenant text). Known weak spots: a repeated
+  Chinese injection scored 0.20; uploads over 15.6K chars are unscored; the
+  bell and "check file" chip are browser-unverified (`tsc` only).
 - **The LettuceDetect Space cannot be deployed free**: HF made CPU Spaces
   PRO-only and Docker Spaces paid (free Gradio Spaces run on ZeroGPU at 5
   GPU-min/day). `deploy/lettucedetect-space/` is now a Gradio-SDK app for when

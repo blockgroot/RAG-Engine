@@ -824,6 +824,12 @@ CREATE TABLE IF NOT EXISTS conversation_attachments (
 CREATE INDEX IF NOT EXISTS idx_conversation_attachments_owner
     ON conversation_attachments (conversation_id, org_id, user_id, created_at);
 
+-- Injection score of the extracted text, set once at upload (app/guard/live.py).
+-- NULL = unscored (guard off, file too long, Groq down). A flagged file is
+-- still ACCEPTED -- vendor PDFs are legitimate -- but its prompt text leads
+-- with a warning and the chip says so.
+ALTER TABLE conversation_attachments ADD COLUMN IF NOT EXISTS injection_score REAL;
+
 -- ---------------------------------------------------------------------------
 -- Feedback & documentation-gap tracking (Feature 2 of the Onyx parity
 -- analysis).

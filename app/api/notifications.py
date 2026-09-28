@@ -25,6 +25,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 
 from ..auth.credentials import list_connections, sanitize_reauth_reason
+from ..config.settings import GuardSettings
+from ..guard.flagged import MAX_LISTED, flagged_documents
 from ..auth.session import SessionClaims
 from ..jobs.autosync import SCOPE_KEYS
 from ..workspaces.store import list_my_workspaces
@@ -98,6 +100,38 @@ def _items_in(org_id: str, workspace_id: str | None, scope: str, href: str) -> l
                     "href": href,
                 }
             )
+    return items + _flagged_items(org_id, workspace_id, scope, href)
+
+
+def _flagged_items(org_id: str, workspace_id: str | None, scope: str, href: str) -> list[dict]:
+    """Documents enforce mode is leaving out of answers. Never fails the bell."""
+    guard = GuardSettings.from_env()
+    if guard.mode != "enforce":
+        return []
+    try:
+        docs = flagged_documents(org_id, workspace_id, guard.threshold)
+    except Exception:  # noqa: BLE001 - a missing item, never a broken bell
+        return []
+    items = [
+        {
+            "kind": "injection",
+            "severity": "medium",
+            "provider": provider or "",
+            "scope": scope,
+            # The title may be shown: the person who can fix a document can
+            # already open it in the source.
+            "title": f"\u201c{title}\u201d contains text that looks like instructions to an AI",
+            "detail": (
+                f"Handbook leaves it out of answers until it changes. Open it in "
+                f"{_label(provider or '')} and remove the instruction-like or hidden text."
+            ),
+            "action": "Review sources",
+            "href": href,
+        }
+        for title, provider in docs[:MAX_LISTED]
+    ]
+    if len(docs) > MAX_LISTED:
+        items[-1]["detail"] += " More documents are affected."
     return items
 
 

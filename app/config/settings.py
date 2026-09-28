@@ -1016,13 +1016,16 @@ class GuardSettings:
     - ``mode``  ``off`` (default: no calls at all), ``shadow`` (score, store,
       log — never change an answer), ``enforce`` (Phase 3).
     - ``threshold``  a chunk scoring at or above this is "flagged". The RAW
-      score is stored, so changing this needs no rescan.
+      score is stored, so changing this needs no rescan. 0.9, not 0.5:
+      measured, a real IT page ("Ignore the old reset email and use the new
+      portal") scored 0.70 while a planted "Note to AI assistants: ignore prior
+      instructions" scored 0.999.
     - ``backfill_batch``  chunks scored per tick for rows ingest left NULL.
     """
 
     mode: str = "off"
     model: str = DEFAULT_GUARD_MODEL
-    threshold: float = 0.5
+    threshold: float = 0.9
     timeout: float = 5.0
     backfill_batch: int = 40
 
@@ -1040,7 +1043,7 @@ class GuardSettings:
         return cls(
             mode=mode,
             model=os.getenv("GUARD_MODEL") or DEFAULT_GUARD_MODEL,
-            threshold=float(os.getenv("GUARD_THRESHOLD") or 0.5),
+            threshold=float(os.getenv("GUARD_THRESHOLD") or 0.9),
             timeout=float(os.getenv("GUARD_TIMEOUT") or 5.0),
             backfill_batch=int(os.getenv("GUARD_BACKFILL_BATCH") or 40),
         )

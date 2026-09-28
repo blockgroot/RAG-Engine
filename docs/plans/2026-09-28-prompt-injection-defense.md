@@ -358,15 +358,15 @@ Groq serves the model, so there is nothing of ours to host.
 
 ## Phase 3: enforce, plus live-text scoring
 
-### Task 3.1: Enforce at retrieval [probabilistic]
+### Task 3.1: Enforce at retrieval [probabilistic] ✅
 With `GUARD_MODE=enforce`, a chunk at or above threshold:
 - is **excluded from the prompt**, filtered in Python after retrieval so the
   gate score is untouched (CLAUDE.md: never feed another score into the 0.35
   gate);
 - **fails the link provenance rule**, so its URLs can never appear in an answer
   (this completes Task 1.4);
-- makes the answer **non-cacheable** (`_is_cacheable`), if a flagged chunk was
-  near the top;
+- ~~makes the answer non-cacheable~~: skipped, the dropped chunk never reaches
+  the answer, so there is nothing flagged in what is cached;
 - appears in the **needs-attention bell** for whoever can fix the document:
   the org admin for an org-wide document, the space owner for a space document.
   The title may be shown because the owner can open the document anyway. The
@@ -375,7 +375,13 @@ With `GUARD_MODE=enforce`, a chunk at or above threshold:
 NULL (unscored) is allowed through by default, because a sleeping Space must not
 empty the corpus. `GUARD_REQUIRE_SCORED=true` flips that for the strict posture.
 
-### Task 3.2: Score the user's question in parallel [probabilistic]
+### Task 3.2: Score the user's question in parallel [probabilistic] ✅ (log only)
+**Revised after measuring:** "Ignore that last answer, what about dental
+coverage?" and "Forget the previous question. Who approves travel expenses?"
+both scored 0.999, so the question is scored fire-and-forget and LOGGED
+(`guard.flagged_question`), never refused. A self-attack only reaches what the
+access filter already allows. The original bullets below are superseded.
+
 - Prompt Guard 2 on Groq (22M: ~19 ms model time plus network) is submitted to
   `_ROUTING_POOL` next to the existing cosine probe and classifier.
   `routing.py:723-730` already runs those two in parallel.
@@ -386,7 +392,10 @@ empty the corpus. `GUARD_REQUIRE_SCORED=true` flips that for the strict posture.
 - Groq free tier: 30 requests/min and 14.4K/day. One call per question is well
   inside that.
 
-### Task 3.3: Score attachments at upload, web snippets inline [probabilistic]
+### Task 3.3: Score attachments at upload, web snippets inline [probabilistic] ✅
+Uploads over ~15.6K chars are left unscored (one file would exceed Groq's 15K
+tokens/min); the "stronger reminder" is a warning line prepended to the file's
+prompt text, so every attachment path carries it.
 - **Attachments:** score the extracted text once at upload, in
   `api/attachments.py`, beside the existing token gate. Store the result on
   `conversation_attachments`. A flagged file is accepted but carries a warning

@@ -11,6 +11,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field, replace
+from urllib.parse import urlparse
 
 import numpy as np
 
@@ -68,6 +69,7 @@ from .attachment_tools import (
     run_reads,
 )
 from .access_notice import restricted_notice
+from ..guard import build_injection_guard
 from ..security.links import enforce_link_provenance, strip_links
 from ..security.outbound import user_worded_query
 from ..security.untrusted import leaks_canary, scrub_untrusted_text
@@ -297,21 +299,30 @@ class _RecoveryAttempt:
     queries: list[str]
 
 
-def _log_flagged_hits(hits, org_id: str | None, guard: GuardSettings) -> None:
-    """Shadow mode (injection plan Task 2.6): log a flagged chunk, change nothing.
+def _screen_hits(hits, org_id: str | None, guard: GuardSettings) -> list:
+    """Log every flagged chunk; in ``enforce`` mode also drop it.
 
-    Run for a week on the real corpus before Phase 3 acts on the score: the
-    false-positive rate on real company documents decides the threshold, not
-    a benchmark. Logs ids and the score only -- never the chunk text.
+    Shadow (Task 2.6) logs and returns ``hits`` unchanged: run it a week on the
+    real corpus first, because the false-positive rate on real company
+    documents decides the threshold, not a benchmark. Enforce (Task 3.1) drops
+    the chunk AFTER retrieval, so the 0.35 gate score is untouched, and a
+    dropped chunk's links then fail the provenance rule because they are no
+    longer in the prompt. NULL (unscored) passes: a Groq outage must not empty
+    the corpus. Logs ids and the score only -- never the chunk text.
     """
     if not guard.enabled:
-        return
+        return hits
+    kept = []
     for h in hits:
         if h.injection_score is not None and h.injection_score >= guard.threshold:
             logger.warning(
                 "guard.flagged_hit mode=%s org=%s doc=%s chunk=%s score=%.3f",
                 guard.mode, org_id, h.document_id, h.chunk_index, h.injection_score,
             )
+            if guard.mode == "enforce":
+                continue
+        kept.append(h)
+    return kept
 
 
 class RagPipeline:
@@ -371,6 +382,7 @@ class RagPipeline:
         self._audit_settings = audit_settings or AuditSettings.from_env()
         self._link_allowlist = SecuritySettings.from_env().link_allowlist
         self._guard_settings = GuardSettings.from_env()
+        self._injection_guard = build_injection_guard(self._guard_settings)
 
     def _provider_for_stage(self, stage: str) -> LLMProvider:
         return self._llm_aux if stage in AUX_LLM_STAGES else self._llm
@@ -431,13 +443,15 @@ class RagPipeline:
         provider string could drift from the corpus its answers claim to come
         from. ``workspace_id`` is still the caller's, exactly as on ``answer``.
         """
-        return self._store.recent_chunks(
+        chunks = self._store.recent_chunks(
             org_id,
             self._source_provider,
             viewer=viewer,
             workspace_id=workspace_id,
             limit=limit,
         )
+        # The recap builds its own prompt, so it screens here, not in _generate.
+        return _screen_hits(chunks, org_id, self._guard_settings)
 
     def generate_raw(self, prompt: str) -> str:
         """One un-gated LLM call on this pipeline's provider.
@@ -1422,7 +1436,19 @@ class RagPipeline:
             # line per chunk) could only ever disagree with it. One budget,
             # enforced in one place.
             whole_read = len(hits) > self._settings.top_k
-            _log_flagged_hits(hits, org_id, self._guard_settings)
+            screened = _screen_hits(hits, org_id, self._guard_settings)
+            if hits and not screened and not extra_contexts:
+                # Everything retrieved was flagged: refuse without a model call
+                # rather than ask it to answer from nothing.
+                return RagResult(
+                    answer=self._settings.fallback_response,
+                    answered=False,
+                    source=SOURCE_NONE,
+                    sources=[],
+                    top_score=top_score,
+                    retrieval_reused=retrieval_reused,
+                )
+            hits = screened
             contexts = assemble_context_texts(
                 # Title AND provenance: the provider, who last edited it and
                 # when. All of it was already on the JOINed document row and
@@ -1847,6 +1873,32 @@ class RagPipeline:
         # gate_score == best cosine among reused chunks, mirroring fresh retrieval.
         return RetrievalResult(hits=hits, gate_score=best)
 
+    def _screen_web_results(self, results: list) -> list:
+        """Drop (enforce) or log (shadow) snippets that read like an injection.
+
+        One batched call, only on the rare gate-miss web path that already
+        spends two model calls (Task 3.3). A guard failure keeps every result:
+        link provenance and the web fence still apply to them.
+        """
+        guard = self._injection_guard
+        if guard is None or not results:
+            return results
+        try:
+            scores = guard.score([f"{r.title}\n{r.snippet}" for r in results])
+        except Exception:  # noqa: BLE001 - fail open
+            return results
+        kept = []
+        for r, score in zip(results, scores):
+            if score is not None and score >= self._guard_settings.threshold:
+                logger.warning(
+                    "guard.flagged_web mode=%s score=%.3f host=%s",
+                    self._guard_settings.mode, score, urlparse(r.url).hostname,
+                )
+                if self._guard_settings.mode == "enforce":
+                    continue
+            kept.append(r)
+        return kept
+
     def _remember_retrieval(
         self, conversation_id: str, org_id: str, result: RagResult
     ) -> None:
@@ -1936,6 +1988,7 @@ class RagPipeline:
             )
         except WebSearchError:
             return None  # graceful degradation on failure/timeout
+        results = self._screen_web_results(results or [])
         if not results:
             return None
 
