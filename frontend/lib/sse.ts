@@ -46,6 +46,11 @@ export interface ChatDonePayload {
    *  normal answer. The pill names all of them, or it would credit one tool
    *  with an answer drawn from two. */
   connected_providers?: string[] | null;
+  /** True when the question was asked in deep research mode. */
+  deep_research?: boolean;
+  /** Connectors read LIVE for this answer (deep research only). Empty when the
+   *  indexed copy answered, so "live" is never claimed for a synced copy. */
+  live_sources?: { provider: string; fetched_at: string }[];
 }
 
 export interface ChatStreamHandlers {
@@ -60,7 +65,8 @@ export async function streamChat(
   handlers: ChatStreamHandlers,
   workspaceId?: string | null,
   agent?: "policy" | "github" | "slack" | "linear" | "notion" | "google",
-  model?: string | null
+  model?: string | null,
+  deepResearch?: boolean
 ): Promise<void> {
   let response: Response;
   try {
@@ -76,6 +82,8 @@ export async function streamChat(
         // Omitted entirely on "auto" so the request is byte-identical to one
         // sent before this feature existed.
         ...(model && model !== "auto" ? { model } : {}),
+        // Only deep research may read a connector live; omitted otherwise.
+        ...(deepResearch ? { deep_research: true } : {}),
       }),
     });
   } catch {

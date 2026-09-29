@@ -1838,3 +1838,40 @@ class GraphSettings:
             retrieval_enabled=env_bool("GRAPH_RETRIEVAL_ENABLED", False),
             connected_enabled=env_bool("GRAPH_CONNECTED_ENABLED", True),
         )
+
+
+@dataclass(frozen=True)
+class LiveToolsSettings:
+    """The live-tools gateway (docs/plans/2026-09-29-live-connector-access.md).
+
+    Three settings and no more (plan D15): everything else is a constant in
+    ``app/livetools/base.py`` until ``live_tool_calls`` shows it needs tuning.
+    Even when enabled, a live read happens only for a question asked in DEEP
+    RESEARCH mode (D0) -- normal Q&A never reaches the gateway.
+
+    ``orgs`` empty means every org; otherwise only the listed org ids, for a
+    staged rollout.
+    """
+
+    enabled: bool = False
+    providers: frozenset[str] = frozenset({"linear"})
+    orgs: frozenset[str] = frozenset()
+
+    @classmethod
+    def from_env(cls) -> "LiveToolsSettings":
+        raw_providers = os.getenv("LIVE_TOOLS_PROVIDERS")
+        providers = (
+            frozenset(p.strip().lower() for p in raw_providers.split(",") if p.strip())
+            if raw_providers not in (None, "")
+            else frozenset({"linear"})
+        )
+        raw_orgs = os.getenv("LIVE_TOOLS_ORGS") or ""
+        return cls(
+            enabled=env_bool("LIVE_TOOLS_ENABLED", False),
+            providers=providers,
+            orgs=frozenset(o.strip() for o in raw_orgs.split(",") if o.strip()),
+        )
+
+    def allows(self, org_id: str | None) -> bool:
+        """Switched on, and this org is in the rollout."""
+        return self.enabled and bool(org_id) and (not self.orgs or org_id in self.orgs)

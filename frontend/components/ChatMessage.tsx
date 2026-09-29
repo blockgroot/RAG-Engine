@@ -54,6 +54,7 @@ export function ChatMessageView({
           connected={message.done.connected_providers ?? undefined}
           attachments={message.done.attachments}
           citations={message.done.citations?.length}
+          live={message.done.live_sources}
         />
       )}
       {thinking ? (

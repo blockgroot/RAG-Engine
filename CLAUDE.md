@@ -369,6 +369,13 @@ already applied skip / owner-only / freeze to that exact row.
   `python -m evaluation.graph_eval` says "enable"** (gain somewhere, loss nowhere)
   with the REAL embedder.
 
+**Live connector reads = DEEP RESEARCH ONLY (`app/livetools/`, plan `docs/plans/2026-09-29-live-connector-access.md`)**
+— normal Q&A never reaches the gateway; the composer's **Deep research** toggle sends `deep_research: true` and the chat edge sets a `LiveRequest` ContextVar (the `GraphPlan` pattern). Off unless `LIVE_TOOLS_ENABLED` (+ `LIVE_TOOLS_PROVIDERS`=linear, `LIVE_TOOLS_ORGS`); Slack never sets one.
+- **The index finds, the live call refreshes**: mode A re-reads only documents in this request's hits, resolved to `(provider, external_id)` from `documents` pinned to org AND space — no search, no model-named target, zero extra model calls. Runs AFTER the gate passes, so a live read never rescues a gate miss. `gateway.py` is the only code that decrypts a token for it; ≤`MAX_REFRESHES`=2, 6s, 6000 chars (truncation stated).
+- **Failures decided by the PROVIDER'S reason**: Linear answers a deleted issue with HTTP 200 + `Entity not found` (and a rate limit with 400 `RATELIMITED`). Only not-found/permission WITHHOLDS the stale copy; rate limit, timeout, reauth (marks `needs_reauth`), 5xx and unknown codes fall back to the index.
+- **The gate re-check uses `RetrievalResult.gate_document_id`**, because `gate_score` is a max over ~30 candidates before rerank and the final hits cannot reproduce it. Withheld non-gate document ⇒ gate untouched; withheld gate document ⇒ all its chunks dropped, gate = best remaining cosine (can only lower it). Every leg's `.score` is a real cosine (keyword leg selects `1 - (embedding <=> q)`, pinned by a DB test).
+- Live blocks lead `extra_contexts`, so fence/scrub, the audit and the link rule all see them; enforce-mode guard drops a flagged block (not a withhold). A live answer is never cached; a `live_withheld` refusal says "no longer available" naming the CONNECTOR, never the item, and is deliberately NOT a gap row (deletion vs revocation is indistinguishable). `live_tool_calls` audits each read — never the token or text — 90-day sweep on the tick.
+
 **Retrieved context carries its provenance** (`rag/context_assemble.py::describe_hit`)
 — every chunk reaches the prompt behind one line naming the document, the app,
 who last edited it and when. All of it was already on the `documents` row each
@@ -1852,6 +1859,7 @@ app/api/notifications.py  what needs attention, derived from connection rows
 app/insights/  registry + panels + store (SQL) + facts + github_facts +
               linear_facts + sentiment + scopes + resolve (ask box) + pins
 app/graph/     Second Brain: identities, builder, linking, walk (+ evaluation/graph_eval.py)
+app/livetools/ deep-research live reads: gateway (only token use), linear, audit, context
 app/workspaces/ sub-workspace CRUD + membership (assert_member)
 app/schedulers/ store, activity (live "since T"), prompts, runner, worker
 app/api/      FastAPI — deps (session/org_id), auth, admin, chat, workspaces,
@@ -2215,6 +2223,7 @@ partial unique indexes: org-wide vs workspace; `sync_requested_at` webhook flag
 indexes on `external_id`, org-wide vs workspace) · `insight_pins` (personal,
 `(org_id, user_id)`; stores the spec, never the numbers) · `person_identities`
 (one row per person per connector; `user_id` only on proof, `ON DELETE SET NULL`) ·
+`live_tool_calls` (deep-research live-read audit; no token, no text, 90 days) ·
 `kg_entities` / `kg_edges` / `kg_evidence` (the graph: IDs and relationships only,
 partial unique indexes org-wide vs space; an edge is visible only through its
 evidence) · `scheduler_reports` (same `(org_id, user_id)` scoping; snapshots its labels
@@ -2258,6 +2267,7 @@ identity linking + "Linked accounts", the graph builder, the access-safe walk,
 and the graph as a retrieval list — **built, OFF for answers**.
 
 **Pending / known gaps**
+- Live tools: **Phase 1 (Linear, mode A, deep research only) is built and OFF**; the Linear GraphQL error shapes (`Entity not found`, `RATELIMITED`, `FORBIDDEN`) are from docs and tested against fakes only — walk it live on staging before trusting (plan §10). The Deep research toggle is `tsc`-checked only. Not built: mode B + handles (Phase 2), Drive/Notion readers, Slack (gated on the rate-limit tier).
 - Second Brain: **`GRAPH_RETRIEVAL_ENABLED` stays off until
   `python -m evaluation.graph_eval` runs with the real embedder and says
   "enable"** (the stand-in embedder in `tests/test_graph_eval.py` only proves the

@@ -426,6 +426,14 @@ def run_external_tick() -> dict[str, int]:
     except Exception:  # noqa: BLE001
         logger.exception("External tick: conversation purge failed")
 
+    # Live-tools audit rows past their 90 days (deep research reads).
+    try:
+        from ..livetools.audit import purge_expired as purge_live_calls
+
+        purge_live_calls()
+    except Exception:  # noqa: BLE001 - a longer log, never a failed tick
+        logger.exception("External tick: live_tool_calls purge failed")
+
     # Injection scores for chunks ingest could not score (Groq rate limit) or
     # that predate the guard. A no-op when GUARD_MODE=off.
     injection_scored = 0

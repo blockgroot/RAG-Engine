@@ -51,6 +51,13 @@ class RetrievalResult:
     # Chunks the knowledge graph contributed to the first stage (0 when the
     # graph list is off or found nothing) -- logged so step 1.7 can measure it.
     graph_hits: int = 0
+    # The document of the candidate that produced ``gate_score``. The final
+    # ``hits`` cannot reproduce the gate (it is a max over every first-stage
+    # candidate, taken BEFORE reranking cuts to top_k), so a caller that must
+    # re-check the gate after withholding a document -- a live read saying
+    # the object is gone -- asks "was the gate earned by THIS document?"
+    # instead of recomputing over hits that never held the max.
+    gate_document_id: str | None = None
 
 
 class HybridRetriever:
@@ -157,6 +164,7 @@ class HybridRetriever:
             return RetrievalResult(hits=[], gate_score=None, graph_hits=graph_hits)
 
         gate_score = max((c.score for c in candidates), default=None)
+        gate_document_id = gate_document(candidates)
 
         pool_candidates = candidates[:pool]
         # A connected answer ranks the WHOLE pool so another tool's best chunk
@@ -169,7 +177,10 @@ class HybridRetriever:
         if graph_cross:
             final = _reserve_other_tools(final, top_k, self._source_provider)
 
-        return RetrievalResult(hits=final, gate_score=gate_score, graph_hits=graph_hits)
+        return RetrievalResult(
+            hits=final, gate_score=gate_score, graph_hits=graph_hits,
+            gate_document_id=gate_document_id,
+        )
 
     def _graph_documents(
         self, org_id: str, workspace_id: str | None, query_text: str, viewer: Viewer | None
@@ -390,6 +401,22 @@ class HybridRetriever:
 
         ordered = sorted(rrf_scores, key=lambda key: rrf_scores[key], reverse=True)
         return [chunk_by_key[key] for key in ordered]
+
+
+def gate_document(chunks) -> str | None:
+    """The document holding the best cosine among ``chunks`` (the gate's).
+
+    Every candidate's ``score`` is a real cosine -- the vector leg and the
+    keyword leg both select ``1 - (embedding <=> q)``, and ``_rrf_fuse`` keeps
+    each chunk's own score -- but a hit with no score is skipped rather than
+    trusted, so a future score-less leg cannot quietly decide the gate.
+    """
+    best = max(
+        (c for c in chunks if getattr(c, "score", None) is not None),
+        key=lambda c: c.score,
+        default=None,
+    )
+    return best.document_id if best is not None else None
 
 
 #: Slots a connected answer reserves for tools other than the routed one.

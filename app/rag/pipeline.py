@@ -68,14 +68,16 @@ from .attachment_tools import (
     build_preview_block,
     run_reads,
 )
-from .access_notice import restricted_notice
+from .access_notice import live_withheld_notice, restricted_notice
 from ..guard import build_injection_guard
+from ..livetools import LiveRefresh, current_live_request
+from ..livetools import refresh as live_refresh
 from ..guard.moderation import answer_is_unsafe
 from ..security.links import enforce_link_provenance, strip_links
 from ..security.outbound import user_worded_query
 from ..security.untrusted import leaks_canary, scrub_untrusted_text
 from .audit import lettuce_verdict, parse_audit_verdict
-from .retrieval import HybridRetriever, RetrievalResult
+from .retrieval import HybridRetriever, RetrievalResult, gate_document
 from .context_assemble import assemble_context_texts, describe_hit
 from .decompose import looks_compound, parse_sub_questions
 from .scope_intent import OVERVIEW, classify_scope_intent
@@ -170,6 +172,10 @@ def _is_cacheable(result: "RagResult") -> bool:
     # and a connected answer reads other tools the cache key does not name --
     # either would be served verbatim to the next person on the same key.
     if getattr(result, "graph_shaped", False):
+        return False
+    # A live read is one moment, read for one asker (plan D13); a withheld
+    # object is about that moment too.
+    if getattr(result, "live_sources", None) or getattr(result, "live_withheld", False):
         return False
     return not getattr(result, "access_restricted", False)
 
@@ -370,6 +376,37 @@ class RagResult:
     # in the context, or a connected answer reading other tools). Keeps it out
     # of the scope-wide cache; see `_is_cacheable`.
     graph_shaped: bool = False
+    # Deep research only (docs/plans/2026-09-29-live-connector-access.md):
+    # the connectors read LIVE for this answer, ``[{provider, fetched_at}]``.
+    live_sources: list[dict] = field(default_factory=list)
+    # True when this refusal is "the matching item is no longer available":
+    # a live read said the object behind the answer is gone or no longer
+    # readable. Like ``access_restricted`` it rides the result so nothing
+    # matches on text: not cached, and not logged as a documentation gap.
+    live_withheld: bool = False
+
+
+def _without_withheld(
+    hits: list[RetrievedChunk],
+    top_score: float | None,
+    gate_document_id: str | None,
+    withheld: dict[str, str],
+) -> tuple[list[RetrievedChunk], float | None]:
+    """Drop withheld documents' chunks; re-check the gate only if it was theirs.
+
+    ``top_score`` is a max over every first-stage candidate, so the remaining
+    hits cannot reproduce it (plan D8a). A withheld document that did NOT earn
+    the gate leaves it untouched. One that DID gives way to the best cosine of
+    what remains -- a max over at most top_k hits, so it can only come out
+    lower than a full recompute: it can turn an answer into a refusal, never a
+    refusal into an answer. A hit with no score is skipped, never trusted.
+    """
+    if not withheld:
+        return hits, top_score
+    kept = [h for h in hits if h.document_id not in withheld]
+    if gate_document_id is None or gate_document_id in withheld:
+        top_score = max((h.score for h in kept if h.score is not None), default=None)
+    return kept, top_score
 
 
 @dataclass(frozen=True)
@@ -379,6 +416,7 @@ class _RecoveryAttempt:
     hits: list[RetrievedChunk]
     gate_score: float | None
     queries: list[str]
+    gate_document_id: str | None = None
 
 
 def _screen_hits(hits, org_id: str | None, guard: GuardSettings) -> list:
@@ -600,7 +638,11 @@ class RagPipeline:
                     question, context, org_id=org_id, conversation_id=conversation_id
                 )
 
-        if conversation_id is None and not _cross_plan_active():
+        if (
+            conversation_id is None
+            and not _cross_plan_active()
+            and current_live_request() is None
+        ):
             cached = self._query_cache.get(
                 org_id,
                 resolved,
@@ -738,6 +780,7 @@ class RagPipeline:
         )
         if reused is not None:
             hits, top_score = reused.hits, reused.gate_score
+            gate_doc = reused.gate_document_id
             retrieval_reused = True
         else:
             retrieval_reused = False
@@ -750,7 +793,7 @@ class RagPipeline:
                 ]
             else:
                 sub_questions = [retrieval_question]
-            hits, top_score = self._retrieve_for_subquestions(
+            hits, top_score, gate_doc = self._retrieve_for_subquestions(
                 org_id,
                 question,
                 sub_questions,
@@ -791,8 +834,10 @@ class RagPipeline:
                 audit_used=audit_used,
                 audit_downgraded=audit_downgraded,
                 audit_reason=audit_reason,
+                live_sources=live.sources if result.answered and result.source != SOURCE_WEB else [],
             )
 
+        live = LiveRefresh()
         if self._gate_miss(hits, top_score):
             if self._recovery_available(recovery_used) and budget.can_spend(min_stage):
                 attempt = self._recover_once(
@@ -811,6 +856,7 @@ class RagPipeline:
                 recovery_reason = RECOVERY_REASON_GATE_MISS
                 recovery_queries = list(attempt.queries)
                 hits, top_score = attempt.hits, attempt.gate_score
+                gate_doc = attempt.gate_document_id
             elif self._recovery_available(recovery_used):
                 budget_exhausted = True
             if self._gate_miss(hits, top_score):
@@ -844,6 +890,31 @@ class RagPipeline:
                     )
                 )
 
+        # Deep research only (plan D0): re-read what retrieval found, live.
+        # No LiveRequest => `live_refresh` returns nothing and nothing below
+        # changes. Refreshed AFTER the gate passed, so a live read can never
+        # rescue a question the corpus could not ground -- it only freshens
+        # or withholds what the gate already admitted.
+        live = live_refresh(hits, current_live_request(), guard_settings=self._guard_settings)
+        if live.withheld:
+            hits, top_score = _without_withheld(hits, top_score, gate_doc, live.withheld)
+            if self._gate_miss(hits, top_score):
+                return _finalize(
+                    self._gate_failed(
+                        question,
+                        hits=hits,
+                        top_score=top_score,
+                        budget=budget,
+                        conversation_id=conversation_id,
+                        org_id=org_id,
+                        workspace_id=workspace_id,
+                        viewer=viewer,
+                        query_vec=query_vec,
+                        user_question=tone_question,
+                        live_withheld=next(iter(live.withheld.values())),
+                    )
+                )
+
         result = self._generate(
             question,
             hits,
@@ -853,7 +924,10 @@ class RagPipeline:
             conversation_id=conversation_id,
             budget=budget,
             user_question=tone_question,
-            extra_contexts=attachment_contexts,
+            # Live blocks lead: they are the current state of the very items
+            # below them. Inside `contexts`, so the audit and the link rule
+            # both see them (plan D9).
+            extra_contexts=live.blocks + attachment_contexts,
         )
         audit_used, audit_downgraded, audit_reason = (
             result.audit_used,
@@ -881,6 +955,8 @@ class RagPipeline:
             recovery_reason = RECOVERY_REASON_INSUFFICIENT_EVIDENCE
             recovery_queries = list(attempt.queries)
             hits, top_score = attempt.hits, attempt.gate_score
+            gate_doc = attempt.gate_document_id
+            hits, top_score = _without_withheld(hits, top_score, gate_doc, live.withheld)
             if self._gate_miss(hits, top_score):
                 # The corpus has nothing, but the asker handed us a document.
                 # Refusing here would be the old bug in a new place: "what's
@@ -920,7 +996,7 @@ class RagPipeline:
                 conversation_id=conversation_id,
                 budget=budget,
                 user_question=tone_question,
-                extra_contexts=attachment_contexts,
+                extra_contexts=live.blocks + attachment_contexts,
             )
             audit_used, audit_downgraded, audit_reason = (
                 result.audit_used,
@@ -1073,13 +1149,15 @@ class RagPipeline:
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
         viewer: Viewer | None = None,
-    ) -> tuple[list[RetrievedChunk], float | None]:
+    ) -> tuple[list[RetrievedChunk], float | None, str | None]:
+        """``(hits, gate_score, gate_document_id)`` for one query."""
         whole = self._whole_scope(
             org_id, query_text, query_vec,
             workspace_id=workspace_id, tags=tags, viewer=viewer,
         )
         if whole is not None:
-            return whole
+            # A whole read's gate is the max over exactly these hits.
+            return whole[0], whole[1], gate_document(whole[0])
         if self._retriever is not None:
             retrieval = self._retriever.retrieve(
                 org_id,
@@ -1090,7 +1168,7 @@ class RagPipeline:
                 tags=tags,
                 viewer=viewer,
             )
-            return retrieval.hits, retrieval.gate_score
+            return retrieval.hits, retrieval.gate_score, retrieval.gate_document_id
         hits = self._store.query(
             org_id,
             query_vec,
@@ -1102,7 +1180,7 @@ class RagPipeline:
             viewer=viewer,
         )
         top_score = hits[0].score if hits else None
-        return hits, top_score
+        return hits, top_score, gate_document(hits[:1])
 
     def _maybe_decompose(
         self,
@@ -1141,8 +1219,8 @@ class RagPipeline:
         tags: list[str] | None = None,
         viewer: Viewer | None = None,
         known_vectors: dict[str, list[float]] | None = None,
-    ) -> tuple[list[RetrievedChunk], float | None]:
-        """Retrieve for one or more sub-questions."""
+    ) -> tuple[list[RetrievedChunk], float | None, str | None]:
+        """Retrieve for one or more sub-questions: ``(hits, gate, gate_document_id)``."""
         known = known_vectors or {}
 
         if len(sub_questions) == 1:
@@ -1180,7 +1258,7 @@ class RagPipeline:
                 tags=tags,
                 viewer=viewer,
             )
-            return retrieval.hits, retrieval.gate_score
+            return retrieval.hits, retrieval.gate_score, retrieval.gate_document_id
 
         merged: dict[tuple[str, int], RetrievedChunk] = {}
         for q_text, q_vec in zip(sub_questions, vectors):
@@ -1202,7 +1280,7 @@ class RagPipeline:
             : self._settings.top_k
         ]
         top_score = hits[0].score if hits else None
-        return hits, top_score
+        return hits, top_score, gate_document(hits[:1])
 
 
 
@@ -1755,6 +1833,7 @@ class RagPipeline:
                 hits=list(prior_hits),
                 gate_score=prior_hits[0].score if prior_hits else None,
                 queries=[],
+                gate_document_id=gate_document(prior_hits[:1]),
             )
 
         ranked_lists: list[list[RetrievedChunk]] = []
@@ -1768,11 +1847,12 @@ class RagPipeline:
                 hits=list(prior_hits),
                 gate_score=prior_hits[0].score if prior_hits else None,
                 queries=queries,
+                gate_document_id=gate_document(prior_hits[:1]),
             )
 
         for q_text, q_vec in zip(queries, vectors):
             try:
-                hits, _ = self._retrieve_once(
+                hits, _, _ = self._retrieve_once(
                     org_id,
                     q_text,
                     q_vec,
@@ -1795,8 +1875,11 @@ class RagPipeline:
             fused = HybridRetriever._rrf_fuse(ranked_lists, k=60)
 
         gate_score = max((c.score for c in fused), default=None)
+        gate_doc = gate_document(fused)
         fused = fused[: self._settings.top_k]
-        return _RecoveryAttempt(hits=fused, gate_score=gate_score, queries=queries)
+        return _RecoveryAttempt(
+            hits=fused, gate_score=gate_score, queries=queries, gate_document_id=gate_doc
+        )
 
     def _expand_recovery_queries(
         self,
@@ -1858,15 +1941,21 @@ class RagPipeline:
         viewer: Viewer | None = None,
         query_vec: list[float] | None = None,
         user_question: str | None = None,
+        live_withheld: str | None = None,
     ) -> RagResult:
         """Internal evidence insufficient: try web search (if enabled), else fallback.
 
         The single funnel every refusal passes through, which is why the
         withheld-documents check lives here and not at the three call sites.
+        ``live_withheld`` names the connector whose live read said the item
+        behind this answer is gone or no longer readable (deep research).
         """
         min_stage = self._budget_settings.min_stage_seconds
+        # A live-withheld item is internal and the provider just said it is
+        # gone: the web cannot know better, and must not replace that notice.
         if (
-            self._web_search is not None
+            not live_withheld
+            and self._web_search is not None
             and self._web_search_settings.enabled
             and budget.can_spend(min_stage * 2)
         ):
@@ -1885,7 +1974,10 @@ class RagPipeline:
         # true reason for it. One extra query, on refusals only.
         answer = self._settings.fallback_response
         access_restricted = False
-        if org_id and query_vec is not None and viewer is not None:
+        if live_withheld:
+            # The provider just told us; no second query needed to confirm it.
+            answer = live_withheld_notice(live_withheld)
+        elif org_id and query_vec is not None and viewer is not None:
             notice = self._withheld_notice(
                 org_id, query_vec, workspace_id=workspace_id, viewer=viewer
             )
@@ -1901,6 +1993,7 @@ class RagPipeline:
             top_score=top_score,
             budget_exhausted=not budget.can_spend(min_stage),
             access_restricted=access_restricted,
+            live_withheld=bool(live_withheld),
         )
 
     def _withheld_notice(
@@ -1989,7 +2082,7 @@ class RagPipeline:
             for i in order
         ][: self._settings.top_k]
         # gate_score == best cosine among reused chunks, mirroring fresh retrieval.
-        return RetrievalResult(hits=hits, gate_score=best)
+        return RetrievalResult(hits=hits, gate_score=best, gate_document_id=gate_document(hits[:1]))
 
     def _screen_web_results(self, results: list) -> list:
         """Drop (enforce) or log (shadow) snippets that read like an injection.

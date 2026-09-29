@@ -986,6 +986,35 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
   transition: background 0.2s var(--ease), color 0.2s var(--ease),
     border-color 0.2s var(--ease);
 }
+.composer-deep {
+  flex: none;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-muted);
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 500;
+  padding: 0.35rem 0.75rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.2s var(--ease), color 0.2s var(--ease), border-color 0.2s var(--ease);
+}
+.composer-deep:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent-strong);
+}
+.composer-deep[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--accent-strong);
+}
+.composer-deep:disabled { opacity: 0.6; cursor: default; }
+@media (max-width: 560px) {
+  .composer-deep { padding: 0.35rem 0.55rem; font-size: 0.74rem; }
+}
+.provenance-live { font-weight: 600; }
+
 .composer-model:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 13%, transparent);
   color: var(--accent-strong);

@@ -1,11 +1,18 @@
 # Plan: live connector access for the Second Brain (the live-tools gateway)
 
-Status: **proposed, revision 3** · Branch: `feat/live-tools` · Date: 2026-09-29
+Status: **Phase 0 + Phase 1 in progress, revision 4** · Branch: `feat/live-tools` · Date: 2026-09-29
 Owner: Second Brain · Related: `docs/plans/2026-09-23-second-brain.md`, `app/githublive/`
 
 Revisions 2 and 3 fold in two reviews (§14 lists every change and why). The
 short version: **the index finds, the live call refreshes** — for every
 connector — and Phase 1 is **Linear only, with no extra model call**.
+
+**Revision 4: live reads exist ONLY in deep research mode.** Normal search and
+Q&A keep answering from the knowledge graph and the index exactly as today — no
+live call, no handle, no prompt change, nothing to measure against the latency
+budget. A member opts in per question with the **Deep research** toggle in the
+composer (`deep_research: true` on `POST /chat/stream`); only then does the
+gateway refresh what retrieval found. Slack has no deep research mode.
 
 ---
 
@@ -54,13 +61,14 @@ question ──▶ routing + graph plan + retrieval (unchanged, viewer-filtered)
 
 | # | Decision | Why |
 |---|---|---|
+| D0 | **Live reads run only in deep research mode.** `POST /chat/stream` takes `deep_research`; the chat edge sets a request-scoped `LiveRequest` (`app/livetools/context.py`, the `GraphPlan` ContextVar pattern) and the pipeline refreshes only when one is set AND `LIVE_TOOLS_ENABLED` AND the org is allowed. Without it, every code path below is skipped and the answer is byte-identical to today. Slack never sets one. | Normal Q&A must not change, cost or slow down; a member who wants the current state of a ticket asks for it explicitly. It also keeps the blast radius of a new provider path to the people who chose it. |
 | D1 | **The model never holds a token.** Only the gateway calls provider APIs. | A token the model never had cannot leak through output or prompt injection. |
 | D2 | **Read-only, fixed operations; no generic HTTP tool; no search tool.** | A generic tool reaches everything the token can; a provider search bypasses our visibility predicate. Read-only removes the "injected instruction makes the bot act" class. |
 | D3 | **The index finds, the live call refreshes — for every connector.** A live read targets only a document retrieval returned for this asker. | Permissions are inherited from retrieval (which filters by `org_id`, `workspace_id`, scope and `visibility_predicate` before ranking) instead of re-implemented per provider. It also removes Slack's user-token search problem and Drive's nested-folder walk. |
-| D4 | **Opaque handles, resolved server-side.** Every hit in the context carries a handle (`[L2]`, `[S3]`); anything that names a target passes the handle, and the gateway maps it to `(provider, external_id)` from the `documents` row of *this request's* hits. | The model never sees a channel id, thread ts or file id, so it cannot aim a call at something retrieval did not clear. Fixes the `list_reviews`-class bug (CLAUDE.md): a tool needing a value not in the context is unreachable. |
-| D4a | **Handles never reach the user.** The model will sometimes echo them ("per [L2]…"). They are stripped from the final answer at the edge, in the same place the `MODE:` tag is parsed off, BEFORE the answer is streamed, cached, written as a turn, sent to Slack or logged as a gap. | A handle is machinery, meaningless to a reader and a leak of internal structure into the cache and Slack. |
-| D4b | **Handles are minted for reused hits too.** `_try_reuse` answers a follow-up from the previous turn's chunks without retrieval; those chunks get handles exactly like fresh hits, from the same `documents` rows, and resolve only within this request. | Otherwise "any update on it?" after "what's the status of SYV-5?" can refresh nothing — the most natural follow-up to a status question. |
-| D5 | **Phase 1 is mode A only: graph/retrieval-guided refresh, zero extra model calls.** When the graph plan or the top hits contain a refreshable object, the gateway re-reads it in parallel with prompt assembly, and the live block supersedes the stale chunk. | Handles the headline case ("latest on SYV-5") with no latency from a second model round and no cost against the 15 rpm budget. |
+| D4 | **(Lands with mode B, Phase 2.) Opaque handles, resolved server-side.** Mode A needs none: the server picks the targets from this request's hits and resolves `(provider, external_id)` from the `documents` row itself, so no target is ever named by the model. Rendering handles into the prompt before a model can use one would be machinery with no reader. Every hit in the context carries a handle (`[L2]`, `[S3]`); anything that names a target passes the handle, and the gateway maps it to `(provider, external_id)` from the `documents` row of *this request's* hits. | The model never sees a channel id, thread ts or file id, so it cannot aim a call at something retrieval did not clear. Fixes the `list_reviews`-class bug (CLAUDE.md): a tool needing a value not in the context is unreachable. |
+| D4a | **(With D4.) Handles never reach the user.** The model will sometimes echo them ("per [L2]…"). They are stripped from the final answer at the edge, in the same place the `MODE:` tag is parsed off, BEFORE the answer is streamed, cached, written as a turn, sent to Slack or logged as a gap. | A handle is machinery, meaningless to a reader and a leak of internal structure into the cache and Slack. |
+| D4b | **(With D4.) Handles are minted for reused hits too.** Mode A already refreshes reused hits: it reads `document_id` off whatever hits the turn has, fresh or reused. `_try_reuse` answers a follow-up from the previous turn's chunks without retrieval; those chunks get handles exactly like fresh hits, from the same `documents` rows, and resolve only within this request. | Otherwise "any update on it?" after "what's the status of SYV-5?" can refresh nothing — the most natural follow-up to a status question. |
+| D5 | **Phase 1 is mode A only, in deep research: graph/retrieval-guided refresh, zero extra model calls.** When the graph plan or the top hits contain a refreshable object, the gateway re-reads it in parallel with prompt assembly, and the live block supersedes the stale chunk. | Handles the headline case ("latest on SYV-5") with no latency from a second model round and no cost against the 15 rpm budget. |
 | D6 | **Mode B (the model requests a live read) is offered only on a refusal / gate miss — where the web tool already sits — and in deep research.** Never on every question. Arguments are handles only. | Grounded generation does not call tools today (`generate_with_tools` is used only by attachment paging, the web decision, GitHub and schedulers); offering tools on every answer means a serial tool-choosing round on every question. On a refusal that round is already being paid for. Settles rev 1's open question. |
 | D7 | **Scope is honest per connector.** Slack = connected `channel_ids`; Drive = connected `folder_id`; GitHub = authorized repos; **Linear = everything the token can see** (no team scope exists in `source_config`, `autosync.SCOPE_KEYS` has only google/slack); **Notion = pages shared with the integration**. Because of D3 the live read can never exceed what the index already exposes; no guard is claimed that does not exist. A Linear team picker is a separate, optional change. | A claimed guard that does not exist is worse than a stated gap (CLAUDE.md, document-level access). |
 | D8 | **One access model with the index.** Per-person visibility is exactly what `visibility_predicate` already decided at retrieval — including Drive's **owner-only fallback** for unreadable sharing, not a separate "drop" rule. Freshness adds one check: if the live read shows the object is gone or no longer accessible to the connection (404/403), the stale chunk is withheld too ("not found or not accessible"). | Two rules would show the same person a document in a normal answer and not in a live one. |
@@ -100,12 +108,12 @@ app/livetools/
 | `app/config/settings.py` | `LiveToolsSettings.from_env()` — the three settings (D15) |
 | `app/db/schema.sql` | `live_tool_calls` (additive, `IF NOT EXISTS`, after its parents) |
 | `app/rag/access_notice.py` | a second notice, "the matching <connector> item is no longer available (deleted, or access was removed)", chosen in `_gate_failed` when `live_withheld` — connector named, title never |
-| `app/api/chat.py`, `app/api/slack_events.py` | `live_withheld` keeps the refusal out of `feedback_and_gaps`, like `access_restricted` |
-| `app/rag/context_assemble.py` | `describe_hit` renders the handle (`[L2]`) |
+| `app/api/chat.py` | `deep_research` body flag → `LiveRequest` (D0); `live_withheld` keeps the refusal out of `feedback_and_gaps`, like `access_restricted`. `slack_events.py` is unchanged: Slack has no deep research, so it never sets a `LiveRequest` |
+| `app/rag/context_assemble.py` | (Phase 2, with mode B) `describe_hit` renders the handle (`[L2]`) |
 | `app/rag/retrieval.py` | `RetrievalResult.gate_document_id` — the document behind `gate_score`, set where the max is taken (D8a) |
 | `app/rag/pipeline.py` | a withheld GATE document drops all its chunks and `gate_score` is recomputed from the remaining hits before the gate decision (any other withheld document leaves it untouched); below 0.35 ⇒ `_gate_failed` with the "no longer available" notice and `live_withheld=True` (D8a); mode A: refresh before generation, live block prepended to `contexts` (so the audit sees it); guard in enforce mode; `_is_cacheable` false when live used; handles minted on the `_try_reuse` path too; `strip_handles` beside the `MODE:` tag parse; mode B on the refusal path (Phase 2) |
 | `app/api/chat.py` | `done.live_sources` (provider + fetched_at) |
-| `frontend/components/ProvenanceStripe.tsx` | "Linear · live" chip |
+| `frontend/components/ProvenanceStripe.tsx`, `app/chat/page.tsx`, `lib/sse.ts` | "Linear · live" chip; the **Deep research** composer toggle (D0) |
 | `CLAUDE.md` | §3 decisions, §6 table, §7 state |
 
 ---
@@ -221,11 +229,9 @@ CREATE INDEX IF NOT EXISTS idx_live_tool_calls_org_time ON live_tool_calls (org_
 1. `LiveToolsSettings` (three settings, off).
 2. `live_tool_calls` in `schema.sql`, verified on a throwaway DB.
 3. `base.py`, `handles.py`, `gateway.py` skeleton, `audit.py`.
-4. `describe_hit` renders handles, on fresh AND reused (`_try_reuse`) hits;
-   `strip_handles` at the edge beside the `MODE:` parse. Tests pin: handles resolve
-   only within the request; no raw id/ts/file id reaches the prompt; an answer
-   containing `[L2]` reaches the user, the cache, the turn and Slack without it;
-   a reused turn's hits carry resolvable handles.
+4. `LiveRequest` context + the `deep_research` flag on `POST /chat/stream` and a
+   composer toggle; without it nothing below runs (D0). Handles (D4/D4a/D4b) move
+   to Phase 2 with mode B.
 5. `RetrievalResult.gate_document_id` set where `gate_score` is taken; a test pins
    that every candidate `.score` is a cosine (keyword leg included, see D8a).
 6. **Slack tier check**: one real `conversations.history` call against staging,
@@ -370,6 +376,13 @@ charts from live data (numbers still come only from `activity_facts`).
 | Live text must pass guard, audit and link rule, not only scrubbing | D9 + Phase 1 tests for each |
 | Drive "drop unreadable" contradicted the index's owner-only fallback; `in parents` misses nested folders | D8/D11: one access model, refresh-by-handle only, no `drive_search` |
 | 11 settings, a factory, a cache for Phase 1 | D12/D15: three settings, constants, no factory, no cache until the audit shows need |
+
+### Revision 4
+
+| Change | Why |
+|---|---|
+| D0: live reads only in deep research mode (`deep_research` flag, composer toggle) | normal search/Q&A keep the graph + index path unchanged; live is opt-in per question |
+| Handles (D4/D4a/D4b) move to Phase 2 with mode B | mode A resolves targets server-side from the hits; a handle has no reader until the model can name one |
 
 ### Revision 3
 

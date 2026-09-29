@@ -1035,3 +1035,24 @@ CREATE TABLE IF NOT EXISTS kg_evidence (
 CREATE INDEX IF NOT EXISTS idx_kg_evidence_edge ON kg_evidence (edge_id);
 CREATE INDEX IF NOT EXISTS idx_kg_evidence_document ON kg_evidence (document_id);
 CREATE INDEX IF NOT EXISTS idx_kg_evidence_fact ON kg_evidence (fact_id);
+
+-- Live-tools gateway audit (docs/plans/2026-09-29-live-connector-access.md, D14):
+-- one row per live read, so "who looked at what, and what happened" is
+-- answerable. NEVER the token and NEVER the result text -- storing results
+-- would be a second copy of tenant data. Deep research only (D0).
+CREATE TABLE IF NOT EXISTS live_tool_calls (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id          UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    workspace_id    UUID REFERENCES workspaces (id) ON DELETE CASCADE,
+    user_id         UUID REFERENCES users (id) ON DELETE SET NULL,
+    conversation_id UUID,
+    provider        TEXT NOT NULL,
+    external_id     TEXT NOT NULL,
+    mode            TEXT NOT NULL,
+    outcome         TEXT NOT NULL,
+    truncated       BOOLEAN NOT NULL DEFAULT FALSE,
+    latency_ms      INT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_live_tool_calls_org_time
+    ON live_tool_calls (org_id, created_at DESC);

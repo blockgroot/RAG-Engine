@@ -113,6 +113,10 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // that has since left the catalog is discarded on load rather than sent and
   // rejected with a 400.
   const [model, setModel] = useState<string>("auto");
+  // Deep research: the one mode that may read a connected tool LIVE instead of
+  // only its synced copy. Off by default and not remembered across reloads --
+  // a normal question keeps answering from the index, unchanged.
+  const [deepResearch, setDeepResearch] = useState(false);
   const [workspaceGithub, setWorkspaceGithub] = useState(false);
   const [workspaceSlack, setWorkspaceSlack] = useState(false);
   const [workspaceLinear, setWorkspaceLinear] = useState(false);
@@ -571,7 +575,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       workspaceId,
       // No agent pinned: the backend measures which source fits the question.
       undefined,
-      model
+      model,
+      deepResearch
     );
 
   }
@@ -883,6 +888,20 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             disabled={busy}
             autoFocus
           />
+          <button
+            type="button"
+            className="composer-deep"
+            aria-pressed={deepResearch}
+            onClick={() => setDeepResearch((on) => !on)}
+            disabled={busy}
+            title={
+              deepResearch
+                ? "Deep research is on: connected tools are read live for the latest state"
+                : "Deep research: read connected tools live for the latest state"
+            }
+          >
+            Deep research
+          </button>
           {models.length > 0 && (
             <>
               <label className="sr-only" htmlFor="model-select">

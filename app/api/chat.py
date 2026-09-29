@@ -54,6 +54,7 @@ from ..agent.rag_pipeline_agent import RagPipelineAgent
 from ..config.settings import GraphSettings
 from ..core.exceptions import AuthError, LLMProviderError, ProviderError
 from ..graph import plan as graph_plan
+from ..livetools import LiveRequest, reset_live_request, use_live_request
 from ..memory import conversations as conversation_store
 from ..llm import catalog
 from ..llm import org_model
@@ -777,7 +778,7 @@ def _stream_attachment_answer(
         if delay:
             time.sleep(delay)
 
-    if not response.grounded and not response.access_restricted:
+    if not response.grounded and not response.access_restricted and not getattr(response, "live_withheld", False):
         record_gap(
             org_id=org_id,
             question=question,
@@ -814,6 +815,7 @@ def _stream_attachment_answer(
             "model": _answering_model(),
             "chart": None,
             "chart_period": None,
+            "live_sources": list(getattr(response, "live_sources", None) or []),
         },
     )
 
@@ -938,6 +940,43 @@ def _stream_answer(
     requested_agent: str | None = None,
     model: str | None = None,
     session: SessionClaims | None = None,
+    deep_research: bool = False,
+) -> Iterator[str]:
+    # Deep research is the ONLY mode that may read a connector live (live-tools
+    # plan D0). Set here, inside the generator, for the reason `use_model` is.
+    live_token = use_live_request(
+        LiveRequest(
+            org_id=org_id,
+            workspace_id=workspace_id,
+            user_id=session.user_id if session else None,
+            conversation_id=conversation_id,
+        )
+        if deep_research
+        else None
+    )
+    try:
+        yield from _stream_answer_body(
+            question, org_id, conversation_id, workspace_id, requested_agent,
+            model, session, deep_research,
+        )
+    finally:
+        # Starlette may close the generator from another copied context, where
+        # the token is not valid; there the copy dies with the call anyway.
+        try:
+            reset_live_request(live_token)
+        except ValueError:
+            pass
+
+
+def _stream_answer_body(
+    question: str,
+    org_id: str,
+    conversation_id: str | None,
+    workspace_id: str | None,
+    requested_agent: str | None,
+    model: str | None,
+    session: SessionClaims | None,
+    deep_research: bool,
 ) -> Iterator[str]:
     # Set inside the generator, NOT in the route that returns the
     # StreamingResponse: Starlette runs a sync generator via
@@ -1071,7 +1110,11 @@ def _stream_answer(
     # this person simply has not been given access. Logging it would put
     # "how much leave do I have left?" on the admin's list of things nobody
     # has documented, which is the one thing that list must not contain.
-    if not result.grounded and not result.access_restricted:
+    # A live read that withheld the item is not a gap either -- deliberately,
+    # though a real deletion might be one: "not found or not accessible"
+    # cannot tell deletion from revoked access, and a false gap sends an admin
+    # to rewrite a document that exists (live-tools plan D8a).
+    if not result.grounded and not result.access_restricted and not getattr(result, "live_withheld", False):
         record_gap(
             org_id=org_id,
             question=question,
@@ -1119,6 +1162,10 @@ def _stream_answer(
             "model": _answering_model(),
             "chart": getattr(result, "chart", None),
             "chart_period": getattr(result, "chart_period", None),
+            # Deep research: which connectors answered LIVE, and when. Empty
+            # when nothing was refreshed -- the indexed copy answered.
+            "deep_research": deep_research,
+            "live_sources": list(getattr(result, "live_sources", None) or []),
         },
     )
 
@@ -1177,6 +1224,7 @@ def chat_stream(
             requested_agent=requested_agent,
             model=model,
             session=session,
+            deep_research=body.get("deep_research") is True,
         ),
         media_type="text/event-stream",
     )

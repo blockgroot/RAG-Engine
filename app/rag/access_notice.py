@@ -96,3 +96,20 @@ def restricted_notice(
         f"haven't been shared with you, so I can't read them on your behalf. "
         f"Ask {who} to give you access in {source}, then ask me again."
     )
+
+
+def live_withheld_notice(provider: str | None) -> str:
+    """The item behind this answer is gone, or no longer readable (deep research).
+
+    A live read just told us, so -- unlike ``restricted_notice`` -- nothing has
+    to be re-confirmed. "Not found or not accessible", never "deleted": a 404
+    and Linear's ``Entity not found`` mean either, and we cannot tell which.
+    Names the connector, never the item: its title is the stale copy we just
+    decided not to use.
+    """
+    source = _PROVIDER_LABELS.get(provider or "", "connected")
+    return (
+        f"The {source} item that matched this question is no longer available — "
+        f"it was deleted, or access to it was removed — so I can't answer from it. "
+        f"If you still need it, check {source} directly or ask whoever owns it."
+    )
