@@ -11,6 +11,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field, replace
+from urllib.parse import urlparse
 
 import numpy as np
 
@@ -18,12 +19,14 @@ from ..config.settings import (
     AttachmentSettings,
     AuditSettings,
     DecomposeSettings,
+    GuardSettings,
     MemorySettings,
     QueryNormSettings,
     RagSettings,
     RecoverySettings,
     RequestBudgetSettings,
     ReuseSettings,
+    SecuritySettings,
     ToneSettings,
     WebSearchSettings,
 )
@@ -66,7 +69,12 @@ from .attachment_tools import (
     run_reads,
 )
 from .access_notice import restricted_notice
-from .audit import parse_audit_verdict
+from ..guard import build_injection_guard
+from ..guard.moderation import answer_is_unsafe
+from ..security.links import enforce_link_provenance, strip_links
+from ..security.outbound import user_worded_query
+from ..security.untrusted import leaks_canary, scrub_untrusted_text
+from .audit import lettuce_verdict, parse_audit_verdict
 from .retrieval import HybridRetriever, RetrievalResult
 from .context_assemble import assemble_context_texts, describe_hit
 from .decompose import looks_compound, parse_sub_questions
@@ -148,7 +156,14 @@ def _is_cacheable(result: "RagResult") -> bool:
       it would be served verbatim to a member who cannot open that document;
     * a "these documents are not shared with you" notice, which is a statement
       about ONE person's access and is wrong for everybody else.
+
+    Web answers are never written either. Their sources are pages anyone can
+    publish, `sources=[]` made the check above vacuously true, and a cached
+    one is served to the whole scope for the TTL: one poisoned search result
+    would have become everybody's answer.
     """
+    if result.source == SOURCE_WEB:
+        return False
     if not all(getattr(hit, "doc_is_public", True) for hit in result.sources):
         return False
     # Graph facts are walked AS the asker (who wrote what, what links where),
@@ -366,6 +381,32 @@ class _RecoveryAttempt:
     queries: list[str]
 
 
+def _screen_hits(hits, org_id: str | None, guard: GuardSettings) -> list:
+    """Log every flagged chunk; in ``enforce`` mode also drop it.
+
+    Shadow (Task 2.6) logs and returns ``hits`` unchanged: run it a week on the
+    real corpus first, because the false-positive rate on real company
+    documents decides the threshold, not a benchmark. Enforce (Task 3.1) drops
+    the chunk AFTER retrieval, so the 0.35 gate score is untouched, and a
+    dropped chunk's links then fail the provenance rule because they are no
+    longer in the prompt. NULL (unscored) passes: a Groq outage must not empty
+    the corpus. Logs ids and the score only -- never the chunk text.
+    """
+    if not guard.enabled:
+        return hits
+    kept = []
+    for h in hits:
+        if h.injection_score is not None and h.injection_score >= guard.threshold:
+            logger.warning(
+                "guard.flagged_hit mode=%s org=%s doc=%s chunk=%s score=%.3f",
+                guard.mode, org_id, h.document_id, h.chunk_index, h.injection_score,
+            )
+            if guard.mode == "enforce":
+                continue
+        kept.append(h)
+    return kept
+
+
 class RagPipeline:
     """Composes embeddings + vector store + LLM into grounded, org-scoped Q&A.
 
@@ -421,6 +462,9 @@ class RagPipeline:
         self._source_provider = source_provider
         self._prompt_profile = prompt_profile or POLICY_PROMPT_PROFILE
         self._audit_settings = audit_settings or AuditSettings.from_env()
+        self._link_allowlist = SecuritySettings.from_env().link_allowlist
+        self._guard_settings = GuardSettings.from_env()
+        self._injection_guard = build_injection_guard(self._guard_settings)
 
     def _provider_for_stage(self, stage: str) -> LLMProvider:
         return self._llm_aux if stage in AUX_LLM_STAGES else self._llm
@@ -481,13 +525,15 @@ class RagPipeline:
         provider string could drift from the corpus its answers claim to come
         from. ``workspace_id`` is still the caller's, exactly as on ``answer``.
         """
-        return self._store.recent_chunks(
+        chunks = self._store.recent_chunks(
             org_id,
             self._source_provider,
             viewer=viewer,
             workspace_id=workspace_id,
             limit=limit,
         )
+        # The recap builds its own prompt, so it screens here, not in _generate.
+        return _screen_hits(chunks, org_id, self._guard_settings)
 
     def generate_raw(self, prompt: str) -> str:
         """One un-gated LLM call on this pipeline's provider.
@@ -794,6 +840,7 @@ class RagPipeline:
                         workspace_id=workspace_id,
                         viewer=viewer,
                         query_vec=query_vec,
+                        user_question=tone_question,
                     )
                 )
 
@@ -861,6 +908,7 @@ class RagPipeline:
                         workspace_id=workspace_id,
                         viewer=viewer,
                         query_vec=query_vec,
+                        user_question=tone_question,
                     )
                 )
             result = self._generate(
@@ -894,6 +942,7 @@ class RagPipeline:
                     workspace_id=workspace_id,
                     viewer=viewer,
                     query_vec=query_vec,
+                    user_question=tone_question,
                 )
             )
 
@@ -1490,6 +1539,19 @@ class RagPipeline:
             # line per chunk) could only ever disagree with it. One budget,
             # enforced in one place.
             whole_read = len(hits) > self._settings.top_k
+            screened = _screen_hits(hits, org_id, self._guard_settings)
+            if hits and not screened and not extra_contexts:
+                # Everything retrieved was flagged: refuse without a model call
+                # rather than ask it to answer from nothing.
+                return RagResult(
+                    answer=self._settings.fallback_response,
+                    answered=False,
+                    source=SOURCE_NONE,
+                    sources=[],
+                    top_score=top_score,
+                    retrieval_reused=retrieval_reused,
+                )
+            hits = screened
             contexts = assemble_context_texts(
                 # Title AND provenance: the provider, who last edited it and
                 # when. All of it was already on the JOINed document row and
@@ -1577,6 +1639,19 @@ class RagPipeline:
 
         answered = not self._is_refusal(text, self._settings.fallback_response)
         answer = text if answered else self._settings.fallback_response
+        if answered and leaks_canary(answer):
+            # The model repeated its own instructions: what an injection asking
+            # for "your system prompt" gets. Nothing of it ships.
+            logger.warning("security.canary_leak stage=generate org=%s", org_id)
+            answered, answer = False, self._settings.fallback_response
+        moderation = None
+        if answered:
+            # Before the audit, so the audit judges the text that will ship.
+            answer = enforce_link_provenance(answer, contexts, self._link_allowlist)
+            # In parallel with the audit below (Task 4.1); a no-op when off.
+            moderation = _AUX_POOL.submit(
+                answer_is_unsafe, answer, org_id=org_id, stage="generate"
+            )
 
         audit_used = False
         audit_downgraded = False
@@ -1599,7 +1674,18 @@ class RagPipeline:
                     answered = False
                     answer = self._settings.fallback_response
 
+        if answered and moderation is not None:
+            try:
+                unsafe = moderation.result(timeout=self._guard_settings.timeout + 1)
+            except Exception:  # noqa: BLE001 - fail open
+                unsafe = False
+            if unsafe:
+                answered, answer = False, self._settings.fallback_response
+
         if answered and opener:
+            # Composed after the link rule ran, so it gets its own pass: it is
+            # written from the question alone and never needs a link.
+            opener = enforce_link_provenance(opener, [], ())
             answer = compose_supportive_answer(opener, answer)
 
         return RagResult(
@@ -1627,6 +1713,8 @@ class RagPipeline:
         conversation_id: str | None,
     ):
         """One bounded groundedness check. ``None`` on any failure (skip audit)."""
+        if self._audit_settings.backend == "lettuce":
+            return lettuce_verdict(self._audit_settings, question, contexts, answer)
         try:
             raw = self._generate_text(
                 STAGE_AUDIT,
@@ -1769,6 +1857,7 @@ class RagPipeline:
         workspace_id: str | None = None,
         viewer: Viewer | None = None,
         query_vec: list[float] | None = None,
+        user_question: str | None = None,
     ) -> RagResult:
         """Internal evidence insufficient: try web search (if enabled), else fallback.
 
@@ -1786,6 +1875,7 @@ class RagPipeline:
                 top_score,
                 org_id=org_id,
                 conversation_id=conversation_id,
+                user_question=user_question,
             )
             if web is not None:
                 return web
@@ -1901,6 +1991,32 @@ class RagPipeline:
         # gate_score == best cosine among reused chunks, mirroring fresh retrieval.
         return RetrievalResult(hits=hits, gate_score=best)
 
+    def _screen_web_results(self, results: list) -> list:
+        """Drop (enforce) or log (shadow) snippets that read like an injection.
+
+        One batched call, only on the rare gate-miss web path that already
+        spends two model calls (Task 3.3). A guard failure keeps every result:
+        link provenance and the web fence still apply to them.
+        """
+        guard = self._injection_guard
+        if guard is None or not results:
+            return results
+        try:
+            scores = guard.score([f"{r.title}\n{r.snippet}" for r in results])
+        except Exception:  # noqa: BLE001 - fail open
+            return results
+        kept = []
+        for r, score in zip(results, scores):
+            if score is not None and score >= self._guard_settings.threshold:
+                logger.warning(
+                    "guard.flagged_web mode=%s score=%.3f host=%s",
+                    self._guard_settings.mode, score, urlparse(r.url).hostname,
+                )
+                if self._guard_settings.mode == "enforce":
+                    continue
+            kept.append(r)
+        return kept
+
     def _remember_retrieval(
         self, conversation_id: str, org_id: str, result: RagResult
     ) -> None:
@@ -1941,6 +2057,7 @@ class RagPipeline:
         *,
         org_id: str | None = None,
         conversation_id: str | None = None,
+        user_question: str | None = None,
     ) -> RagResult | None:
         """One decision call + at most one search + one answer call.
 
@@ -1973,7 +2090,13 @@ class RagPipeline:
         if not decision.tool_calls:
             return None  # model judged the question internal -> fixed fallback
 
-        query = self._extract_query(decision.tool_calls[0].arguments, question)
+        query = user_worded_query(
+            self._extract_query(decision.tool_calls[0].arguments, question),
+            self._user_texts(user_question or question, conversation_id),
+        )
+        if query is None:
+            logger.info("security.web_query_dropped: mostly words the user never typed")
+            return None
 
         try:
             results = self._web_search.search(
@@ -1983,6 +2106,7 @@ class RagPipeline:
             )
         except WebSearchError:
             return None  # graceful degradation on failure/timeout
+        results = self._screen_web_results(results or [])
         if not results:
             return None
 
@@ -1999,6 +2123,14 @@ class RagPipeline:
         except LLMProviderError:
             return None
 
+        # The Sources list is appended by us from the search results, never by
+        # the model; only the model's own prose is checked.
+        if leaks_canary(raw):
+            logger.warning("security.canary_leak stage=web org=%s", org_id)
+            return None
+        raw = enforce_link_provenance(raw, [results_block], self._link_allowlist)
+        if answer_is_unsafe(raw, org_id=org_id, stage="web"):
+            return None
         return RagResult(
             answer=self._format_web_answer(raw, results),
             answered=True,
@@ -2006,6 +2138,21 @@ class RagPipeline:
             sources=[],
             top_score=top_score,
         )
+
+    def _user_texts(self, latest: str, conversation_id: str | None) -> list[str]:
+        """The asker's own words in this conversation: the web query's word list.
+
+        Earlier QUESTIONS only -- never answers, the summary or documents --
+        so a follow-up ("and their CEO?") can still search for the company the
+        user named two turns ago. One memory read, on the rare web path only.
+        """
+        texts = [latest]
+        if conversation_id and self._memory is not None:
+            try:
+                texts += [t.question for t in self._memory.get_turns(conversation_id)]
+            except Exception:  # noqa: BLE001 - fewer words, never a failed answer
+                logger.warning("web query: could not read earlier questions", exc_info=True)
+        return texts
 
     @staticmethod
     def _extract_query(arguments: str, default: str) -> str:
@@ -2123,6 +2270,9 @@ class RagPipeline:
             ).strip()
         except LLMProviderError:
             return
+        # Model-written, from turns that may carry injected document text, and
+        # stored: cleaned the way any untrusted text is before it is kept.
+        summary = strip_links(scrub_untrusted_text(summary))
         if summary:
             self._memory.set_summary_folded_through(
                 conversation_id, summary, falling_out[-1].turn_index

@@ -12,10 +12,12 @@ from ..config.settings import (
     ChunkingSettings,
     ContextualSettings,
     GraphSettings,
+    GuardSettings,
     KeywordExtractionSettings,
 )
 from ..embeddings import build_embedding_provider
 from ..embeddings.base import EmbeddingProvider
+from ..guard import InjectionGuard, build_injection_guard
 from ..ingestion.chunking import chunk_text
 from ..ingestion.sanitize import sanitize_ingest_text
 from ..ingestion.contextualize import contextualize_chunks
@@ -402,6 +404,41 @@ def _reindex_slack_docs_missing_channel_prefix(
     return to_update + extra, max(0, unchanged - len(extra))
 
 
+def _guard_document(
+    guard: InjectionGuard | None, threshold: float, raw_chunks: list[str], *, external_id: str
+) -> tuple[list[float | None] | None, bool]:
+    """Injection scores for a document's raw chunks, and whether it is flagged.
+
+    Scored BEFORE contextualization: a flagged document skips it WHOLE,
+    because every contextualize call carries the full document text -- skipping
+    only the flagged chunk would still hand the poison to our own model. A
+    guard failure is ``(None, False)``: unscored, never a failed ingest.
+    """
+    if guard is None:
+        return None, False
+    try:
+        scores = guard.score(raw_chunks)
+    except Exception:  # noqa: BLE001 - scoring must never fail an ingest job
+        logger.warning("Injection scoring failed for %s; left unscored", external_id, exc_info=True)
+        return None, False
+    flagged = [i for i, sc in enumerate(scores) if sc is not None and sc >= threshold]
+    if flagged:
+        logger.warning(
+            "Injection guard flagged %s chunk(s) of %s (max %.2f); stored without context",
+            len(flagged), external_id, max(scores[i] for i in flagged),
+        )
+    return scores, bool(flagged)
+
+
+def _store_scores(store: VectorStore, document_id: str, scores, guard: InjectionGuard | None) -> None:
+    if guard is None or scores is None:
+        return
+    try:
+        store.set_injection_scores(document_id, dict(enumerate(scores)), guard.model)
+    except Exception:  # noqa: BLE001 - a missing score is retried by the backfill
+        logger.warning("Could not store injection scores for %s", document_id, exc_info=True)
+
+
 def ingest_source(
     adapter: SourceAdapter,
     org_id: str,
@@ -417,6 +454,7 @@ def ingest_source(
     workspace_id: str | None = None,
     tags: list[str] | None = None,
     on_progress: ProgressCallback | None = None,
+    guard: InjectionGuard | None = None,
 ) -> IngestResult:
     """Ingest documents from ``adapter`` into ``org_id``.
 
@@ -430,6 +468,8 @@ def ingest_source(
     contextual = contextual or ContextualSettings.from_env()
     keywords = keywords or KeywordExtractionSettings.from_env()
     apply_contextual_inline = contextual.enabled and not contextual.defer
+    guard = guard or build_injection_guard()
+    guard_threshold = GuardSettings.from_env().threshold
     if apply_contextual_inline and llm is None:
         llm = build_aux_llm_provider()
 
@@ -573,7 +613,10 @@ def ingest_source(
             report("indexing", done, total_work)
             continue
 
-        if apply_contextual_inline and llm is not None:
+        scores, flagged = _guard_document(
+            guard, guard_threshold, raw_chunks, external_id=doc.external_id
+        )
+        if apply_contextual_inline and llm is not None and not flagged:
             if len(chunks) > contextual.max_chunks:
                 logger.warning(
                     "Skipping contextual enrichment for %s (%s chunks > max_chunks=%s); "
@@ -618,6 +661,7 @@ def ingest_source(
             source_meta=meta,
             editor_key=meta_editor,
         )
+        _store_scores(store, document_id, scores, guard)
         doc_ids.append(document_id)
         ingested_external_ids.append(doc.external_id)
         chunks_total += len(chunks)
@@ -746,6 +790,7 @@ def enrich_source_contextual(
     workspace_id: str | None = None,
     tags: list[str] | None = None,
     on_progress: ProgressCallback | None = None,
+    guard: InjectionGuard | None = None,
 ) -> int:
     """Re-apply deferred contextual retrieval to pages already stored."""
     if not external_ids:
@@ -757,6 +802,8 @@ def enrich_source_contextual(
     embedder = embedder or build_embedding_provider()
     store = store or build_vector_store()
     llm = llm or build_aux_llm_provider()
+    guard = guard or build_injection_guard()
+    guard_threshold = GuardSettings.from_env().threshold
 
     def report(phase: str, processed: int, total: int) -> None:
         if on_progress is None:
@@ -788,6 +835,13 @@ def enrich_source_contextual(
                 report("enriching", i, total)
                 continue
             raw_chunks = chunks
+            # A flagged document keeps its plain, already-scored rows.
+            scores, flagged = _guard_document(
+                guard, guard_threshold, raw_chunks, external_id=external_id
+            )
+            if flagged:
+                report("enriching", i, total)
+                continue
             chunks = contextualize_chunks(
                 llm,
                 clean,
@@ -810,14 +864,17 @@ def enrich_source_contextual(
             # Re-reading the sharing from this re-fetch is NOT a fix: Slack
             # reports sharing only on the listing, and ingest has already
             # applied the skip / owner-only / freeze rules to this very row.
-            if store.replace_source_document_chunks(
+            document_id = store.replace_source_document_chunks(
                 org_id,
                 provider=provider,
                 external_id=doc.external_id,
                 chunks=chunks,
                 embeddings=embeddings,
                 workspace_id=workspace_id,
-            ) is not None:
+            )
+            if document_id is not None:
+                # Replacing the chunk rows dropped their ingest-time scores.
+                _store_scores(store, document_id, scores, guard)
                 enriched += 1
         except Exception:  # noqa: BLE001 - one bad page must not abort enrich
             pass

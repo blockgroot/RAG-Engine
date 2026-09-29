@@ -127,6 +127,9 @@ export interface Attachment {
    *  Shown in the chip: a partial file that looks complete is the failure the
    *  whole feature is arranged against. */
   truncated: boolean;
+  /** Parts of the file read like instructions to an AI. Still used as a
+   *  source, but the model is told to treat all of it as data. */
+  flagged?: boolean;
 }
 
 /** One of the member's own accounts in a connected tool, linked to them. */
@@ -568,7 +571,7 @@ export type ConnectorFreshness = {
 };
 
 export type Notification = {
-  kind: "reauth" | "scope";
+  kind: "reauth" | "scope" | "injection";
   severity: "high" | "medium";
   provider: string;
   scope: string;

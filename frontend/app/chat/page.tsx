@@ -820,6 +820,14 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                     part only
                   </span>
                 )}
+                {a.flagged && (
+                  <span
+                    className="attach-cut"
+                    title="Parts of this file read like instructions to an AI. It is still read, as data only."
+                  >
+                    check file
+                  </span>
+                )}
                 <button
                   type="button"
                   className="attach-remove"

@@ -68,6 +68,12 @@ services:
         sync: false
 
       # -- LLM --
+      # Provider from a fixed list (google, groq, openai, anthropic, ...,
+      # custom); it supplies the base URL, so leave LLM_BASE_URL empty unless
+      # LLM_ADAPTER=custom. The boot check refuses a model the provider does
+      # not list.
+      - key: LLM_ADAPTER
+        sync: false
       - key: LLM_MODEL
         sync: false
       - key: LLM_API_KEY

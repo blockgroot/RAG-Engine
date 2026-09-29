@@ -67,6 +67,13 @@ function sentLabel(iso: string): string {
   return `${date} at ${time}`;
 }
 
+// A report item's URL comes from the source's own API, not the model, but a
+// `javascript:` or `data:` value in a source record would still run on click.
+// Only http(s) becomes a link; anything else renders as plain text.
+function isWebUrl(url: string | null | undefined): url is string {
+  return !!url && /^https?:\/\//i.test(url);
+}
+
 export default function ReportPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const { me, loading } = useMe();
@@ -214,7 +221,7 @@ export default function ReportPage({ params }: { params: Promise<{ id: string }>
                 );
                 return (
                   <li key={`${i}-${item.summary}`}>
-                    {item.url ? (
+                    {isWebUrl(item.url) ? (
                       <a
                         href={item.url}
                         target="_blank"

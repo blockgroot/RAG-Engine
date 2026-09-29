@@ -53,11 +53,19 @@ def main() -> int:
             "from its original manual-probe behaviour."
         ),
     )
+    parser.add_argument(
+        "--cases",
+        default="",
+        help="Comma-separated case ids to run (default: every injection-/bias- case).",
+    )
     args = parser.parse_args()
+    only = {c.strip() for c in args.cases.split(",") if c.strip()}
 
     total_leaks = 0
     cases = [
-        c for c in GOLDEN_CASES if c.id.startswith("injection-") or c.id.startswith("bias-")
+        c for c in GOLDEN_CASES
+        if (c.id.startswith("injection-") or c.id.startswith("bias-"))
+        and (not only or c.id in only)
     ]
     store = build_vector_store()
     embedder = build_embedding_provider()

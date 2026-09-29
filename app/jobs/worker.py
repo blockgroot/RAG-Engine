@@ -426,6 +426,16 @@ def run_external_tick() -> dict[str, int]:
     except Exception:  # noqa: BLE001
         logger.exception("External tick: conversation purge failed")
 
+    # Injection scores for chunks ingest could not score (Groq rate limit) or
+    # that predate the guard. A no-op when GUARD_MODE=off.
+    injection_scored = 0
+    try:
+        from ..guard.backfill import backfill_injection_scores
+
+        injection_scored = backfill_injection_scores()
+    except Exception:  # noqa: BLE001 - an unscored chunk, never a failed tick
+        logger.exception("External tick: injection-score backfill failed")
+
     scheduler_settings = SchedulerSettings.from_env()
     schedulers_ran = (
         run_scheduler_tick(scheduler_settings) if scheduler_settings.enabled else 0
@@ -438,6 +448,7 @@ def run_external_tick() -> dict[str, int]:
         "facts_backfilled": backfilled,
         "attachments_purged": attachments_purged,
         "conversations_purged": conversations_purged,
+        "injection_scored": injection_scored,
         "schedulers_ran": schedulers_ran,
     }
 

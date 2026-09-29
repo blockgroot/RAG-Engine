@@ -60,6 +60,7 @@ from ..llm import org_model
 from ..llm.routed import answering_model, selected_model, use_model
 from ..db.connection import get_connection
 from ..feedback import record_gap
+from ..guard.live import ATTACHMENT_WARNING, is_flagged, watch_question
 from ..security.rate_limit import check_rate_limit
 from ..security.visibility import visibility_predicate
 from ..workspaces import assert_member
@@ -696,8 +697,11 @@ def _conversation_attachments(
     try:
         from ..attachments import load_attachment_texts
 
+        # A flagged file (enforce mode) leads with a warning, so every path
+        # that quotes it -- inline, paged, head-only -- carries it too.
         return [
-            (a.filename, a.content or "", a.truncated)
+            (a.filename, (ATTACHMENT_WARNING if is_flagged(a.injection_score) else "")
+             + (a.content or ""), a.truncated)
             for a in load_attachment_texts(
                 org_id=org_id,
                 conversation_id=conversation_id,
@@ -942,6 +946,8 @@ def _stream_answer(
     # here also resets it per stream, so a pooled thread cannot leak one
     # request's model choice into the next.
     use_model(model, org_id=org_id)
+    # Logged, never refused (see guard/live.py for the measured reason).
+    watch_question(question)
 
     # Loaded BEFORE routing but no longer instead of it. An attached file used
     # to short-circuit `choose_agent` entirely, on the reasoning that someone
