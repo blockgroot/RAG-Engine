@@ -23,11 +23,40 @@ from ..llm.base import LLMProvider
 from ..llm.metering import log_llm_call
 from ..llm.pacing import wait_for_background_slot
 from ..llm.stages import STAGE_INGEST_CONTEXT
-from ..security.untrusted import UNTRUSTED_POLICY, UNTRUSTED_REMINDER, scrub_untrusted_text
+from ..security.links import URL_PATTERN
+from ..security.untrusted import (
+    UNTRUSTED_POLICY,
+    UNTRUSTED_REMINDER,
+    normalize_untrusted,
+    scrub_untrusted_text,
+)
 
 # Cap how much of the document we send as context, to bound cost/latency on very
 # large documents (a couple of thousand tokens of surrounding context is plenty).
 MAX_DOC_CHARS = 8000
+
+# The generated context is written by OUR model, but from a document anyone may
+# have authored, and it is then stored as part of the chunk -- embedded, keyword
+# indexed, fed to every later prompt as document text, and hidden from the
+# citation UI. So it is untrusted text we would otherwise persist: a poisoned
+# document could have our own model write an instruction into the index. A real
+# context is one or two plain sentences, so anything longer, anything the
+# scrubber would cut, and any link or mention is refused, and the chunk is
+# stored bare (the same outcome as a failed call).
+MAX_PREFIX_CHARS = 700
+_MENTION = re.compile(r"<[@!#]|@(?:channel|here|everyone)\b", re.IGNORECASE)
+
+
+def _safe_derived(text: str) -> str | None:
+    """``text`` flattened to one line if it is safe to store, else ``None``."""
+    flat = " ".join(normalize_untrusted(text).split())
+    if not flat or len(flat) > MAX_PREFIX_CHARS:
+        return None
+    if " ".join(scrub_untrusted_text(text).split()) != flat:
+        return None
+    if URL_PATTERN.search(flat) or _MENTION.search(flat):
+        return None
+    return flat
 
 # Ingest is an offline batch job, so a couple of retries cost little and recover
 # transient endpoint blips that would otherwise silently cost a chunk its
@@ -145,8 +174,11 @@ def contextualize_chunk(
             if not raw:
                 return chunk
             if not hypothetical_questions:
-                return f"{raw}\n\n{chunk}"
+                prefix = _safe_derived(raw)
+                return f"{prefix}\n\n{chunk}" if prefix else chunk
             context, questions = _parse_context_and_questions(raw)
+            context = _safe_derived(context) if context else None
+            questions = [q for q in (_safe_derived(q) for q in questions) if q]
             parts = [context] if context else []
             if questions:
                 parts.append("Possible questions this answers:\n" + "\n".join(questions))

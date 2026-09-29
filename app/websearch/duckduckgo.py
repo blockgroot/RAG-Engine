@@ -39,7 +39,9 @@ class DuckDuckGoSearch(WebSearchProvider):
                 raw = ddgs.text(query, max_results=max_results)
         except Exception as exc:  # ratelimit, network, timeout, etc.
             raise WebSearchError(
-                f"DuckDuckGo search failed for {query!r}: {exc}", cause=exc
+                # Never the query: it can carry a fact from a private answer,
+                # and error text lands in logs anyone with log access reads.
+                f"DuckDuckGo search failed: {exc}", cause=exc
             ) from exc
 
         return [

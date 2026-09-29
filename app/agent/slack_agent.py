@@ -45,7 +45,11 @@ from collections.abc import Iterator
 
 from ..core.answer_sources import SOURCE_SLACK
 from ..core.streaming import chunk_answer
+from ..config.settings import SecuritySettings
 from ..rag.prompts import build_slack_recap_prompt
+from ..guard.moderation import answer_is_unsafe
+from ..security.links import enforce_link_provenance
+from ..security.untrusted import leaks_canary
 from .base import AgentResponse
 from ..vectorstore.base import Viewer
 from .rag_pipeline_agent import RagPipelineAgent
@@ -191,6 +195,14 @@ class SlackAgent(RagPipelineAgent):
             logger.warning("Slack recap generation failed", exc_info=True)
             return None
         if not text or fallback.lower() in text.lower():
+            return None
+        if leaks_canary(text):
+            logger.warning("security.canary_leak stage=slack_recap")
+            return None
+        text = enforce_link_provenance(
+            text, [c.content for c in chunks], SecuritySettings.from_env().link_allowlist
+        )
+        if answer_is_unsafe(text, org_id=None, stage="slack_recap"):
             return None
 
         return AgentResponse(

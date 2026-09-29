@@ -201,6 +201,8 @@ class RetrievedChunk:
     # its key, deliberately -- so the write is gated instead). Defaults True,
     # which is what a fake, a reuse hit or a legacy row honestly is.
     doc_is_public: bool = True
+    # Prompt-injection probability from ingest (`app/guard/`); None = unscored.
+    injection_score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -475,6 +477,24 @@ class VectorStore(ABC):
         Optional capability. ``tags`` behaves exactly as on ``add_document``.
         """
         raise NotImplementedError("this vector store does not support source document upsert")
+
+    def set_injection_scores(
+        self, document_id: str, scores: dict[int, float | None], model: str
+    ) -> None:
+        """Store injection scores for chunks of ``document_id``, keyed by chunk index.
+
+        A ``None`` score leaves that chunk NULL (unscored), so the backfill
+        retries it. Optional capability; default raises.
+        """
+        raise NotImplementedError("this vector store does not store injection scores")
+
+    def list_unscored_chunks(self, model: str, limit: int) -> list[tuple[str, int, str]]:
+        """``(document_id, chunk_index, content)`` never scored by ``model``, in random order.
+
+        Cross-tenant on purpose: it feeds the tick's backfill, which writes a
+        score back to the same row and returns nothing to anyone.
+        """
+        raise NotImplementedError("this vector store does not store injection scores")
 
     def acknowledge_source_document(
         self,

@@ -216,3 +216,22 @@ def test_relabel_rejects_a_channel_name_that_is_not_name_shaped():
 
     assert relabel_indexed_channel("org", "ok-name", "bad name; drop table") == 0
     assert relabel_indexed_channel("org", "same", "same") == 0
+
+
+def test_every_bot_message_is_sent_with_previews_off(monkeypatch):
+    """A preview is a fetch of the URL — a zero-click leak if the URL carries data."""
+    from app.sources import slack_utils
+
+    sent = []
+
+    def fake_post(url, json, headers, timeout):
+        sent.append((url, json))
+        return FakeResponse({"ok": True, "ts": "1.2"})
+
+    monkeypatch.setattr(slack_utils.httpx, "post", fake_post)
+    slack_utils.post_message("xoxb", "C1", "hi", thread_ts="9.9")
+    slack_utils.update_message("xoxb", "C1", "1.2", "answer")
+    assert [u.rsplit("/", 1)[1] for u, _ in sent] == ["chat.postMessage", "chat.update"]
+    for _, payload in sent:
+        assert payload["unfurl_links"] is False
+        assert payload["unfurl_media"] is False

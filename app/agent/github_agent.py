@@ -36,10 +36,14 @@ retrieved chunks (Phase 16) before it reaches a prompt.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Callable, Iterator
 
-from ..config.settings import GitHubAgentSettings
+from ..config.settings import GitHubAgentSettings, SecuritySettings
+from ..guard.moderation import answer_is_unsafe
+from ..security.links import enforce_link_provenance
+from ..security.untrusted import leaks_canary
 from ..core.answer_sources import (
     RECOVERY_REASON_INSUFFICIENT_EVIDENCE,
     SOURCE_GITHUB,
@@ -64,6 +68,8 @@ from ..rag.prompts import (
 )
 from ..vectorstore.base import Viewer
 from .base import Agent, AgentResponse, Citation
+
+logger = logging.getLogger(__name__)
 
 ReaderBuilder = Callable[..., GitHubReader]
 
@@ -115,6 +121,7 @@ class GitHubAgent(Agent):
         self._build_reader = reader_builder
         self._fallback = fallback_response
         self._settings = settings or GitHubAgentSettings.from_env()
+        self._link_allowlist = SecuritySettings.from_env().link_allowlist
 
     def answer(
         self,
@@ -198,7 +205,12 @@ class GitHubAgent(Agent):
         except LLMProviderError:
             return None
         mode, answer = _split_mode_tag(raw)
-        if not answer:
+        if answer and leaks_canary(answer):
+            logger.warning("security.canary_leak stage=github")
+            return None
+        if answer:
+            answer = enforce_link_provenance(answer, [evidence_block], self._link_allowlist)
+        if not answer or answer_is_unsafe(answer, org_id=None, stage="github"):
             return None
         return mode, answer
 
@@ -467,11 +479,10 @@ class GitHubAgent(Agent):
             lines.append(f"Description: {description}")
         if topics:
             lines.append("Topics / tech tags: " + ", ".join(topics))
-        lines.append(
-            "Guidance for the answer: expand these fields into a clear overview "
-            "of what the repository is for. Do not invent features beyond the "
-            "description and topics."
-        )
+        # No "guidance for the answer" line here: this block is fenced as
+        # UNTRUSTED evidence, and a trusted instruction inside the fence teaches
+        # the model that instructions there are legitimate. The answer prompt's
+        # own rules already cover catalog-only evidence.
         block = "\n".join(lines)
         about_body = description or ("Topics: " + ", ".join(topics))
         return block, [
