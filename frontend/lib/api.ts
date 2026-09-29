@@ -148,6 +148,23 @@ export interface LinkedIdentities {
   github_link_available: boolean;
 }
 
+export interface MemoryFact {
+  id: string;
+  kind: "preference" | "context" | "interest";
+  text: string;
+  pinned: boolean;
+  created_at: string | null;
+}
+
+export interface PersonalMemory {
+  /** Off for the whole deployment: nothing is remembered anywhere. */
+  available: boolean;
+  org_enabled: boolean;
+  enabled: boolean;
+  can_manage_org: boolean;
+  facts: MemoryFact[];
+}
+
 export interface Me {
   user_id: string;
   org_id: string;
@@ -780,6 +797,33 @@ export const api = {
     request<{ ok: boolean }>(`/account/identities/${encodeURIComponent(identityId)}`, {
       method: "DELETE",
     }),
+
+  personalMemory: () => request<PersonalMemory>("/account/memory"),
+
+  setMemoryEnabled: (enabled: boolean) =>
+    request<{ enabled: boolean }>("/account/memory/settings", {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
+
+  setOrgMemoryEnabled: (enabled: boolean) =>
+    request<{ org_enabled: boolean }>("/account/memory/org", {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
+
+  pinMemory: (id: string, pinned: boolean) =>
+    request<{ id: string; pinned: boolean }>(`/account/memory/${encodeURIComponent(id)}/pin`, {
+      method: "POST",
+      body: JSON.stringify({ pinned }),
+    }),
+
+  forgetMemory: (id: string) =>
+    request<{ deleted: string }>(`/account/memory/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+
+  clearMemory: () => request<{ deleted: number }>("/account/memory", { method: "DELETE" }),
 
   feedbackSummary: (days = 30) =>
     request<FeedbackSummary>(`/admin/feedback?days=${days}`),

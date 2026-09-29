@@ -5,6 +5,7 @@ import { AnswerFeedback } from "./AnswerFeedback";
 import { AnswerText } from "./AnswerText";
 import { Chart } from "./Chart";
 import { ProvenanceStripe } from "./ProvenanceStripe";
+import { RememberedNote } from "./RememberedNote";
 
 export interface Message {
   role: "user" | "assistant";
@@ -100,6 +101,9 @@ export function ChatMessageView({
           {message.streaming && <span className="chat-stream-caret" aria-hidden />}
           {message.done?.model && (
             <span className="chat-model-tag">Answered by {message.done.model}</span>
+          )}
+          {message.done?.remembered && message.done.remembered.length > 0 && (
+            <RememberedNote facts={message.done.remembered} />
           )}
           {message.done && conversationId && question && (
             <AnswerFeedback

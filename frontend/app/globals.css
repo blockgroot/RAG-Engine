@@ -988,6 +988,50 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 }
 .provenance-live { font-weight: 600; }
 
+/* Personal memory: "Remembered: ... · Undo" under an answer. Quiet on purpose
+   -- it confirms, it does not compete with the answer. */
+.chat-remembered {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.6rem;
+  margin-top: 0.6rem;
+  font-size: 0.78rem;
+  color: var(--ink-muted);
+}
+.chat-remembered-label { font-weight: 600; }
+.chat-remembered-fact {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.chat-remembered-undo,
+.chat-remembered-manage {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent-strong);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.chat-remembered-error { color: var(--danger, #b42318); }
+.memory-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+.memory-switch-org {
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+.memory-actions { display: flex; gap: 0.4rem; justify-content: flex-end; }
+
 .composer-model:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 13%, transparent);
   color: var(--accent-strong);

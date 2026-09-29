@@ -378,6 +378,13 @@ already applied skip / owner-only / freeze to that exact row.
 - **A live block SUPERSEDES its document's synced chunks in the prompt** (`superseded=live.refreshed` → `_generate_core`); they stay in `hits` for citations and next-turn reuse. Shipped as ADD-beside: staging measured first word ~5 s slower (prompt ~2x, two versions of one page for the model and the audit). The ~2 s read is still serial after the gate; the next lever is starting it during rerank.
 - Live blocks lead `extra_contexts`, so fence/scrub, the audit and the link rule all see them; enforce-mode guard drops a flagged block (not a withhold). A live answer is never cached; a `live_withheld` refusal says "no longer available" naming the CONNECTOR, never the item, and is deliberately NOT a gap row (deletion vs revocation is indistinguishable). `live_tool_calls` audits each read — never the token or text — 90-day sweep on the tick.
 
+**Personal memory = the Second Brain's third layer (`app/memory/personal.py`, `user_memory`)**
+— a few facts per person ("works in the Bangalore office", "prefers short answers") carried across chats. Off unless `PERSONAL_MEMORY_ENABLED`; `users.memory_enabled` and `organizations.memory_enabled` (admin) switch it off.
+- **Written ONLY from the asker's own question**, never an answer (an answer can quote a document only they may read). One aux call (`STAGE_MEMORY_EXTRACT`), beside the answer, and only when `worth_reading` sees self-talk ("I'm…", "my team…", "keep it short") — most questions pay nothing. ≤3 facts per question, ≤120 chars, third person; sensitive words (health, pay, credentials, family…), links/mentions and anything the scrubber would cut are dropped; case-insensitive dedupe.
+- **Never evidence**: facts ride the grounded prompt AFTER the fenced context as "ABOUT THE ASKER — interpretation only"; the audit is handed documents alone, so a claim resting on memory is unsupported by construction. `RagResult.personalized` keeps it out of the cache (read and write). The rewrite prompt does NOT get facts.
+- **Saved automatically, never silently** (the ChatGPT/Claude pattern): `done.remembered` → "Remembered: … · Undo" under the answer (waits ≤1.5 s for extraction; a slower one still saves and shows on the account page). `/account` lists, pins, forgets, clears; only the owner can touch a fact — an admin's only control is the company switch.
+- **Bounded and fading**: `max_facts`=30, oldest UNPINNED out; `source_conversation_id ON DELETE CASCADE` so a fact dies with its chat (30-day purge) unless pinned, which detaches it. Web chat only — Slack/schedulers never read or write it. Not built: a one-off private chat.
+
 **Retrieved context carries its provenance** (`rag/context_assemble.py::describe_hit`)
 — every chunk reaches the prompt behind one line naming the document, the app,
 who last edited it and when. All of it was already on the `documents` row each
@@ -1844,7 +1851,7 @@ app/db/       schema.sql, connection.py (pool), migrate.py
 app/ingestion/ preprocess, chunk, contextualize, pipeline  (orchestrator)
 app/rag/      pipeline, prompts, retrieval, query_normalize, summary_fold,
               access_notice (the "not shared with you" refusal), …
-app/memory/   org-scoped conversation history + last-retrieval
+app/memory/   org-scoped conversation history + last-retrieval + personal (user facts)
 app/sources/  SourceAdapter: notion, google_drive, slack, linear + factory
               + google_forms.py (live reads, NOT an adapter — never indexed)
               + google_groups.py (asker's Group memberships → Viewer.groups)
@@ -2224,7 +2231,7 @@ partial unique indexes: org-wide vs workspace; `sync_requested_at` webhook flag
 (scoped by `org_id` **and** `user_id`, unlike every other tenant table; `model` NULL = the configured default) ·
 `conversation_attachments` (metadata + `storage_key` only — the bytes and the extracted text are Cloudinary objects, `content` NULL on every row written since) · `feedback_and_gaps` (refusals + thumbs in one table; `user_id` is `ON DELETE SET NULL`, the only tenant table that does not cascade from a person) · `activity_facts` (the ONLY numeric substrate for charts; two partial unique
 indexes on `external_id`, org-wide vs workspace) · `insight_pins` (personal,
-`(org_id, user_id)`; stores the spec, never the numbers) · `person_identities`
+`(org_id, user_id)`; stores the spec, never the numbers) · `user_memory` (personal facts, private to `(org_id, user_id)`, cascades from its chat unless pinned; `users`/`organizations.memory_enabled` switches) · `person_identities`
 (one row per person per connector; `user_id` only on proof, `ON DELETE SET NULL`) ·
 `live_tool_calls` (live-read audit; no token, no text, 90 days) ·
 `kg_entities` / `kg_edges` / `kg_evidence` (the graph: IDs and relationships only,
@@ -2270,6 +2277,7 @@ identity linking + "Linked accounts", the graph builder, the access-safe walk,
 and the graph as a retrieval list — **built, OFF for answers**.
 
 **Pending / known gaps**
+- Personal memory: **built and OFF** (`PERSONAL_MEMORY_ENABLED`); the account panel and the "Remembered · Undo" line are `tsc`-checked only, and extraction has run against a fake model only — check its facts on staging with the real one. No private (memory-free) chat yet.
 - Live tools: **Phases 0–3 + the Slack reader are built and OFF** (normal Ask, behind `LIVE_TOOLS_ENABLED`). Every provider's error shapes (Linear `Entity not found`/`RATELIMITED`, Drive 403 reasons, Notion codes, Slack `error`) are from docs and tested against fakes only — walk each live on staging before trusting (plan §10). Slack is on the RESTRICTED tier (staging: `limit=200` → 15 + `has_more`), so it stays out of `LIVE_TOOLS_PROVIDERS`, and ingestion pages 13x more than it assumes. Staging verified Notion + Drive (viewer and non-viewer); Linear untested (token expired); first word re-measure pending after the supersede fix. Later by design: GitHub on the gateway, per-user tokens, MCP.
 - Second Brain: **`GRAPH_RETRIEVAL_ENABLED` stays off until
   `python -m evaluation.graph_eval` runs with the real embedder and says

@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Iterator
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -55,6 +56,7 @@ from ..config.settings import GraphSettings
 from ..core.exceptions import AuthError, LLMProviderError, ProviderError
 from ..graph import plan as graph_plan
 from ..livetools import LiveRequest, reset_live_request, use_live_request
+from ..memory import personal as personal_memory
 from ..memory import conversations as conversation_store
 from ..llm import catalog
 from ..llm import org_model
@@ -952,18 +954,62 @@ def _stream_answer(
             conversation_id=conversation_id,
         )
     )
+    # Personal memory (Second Brain layer C): this person's facts shape how
+    # the question is READ, and the question itself -- never the answer -- is
+    # read for new ones, alongside the answer rather than in front of it.
+    facts, memory_future = _start_personal_memory(question, org_id, conversation_id, session)
+    facts_token = personal_memory.use_asker_facts(tuple(f.text for f in facts))
     try:
         yield from _stream_answer_body(
             question, org_id, conversation_id, workspace_id, requested_agent,
-            model, session,
+            model, session, memory_future,
         )
     finally:
         # Starlette may close the generator from another copied context, where
         # the token is not valid; there the copy dies with the call anyway.
-        try:
-            reset_live_request(live_token)
-        except ValueError:
-            pass
+        for reset, token in ((reset_live_request, live_token),
+                             (personal_memory.reset_asker_facts, facts_token)):
+            try:
+                reset(token)
+            except ValueError:
+                pass
+
+
+#: Extraction runs beside the answer; the answer waits at most this long
+#: for it before `done`, so "Remembered: ..." can be shown in the moment.
+_MEMORY_GRACE_SECONDS = 1.5
+_MEMORY_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="personal-memory")
+
+
+def _start_personal_memory(question, org_id, conversation_id, session):
+    """``(facts, future|None)``. Never raises; off => ``([], None)``."""
+    user_id = session.user_id if session else None
+    try:
+        if not personal_memory.is_active(org_id, user_id):
+            return [], None
+        facts = personal_memory.list_facts(org_id, user_id)
+    except Exception:  # noqa: BLE001 - memory may only ever add
+        logger.warning("personal memory unavailable", exc_info=True)
+        return [], None
+    future = None
+    if personal_memory.worth_reading(question):
+        future = _MEMORY_POOL.submit(
+            personal_memory.remember_from_question, question, org_id=org_id,
+            user_id=user_id, conversation_id=conversation_id,
+            known=tuple(f.text for f in facts),
+        )
+    return facts, future
+
+
+def _remembered(future) -> list[dict]:
+    """Facts saved from THIS question, for the "Remembered: ... · Undo" line.
+    A slow extraction still saves; it then shows on the account page only."""
+    if future is None:
+        return []
+    try:
+        return [{"id": f.id, "text": f.text} for f in future.result(timeout=_MEMORY_GRACE_SECONDS)]
+    except Exception:  # noqa: BLE001 - includes the timeout
+        return []
 
 
 def _stream_answer_body(
@@ -974,6 +1020,7 @@ def _stream_answer_body(
     requested_agent: str | None,
     model: str | None,
     session: SessionClaims | None,
+    memory_future=None,
 ) -> Iterator[str]:
     # Set inside the generator, NOT in the route that returns the
     # StreamingResponse: Starlette runs a sync generator via
@@ -1162,6 +1209,9 @@ def _stream_answer_body(
             # Which connectors answered LIVE, and when. Empty when nothing was
             # refreshed -- the indexed copy answered.
             "live_sources": list(getattr(result, "live_sources", None) or []),
+            # Personal memory saved from this question, announced so saving is
+            # never silent; the pill offers Undo.
+            "remembered": _remembered(memory_future),
         },
     )
 

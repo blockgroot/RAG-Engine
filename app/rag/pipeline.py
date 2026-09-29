@@ -71,6 +71,7 @@ from .attachment_tools import (
 from .access_notice import live_withheld_notice, restricted_notice
 from ..guard import build_injection_guard
 from ..livetools import LiveRefresh, current_live_request
+from ..memory.personal import current_asker_facts
 from ..livetools import refresh as live_refresh
 from ..livetools.handles import mint as mint_handles
 from ..livetools.handles import resolve as resolve_handle
@@ -181,6 +182,8 @@ def _is_cacheable(result: "RagResult") -> bool:
     # A live read is one moment, read for one asker (plan D13); a withheld
     # object is about that moment too.
     if getattr(result, "live_sources", None) or getattr(result, "live_withheld", False):
+        return False
+    if getattr(result, "personalized", False):
         return False
     return not getattr(result, "access_restricted", False)
 
@@ -389,6 +392,9 @@ class RagResult:
     # readable. Like ``access_restricted`` it rides the result so nothing
     # matches on text: not cached, and not logged as a documentation gap.
     live_withheld: bool = False
+    # True when personal memory was in the prompt: the answer was interpreted
+    # for ONE person, so it is never served to the next asker on the same key.
+    personalized: bool = False
 
 
 def _without_withheld(
@@ -647,6 +653,7 @@ class RagPipeline:
             conversation_id is None
             and not _cross_plan_active()
             and current_live_request() is None
+            and not current_asker_facts()
         ):
             cached = self._query_cache.get(
                 org_id,
@@ -1680,10 +1687,12 @@ class RagPipeline:
             budget=budget,
         )
 
+        asker = current_asker_facts()
         prompt = build_grounded_prompt(
             question=question,
             contexts=contexts,
             fallback_response=self._settings.fallback_response,
+            asker_facts=asker,
             # An override only for the attachment path: the agent's own
             # profile carries its escalation hint ("your HR team can help"),
             # which is a wrong contact for a file the asker uploaded --
@@ -1800,6 +1809,7 @@ class RagPipeline:
             audit_used=audit_used,
             audit_downgraded=audit_downgraded,
             audit_reason=audit_reason,
+            personalized=bool(asker),
         )
 
     def _audit_answer(

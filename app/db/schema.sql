@@ -1056,3 +1056,25 @@ CREATE TABLE IF NOT EXISTS live_tool_calls (
 );
 CREATE INDEX IF NOT EXISTS idx_live_tool_calls_org_time
     ON live_tool_calls (org_id, created_at DESC);
+
+-- Personal memory (Second Brain layer C): a few facts per person, carried
+-- across chats. Written ONLY from the person's own questions -- never from an
+-- answer, which can quote a document only they may read -- and used only to
+-- interpret the question and set tone, never as evidence. Private to
+-- (org_id, user_id). A fact dies with the chat it came from (the cascade)
+-- unless pinned, which detaches it (source_conversation_id -> NULL).
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS memory_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS memory_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+CREATE TABLE IF NOT EXISTS user_memory (
+    id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id                 UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    user_id                UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    kind                   TEXT NOT NULL,
+    text                   TEXT NOT NULL,
+    source_conversation_id UUID REFERENCES conversations (id) ON DELETE CASCADE,
+    pinned                 BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_user_memory_text
+    ON user_memory (org_id, user_id, lower(text));
+CREATE INDEX IF NOT EXISTS idx_user_memory_owner ON user_memory (org_id, user_id, created_at DESC);

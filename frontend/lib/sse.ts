@@ -49,6 +49,9 @@ export interface ChatDonePayload {
   /** Connectors read LIVE for this answer (Second Brain live tools). Empty when the
    *  indexed copy answered, so "live" is never claimed for a synced copy. */
   live_sources?: { provider: string; fetched_at: string }[];
+  /** Personal memory saved from THIS question -- shown with Undo, so saving
+   *  is never silent. */
+  remembered?: { id: string; text: string }[];
 }
 
 export interface ChatStreamHandlers {

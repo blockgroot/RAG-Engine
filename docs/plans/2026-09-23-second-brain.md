@@ -70,9 +70,9 @@ same retrieval path and the same fail-open posture.
 |---|---|---|---|
 | A. Index | org/space, filtered per document | synced documents → chunks | exists |
 | B. Knowledge graph | org/space, filtered per viewer | document metadata, `activity_facts`, native links | **Phase 1** |
-| C. Personal memory | `(org_id, user_id)`, private | the person's own **questions** | later |
+| C. Personal memory | `(org_id, user_id)`, private | the person's own **questions** | **built** (off by default) |
 | D. Conversation memory | one chat | turns → summary | exists |
-| Live tools | scope, filtered per viewer | connector APIs, read-only | later |
+| Live tools | scope, filtered per viewer | connector APIs, read-only | **built** (`docs/plans/2026-09-29-live-connector-access.md`) |
 
 ---
 
@@ -100,7 +100,7 @@ same retrieval path and the same fail-open posture.
 | O3 | Include Google Workspace directory aliases in identity linking (needs a Workspace-admin connection, off by default)? | 1a (optional) |
 | O4 | Does each tenant's Notion integration have the "read user information including email" capability? If not, Notion people stay unlinked nodes. | 1a |
 | O5 | Deep research LLM-call budget per run (proposed ≤5). | deep research |
-| O6 | Personal memory: saved automatically but visible/deletable (proposed), or confirmed by the user first? | personal memory |
+| O6 | ~~Personal memory: saved automatically or confirmed first?~~ **Answered 2026-09-29: automatically**, never silently ("Remembered: … · Undo" in the chat, review page, personal + company off switches) — the production pattern. | personal memory |
 
 ---
 
@@ -527,7 +527,18 @@ part of the current work. **Next after Phase 1 is 1.7's measurement, then 1d.**
 
 ## Later phases (outline)
 
-**Personal memory.** `user_memory (org_id, user_id, kind, text,
+**Personal memory — BUILT (2026-09-29, `app/memory/personal.py`).** As
+outlined below, with these choices made while building it: extraction is its
+OWN small aux call, run beside the answer, and only when a cheap pre-filter
+sees the asker talking about themselves ("I'm on…", "my team…", "keep it
+short") — most questions cost nothing; the summary fold was not reused because
+it runs only when a chat grows long. Facts go into the grounded prompt AFTER
+the fenced context as interpretation only; the audit gets documents alone. Not
+used by the rewrite prompt (its rule is "add nothing not implied by the
+conversation"). `last_used_at` dropped (no reader). Web chat only; Slack and
+schedulers never read or write memory. Not built yet: a one-off private chat.
+
+**Personal memory (original outline).** `user_memory (org_id, user_id, kind, text,
 source_conversation_id ON DELETE CASCADE, pinned, last_used_at)`, ~30 per
 person, no embeddings in v1. Written by the existing background summary-fold
 call from the person's **questions only** (never from answers, which would copy

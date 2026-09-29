@@ -1875,3 +1875,25 @@ class LiveToolsSettings:
     def allows(self, org_id: str | None) -> bool:
         """Switched on, and this org is in the rollout."""
         return self.enabled and bool(org_id) and (not self.orgs or org_id in self.orgs)
+
+
+@dataclass(frozen=True)
+class PersonalMemorySettings:
+    """Personal memory, the Second Brain's "who is asking" layer.
+
+    OFF by default like every new layer: unset, no fact is written or read and
+    every answer is byte-identical. On, members and org admins can still turn
+    it off for themselves / the whole company (``users.memory_enabled``,
+    ``organizations.memory_enabled``). ``max_facts`` bounds each person's list:
+    past it the oldest UNPINNED fact goes.
+    """
+
+    enabled: bool = False
+    max_facts: int = 30
+
+    @classmethod
+    def from_env(cls) -> "PersonalMemorySettings":
+        return cls(
+            enabled=env_bool("PERSONAL_MEMORY_ENABLED", False),
+            max_facts=_env_positive_int("PERSONAL_MEMORY_MAX_FACTS", 30),
+        )

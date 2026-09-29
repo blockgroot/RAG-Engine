@@ -115,3 +115,98 @@ def finish_github_link(provider, code: str, state: str, settings: ApiSettings) -
         return back("link_error=github")
     _on_identity_change(org_id)
     return back("linked=github")
+
+
+# -- Personal memory (Second Brain layer C) ----------------------------------
+# Member-level and scoped to (org_id, user_id) from the session: a fact is about
+# one person, and nobody else can see, pin or delete it -- not even an admin.
+# The admin's only control is the company-wide switch (`PUT /account/memory/org`).
+
+
+def _fact(f) -> dict:
+    return {
+        "id": f.id,
+        "kind": f.kind,
+        "text": f.text,
+        "pinned": f.pinned,
+        "created_at": f.created_at.isoformat() if f.created_at else None,
+    }
+
+
+@router.get("/memory")
+def get_memory(session=Depends(get_session)):
+    from ..config.settings import PersonalMemorySettings
+    from ..memory import personal
+
+    available = PersonalMemorySettings.from_env().enabled
+    org_on, user_on = personal.switches(session.org_id, session.user_id)
+    return {
+        # Off for the deployment: the page says so instead of an empty list.
+        "available": available,
+        "org_enabled": org_on,
+        "enabled": user_on,
+        "can_manage_org": session.role == "admin",
+        "facts": [_fact(f) for f in personal.list_facts(session.org_id, session.user_id)],
+    }
+
+
+@router.put("/memory/settings")
+def set_memory_enabled(body: dict, session=Depends(get_session)):
+    from ..memory import personal
+
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="enabled must be true or false")
+    personal.set_user_enabled(session.org_id, session.user_id, enabled)
+    return {"enabled": enabled}
+
+
+@router.put("/memory/org")
+def set_org_memory_enabled(body: dict, session=Depends(get_session)):
+    from ..memory import personal
+
+    if session.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin role required")
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="enabled must be true or false")
+    personal.set_org_enabled(session.org_id, enabled)
+    return {"org_enabled": enabled}
+
+
+@router.post("/memory/{fact_id}/pin")
+def pin_memory(fact_id: str, body: dict, session=Depends(get_session)):
+    from ..memory import personal
+
+    pinned = body.get("pinned")
+    if not isinstance(pinned, bool):
+        raise HTTPException(status_code=400, detail="pinned must be true or false")
+    if not _is_uuid(fact_id) or not personal.set_pinned(session.org_id, session.user_id, fact_id, pinned):
+        raise HTTPException(status_code=404, detail="No such memory")
+    return {"id": fact_id, "pinned": pinned}
+
+
+@router.delete("/memory/{fact_id}")
+def delete_memory(fact_id: str, session=Depends(get_session)):
+    from ..memory import personal
+
+    if not _is_uuid(fact_id) or not personal.delete_fact(session.org_id, session.user_id, fact_id):
+        raise HTTPException(status_code=404, detail="No such memory")
+    return {"deleted": fact_id}
+
+
+@router.delete("/memory")
+def clear_memory(session=Depends(get_session)):
+    from ..memory import personal
+
+    return {"deleted": personal.clear_facts(session.org_id, session.user_id)}
+
+
+def _is_uuid(value: str) -> bool:
+    import uuid as _uuid
+
+    try:
+        _uuid.UUID(value)
+        return True
+    except (ValueError, TypeError):
+        return False

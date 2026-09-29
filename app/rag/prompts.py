@@ -179,8 +179,14 @@ def build_grounded_prompt(
     fallback_response: str,
     *,
     profile: PromptProfile = POLICY_PROMPT_PROFILE,
+    asker_facts: tuple[str, ...] = (),
 ) -> str:
     """Build the grounded-answer prompt (facts from CONTEXT only).
+
+    ``asker_facts`` (personal memory) sit OUTSIDE the context, after it, and
+    are framed as interpretation only: they may decide WHICH office or team a
+    question means, never supply a fact. The audit is handed CONTEXT alone,
+    so an answer resting on a memory is unsupported there by construction.
 
     ``contexts`` are retrieved chunk texts, most-relevant first. ``profile``
     supplies persona / scope nouns (policy vs workspace). Reply must open with
@@ -251,8 +257,24 @@ def build_grounded_prompt(
         "— not an exhaustive dump of every clause.\n\n"
         f"CONTEXT:\n{fenced}\n\n"
         f"{UNTRUSTED_REMINDER}\n\n"
+        f"{asker_block(asker_facts)}"
         f"QUESTION: {question}\n\n"
         "ANSWER:"
+    )
+
+
+def asker_block(asker_facts: tuple[str, ...]) -> str:
+    """Personal memory for a prompt, or "" when there is none."""
+    facts = [scrub_untrusted_text(f) for f in asker_facts if f and scrub_untrusted_text(f)]
+    if not facts:
+        return ""
+    lines = "\n".join(f"- {f}" for f in facts)
+    return (
+        "ABOUT THE ASKER (remembered from their own earlier questions). Use this "
+        "ONLY to understand what they mean -- which office, team or project, and "
+        "how much detail they like. It is NOT evidence: never state it as a fact "
+        "from CONTEXT and never answer from it.\n"
+        f"{lines}\n\n"
     )
 
 
