@@ -1075,6 +1075,7 @@ CREATE TABLE IF NOT EXISTS user_memory (
     pinned                 BOOLEAN NOT NULL DEFAULT FALSE,
     created_at             TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE user_memory ADD COLUMN IF NOT EXISTS announced BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_user_memory_text
     ON user_memory (org_id, user_id, lower(text));
 CREATE INDEX IF NOT EXISTS idx_user_memory_owner ON user_memory (org_id, user_id, created_at DESC);

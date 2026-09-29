@@ -46,6 +46,7 @@ _PHRASES = {
     "reviewed": "reviewed",
     "committed_to": "committed to",
     "same_person": "is the same person as",
+    "member_of": "is a member of",
 }
 _KNOWN_PROVIDERS = {"notion", "google", "slack", "linear", "github"}
 

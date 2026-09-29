@@ -280,6 +280,7 @@ from a re-fetch there — Slack reports it only on the LISTING, and ingest has
 already applied skip / owner-only / freeze to that exact row.
 
 **Second Brain graph (`app/graph/`: `identities`, `builder`, `linking`, `walk`)**
+- **`member_of` = person → PRIVATE Slack channel, evidence carries the CHANNEL's ACL** (`is_public=FALSE`, `viewers`=its `doc_viewers`), because membership is itself sensitive. Built from the database (threads' `doc_viewers` + `person_identities`), rebuilt whole per scope on EVERY Slack sync: membership moves without any message changing. Public channels get none.
 — Phase 1 of the plan, built and **OFF for answers** (`GRAPH_RETRIEVAL_ENABLED`).
 - **Identity is linked on PROOF only** (`person_identities.user_id`): the
   connector's email equals a member's login email IN THE SAME ORG
@@ -380,9 +381,10 @@ already applied skip / owner-only / freeze to that exact row.
 
 **Personal memory = the Second Brain's third layer (`app/memory/personal.py`, `user_memory`)**
 — a few facts per person ("works in the Bangalore office", "prefers short answers") carried across chats. Off unless `PERSONAL_MEMORY_ENABLED`; `users.memory_enabled` and `organizations.memory_enabled` (admin) switch it off.
+- **Memory narrows the SEARCH, not just the wording**: `context` facts (team, office) go into the rewrite prompt before retrieval, and a chat's FIRST question is rewritten when one exists ("office hours?" → "…for the Bangalore office?"). Shipped prompt-only, where "office hours" still searched every office and the Bangalore excerpt was usable only if it happened to rank. `preference` facts never trigger a rewrite. No `interest` kind: one message cannot show a recurring topic, and one-off questions filled the slots.
 - **Written ONLY from the asker's own question**, never an answer (an answer can quote a document only they may read). One aux call (`STAGE_MEMORY_EXTRACT`), beside the answer, and only when `worth_reading` sees self-talk ("I'm…", "my team…", "keep it short") — most questions pay nothing. ≤3 facts per question, ≤120 chars, third person; sensitive words (health, pay, credentials, family…), links/mentions and anything the scrubber would cut are dropped; case-insensitive dedupe.
 - **Never evidence**: facts ride the grounded prompt AFTER the fenced context as "ABOUT THE ASKER — interpretation only"; the audit is handed documents alone, so a claim resting on memory is unsupported by construction. `RagResult.personalized` keeps it out of the cache (read and write). The rewrite prompt does NOT get facts.
-- **Saved automatically, never silently** (the ChatGPT/Claude pattern): `done.remembered` → "Remembered: … · Undo" under the answer (waits ≤1.5 s for extraction; a slower one still saves and shows on the account page). `/account` lists, pins, forgets, clears; only the owner can touch a fact — an admin's only control is the company switch.
+- **Saved automatically, never silently** (the ChatGPT/Claude pattern): `done.remembered` → "Remembered: … · Undo" under the answer (waits ≤1.5 s; a slower save is `announced = FALSE` and shown on the NEXT answer — it shipped silent, which broke the promise). Nothing is saved without a chat: a chat-less fact would never expire. `/account` lists, pins, forgets, clears; only the owner can touch a fact — an admin's only control is the company switch.
 - **Bounded and fading**: `max_facts`=30, oldest UNPINNED out; `source_conversation_id ON DELETE CASCADE` so a fact dies with its chat (30-day purge) unless pinned, which detaches it. Web chat only — Slack/schedulers never read or write it. Not built: a one-off private chat.
 
 **Retrieved context carries its provenance** (`rag/context_assemble.py::describe_hit`)
@@ -2283,7 +2285,7 @@ and the graph as a retrieval list — **built, OFF for answers**.
   `python -m evaluation.graph_eval` runs with the real embedder and says
   "enable"** (the stand-in embedder in `tests/test_graph_eval.py` only proves the
   machinery). The "Linked accounts" page is `tsc`-checked only, never rendered.
-  `member_of` (private-channel membership) is not built. Deploy needs the
+  `member_of` is built (`builder.build_memberships`, every Slack sync; evidence carries the channel's ACL). Phase 1d (LLM extraction) waits on 1.7 + an aux endpoint (O1), by design. Deploy needs the
   additive schema (graph tables, `pg_trgm`, `person_identities`,
   `oauth_states.user_id`); existing documents fill in over ticks
   (`refresh_missing_meta` 25/job, `graph.builder.backfill` 200/tick).

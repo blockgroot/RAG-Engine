@@ -58,6 +58,13 @@ def _build_graph(org_id: str, provider: str, workspace_id: str | None, result) -
             build_documents(org_id, workspace_id, provider, external_ids)
         elif getattr(result, "documents_removed", 0):
             collect_garbage(org_id, workspace_id)
+        if provider == "slack":
+            # Membership moves without any message changing (someone joins or
+            # leaves a private channel; the listing re-stamps its threads), so
+            # it is rebuilt on EVERY Slack sync, not only when threads changed.
+            from ..graph.builder import build_memberships
+
+            build_memberships(org_id, workspace_id)
     except Exception:  # noqa: BLE001 - see docstring
         logger.warning(
             "graph: could not build %s for org %s", provider, org_id, exc_info=True

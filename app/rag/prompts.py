@@ -263,6 +263,21 @@ def build_grounded_prompt(
     )
 
 
+def _rewrite_asker_block(asker_context: tuple[str, ...]) -> str:
+    facts = [scrub_untrusted_text(f) for f in asker_context if f and scrub_untrusted_text(f)]
+    if not facts:
+        return ""
+    lines = "\n".join(f"- {f}" for f in facts)
+    return (
+        "ABOUT THE ASKER (remembered from their own earlier questions):\n"
+        f"{lines}\n"
+        "Add one of these details to the standalone question ONLY when the question "
+        "is ambiguous without it -- e.g. 'what are the office hours?' -> 'what are "
+        "the office hours for the Bangalore office?'. A question that is already "
+        "specific, or unrelated to them, stays unchanged.\n\n"
+    )
+
+
 def asker_block(asker_facts: tuple[str, ...]) -> str:
     """Personal memory for a prompt, or "" when there is none."""
     facts = [scrub_untrusted_text(f) for f in asker_facts if f and scrub_untrusted_text(f)]
@@ -339,8 +354,17 @@ def build_decompose_prompt(question: str) -> str:
     )
 
 
-def build_rewrite_prompt(question: str, summary: str | None, recent: list[tuple[str, str]]) -> str:
-    """Build the conversation rewrite prompt."""
+def build_rewrite_prompt(
+    question: str, summary: str | None, recent: list[tuple[str, str]],
+    asker_context: tuple[str, ...] = (),
+) -> str:
+    """Build the conversation rewrite prompt.
+
+    ``asker_context`` (personal memory: team, office, role) is what lets the
+    SEARCH narrow, not only the wording: "what are the office hours?" becomes
+    "office hours for the Bangalore office" BEFORE retrieval, so the Bangalore
+    excerpt is actually among what the answer can read.
+    """
     lines: list[str] = []
     if summary:
         lines.append(f"Summary of earlier conversation:\n{summary}")
@@ -368,13 +392,15 @@ def build_rewrite_prompt(question: str, summary: str | None, recent: list[tuple[
         "- Output ONLY the rewritten question: ONE line, ending with '?'.\n"
         "- Do NOT answer it, explain it, or add any other text.\n"
         "- If the latest question is already standalone, return it unchanged.\n"
-        "- Preserve the user's intent; do not add facts not implied by context.\n\n"
+        "- Preserve the user's intent; do not add facts not implied by context"
+        + (" or by ABOUT THE ASKER" if asker_context else "") + ".\n\n"
         "If the latest message is a follow-up, resolve references into a "
         "full standalone question; if it is already standalone, return it "
         "unchanged.\n\n"
         f"{UNTRUSTED_POLICY}\n"
         f"CONVERSATION CONTEXT:\n{context_block}\n\n"
         f"{UNTRUSTED_REMINDER}\n\n"
+        f"{_rewrite_asker_block(asker_context)}"
         f"LATEST QUESTION: {question}\n\n"
         "STANDALONE QUESTION:"
     )

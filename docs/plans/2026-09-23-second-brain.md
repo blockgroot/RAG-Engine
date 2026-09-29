@@ -387,9 +387,15 @@ For each document an ingest job touched (`IngestResult.ingested_external_ids`):
   issue entity's `aliases`.
 - Documents re-fetched by the metadata refresh are built too
   (`IngestResult.meta_refreshed_external_ids`).
-- `member_of` (private-channel membership) is NOT built in Phase 1: membership
-  is only stored as the threads' `doc_viewers`, and it is sensitive enough to
-  wait for evidence rows that carry the channel's own ACL.
+- `member_of` (private-channel membership) — **built 2026-09-29**
+  (`builder.build_memberships`). Read from the database only: a private
+  channel's access list is on its threads' `doc_viewers`, and a member email
+  becomes a person through `person_identities` (provider `slack`). Each edge's
+  evidence carries the CHANNEL's ACL (`is_public = FALSE`, `viewers` = that
+  list), so only people who may read the channel learn who is in it. Rebuilt
+  whole for the scope on EVERY Slack sync (membership moves without any
+  message changing); a channel that turns public, a member who leaves, or a
+  disconnect converge on the next build. Public channels get no edges.
 
 ### 1.5 Linking and walking (`linking.py`, `walk.py`)
 
@@ -509,6 +515,14 @@ part of the current work. **Next after Phase 1 is 1.7's measurement, then 1d.**
 
 ## Phase 1d: LLM extraction (after 1.7 shows the structured graph is used)
 
+**Status (2026-09-29): deliberately not built yet — its two gates are still
+closed.** (1) Step 1.7 has not run with the real embedder, so there is no
+evidence the structured graph is used; extraction would add cost to a layer
+not yet shown to help. (2) O1: every extraction is an LLM call per new chunk,
+and without a separate background endpoint (`LLM_AUX_BASE_URL` + key) it would
+compete with live questions for the same 15 rpm. Build it when 1.7 says
+"enable" and an aux endpoint exists.
+
 - LightRAG-style: entities and relations from **new or changed chunks only**
   (the sync diff already knows which), on the **aux** endpoint, with a
   per-org extraction budget. Closed entity types: person, team, project,
@@ -537,6 +551,17 @@ the fenced context as interpretation only; the audit gets documents alone. Not
 used by the rewrite prompt (its rule is "add nothing not implied by the
 conversation"). `last_used_at` dropped (no reader). Web chat only; Slack and
 schedulers never read or write memory. Not built yet: a one-off private chat.
+
+Review fixes (2026-09-29): (1) memory now narrows the SEARCH — `context`
+facts go into the question rewrite before retrieval, which now runs even on a
+chat's first question when such a fact exists ("office hours?" → "office hours
+for the Bangalore office?"; one aux call, only for people with a remembered
+team/office); preferences never trigger it. (2) the `interest` kind is gone:
+one message cannot show someone keeps asking about a topic, and single
+questions were filling the slots. (3) a fact whose extraction outlives the
+1.5 s grace is `announced = FALSE` and shown on the NEXT answer, so nothing is
+saved silently. (4) nothing is saved without a chat, since a chat-less fact
+would never expire.
 
 **Personal memory (original outline).** `user_memory (org_id, user_id, kind, text,
 source_conversation_id ON DELETE CASCADE, pinned, last_used_at)`, ~30 per

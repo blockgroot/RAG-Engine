@@ -71,7 +71,7 @@ from .attachment_tools import (
 from .access_notice import live_withheld_notice, restricted_notice
 from ..guard import build_injection_guard
 from ..livetools import LiveRefresh, current_live_request
-from ..memory.personal import current_asker_facts
+from ..memory.personal import current_asker_context, current_asker_facts
 from ..livetools import refresh as live_refresh
 from ..livetools.handles import mint as mint_handles
 from ..livetools.handles import resolve as resolve_handle
@@ -644,7 +644,10 @@ class RagPipeline:
             context = self._memory.get_context(
                 conversation_id, self._memory_settings.recent_turns
             )
-            if not context.is_empty():
+            # Personal memory narrows the SEARCH, not only the wording: with
+            # a remembered team/office the question is rewritten even on a
+            # chat's first turn, so "office hours?" searches for Bangalore's.
+            if not context.is_empty() or current_asker_context():
                 resolved = self._rewrite_question(
                     question, context, org_id=org_id, conversation_id=conversation_id
                 )
@@ -2454,7 +2457,9 @@ class RagPipeline:
         conversation_id: str | None = None,
     ) -> str:
         recent = [(t.question, t.answer) for t in context.recent_turns]
-        prompt = build_rewrite_prompt(question, context.summary, recent)
+        prompt = build_rewrite_prompt(
+            question, context.summary, recent, asker_context=current_asker_context()
+        )
         try:
             rewritten = self._generate_text(
                 STAGE_REWRITE,

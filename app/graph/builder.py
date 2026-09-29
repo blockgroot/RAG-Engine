@@ -424,6 +424,129 @@ def build_documents(
     return len(rows)
 
 
+# -- private-channel membership (member_of) ------------------------------------------
+
+#: `documents.tags` prefix for a Slack channel, the same string a channel
+#: container is keyed by (`container_key`), so one value names both.
+_SLACK_CHANNEL = "slack:channel:"
+
+
+def build_memberships(org_id: str, workspace_id: str | None) -> int:
+    """(Re)build ``member_of`` edges: person → PRIVATE Slack channel.
+
+    Membership is sensitive in itself ("who is in #layoffs-planning"), so each
+    edge's evidence carries the CHANNEL's own ACL (``is_public = FALSE``,
+    ``viewers`` = the channel's access list), and the walk's
+    ``evidence_predicate`` shows it only to someone who may read that channel.
+
+    Read from the database only, like the rest of the builder: the channel's
+    access list is already on its threads (``doc_viewers``, captured from
+    ``conversations.members`` at sync), and a member email becomes a person
+    through ``person_identities``. Rebuilt whole for the scope every time, so a
+    channel that went public, a member who left, or a disconnect all converge
+    on the next build. Returns edges written.
+    """
+    with get_connection() as conn:
+        channels = conn.execute(
+            f"""
+            SELECT DISTINCT ON (tag) tag, d.doc_viewers
+              FROM documents d, unnest(d.tags) AS tag
+             WHERE d.org_id = %s::uuid AND {_scope('d')}
+               AND d.source_provider = 'slack' AND NOT d.doc_is_public
+               AND tag LIKE %s
+             ORDER BY tag, d.source_last_modified DESC NULLS LAST
+            """,
+            (org_id, workspace_id, _SLACK_CHANNEL + "%"),
+        ).fetchall()
+        # Every channel's old membership goes first: a channel that turned
+        # public (no private threads left) or a member who left must lose it.
+        conn.execute(
+            f"""
+            DELETE FROM kg_evidence ev USING kg_edges e, kg_entities x
+             WHERE ev.edge_id = e.id AND e.relation = 'member_of'
+               AND e.dst_id = x.id AND x.org_id = %s::uuid AND {_scope('x')}
+               AND x.key LIKE %s
+            """,
+            (org_id, workspace_id, _SLACK_CHANNEL + "%"),
+        )
+        channel_ids = dict(
+            conn.execute(
+                f"""
+                SELECT key, id::text FROM kg_entities
+                 WHERE org_id = %s::uuid AND {_scope()} AND key = ANY(%s)
+                """,
+                (org_id, workspace_id, [c[0] for c in channels]),
+            ).fetchall()
+        )
+        emails = sorted({
+            v.lower() for _, viewers in channels for v in (viewers or []) if "@" in v and ":" not in v
+        })
+        people = conn.execute(
+            """
+            SELECT lower(email), external_id, coalesce(display_name, email)
+              FROM person_identities
+             WHERE org_id = %s::uuid AND provider = 'slack' AND lower(email) = ANY(%s)
+            """,
+            (org_id, emails),
+        ).fetchall() if emails else []
+        by_email: dict[str, list[tuple[str, str]]] = {}
+        for email, external_id, name in people:
+            by_email.setdefault(email, []).append((external_id, name))
+
+        batch = _Batch(org_id, workspace_id)
+        acl_by_channel: dict[str, list[str]] = {}
+        for tag, viewers in channels:
+            if tag not in channel_ids:
+                continue  # no channel entity in this scope yet
+            acl_by_channel[tag] = list(viewers or [])
+            for email in {v.lower() for v in (viewers or []) if "@" in v and ":" not in v}:
+                for external_id, name in by_email.get(email, []):
+                    pkey = batch.entity(identity_key("slack", external_id), "person", name)
+                    batch.edge(pkey, tag, "member_of")
+        written = _write_memberships(conn, batch, channel_ids, acl_by_channel)
+        _collect_garbage(conn, org_id, workspace_id)
+    return written
+
+
+def _write_memberships(conn, batch: _Batch, channel_ids: dict[str, str],
+                       acl_by_channel: dict[str, list[str]]) -> int:
+    """Edges via `_write` without evidence, then evidence carrying each
+    channel's ACL -- the one evidence kind `_write` does not produce."""
+    edges = list(batch.edges)
+    batch.edges = []
+    _write(conn, batch, channel_ids)  # entities only
+    if not edges:
+        return 0
+    person_ids = dict(conn.execute(
+        f"""
+        SELECT key, id::text FROM kg_entities
+         WHERE org_id = %s::uuid AND {_scope()} AND key = ANY(%s)
+        """,
+        (batch.org_id, batch.workspace_id, list({src for src, _, _, _ in edges})),
+    ).fetchall())
+    rows = [(person_ids[src], channel_ids[dst], dst) for src, dst, _, _ in edges
+            if src in person_ids and dst in channel_ids]
+    if not rows:
+        return 0
+    edge_ids = conn.execute(
+        """
+        INSERT INTO kg_edges (org_id, workspace_id, src_id, dst_id, relation)
+        SELECT %s::uuid, %s::uuid, s::uuid, d::uuid, 'member_of'
+          FROM unnest(%s::text[], %s::text[]) AS t(s, d)
+        ON CONFLICT (src_id, dst_id, relation) WHERE valid_to IS NULL
+        DO UPDATE SET last_seen = now()
+        RETURNING id::text, dst_id::text
+        """,
+        (batch.org_id, batch.workspace_id, [r[0] for r in rows], [r[1] for r in rows]),
+    ).fetchall()
+    key_by_id = {cid: key for key, cid in channel_ids.items()}
+    conn.cursor().executemany(
+        "INSERT INTO kg_evidence (edge_id, is_public, viewers) VALUES (%s::uuid, FALSE, %s)",
+        [(edge_id, acl_by_channel[key_by_id[dst]]) for edge_id, dst in edge_ids],
+    )
+    return len(edge_ids)
+
+
 # -- facts (GitHub) -----------------------------------------------------------------
 
 

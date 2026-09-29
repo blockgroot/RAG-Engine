@@ -41,7 +41,10 @@ from ..security.untrusted import (
 
 logger = logging.getLogger(__name__)
 
-KINDS = ("preference", "context", "interest")
+#: No "interest": one message cannot show that someone KEEPS asking about a
+#: topic, and single questions saved as interests filled the slots with noise
+#: ("Inquires about the ownership of the authentication service").
+KINDS = ("preference", "context")
 #: Facts saved from one question, at most.
 MAX_PER_QUESTION = 3
 MAX_FACT_CHARS = 120
@@ -63,7 +66,7 @@ _SENSITIVE = re.compile(
     re.IGNORECASE,
 )
 _LINKISH = re.compile(r"https?://|www\.|@\w|<[^>]+>")
-_LINE = re.compile(r"^\s*[-*]?\s*(preference|context|interest)\s*[:|]\s*(.+?)\s*$", re.IGNORECASE)
+_LINE = re.compile(r"^\s*[-*]?\s*(preference|context)\s*[:|]\s*(.+?)\s*$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -73,17 +76,23 @@ class Fact:
     text: str
     pinned: bool
     created_at: datetime | None = None
+    #: Shown to the person yet ("Remembered: ... · Undo")? A fact saved after
+    #: the answer stopped waiting is announced on their NEXT answer instead.
+    announced: bool = True
 
 
 # -- the facts the current request may use -----------------------------------
 
-_ASKER: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
+_ASKER: contextvars.ContextVar[tuple[tuple[str, str], ...]] = contextvars.ContextVar(
     "asker_facts", default=()
 )
 
 
-def use_asker_facts(facts: tuple[str, ...]) -> contextvars.Token:
-    return _ASKER.set(tuple(facts))
+def use_asker_facts(facts) -> contextvars.Token:
+    """``facts``: ``(kind, text)`` pairs, or bare strings (read as context)."""
+    return _ASKER.set(tuple(
+        (f, "context")[::-1] if isinstance(f, str) else (f[0], f[1]) for f in facts
+    ))
 
 
 def reset_asker_facts(token: contextvars.Token) -> None:
@@ -92,7 +101,13 @@ def reset_asker_facts(token: contextvars.Token) -> None:
 
 def current_asker_facts() -> tuple[str, ...]:
     """Facts about the person asking THIS question; empty everywhere else."""
-    return _ASKER.get()
+    return tuple(text for _, text in _ASKER.get())
+
+
+def current_asker_context() -> tuple[str, ...]:
+    """Only the ``context`` facts (team, office, role): the ones that may
+    narrow WHAT is searched. Preferences shape wording, never the search."""
+    return tuple(text for kind, text in _ASKER.get() if kind == "context")
 
 
 # -- switches -----------------------------------------------------------------
@@ -157,7 +172,7 @@ def list_facts(org_id: str, user_id: str) -> list[Fact]:
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT id::text, kind, text, pinned, created_at
+            SELECT id::text, kind, text, pinned, created_at, announced
             FROM user_memory
             WHERE org_id = %s::uuid AND user_id = %s::uuid
             ORDER BY pinned DESC, created_at DESC
@@ -182,7 +197,7 @@ def save_facts(org_id: str, user_id: str, conversation_id: str | None,
                 INSERT INTO user_memory (org_id, user_id, kind, text, source_conversation_id)
                 VALUES (%s::uuid, %s::uuid, %s, %s, %s::uuid)
                 ON CONFLICT (org_id, user_id, lower(text)) DO NOTHING
-                RETURNING id::text, kind, text, pinned, created_at
+                RETURNING id::text, kind, text, pinned, created_at, announced
                 """,
                 (org_id, user_id, kind, text, conversation_id),
             ).fetchone()
@@ -203,6 +218,17 @@ def save_facts(org_id: str, user_id: str, conversation_id: str | None,
             (org_id, user_id, settings.max_facts, org_id, user_id),
         )
     return added
+
+
+def mark_announced(org_id: str, user_id: str, fact_ids: list[str]) -> None:
+    if not fact_ids:
+        return
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE user_memory SET announced = TRUE "
+            "WHERE org_id = %s::uuid AND user_id = %s::uuid AND id = ANY(%s::uuid[])",
+            (org_id, user_id, fact_ids),
+        )
 
 
 def delete_fact(org_id: str, user_id: str, fact_id: str) -> bool:
@@ -254,12 +280,12 @@ def build_extract_prompt(question: str, known: tuple[str, ...]) -> str:
         "assistant understand their future questions (which office, team or role "
         "they mean; how they like answers).\n\n"
         "From the employee's MESSAGE below, extract at most three NEW, lasting facts "
-        "about the employee THEMSELVES, one per line, as:\n"
+        "the employee STATES about THEMSELVES, one per line, as:\n"
         "preference: <how they like answers>\n"
         "context: <their team, role, office, location, projects>\n"
-        "interest: <a topic, team or project they keep asking about>\n"
         "Write each fact in the third person, under 15 words (e.g. 'Works in the "
-        "Bangalore office'). Skip anything already in KNOWN FACTS, anything about "
+        "Bangalore office'). A question is not a fact: never record what they asked "
+        "about. Skip anything already in KNOWN FACTS, anything about "
         "other people, anything temporary, and anything sensitive (health, pay, "
         "family, credentials, beliefs, identity). If there is nothing, reply "
         "exactly: NONE\n\n"
@@ -302,8 +328,12 @@ def parse_facts(raw: str, known: tuple[str, ...] = ()) -> list[tuple[str, str]]:
 def remember_from_question(question: str, *, org_id: str, user_id: str,
                            conversation_id: str | None, known: tuple[str, ...],
                            llm=None) -> list[Fact]:
-    """Read ONE question for lasting facts and save them. Never raises."""
-    if not worth_reading(question):
+    """Read ONE question for lasting facts and save them. Never raises.
+
+    Nothing is saved without a chat: a fact expires with the chat it came from,
+    so one with no chat would never expire -- a pin nobody chose.
+    """
+    if not worth_reading(question) or not conversation_id:
         return []
     try:
         from ..llm.factory import build_aux_llm_provider

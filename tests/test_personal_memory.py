@@ -48,16 +48,17 @@ def test_parse_keeps_valid_facts_and_drops_everything_risky():
         "context: Works in the Bangalore office.",
         "preference: Prefers short answers",
         "context: Has a medical condition",                  # sensitive
-        "interest: Asks about https://evil.example/x",       # a link
+        "context: See https://evil.example/x",               # a link
         "context: " + "x" * 200,                              # oversized
-        "interest: Payments team issues",
+        "interest: Inquires about the auth service owner",   # no interests any more
+        "context: Works on the payments team",
         "context: Leads the mobile squad",
         "context: Something past the per-question cap",
         "Sure! Here you go",                                  # off-format
     ])
     facts = personal.parse_facts(raw, known=("prefers short answers",))
     assert facts == [("context", "Works in the Bangalore office"),
-                     ("interest", "Payments team issues"),
+                     ("context", "Works on the payments team"),
                      ("context", "Leads the mobile squad")]  # capped at 3
 
 
@@ -151,10 +152,11 @@ def test_the_chat_edge_hands_facts_in_and_announces_what_it_saved(monkeypatch):
     monkeypatch.setattr(personal, "list_facts",
                         lambda org, user: [personal.Fact("f-0", "preference", "Prefers short answers", True)])
     monkeypatch.setattr(personal, "remember_from_question", lambda q, **kw: (seen.setdefault("kw", kw), saved)[1])
+    monkeypatch.setattr(personal, "mark_announced", lambda org, user, ids: seen.setdefault("announced", ids))
 
-    def body(question, org_id, conversation_id, workspace_id, requested_agent, model, session, memory_future):
+    def body(question, org_id, conversation_id, workspace_id, requested_agent, model, session, memory_turn):
         seen["facts"] = personal.current_asker_facts()
-        yield "event: done\ndata: " + json.dumps({"remembered": chat._remembered(memory_future)}) + "\n\n"
+        yield "event: done\ndata: " + json.dumps({"remembered": chat._remembered(memory_turn)}) + "\n\n"
 
     monkeypatch.setattr(chat, "_stream_answer_body", body)
     session = SimpleNamespace(user_id="user-1", role="member")
@@ -165,7 +167,34 @@ def test_the_chat_edge_hands_facts_in_and_announces_what_it_saved(monkeypatch):
     assert seen["kw"]["known"] == ("Prefers short answers",)
     done = json.loads(out[-1].split("data: ", 1)[1])
     assert done["remembered"] == [{"id": "f-1", "text": "Works in the Bangalore office"}]
+    assert seen["announced"] == ["f-1"]
     assert personal.current_asker_facts() == ()  # reset after the stream
+
+
+def test_a_fact_saved_too_late_is_announced_on_the_next_answer(monkeypatch):
+    """The answer waits 1.5 s at most; a slower save must not stay silent."""
+    from app.api import chat
+
+    late = personal.Fact("f-9", "context", "Works in the Pune office", False, announced=False)
+    monkeypatch.setattr(personal, "is_active", lambda org, user: True)
+    monkeypatch.setattr(personal, "list_facts", lambda org, user: [late])
+    marked = []
+    monkeypatch.setattr(personal, "mark_announced", lambda org, user, ids: marked.extend(ids))
+    facts, turn = chat._start_personal_memory("What is the leave policy?", "org-1", "c-2",
+                                              SimpleNamespace(user_id="u"))
+    assert turn.future is None  # nothing new to read in this question
+    assert chat._remembered(turn) == [{"id": "f-9", "text": "Works in the Pune office"}]
+    assert marked == ["f-9"]
+
+
+def test_a_question_with_no_chat_saves_nothing(monkeypatch):
+    class _LLM:
+        def generate(self, *a, **k):
+            raise AssertionError("no call without a chat")
+
+    assert personal.remember_from_question(
+        "I work in the Pune office", org_id="o", user_id="u", conversation_id=None,
+        known=(), llm=_LLM()) == []
 
 
 def test_memory_off_means_no_facts_and_no_extraction(monkeypatch):
@@ -174,8 +203,8 @@ def test_memory_off_means_no_facts_and_no_extraction(monkeypatch):
     monkeypatch.setattr(personal, "is_active", lambda org, user: False)
     monkeypatch.setattr(personal, "remember_from_question",
                         lambda *a, **k: pytest.fail("no extraction when off"))
-    facts, future = chat._start_personal_memory("I'm on payments", "org-1", "c", SimpleNamespace(user_id="u"))
-    assert facts == [] and future is None
+    facts, turn = chat._start_personal_memory("I'm on payments", "org-1", "c", SimpleNamespace(user_id="u"))
+    assert facts == [] and turn is None
 
 
 # --------------------------------------------------------------------------
@@ -291,3 +320,78 @@ def test_routes_are_scoped_and_the_org_switch_is_admin_only(people, monkeypatch)
     admin = SimpleNamespace(org_id=people.org, user_id=people.bo, role="admin")
     assert account.set_org_memory_enabled({"enabled": False}, session=admin) == {"org_enabled": False}
     assert account.delete_memory(fact.id, session=ada) == {"deleted": fact.id}
+
+
+
+# --------------------------------------------------------------------------
+# Memory narrows the SEARCH, not only the wording
+# --------------------------------------------------------------------------
+
+
+class _Memory:
+    """A conversation store with no history: a chat's first question."""
+
+    def get_context(self, conversation_id, recent_turns):
+        from app.memory.base import ConversationContext
+
+        return ConversationContext()
+
+    def append_turn(self, *a, **k):
+        pass
+
+    def get_last_retrieval(self, *a, **k):
+        return []
+
+    def set_last_retrieval(self, *a, **k):
+        pass
+
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
+def _memory_pipeline(rewrite):
+    llm = RecordingLLM(answer="MODE: A\nBangalore opens at 9.", rewrite=rewrite)
+    pipe = RagPipeline(
+        llm=llm, embedder=KeywordEmbedder(),
+        store=TopicAwareVectorStore("org-1", [("d1", "leave office hours Bangalore 9-6")]),
+        memory=_Memory(),
+        settings=RagSettings(top_k=3, similarity_threshold=0.35, fallback_response=FALLBACK),
+    )
+    return llm, pipe
+
+
+def test_a_remembered_office_rewrites_the_first_question_before_search():
+    llm, pipe = _memory_pipeline("What are the leave office hours for the Bangalore office?")
+    token = personal.use_asker_facts((("context", "Works in the Bangalore office"),))
+    try:
+        result = pipe.answer("What are the office hours?", "org-1", conversation_id="c-1")
+    finally:
+        personal.reset_asker_facts(token)
+    rewrite_prompts = [p for p in llm.prompts if "STANDALONE QUESTION:" in p]
+    assert rewrite_prompts, "a first question with a remembered office must be rewritten"
+    assert "Works in the Bangalore office" in rewrite_prompts[0]
+    assert result.resolved_question == "What are the leave office hours for the Bangalore office?"
+
+
+def test_a_preference_alone_never_triggers_a_rewrite():
+    llm, pipe = _memory_pipeline("unused?")
+    token = personal.use_asker_facts((("preference", "Prefers short answers"),))
+    try:
+        pipe.answer("What are the office hours?", "org-1", conversation_id="c-1")
+    finally:
+        personal.reset_asker_facts(token)
+    assert not [p for p in llm.prompts if "STANDALONE QUESTION:" in p]
+
+
+def test_no_memory_means_no_first_turn_rewrite():
+    llm, pipe = _memory_pipeline("unused?")
+    pipe.answer("What are the office hours?", "org-1", conversation_id="c-1")
+    assert not [p for p in llm.prompts if "STANDALONE QUESTION:" in p]
+
+
+@requires_db
+def test_a_late_fact_is_unannounced_until_shown(people):
+    (fact,) = personal.save_facts(people.org, people.ada, people.conv, [("context", "On payments")])
+    assert personal.list_facts(people.org, people.ada)[0].announced is False
+    personal.mark_announced(people.org, people.ada, [fact.id])
+    assert personal.list_facts(people.org, people.ada)[0].announced is True
