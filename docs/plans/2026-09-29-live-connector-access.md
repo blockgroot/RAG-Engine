@@ -68,7 +68,7 @@ question ──▶ routing + graph plan + retrieval (unchanged, viewer-filtered)
 | D4 | **(Lands with mode B, Phase 2.) Opaque handles, resolved server-side.** Mode A needs none: the server picks the targets from this request's hits and resolves `(provider, external_id)` from the `documents` row itself, so no target is ever named by the model. Rendering handles into the prompt before a model can use one would be machinery with no reader. Every hit in the context carries a handle (`[L2]`, `[S3]`); anything that names a target passes the handle, and the gateway maps it to `(provider, external_id)` from the `documents` row of *this request's* hits. | The model never sees a channel id, thread ts or file id, so it cannot aim a call at something retrieval did not clear. Fixes the `list_reviews`-class bug (CLAUDE.md): a tool needing a value not in the context is unreachable. |
 | D4a | **(With D4.) Handles never reach the user.** The model will sometimes echo them ("per [L2]…"). They are stripped from the final answer at the edge, in the same place the `MODE:` tag is parsed off, BEFORE the answer is streamed, cached, written as a turn, sent to Slack or logged as a gap. | A handle is machinery, meaningless to a reader and a leak of internal structure into the cache and Slack. |
 | D4b | **(With D4.) Handles are minted for reused hits too.** Mode A already refreshes reused hits: it reads `document_id` off whatever hits the turn has, fresh or reused. `_try_reuse` answers a follow-up from the previous turn's chunks without retrieval; those chunks get handles exactly like fresh hits, from the same `documents` rows, and resolve only within this request. | Otherwise "any update on it?" after "what's the status of SYV-5?" can refresh nothing — the most natural follow-up to a status question. |
-| D5 | **Phase 1 is mode A only, in deep research: graph/retrieval-guided refresh, zero extra model calls.** When the graph plan or the top hits contain a refreshable object, the gateway re-reads it in parallel with prompt assembly, and the live block supersedes the stale chunk. | Handles the headline case ("latest on SYV-5") with no latency from a second model round and no cost against the 15 rpm budget. |
+| D5 | **Phase 1 is mode A only, in deep research: graph/retrieval-guided refresh, zero extra model calls.** When the top hits contain a refreshable object, the gateway re-reads it (reads run in parallel with EACH OTHER) and the live block SUPERSEDES the stale chunk: that document's synced chunks leave the prompt (they stay on the result for citations and next-turn reuse). **Correction (staging, 2026-09-29):** "in parallel with prompt assembly" was never achievable — prompt assembly is microseconds, so the read (~2 s) is on the critical path after the gate. Hiding it means starting it during retrieval's tail (rerank), the next step if first word is still over budget. | Handles the headline case ("latest on SYV-5") with no latency from a second model round and no cost against the 15 rpm budget. |
 | D6 | **Mode B (the model requests a live read) is offered only on a refusal / gate miss — where the web tool already sits — and in deep research.** Never on every question. Arguments are handles only. | Grounded generation does not call tools today (`generate_with_tools` is used only by attachment paging, the web decision, GitHub and schedulers); offering tools on every answer means a serial tool-choosing round on every question. On a refusal that round is already being paid for. Settles rev 1's open question. |
 | D7 | **Scope is honest per connector.** Slack = connected `channel_ids`; Drive = connected `folder_id`; GitHub = authorized repos; **Linear = everything the token can see** (no team scope exists in `source_config`, `autosync.SCOPE_KEYS` has only google/slack); **Notion = pages shared with the integration**. Because of D3 the live read can never exceed what the index already exposes; no guard is claimed that does not exist. A Linear team picker is a separate, optional change. | A claimed guard that does not exist is worse than a stated gap (CLAUDE.md, document-level access). |
 | D8 | **One access model with the index.** Per-person visibility is exactly what `visibility_predicate` already decided at retrieval — including Drive's **owner-only fallback** for unreadable sharing, not a separate "drop" rule. Freshness adds one check: if the live read shows the object is gone or no longer accessible to the connection (404/403), the stale chunk is withheld too ("not found or not accessible"). | Two rules would show the same person a document in a normal answer and not in a live one. |
@@ -189,7 +189,7 @@ only on a refusal/gate miss. There is no search tool (D2, D3).
 | Env var | Default | Meaning |
 |---|---|---|
 | `LIVE_TOOLS_ENABLED` | `false` | master switch |
-| `LIVE_TOOLS_PROVIDERS` | `linear` | which providers may be refreshed |
+| `LIVE_TOOLS_PROVIDERS` | `linear` | which providers may be refreshed; staging: `notion,google` (+`linear` once verified), never `slack` (restricted tier) |
 | `LIVE_TOOLS_ORGS` | *(empty = all)* | org allow-list for staged rollout |
 
 Constants in `app/livetools/base.py`: `MAX_REFRESHES = 2` per question,
@@ -376,6 +376,21 @@ charts from live data (numbers still come only from `activity_facts`).
 | Live text must pass guard, audit and link rule, not only scrubbing | D9 + Phase 1 tests for each |
 | Drive "drop unreadable" contradicted the index's owner-only fallback; `in parents` misses nested folders | D8/D11: one access model, refresh-by-handle only, no `drive_search` |
 | 11 settings, a factory, a cache for Phase 1 | D12/D15: three settings, constants, no factory, no cache until the audit shows need |
+
+### Staging run (2026-09-29)
+
+| Check | Result |
+|---|---|
+| `tests/test_live_tools.py` | pass |
+| Notion live refresh, 2 reads | pass, ~2.1 s, reads parallel to each other; `live_sources` in `done` |
+| Follow-up "any update on it?" | pass, same pages re-read |
+| Drive viewer / non-viewer | pass; non-viewer gets no live call and the "not shared with you" notice (folder, never document) |
+| No handles in answers/turns; `live_tool_calls` rows with no token or text; no token in in-process logs | pass |
+| Time to first word | **fail, ~5 s slower**: the read is serial after the gate, and the live block was ADDED beside the synced chunks (a prompt ~2x long, two versions of one page). Fixed: the block now supersedes that document's chunks. Re-measure. |
+| Slack tier (D10) | **restricted**: `limit=200` returned exactly 15 with `has_more` twice. Slack stays out of `LIVE_TOOLS_PROVIDERS`; ingestion is affected too (follow-up). |
+| Linear, injection guard on live text, Render logs | not tested (staging's Linear token expired; client secret only on the server; needs a throwaway issue) |
+
+Found and fixed: `get_live_connection_token` marked `needs_reauth` on ANY refresh failure, including this host's own `ConfigurationError` (client secret unset) — one bad deploy would flag every connection "Reconnect". It now re-raises a `ConfigurationError` without touching the connection.
 
 ### Revision 4
 

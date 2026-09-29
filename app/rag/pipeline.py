@@ -936,6 +936,7 @@ class RagPipeline:
             # below them. Inside `contexts`, so the audit and the link rule
             # both see them (plan D9).
             extra_contexts=live.blocks + attachment_contexts,
+            superseded=live.refreshed,
         )
         audit_used, audit_downgraded, audit_reason = (
             result.audit_used,
@@ -1005,6 +1006,7 @@ class RagPipeline:
                 budget=budget,
                 user_question=tone_question,
                 extra_contexts=live.blocks + attachment_contexts,
+                superseded=live.refreshed,
             )
             audit_used, audit_downgraded, audit_reason = (
                 result.audit_used,
@@ -1598,6 +1600,7 @@ class RagPipeline:
         contexts: list[str] | None = None,
         extra_contexts: list[str] | None = None,
         profile: PromptProfile | None = None,
+        superseded: frozenset[str] = frozenset(),
     ) -> RagResult:
         # `contexts` is supplied only by `answer_from_attachments`, where the
         # text came from a file the asker handed us rather than from
@@ -1638,13 +1641,19 @@ class RagPipeline:
                     retrieval_reused=retrieval_reused,
                 )
             hits = screened
+            # A document read LIVE this request (deep research) is in
+            # `extra_contexts` already; its synced chunks would put a second,
+            # older version of the same page in the prompt and double what the
+            # model and the audit read. They stay in `hits` -- citations and
+            # the next turn's reuse still need to know the document was used.
+            prompt_hits = [h for h in hits if h.document_id not in superseded]
             contexts = assemble_context_texts(
                 # Title AND provenance: the provider, who last edited it and
                 # when. All of it was already on the JOINed document row and
                 # was being dropped, so "who wrote this?" refused against data
                 # we had. The date is also what lets a whole read answer
                 # "what happened recently?" at all.
-                [describe_hit(h) for h in hits],
+                [describe_hit(h) for h in prompt_hits],
                 0 if whole_read else self._settings.max_context_chars,
             )
         # Files the asker attached go in FIRST, ahead of retrieved chunks.
@@ -2202,7 +2211,7 @@ class RagPipeline:
         result = self._generate(
             question, chosen, top_score, retrieval_reused=False, org_id=org_id,
             conversation_id=conversation_id, budget=budget, user_question=user_question,
-            extra_contexts=live.blocks,
+            extra_contexts=live.blocks, superseded=live.refreshed,
         )
         if not result.answered:
             return None, web

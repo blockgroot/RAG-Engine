@@ -68,6 +68,12 @@ class LiveRefresh:
         return [r.text for r in self.reads if r.outcome == OK and r.text]
 
     @property
+    def refreshed(self) -> frozenset[str]:
+        """Documents whose live block is in the prompt: their synced chunks
+        are superseded and must not ride along beside it (plan D5)."""
+        return frozenset(r.document_id for r in self.reads if r.outcome == OK and r.text)
+
+    @property
     def withheld(self) -> dict[str, str]:
         """``document_id -> provider`` for objects the provider says are gone
         or no longer readable: their indexed copies must not answer either."""

@@ -367,13 +367,18 @@ def test_normal_qa_never_reads_live(monkeypatch):
     assert result.live_sources == []
 
 
-def test_deep_research_puts_the_live_block_first_in_the_prompt(monkeypatch, deep_research):
+def test_deep_research_replaces_the_synced_copy_with_the_live_block(monkeypatch, deep_research):
     _live(monkeypatch, LiveRefresh(reads=[_ok()]))
     llm, pipeline = _pipeline()
     result = pipeline.answer("leave tracker status?", "org-1")
 
     prompt = _grounded_prompt(llm)
-    assert prompt.index("SYV-5 status In Review") < prompt.index("leave tracker issue SYV-5")
+    assert "SYV-5 status In Review" in prompt
+    # The live block SUPERSEDES the synced copy: one version of the page, not two.
+    assert "leave tracker issue SYV-5" not in prompt
+    assert "leave dental policy page" in prompt  # other documents are untouched
+    # Still cited, and still remembered for the next turn's reuse.
+    assert "doc-linear" in {h.document_id for h in result.sources}
     assert result.answered
     assert result.live_sources == [{"provider": "linear",
                                     "fetched_at": "2026-09-29T12:04:00+00:00"}]
@@ -895,3 +900,42 @@ def test_mode_b_shares_one_call_with_the_web_decision(monkeypatch, deep_research
     result = pipe.answer("what is the parking status?", "org-1")
     assert llm.tools_offered == [["refresh_item", "web_search"]]  # one call, both tools
     assert not result.answered
+
+
+# --------------------------------------------------------------------------
+# A host that cannot refresh must not flag the tenant's connection
+# --------------------------------------------------------------------------
+
+
+def test_a_missing_client_secret_does_not_mark_reauth(monkeypatch):
+    """Staging, 2026-09-29: LINEAR_CLIENT_SECRET unset on the calling host set
+    needs_reauth on a healthy connection and stopped its auto-sync."""
+    from datetime import timedelta
+
+    from app.auth import credentials
+    from app.core.exceptions import ConfigurationError
+
+    marked = []
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, *a, **k):
+            expired = datetime.now(timezone.utc) - timedelta(hours=1)
+            return SimpleNamespace(fetchone=lambda: ("enc-access", "enc-refresh", expired))
+
+    def no_secret(provider):
+        raise ConfigurationError("LINEAR_CLIENT_SECRET is not set")
+
+    monkeypatch.setattr(credentials, "get_connection", lambda: _Conn())
+    monkeypatch.setattr(credentials, "decrypt", lambda v: "plain")
+    monkeypatch.setattr("app.auth.factory.build_oauth_provider", no_secret)
+    monkeypatch.setattr(credentials, "mark_needs_reauth", lambda *a, **k: marked.append(a))
+
+    with pytest.raises(ConfigurationError):
+        credentials.get_live_connection_token("org-1", "linear")
+    assert marked == []
