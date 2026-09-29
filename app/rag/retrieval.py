@@ -411,8 +411,12 @@ def _reserve_other_tools(
     final = list(ordered[:top_k])
     present = {c.source_provider for c in final}
     swaps = 0
+    # One seat per other tool, up to all but two of the slots: a question
+    # naming four tools must hear from each, and the routed tool keeps two.
+    limit = max(_CROSS_RESERVED_SLOTS, min(len({c.source_provider for c in ordered}) - 1,
+                                           top_k - 2))
     for chunk in ordered[top_k:]:
-        if swaps >= _CROSS_RESERVED_SLOTS:
+        if swaps >= limit:
             break
         tool = chunk.source_provider
         if not tool or tool == routed or tool in present:

@@ -48,7 +48,7 @@ from ..agent.routing import (
     EMBEDDED_PROVIDERS,
     _connected_providers,
     choose_agent,
-    named_provider,
+    named_providers,
 )
 from ..agent.rag_pipeline_agent import RagPipelineAgent
 from ..config.settings import GraphSettings
@@ -881,22 +881,22 @@ def _graph_plan_result(future):
         return None
 
 
-def _named_connected_tool(question: str, org_id: str, workspace_id: str | None) -> str | None:
-    """The indexed tool the question NAMES, if it is connected in this scope.
+def _named_connected_tools(question: str, org_id: str, workspace_id: str | None) -> set[str]:
+    """Every indexed tool the question NAMES that is connected in this scope.
 
     Deliberately not limited to tools the graph already reached: the asker
     naming Slack is reason enough to search Slack. Limited to CONNECTED
     tools, or the pill would claim a tool that contributed nothing. The
     connection lookup runs only when a tool is actually named.
     """
-    named = named_provider(question, EMBEDDED_PROVIDERS)
-    if named is None:
-        return None
+    named = named_providers(question, EMBEDDED_PROVIDERS)
+    if not named:
+        return set()
     try:
-        return named if named in _connected_providers(org_id, workspace_id) else None
+        return named & _connected_providers(org_id, workspace_id)
     except Exception:  # noqa: BLE001 - a named tool may only ever add
         logger.warning("could not read connections for a named tool", exc_info=True)
-        return None
+        return set()
 
 
 def _graph_connected_enabled() -> bool:
@@ -981,7 +981,7 @@ def _stream_answer(
     connected: set[str] | None = None
     if plan is not None and _graph_connected_enabled():
         connected = graph_plan.connected_tools(
-            plan, decision.agent_key, _named_connected_tool(question, org_id, workspace_id)
+            plan, decision.agent_key, _named_connected_tools(question, org_id, workspace_id)
         )
         if connected:
             plan = plan.connected(connected, search=connected - {decision.agent_key})

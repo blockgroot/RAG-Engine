@@ -518,7 +518,7 @@ def test_focus_is_carried_raw_because_this_layer_has_no_database():
     so validation here is a length cap, not a judgement."""
     long = "z" * 400
     intent = _classify(
-        "commits in x",
+        "chart commits in x",
         '{"intent":"chart","metric":"commits_by_author","group_by":null,'
         f'"period":"month","chart":"bar","focus":"{long}"}}',
         ["github"],
@@ -529,7 +529,7 @@ def test_focus_is_carried_raw_because_this_layer_has_no_database():
 def test_an_empty_focus_is_no_focus():
     for value in ('""', '"null"', '"   "'):
         intent = _classify(
-            "commits",
+            "chart commits",
             '{"intent":"chart","metric":"commits_by_author","group_by":null,'
             f'"period":"month","chart":"bar","focus":{value}}}',
             ["github"],
@@ -597,3 +597,22 @@ def test_knowledge_graph_is_not_a_plot_ask():
     assert not _asked_for_a_plot("What is the dependency graph of the auth service?")
     assert _asked_for_a_plot("graph our commits by author")
     assert _asked_for_a_plot("show a graph of pull requests")
+
+
+def test_in_chat_a_chart_must_be_asked_for():
+    """Real Gemini answered "What is Sana working on in Linear?" with a valid
+    chart spec -- completed tasks by team -- which pre-empts routing, so the
+    Linear agent and the graph never saw it. In chat a chart needs a visual
+    or a count in the question; the dedicated chart box is not gated."""
+    reply = ('{"intent":"chart","metric":"issues_completed","group_by":"subject",'
+             '"period":"month","chart":"bar","focus":"Sana"}')
+    assert _classify("What is Sana working on in Linear?", reply, ["linear"]).kind == "qa"
+    for asked in ("How many tasks did Sana complete?", "chart tasks completed by team",
+                  "tasks completed per week"):
+        assert _classify(asked, reply, ["linear"]).kind == "chart", asked
+    box = resolve.classify_question("What is Sana working on in Linear?",
+                                    providers=["linear"], llm=FakeLLM(reply), fail_open=False)
+    assert box.kind == "chart"  # the chart box itself is not gated
+    assert _classify("show me the org chart", '{"intent":"chart","metric":"issues_completed"}',
+                     ["linear"]).kind == "qa"
+

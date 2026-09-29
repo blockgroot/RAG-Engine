@@ -335,6 +335,21 @@ already applied skip / owner-only / freeze to that exact row.
   connected set (graph documents/facts only, no extra search leg); (3) a named
   tool counts when CONNECTED, not only when the walk reached it (the pill said
   Notion while Slack answered). Fake-LLM unit tests passed through all three.
+- **Naming SEVERAL tools reads all of them** (`routing.named_providers`,
+  `plan.connected_tools`). Routing keeps "two names = neither" (ambiguity), but
+  a connected answer is told explicitly where to look; each named tool gets its
+  own legs and one reserved seat (up to `top_k - 2`, the routed tool keeps two).
+  Measured, real Gemini, 4-tool questions: graph OFF answered from Linear alone
+  ("no information about Notion, Slack or Drive"), ON covered all four
+  correctly; median time to FIRST WORD 5.8s on vs 6.6s off (noise = Gemini),
+  graph plan ~20ms, retrieval +11ms. The TOTAL is longer only because chat
+  types a decided answer at `CHAT_STREAM_WORD_DELAY_MS`=50ms/word and a 4-tool
+  answer is ~40 words longer -- measure latency to the first token, never the total.
+- **In chat a chart must be ASKED for** (`resolve._wants_a_chart`): a chart or
+  refuse intent without a plot word, "chart" (not "org chart") or a count
+  phrase becomes qa. Real Gemini turned "What is Sana working on in Linear?"
+  into completed-tasks-by-team, pre-empting routing so neither the Linear
+  agent nor the graph saw it. The chart box (`fail_open=False`) is not gated.
 - **`_PLOT_ASK` matched "knowledge graph"** (`insights/resolve.py`), forcing
   "when is the knowledge graph beta launching?" into a chart refusal although
   the classifier said qa. Compound nouns are excluded by lookbehind.

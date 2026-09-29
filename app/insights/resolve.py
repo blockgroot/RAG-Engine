@@ -376,7 +376,45 @@ def classify_question(
         recovered = _fallback_spec(question, metrics)
         if recovered is not None:
             return AskIntent("chart", spec=recovered)
+    if fail_open and intent.kind in ("chart", "refuse") and not _wants_a_chart(question):
+        # In chat, a chart must be ASKED for. Measured with real Gemini: "What
+        # is Sana working on in Linear?" came back as a valid chart spec
+        # (issues_completed by team, focus "Sana") -- a count of FINISHED work
+        # answering a question about CURRENT work, and it pre-empts routing, so
+        # neither the Linear agent nor the graph ever saw the question. A wrong
+        # chart has no way back; a written answer to a vague "show me the
+        # activity" costs one re-ask with the word "chart". The dedicated chart
+        # box (fail_open=False) is not gated: asking there IS asking for one.
+        logger.info("insights: chart intent without a chart or count ask -> qa")
+        return AskIntent("qa")
     return intent
+
+
+#: A COUNT is being asked for: how many, how much, over time, ranked. With
+#: ``_PLOT_ASK`` this is the whole evidence that someone in chat wants a chart
+#: rather than an answer. "most recent" is a date, not a ranking.
+_COUNT_ASK = re.compile(
+    r"\b("
+    r"how\s+many|how\s+much|number\s+of|count(?:s|ed)?|totals?"
+    r"|most(?!\s+recent)|least|top\s+\d+|ranking|rank(?:ed)?|leaderboard"
+    r"|trends?|over\s+time|per\s+(?:day|week|month|quarter|person|author|team|repo\w*)"
+    r"|(?:by|per)\s+(?:author|person|people|team|repo\w*|channel|week|month|quarter|day|state|status)"
+    r"|breakdown|broken\s+down|compare|comparison|split"
+    r"|daily|weekly|monthly|quarterly"
+    r")\b",
+    re.I,
+)
+
+
+#: "chart" itself, as a verb or a noun -- but never "org chart", which is a
+#: document (the reason ``_PLOT_ASK`` leaves the bare word out).
+_CHART_WORD = re.compile(r"(?<!org )(?<!organisation )(?<!organization )\bchart(?:s|ed|ing)?\b", re.I)
+
+
+def _wants_a_chart(question: str) -> bool:
+    """A visual or a count was asked for -- chat's bar for accepting a chart."""
+    q = question or ""
+    return _asked_for_a_plot(q) or bool(_CHART_WORD.search(q) or _COUNT_ASK.search(q))
 
 
 #: Named plot, not the word "chart" alone ("org chart" is a document).

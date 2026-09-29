@@ -304,8 +304,8 @@ def test_reserved_slots_seat_other_tools_but_keep_the_routed_majority():
                                                            _c("g", "google")]
     final = _reserve_other_tools(ordered, 5, "notion")
     assert len(final) == 5
-    assert [c.document_id for c in final[:3]] == ["n0", "n1", "n2"]
-    assert {c.source_provider for c in final} == {"notion", "slack", "linear"}  # max 2 swaps
+    assert [c.document_id for c in final[:2]] == ["n0", "n1"]  # the routed tool keeps two
+    assert {c.source_provider for c in final} == {"notion", "slack", "linear", "google"}
     # Already present: nothing moves.
     mixed = [_c("n0", "notion"), _c("s", "slack")] + [_c(f"n{i}", "notion") for i in range(1, 6)]
     assert _reserve_other_tools(mixed, 5, "notion") == mixed[:5]
@@ -550,3 +550,25 @@ def test_a_connected_answer_is_framed_for_every_tool_it_reads():
     finally:
         gp.reset_plan(token)
     assert rag_pipeline._connected_tools(ORG) == frozenset()  # normal answers untouched
+
+
+def test_naming_several_tools_reads_all_of_them():
+    """"What has Sana done across Notion, Slack, Linear and Drive?" -- routing
+    treats two names as ambiguous, a connected answer reads every one."""
+    from app.agent.routing import named_providers
+
+    q = "What has Sana done across Notion, Slack, Linear and Google Drive?"
+    named = named_providers(q, {"notion", "slack", "linear", "google"})
+    assert named == {"notion", "slack", "linear", "google"}
+    tools = gp.connected_tools(_plan(), "notion", named)
+    assert tools == {"notion", "slack", "linear", "google"}
+    plan = _plan().connected(tools, search=tools - {"notion"})
+    assert plan.search_tools("notion") == ["google", "linear", "slack"]
+
+
+def test_the_edge_connects_every_named_connected_tool(chat_edge):
+    chat_edge.responses.append(_response(True, "Across all four..."))
+    done = chat_edge.run("what has sana done in notion, slack, linear and google drive?", _plan())
+    assert done["connected_providers"] == ["google", "linear", "notion", "slack"]
+    assert chat_edge.seen["plans"][0].search == frozenset({"slack", "linear", "google"})
+

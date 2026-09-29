@@ -172,6 +172,19 @@ PROVIDER_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 
+def named_providers(text: str, available) -> set[str]:
+    """EVERY service this text names. For a connected answer, where naming
+    Notion, Slack and Linear in one question means "read all three" -- unlike
+    routing, where two names are ambiguous and ``named_provider`` picks none."""
+    lowered = (text or "").lower()
+    return {
+        provider
+        for provider in available
+        for alias in PROVIDER_ALIASES.get(provider, ())
+        if re.search(rf"\b{re.escape(alias)}\b", lowered)
+    }
+
+
 def named_provider(text: str, available) -> str | None:
     """The service this text NAMES, when it names exactly one of them.
 

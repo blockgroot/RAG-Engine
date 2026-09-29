@@ -214,28 +214,31 @@ def _fact_line(link) -> str:
 _INDEXED = {"notion", "google", "slack", "linear"}
 
 
-def connected_tools(plan: GraphPlan | None, routed: str | None, named: str | None) -> set[str] | None:
+def connected_tools(plan: GraphPlan | None, routed: str | None, named) -> set[str] | None:
     """The tools a PREDICTIVE connected answer should read, or ``None``.
 
-    Fires when the question names an indexed tool other than the one routing
-    picked -- "has the author of the Leave Policy discussed it in Slack?"
-    routed to Notion. That named tool's own searches then run alongside the
+    Fires when the question names one or more indexed tools other than the one
+    routing picked -- "has the author of the Leave Policy discussed it in
+    Slack?" routed to Notion, or "what has Sana done across Notion, Slack,
+    Linear and Drive?". Each named tool's own searches then run alongside the
     routed one's (``GraphPlan.search``), with no graph evidence required: the
     graph proving a connection is one way to know another tool matters, the
-    asker naming it is a stronger one. It is the NAMED tool only, never "all
-    of them", so this is two agents' corpora, never the blended one.
+    asker naming it is a stronger one. Only NAMED tools, never "all of them",
+    so this is the corpora the asker pointed at, never the blended one.
+    ``named`` is one tool, a set of them, or nothing.
     """
-    if plan is None or routed not in _INDEXED or not named or named == routed:
-        return None
-    if named not in _INDEXED:
+    if isinstance(named, str):
+        named = {named}
+    named = {t for t in (named or ()) if t in _INDEXED and t != routed}
+    if plan is None or routed not in _INDEXED or not named:
         return None
     # Plus the tools holding what the question REFERS to: "has the author of
     # the Leave Policy discussed it in Slack?" routed to Linear could read
     # Sana's Slack thread but not that she wrote the Leave Policy -- that fact
     # lives in Notion -- and refused (measured with real Gemini). Those tools
     # join through the graph's documents and facts only; their own search
-    # legs do not run (``search`` stays the named tool).
-    return {routed, named} | (plan.seed_tools & _INDEXED)
+    # legs do not run (``search`` stays the named tools).
+    return {routed} | named | (plan.seed_tools & _INDEXED)
 
 
 def escalation_tools(plan: GraphPlan | None, routed: str | None) -> set[str] | None:
