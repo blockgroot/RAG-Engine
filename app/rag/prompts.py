@@ -456,7 +456,7 @@ REFRESH_ITEM_TOOL = {
 def build_live_decision_prompt(
     question: str, catalog: str, fallback_response: str, *, web: bool
 ) -> str:
-    """Deep research, refusal path: may ONE listed item be read live? (plan D6).
+    """Live tools, refusal path: may ONE listed item be read live? (plan D6).
 
     The catalog is handles + titles only -- titles are document text, so they
     are fenced like any other. The model can name a handle; it can never name

@@ -369,12 +369,12 @@ already applied skip / owner-only / freeze to that exact row.
   `python -m evaluation.graph_eval` says "enable"** (gain somewhere, loss nowhere)
   with the REAL embedder.
 
-**Live connector reads = DEEP RESEARCH ONLY (`app/livetools/`, plan `docs/plans/2026-09-29-live-connector-access.md`)**
-— normal Q&A never reaches the gateway; the composer's **Deep research** toggle sends `deep_research: true` and the chat edge sets a `LiveRequest` ContextVar (the `GraphPlan` pattern). Off unless `LIVE_TOOLS_ENABLED` (+ `LIVE_TOOLS_PROVIDERS`=linear, `LIVE_TOOLS_ORGS`); Slack never sets one.
+**Live connector reads = the Second Brain's second half (`app/livetools/`, plan `docs/plans/2026-09-29-live-connector-access.md`)**
+— the Second Brain is the knowledge graph PLUS live tool access, in normal Ask. No toggle: a "Deep research" composer toggle shipped and was removed (deep research is a separate, later planner+report feature). The web chat sets a `LiveRequest` ContextVar (the `GraphPlan` pattern) on every question; `LIVE_TOOLS_ENABLED` (+ `LIVE_TOOLS_PROVIDERS`, `LIVE_TOOLS_ORGS`) decides. Off = byte-identical answers. Slack, schedulers and eval never set one. On, a question whose top hits include a refreshable item waits for the read (~2 s staging) — measure first word before prod.
 - **The index finds, the live call refreshes**: mode A re-reads only documents in this request's hits, resolved to `(provider, external_id)` from `documents` pinned to org AND space — no search, no model-named target, zero extra model calls. Runs AFTER the gate passes, so a live read never rescues a gate miss. `gateway.py` is the only code that decrypts a token for it; ≤`MAX_REFRESHES`=2, 6s, 6000 chars (truncation stated).
 - **Failures decided by the PROVIDER'S reason**: Linear answers a deleted issue with HTTP 200 + `Entity not found` (and a rate limit with 400 `RATELIMITED`). Only not-found/permission WITHHOLDS the stale copy; rate limit, timeout, reauth (marks `needs_reauth`), 5xx and unknown codes fall back to the index.
 - **The gate re-check uses `RetrievalResult.gate_document_id`**, because `gate_score` is a max over ~30 candidates before rerank and the final hits cannot reproduce it. Withheld non-gate document ⇒ gate untouched; withheld gate document ⇒ all its chunks dropped, gate = best remaining cosine (can only lower it). Every leg's `.score` is a real cosine (keyword leg selects `1 - (embedding <=> q)`, pinned by a DB test).
-- **Mode B (refusal path, deep research only)**: ONE tool call offers `refresh_item(handle)` over `[L1]`/`[D1]`/`[N1]`/`[S1]` handles for the below-gate hits (titles fenced) — in the SAME call as `web_search` when web is on, so no extra serial round. Handles map only within the request (`livetools/handles.py`); an invented one resolves to nothing; echoed handles are stripped after the MODE parse. Readers: Linear, Drive (`files.get` + export; trashed/404/permission-403 withhold, `rateLimitExceeded` 403 falls back), Notion (ingest renderer, shared char budget + 12-call cap), Slack (≤15 msgs; OFF in `LIVE_TOOLS_PROVIDERS` until the D10 tier check).
+- **Mode B (refusal path only)**: ONE tool call offers `refresh_item(handle)` over `[L1]`/`[D1]`/`[N1]`/`[S1]` handles for the below-gate hits (titles fenced) — in the SAME call as `web_search` when web is on, so no extra serial round. Handles map only within the request (`livetools/handles.py`); an invented one resolves to nothing; echoed handles are stripped after the MODE parse. Readers: Linear, Drive (`files.get` + export; trashed/404/permission-403 withhold, `rateLimitExceeded` 403 falls back), Notion (ingest renderer, shared char budget + 12-call cap), Slack (≤15 msgs; OFF in `LIVE_TOOLS_PROVIDERS` until the D10 tier check).
 - **A live block SUPERSEDES its document's synced chunks in the prompt** (`superseded=live.refreshed` → `_generate_core`); they stay in `hits` for citations and next-turn reuse. Shipped as ADD-beside: staging measured first word ~5 s slower (prompt ~2x, two versions of one page for the model and the audit). The ~2 s read is still serial after the gate; the next lever is starting it during rerank.
 - Live blocks lead `extra_contexts`, so fence/scrub, the audit and the link rule all see them; enforce-mode guard drops a flagged block (not a withhold). A live answer is never cached; a `live_withheld` refusal says "no longer available" naming the CONNECTOR, never the item, and is deliberately NOT a gap row (deletion vs revocation is indistinguishable). `live_tool_calls` audits each read — never the token or text — 90-day sweep on the tick.
 
@@ -1861,7 +1861,7 @@ app/api/notifications.py  what needs attention, derived from connection rows
 app/insights/  registry + panels + store (SQL) + facts + github_facts +
               linear_facts + sentiment + scopes + resolve (ask box) + pins
 app/graph/     Second Brain: identities, builder, linking, walk (+ evaluation/graph_eval.py)
-app/livetools/ deep-research live reads: gateway (only token use), linear/drive/notion/slack readers, handles, audit, context
+app/livetools/ Second Brain live reads: gateway (only token use), linear/drive/notion/slack readers, handles, audit, context
 app/workspaces/ sub-workspace CRUD + membership (assert_member)
 app/schedulers/ store, activity (live "since T"), prompts, runner, worker
 app/api/      FastAPI — deps (session/org_id), auth, admin, chat, workspaces,
@@ -2226,7 +2226,7 @@ partial unique indexes: org-wide vs workspace; `sync_requested_at` webhook flag
 indexes on `external_id`, org-wide vs workspace) · `insight_pins` (personal,
 `(org_id, user_id)`; stores the spec, never the numbers) · `person_identities`
 (one row per person per connector; `user_id` only on proof, `ON DELETE SET NULL`) ·
-`live_tool_calls` (deep-research live-read audit; no token, no text, 90 days) ·
+`live_tool_calls` (live-read audit; no token, no text, 90 days) ·
 `kg_entities` / `kg_edges` / `kg_evidence` (the graph: IDs and relationships only,
 partial unique indexes org-wide vs space; an edge is visible only through its
 evidence) · `scheduler_reports` (same `(org_id, user_id)` scoping; snapshots its labels
@@ -2270,7 +2270,7 @@ identity linking + "Linked accounts", the graph builder, the access-safe walk,
 and the graph as a retrieval list — **built, OFF for answers**.
 
 **Pending / known gaps**
-- Live tools: **Phases 0–3 + the Slack reader are built and OFF** (deep research only). Every provider's error shapes (Linear `Entity not found`/`RATELIMITED`, Drive 403 reasons, Notion codes, Slack `error`) are from docs and tested against fakes only — walk each live on staging before trusting (plan §10). Slack is on the RESTRICTED tier (staging: `limit=200` → 15 + `has_more`), so it stays out of `LIVE_TOOLS_PROVIDERS`, and ingestion pages 13x more than it assumes. Staging verified Notion + Drive (viewer and non-viewer); Linear untested (token expired); first word re-measure pending after the supersede fix. The Deep research toggle is `tsc`-checked only. Later by design: GitHub on the gateway, per-user tokens, MCP.
+- Live tools: **Phases 0–3 + the Slack reader are built and OFF** (normal Ask, behind `LIVE_TOOLS_ENABLED`). Every provider's error shapes (Linear `Entity not found`/`RATELIMITED`, Drive 403 reasons, Notion codes, Slack `error`) are from docs and tested against fakes only — walk each live on staging before trusting (plan §10). Slack is on the RESTRICTED tier (staging: `limit=200` → 15 + `has_more`), so it stays out of `LIVE_TOOLS_PROVIDERS`, and ingestion pages 13x more than it assumes. Staging verified Notion + Drive (viewer and non-viewer); Linear untested (token expired); first word re-measure pending after the supersede fix. Later by design: GitHub on the gateway, per-user tokens, MCP.
 - Second Brain: **`GRAPH_RETRIEVAL_ENABLED` stays off until
   `python -m evaluation.graph_eval` runs with the real embedder and says
   "enable"** (the stand-in embedder in `tests/test_graph_eval.py` only proves the

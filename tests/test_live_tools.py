@@ -1,7 +1,7 @@
 """Live-tools gateway, Phase 1 (docs/plans/2026-09-29-live-connector-access.md).
 
 Pinned here:
-- live reads happen ONLY in deep research (a LiveRequest), never on normal Q&A;
+- live reads need a LiveRequest (set by the web chat) AND LIVE_TOOLS_ENABLED;
 - the Linear reader decides by LINEAR'S reason (HTTP 200 + "Entity not found"
   withholds; a rate limit falls back), and never leaks the token;
 - the gateway refreshes only documents the request's own hits name, pinned to
@@ -335,7 +335,7 @@ def _grounded_prompt(llm):
 
 
 @pytest.fixture
-def deep_research():
+def live_request():
     token = use_live_request(REQUEST)
     yield
     reset_live_request(token)
@@ -357,17 +357,17 @@ def _ok(doc="doc-linear", text="Live from Linear, fetched now\nSYV-5 status In R
                     fetched_at=datetime(2026, 9, 29, 12, 4, tzinfo=timezone.utc))
 
 
-def test_normal_qa_never_reads_live(monkeypatch):
+def test_no_live_request_never_reads_live(monkeypatch):
     seen = _live(monkeypatch, LiveRefresh(reads=[_ok()]))
     llm, pipeline = _pipeline()
     result = pipeline.answer("leave tracker status?", "org-1")
 
-    assert [req for _, req in seen] == [None]  # asked, with no deep research
+    assert [req for _, req in seen] == [None]  # no asker identified: nothing to read as
     assert "Live from Linear" not in _grounded_prompt(llm)
     assert result.live_sources == []
 
 
-def test_deep_research_replaces_the_synced_copy_with_the_live_block(monkeypatch, deep_research):
+def test_the_live_block_replaces_the_synced_copy(monkeypatch, live_request):
     _live(monkeypatch, LiveRefresh(reads=[_ok()]))
     llm, pipeline = _pipeline()
     result = pipeline.answer("leave tracker status?", "org-1")
@@ -385,7 +385,7 @@ def test_deep_research_replaces_the_synced_copy_with_the_live_block(monkeypatch,
     assert _is_cacheable(result) is False
 
 
-def test_the_audit_is_handed_the_live_block(monkeypatch, deep_research):
+def test_the_audit_is_handed_the_live_block(monkeypatch, live_request):
     from dataclasses import replace
 
     _live(monkeypatch, LiveRefresh(reads=[_ok()]))
@@ -398,14 +398,14 @@ def test_the_audit_is_handed_the_live_block(monkeypatch, deep_research):
     assert audited and any("SYV-5 status In Review" in c for c in audited[0])
 
 
-def test_a_live_read_never_rescues_a_gate_miss(monkeypatch, deep_research):
+def test_a_live_read_never_rescues_a_gate_miss(monkeypatch, live_request):
     seen = _live(monkeypatch, LiveRefresh(reads=[_ok()]))
     llm, pipeline = _pipeline()
     result = pipeline.answer("what is the parking rule?", "org-1")
     assert seen == [] and not result.answered
 
 
-def test_withholding_the_gate_document_refuses_with_the_notice(monkeypatch, deep_research):
+def test_withholding_the_gate_document_refuses_with_the_notice(monkeypatch, live_request):
     """Only the Linear issue matches; the provider says it is gone."""
     _live(monkeypatch, LiveRefresh(reads=[
         LiveRead("linear", "doc-linear", "uuid-5", base.NOT_ACCESSIBLE)]))
@@ -419,7 +419,7 @@ def test_withholding_the_gate_document_refuses_with_the_notice(monkeypatch, deep
     assert _is_cacheable(result) is False
 
 
-def test_a_live_withheld_refusal_never_tries_the_web(monkeypatch, deep_research):
+def test_a_live_withheld_refusal_never_tries_the_web(monkeypatch, live_request):
     """The provider said the internal item is gone; the web cannot know better."""
     from app.config.settings import WebSearchSettings
 
@@ -434,7 +434,7 @@ def test_a_live_withheld_refusal_never_tries_the_web(monkeypatch, deep_research)
     assert tried == [] and result.live_withheld
 
 
-def test_withholding_one_of_several_answers_from_the_rest(monkeypatch, deep_research):
+def test_withholding_one_of_several_answers_from_the_rest(monkeypatch, live_request):
     _live(monkeypatch, LiveRefresh(reads=[
         LiveRead("linear", "doc-notion", "n-1", base.NOT_ACCESSIBLE)]))
     llm, pipeline = _pipeline()
@@ -451,7 +451,9 @@ def test_withholding_one_of_several_answers_from_the_rest(monkeypatch, deep_rese
 # --------------------------------------------------------------------------
 
 
-def test_the_chat_edge_sets_a_live_request_only_for_deep_research(monkeypatch):
+def test_the_chat_edge_identifies_the_asker_for_every_question(monkeypatch):
+    """No toggle: the web chat always says who is asking; LIVE_TOOLS_ENABLED
+    (checked in the gateway) decides whether anything is read live."""
     from app.api import chat
     from app.livetools.context import current_live_request
 
@@ -464,10 +466,8 @@ def test_the_chat_edge_sets_a_live_request_only_for_deep_research(monkeypatch):
     monkeypatch.setattr(chat, "_stream_answer_body", body)
     session = SimpleNamespace(user_id="user-1", role="member")
     list(chat._stream_answer("q", "org-1", "conv-1", session=session))
-    list(chat._stream_answer("q", "org-1", "conv-1", session=session, deep_research=True))
 
-    assert seen[0] is None
-    assert seen[1] == LiveRequest("org-1", None, "user-1", "conv-1")
+    assert seen == [LiveRequest("org-1", None, "user-1", "conv-1")]
     assert current_live_request() is None  # reset after the stream
 
 
@@ -499,11 +499,10 @@ def test_a_live_withheld_refusal_is_not_a_documentation_gap(monkeypatch):
     monkeypatch.setattr(chat, "choose_agent",
                         lambda *a, **k: routing.RoutingDecision("linear", "graph-named"))
     session = SimpleNamespace(user_id="user-1", role="member")
-    out = list(chat._stream_answer("status of SYV-5?", "org-1", "conv-1",
-                                   session=session, deep_research=True))
+    out = list(chat._stream_answer("status of SYV-5?", "org-1", "conv-1", session=session))
     done = json.loads(out[-1].split("data: ", 1)[1])
     assert gaps == []
-    assert done["deep_research"] is True and done["live_sources"] == []
+    assert done["live_sources"] == [] and "deep_research" not in done
 
 
 # --------------------------------------------------------------------------
@@ -849,13 +848,13 @@ def _mode_b(monkeypatch, call, *, docs=(("doc-linear", "sick tracker SYV-5 ticke
     return llm, pipe
 
 
-def test_mode_b_is_never_offered_outside_deep_research(monkeypatch):
+def test_mode_b_is_never_offered_without_a_live_request(monkeypatch):
     llm, pipe = _mode_b(monkeypatch, ("refresh_item", '{"handle": "L1"}'))
     pipe.answer("what is the parking status?", "org-1")
     assert llm.tool_prompts == []
 
 
-def test_mode_b_refreshes_the_named_handle_and_answers_live(monkeypatch, deep_research):
+def test_mode_b_refreshes_the_named_handle_and_answers_live(monkeypatch, live_request):
     llm, pipe = _mode_b(monkeypatch, ("refresh_item", '{"handle": "L1"}'))
     seen = []
 
@@ -875,7 +874,7 @@ def test_mode_b_refreshes_the_named_handle_and_answers_live(monkeypatch, deep_re
     assert "SYV-5 status In Review" in _grounded_prompt(llm)
 
 
-def test_mode_b_ignores_an_invented_handle(monkeypatch, deep_research):
+def test_mode_b_ignores_an_invented_handle(monkeypatch, live_request):
     llm, pipe = _mode_b(monkeypatch, ("refresh_item", '{"handle": "L7"}'))
     called = []
     monkeypatch.setattr(rp, "live_refresh", lambda *a, **k: called.append(a) or LiveRefresh())
@@ -883,7 +882,7 @@ def test_mode_b_ignores_an_invented_handle(monkeypatch, deep_research):
     assert called == [] and not result.answered
 
 
-def test_mode_b_withheld_item_gives_the_notice(monkeypatch, deep_research):
+def test_mode_b_withheld_item_gives_the_notice(monkeypatch, live_request):
     llm, pipe = _mode_b(monkeypatch, ("refresh_item", '{"handle": "L1"}'))
     monkeypatch.setattr(rp, "live_refresh", lambda hits, req, **k: LiveRefresh(reads=[
         LiveRead("linear", hits[0].document_id, "uuid-5", base.NOT_ACCESSIBLE)]))
@@ -891,7 +890,7 @@ def test_mode_b_withheld_item_gives_the_notice(monkeypatch, deep_research):
     assert result.live_withheld and "no longer available" in result.answer
 
 
-def test_mode_b_shares_one_call_with_the_web_decision(monkeypatch, deep_research):
+def test_mode_b_shares_one_call_with_the_web_decision(monkeypatch, live_request):
     from app.config.settings import WebSearchSettings
 
     llm, pipe = _mode_b(monkeypatch, None)  # the model declines both

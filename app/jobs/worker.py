@@ -426,7 +426,7 @@ def run_external_tick() -> dict[str, int]:
     except Exception:  # noqa: BLE001
         logger.exception("External tick: conversation purge failed")
 
-    # Live-tools audit rows past their 90 days (deep research reads).
+    # Live-tools audit rows past their 90 days (Second Brain live reads).
     try:
         from ..livetools.audit import purge_expired as purge_live_calls
 

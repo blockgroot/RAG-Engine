@@ -74,7 +74,7 @@ export function ProvenanceStripe({
   attachments?: string[];
   /** How many corpus chunks were also in it. */
   citations?: number;
-  /** Connectors read live for this answer (deep research). */
+  /** Connectors read live for this answer (Second Brain live tools). */
   live?: { provider: string; fetched_at: string }[];
 }) {
   const liveChip = live && live.length > 0 ? <LiveChip live={live} /> : null;

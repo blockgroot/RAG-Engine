@@ -99,7 +99,7 @@ def restricted_notice(
 
 
 def live_withheld_notice(provider: str | None) -> str:
-    """The item behind this answer is gone, or no longer readable (deep research).
+    """The item behind this answer is gone, or no longer readable (a live read said so).
 
     A live read just told us, so -- unlike ``restricted_notice`` -- nothing has
     to be re-confirmed. "Not found or not accessible", never "deleted": a 404

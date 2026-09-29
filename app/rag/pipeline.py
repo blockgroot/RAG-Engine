@@ -381,7 +381,7 @@ class RagResult:
     # in the context, or a connected answer reading other tools). Keeps it out
     # of the scope-wide cache; see `_is_cacheable`.
     graph_shaped: bool = False
-    # Deep research only (docs/plans/2026-09-29-live-connector-access.md):
+    # Second Brain live tools (docs/plans/2026-09-29-live-connector-access.md):
     # the connectors read LIVE for this answer, ``[{provider, fetched_at}]``.
     live_sources: list[dict] = field(default_factory=list)
     # True when this refusal is "the matching item is no longer available":
@@ -898,9 +898,9 @@ class RagPipeline:
                     )
                 )
 
-        # Deep research only (plan D0): re-read what retrieval found, live.
-        # No LiveRequest => `live_refresh` returns nothing and nothing below
-        # changes. Refreshed AFTER the gate passed, so a live read can never
+        # Second Brain live tools: re-read what retrieval found, live. Off
+        # (LIVE_TOOLS_ENABLED unset) or no LiveRequest => `live_refresh`
+        # returns nothing and nothing below changes. Refreshed AFTER the gate passed, so a live read can never
         # rescue a question the corpus could not ground -- it only freshens
         # or withholds what the gate already admitted.
         live = live_refresh(hits, current_live_request(), guard_settings=self._guard_settings)
@@ -1641,7 +1641,7 @@ class RagPipeline:
                     retrieval_reused=retrieval_reused,
                 )
             hits = screened
-            # A document read LIVE this request (deep research) is in
+            # A document read LIVE this request is in
             # `extra_contexts` already; its synced chunks would put a second,
             # older version of the same page in the prompt and double what the
             # model and the audit read. They stay in `hits` -- citations and
@@ -1700,7 +1700,7 @@ class RagPipeline:
         ).strip()
         mode, text = _parse_tagged_mode(raw)
         if current_live_request() is not None:
-            # Deep research: a handle the model echoed ("per [L1]") is
+            # Live tools: a handle the model echoed ("per [L1]") is
             # machinery, never text for the reader, the cache or a turn (D4a).
             text = strip_handles(text)
 
@@ -1969,7 +1969,7 @@ class RagPipeline:
         The single funnel every refusal passes through, which is why the
         withheld-documents check lives here and not at the three call sites.
         ``live_withheld`` names the connector whose live read said the item
-        behind this answer is gone or no longer readable (deep research).
+        behind this answer is gone or no longer readable (a live read said so).
         """
         min_stage = self._budget_settings.min_stage_seconds
         web_decided = False
@@ -1979,7 +1979,7 @@ class RagPipeline:
             and current_live_request() is not None
             and budget.can_spend(min_stage * 2)
         ):
-            # Deep research, mode B (plan D6): may ONE of the related items be
+            # Live tools, mode B (plan D6): may ONE of the related items be
             # read live? Offered only here, on the way to a refusal, and in the
             # same tool call as the web decision when web search is on.
             outcome, web_decided = self._try_live_decision(
@@ -2290,7 +2290,7 @@ class RagPipeline:
 
         Any failure (model declines, search error/timeout, empty results) returns
         ``None`` so the caller falls back to the fixed internal response.
-        ``decision``: a tool decision already made -- deep research asks the
+        ``decision``: a tool decision already made -- live tools ask the
         web question in the same call as the live-read question.
         """
         if decision is not None:

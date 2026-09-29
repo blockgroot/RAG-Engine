@@ -940,10 +940,10 @@ def _stream_answer(
     requested_agent: str | None = None,
     model: str | None = None,
     session: SessionClaims | None = None,
-    deep_research: bool = False,
 ) -> Iterator[str]:
-    # Deep research is the ONLY mode that may read a connector live (live-tools
-    # plan D0). Set here, inside the generator, for the reason `use_model` is.
+    # Who is asking, for the Second Brain's live reads (app/livetools). Whether
+    # anything is read live is decided by LIVE_TOOLS_ENABLED and the gateway,
+    # not here. Set inside the generator, for the reason `use_model` is.
     live_token = use_live_request(
         LiveRequest(
             org_id=org_id,
@@ -951,13 +951,11 @@ def _stream_answer(
             user_id=session.user_id if session else None,
             conversation_id=conversation_id,
         )
-        if deep_research
-        else None
     )
     try:
         yield from _stream_answer_body(
             question, org_id, conversation_id, workspace_id, requested_agent,
-            model, session, deep_research,
+            model, session,
         )
     finally:
         # Starlette may close the generator from another copied context, where
@@ -976,7 +974,6 @@ def _stream_answer_body(
     requested_agent: str | None,
     model: str | None,
     session: SessionClaims | None,
-    deep_research: bool,
 ) -> Iterator[str]:
     # Set inside the generator, NOT in the route that returns the
     # StreamingResponse: Starlette runs a sync generator via
@@ -1162,9 +1159,8 @@ def _stream_answer_body(
             "model": _answering_model(),
             "chart": getattr(result, "chart", None),
             "chart_period": getattr(result, "chart_period", None),
-            # Deep research: which connectors answered LIVE, and when. Empty
-            # when nothing was refreshed -- the indexed copy answered.
-            "deep_research": deep_research,
+            # Which connectors answered LIVE, and when. Empty when nothing was
+            # refreshed -- the indexed copy answered.
             "live_sources": list(getattr(result, "live_sources", None) or []),
         },
     )
@@ -1224,7 +1220,6 @@ def chat_stream(
             requested_agent=requested_agent,
             model=model,
             session=session,
-            deep_research=body.get("deep_research") is True,
         ),
         media_type="text/event-stream",
     )

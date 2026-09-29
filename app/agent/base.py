@@ -103,7 +103,7 @@ class AgentResponse:
     #: written -- the company is not missing it), and the answer cache must not
     #: serve one person's access situation to the next asker.
     access_restricted: bool = False
-    #: Deep research only: connectors read LIVE for this answer, and whether a
+    #: Second Brain live tools: connectors read LIVE for this answer, and whether a
     #: live read withheld the item behind a refusal (kept out of the gap log
     #: and the cache for the reason `access_restricted` is).
     live_sources: list[dict] = field(default_factory=list)

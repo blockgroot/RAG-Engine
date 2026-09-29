@@ -1,18 +1,21 @@
 # Plan: live connector access for the Second Brain (the live-tools gateway)
 
-Status: **Phases 0–3 built (+ the Slack reader, off until D10), revision 4** — all behind `LIVE_TOOLS_ENABLED` and deep research · Branch: `feat/live-tools` · Date: 2026-09-29
+Status: **Phases 0–3 built (+ the Slack reader, off: restricted tier), revision 5** — part of the Second Brain in normal Ask, behind `LIVE_TOOLS_ENABLED` · Branch: `feat/live-tools` · Date: 2026-09-29
 Owner: Second Brain · Related: `docs/plans/2026-09-23-second-brain.md`, `app/githublive/`
 
 Revisions 2 and 3 fold in two reviews (§14 lists every change and why). The
 short version: **the index finds, the live call refreshes** — for every
 connector — and Phase 1 is **Linear only, with no extra model call**.
 
-**Revision 4: live reads exist ONLY in deep research mode.** Normal search and
-Q&A keep answering from the knowledge graph and the index exactly as today — no
-live call, no handle, no prompt change, nothing to measure against the latency
-budget. A member opts in per question with the **Deep research** toggle in the
-composer (`deep_research: true` on `POST /chat/stream`); only then does the
-gateway refresh what retrieval found. Slack has no deep research mode.
+**Revision 5: live reads are part of the Second Brain, in normal Ask — no
+toggle.** The Second Brain is two things: the knowledge graph and live tool
+access. Revision 4 put live reads behind a "Deep research" toggle; that was
+removed, because deep research is a separate, later feature (a planner +
+report orchestrator, see the Second Brain plan) and live access belongs to the
+Second Brain itself. The web chat identifies the asker on every question;
+`LIVE_TOOLS_ENABLED` (+ `LIVE_TOOLS_PROVIDERS`, `LIVE_TOOLS_ORGS`) decides
+whether anything is read live. Off, every answer is byte-identical to before.
+Slack, schedulers and evaluation never set a `LiveRequest`.
 
 ---
 
@@ -61,7 +64,7 @@ question ──▶ routing + graph plan + retrieval (unchanged, viewer-filtered)
 
 | # | Decision | Why |
 |---|---|---|
-| D0 | **Live reads run only in deep research mode.** `POST /chat/stream` takes `deep_research`; the chat edge sets a request-scoped `LiveRequest` (`app/livetools/context.py`, the `GraphPlan` ContextVar pattern) and the pipeline refreshes only when one is set AND `LIVE_TOOLS_ENABLED` AND the org is allowed. Without it, every code path below is skipped and the answer is byte-identical to today. Slack never sets one. | Normal Q&A must not change, cost or slow down; a member who wants the current state of a ticket asks for it explicitly. It also keeps the blast radius of a new provider path to the people who chose it. |
+| D0 | **(Revision 5) Live reads are a Second Brain capability in normal Ask, switched by config, not by the member.** The web chat sets a request-scoped `LiveRequest` (`app/livetools/context.py`, the `GraphPlan` ContextVar pattern) for every question; the pipeline refreshes only when one is set AND `LIVE_TOOLS_ENABLED` AND the org is allowed. Off, every code path below is skipped. Slack, schedulers and eval never set one. The cost of that choice is latency: with it on, a question whose top hits include a refreshable item waits for the read (~2 s on staging) — measure first word before enabling in prod. | The Second Brain = knowledge graph + live tool access; a per-question toggle made fresh data something a member had to know to ask for. Deep research (planner + report) stays a separate, later feature. |
 | D1 | **The model never holds a token.** Only the gateway calls provider APIs. | A token the model never had cannot leak through output or prompt injection. |
 | D2 | **Read-only, fixed operations; no generic HTTP tool; no search tool.** | A generic tool reaches everything the token can; a provider search bypasses our visibility predicate. Read-only removes the "injected instruction makes the bot act" class. |
 | D3 | **The index finds, the live call refreshes — for every connector.** A live read targets only a document retrieval returned for this asker. | Permissions are inherited from retrieval (which filters by `org_id`, `workspace_id`, scope and `visibility_predicate` before ranking) instead of re-implemented per provider. It also removes Slack's user-token search problem and Drive's nested-folder walk. |
@@ -108,12 +111,12 @@ app/livetools/
 | `app/config/settings.py` | `LiveToolsSettings.from_env()` — the three settings (D15) |
 | `app/db/schema.sql` | `live_tool_calls` (additive, `IF NOT EXISTS`, after its parents) |
 | `app/rag/access_notice.py` | a second notice, "the matching <connector> item is no longer available (deleted, or access was removed)", chosen in `_gate_failed` when `live_withheld` — connector named, title never |
-| `app/api/chat.py` | `deep_research` body flag → `LiveRequest` (D0); `live_withheld` keeps the refusal out of `feedback_and_gaps`, like `access_restricted`. `slack_events.py` is unchanged: Slack has no deep research, so it never sets a `LiveRequest` |
+| `app/api/chat.py` | a `LiveRequest` for every web question (D0, rev 5); `live_withheld` keeps the refusal out of `feedback_and_gaps`, like `access_restricted`. `slack_events.py` is unchanged: Slack has no deep research, so it never sets a `LiveRequest` |
 | `app/rag/context_assemble.py` | (Phase 2, with mode B) `describe_hit` renders the handle (`[L2]`) |
 | `app/rag/retrieval.py` | `RetrievalResult.gate_document_id` — the document behind `gate_score`, set where the max is taken (D8a) |
 | `app/rag/pipeline.py` | a withheld GATE document drops all its chunks and `gate_score` is recomputed from the remaining hits before the gate decision (any other withheld document leaves it untouched); below 0.35 ⇒ `_gate_failed` with the "no longer available" notice and `live_withheld=True` (D8a); mode A: refresh before generation, live block prepended to `contexts` (so the audit sees it); guard in enforce mode; `_is_cacheable` false when live used; handles minted on the `_try_reuse` path too; `strip_handles` beside the `MODE:` tag parse; mode B on the refusal path (Phase 2) |
 | `app/api/chat.py` | `done.live_sources` (provider + fetched_at) |
-| `frontend/components/ProvenanceStripe.tsx`, `app/chat/page.tsx`, `lib/sse.ts` | "Linear · live" chip; the **Deep research** composer toggle (D0) |
+| `frontend/components/ProvenanceStripe.tsx`, `lib/sse.ts` | "Linear · live" chip (the rev 4 toggle is removed) |
 | `CLAUDE.md` | §3 decisions, §6 table, §7 state |
 
 ---
@@ -391,6 +394,12 @@ charts from live data (numbers still come only from `activity_facts`).
 | Linear, injection guard on live text, Render logs | not tested (staging's Linear token expired; client secret only on the server; needs a throwaway issue) |
 
 Found and fixed: `get_live_connection_token` marked `needs_reauth` on ANY refresh failure, including this host's own `ConfigurationError` (client secret unset) — one bad deploy would flag every connection "Reconnect". It now re-raises a `ConfigurationError` without touching the connection.
+
+### Revision 5
+
+| Change | Why |
+|---|---|
+| The Deep research toggle is removed; live reads run in normal Ask whenever `LIVE_TOOLS_ENABLED` is on | Live tool access is half of the Second Brain (with the graph), not a mode; deep research remains a separate later feature |
 
 ### Revision 4
 
