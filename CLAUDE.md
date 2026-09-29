@@ -374,6 +374,7 @@ already applied skip / owner-only / freeze to that exact row.
 - **The index finds, the live call refreshes**: mode A re-reads only documents in this request's hits, resolved to `(provider, external_id)` from `documents` pinned to org AND space — no search, no model-named target, zero extra model calls. Runs AFTER the gate passes, so a live read never rescues a gate miss. `gateway.py` is the only code that decrypts a token for it; ≤`MAX_REFRESHES`=2, 6s, 6000 chars (truncation stated).
 - **Failures decided by the PROVIDER'S reason**: Linear answers a deleted issue with HTTP 200 + `Entity not found` (and a rate limit with 400 `RATELIMITED`). Only not-found/permission WITHHOLDS the stale copy; rate limit, timeout, reauth (marks `needs_reauth`), 5xx and unknown codes fall back to the index.
 - **The gate re-check uses `RetrievalResult.gate_document_id`**, because `gate_score` is a max over ~30 candidates before rerank and the final hits cannot reproduce it. Withheld non-gate document ⇒ gate untouched; withheld gate document ⇒ all its chunks dropped, gate = best remaining cosine (can only lower it). Every leg's `.score` is a real cosine (keyword leg selects `1 - (embedding <=> q)`, pinned by a DB test).
+- **Mode B (refusal path, deep research only)**: ONE tool call offers `refresh_item(handle)` over `[L1]`/`[D1]`/`[N1]`/`[S1]` handles for the below-gate hits (titles fenced) — in the SAME call as `web_search` when web is on, so no extra serial round. Handles map only within the request (`livetools/handles.py`); an invented one resolves to nothing; echoed handles are stripped after the MODE parse. Readers: Linear, Drive (`files.get` + export; trashed/404/permission-403 withhold, `rateLimitExceeded` 403 falls back), Notion (ingest renderer, shared char budget + 12-call cap), Slack (≤15 msgs; OFF in `LIVE_TOOLS_PROVIDERS` until the D10 tier check).
 - Live blocks lead `extra_contexts`, so fence/scrub, the audit and the link rule all see them; enforce-mode guard drops a flagged block (not a withhold). A live answer is never cached; a `live_withheld` refusal says "no longer available" naming the CONNECTOR, never the item, and is deliberately NOT a gap row (deletion vs revocation is indistinguishable). `live_tool_calls` audits each read — never the token or text — 90-day sweep on the tick.
 
 **Retrieved context carries its provenance** (`rag/context_assemble.py::describe_hit`)
@@ -1859,7 +1860,7 @@ app/api/notifications.py  what needs attention, derived from connection rows
 app/insights/  registry + panels + store (SQL) + facts + github_facts +
               linear_facts + sentiment + scopes + resolve (ask box) + pins
 app/graph/     Second Brain: identities, builder, linking, walk (+ evaluation/graph_eval.py)
-app/livetools/ deep-research live reads: gateway (only token use), linear, audit, context
+app/livetools/ deep-research live reads: gateway (only token use), linear/drive/notion/slack readers, handles, audit, context
 app/workspaces/ sub-workspace CRUD + membership (assert_member)
 app/schedulers/ store, activity (live "since T"), prompts, runner, worker
 app/api/      FastAPI — deps (session/org_id), auth, admin, chat, workspaces,
@@ -2267,7 +2268,7 @@ identity linking + "Linked accounts", the graph builder, the access-safe walk,
 and the graph as a retrieval list — **built, OFF for answers**.
 
 **Pending / known gaps**
-- Live tools: **Phase 1 (Linear, mode A, deep research only) is built and OFF**; the Linear GraphQL error shapes (`Entity not found`, `RATELIMITED`, `FORBIDDEN`) are from docs and tested against fakes only — walk it live on staging before trusting (plan §10). The Deep research toggle is `tsc`-checked only. Not built: mode B + handles (Phase 2), Drive/Notion readers, Slack (gated on the rate-limit tier).
+- Live tools: **Phases 0–3 + the Slack reader are built and OFF** (deep research only). Every provider's error shapes (Linear `Entity not found`/`RATELIMITED`, Drive 403 reasons, Notion codes, Slack `error`) are from docs and tested against fakes only — walk each live on staging before trusting (plan §10). Slack stays out of `LIVE_TOOLS_PROVIDERS` until the tier check. The Deep research toggle is `tsc`-checked only. Later by design: GitHub on the gateway, per-user tokens, MCP.
 - Second Brain: **`GRAPH_RETRIEVAL_ENABLED` stays off until
   `python -m evaluation.graph_eval` runs with the real embedder and says
   "enable"** (the stand-in embedder in `tests/test_graph_eval.py` only proves the

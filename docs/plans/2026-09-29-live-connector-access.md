@@ -1,6 +1,6 @@
 # Plan: live connector access for the Second Brain (the live-tools gateway)
 
-Status: **Phase 0 + Phase 1 in progress, revision 4** · Branch: `feat/live-tools` · Date: 2026-09-29
+Status: **Phases 0–3 built (+ the Slack reader, off until D10), revision 4** — all behind `LIVE_TOOLS_ENABLED` and deep research · Branch: `feat/live-tools` · Date: 2026-09-29
 Owner: Second Brain · Related: `docs/plans/2026-09-23-second-brain.md`, `app/githublive/`
 
 Revisions 2 and 3 fold in two reviews (§14 lists every change and why). The
@@ -381,6 +381,7 @@ charts from live data (numbers still come only from `activity_facts`).
 
 | Change | Why |
 |---|---|
+| Built: Phase 2 (`drive.py`, mode B `refresh_item` over handles on the refusal path, sharing ONE tool call with the web decision), Phase 3 (`notion.py`, ingest renderer with a shared char budget + a `MAX_BLOCK_CALLS`=12 call cap), `slack.py` (≤15 messages, not in the default providers until the D10 tier check) | "complete all the phases"; Later items (GitHub on the gateway, per-user tokens, MCP) stay later — no consumer yet (D17) |
 | D0: live reads only in deep research mode (`deep_research` flag, composer toggle) | normal search/Q&A keep the graph + index path unchanged; live is opt-in per question |
 | Handles (D4/D4a/D4b) move to Phase 2 with mode B | mode A resolves targets server-side from the hits; a handle has no reader until the model can name one |
 

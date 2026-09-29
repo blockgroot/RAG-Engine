@@ -23,7 +23,7 @@ from typing import Callable
 
 from ..config.settings import GuardSettings, LiveToolsSettings
 from ..db.connection import get_connection
-from . import audit, base, linear
+from . import audit, base, drive, linear, notion, slack
 from .base import LiveRead, LiveRefresh, ProviderRead
 from .context import LiveRequest
 
@@ -33,6 +33,9 @@ logger = logging.getLogger("livetools")
 #: live, whatever LIVE_TOOLS_PROVIDERS says.
 READERS: dict[str, Callable[[str, str], ProviderRead]] = {
     "linear": linear.read_issue,
+    "google": drive.read_file,
+    "notion": notion.read_page,
+    "slack": slack.read_thread,  # listed, but off until the D10 tier check
 }
 
 _LABELS = {"linear": "Linear", "google": "Google Drive", "notion": "Notion", "slack": "Slack"}
@@ -46,8 +49,13 @@ def refresh(
     *,
     settings: LiveToolsSettings | None = None,
     guard_settings: GuardSettings | None = None,
+    mode: str = "refresh",
 ) -> LiveRefresh:
-    """Re-read the best refreshable hits live. Never raises."""
+    """Re-read the best refreshable hits live. Never raises.
+
+    ``mode`` is the audit's: ``refresh`` (mode A, the server picked) or
+    ``model`` (mode B, the model named one of this request's handles).
+    """
     if request is None or not hits:
         return LiveRefresh()
     try:
@@ -59,13 +67,21 @@ def refresh(
         targets = _targets(hits, request, settings)
         if not targets:
             return LiveRefresh()
-        return LiveRefresh(reads=_read_all(targets, request, guard_settings))
+        return LiveRefresh(reads=_read_all(targets, request, guard_settings, mode))
     except Exception:  # noqa: BLE001 - a live read may only ever add
         logger.warning("live refresh skipped", exc_info=True)
         return LiveRefresh()
 
 
 def _targets(hits: list, request: LiveRequest, settings: LiveToolsSettings) -> list[tuple[str, str, str]]:
+    """``[(document_id, provider, external_id)]``, at most MAX_REFRESHES."""
+    return [c[:3] for c in candidates(hits, request, settings, limit=base.MAX_REFRESHES)]
+
+
+def candidates(
+    hits: list, request: LiveRequest, settings: LiveToolsSettings | None = None,
+    *, limit: int = base.CANDIDATE_DOCUMENTS,
+) -> list[tuple[str, str, str, str]]:
     """``[(document_id, provider, external_id)]`` for the best refreshable hits.
 
     Looked up from ``documents`` by id, pinned to the request's org AND space:
@@ -85,7 +101,7 @@ def _targets(hits: list, request: LiveRequest, settings: LiveToolsSettings) -> l
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT id::text, source_provider, source_external_id
+            SELECT id::text, source_provider, source_external_id, coalesce(title, '')
             FROM documents
             WHERE org_id = %s::uuid
               AND workspace_id IS NOT DISTINCT FROM %s::uuid
@@ -93,18 +109,20 @@ def _targets(hits: list, request: LiveRequest, settings: LiveToolsSettings) -> l
             """,
             (request.org_id, request.workspace_id, order),
         ).fetchall()
-    found = {r[0]: (r[1], r[2]) for r in rows}
+    settings = settings or LiveToolsSettings.from_env()
+    found = {r[0]: (r[1], r[2], r[3]) for r in rows}
     out = []
     for doc in order:
-        provider, external_id = found.get(doc, (None, None))
+        provider, external_id, title = found.get(doc, (None, None, ""))
         if provider in READERS and provider in settings.providers and external_id:
-            out.append((doc, provider, external_id))
-        if len(out) >= base.MAX_REFRESHES:
+            out.append((doc, provider, external_id, title))
+        if len(out) >= limit:
             break
     return out
 
 
-def _read_all(targets, request: LiveRequest, guard_settings: GuardSettings | None) -> list[LiveRead]:
+def _read_all(targets, request: LiveRequest, guard_settings: GuardSettings | None,
+              mode: str = "refresh") -> list[LiveRead]:
     tokens: dict[str, tuple[str | None, str | None]] = {}
     for _, provider, _ in targets:
         if provider not in tokens:
@@ -144,7 +162,7 @@ def _read_all(targets, request: LiveRequest, guard_settings: GuardSettings | Non
     reads = _screen(reads, request, guard_settings)
     latency = round((time.perf_counter() - started) * 1000)
     for read in reads:
-        audit.record(request, read, mode="refresh", latency_ms=latency)
+        audit.record(request, read, mode=mode, latency_ms=latency)
     return reads
 
 

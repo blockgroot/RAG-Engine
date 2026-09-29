@@ -599,3 +599,299 @@ def _drop_org(org_id: str) -> None:
 
     with get_connection() as conn:
         conn.execute("DELETE FROM organizations WHERE id = %s::uuid", (org_id,))
+
+
+# --------------------------------------------------------------------------
+# Phase 2: Google Drive
+# --------------------------------------------------------------------------
+
+from app.livetools import drive, handles, notion as live_notion, slack as live_slack  # noqa: E402
+
+
+class _HttpResp(_Resp):
+    def __init__(self, status, payload=None, text="", content=b""):
+        super().__init__(status, payload)
+        self.text = text
+        self.content = content
+
+
+@pytest.fixture
+def drive_api(monkeypatch):
+    replies: dict = {}
+    calls: list = []
+
+    def get(url, params=None, headers=None, timeout=None):
+        assert url.startswith("https://www.googleapis.com/drive/v3/files/"), url
+        assert headers == {"Authorization": f"Bearer {SECRET}"}
+        calls.append((url, params))
+        key = "export" if url.endswith("/export") else ("media" if (params or {}).get("alt") else "meta")
+        value = replies[key]
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    monkeypatch.setattr(drive.httpx, "get", get)
+    return SimpleNamespace(replies=replies, calls=calls)
+
+
+def _gerr(status, reason):
+    return _HttpResp(status, {"error": {"errors": [{"reason": reason}]}})
+
+
+def test_drive_reads_a_google_doc_as_current_text(drive_api):
+    drive_api.replies["meta"] = _HttpResp(200, {
+        "name": "Onboarding checklist", "mimeType": "application/vnd.google-apps.document",
+        "modifiedTime": "2026-09-29T08:00:00Z", "lastModifyingUser": {"displayName": "Bo Khan"}})
+    drive_api.replies["export"] = _HttpResp(200, text="Laptop from IT on day one.")
+    out = drive.read_file(SECRET, "file-1")
+    assert out.outcome == base.OK
+    assert "Onboarding checklist" in out.text and "last edited by Bo Khan" in out.text
+    assert "Laptop from IT" in out.text and SECRET not in out.text
+
+
+@pytest.mark.parametrize("meta, outcome", [
+    (_HttpResp(200, {"name": "x", "mimeType": "application/pdf", "trashed": True}), base.NOT_ACCESSIBLE),
+    (_HttpResp(404, None), base.NOT_ACCESSIBLE),
+    (_gerr(403, "insufficientFilePermissions"), base.NOT_ACCESSIBLE),
+    (_gerr(403, "forbidden"), base.NOT_ACCESSIBLE),
+    # Google reports a rate limit as a 403 too: the reason decides.
+    (_gerr(403, "rateLimitExceeded"), base.RATE_LIMITED),
+    (_gerr(403, "userRateLimitExceeded"), base.RATE_LIMITED),
+    (_gerr(403, "somethingNew"), base.ERROR),
+    (_HttpResp(401, None), base.REAUTH),
+    (_HttpResp(429, None), base.RATE_LIMITED),
+    (_HttpResp(200, {"name": "x", "mimeType": "application/pdf", "size": str(50 * 1024 * 1024)}),
+     base.ERROR),
+])
+def test_drive_failures_are_decided_by_googles_reason(drive_api, meta, outcome):
+    drive_api.replies["meta"] = meta
+    assert drive.read_file(SECRET, "file-1").outcome == outcome
+
+
+# --------------------------------------------------------------------------
+# Phase 3: Notion
+# --------------------------------------------------------------------------
+
+
+class _NotionClient:
+    def __init__(self, page=None, error=None, blocks=None):
+        self._page, self._error = page, error
+        self._blocks = blocks or []
+        self.block_calls = 0
+        self.pages = SimpleNamespace(retrieve=self._retrieve)
+        self.blocks = SimpleNamespace(children=SimpleNamespace(list=self._list))
+
+    def _retrieve(self, page_id):
+        if self._error:
+            raise self._error
+        return self._page
+
+    def _list(self, block_id, **kw):
+        self.block_calls += 1
+        return {"results": self._blocks if block_id == "page-1" else [],
+                "has_more": False, "next_cursor": None}
+
+
+def _notion(monkeypatch, client):
+    import notion_client
+
+    monkeypatch.setattr(notion_client, "Client", lambda auth, timeout_ms: client)
+
+
+def _para(text, children=False, bid="b"):
+    return {"id": bid, "type": "paragraph", "has_children": children,
+            "paragraph": {"rich_text": [{"plain_text": text}]}}
+
+
+PAGE = {"properties": {"title": {"type": "title", "title": [{"plain_text": "Leave Policy"}]}},
+        "last_edited_time": "2026-09-29T08:00:00Z"}
+
+
+def test_notion_reads_the_page_body(monkeypatch):
+    _notion(monkeypatch, _NotionClient(page=PAGE, blocks=[_para("24 days of annual leave.")]))
+    out = live_notion.read_page(SECRET, "page-1")
+    assert out.outcome == base.OK
+    assert "Leave Policy" in out.text and "24 days of annual leave." in out.text
+
+
+def test_notion_block_calls_are_bounded(monkeypatch):
+    """A page of empty nested blocks spends no characters, so calls are capped too."""
+    client = _NotionClient(page=PAGE, blocks=[_para("", children=True, bid=f"c{i}") for i in range(40)])
+    _notion(monkeypatch, client)
+    out = live_notion.read_page(SECRET, "page-1")
+    assert client.block_calls <= live_notion.MAX_BLOCK_CALLS
+    assert "truncated" in out.text
+
+
+def test_notion_archived_page_is_not_accessible(monkeypatch):
+    _notion(monkeypatch, _NotionClient(page={**PAGE, "archived": True}))
+    assert live_notion.read_page(SECRET, "page-1").outcome == base.NOT_ACCESSIBLE
+
+
+@pytest.mark.parametrize("code, outcome", [
+    ("object_not_found", base.NOT_ACCESSIBLE),
+    ("restricted_resource", base.NOT_ACCESSIBLE),
+    ("unauthorized", base.REAUTH),
+    ("rate_limited", base.RATE_LIMITED),
+    ("internal_server_error", base.ERROR),
+])
+def test_notion_failures_are_decided_by_notions_code(monkeypatch, code, outcome):
+    from notion_client import APIResponseError
+
+    err = APIResponseError(code=code, status=400, message="x", headers=httpx.Headers(),
+                           raw_body_text="{}")
+    _notion(monkeypatch, _NotionClient(error=err))
+    assert live_notion.read_page(SECRET, "page-1").outcome == outcome
+
+
+# --------------------------------------------------------------------------
+# Slack (gated on the rate tier, D10)
+# --------------------------------------------------------------------------
+
+
+def test_slack_is_not_live_by_default(monkeypatch):
+    monkeypatch.delenv("LIVE_TOOLS_PROVIDERS", raising=False)
+    assert "slack" not in LiveToolsSettings.from_env().providers
+
+
+@pytest.fixture
+def slack_api(monkeypatch):
+    reply = {}
+
+    def get(url, params=None, headers=None, timeout=None):
+        assert url == "https://slack.com/api/conversations.replies", url
+        assert params["limit"] == live_slack.MAX_MESSAGES
+        reply["params"] = params
+        return reply["value"]
+
+    monkeypatch.setattr(live_slack.httpx, "get", get)
+    return reply
+
+
+def test_slack_reads_the_thread_and_says_when_it_is_cut(slack_api):
+    slack_api["value"] = _Resp(200, {"ok": True, "has_more": True, "messages": [
+        {"text": "Deploy is frozen till Monday", "ts": "1727600000.0",
+         "user_profile": {"real_name": "Bo Khan"}},
+        {"text": "bot echo", "bot_id": "B1", "ts": "1727600001.0"}]})
+    out = live_slack.read_thread(SECRET, "C1:1727600000.0")
+    assert out.outcome == base.OK
+    assert slack_api["params"]["channel"] == "C1" and slack_api["params"]["ts"] == "1727600000.0"
+    assert "Bo Khan" in out.text and "bot echo" not in out.text
+    assert f"first {live_slack.MAX_MESSAGES} messages" in out.text
+
+
+@pytest.mark.parametrize("error, outcome", [
+    ("channel_not_found", base.NOT_ACCESSIBLE), ("not_in_channel", base.NOT_ACCESSIBLE),
+    ("thread_not_found", base.NOT_ACCESSIBLE), ("ratelimited", base.RATE_LIMITED),
+    ("invalid_auth", base.REAUTH), ("token_revoked", base.REAUTH), ("weird", base.ERROR),
+])
+def test_slack_failures_are_decided_by_slacks_error(slack_api, error, outcome):
+    slack_api["value"] = _Resp(200, {"ok": False, "error": error})
+    assert live_slack.read_thread(SECRET, "C1:1.0").outcome == outcome
+
+
+# --------------------------------------------------------------------------
+# Mode B: handles and the refusal-path decision
+# --------------------------------------------------------------------------
+
+
+def test_handles_resolve_only_what_this_request_minted():
+    minted = handles.mint([("d1", "linear", "u1", "SYV-5"), ("d2", "google", "f1", "Doc"),
+                           ("d3", "github", "r", "repo")])
+    assert set(minted) == {"L1", "D1"}  # a provider with no reader gets no handle
+    assert handles.resolve("L1", minted) == "d1"
+    assert handles.resolve("[d1]", minted) == "d2"
+    assert handles.resolve("L9", minted) is None and handles.resolve(None, minted) is None
+
+
+def test_echoed_handles_are_stripped():
+    assert handles.strip_handles("SYV-5 is in review [L1]. See also [D2].") == \
+        "SYV-5 is in review. See also."
+    assert handles.strip_handles("Clause [1] applies.") == "Clause [1] applies."
+
+
+class _ToolLLM(RecordingLLM):
+    """RecordingLLM that answers the tool decision with a fixed call."""
+
+    def __init__(self, call=None, **kw):
+        super().__init__(**kw)
+        self._call = call
+        self.tool_prompts: list[str] = []
+        self.tools_offered: list[list[str]] = []
+
+    def generate_with_tools(self, messages, tools=None, tool_choice=None, timeout=None):
+        from app.llm.base import ChatResult, ToolCall
+
+        self.tool_prompts.append(messages[-1]["content"])
+        self.tools_offered.append([t["function"]["name"] for t in tools or []])
+        calls = [ToolCall(id="t1", name=self._call[0], arguments=self._call[1])] if self._call else []
+        return ChatResult(text=None if calls else FALLBACK, tool_calls=calls)
+
+
+def _mode_b(monkeypatch, call, *, docs=(("doc-linear", "sick tracker SYV-5 ticket"),)):
+    """A gate miss (the question's topic is not in the chunk) with one
+    below-gate related hit, so the refusal path runs."""
+    llm = _ToolLLM(call=call, answer="MODE: A\nSYV-5 is in review now [L1].")
+    store = TopicAwareVectorStore("org-1", list(docs), weak_fallback_content="SYV-5 ticket",
+                                  weak_fallback_score=0.2)
+    pipe = RagPipeline(llm=llm, embedder=KeywordEmbedder(), store=store,
+                       settings=RagSettings(top_k=3, similarity_threshold=0.35,
+                                            fallback_response=FALLBACK))
+    monkeypatch.setenv("LIVE_TOOLS_ENABLED", "true")
+    monkeypatch.setattr("app.livetools.gateway.candidates",
+                        lambda hits, req, settings=None, limit=5:
+                        [(h.document_id, "linear", "uuid-5", "SYV-5 - scheduler") for h in hits[:1]])
+    return llm, pipe
+
+
+def test_mode_b_is_never_offered_outside_deep_research(monkeypatch):
+    llm, pipe = _mode_b(monkeypatch, ("refresh_item", '{"handle": "L1"}'))
+    pipe.answer("what is the parking status?", "org-1")
+    assert llm.tool_prompts == []
+
+
+def test_mode_b_refreshes_the_named_handle_and_answers_live(monkeypatch, deep_research):
+    llm, pipe = _mode_b(monkeypatch, ("refresh_item", '{"handle": "L1"}'))
+    seen = []
+
+    def fake(hits, request, **kw):
+        seen.append(([h.document_id for h in hits], kw.get("mode")))
+        return LiveRefresh(reads=[_ok(doc=hits[0].document_id)])
+
+    monkeypatch.setattr(rp, "live_refresh", fake)
+    result = pipe.answer("what is the parking status?", "org-1")
+
+    (prompt,) = llm.tool_prompts
+    assert "[L1] SYV-5 - scheduler (Linear)" in prompt
+    assert "doc-weak" not in prompt and "uuid-5" not in prompt  # no ids reach the model
+    assert seen == [(["doc-weak"], "model")]
+    assert result.answered and result.live_sources
+    assert "[L1]" not in result.answer  # the echoed handle is stripped
+    assert "SYV-5 status In Review" in _grounded_prompt(llm)
+
+
+def test_mode_b_ignores_an_invented_handle(monkeypatch, deep_research):
+    llm, pipe = _mode_b(monkeypatch, ("refresh_item", '{"handle": "L7"}'))
+    called = []
+    monkeypatch.setattr(rp, "live_refresh", lambda *a, **k: called.append(a) or LiveRefresh())
+    result = pipe.answer("what is the parking status?", "org-1")
+    assert called == [] and not result.answered
+
+
+def test_mode_b_withheld_item_gives_the_notice(monkeypatch, deep_research):
+    llm, pipe = _mode_b(monkeypatch, ("refresh_item", '{"handle": "L1"}'))
+    monkeypatch.setattr(rp, "live_refresh", lambda hits, req, **k: LiveRefresh(reads=[
+        LiveRead("linear", hits[0].document_id, "uuid-5", base.NOT_ACCESSIBLE)]))
+    result = pipe.answer("what is the parking status?", "org-1")
+    assert result.live_withheld and "no longer available" in result.answer
+
+
+def test_mode_b_shares_one_call_with_the_web_decision(monkeypatch, deep_research):
+    from app.config.settings import WebSearchSettings
+
+    llm, pipe = _mode_b(monkeypatch, None)  # the model declines both
+    pipe._web_search = object()
+    pipe._web_search_settings = WebSearchSettings(enabled=True)
+    result = pipe.answer("what is the parking status?", "org-1")
+    assert llm.tools_offered == [["refresh_item", "web_search"]]  # one call, both tools
+    assert not result.answered

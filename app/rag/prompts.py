@@ -431,6 +431,61 @@ def build_web_decision_prompt(question: str, fallback_response: str) -> str:
     )
 
 
+REFRESH_ITEM_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "refresh_item",
+        "description": (
+            "Read ONE of the listed company items live from its tool (Linear, "
+            "Google Drive, Notion or Slack) to get its CURRENT content. Use it only "
+            "when the question is about one of the listed items and its synced copy "
+            "may be out of date or incomplete. Pass the item's handle exactly as "
+            "listed, e.g. L1."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "handle": {"type": "string", "description": "The item's handle, e.g. L1."}
+            },
+            "required": ["handle"],
+        },
+    },
+}
+
+
+def build_live_decision_prompt(
+    question: str, catalog: str, fallback_response: str, *, web: bool
+) -> str:
+    """Deep research, refusal path: may ONE listed item be read live? (plan D6).
+
+    The catalog is handles + titles only -- titles are document text, so they
+    are fenced like any other. The model can name a handle; it can never name
+    an id, a URL or anything the list does not contain.
+    """
+    web_rule = (
+        "- If instead the question is about a REAL, NAMED, EXTERNAL entity with "
+        "public information, call web_search exactly once.\n"
+        if web else ""
+    )
+    return (
+        "The company's synced documents did not answer the user's question well "
+        "enough. Some related company items were found; their live content may "
+        "answer it. Decide what to do:\n"
+        "- If the question is about one of the ITEMS below, call refresh_item "
+        "once with that item's handle.\n"
+        f"{web_rule}"
+        "- Otherwise do not call any tool and reply with exactly this sentence: "
+        f"{fallback_response}\n\n"
+        f"{UNTRUSTED_POLICY}\n"
+        "ITEMS:\n"
+        "<<<UNTRUSTED_ITEM_CATALOG>>>\n"
+        f"{scrub_untrusted_text(catalog)}\n"
+        "<<<END_UNTRUSTED_ITEM_CATALOG>>>\n\n"
+        f"{UNTRUSTED_REMINDER}\n\n"
+        f"QUESTION: {question}\n"
+    )
+
+
 def build_web_answer_prompt(question: str, results_block: str) -> str:
     """Prompt to compose the final answer from web results (single step).
 

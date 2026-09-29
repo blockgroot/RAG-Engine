@@ -52,6 +52,7 @@ def _built_prompts() -> dict[str, str]:
         "rewrite": prompts.build_rewrite_prompt("and them?", ATTACK, [("q?", ATTACK)]),
         "summary_fold": prompts.build_summary_prompt(ATTACK, [("q?", ATTACK)]),
         "github_decision": prompts.build_github_decision_prompt("q?", ATTACK),
+        "live_decision": prompts.build_live_decision_prompt("q?", ATTACK, "idk", web=True),
     }
 
 
