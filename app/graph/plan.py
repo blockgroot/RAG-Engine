@@ -88,6 +88,11 @@ class GraphPlan:
         return {p for p in self.document_providers.values() if p}
 
     @property
+    def seed_tools(self) -> set[str]:
+        """Tools holding what the question REFERS to (its graph seeds)."""
+        return {t for t in (provider_of(getattr(s, "key", "")) for s in self.seeds) if t}
+
+    @property
     def exact_seeds(self) -> list:
         return [s for s in self.seeds if getattr(s, "exact", False)]
 
@@ -224,7 +229,13 @@ def connected_tools(plan: GraphPlan | None, routed: str | None, named: str | Non
         return None
     if named not in _INDEXED:
         return None
-    return {routed, named}
+    # Plus the tools holding what the question REFERS to: "has the author of
+    # the Leave Policy discussed it in Slack?" routed to Linear could read
+    # Sana's Slack thread but not that she wrote the Leave Policy -- that fact
+    # lives in Notion -- and refused (measured with real Gemini). Those tools
+    # join through the graph's documents and facts only; their own search
+    # legs do not run (``search`` stays the named tool).
+    return {routed, named} | (plan.seed_tools & _INDEXED)
 
 
 def escalation_tools(plan: GraphPlan | None, routed: str | None) -> set[str] | None:

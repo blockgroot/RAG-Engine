@@ -388,7 +388,10 @@ _PLOT_ASK = re.compile(
     r"|bar\s+charts?"
     r"|line\s+charts?"
     r"|stacked\s+bars?"
-    r"|graphs?"
+    # "graph" alone is a plot ask ("graph our commits"), but not inside a
+    # compound noun: "when is the knowledge graph beta launching?" was forced
+    # into a chart refusal although the classifier had said qa.
+    r"|(?<!knowledge )(?<!knowledge-)(?<!call )(?<!dependency )graphs?"
     r"|plots?"
     r"|visuali[sz]ations?"
     r"|visual\s+(?:reports?|representations?)"

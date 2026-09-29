@@ -586,3 +586,14 @@ def test_an_unavailable_claim_about_an_unknown_provider_is_ignored():
         ["notion"],
     )
     assert intent.kind != "refuse" or "Jira" not in (intent.message or "")
+
+
+def test_knowledge_graph_is_not_a_plot_ask():
+    """"When is the knowledge graph beta launching?" was forced into a chart
+    refusal: the classifier said qa, the plot regex matched "graph"."""
+    from app.insights.resolve import _asked_for_a_plot
+
+    assert not _asked_for_a_plot("When is the knowledge graph beta launching?")
+    assert not _asked_for_a_plot("What is the dependency graph of the auth service?")
+    assert _asked_for_a_plot("graph our commits by author")
+    assert _asked_for_a_plot("show a graph of pull requests")

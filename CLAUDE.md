@@ -325,6 +325,19 @@ already applied skip / owner-only / freeze to that exact row.
   in Slack" from evidence -- no canned reply, the prompt is unchanged.
   `GRAPH_CONNECTED_ENABLED` switches it off; `done` carries
   `connected_providers` and the pill names every tool.
+- **Three connected-answer bugs only the REAL model exposed** (end-to-end run,
+  real Gemini + embeddings, 17 scenarios, graph on vs off): (1) the routed
+  agent's profile says "only from <tool>" and the model obeyed it, refusing
+  the Slack thread it was handed -- a connected answer now gets
+  `prompts.connected_prompt_profile` naming every tool; (2) "the author of the
+  Leave Policy ... in Slack?" routed to Linear lacked the Notion fact that
+  identifies the author -- the tools holding the question's SEEDS join the
+  connected set (graph documents/facts only, no extra search leg); (3) a named
+  tool counts when CONNECTED, not only when the walk reached it (the pill said
+  Notion while Slack answered). Fake-LLM unit tests passed through all three.
+- **`_PLOT_ASK` matched "knowledge graph"** (`insights/resolve.py`), forcing
+  "when is the knowledge graph beta launching?" into a chart refusal although
+  the classifier said qa. Compound nouns are excluded by lookbehind.
 - **In retrieval it is ONE more RRF list** (`retrieval._graph_documents`): a
   vector search restricted to the walk's evidence documents, viewer-filtered
   AGAIN, so the gate is untouched. Any failure drops only its candidates.

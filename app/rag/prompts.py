@@ -90,6 +90,35 @@ WORKSPACE_PROMPT_PROFILE = PromptProfile(
     source_label=SOURCE_WORKSPACE,
 )
 
+_TOOL_NAMES = {"notion": "Notion", "google": "Google Drive", "slack": "Slack",
+               "linear": "Linear", "github": "GitHub"}
+
+
+def connected_prompt_profile(tools, source_label: str) -> PromptProfile:
+    """The framing for a CONNECTED answer, which reads more than one tool.
+
+    Every per-tool profile says "answer only from <this tool>", and a model
+    obeys it: measured with real Gemini, a question routed to Linear that
+    named Slack was handed the right Slack thread and still refused, because
+    rule 1 told it to use only issue-tracking facts. The framing must name
+    every tool the context was drawn from -- each excerpt already carries its
+    app on its provenance line. The grounding rules themselves are unchanged;
+    only the scope they refer to widens to the tools actually searched.
+    """
+    names = [_TOOL_NAMES.get(t, t) for t in sorted(tools)]
+    listed = ", ".join(names[:-1]) + (" and " if len(names) > 1 else "") + names[-1]
+    return PromptProfile(
+        persona=(
+            f"an assistant answering from this company's connected tools ({listed}); "
+            "each excerpt in CONTEXT names the app it came from"
+        ),
+        scope_adjective="company-specific",
+        scope_noun=f"company's {listed} content",
+        escalation_hint="whoever owns that document or conversation can help with this",
+        source_label=source_label,
+    )
+
+
 ATTACHMENT_PROMPT_PROFILE = PromptProfile(
     persona=(
         "an assistant answering from the file the person has just attached to "

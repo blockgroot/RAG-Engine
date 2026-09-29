@@ -91,6 +91,7 @@ from .prompts import (
     build_audit_prompt,
     build_decompose_prompt,
     ATTACHMENT_PROMPT_PROFILE,
+    connected_prompt_profile,
     build_attachment_paging_prompt,
     build_grounded_prompt,
     build_recovery_queries_prompt,
@@ -214,6 +215,19 @@ def _cross_plan_active() -> bool:
         return plan is not None and plan.cross is not None
     except Exception:  # noqa: BLE001
         return False
+
+
+def _connected_tools(org_id: str | None) -> frozenset[str]:
+    """The tools a connected answer is reading, or empty for a normal one."""
+    try:
+        from ..graph.plan import current_plan
+
+        plan = current_plan()
+        if plan is None or plan.cross is None or plan.org_id != org_id:
+            return frozenset()
+        return frozenset(plan.cross)
+    except Exception:  # noqa: BLE001
+        return frozenset()
 
 
 def _tone_retry_addendum(mode: str) -> str:
@@ -1424,6 +1438,13 @@ class RagPipeline:
         facts, shaped = (None, False)
         if kw.get("contexts") is None and hits:
             facts, shaped = _graph_facts_block(kw.get("org_id"), self._source_provider)
+            tools = _connected_tools(kw.get("org_id"))
+            if tools and kw.get("profile") is None:
+                # A connected answer reads several tools, so it cannot keep the
+                # routed agent's "only from <tool>" framing (see prompts).
+                kw["profile"] = connected_prompt_profile(
+                    tools, self._prompt_profile.source_label
+                )
         result = self._generate_core(question, hits, top_score, graph_facts=facts, **kw)
         return replace(result, graph_shaped=True) if shaped else result
 

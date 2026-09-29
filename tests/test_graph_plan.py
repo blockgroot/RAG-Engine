@@ -524,3 +524,29 @@ def test_a_named_tool_that_is_not_connected_changes_nothing(chat_edge, monkeypat
     assert done["connected_providers"] is None
     assert chat_edge.seen["plans"][0].cross is None
 
+
+
+def test_a_connected_answer_includes_the_tool_the_question_refers_to():
+    """Real Gemini: "has the author of the Leave Policy discussed the scheduler
+    in Slack?" routed to Linear refused -- the Leave Policy's author is a
+    Notion fact, and Notion was not in the answer's tools."""
+    plan = gp.GraphPlan(ORG, None, (Seed("e", "document", "Leave Policy", False, 0.9,
+                                         "notion:leave"),))
+    assert gp.connected_tools(plan, "linear", "slack") == {"linear", "slack", "notion"}
+    assert plan.connected({"linear", "slack", "notion"}, search={"slack"}).search_tools(
+        "linear") == ["slack"]  # Notion joins through the graph, not a second search
+
+
+def test_a_connected_answer_is_framed_for_every_tool_it_reads():
+    """Every per-tool profile says "only from <tool>", and the model obeyed it."""
+    from app.rag.prompts import connected_prompt_profile
+
+    profile = connected_prompt_profile({"linear", "slack"}, "linear")
+    assert "Linear and Slack" in profile.persona
+    assert profile.source_label == "linear"
+    token = gp.use_plan(_plan().connected({"linear", "slack"}))
+    try:
+        assert rag_pipeline._connected_tools(ORG) == {"linear", "slack"}
+    finally:
+        gp.reset_plan(token)
+    assert rag_pipeline._connected_tools(ORG) == frozenset()  # normal answers untouched
