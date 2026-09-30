@@ -154,6 +154,11 @@ class RoutingDecision:
     scores: dict[str, float] = field(default_factory=dict)
     chart_spec: object | None = None
     chart_refusal: str | None = None
+    #: The classifier's view on whether this question needs LIVE data (see
+    #: ``AskIntent.needs_live``). ``None`` when the classifier did not run or
+    #: did not say. Carried here because the classifier already runs inside
+    #: routing; the chat edge hands it to the live-tools gateway.
+    needs_live: bool | None = None
 
 
 #: What a member is likely to CALL each service when they type its name.
@@ -598,11 +603,14 @@ def _try_insights_route(
     connected: set[str],
     org_id: str,
     workspace_id: str | None,
+    live_out: list | None = None,
 ) -> RoutingDecision | None:
     """Chart vs document vs live GitHub, decided by the classifier.
 
     Returns None when this is ordinary Q&A so the cosine router still runs.
     Never raises: a dead classifier is a document question, not a failed Ask.
+    ``live_out`` receives the same call's ``needs_live`` answer (the return
+    shape stays a decision-or-None, which every caller and test relies on).
     """
     from ..insights import panels as panel_defs
     from ..insights.resolve import classify_question
@@ -615,6 +623,8 @@ def _try_insights_route(
     except Exception:  # noqa: BLE001
         logger.warning("Agent routing: chart classifier failed", exc_info=True)
         return None
+    if live_out is not None:
+        live_out.append(getattr(intent, "needs_live", None))
     if intent.kind == "qa":
         return None
     if intent.kind == "github_live":
@@ -704,6 +714,25 @@ def choose_agent(
     context: str | None = None,
     graph_plan=None,
 ) -> RoutingDecision:
+    """Which agent answers, plus the classifier's live-data verdict."""
+    live: list = []
+    decision = _choose_agent(
+        question, org_id, workspace_id=workspace_id, requested_agent=requested_agent,
+        context=context, graph_plan=graph_plan, live_out=live,
+    )
+    return replace(decision, needs_live=live[0] if live else None)
+
+
+def _choose_agent(
+    question: str,
+    org_id: str,
+    *,
+    workspace_id: str | None = None,
+    requested_agent: str | None = None,
+    context: str | None = None,
+    graph_plan=None,
+    live_out: list | None = None,
+) -> RoutingDecision:
     """Decide which agent answers ``question``. Never raises.
 
     ``context`` is the conversation's previous question. A follow-up such as
@@ -780,7 +809,7 @@ def choose_agent(
             _probe_scores, question, org_id, workspace_id, connected,
         )
 
-    visual = _try_insights_route(question, connected, org_id, workspace_id)
+    visual = _try_insights_route(question, connected, org_id, workspace_id, live_out=live_out)
     if visual is not None:
         return visual
 

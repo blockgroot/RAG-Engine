@@ -13,6 +13,8 @@ Pinned here:
 
 from __future__ import annotations
 
+import dataclasses
+
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -148,7 +150,7 @@ def _hit(doc, score, provider=None, content=None, index=0):
                           chunk_index=index, org_id="org-1", source_provider=provider)
 
 
-REQUEST = LiveRequest(org_id="org-1", workspace_id=None, user_id="user-1")
+REQUEST = LiveRequest(org_id="org-1", workspace_id=None, user_id="user-1", needs_live=True)
 ON = LiveToolsSettings(enabled=True)
 
 
@@ -467,7 +469,7 @@ def test_the_chat_edge_identifies_the_asker_for_every_question(monkeypatch):
     session = SimpleNamespace(user_id="user-1", role="member")
     list(chat._stream_answer("q", "org-1", "conv-1", session=session))
 
-    assert seen == [LiveRequest("org-1", None, "user-1", "conv-1")]
+    assert seen == [LiveRequest("org-1", None, "user-1", "conv-1", question="q")]
     assert current_live_request() is None  # reset after the stream
 
 
@@ -553,7 +555,7 @@ def test_targets_resolve_only_this_scopes_documents(store, monkeypatch):
             org, provider="linear", external_id="u-space", title="SYV-9",
             chunks=["c"], embeddings=[_vec(5)], workspace_id=space)
 
-        request = LiveRequest(org_id=org, workspace_id=None, user_id=owner.id)
+        request = LiveRequest(org_id=org, workspace_id=None, user_id=owner.id, needs_live=True)
         hits = [_hit(space_linear, 0.9), _hit(company_notion, 0.8), _hit(company_linear, 0.7)]
         targets = gateway._targets(hits, request, ON)
         # The space's document is invisible from company scope; Notion is not
@@ -938,3 +940,61 @@ def test_a_missing_client_secret_does_not_mark_reauth(monkeypatch):
     with pytest.raises(ConfigurationError):
         credentials.get_live_connection_token("org-1", "linear")
     assert marked == []
+
+
+# -- when a live read is worth it (trigger) ----------------------------------------
+
+
+def test_wants_live_prefers_the_classifier_verdict():
+    from app.livetools.trigger import wants_live
+
+    assert wants_live(True, "what is our leave policy?")
+    assert not wants_live(False, "what's the latest on SYV-5?")
+
+
+def test_wants_live_falls_back_to_the_word_rule():
+    from app.livetools.trigger import wants_live
+
+    assert wants_live(None, "Is SYV-5 still blocked?")
+    assert wants_live(None, "what's the status of the migration")
+    assert not wants_live(None, "what is our leave policy?")
+    assert not wants_live(None, None)
+
+
+def _gate_setup(monkeypatch):
+    calls = []
+    monkeypatch.setattr(gateway, "_targets", lambda hits, request, settings: [("d1", "linear", "L-1")])
+    monkeypatch.setattr(gateway, "_drop_freshly_synced", lambda targets, request: targets)
+    monkeypatch.setattr(gateway, "_read_all", lambda targets, *a, **k: calls.append(targets) or [])
+    return calls
+
+
+@pytest.mark.parametrize(
+    "request_, reads",
+    [
+        (dataclasses.replace(REQUEST, needs_live=False, question="is it blocked?"), False),
+        (dataclasses.replace(REQUEST, needs_live=None, question="is SYV-5 still blocked?"), True),
+        (dataclasses.replace(REQUEST, needs_live=None, question="what is our leave policy?"), False),
+        (dataclasses.replace(REQUEST, needs_live=True, question="leave policy"), True),
+    ],
+)
+def test_refresh_mode_is_gated_on_the_verdict(monkeypatch, request_, reads):
+    calls = _gate_setup(monkeypatch)
+    gateway.refresh([object()], request_, settings=ON)
+    assert bool(calls) is reads
+
+
+def test_model_mode_is_not_gated(monkeypatch):
+    calls = _gate_setup(monkeypatch)
+    request_ = dataclasses.replace(REQUEST, needs_live=False, question="leave policy")
+    gateway.refresh([object()], request_, settings=ON, mode="model")
+    assert calls
+
+
+def test_freshness_lookup_failure_reads_live(monkeypatch):
+    def boom():
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(gateway, "get_connection", boom)
+    targets = [("d1", "linear", "L-1")]
+    assert gateway._drop_freshly_synced(targets, REQUEST) == targets

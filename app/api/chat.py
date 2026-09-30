@@ -7,6 +7,7 @@ import contextvars
 import json
 import logging
 import os
+import dataclasses
 import time
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
@@ -56,7 +57,7 @@ from ..agent.rag_pipeline_agent import RagPipelineAgent
 from ..config.settings import GraphSettings
 from ..core.exceptions import AuthError, LLMProviderError, ProviderError
 from ..graph import plan as graph_plan
-from ..livetools import LiveRequest, reset_live_request, use_live_request
+from ..livetools import LiveRequest, current_live_request, reset_live_request, use_live_request
 from ..memory import personal as personal_memory
 from ..memory import conversations as conversation_store
 from ..llm import catalog
@@ -953,6 +954,7 @@ def _stream_answer(
             workspace_id=workspace_id,
             user_id=session.user_id if session else None,
             conversation_id=conversation_id,
+            question=question,
         )
     )
     # Personal memory (Second Brain layer C): this person's facts shape how
@@ -1086,6 +1088,12 @@ def _stream_answer_body(
         graph_plan=plan_future,
     )
     plan = _graph_plan_result(plan_future)
+    # The classifier's live-data verdict rides the request note to the gateway
+    # (reset with it when the stream ends: the outer token restores the value
+    # from before this stream).
+    current = current_live_request()
+    if current is not None:
+        use_live_request(dataclasses.replace(current, needs_live=getattr(decision, "needs_live", None)))
     connected: set[str] | None = None
     if plan is not None and _graph_connected_enabled():
         connected = graph_plan.connected_tools(

@@ -95,6 +95,14 @@ class AskIntent:
     kind: str  # qa | chart | refuse | github_live
     spec: ChartSpec | None = None
     message: str | None = None
+    #: Does the question ask about the CURRENT state of something (status,
+    #: progress, done/blocked/reviewed, latest update)? Decides whether the
+    #: Second Brain re-reads the matching items live (app/livetools). Asked in
+    #: this call because it already runs for every chat question, beside the
+    #: cosine probe: a separate "should I read live?" call would cost more
+    #: than the live read it decides about. ``None`` = the model was not asked
+    #: or did not say; the gateway then falls back to a word rule.
+    needs_live: bool | None = None
 
 
 _JSON_RE = re.compile(r"\{.*\}", re.S)
@@ -252,8 +260,14 @@ def _prompt(
             else '{"intent": "qa"|"chart", "metric": "<key or null>", '
         ) +
         '"group_by": "<option or null>", "period": "<period>", '
-        '"chart": "<shape or null>", "focus": "<one named thing or null>"}\n\n'
+        '"chart": "<shape or null>", "focus": "<one named thing or null>", '
+        '"live": true|false}\n\n'
         "Rules:\n"
+        "- live=true when the question asks about the CURRENT state of a "
+        "specific item or someone's work: its status, progress, whether it is "
+        "done, blocked, reviewed or merged yet, the latest update, who is on it "
+        "now. live=false for anything settled that does not move day to day "
+        "(a policy, a how-to, who wrote a document, what a page says).\n"
         "- Never invent a metric key. Match the question to the list "
         "above, even if the wording differs from the label.\n"
         "- group_by must be one of that metric's options, or null.\n"
@@ -364,6 +378,28 @@ def classify_question(
         reply, metrics, fail_open=fail_open, github=github,
         missing=missing, providers=providers,
     )
+    return replace(
+        _finish(intent, question, metrics, fail_open=fail_open),
+        needs_live=parse_live(reply),
+    )
+
+
+def parse_live(reply: str) -> bool | None:
+    """The ``live`` field of the classifier's reply. Only a real boolean
+    counts: anything else is "not said", and the gateway's word rule decides."""
+    match = _JSON_RE.search(reply or "")
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(0))
+    except (ValueError, TypeError):
+        return None
+    value = data.get("live") if isinstance(data, dict) else None
+    return value if isinstance(value, bool) else None
+
+
+def _finish(intent: AskIntent, question: str, metrics, *, fail_open: bool) -> AskIntent:
+    """The post-parse corrections, unchanged: plot recovery and the chat gate."""
     # A model that treats "make a pie chart of this doc" as qa will retrieve
     # the file and invent slices (or say the docs don't contain a pie tool).
     # An explicit shape with no metric is a refusal, not RAG — unless the

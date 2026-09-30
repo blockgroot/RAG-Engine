@@ -19,6 +19,9 @@ MAX_CHARS = 6000
 LINEAR_COMMENTS = 5
 #: How many distinct documents at the top of the hits are considered at all.
 CANDIDATE_DOCUMENTS = 5
+#: A tool whose last SUCCESSFUL sync is younger than this is not read live:
+#: its synced copy is already fresh, and the read would only cost ~2 s.
+FRESH_SECONDS = 15 * 60
 
 # Outcomes (the audit row's `outcome`). Only NOT_ACCESSIBLE withholds the
 # indexed copy; every other failure falls back to it (plan D16, §5).

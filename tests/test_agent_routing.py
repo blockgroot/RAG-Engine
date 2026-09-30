@@ -460,7 +460,7 @@ def test_a_chart_intent_beats_the_only_connected_source(monkeypatch):
     monkeypatch.setattr(
         routing,
         "_try_insights_route",
-        lambda q, c, o, w: routing.RoutingDecision(INSIGHTS_KEY, "chart", chart_spec=spec),
+        lambda q, c, o, w, **k: routing.RoutingDecision(INSIGHTS_KEY, "chart", chart_spec=spec),
     )
 
     decision = routing.choose_agent("share of completed work by team", ORG)
@@ -476,7 +476,7 @@ def test_an_uncountable_visual_still_routes_to_insights(monkeypatch):
     monkeypatch.setattr(
         routing,
         "_try_insights_route",
-        lambda q, c, o, w: routing.RoutingDecision(
+        lambda q, c, o, w, **k: routing.RoutingDecision(
             INSIGHTS_KEY,
             "chart-refuse",
             chart_refusal="I can't chart that from your connected apps.",

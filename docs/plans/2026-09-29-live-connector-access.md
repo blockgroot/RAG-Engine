@@ -422,3 +422,12 @@ Found and fixed: `get_live_connection_token` marked `needs_reauth` on ANY refres
 | The final hits cannot reproduce `gate_score` (a max over ~30 candidates before rerank) | D8a: `RetrievalResult.gate_document_id`; recompute only when the withheld document IS the gate document, dropping all its chunks — can only lower the score (safe direction) |
 | Are all candidate scores cosines? | D8a: verified — both legs select `1 - (embedding <=> q)`, embedding `NOT NULL`, RRF keeps the chunk's score; `None` skipped anyway, pinned by a test |
 | No gap row on a real deletion is debatable | D8a: stated as deliberate — a 404 / `Entity not found` cannot tell deletion from revocation, and a false gap costs more than a missed one |
+
+### Revision 6 — when a live read runs (built)
+
+Mode A used to read live whenever a refreshable item ranked in the top hits. It now needs two things, and neither costs a model call:
+
+1. **The question asks about how something stands NOW.** `classify_question` already runs on every chat question, so it returns `live: true|false` in the same reply. If there is no verdict, a word rule decides (`trigger._CURRENT_STATE`: status, latest, still, yet, blocked, merged…).
+2. **The synced copy is not already fresh.** If the tool's last *successful* ingest job finished less than 15 min ago, it is skipped.
+
+Mode B (the model's `refresh_item` on the refusal path) is not gated. Skips are logged as `livetools.skip reason=not_current_state|fresh`. Rollout is unchanged: staging Linear first, then Notion + Drive, then prod for Syvora only (`LIVE_TOOLS_ORGS`), then everyone. Slack stays off.

@@ -616,3 +616,27 @@ def test_in_chat_a_chart_must_be_asked_for():
     assert _classify("show me the org chart", '{"intent":"chart","metric":"issues_completed"}',
                      ["linear"]).kind == "qa"
 
+
+
+@pytest.mark.parametrize(
+    "reply, expected",
+    [
+        ('{"intent": "qa", "live": true}', True),
+        ('{"intent": "qa", "live": false}', False),
+        ('{"intent": "qa"}', None),
+        ('{"intent": "qa", "live": "yes"}', None),  # only a real bool counts
+        ("not json", None),
+    ],
+)
+def test_parse_live(reply, expected):
+    assert resolve.parse_live(reply) is expected
+
+
+def test_classify_question_carries_the_live_verdict():
+    """One call answers both 'chart or question?' and 'does it need live data?'."""
+    reply = json.dumps({**json.loads(_spec(intent="qa", metric=None)), "live": True})
+    intent = resolve.classify_question(
+        "Is SYV-5 still blocked?", providers=["linear"], llm=FakeLLM(reply), fail_open=True
+    )
+    assert intent.kind == "qa"
+    assert intent.needs_live is True

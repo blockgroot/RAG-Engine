@@ -23,7 +23,7 @@ from typing import Callable
 
 from ..config.settings import GuardSettings, LiveToolsSettings
 from ..db.connection import get_connection
-from . import audit, base, drive, linear, notion, slack
+from . import audit, base, drive, linear, notion, slack, trigger
 from .base import LiveRead, LiveRefresh, ProviderRead
 from .context import LiveRequest
 
@@ -64,7 +64,14 @@ def refresh(
             # No identity => no live read at all (plan §5): a live read is a
             # read on someone's behalf, and the audit must say whose.
             return LiveRefresh()
+        if mode == "refresh" and not trigger.wants_live(request.needs_live, request.question):
+            # Nothing about this question moves day to day: the synced copy is
+            # the answer, and a live read would only cost time.
+            logger.info("livetools.skip reason=not_current_state verdict=%s", request.needs_live)
+            return LiveRefresh()
         targets = _targets(hits, request, settings)
+        if mode == "refresh":
+            targets = _drop_freshly_synced(targets, request)
         if not targets:
             return LiveRefresh()
         return LiveRefresh(reads=_read_all(targets, request, guard_settings, mode))
@@ -119,6 +126,41 @@ def candidates(
         if len(out) >= limit:
             break
     return out
+
+
+def _drop_freshly_synced(targets, request: LiveRequest) -> list:
+    """Drop items whose tool last synced SUCCESSFULLY within ``FRESH_SECONDS``.
+
+    A success time, not ``oauth_connections.last_sync_at``: that is stamped on
+    ATTEMPT, so a failing sync would read as fresh and suppress exactly the
+    live read that would have covered for it. Per provider, same org AND
+    space. A lookup failure keeps the targets -- reading live is the safe
+    direction when freshness is unknown.
+    """
+    providers = sorted({provider for _, provider, _ in targets})
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT c.provider,
+                       max(j.finished_at) > now() - make_interval(secs => %s)
+                FROM oauth_connections c
+                JOIN ingestion_jobs j ON j.connection_id = c.id
+                WHERE c.org_id = %s::uuid
+                  AND c.workspace_id IS NOT DISTINCT FROM %s::uuid
+                  AND c.provider = ANY(%s)
+                  AND j.status = 'succeeded'
+                GROUP BY c.provider
+                """,
+                (base.FRESH_SECONDS, request.org_id, request.workspace_id, providers),
+            ).fetchall()
+    except Exception:  # noqa: BLE001 - unknown freshness reads live
+        logger.warning("livetools: freshness lookup failed", exc_info=True)
+        return targets
+    fresh = {provider for provider, is_fresh in rows if is_fresh}
+    if fresh:
+        logger.info("livetools.skip reason=fresh providers=%s", ",".join(sorted(fresh)))
+    return [t for t in targets if t[1] not in fresh]
 
 
 def _read_all(targets, request: LiveRequest, guard_settings: GuardSettings | None,
