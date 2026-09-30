@@ -18,6 +18,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
+from psycopg.types.json import Jsonb
+
 from ..db.connection import get_connection
 
 logger = logging.getLogger(__name__)
@@ -95,11 +97,12 @@ def _issue_rows(org_id, workspace_id, issue) -> list[tuple]:
     created_at = issue.get("created_at")
     completed_at = issue.get("completed_at")
 
+    attrs = _issue_attrs(issue)
     rows = [(
         org_id, workspace_id, PROVIDER, KIND_STATE,
         assignee, team, state,
         moved_at or completed_at or created_at, None,
-        issue.get("url") or None, identifier,
+        issue.get("url") or None, identifier, attrs,
     )]
 
     if state_type == _COMPLETED_TYPE:
@@ -117,10 +120,28 @@ def _issue_rows(org_id, workspace_id, issue) -> list[tuple]:
             org_id, workspace_id, PROVIDER, KIND_COMPLETED,
             assignee, team, state,
             when, cycle,
-            issue.get("url") or None, identifier,
+            issue.get("url") or None, identifier, attrs,
         ))
 
     return rows
+
+
+def _issue_attrs(issue: dict) -> Jsonb:
+    """The declared Linear attributes (registry.ATTRS), from the feed row.
+    Absent values are omitted: an unset priority must not chart as a
+    priority called "None"."""
+    attrs: dict = {}
+    for key in ("priority", "project"):
+        value = (issue.get(key) or "").strip() if isinstance(issue.get(key), str) else ""
+        if value:
+            attrs[key] = value
+    estimate = issue.get("estimate")
+    if isinstance(estimate, (int, float)) and not isinstance(estimate, bool):
+        attrs["estimate"] = estimate
+    labels = [l.strip() for l in (issue.get("labels") or []) if isinstance(l, str) and l.strip()]
+    if labels:
+        attrs["label"] = labels
+    return Jsonb(attrs)
 
 
 def _write(rows: list[tuple], workspace_id: str | None) -> int:
@@ -147,10 +168,11 @@ def _write(rows: list[tuple], workspace_id: str | None) -> int:
     sql = f"""
         INSERT INTO activity_facts
             (org_id, workspace_id, provider, kind, actor, subject, state,
-             occurred_at, value, url, external_id)
-        VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             occurred_at, value, url, external_id, attrs)
+        VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         {conflict}
         DO UPDATE SET actor       = EXCLUDED.actor,
+                      attrs       = EXCLUDED.attrs,
                       subject     = EXCLUDED.subject,
                       state       = EXCLUDED.state,
                       occurred_at = EXCLUDED.occurred_at,

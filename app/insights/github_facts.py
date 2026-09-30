@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 from ..config.settings import GitHubLiveSettings
 from ..githublive.base import dedupe_reviews
 from ..db.connection import get_connection
+from psycopg.types.json import Jsonb
 
 logger = logging.getLogger(__name__)
 
@@ -191,11 +192,12 @@ def _pull_rows(org_id, workspace_id, pull) -> list[tuple]:
     ``external_id`` is per kind, so the two rows cannot collide on the unique
     index -- and re-reading the same window updates them instead of doubling.
     """
+    attrs = _pull_attrs(pull)
     rows = [(
         org_id, workspace_id, PROVIDER, KIND_OPENED,
         pull.author, pull.repo, pull.state,
         pull.created_at, None, pull.url,
-        f"{pull.repo}#{pull.number}",
+        f"{pull.repo}#{pull.number}", attrs,
         actor_key(pull.author),
     )]
     if pull.merged_at:
@@ -206,10 +208,24 @@ def _pull_rows(org_id, workspace_id, pull) -> list[tuple]:
             org_id, workspace_id, PROVIDER, KIND_MERGED,
             pull.merged_by, pull.repo, "merged",
             pull.merged_at, pull.lead_time_seconds, pull.url,
-            f"{pull.repo}#{pull.number}",
+            f"{pull.repo}#{pull.number}", attrs,
             actor_key(pull.merged_by),
         ))
     return rows
+
+
+def _pull_attrs(pull) -> Jsonb:
+    """The declared GitHub attributes (registry.ATTRS): labels and target
+    branch, both from the payload already in hand. An absent value is
+    omitted, never stored as "none" -- that would chart as a real branch."""
+    attrs = {}
+    labels = list(getattr(pull, "labels", ()) or ())
+    if labels:
+        attrs["label"] = labels
+    base = getattr(pull, "base", None)
+    if base:
+        attrs["base"] = base
+    return Jsonb(attrs)
 
 
 def _review_rows(org_id, workspace_id, pull, reviews) -> list[tuple]:
@@ -226,7 +242,7 @@ def _review_rows(org_id, workspace_id, pull, reviews) -> list[tuple]:
             org_id, workspace_id, PROVIDER, KIND_REVIEWED,
             review.reviewer, pull.repo, review.state,
             review.submitted_at or pull.created_at, None, pull.url,
-            f"{pull.repo}#{pull.number}:{review.reviewer}",
+            f"{pull.repo}#{pull.number}:{review.reviewer}", Jsonb({}),
             actor_key(review.reviewer),
         ))
     return rows
@@ -241,7 +257,7 @@ def _commit_rows(org_id, workspace_id, commit) -> list[tuple]:
         org_id, workspace_id, PROVIDER, KIND_COMMIT,
         commit.author, commit.repo, None,
         commit.date, None, commit.url,
-        f"{commit.repo}:{commit.sha}",
+        f"{commit.repo}:{commit.sha}", Jsonb({}),
         # Only a real login: `author` may be the git display name.
         actor_key(getattr(commit, "author_login", None)),
     )]
@@ -271,11 +287,12 @@ def _write(rows: list[tuple], workspace_id: str | None) -> int:
     sql = f"""
         INSERT INTO activity_facts
             (org_id, workspace_id, provider, kind, actor, subject, state,
-             occurred_at, value, url, external_id, actor_key)
-        VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             occurred_at, value, url, external_id, attrs, actor_key)
+        VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         {conflict}
         DO UPDATE SET actor       = EXCLUDED.actor,
                       actor_key   = EXCLUDED.actor_key,
+                      attrs       = EXCLUDED.attrs,
                       state       = EXCLUDED.state,
                       occurred_at = EXCLUDED.occurred_at,
                       value       = EXCLUDED.value,

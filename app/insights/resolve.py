@@ -180,7 +180,7 @@ def _allowed_shapes(metric: registry.Metric) -> tuple[str, ...]:
 def _catalogue(metrics: list[registry.Metric]) -> str:
     lines = []
     for metric in metrics:
-        dims = ", ".join(metric.dims) or "none"
+        dims = ", ".join(query.group_dims(metric)) or "none"
         shapes = ", ".join(_allowed_shapes(metric))
         line = (
             f"- {metric.key} [{metric.provider}]: {metric.label}. "
@@ -196,6 +196,21 @@ def _catalogue(metrics: list[registry.Metric]) -> str:
         if query.filter_dims(metric):
             line += f". filters: {', '.join(query.filter_dims(metric))}"
         lines.append(line)
+    # Named once, so "label" in three metrics' option lists is not a mystery
+    # and the model learns a tag breakdown counts an item under each tag.
+    declared = {}
+    for metric in metrics:
+        for a in query.readable_attrs(metric):
+            declared.setdefault((a.provider, a.key), a)
+    if declared:
+        lines.append("Fields recorded from the apps (usable where listed above):")
+        for (provider, key), a in sorted(declared.items()):
+            how = {
+                "category": "one value per item",
+                "tags": "several per item; an item counts under each",
+                "number": f"a number, summed by total_{key} / average_{key}",
+            }[a.type]
+            lines.append(f"  {key} [{provider}] = {a.label} ({how})")
     return "\n".join(lines)
 
 
@@ -341,9 +356,10 @@ def _prompt(
         "- measure = what each bar is, only from that metric's options: "
         "\"how many people\" is people, \"average time\" is average. Null for "
         "a plain count.\n"
-        "- filters = narrow to ONE person (actor) or ONE state, only from that "
-        "metric's filter options, with the name as they typed it: \"Sana's "
-        "PRs\" is {\"actor\": \"Sana\"}. Empty {} when they did not narrow. A "
+        "- filters = narrow to ONE person (actor), ONE state or ONE recorded "
+        "field value, only from that metric's filter options, with the value "
+        "as they typed it: \"Sana's PRs\" is {\"actor\": \"Sana\"}, \"urgent "
+        "tasks\" is {\"priority\": \"urgent\"}. Empty {} when they did not narrow. A "
         "repository, channel, team, page or file goes in focus, not here.\n"
         "- Do not compute or state any numbers.\n"
         "- intent=chart with metric null means they wanted a visual we cannot count.\n"
@@ -696,12 +712,12 @@ def _parse_intent(
     if group_by in ("", "null", "none"):
         group_by = None
     if group_by is not None:
-        if not isinstance(group_by, str) or group_by not in metric.dims:
+        if not isinstance(group_by, str) or group_by not in query.group_dims(metric):
             return AskIntent(
                 "refuse",
                 message=(
                     f"I can show {metric.label.lower()}, but not broken down that "
-                    f"way. Options: {', '.join(metric.dims) or 'none'}."
+                    f"way. Options: {', '.join(query.group_dims(metric)) or 'none'}."
                 ),
             )
 
@@ -733,12 +749,12 @@ def _parse_intent(
         # A split with no first grouping: the model put the one breakdown in
         # the wrong slot. Moved, not dropped -- validation still checks it.
         group_by, split_by = split_by, None
-        if group_by not in metric.dims:
+        if group_by not in query.group_dims(metric):
             return AskIntent(
                 "refuse",
                 message=(
                     f"I can show {metric.label.lower()}, but not broken down that "
-                    f"way. Options: {', '.join(metric.dims) or 'none'}."
+                    f"way. Options: {', '.join(query.group_dims(metric)) or 'none'}."
                 ),
             )
     try:
@@ -800,10 +816,10 @@ def patch_spec(
     metric = registry.get(spec.metric)
 
     if group_by is not ...:
-        if group_by is not None and group_by not in metric.dims:
+        if group_by is not None and group_by not in query.group_dims(metric):
             raise CannotChart(
                 f"{metric.label} cannot be grouped that way. "
-                f"Options: {', '.join(metric.dims) or 'none'}."
+                f"Options: {', '.join(query.group_dims(metric)) or 'none'}."
             )
         split_by = spec.split_by
         if group_by is None or split_by == group_by:

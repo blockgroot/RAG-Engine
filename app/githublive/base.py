@@ -106,6 +106,10 @@ class PullRequest:
     merged_at: datetime | None
     closed_at: datetime | None
     url: str
+    #: Label names and the branch it targets. Both ride the listing we already
+    #: fetch, so charts can group by them at no extra cost (activity_facts.attrs).
+    labels: tuple[str, ...] = ()
+    base: str | None = None
 
     @property
     def lead_time_seconds(self) -> float | None:

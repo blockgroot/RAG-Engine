@@ -162,6 +162,8 @@ export type DetailRow = {
   state?: string | null;
   at?: string | null;
   url?: string | null;
+  /** Recorded fields (label, priority, ...) for matching a hover to a bar. */
+  attrs?: Record<string, unknown>;
 };
 
 /**
@@ -183,11 +185,19 @@ export type DetailRow = {
  *  back to match hover rows on BOTH fields. */
 const SPLIT_SEP = " · ";
 
-function fieldOf(row: DetailRow, dim: string) {
-  return dim === "actor" ? row.actor
-    : dim === "state" ? row.state
-    : dim === "subject" ? row.subject
-    : null;
+/** A row's value for a dimension. A recorded field (label, priority, ...)
+ *  lives in `attrs`; a tag list matches when it CONTAINS the wanted value,
+ *  mirroring the server, where an item counts under each of its tags. */
+function fieldOf(row: DetailRow, dim: string, wanted?: string) {
+  if (dim === "actor") return row.actor;
+  if (dim === "state") return row.state;
+  if (dim === "subject") return row.subject;
+  const value = row.attrs?.[dim];
+  if (Array.isArray(value)) {
+    const hit = value.find((v) => String(v).trim().toLowerCase() === wanted);
+    return hit == null ? (value.length ? String(value[0]) : null) : String(hit);
+  }
+  return value == null ? null : String(value);
 }
 
 function detailsFor(
@@ -209,7 +219,7 @@ function detailsFor(
     const norm = (v: string | null | undefined) => (v || "").trim().toLowerCase();
     const wanted = parts.map((p) => (p.trim() === "Unknown" ? "" : norm(p)));
     return rows.filter((row) =>
-      dims.every((dim, i) => norm(fieldOf(row, dim)) === wanted[i]),
+      dims.every((dim, i) => norm(fieldOf(row, dim, wanted[i])) === wanted[i]),
     );
   }
   if (bucket) {

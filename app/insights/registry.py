@@ -381,6 +381,57 @@ _add(Metric(
 # there is, and it is deliberately not paid for yet.
 
 
+# ---------------------------------------------------------------------------
+# Attributes -- fields the source already returned, kept in `attrs` JSONB.
+#
+# Step 2 of docs/plans/2026-09-30-open-ended-charts.md. `activity_facts` has
+# one fixed shape, so "PRs by label" or "tasks by priority" refused against
+# data the API had handed us and we had thrown away. Each attribute is a
+# DECLARATION, like a metric: which provider and fact kinds carry it, and
+# whether it is a category (group/filter), a tag list (group/filter; a row
+# counts under EACH of its tags) or a number (sum/average). The key is spliced
+# into SQL as a JSON key literal, so it must be a bare identifier --
+# `tests/test_insights_attrs.py` pins that. Zero extra API calls: every one
+# of these rides a request the facts writers already make.
+# ---------------------------------------------------------------------------
+
+ATTR_TYPES = ("category", "tags", "number")
+
+
+@dataclass(frozen=True)
+class Attr:
+    key: str
+    provider: str
+    kinds: tuple[str, ...]
+    type: str
+    #: The noun in a title: "Tasks completed by priority".
+    label: str
+    #: For a number: what a sum of it is called in the chart's unit.
+    unit: str = ""
+
+
+ATTRS: tuple[Attr, ...] = (
+    Attr("label", "github", ("pr_opened", "pr_merged"), "tags", "label"),
+    Attr("base", "github", ("pr_opened", "pr_merged"), "category", "target branch"),
+    Attr("priority", "linear", ("issue_state", "issue_completed"), "category", "priority"),
+    Attr("label", "linear", ("issue_state", "issue_completed"), "tags", "label"),
+    Attr("project", "linear", ("issue_state", "issue_completed"), "category", "project"),
+    Attr("estimate", "linear", ("issue_state", "issue_completed"), "number",
+         "estimate", unit="estimate points"),
+)
+
+
+def attrs_for(metric: "Metric") -> tuple[Attr, ...]:
+    """The attributes rows of this metric carry. Empty is a valid answer."""
+    return tuple(
+        a for a in ATTRS if a.provider == metric.provider and metric.kind in a.kinds
+    )
+
+
+def attr(metric: "Metric", key: str) -> Attr | None:
+    return next((a for a in attrs_for(metric) if a.key == key), None)
+
+
 def get(key: str) -> Metric:
     """Look one up, raising rather than inventing.
 

@@ -829,6 +829,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_activity_facts_space
 -- threads without ever matching on a name. NULL where the source gave none.
 ALTER TABLE activity_facts ADD COLUMN IF NOT EXISTS actor_key TEXT;
 
+-- Every other field the source ALREADY handed us for this fact (GitHub PR
+-- labels and target branch; Linear priority, estimate, labels, project), so a
+-- chart can group, filter or sum by it without a new column per field. The
+-- keys a chart may read are declared in `insights/registry.py::ATTRS`; any
+-- other key is stored and ignored. `{}` = nothing extra was captured (every
+-- row written before this column existed, until its next sync re-reads it).
+ALTER TABLE activity_facts ADD COLUMN IF NOT EXISTS attrs JSONB NOT NULL DEFAULT '{}'::jsonb;
+
 -- A chart a member asked for and kept. Personal, scoped `(org_id, user_id)`
 -- like `schedulers` and unlike every other tenant table -- a pin is one
 -- person's shortcut, never published to anyone, which is why this feature has

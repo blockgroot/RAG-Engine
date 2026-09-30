@@ -211,6 +211,7 @@ def _details(
             "actor": f.actor,
             "state": f.state,
             "at": f.occurred_at,
+            **({"attrs": f.attrs} if getattr(f, "attrs", None) else {}),
             "url": f.url,
         }
         for f in facts
@@ -439,7 +440,30 @@ def _caption(
     return title
 
 
+def _grammar_caveat(metric, group_by, split_by) -> str:
+    """The metric's caveat, plus the one a TAG breakdown adds: an item with
+    two labels is in two bars, so the bars sum to more than the items. A
+    chart whose bars over-add without saying so reads as a miscount."""
+    notes = [metric.caveat] if metric.caveat else []
+    for dim in (group_by, split_by):
+        if query.is_tag(metric, dim):
+            notes.append(
+                f"An item with several {registry.attr(metric, dim).label}s counts "
+                f"under each, so the bars can add up to more than the total."
+            )
+            break
+    if any(registry.attr(metric, d) for d in (group_by, split_by) if d):
+        notes.append(
+            "Recorded from each item's next sync after this field was added; "
+            "older items with no value show as Unknown."
+        )
+    return " ".join(notes)
+
+
 def _dim_label(metric, dim: str) -> str:
+    found = registry.attr(metric, dim)
+    if found is not None:
+        return found.label
     return {
         "actor": "person",
         "subject": registry.subject_label(metric.provider),
@@ -590,7 +614,7 @@ def _run_spec(
         "split_by": split_by,
         "filters": [list(f) for f in filters],
         "unit": chosen.unit,
-        "caveat": metric.caveat,
+        "caveat": _grammar_caveat(metric, group_by, split_by),
         "points": [
             {"bucket": p.bucket, "group": p.group, "series": p.series, "value": p.value}
             for p in points

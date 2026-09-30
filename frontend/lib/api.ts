@@ -559,6 +559,7 @@ export type InsightPanel = {
     state?: string | null;
     at?: string | null;
     url?: string | null;
+    attrs?: Record<string, unknown>;
   }[];
 };
 
