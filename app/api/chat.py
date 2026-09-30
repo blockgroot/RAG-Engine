@@ -954,7 +954,6 @@ def _stream_answer(
             workspace_id=workspace_id,
             user_id=session.user_id if session else None,
             conversation_id=conversation_id,
-            question=question,
         )
     )
     # Personal memory (Second Brain layer C): this person's facts shape how

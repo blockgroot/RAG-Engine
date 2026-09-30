@@ -469,7 +469,7 @@ def test_the_chat_edge_identifies_the_asker_for_every_question(monkeypatch):
     session = SimpleNamespace(user_id="user-1", role="member")
     list(chat._stream_answer("q", "org-1", "conv-1", session=session))
 
-    assert seen == [LiveRequest("org-1", None, "user-1", "conv-1", question="q")]
+    assert seen == [LiveRequest("org-1", None, "user-1", "conv-1")]
     assert current_live_request() is None  # reset after the stream
 
 
@@ -945,20 +945,12 @@ def test_a_missing_client_secret_does_not_mark_reauth(monkeypatch):
 # -- when a live read is worth it (trigger) ----------------------------------------
 
 
-def test_wants_live_prefers_the_classifier_verdict():
+def test_only_an_explicit_no_skips_the_read():
     from app.livetools.trigger import wants_live
 
-    assert wants_live(True, "what is our leave policy?")
-    assert not wants_live(False, "what's the latest on SYV-5?")
-
-
-def test_wants_live_falls_back_to_the_word_rule():
-    from app.livetools.trigger import wants_live
-
-    assert wants_live(None, "Is SYV-5 still blocked?")
-    assert wants_live(None, "what's the status of the migration")
-    assert not wants_live(None, "what is our leave policy?")
-    assert not wants_live(None, None)
+    assert wants_live(True)
+    assert wants_live(None)  # classifier down / field missing: read, never go stale
+    assert not wants_live(False)
 
 
 def _gate_setup(monkeypatch):
@@ -972,10 +964,9 @@ def _gate_setup(monkeypatch):
 @pytest.mark.parametrize(
     "request_, reads",
     [
-        (dataclasses.replace(REQUEST, needs_live=False, question="is it blocked?"), False),
-        (dataclasses.replace(REQUEST, needs_live=None, question="is SYV-5 still blocked?"), True),
-        (dataclasses.replace(REQUEST, needs_live=None, question="what is our leave policy?"), False),
-        (dataclasses.replace(REQUEST, needs_live=True, question="leave policy"), True),
+        (dataclasses.replace(REQUEST, needs_live=False), False),
+        (dataclasses.replace(REQUEST, needs_live=None), True),
+        (dataclasses.replace(REQUEST, needs_live=True), True),
     ],
 )
 def test_refresh_mode_is_gated_on_the_verdict(monkeypatch, request_, reads):
@@ -986,7 +977,7 @@ def test_refresh_mode_is_gated_on_the_verdict(monkeypatch, request_, reads):
 
 def test_model_mode_is_not_gated(monkeypatch):
     calls = _gate_setup(monkeypatch)
-    request_ = dataclasses.replace(REQUEST, needs_live=False, question="leave policy")
+    request_ = dataclasses.replace(REQUEST, needs_live=False)
     gateway.refresh([object()], request_, settings=ON, mode="model")
     assert calls
 

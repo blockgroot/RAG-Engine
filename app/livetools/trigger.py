@@ -7,9 +7,10 @@ Two cheap decisions now gate it, and neither adds a model call:
 1. **Does the question ask about the CURRENT state of something?** The
    question classifier already runs for every chat question (beside the
    cosine probe), so it answers this in the same call (``AskIntent.needs_live``).
-   With no verdict -- classifier down, or skipped in a scope with nothing to
-   chart -- the word rule below decides, so a dead classifier cannot switch
-   live reads off entirely.
+   No hardcoded word list: a phrase list cannot tell "has Rahul reviewed the
+   PR?" from "how do reviews work here?", and the classifier already reads
+   the question. With NO verdict (classifier down, or the field missing) the
+   read goes ahead -- an outage may cost ~2 s, never a stale answer.
 2. **Is the synced copy already fresh?** A tool whose last SUCCESSFUL sync is
    younger than ``FRESH_SECONDS`` is not read at all (``gateway``).
 
@@ -19,21 +20,7 @@ synced copy already failed to answer there.
 
 from __future__ import annotations
 
-import re
 
-#: Words that ask about how things stand NOW. The fallback only -- the
-#: classifier catches phrasings this cannot ("has Rahul reviewed the PR?").
-_CURRENT_STATE = re.compile(
-    r"\b(latest|status|state|progress|update[sd]?|now|currently|current|still|"
-    r"yet|today|recent(?:ly)?|so far|done|finished|blocked|stuck|merged|"
-    r"reviewed|resolved|closed|open|pending|in review|in progress|eta|"
-    r"who(?:'s| is) (?:on|working on|handling))\b",
-    re.IGNORECASE,
-)
-
-
-def wants_live(needs_live: bool | None, question: str | None) -> bool:
-    """The classifier's verdict when it gave one, else the word rule."""
-    if needs_live is not None:
-        return needs_live
-    return bool(_CURRENT_STATE.search(question or ""))
+def wants_live(needs_live: bool | None) -> bool:
+    """Only an explicit "no" from the classifier skips the read."""
+    return needs_live is not False

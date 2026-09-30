@@ -101,7 +101,7 @@ class AskIntent:
     #: this call because it already runs for every chat question, beside the
     #: cosine probe: a separate "should I read live?" call would cost more
     #: than the live read it decides about. ``None`` = the model was not asked
-    #: or did not say; the gateway then falls back to a word rule.
+    #: or did not say; the gateway then reads live (only False skips).
     needs_live: bool | None = None
 
 
@@ -386,7 +386,7 @@ def classify_question(
 
 def parse_live(reply: str) -> bool | None:
     """The ``live`` field of the classifier's reply. Only a real boolean
-    counts: anything else is "not said", and the gateway's word rule decides."""
+    counts: anything else is "not said", and the read goes ahead."""
     match = _JSON_RE.search(reply or "")
     if not match:
         return None

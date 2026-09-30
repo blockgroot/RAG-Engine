@@ -23,11 +23,8 @@ class LiveRequest:
     workspace_id: str | None
     user_id: str | None
     conversation_id: str | None = None
-    #: What the person typed -- for the word-rule fallback when the classifier
-    #: gave no verdict (``trigger.wants_live``).
-    question: str | None = None
     #: The classifier's verdict (``AskIntent.needs_live``), set by the chat
-    #: edge once routing has run. ``None`` = no verdict: the word rule decides.
+    #: edge once routing has run. ``None`` = no verdict: the read goes ahead.
     needs_live: bool | None = None
 
 

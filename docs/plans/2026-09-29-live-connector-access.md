@@ -427,7 +427,7 @@ Found and fixed: `get_live_connection_token` marked `needs_reauth` on ANY refres
 
 Mode A used to read live whenever a refreshable item ranked in the top hits. It now needs two things, and neither costs a model call:
 
-1. **The question asks about how something stands NOW.** `classify_question` already runs on every chat question, so it returns `live: true|false` in the same reply. If there is no verdict, a word rule decides (`trigger._CURRENT_STATE`: status, latest, still, yet, blocked, merged…).
+1. **The question asks about how something stands NOW.** `classify_question` already runs on every chat question, so it returns `live: true|false` in the same reply. There is no hardcoded word list: the classifier alone decides, and with no verdict (classifier down, field missing) the read goes ahead.
 2. **The synced copy is not already fresh.** If the tool's last *successful* ingest job finished less than 15 min ago, it is skipped.
 
 Mode B (the model's `refresh_item` on the refusal path) is not gated. Skips are logged as `livetools.skip reason=not_current_state|fresh`. Rollout is unchanged: staging Linear first, then Notion + Drive, then prod for Syvora only (`LIVE_TOOLS_ORGS`), then everyone. Slack stays off.

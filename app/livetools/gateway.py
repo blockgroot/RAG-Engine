@@ -64,7 +64,7 @@ def refresh(
             # No identity => no live read at all (plan §5): a live read is a
             # read on someone's behalf, and the audit must say whose.
             return LiveRefresh()
-        if mode == "refresh" and not trigger.wants_live(request.needs_live, request.question):
+        if mode == "refresh" and not trigger.wants_live(request.needs_live):
             # Nothing about this question moves day to day: the synced copy is
             # the answer, and a live read would only cost time.
             logger.info("livetools.skip reason=not_current_state verdict=%s", request.needs_live)
