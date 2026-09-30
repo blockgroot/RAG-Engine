@@ -21,7 +21,8 @@ from ..core.exceptions import ProviderError
 from ..core.streaming import chunk_answer
 from ..insights import registry, scopes, store
 from ..insights.facts import DOCUMENT_PROVIDERS, record_document_facts
-from ..insights.resolve import ChartSpec, CannotChart
+from ..insights import query
+from ..insights.resolve import ChartSpec, CannotChart, spec_from_dict
 from ..vectorstore.base import Viewer
 from .base import Agent, AgentResponse
 from ..security.links import enforce_link_provenance
@@ -144,13 +145,8 @@ def _as_spec(spec: ChartSpec | dict | None) -> ChartSpec | None:
     if isinstance(spec, ChartSpec):
         return spec
     try:
-        return ChartSpec(
-            metric=spec["metric"],
-            group_by=spec.get("group_by"),
-            period=spec["period"],
-            chart=spec["chart"],
-        )
-    except (KeyError, TypeError):
+        return spec_from_dict(spec)
+    except (KeyError, TypeError, ValueError):
         return None
 
 
@@ -196,13 +192,15 @@ def _backfill_and_retry(
         return panel, period
 
 
-def _details(spec, *, org_id, workspace_id, days, focus, viewer=None) -> list[dict]:
+def _details(
+    spec, *, org_id, workspace_id, days, focus, viewer=None, filters=(),
+) -> list[dict]:
     """Never fatal: a chart without its rows is still a chart, and losing the
     answer to keep the annotation would be the wrong trade."""
     try:
         facts = store.list_facts(
             spec.metric, org_id=org_id, workspace_id=workspace_id,
-            days=days, focus=focus, viewer=viewer,
+            days=days, focus=focus, viewer=viewer, filters=filters,
         )
     except (ProviderError, KeyError):
         logger.warning("insights: could not read details of %s", spec.metric)
@@ -254,21 +252,60 @@ def _resolve_focus(spec, metric, *, org_id, workspace_id, days, viewer=None) -> 
     have 18-sana/Chain-Guard" and an empty chart, which reads as "nobody
     worked" rather than "you asked for something that isn't there".
     """
-    wanted = spec.focus.strip().lower()
-    try:
-        subjects = store.list_subjects(
-            spec.metric, org_id=org_id, workspace_id=workspace_id, days=days,
-            viewer=viewer,
+    return _resolve_value(
+        "subject", spec.focus, spec, metric, org_id=org_id,
+        workspace_id=workspace_id, days=days, viewer=viewer,
+    )
+
+
+def _resolve_filters(spec, metric, *, org_id, workspace_id, days, viewer=None):
+    """Each grammar filter's raw value, matched to a value with rows.
+
+    Same contract as ``focus``: "only Sana's" becomes the stored actor
+    ``18-sana`` or a refusal naming who IS there -- never a filter on text
+    nobody stored, which would draw an empty chart reading "no activity".
+    A filter that cannot be verified (the listing failed) is DROPPED and the
+    chart is still drawn, exactly as an unverifiable focus is.
+    """
+    out = []
+    for dim, raw in spec.filters:
+        value = _resolve_value(
+            dim, raw, spec, metric, org_id=org_id,
+            workspace_id=workspace_id, days=days, viewer=viewer,
         )
+        if value is not None:
+            out.append((dim, value))
+    return tuple(out)
+
+
+#: How a dimension is named back to the member in a refusal.
+_DIM_NOUN = {"actor": "person", "state": "state"}
+
+
+def _resolve_value(
+    dim, raw, spec, metric, *, org_id, workspace_id, days, viewer=None,
+) -> str | None:
+    wanted = raw.strip().lower()
+    try:
+        if dim == "subject":
+            values = store.list_subjects(
+                spec.metric, org_id=org_id, workspace_id=workspace_id,
+                days=days, viewer=viewer,
+            )
+        else:
+            values = store.list_values(
+                spec.metric, dim, org_id=org_id, workspace_id=workspace_id,
+                days=days, viewer=viewer,
+            )
     except ProviderError:
         # Cannot verify, so do not filter. A whole chart beats a wrong one.
-        logger.warning("insights: could not list subjects of %s", spec.metric)
+        logger.warning("insights: could not list %s of %s", dim, spec.metric)
         return None
 
-    if not subjects:
+    if not values:
         return None
 
-    exact = [s for s in subjects if s.lower() == wanted]
+    exact = [v for v in values if v.lower() == wanted]
     if exact:
         return exact[0]
 
@@ -281,22 +318,24 @@ def _resolve_focus(spec, metric, *, org_id, workspace_id, days, viewer=None) -> 
     # Both directions: "DAO" is inside "18-sana/DAO", and someone may paste
     # the full "18-sana/Chain-Guard" for a subject stored bare.
     partial = [
-        s for s in subjects
-        if key in _squash(s) or (_squash(s) and _squash(s) in key)
+        v for v in values
+        if key in _squash(v) or (_squash(v) and _squash(v) in key)
     ]
     if len(partial) == 1:
         return partial[0]
     # The name is repeated back on purpose (see the docstring), but it is
     # model-extracted text, so it never carries a link back to the reader.
-    named = enforce_link_provenance(spec.focus, [], ())
+    named = enforce_link_provenance(raw, [], ())
     if len(partial) > 1:
         raise CannotChart(
             f"\"{named}\" matches more than one: "
             f"{_listed(partial)}. Which one?"
         )
+    noun = _DIM_NOUN.get(dim)
+    what = f" {noun}" if noun else ""
     raise CannotChart(
-        f"I have no {metric.label.lower()} for \"{named}\" in the last "
-        f"{days} days. What I do have: {_listed(subjects)}."
+        f"I have no {metric.label.lower()} for{what} \"{named}\" in the last "
+        f"{days} days. What I do have: {_listed(values)}."
     )
 
 
@@ -400,16 +439,33 @@ def _caption(
     return title
 
 
-def _ask_title(metric, group_by: str | None) -> str:
-    if not group_by:
-        return metric.label
-    by = {
+def _dim_label(metric, dim: str) -> str:
+    return {
         "actor": "person",
         "subject": registry.subject_label(metric.provider),
         "state": "state",
         "provider": "app",
-    }.get(group_by, group_by)
-    return f"{metric.label} by {by}"
+    }.get(dim, dim)
+
+
+def _ask_title(
+    metric, group_by: str | None, *, split_by: str | None = None,
+    measure: str | None = None, filters: tuple[tuple[str, str], ...] = (),
+) -> str:
+    """Says every slice applied. A split, a distinct count or a person filter
+    that the title omits reads as the plain chart -- the same failure as a
+    focus the title omits."""
+    chosen = query.measures_for(metric).get(measure) if measure else None
+    title = metric.label
+    if chosen is not None and chosen.label:
+        title = f"{chosen.label} — {metric.label.lower()}"
+    if group_by:
+        title += f" by {_dim_label(metric, group_by)}"
+        if split_by:
+            title += f" and {_dim_label(metric, split_by)}"
+    for dim, value in filters:
+        title += f" — {_dim_label(metric, dim)}: {value}"
+    return title
 
 
 def _run_spec(
@@ -443,6 +499,17 @@ def _run_spec(
     if spec.focus:
         focus = _resolve_focus(spec, metric, org_id=org_id,
                                workspace_id=workspace_id, days=days, viewer=viewer)
+    filters = _resolve_filters(spec, metric, org_id=org_id,
+                               workspace_id=workspace_id, days=days, viewer=viewer)
+    split_by = spec.split_by if group_by else None
+    measure = spec.measure
+    try:
+        query.validate(metric, group_by=group_by, split_by=split_by,
+                       measure=measure, filters=filters)
+    except ValueError as exc:
+        # The resolver validated this already; a spec arriving another way
+        # (a stored dict, a future caller) is refused the same way.
+        raise CannotChart(f"I can't chart it that way. {exc}") from exc
     if chart == "pie" and group_by is None:
         # A pie needs groups to be shares OF something. Without one it is a
         # single full circle, which states nothing.
@@ -457,6 +524,9 @@ def _run_spec(
         group_by=group_by,
         focus=focus,
         viewer=viewer,
+        split_by=split_by,
+        measure=measure,
+        filters=filters,
     )
 
     # A period that puts EVERYTHING in one bucket draws as a single point --
@@ -478,6 +548,7 @@ def _run_spec(
                 spec.metric, org_id=org_id, workspace_id=workspace_id,
                 period=finer, days=finer_window,
                 group_by=group_by, focus=focus, viewer=viewer,
+                split_by=split_by, measure=measure, filters=filters,
             )
         except (ProviderError, ValueError):
             break
@@ -494,20 +565,31 @@ def _run_spec(
     begun = store.first_fact_at(
         metric.provider, org_id=org_id, workspace_id=workspace_id, viewer=viewer
     )
-    title = _ask_title(metric, group_by)
+    title = _ask_title(
+        metric, group_by, split_by=split_by, measure=measure, filters=filters,
+    )
     if focus:
         # In the title, because a filtered chart that looks unfiltered is the
         # same failure as charting the wrong thing.
         title = f"{title} — {focus}"
 
+    chosen = query.measures_for(metric)[measure or query.default_measure(metric)]
     panel = {
-        "id": f"ask:{spec.metric}:{group_by or 'time'}:{focus or 'all'}",
+        "id": (
+            f"ask:{spec.metric}:{group_by or 'time'}:{split_by or '-'}:"
+            f"{chosen.name}:{focus or 'all'}:"
+            + ",".join(f"{d}={v}" for d, v in filters)
+        ),
         "provider": metric.provider,
         "title": title,
         "focus": focus,
         "chart": chart,
         "group_by": group_by,
-        "unit": metric.unit,
+        # The second grouping: the chart draws "group · split" categories and
+        # matches hover rows on BOTH fields.
+        "split_by": split_by,
+        "filters": [list(f) for f in filters],
+        "unit": chosen.unit,
         "caveat": metric.caveat,
         "points": [
             {"bucket": p.bucket, "group": p.group, "series": p.series, "value": p.value}
@@ -519,7 +601,7 @@ def _run_spec(
         # the counted row.
         "details": _details(
             spec, org_id=org_id, workspace_id=workspace_id, days=days, focus=focus,
-            viewer=viewer,
+            viewer=viewer, filters=filters,
         ),
         "measured_since": begun.isoformat() if begun else None,
     }

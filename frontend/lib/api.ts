@@ -532,6 +532,8 @@ export type InsightPanel = {
   title: string;
   chart: string;
   group_by: string | null;
+  /** A second grouping from the query grammar; drawn as "group · split". */
+  split_by?: string | null;
   unit: string;
   caveat: string;
   /** null means the panel failed; [] means it ran and there is nothing to

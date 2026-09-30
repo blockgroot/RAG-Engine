@@ -66,6 +66,7 @@ from ..llm.routed import answering_model, selected_model, use_model
 from ..db.connection import get_connection
 from ..feedback import record_gap
 from ..guard.live import ATTACHMENT_WARNING, is_flagged, watch_question
+from ..insights.resolve import spec_to_dict
 from ..security.rate_limit import check_rate_limit
 from ..security.visibility import visibility_predicate
 from ..workspaces import assert_member
@@ -1116,14 +1117,7 @@ def _stream_answer_body(
         return
 
     spec = getattr(decision, "chart_spec", None)
-    chart_spec = None
-    if spec is not None:
-        chart_spec = {
-            "metric": spec.metric,
-            "group_by": spec.group_by,
-            "period": spec.period,
-            "chart": spec.chart,
-        }
+    chart_spec = spec_to_dict(spec) if spec is not None else None
 
     graph_input = {
         "question": question,

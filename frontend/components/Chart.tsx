@@ -177,6 +177,19 @@ export type DetailRow = {
  * rather than all rows: showing a repository's commits under a different
  * repository's slice would be worse than showing none.
  */
+/** Joins a two-way split ("Sana · Chain-Guard") into one category. The
+ *  server sends the second grouping as `series`; every chart shape here draws
+ *  ONE category axis, so the pair becomes one name and `detailsFor` splits it
+ *  back to match hover rows on BOTH fields. */
+const SPLIT_SEP = " · ";
+
+function fieldOf(row: DetailRow, dim: string) {
+  return dim === "actor" ? row.actor
+    : dim === "state" ? row.state
+    : dim === "subject" ? row.subject
+    : null;
+}
+
 function detailsFor(
   rows: DetailRow[],
   { groupBy, group, bucket, period }: {
@@ -188,13 +201,16 @@ function detailsFor(
 ): DetailRow[] {
   if (!rows.length) return [];
   if (group != null && groupBy) {
-    const key = group.trim().toLowerCase();
-    const field = (row: DetailRow) =>
-      groupBy === "actor" ? row.actor
-      : groupBy === "state" ? row.state
-      : groupBy === "subject" ? row.subject
-      : null;
-    return rows.filter((row) => (field(row) || "").trim().toLowerCase() === key);
+    // "actor+subject" for a split chart: every part must match, or the hover
+    // would list another repository's rows under this bar.
+    const dims = groupBy.split("+");
+    const parts = dims.length > 1 ? group.split(SPLIT_SEP) : [group];
+    if (parts.length !== dims.length) return [];
+    const norm = (v: string | null | undefined) => (v || "").trim().toLowerCase();
+    const wanted = parts.map((p) => (p.trim() === "Unknown" ? "" : norm(p)));
+    return rows.filter((row) =>
+      dims.every((dim, i) => norm(fieldOf(row, dim)) === wanted[i]),
+    );
   }
   if (bucket) {
     const want = bucketKey(bucket, period);
@@ -223,10 +239,11 @@ function bucketKey(iso: string, period: string): string {
 
 export function Chart({
   chart,
-  points,
+  points: rawPoints,
   period,
   unit,
-  groupBy,
+  groupBy: baseGroupBy,
+  splitBy,
   details = [],
 }: {
   chart: string;
@@ -234,9 +251,26 @@ export function Chart({
   period: string;
   unit?: string;
   groupBy?: string | null;
+  /** A second grouping: each category is "group · split". */
+  splitBy?: string | null;
   /** The rows this chart counted, shown on hover for the hovered section. */
   details?: DetailRow[];
 }) {
+  const split = Boolean(baseGroupBy && splitBy);
+  const groupBy = split ? `${baseGroupBy}+${splitBy}` : baseGroupBy;
+  const points = useMemo(
+    () =>
+      split
+        ? rawPoints.map((p) => ({
+            ...p,
+            group: [p.group, p.series]
+              .map((v) => (v || "").trim() || "Unknown")
+              .join(SPLIT_SEP),
+            series: null,
+          }))
+        : rawPoints,
+    [rawPoints, split],
+  );
   const { buckets, series, at } = useMemo(() => pivot(points), [points]);
 
   // A grouped bar chart is a leaderboard, not a time series: collapse the

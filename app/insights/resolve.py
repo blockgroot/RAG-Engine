@@ -24,7 +24,7 @@ from dataclasses import dataclass, replace
 
 from ..core.exceptions import ProviderError
 from ..security.untrusted import UNTRUSTED_POLICY, UNTRUSTED_REMINDER, scrub_untrusted_text
-from . import registry
+from . import query, registry
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,54 @@ class ChartSpec:
     #: actually have rows, in the scope, at run time -- this layer has no
     #: database and must not pretend to validate it.
     focus: str | None = None
+    #: The query grammar (`query.py`). A second grouping from the metric's
+    #: own dims, drawn as "group · split" categories.
+    split_by: str | None = None
+    #: A name from `query.measures_for(metric)`; None = the metric's default,
+    #: so an old spec charts exactly what it always did.
+    measure: str | None = None
+    #: ``((dim, raw_value), ...)`` -- RAW like `focus`, resolved against real
+    #: rows at run time. A tuple so the spec stays hashable and frozen.
+    filters: tuple[tuple[str, str], ...] = ()
+
+
+def spec_to_dict(spec: ChartSpec) -> dict:
+    """The one serialisation of a spec for the agent graph's state.
+
+    Chat and Slack each built this dict by hand and both omitted ``focus``, so
+    "commits in the DAO repo" reached InsightsAgent as commits in EVERY repo
+    -- the chart-answering-a-different-question failure ``focus`` exists to
+    prevent. One function both directions, so a field added to ``ChartSpec``
+    cannot be dropped at a call site again.
+    """
+    return {
+        "metric": spec.metric,
+        "group_by": spec.group_by,
+        "period": spec.period,
+        "chart": spec.chart,
+        "focus": spec.focus,
+        "split_by": spec.split_by,
+        "measure": spec.measure,
+        "filters": [list(f) for f in spec.filters],
+    }
+
+
+def spec_from_dict(data: dict) -> ChartSpec:
+    """Inverse of ``spec_to_dict``. Raises ``KeyError``/``TypeError`` on a
+    malformed dict; tolerates the older four-key shape."""
+    filters = tuple(
+        (str(dim), str(value)) for dim, value in (data.get("filters") or ())
+    )
+    return ChartSpec(
+        metric=data["metric"],
+        group_by=data.get("group_by"),
+        period=data["period"],
+        chart=data["chart"],
+        focus=data.get("focus"),
+        split_by=data.get("split_by"),
+        measure=data.get("measure"),
+        filters=filters,
+    )
 
 
 @dataclass(frozen=True)
@@ -134,10 +182,20 @@ def _catalogue(metrics: list[registry.Metric]) -> str:
     for metric in metrics:
         dims = ", ".join(metric.dims) or "none"
         shapes = ", ".join(_allowed_shapes(metric))
-        lines.append(
+        line = (
             f"- {metric.key} [{metric.provider}]: {metric.label}. "
             f"group_by: {dims}. shapes: {shapes}"
         )
+        # Offered only where they apply, so the model is never shown a slot
+        # this metric would refuse.
+        measures = list(query.measures_for(metric))
+        if len(measures) > 1:
+            line += f". measure: {', '.join(measures)}"
+        if query.split_dims(metric):
+            line += f". split_by: {', '.join(query.split_dims(metric))}"
+        if query.filter_dims(metric):
+            line += f". filters: {', '.join(query.filter_dims(metric))}"
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -259,7 +317,9 @@ def _prompt(
             if github
             else '{"intent": "qa"|"chart", "metric": "<key or null>", '
         ) +
-        '"group_by": "<option or null>", "period": "<period>", '
+        '"group_by": "<option or null>", "split_by": "<option or null>", '
+        '"measure": "<option or null>", "filters": {"<dim>": "<value>"}, '
+        '"period": "<period>", '
         '"chart": "<shape or null>", "focus": "<one named thing or null>", '
         '"live": true|false}\n\n'
         "Rules:\n"
@@ -275,6 +335,16 @@ def _prompt(
         "page or file NAME. \"commits in the DAO repo\" is focus=\"DAO\", "
         "not a grouping. Null when they asked about everything.\n"
         "- chart must be one of that metric's shapes, or null to use the default.\n"
+        "- split_by = a SECOND breakdown, only when they asked for two "
+        "(\"by person and repo\" is group_by=actor, split_by=subject). One of "
+        "that metric's split_by options, never the same as group_by, else null.\n"
+        "- measure = what each bar is, only from that metric's options: "
+        "\"how many people\" is people, \"average time\" is average. Null for "
+        "a plain count.\n"
+        "- filters = narrow to ONE person (actor) or ONE state, only from that "
+        "metric's filter options, with the name as they typed it: \"Sana's "
+        "PRs\" is {\"actor\": \"Sana\"}. Empty {} when they did not narrow. A "
+        "repository, channel, team, page or file goes in focus, not here.\n"
         "- Do not compute or state any numbers.\n"
         "- intent=chart with metric null means they wanted a visual we cannot count.\n"
         + (
@@ -654,14 +724,64 @@ def _parse_intent(
         # essay reaching the database, not to decide what is real.
         focus = focus.strip()[:120]
 
+    split_by = _optional_str(data.get("split_by"))
+    measure = _optional_str(data.get("measure"))
+    if measure == query.default_measure(metric):
+        measure = None
+    filters = _parse_filters(data.get("filters"))
+    if split_by is not None and group_by is None:
+        # A split with no first grouping: the model put the one breakdown in
+        # the wrong slot. Moved, not dropped -- validation still checks it.
+        group_by, split_by = split_by, None
+        if group_by not in metric.dims:
+            return AskIntent(
+                "refuse",
+                message=(
+                    f"I can show {metric.label.lower()}, but not broken down that "
+                    f"way. Options: {', '.join(metric.dims) or 'none'}."
+                ),
+            )
+    try:
+        query.validate(
+            metric, group_by=group_by, split_by=split_by, measure=measure,
+            filters=filters,
+        )
+    except ValueError as exc:
+        # Refused with the options, never corrected: charting a plain count
+        # when they asked how many PEOPLE answers a different question.
+        return AskIntent("refuse", message=f"I can't chart it that way. {exc}")
+
     spec = ChartSpec(
         metric=metric.key,
         group_by=group_by,
         period=period,
         chart=_pick_chart(metric, group_by, requested),
         focus=focus,
+        split_by=split_by,
+        measure=measure,
+        filters=filters,
     )
     return AskIntent("chart", spec=spec)
+
+
+def _optional_str(value) -> str | None:
+    if not isinstance(value, str) or value.strip().lower() in ("", "null", "none"):
+        return None
+    return value.strip()
+
+
+def _parse_filters(raw) -> tuple[tuple[str, str], ...]:
+    """``{"actor": "Sana"}`` -> ``(("actor", "Sana"),)``. Shape only: which
+    dims are allowed is ``query.validate``'s call, and whether the value is
+    real is decided against stored rows at run time. Capped like ``focus``."""
+    if not isinstance(raw, dict):
+        return ()
+    out = []
+    for dim, value in raw.items():
+        value = _optional_str(value)
+        if isinstance(dim, str) and value is not None:
+            out.append((dim, value[:120]))
+    return tuple(sorted(out))
 
 
 def patch_spec(
@@ -685,9 +805,15 @@ def patch_spec(
                 f"{metric.label} cannot be grouped that way. "
                 f"Options: {', '.join(metric.dims) or 'none'}."
             )
+        split_by = spec.split_by
+        if group_by is None or split_by == group_by:
+            # A split rides on the first grouping; without it (or merged into
+            # it) there is nothing left to split.
+            split_by = None
         spec = replace(
             spec,
             group_by=group_by,
+            split_by=split_by,
             chart=_pick_chart(metric, group_by, spec.chart),
         )
 

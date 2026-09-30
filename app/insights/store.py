@@ -18,7 +18,7 @@ from ..core.exceptions import ProviderError
 from ..db.connection import get_connection
 from ..security.visibility import visibility_predicate
 from ..sources.factory import ACL_CAPABLE
-from . import registry
+from . import query, registry
 
 if TYPE_CHECKING:
     from ..vectorstore.base import Viewer
@@ -121,6 +121,19 @@ def _floored(inner: str, metric, *, has_series: bool) -> str:
     """
 
 
+def _filter_clause(filters: tuple[tuple[str, str], ...]) -> tuple[str, dict]:
+    """``AND actor = %(f_actor)s`` per filter. The column comes from the
+    ``registry.DIMENSIONS`` whitelist and the parameter NAME from
+    ``query.FILTER_DIMS``, so the only caller text is the bound value."""
+    sql, params = "", {}
+    for dim, value in filters:
+        if dim not in query.FILTER_DIMS:
+            raise ValueError(f"unknown filter {dim!r}")
+        sql += f" AND {registry.DIMENSIONS[dim]} = %(f_{dim})s"
+        params[f"f_{dim}"] = value
+    return sql, params
+
+
 def run_metric(
     key: str,
     *,
@@ -131,11 +144,20 @@ def run_metric(
     group_by: str | None = None,
     focus: str | None = None,
     viewer: "Viewer | None" = None,
+    split_by: str | None = None,
+    measure: str | None = None,
+    filters: tuple[tuple[str, str], ...] = (),
 ) -> list[Point]:
     """Count one registry metric in one scope over one window.
 
     ``viewer`` narrows the count to documents that person may open
     (`_viewer_filter`); every product call site passes one.
+
+    ``split_by`` / ``measure`` / ``filters`` are the query grammar
+    (`query.py`), re-validated here so no call site can compile what the
+    grammar does not admit. Filter VALUES must already be resolved against
+    real rows (`list_values`); they are bound, never spliced. With all three
+    left at their defaults the SQL is exactly what it was before them.
 
     Raises ``KeyError`` for an unknown metric and ``ValueError`` for an unknown
     period or dimension -- never a sanitized fallback. A chart drawn from a
@@ -149,6 +171,12 @@ def run_metric(
         )
     if group_by is not None and group_by not in registry.DIMENSIONS:
         raise ValueError(f"unknown dimension {group_by!r}")
+    query.validate(
+        metric, group_by=group_by, split_by=split_by, measure=measure,
+        filters=filters,
+    )
+    chosen = query.measures_for(metric)[measure or query.default_measure(metric)]
+    select = chosen.select or metric.select
 
     # Both are looked-up constants by this point, never caller text.
     column = registry.DIMENSIONS[group_by] if group_by else None
@@ -160,13 +188,13 @@ def run_metric(
     )
     grouped = f", {column}" if column else ""
 
-    # The metric's own second dimension. Fixed in the registry, not requested,
-    # and looked up in the same whitelist.
-    series_column = (
-        registry.DIMENSIONS[metric.series_by] if metric.series_by else None
-    )
-    if metric.series_by and series_column is None:
-        raise ValueError(f"{key} declares unknown series {metric.series_by!r}")
+    # The second dimension: the metric's own (fixed in the registry) or a
+    # requested split. Never both -- a metric with `series_by` is protected
+    # and admits no split (`query.is_protected`). Same whitelist either way.
+    second = metric.series_by or split_by
+    series_column = registry.DIMENSIONS.get(second) if second else None
+    if second and series_column is None:
+        raise ValueError(f"{key} has unknown second dimension {second!r}")
     selected += (
         f", {series_column}::text AS series" if series_column
         else ", NULL::text AS series"
@@ -190,12 +218,14 @@ def run_metric(
     # `group_by` it is bound as a parameter and never spliced.
     if focus is not None:
         where += " AND subject = %(focus)s"
+    filter_sql, filter_params = _filter_clause(filters)
+    where += filter_sql
     access, access_params = _viewer_filter(viewer)
     where += access
 
     inner = f"""
         SELECT date_trunc('{period}', occurred_at) AS bucket{selected},
-               {metric.select} AS value
+               {select} AS value
           FROM activity_facts
           {where}
          GROUP BY bucket{grouped}
@@ -210,6 +240,7 @@ def run_metric(
         "days": days,
         "workspace_id": workspace_id,
         "focus": focus,
+        **filter_params,
         **access_params,
     }
 
@@ -256,6 +287,7 @@ def list_facts(
     focus: str | None = None,
     limit: int = MAX_DETAILS,
     viewer: "Viewer | None" = None,
+    filters: tuple[tuple[str, str], ...] = (),
 ) -> list[Fact]:
     """The newest rows this chart counted.
 
@@ -277,6 +309,10 @@ def list_facts(
     )
     if focus is not None:
         where += " AND subject = %(focus)s"
+    # The hover lists what the bars counted, so it narrows exactly as they do:
+    # Sana's PRs must not be shown behind a chart filtered to someone else.
+    filter_sql, filter_params = _filter_clause(filters)
+    where += filter_sql
     access, access_params = _viewer_filter(viewer)
     where += access
 
@@ -291,7 +327,8 @@ def list_facts(
                 """,
                 {"org_id": org_id, "provider": metric.provider, "kind": metric.kind,
                  "days": days, "workspace_id": workspace_id, "focus": focus,
-                 "limit": max(1, min(int(limit), MAX_DETAILS)), **access_params},
+                 "limit": max(1, min(int(limit), MAX_DETAILS)),
+                 **filter_params, **access_params},
             ).fetchall()
     except Exception as exc:  # noqa: BLE001
         raise ProviderError(f"insights: details of {key} failed", cause=exc) from exc
@@ -318,14 +355,34 @@ def list_subjects(
     silently returns an empty chart, which reads as "no activity" when it
     means "no such thing".
     """
+    return list_values(
+        key, "subject", org_id=org_id, workspace_id=workspace_id, days=days,
+        viewer=viewer,
+    )
+
+
+def list_values(
+    key: str, dim: str, *, org_id: str, workspace_id: str | None, days: int,
+    viewer: "Viewer | None" = None,
+) -> list[str]:
+    """Every value of ``dim`` this metric has rows for, in this scope.
+
+    The same role as ``list_subjects`` for the grammar's filters: "only
+    Sana's" is resolved against the actors that actually appear, so an
+    unmatched name is refused by name rather than filtering to nothing.
+    Viewer-filtered because the refusal repeats the list back.
+    """
     metric = registry.get(key)
+    if dim not in registry.DIMENSIONS:
+        raise ValueError(f"unknown dimension {dim!r}")
+    column = registry.DIMENSIONS[dim]
     where = _scoped(
-        """
+        f"""
          WHERE org_id = %(org_id)s
            AND provider = %(provider)s
            AND kind = %(kind)s
            AND occurred_at >= now() - make_interval(days => %(days)s)
-           AND subject IS NOT NULL
+           AND {column} IS NOT NULL
         """,
         workspace_id,
     )
@@ -336,12 +393,12 @@ def list_subjects(
     try:
         with get_connection() as conn:
             rows = conn.execute(
-                f"SELECT DISTINCT subject FROM activity_facts {where} ORDER BY 1",
+                f"SELECT DISTINCT {column} FROM activity_facts {where} ORDER BY 1",
                 {"org_id": org_id, "provider": metric.provider, "kind": metric.kind,
                  "days": days, "workspace_id": workspace_id, **access_params},
             ).fetchall()
     except Exception as exc:  # noqa: BLE001
-        raise ProviderError(f"insights: subjects of {key} failed", cause=exc) from exc
+        raise ProviderError(f"insights: {dim} values of {key} failed", cause=exc) from exc
     return [r[0] for r in rows if r[0]]
 
 

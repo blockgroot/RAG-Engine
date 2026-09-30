@@ -55,6 +55,7 @@ from ..jobs.autosync import request_sync_external
 from ..vectorstore.base import Viewer
 from ..config.settings import SlackSettings
 from ..core.exceptions import ProviderError
+from ..insights.resolve import spec_to_dict
 from ..db.connection import get_connection
 from ..sources.slack_utils import channel_tag, post_message, update_message
 from .deps import get_slack_agent
@@ -308,16 +309,7 @@ def _answer(
     # holding nothing -- which answers "I can't chart that", a flat denial of
     # something the router had already resolved.
     spec = getattr(decision, "chart_spec", None)
-    chart_spec = (
-        {
-            "metric": spec.metric,
-            "group_by": spec.group_by,
-            "period": spec.period,
-            "chart": spec.chart,
-        }
-        if spec is not None
-        else None
-    )
+    chart_spec = spec_to_dict(spec) if spec is not None else None
 
     state = build_agent_graph(_agent_getters()).invoke(
         {
