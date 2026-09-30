@@ -132,7 +132,9 @@ class Viewer:
             # group says "this PERSON belongs to X" and needs an identity to
             # mean anything, while a channel says "this REPLY is being read by
             # the members of X" and needs none.
-            return [f"channel:{c.strip()}" for c in self.channels if c.strip()]
+            # Lowercased because `normalize_viewers` lowercases on write: Slack
+            # ids are uppercase, so an unlowered `channel:C0B...` never matched.
+            return [f"channel:{c.strip().lower()}" for c in self.channels if c.strip()]
         entries.append(email)
         if "@" in email:
             entries.append(f"domain:{email.split('@', 1)[1]}")
@@ -147,7 +149,7 @@ class Viewer:
                 entries.append(entry)
         # Spelled to match `sources.slack._channel_entry`, the only writer.
         for channel in self.channels:
-            entry = f"channel:{channel.strip()}"
+            entry = f"channel:{channel.strip().lower()}"
             if channel.strip() and entry not in seen:
                 seen.add(entry)
                 entries.append(entry)

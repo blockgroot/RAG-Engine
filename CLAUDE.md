@@ -1759,6 +1759,7 @@ frontend/ Next.js 15 portal · tests/ pytest
   blast radius: a fake that does not know about access filtering cannot catch
   an access bug. `def keyword_search(self, *a, **kw)` is fine; a positional
   signature is not.
+- **`Viewer.acl()` must lowercase EVERY entry kind** — `normalize_viewers` lowercases on write, so a raw Slack id (`channel:C0B…`) never matched the stored `channel:c0b…` and every private-channel reply refused as "not shared with you". Tests compared against the writer, not the STORED form.
 - **`doc_viewers && '{}'` is FALSE, which is what makes `public_only` work.**
   An empty ACL array reduces the predicate to `doc_is_public` rather than
   matching everything — the opposite reading would turn an identity failure

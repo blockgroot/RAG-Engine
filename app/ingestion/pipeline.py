@@ -502,8 +502,8 @@ def ingest_source(
             "(pagination race, indexing lag, rate limit) rather than a real "
             "mass unshare/delete. Skipping removal this run; re-run once the "
             "source's listing is confirmed stable if pages were genuinely "
-            "removed.",
-            org_id, provider, workspace_id,
+            "removed. (listed=%d stored=%d)",
+            org_id, provider, workspace_id, len(refs), len(stored),
         )
 
     removed_n = (
