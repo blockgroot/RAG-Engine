@@ -1336,11 +1336,30 @@ made staleness a *user chore*. Two columns on `oauth_connections` carry the
 only two reasons to sync: `sync_requested_at` (a service TOLD us — stamped by
 a webhook handler, never by the sync module) and `last_sync_at` (the interval
 elapsed).
-- **The poll is the FLOOR, not the plan.** Slack/Linear/Notion can push;
-  **Drive can never** — Google requires the push receiver's domain to be
-  verified in Cloud Console, which `*.onrender.com` cannot be. A webhook
-  delivered while the free instance was cold-started is also simply lost. The
-  interval turns both into a delay instead of a permanent hole.
+- **The poll is the FLOOR, not the plan.** All four push now (below), but a
+  webhook delivered while the free instance was cold-started is lost, Linear's
+  app webhook covers PUBLIC teams only, and a Drive channel can lapse. The
+  interval turns each into a delay instead of a permanent hole. "Drive can never
+  push" was true when written (Google required a verified receiver domain) and
+  is not now: support.google.com/googleapi/answer/7072069 says verification "is
+  no longer required".
+- **Push receivers only FLAG** (`api/webhooks.py`, `request_sync_external` by
+  the provider's own workspace id; `slack_events.py` for Slack). Each is 404
+  until its secret is set. Slack: a CHANNEL `message` (incl. edit/delete
+  subtypes, which may lack `channel_type`, so `C`/`G` ids count) flags only the
+  connections whose `channel_ids` hold it and is NEVER answered -- the route
+  used to answer any non-DM `message`, so subscribing `message.channels` would
+  have made the bot reply to all conversation. Notion: the unsigned first POST's
+  `verification_token` is LOGGED for the operator (paste into Notion's Verify
+  form and `NOTION_WEBHOOK_VERIFICATION_TOKEN`) and is the HMAC key for
+  `X-Notion-Signature: sha256=<hex>`. Linear: bare-hex `Linear-Signature`,
+  `webhookTimestamp` within 60 s, `organizationId` = `external_workspace_id`;
+  configured on the OAuth app, so no `admin` scope. Drive (`sources/drive_watch.py`,
+  `drive_watch_channels`): `changes.watch` per scoped connection, renewed on the
+  tick a day before its ≤7-day expiry, old channel stopped after the new one is
+  stored; no signature exists, so the channel token's SHA-256 is the proof, and
+  an unproven notification still gets 200 so Google stops retrying. The change
+  log is the ACCOUNT's, not the folder's, so any Drive edit flags a (cheap) sync.
 - **`sync_requested_at` is a FLAG, not a queue** — a busy channel stamps it per
   message and the tick reads-and-clears it, so fifty messages produce ONE job.
   That read-and-clear IS the debounce; there is no timer and no counter. A
@@ -2247,7 +2266,8 @@ source_external_id)`; `doc_is_public` DEFAULT TRUE + `doc_viewers TEXT[]` GIN
 carry document-level access, see §3) · `chunks` (`vector(1024)` + generated `content_tsv`) ·
 `conversations` / `conversation_turns` / `conversation_last_retrieval` ·
 `users` · `user_email_aliases` (prior sign-in emails, one owner each) ·
-`email_change_requests` (single-use, hashed, never a login) · `oauth_connections` (encrypted tokens, `source_config` JSONB, two
+`email_change_requests` (single-use, hashed, never a login) · `drive_watch_channels`
+(one Drive push channel per connection, token stored hashed) · `oauth_connections` (encrypted tokens, `source_config` JSONB, two
 partial unique indexes: org-wide vs workspace; `sync_requested_at` webhook flag
 + `last_sync_at` poll floor, see §3 Automatic freshness) · `ingestion_jobs`
 (+`phase`/`attempts`/`progress_at`/`permission_unreadable_documents`) · `magic_link_tokens` · `oauth_states` ·
@@ -2416,10 +2436,14 @@ and the graph as a retrieval list — **built, OFF for answers**.
   that fails the MODE-tag check must be replaced, not shipped.
 - Validate the 0.35 gate and 0.72 reuse threshold against production
   `rag.query_signals` logs rather than hand-measured examples.
-- **Auto-sync is polling ONLY so far** — `request_sync()` and the flag column
-  exist, but **no webhook endpoint calls them yet**, so today's worst case is
-  the 1h interval rather than one tick. Slack/Linear/Notion handlers are the
-  next step; Drive can never have one.
+- **Push receivers are built and CLOSED until configured, never run live.**
+  Outside the repo: Slack app events `message.channels` + `message.groups` (scopes
+  already granted, bot must be in the channel); a Notion subscription on the
+  public integration + `NOTION_WEBHOOK_VERIFICATION_TOKEN`; the Linear OAuth app's
+  webhook URL + `LINEAR_WEBHOOK_SECRET`; `DRIVE_PUSH_BASE_URL` (the API's public
+  HTTPS origin). Unverified from the docs: that a public Notion integration gets
+  events from EVERY installing workspace, and that Linear's app webhook needs no
+  `admin` scope. Latency is still bounded by the ~10-min tick, not instant.
 - **The Check button is GONE, and `last_sync_at` replaced it on the card**
   (`credentials.OAuthConnectionInfo` -> `/admin/connections` ->
   `ConnectionCard::checkedAgo`). It was the manual override held until an

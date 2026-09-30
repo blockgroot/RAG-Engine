@@ -282,8 +282,14 @@ https://developers.google.com/workspace/admin/directory/reference/rest/v1/groups
 
 | | |
 | --- | --- |
-| **Verdict** | **OPEN for all four**, including Google Drive. Drive was previously recorded as BLOCKED; that was wrong. |
+| **Verdict** | **DONE** for all four, closed until configured and never run live. Drive was previously recorded as BLOCKED; that was wrong. |
 | **Last checked** | 2026-09-30 |
+
+**Built** (`app/api/webhooks.py`, `app/sources/drive_watch.py`, `app/api/slack_events.py`,
+`tests/test_webhook_sync.py`). Every receiver only flags `sync_requested_at`; the tick
+syncs. So latency drops from the 1h poll to the ~10-minute tick, not to instant. Each
+route answers 404 until its secret is set. What has to be done outside the repo, per
+provider, is listed under each one below.
 
 **What is missing.** The flag column and `request_sync()` exist; no webhook endpoint calls
 them. Worst-case staleness is one poll interval (1h) rather than one tick.
@@ -306,7 +312,18 @@ https://developers.google.com/workspace/drive/api/guides/push
   on the existing tick. A notification arriving at a cold-started free instance is still
   lost, which is exactly what the 1h poll floor is for.
 
-**Notion: OPEN.** "Webhooks let your connection receive real-time updates from Notion.
+  *Built that way:* one `changes.watch` channel per connection that has a folder, renewed
+  a day before its 7-day expiry. Notifications carry no signature, so the channel token
+  (stored hashed) is the proof. The change log covers the whole account rather than one
+  folder, so any Drive edit flags a sync, which costs one listing diff. Setup:
+  `DRIVE_PUSH_BASE_URL`.
+
+**Notion: built.** Setup: create a subscription on the public integration pointing at
+`<api>/webhooks/notion`. The server logs the one-time `verification_token`; paste it into
+Notion's Verify form and set it as `NOTION_WEBHOOK_VERIFICATION_TOKEN`. The same token
+then verifies `X-Notion-Signature`. The docs do not say outright whether a public
+integration's subscription receives events from every installing workspace; the payload's
+`workspace_id` implies it does. Original finding: "Webhooks let your connection receive real-time updates from Notion.
 Whenever a page or database changes, Notion sends a secure HTTP POST request to your
 webhook endpoint." Delivered events include `page.content_updated`, `page.locked`,
 `comment.created` and `data_source.schema_updated`. Setup is a subscription with a public
@@ -314,16 +331,26 @@ SSL endpoint, a one-time `verification_token` round trip, and HMAC-SHA256 payloa
 signatures, which is the verification shape `slack_events.py` already implements. Plan
 availability is not documented. https://developers.notion.com/reference/webhooks
 
-**Linear: OPEN, at a scope cost worth knowing before promising it.** Issues, issue
-comments, issue labels and issue attachments are all supported event types. But: "Only
-workspace admins, or OAuth applications with the `admin` scope, can create or read
-webhooks." Linear's scopes are `read`, `write`, `admin`, so this upgrades our connection
-from `read` to `admin`, which means **every tenant reconnects Linear and grants admin** to
-save an hour of staleness. That trade has to be made deliberately.
+**Linear: no admin scope needed, which corrects the first draft.** The admin-scope rule
+("Only workspace admins, or OAuth applications with the `admin` scope, can create or read
+webhooks") is about creating webhooks through the API. The same page also says: "OAuth
+applications can configure webhook settings. Once those settings are configured, each
+time a new organization authorizes the given application, a webhook will be created for
+that organization". So it is configured once on our OAuth app, with our `read` scope
+unchanged. That no admin scope is needed is inferred from the wording, not stated. One
+real limit: these webhooks cover all PUBLIC teams, so private-team issues stay on the
+poll. Setup: webhook URL `<api>/webhooks/linear` on the OAuth app, plus
+`LINEAR_WEBHOOK_SECRET`. The receiver checks `Linear-Signature` (bare hex HMAC-SHA256 of
+the raw body) and a `webhookTimestamp` within 60 s.
 https://linear.app/developers/webhooks
 
-**Slack: already built.** `app/api/slack_events.py` is a live Events API receiver with
-signature verification. Only the sync-flag call is missing.
+**Slack: not just one missing line.** `app/api/slack_events.py` answered EVERY non-DM
+`message` event, so subscribing to channel messages would have made the bot reply to all
+conversation. A channel message (including edits and deletes) now only flags the
+connections whose `channel_ids` hold that channel. Setup: add the bot events
+`message.channels` and `message.groups` in the Slack app. Their scopes
+(`channels:history`, `groups:history`) are already granted, and the bot only receives
+events for channels it is in.
 
 ### 4.2 Connector breadth
 

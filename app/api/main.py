@@ -43,6 +43,7 @@ from . import attachments as attachments_router
 from . import chat as chat_router
 from . import feedback as feedback_router
 from . import slack_events as slack_events_router
+from . import webhooks as webhooks_router
 from . import orgs as orgs_router
 from . import insights as insights_router
 from . import schedulers as schedulers_router
@@ -220,6 +221,7 @@ def create_app() -> FastAPI:
     app.include_router(notifications_router.router)
     app.include_router(account_router.router)
     app.include_router(slack_events_router.router)
+    app.include_router(webhooks_router.router)
 
     @app.get("/health")
     def health():

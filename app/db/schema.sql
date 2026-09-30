@@ -480,6 +480,22 @@ ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS reauth_reason TEXT;
 ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS sync_requested_at TIMESTAMPTZ;
 ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS last_sync_at TIMESTAMPTZ;
 
+-- Drive push (`sources/drive_watch.py`): one `changes.watch` channel per Google
+-- connection. Drive is the one source that cannot push without us asking, and a
+-- channel EXPIRES (at most a week for `changes`) with no automatic renewal, so
+-- the tick re-watches before `expires_at`. `token_hash` is the SHA-256 of the
+-- secret we hand Google as the channel token; a notification whose
+-- X-Goog-Channel-Token does not hash to it is ignored. It can only ever flag a
+-- sync, but an unauthenticated flag is still a free way to spend quota.
+CREATE TABLE IF NOT EXISTS drive_watch_channels (
+    connection_id UUID PRIMARY KEY REFERENCES oauth_connections (id) ON DELETE CASCADE,
+    channel_id    TEXT NOT NULL UNIQUE,
+    resource_id   TEXT NOT NULL,
+    token_hash    TEXT NOT NULL,
+    expires_at    TIMESTAMPTZ NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Partial: only rows actually waiting are scanned, and "waiting" is the
 -- common-case empty set.
 CREATE INDEX IF NOT EXISTS idx_oauth_connections_sync_requested

@@ -51,6 +51,7 @@ from ..guard.live import watch_question
 from ..auth.credentials import get_live_connection_token
 from ..auth.users import get_user_by_email
 from ..sources.google_groups import viewer_for_person
+from ..jobs.autosync import request_sync_external
 from ..vectorstore.base import Viewer
 from ..config.settings import SlackSettings
 from ..core.exceptions import ProviderError
@@ -574,6 +575,35 @@ def _handle(event: dict, team_id: str) -> None:
     post_message(token, channel, answer, thread_ts)
 
 
+def _is_channel_content(event: dict) -> bool:
+    """A message posted, edited or deleted in a channel (not a DM, not a mention).
+
+    `channel_type` is "channel"/"group" on a posted message, but Slack's own
+    examples for `message_changed`/`message_deleted` omit it, so an edit falls
+    back to the channel id: `C`/`G` are channels, `D` is a DM.
+    """
+    if event.get("type") != "message":
+        return False
+    kind = event.get("channel_type")
+    if kind in ("channel", "group"):
+        return True
+    return kind is None and str(event.get("channel") or "")[:1] in ("C", "G")
+
+
+def _flag_channel_sync(team_id: str, channel: str) -> None:
+    """Stamp `sync_requested_at` for connections indexing this channel.
+
+    Never raises: a missed flag costs one poll interval, and the ack has
+    already gone out.
+    """
+    if not team_id or not channel:
+        return
+    try:
+        request_sync_external("slack", team_id, slack_channel=channel)
+    except Exception:  # noqa: BLE001
+        logger.warning("slack.events: could not flag a sync for %s", channel, exc_info=True)
+
+
 @router.post("/events")
 async def slack_events(
     request: Request,
@@ -604,6 +634,23 @@ async def slack_events(
     if payload.get("type") == "url_verification":
         return {"challenge": payload.get("challenge")}
 
+    event = payload.get("event") or {}
+
+    # A message in a CHANNEL (public `message.channels`, private
+    # `message.groups`) is content changing, not a question: flag a sync of the
+    # connections that index that channel and never answer it -- answering
+    # every channel message would make the bot reply to all conversation. The
+    # bot's questions arrive as `app_mention`, which is handled below. Edits
+    # and deletions (`message_changed` / `message_deleted` subtypes) are
+    # content changes too, so the subtype filter does not apply here. Done
+    # BEFORE the retry drop: the flag is idempotent, so a retry of a delivery
+    # that died on a cold start still lands.
+    if _is_channel_content(event):
+        background.add_task(
+            _flag_channel_sync, payload.get("team_id") or "", event.get("channel") or ""
+        )
+        return {"ok": True}
+
     # Slack retries up to 3 times when an ack misses its 3-second deadline,
     # and on a free instance a cold start misses it routinely. The first
     # delivery has ALREADY started answering by then, so honouring a retry
@@ -615,7 +662,6 @@ async def slack_events(
         logger.info("slack.bot ignoring retry #%s", x_slack_retry_num)
         return {"ok": True}
 
-    event = payload.get("event") or {}
     # Never react to our own posts (or any bot's): the bot's reply is itself a
     # message event, so answering one would loop forever.
     if event.get("bot_id") or event.get("subtype"):

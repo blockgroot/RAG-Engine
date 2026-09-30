@@ -1754,6 +1754,36 @@ class AutoSyncSettings:
         )
 
 
+
+@dataclass(frozen=True)
+class WebhookSettings:
+    """Push receivers for Notion, Linear and Drive (`app/api/webhooks.py`).
+
+    Every field unset means that receiver is CLOSED (404) and the provider is
+    polled on the auto-sync interval exactly as before -- the INTERNAL_TICK_SECRET
+    posture: an unconfigured secret closes a route rather than leaving an
+    unauthenticated one open.
+    """
+
+    #: The `verification_token` Notion POSTs once when the subscription is
+    #: created; it is also the HMAC key for `X-Notion-Signature`.
+    notion_verification_token: str | None = None
+    #: The signing secret of the Linear webhook (OAuth-app webhook settings, or
+    #: a workspace webhook), used for `Linear-Signature`.
+    linear_secret: str | None = None
+    #: Public HTTPS base URL of THIS API, where Google delivers Drive push
+    #: notifications (`<base>/webhooks/google`). Unset = Drive is poll-only.
+    drive_push_base_url: str | None = None
+
+    @classmethod
+    def from_env(cls) -> "WebhookSettings":
+        base = (os.getenv("DRIVE_PUSH_BASE_URL") or "").strip().rstrip("/")
+        return cls(
+            notion_verification_token=(os.getenv("NOTION_WEBHOOK_VERIFICATION_TOKEN") or None),
+            linear_secret=(os.getenv("LINEAR_WEBHOOK_SECRET") or None),
+            drive_push_base_url=base or None,
+        )
+
 # LLM request pacing. The aux (ingest) provider shares the main provider's key
 # and endpoint, so background contextualization and a member's live question
 # compete for ONE rate limit. Free Gemini is 15 rpm, and a 429 on the answer
