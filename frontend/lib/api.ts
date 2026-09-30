@@ -132,6 +132,13 @@ export interface Attachment {
   flagged?: boolean;
 }
 
+/** The address you sign in with, and the ones you used before. Documents shared
+ *  with a prior address stay readable to you. */
+export interface SignInEmails {
+  email: string | null;
+  prior: string[];
+}
+
 /** One of the member's own accounts in a connected tool, linked to them. */
 export interface LinkedIdentity {
   id: string;
@@ -789,6 +796,20 @@ export const api = {
     }),
 
   linkedIdentities: () => request<LinkedIdentities>("/account/identities"),
+
+  signInEmails: () => request<SignInEmails>("/account/emails"),
+
+  /** Mails a confirmation link to the NEW address; nothing changes until it is used. */
+  requestEmailChange: (email: string) =>
+    request<{ status: "sent"; message: string; dev_link: string | null }>("/account/email", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+
+  removePriorEmail: (email: string) =>
+    request<{ removed: string }>(`/account/emails/${encodeURIComponent(email)}`, {
+      method: "DELETE",
+    }),
 
   /** A full-page navigation, not a fetch: it ends on GitHub's consent screen. */
   githubLinkUrl: () => `${API_BASE_URL}/account/identities/github/link`,

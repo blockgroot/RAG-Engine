@@ -575,6 +575,36 @@ CREATE TABLE IF NOT EXISTS magic_link_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_magic_link_tokens_email ON magic_link_tokens (email);
 
+-- A member's PRIOR sign-in addresses, kept when they change their email
+-- (`auth/email_change.py`). Document access is keyed on EMAIL (a file is shared
+-- with someone before they sign up), so without this a changed address stops
+-- matching every grant the person still holds in Drive/Slack/Linear. Onyx's
+-- `prior_emails`. One owner per address (PRIMARY KEY), and every row was PROVEN:
+-- it was this person's verified login until they replaced it. Read side
+-- ignores an alias another `users` row now signs in with, so an address that
+-- is reassigned never matches two people.
+CREATE TABLE IF NOT EXISTS user_email_aliases (
+    email      TEXT PRIMARY KEY,
+    user_id    UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_user_email_aliases_user ON user_email_aliases (user_id);
+
+-- A pending "change my email" request: a single-use token mailed to the NEW
+-- address. Separate from magic_link_tokens on purpose -- a consumed magic link
+-- signs in whoever owns its email, and this token must never be usable as a
+-- login. Hashed like magic links; `user_id` is bound at request time from the
+-- session, so the link proves the inbox and the session proved the account.
+CREATE TABLE IF NOT EXISTS email_change_requests (
+    token_hash  TEXT PRIMARY KEY,
+    user_id     UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    new_email   TEXT NOT NULL,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    consumed_at TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_email_change_requests_user ON email_change_requests (user_id);
+
 -- Single-use OAuth `state` values (Phase 13) — CSRF/replay protection for the
 -- admin "Connect X" flow. Stored server-side (not just a signed JWT) so a
 -- state can be validated AND immediately consumed on lookup in the callback;

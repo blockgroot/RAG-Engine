@@ -79,13 +79,19 @@ hook, and every process boundary must `close_pool()`.
     day they log in. `Viewer.acl()` (read) and `_normalize_viewers` (write) are
     the only two formatters and must agree; a mis-spelled entry fails CLOSED
     (the person is locked out), which is the safe direction.
+  - **A changed email keeps its old address as a PRIOR email** (`auth/email_change.py`,
+    `user_email_aliases`, Onyx's `prior_emails`; `Viewer.aliases` → `acl()`), or every
+    grant a source still records under it stops matching. The only writer is a
+    confirmed change (link mailed to the NEW address, GET page / POST act, token never a
+    login), so every alias was a verified login; an alias another `users` row now signs
+    in with is ignored on read, and `auto_link_by_email` treats aliases as proof too.
   - **`Viewer` has THREE states and collapsing any two is the leak.**
     `unrestricted()` = no filter (ingest, eval, CLI); a real email = that
     person; `public_only_viewer()` = scope-public only, whose empty ACL array
     makes `&&` false for every row. A signed-in session whose `users` row
     cannot be read gets `public_only`, never unrestricted (`deps.viewer_for`).
   - **Capture is per adapter and FAILS CLOSED** (`sources.factory.ACL_CAPABLE`,
-    `{"google", "slack"}` today). Drive's `permissions(type,emailAddress,domain,deleted)`
+    `{"google", "slack", "linear"}` today). Drive's `permissions(type,emailAddress,domain,deleted)`
     rides in the `files.list` we already make — zero extra calls, the
     `lastModifyingUser` trick again. `anyone` ⇒ scope-public, `user` ⇒ email,
     `domain` ⇒ `domain:<host>`, `group` ⇒ `group:<addr>`. An ACL-capable
@@ -238,15 +244,27 @@ hook, and every process boundary must `close_pool()`.
     it a weekly Drive report would MAIL them every file they were never shared
     on. Starter chips filter on the same predicate (`_TITLE_ACCESS_SQL`): a
     chip is a document title.
-  - **Coverage is honest and partial.** Drive enforces per-file; **Notion has
-    no per-page permission API at all** (Onyx does not sync Notion permissions
-    either), Slack (channel membership) and Linear (team membership) are
-    readable but NOT wired yet, so they stay scope-level. GitHub/Insights
-    accept the viewer and ignore it, with the reason at the call site: GitHub
-    reads live through the installation's token, and charts count
-    `activity_facts` rows, not documents — **chart counts and hover rows remain
-    scope-level**, a known gap. Say which sources enforce it in the UI: a
-    half-enforced guarantee that reads as whole is worse than none.
+  - **Coverage is honest and partial.** Drive enforces per-file, Slack per private
+    channel, Linear per private team; **Notion has no per-page permission API at all**
+    (Onyx does not sync Notion permissions either). GitHub accepts the viewer and
+    ignores it: it reads live through the installation's token. Say which sources
+    enforce it in the UI: a half-enforced guarantee that reads as whole is worse than none.
+  - **A Linear team's membership IS its issues' ACL** (`sources.linear._access_for`, the
+    Slack channel rule): a PUBLIC team is scope-public and costs no call; a PRIVATE or
+    RESTRICTED team (a non-private team inside a private-team boundary, treated as
+    members-only until they join) is its members' emails PLUS `sharedAccess.sharedWithUsers`
+    (per-issue sharing out of a private team, Enterprise). Team + sharing ride the issues
+    LISTING so revocation re-stamps; `teams` once and `members` once per non-public team
+    per sync; unreadable membership ⇒ owner-only (`viewer.email`), like Drive. Queries are
+    validated against Linear's published `schema.graphql`, never run live yet.
+  - **Charts go through the same predicate** (`insights.store._viewer_filter`, spliced
+    into `run_metric`, `list_facts`, `list_subjects`, `first_fact_at`): a fact from an
+    ACL-capable provider counts only when its DOCUMENT is visible, joined on
+    `external_id` (doc facts) or `url` = `source_uri` (Linear issue facts, keyed by
+    identifier). No visible document ⇒ hidden, so a DELETED Drive file drops out of
+    every member's chart history. `list_subjects` matters: a refusal repeats it back and
+    a Drive subject is a file title. `tests/test_insights_access.py` fails on any
+    product call site without `viewer=`.
   - Unchanged and still true: the controls are **what the token can reach**
     (Drive `folder_id`, Slack channel list, GitHub authorized repos, Notion's
     explicit share, Forms `form_ids`) and **who is in the scope**; a space
@@ -2228,7 +2246,8 @@ frontend/ Next.js 15 portal · tests/ pytest
 source_external_id)`; `doc_is_public` DEFAULT TRUE + `doc_viewers TEXT[]` GIN
 carry document-level access, see §3) · `chunks` (`vector(1024)` + generated `content_tsv`) ·
 `conversations` / `conversation_turns` / `conversation_last_retrieval` ·
-`users` · `oauth_connections` (encrypted tokens, `source_config` JSONB, two
+`users` · `user_email_aliases` (prior sign-in emails, one owner each) ·
+`email_change_requests` (single-use, hashed, never a login) · `oauth_connections` (encrypted tokens, `source_config` JSONB, two
 partial unique indexes: org-wide vs workspace; `sync_requested_at` webhook flag
 + `last_sync_at` poll floor, see §3 Automatic freshness) · `ingestion_jobs`
 (+`phase`/`attempts`/`progress_at`/`permission_unreadable_documents`) · `magic_link_tokens` · `oauth_states` ·
@@ -2267,8 +2286,8 @@ portal; Workspace-within-a-Workspace; signup-approval queue; injection,
 latency, security and eval hardening; the Activity Scheduler; Multi-Model
 Selection (OpenRouter, ~5 models, per-request routing); automatic freshness (interval + webhook-flag sync, external tick, LLM pacing);
 in-chat file attachments (Cloudinary object store, Onyx's FileStore shape);
-document-level access filtering (Drive only: per-file viewers captured from the
-listing, one WHERE conjunct on every retrieval leg, revocation on re-listing, read-side Google
+document-level access filtering (Drive per-file, Slack private channels, Linear
+private teams + per-issue shares, charts; viewers captured from the listing, one WHERE conjunct on every retrieval leg, revocation on re-listing, read-side Google
 Group expansion behind GOOGLE_GROUPS_ENABLED, "not shared with you" refusal,
 `tests/test_doc_access.py`); the needs-attention bell (derived, owner/admin-scoped); feedback & documentation-gap tracking (automatic refusal logging on web + Slack, thumbs with three reasons, `/admin/feedback`); Visual Representation, **all five phases** — `activity_facts`, metric registry
 + panels, charts **in Ask** (no Visualizations tab; `/visualizations` redirects
@@ -2299,15 +2318,17 @@ and the graph as a retrieval list — **built, OFF for answers**.
   against fixtures only. Walk it through live before trusting it, and watch for
   the case that will bite first: a connecting account that is only a VIEWER on
   some files gets `permissions` omitted, so those documents are SKIPPED and
-  read as a sync that quietly indexed less. Also unwired: Slack and Linear
-  (membership is readable, nothing captures it) and charts (`activity_facts`
-  counts and hover rows stay scope-level). **Group expansion has never run
-  against a live directory** — `GOOGLE_GROUPS_ENABLED` is off, no tenant has
-  the scope, and the Admin SDK needs a Workspace-admin connection nobody has
-  confirmed they have; `groups.list?userKey=` also returns DIRECT memberships
-  only, so a nested group is still withheld. `prior_emails` aliasing (Onyx has
-  it) is still missing: change your email and every grant stops matching. **The migration must be applied to prod** — three additive
-  `IF NOT EXISTS` statements, verified against a throwaway local database.
+  read as a sync that quietly indexed less. **Linear team access has never run
+  against a live workspace** either: the first sync after deploy re-stamps every
+  private-team issue, so check `permission_unreadable_documents` on that job.
+  **Group expansion has never run against a live directory** — `GOOGLE_GROUPS_ENABLED`
+  is off, no tenant has the scope, and the Admin SDK needs a Workspace-admin
+  connection nobody has confirmed they have. Nested groups go through
+  `members.hasMember` against the org's indexed `group:` grants (≤40, same domain
+  only; Google does not resolve cross-domain nesting). The email-change pages are
+  API-rendered and the `/account` panel is `tsc`-checked only. **The migration must be
+  applied to prod** — additive `IF NOT EXISTS` statements (incl. `user_email_aliases`,
+  `email_change_requests`), verified against a throwaway local database.
 - Charts: Forms is now REACHABLE from the product (picker + chips), but **the
   Google Forms path has still never run against a real form.** The
   Forms API calls, the `mimeType` listing and the scope behaviour are written

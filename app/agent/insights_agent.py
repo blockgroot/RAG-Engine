@@ -45,11 +45,10 @@ class InsightsAgent(Agent):
         user_id: str | None = None,
         role: str | None = None,
     ) -> AgentResponse:
-        # Accepted and ignored: a chart counts rows in `activity_facts`, not
-        # indexed documents, so there is no per-document ACL to apply here.
-        # That is a KNOWN gap, not an oversight -- counts and hover rows stay
-        # scope-level while retrieval is per-document (see CLAUDE.md).
-        del viewer
+        # Every count, hover row, subject list and "measured since" date below
+        # is narrowed to documents this viewer may open (`store._viewer_filter`)
+        # -- a chart is a summary of documents and must not summarise ones the
+        # asker cannot read.
         del conversation_id, question  # Spec is already resolved; question is untrusted.
         if refusal:
             return AgentResponse(
@@ -74,6 +73,7 @@ class InsightsAgent(Agent):
                 workspace_id=workspace_id,
                 user_id=user_id or "",
                 role=role or "member",
+                viewer=viewer,
             )
         except CannotChart as exc:
             return AgentResponse(
@@ -92,7 +92,7 @@ class InsightsAgent(Agent):
             panel, period = _backfill_and_retry(
                 parsed, panel, period,
                 org_id=org_id, workspace_id=workspace_id,
-                user_id=user_id or "", role=role or "member",
+                user_id=user_id or "", role=role or "member", viewer=viewer,
             )
             points = panel.get("points") or []
 
@@ -101,6 +101,7 @@ class InsightsAgent(Agent):
             org_id=org_id, workspace_id=workspace_id,
             days=scopes.WINDOW_DAYS.get(period, 0),
             metric=registry.METRICS.get(parsed.metric),
+            viewer=viewer,
         )
         return AgentResponse(
             answer=caption,
@@ -162,6 +163,7 @@ def _backfill_and_retry(
     workspace_id: str | None,
     user_id: str,
     role: str,
+    viewer: Viewer | None = None,
 ) -> tuple[dict, str]:
     """Fill facts from the index for this scope, then re-run the metric.
 
@@ -188,19 +190,19 @@ def _backfill_and_retry(
     try:
         return _run_spec(
             spec, org_id=org_id, workspace_id=workspace_id,
-            user_id=user_id, role=role,
+            user_id=user_id, role=role, viewer=viewer,
         )
     except (CannotChart, ProviderError):
         return panel, period
 
 
-def _details(spec, *, org_id, workspace_id, days, focus) -> list[dict]:
+def _details(spec, *, org_id, workspace_id, days, focus, viewer=None) -> list[dict]:
     """Never fatal: a chart without its rows is still a chart, and losing the
     answer to keep the annotation would be the wrong trade."""
     try:
         facts = store.list_facts(
             spec.metric, org_id=org_id, workspace_id=workspace_id,
-            days=days, focus=focus,
+            days=days, focus=focus, viewer=viewer,
         )
     except (ProviderError, KeyError):
         logger.warning("insights: could not read details of %s", spec.metric)
@@ -244,7 +246,7 @@ def _span_days(points) -> int:
     return max(0, (now - oldest).days + 2)
 
 
-def _resolve_focus(spec, metric, *, org_id, workspace_id, days) -> str | None:
+def _resolve_focus(spec, metric, *, org_id, workspace_id, days, viewer=None) -> str | None:
     """Match what the member named against subjects that actually have rows.
 
     Refuses BY NAME when nothing matches, and lists what does exist. That is
@@ -255,7 +257,8 @@ def _resolve_focus(spec, metric, *, org_id, workspace_id, days) -> str | None:
     wanted = spec.focus.strip().lower()
     try:
         subjects = store.list_subjects(
-            spec.metric, org_id=org_id, workspace_id=workspace_id, days=days
+            spec.metric, org_id=org_id, workspace_id=workspace_id, days=days,
+            viewer=viewer,
         )
     except ProviderError:
         # Cannot verify, so do not filter. A whole chart beats a wrong one.
@@ -309,7 +312,7 @@ def _listed(values: list[str], limit: int = 6) -> str:
     return f"{text} and {rest} more" if rest > 0 else text
 
 
-def _empty_caption(spec, title, *, org_id, workspace_id, days, metric) -> str:
+def _empty_caption(spec, title, *, org_id, workspace_id, days, metric, viewer=None) -> str:
     """Say WHICH kind of empty this is. There are three, and they need
     different actions from the member.
 
@@ -324,7 +327,8 @@ def _empty_caption(spec, title, *, org_id, workspace_id, days, metric) -> str:
     if org_id:
         try:
             began = store.first_fact_at(
-                metric.provider, org_id=org_id, workspace_id=workspace_id
+                metric.provider, org_id=org_id, workspace_id=workspace_id,
+                viewer=viewer,
             )
         except ProviderError:
             began = None
@@ -338,7 +342,9 @@ def _empty_caption(spec, title, *, org_id, workspace_id, days, metric) -> str:
         )
 
     # There ARE facts from this provider, just not of this kind in this window.
-    wider = _has_older_rows(metric, org_id=org_id, workspace_id=workspace_id)
+    wider = _has_older_rows(
+        metric, org_id=org_id, workspace_id=workspace_id, viewer=viewer
+    )
     if wider:
         return (
             f"{title}. Nothing in the last {days} days, but there IS older "
@@ -353,7 +359,9 @@ def _empty_caption(spec, title, *, org_id, workspace_id, days, metric) -> str:
     )
 
 
-def _has_older_rows(metric, *, org_id: str, workspace_id: str | None) -> bool:
+def _has_older_rows(
+    metric, *, org_id: str, workspace_id: str | None, viewer: Viewer | None = None
+) -> bool:
     """Whether this exact metric has rows beyond the widest chart window.
 
     Answers the question the member actually has -- "is it missing, or am I
@@ -365,6 +373,7 @@ def _has_older_rows(metric, *, org_id: str, workspace_id: str | None) -> bool:
         points = store.run_metric(
             metric.key, org_id=org_id, workspace_id=workspace_id,
             period="quarter", days=max(scopes.WINDOW_DAYS.values()),
+            viewer=viewer,
         )
     except (ProviderError, ValueError, KeyError):
         return False
@@ -374,13 +383,13 @@ def _has_older_rows(metric, *, org_id: str, workspace_id: str | None) -> bool:
 def _caption(
     spec: ChartSpec, panel: dict, points: list, *,
     org_id: str = "", workspace_id: str | None = None, days: int = 0,
-    metric=None,
+    metric=None, viewer: Viewer | None = None,
 ) -> str:
     title = panel["title"]
     if not points:
         return _empty_caption(
             spec, title, org_id=org_id, workspace_id=workspace_id,
-            days=days, metric=metric,
+            days=days, metric=metric, viewer=viewer,
         )
     if spec.group_by == "actor" and all(not p.get("group") for p in points):
         return (
@@ -410,6 +419,7 @@ def _run_spec(
     workspace_id: str | None,
     user_id: str,
     role: str,
+    viewer: Viewer | None = None,
 ) -> tuple[dict, str]:
     try:
         metric = registry.get(spec.metric)
@@ -432,7 +442,7 @@ def _run_spec(
     focus = None
     if spec.focus:
         focus = _resolve_focus(spec, metric, org_id=org_id,
-                               workspace_id=workspace_id, days=days)
+                               workspace_id=workspace_id, days=days, viewer=viewer)
     if chart == "pie" and group_by is None:
         # A pie needs groups to be shares OF something. Without one it is a
         # single full circle, which states nothing.
@@ -446,6 +456,7 @@ def _run_spec(
         days=days,
         group_by=group_by,
         focus=focus,
+        viewer=viewer,
     )
 
     # A period that puts EVERYTHING in one bucket draws as a single point --
@@ -466,7 +477,7 @@ def _run_spec(
             candidate = store.run_metric(
                 spec.metric, org_id=org_id, workspace_id=workspace_id,
                 period=finer, days=finer_window,
-                group_by=group_by, focus=focus,
+                group_by=group_by, focus=focus, viewer=viewer,
             )
         except (ProviderError, ValueError):
             break
@@ -481,7 +492,7 @@ def _run_spec(
     # the detail rows: July's commits are outside a 45-day daily window in
     # September, so the chart had four bars and nothing behind them.
     begun = store.first_fact_at(
-        metric.provider, org_id=org_id, workspace_id=workspace_id
+        metric.provider, org_id=org_id, workspace_id=workspace_id, viewer=viewer
     )
     title = _ask_title(metric, group_by)
     if focus:
@@ -507,7 +518,8 @@ def _run_spec(
         # questions that follow immediately, and every column is already on
         # the counted row.
         "details": _details(
-            spec, org_id=org_id, workspace_id=workspace_id, days=days, focus=focus
+            spec, org_id=org_id, workspace_id=workspace_id, days=days, focus=focus,
+            viewer=viewer,
         ),
         "measured_since": begun.isoformat() if begun else None,
     }

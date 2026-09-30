@@ -25,20 +25,23 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # the vector store imports this module; avoid a cycle
     from ..vectorstore.base import Viewer
 
-_PREDICATE = "({prefix}doc_is_public OR {prefix}doc_viewers && %s::text[])"
+_PREDICATE = "({prefix}doc_is_public OR {prefix}doc_viewers && {param}::text[])"
 
 
-def visibility_predicate(alias: str | None = "d") -> str:
-    """The bare predicate, parenthesised, with ONE ``%s`` for the ACL array.
+def visibility_predicate(alias: str | None = "d", *, param: str | None = None) -> str:
+    """The bare predicate, parenthesised, with ONE placeholder for the ACL array.
 
     ``alias`` is the `documents` table alias; ``None`` means the columns are
     referenced unqualified (a query that selects from `documents` alone).
+    ``param`` names the placeholder for a query using NAMED parameters
+    (``%(param)s``); by default it is positional (``%s``).
     No leading ``AND`` so it can also be negated -- `restricted_match` asks for
     exactly what this predicate removes, so "withheld" can never mean anything
     else.
     """
     prefix = f"{alias}." if alias else ""
-    return _PREDICATE.format(prefix=prefix)
+    placeholder = f"%({param})s" if param else "%s"
+    return _PREDICATE.format(prefix=prefix, param=placeholder)
 
 
 _EVIDENCE_PREDICATE = "({prefix}is_public IS TRUE OR {prefix}viewers && %s::text[])"

@@ -25,7 +25,7 @@ from ..insights import pins, registry, resolve, scopes
 from ..insights import store as insight_store
 from ..security.rate_limit import check_rate_limit
 from ..workspaces.store import assert_member
-from .deps import SessionClaims, get_session
+from .deps import SessionClaims, get_session, viewer_for
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +135,9 @@ def dashboard(
     if found is None:
         raise HTTPException(status_code=404, detail="No such scope.")
 
+    # Resolved once for every panel: each count is narrowed to documents this
+    # person may open, the same rule retrieval applies.
+    viewer = viewer_for(session)
     out = []
     for provider in found.providers:
         for panel in panel_defs.for_provider(provider):
@@ -151,6 +154,7 @@ def dashboard(
                     period=period,
                     days=days,
                     group_by=panel.group_by,
+                    viewer=viewer,
                 )
             except ProviderError:
                 # One broken panel must not blank the page. It reports itself
@@ -161,7 +165,8 @@ def dashboard(
                 continue
 
             begun = insight_store.first_fact_at(
-                provider, org_id=session.org_id, workspace_id=workspace_id
+                provider, org_id=session.org_id, workspace_id=workspace_id,
+                viewer=viewer,
             )
             out.append(_panel_payload(provider, panel, points, begun))
 
@@ -241,6 +246,7 @@ def answer_chart_question(
         }
 
     days = _WINDOW_DAYS[spec.period]
+    viewer = viewer_for(session)
     try:
         points = insight_store.run_metric(
             spec.metric,
@@ -249,6 +255,7 @@ def answer_chart_question(
             period=spec.period,
             days=days,
             group_by=spec.group_by,
+            viewer=viewer,
         )
     except ProviderError:
         logger.warning("insights: ask ran %s and failed", spec.metric, exc_info=True)
@@ -256,7 +263,8 @@ def answer_chart_question(
 
     metric = registry.get(spec.metric)
     begun = insight_store.first_fact_at(
-        metric.provider, org_id=session.org_id, workspace_id=workspace_id
+        metric.provider, org_id=session.org_id, workspace_id=workspace_id,
+        viewer=viewer,
     )
     return {
         "charted": True,
