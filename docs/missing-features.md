@@ -28,6 +28,7 @@ promising the second one as if it were the first.
 | **OPEN** | Proven possible against the provider's own reference or against our code. Not built yet. |
 | **UNVERIFIED** | Built, but has never run against the real service. Treat as "does not work" until walked through live. |
 | **DECIDED** | Deliberately not built, with the reason. Not a gap, recorded so it is not re-opened by accident. |
+| **VERIFIED** | Walked through live against the real service. |
 | **DONE** | Built and tested against our own database and the provider's published schema. An entry that also needs a live walkthrough says so. |
 
 **BLOCKED and OPEN are claims, so both require proof.** An unchecked guess is not a
@@ -371,15 +372,15 @@ against documented REST APIs, not a blocker. No upstream check applies.
 These are not missing code. They are missing **proof**, and until walked through live they
 should be described to anyone outside the team as not working.
 
-| Feature | Verdict | Last checked | What has never happened |
+| Feature | Verdict | Last checked | Status |
 | --- | --- | --- | --- |
-| Drive per-file permission capture | **UNVERIFIED** | 2026-09-29 | The `permissions` field list, the grant-type mapping and the omitted-permissions fallback are written from documented shapes and tested against fixtures only. Never run against a live folder. |
+| Drive per-file permission capture | **VERIFIED** | 2026-09-30 | Walked through live by the team: per-file sharing is enforced on a real folder. |
 | Google Groups read-side expansion | **UNVERIFIED** | 2026-09-29 | `GOOGLE_GROUPS_ENABLED` is off, no tenant holds the scope, and the Admin SDK needs a Workspace-admin connection nobody has confirmed exists. |
 | Google Forms sentiment | **UNVERIFIED** | 2026-09-29 | The Forms API calls, the `mimeType` listing and the scope behaviour are tested against a fake reader only. Enabling it also forces every tenant to reconnect Google. |
-| Scheduler email delivery | **UNVERIFIED** | 2026-09-29 | `console` sender only. A real send has never been observed. The report is stored and readable in-app either way, so a failure costs the notification, not the work. |
-| The entire frontend | **UNVERIFIED** | 2026-09-29 | `tsc --noEmit` and one colour check. No rendered assertion anywhere, no test infrastructure. Charts, the Forms picker and all touch behaviour have been checked by screenshot only. |
-| Prompt-injection guard | **UNVERIFIED** in prod | 2026-09-29 | All four phases built, `GUARD_MODE` unset, so nothing is on. Plan is shadow for a week, read the false positives, then enforce. |
-| The answer audit (LettuceDetect) | **BLOCKED** on cost | 2026-09-29 | Hugging Face made CPU Spaces PRO-only and Docker Spaces paid, so our private checker Space cannot be deployed free. The audit stays off; endpoint code is tested against a fake. |
+| Scheduler email delivery | **VERIFIED** | 2026-09-30 | Scheduled reports arrive on time at the correct address. |
+| The entire frontend | **VERIFIED** by hand | 2026-09-30 | Walked through in the browser by the team. Still no automated rendered test, so a regression is caught by eye or not at all. |
+| Prompt-injection guard | **UNVERIFIED** in prod | 2026-09-30 | All four phases built, `GUARD_MODE` unset, so nothing is on. Plan: `GUARD_MODE=shadow` for a week, read `guard.flagged_hit` false positives, then `enforce`. |
+| The answer audit (LettuceDetect) | **DECIDED** (on hold) | 2026-09-30 | Paused by decision. Hugging Face CPU Spaces are PRO-only, so the private checker Space cannot be deployed free; the audit stays off. |
 
 ---
 
@@ -412,7 +413,7 @@ something false.
 
 | | |
 | --- | --- |
-| **Verdict** | BLOCKED | OPEN | UNVERIFIED | DECIDED | DONE |
+| **Verdict** | BLOCKED | OPEN | UNVERIFIED | VERIFIED | DECIDED | DONE |
 | **Last checked** | YYYY-MM-DD |
 
 **What is missing.** One paragraph, in the words someone outside the codebase would use.

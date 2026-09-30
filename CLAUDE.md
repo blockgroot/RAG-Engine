@@ -2332,13 +2332,8 @@ and the graph as a retrieval list — **built, OFF for answers**.
   additive schema (graph tables, `pg_trgm`, `person_identities`,
   `oauth_states.user_id`); existing documents fill in over ticks
   (`refresh_missing_meta` 25/job, `graph.builder.backfill` 200/tick).
-- Document-level access: **the Drive `permissions` path has never run against a
-  live folder** — the field list, the grant-type mapping and the
-  omitted-permissions case are written from the documented shapes and tested
-  against fixtures only. Walk it through live before trusting it, and watch for
-  the case that will bite first: a connecting account that is only a VIEWER on
-  some files gets `permissions` omitted, so those documents are SKIPPED and
-  read as a sync that quietly indexed less. **Linear team access has never run
+- Document-level access: **Drive per-file sharing is VERIFIED live** (by the
+  user, 2026-09-30). **Linear team access has never run
   against a live workspace** either: the first sync after deploy re-stamps every
   private-team issue, so check `permission_unreadable_documents` on that job.
   **Group expansion has never run against a live directory** — `GOOGLE_GROUPS_ENABLED`
@@ -2381,11 +2376,9 @@ and the graph as a retrieval list — **built, OFF for answers**.
   diverging bar) and inline Ask charts are covered by `tsc --noEmit` only,
   never a rendered assertion. Do not add a React test stack as a side effect
   of a chart.
-- **The whole frontend remains browser-unverified.** Charts, the marketing
-  bands, the Forms picker and the phone pass are covered by `tsc --noEmit` and
-  one colour check only; the user's screenshots have been the sole rendering
-  check throughout. The touch behaviour in particular (pointer events,
-  tap-to-inspect, the flipped tip) has never run on a real phone.
+- **The frontend is checked BY HAND, not by tests** — the user walked it through
+  in the browser (2026-09-30); there is still no automated rendered assertion, so
+  a UI regression is caught by eye or not at all.
 - Charts: **no browser click-through yet** — the org-member vs space-member
   difference and the sentiment gate are asserted at the API, not in a real
   page load.
@@ -2399,9 +2392,8 @@ and the graph as a retrieval list — **built, OFF for answers**.
 - Charts: **`first_fact_at` starts on deploy day for authorship.** Counts
   backfill from `source_last_modified`; author names cannot — never captured.
   The UI says "Measured since <date>", which is the honest floor, not a fix.
-- Scheduler: **email delivery is unverified — `console` only** (a failed send
-  now costs only the notification: the report is stored and readable in-app
-  either way).
+- Scheduler: **email delivery is VERIFIED live** (the user receives reports on
+  schedule at the right address, 2026-09-30).
 - Indexed reports inherit the ingest pipeline's filters and shape: content
   dropped by `SLACK_MIN_THREAD_CHARS` can never appear in a report, Slack items
   are threads (not per-message, so no author attribution), and Notion/Drive/
