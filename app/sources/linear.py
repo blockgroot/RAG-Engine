@@ -15,14 +15,17 @@ one document — the natural unit, same role a Notion page plays.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 import httpx
 
 from ..config.settings import LinearSettings
 from ..core.exceptions import ConfigurationError, SourceError
-from .base import SourceAdapter, SourceDocument, SourceRef
+from .base import DocAccess, SourceAdapter, SourceDocument, SourceRef
 from .meta import build_meta, container, person, resolve_link
+
+logger = logging.getLogger(__name__)
 
 _API_URL = "https://api.linear.app/graphql"
 _TIMEOUT = 30.0
@@ -33,14 +36,56 @@ _TIMEOUT = 30.0
 _MAX_ISSUES = 2000
 _PAGE_SIZE = 100
 
+# The listing carries each issue's TEAM and its per-issue SHARING, because
+# revocation rides the listing (`ingestion.pipeline._restamp_unchanged_access`):
+# a change in who may read an issue moves no `updatedAt`, so an issue whose
+# audience changed is "unchanged" and is never re-fetched. Both ride the query
+# already being made -- the only new calls are per TEAM (`_team_access`).
 _ISSUES_QUERY = """
 query Issues($after: String) {
   issues(first: %d, after: $after, orderBy: updatedAt) {
-    nodes { id identifier title url updatedAt }
+    nodes {
+      id identifier title url updatedAt
+      team { id }
+      sharedAccess { isShared sharedWithUsers { email } }
+    }
     pageInfo { hasNextPage endCursor }
   }
 }
 """ % _PAGE_SIZE
+
+# `teams` returns "all teams whose issues the user can access", so every team an
+# issue in the listing belongs to is in here. `visibility` replaced the
+# deprecated `private` flag: public | private | restricted.
+_TEAMS_QUERY = """
+query Teams($after: String) {
+  teams(first: 100, after: $after) {
+    nodes { id visibility }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+"""
+
+# A team's members ARE its ACL for a non-public team. Disabled/suspended users
+# are excluded by default (`includeDisabled: false`), which is what we want: a
+# suspended account cannot sign in to Linear either.
+_TEAM_MEMBERS_QUERY = """
+query TeamMembers($id: String!, $after: String) {
+  team(id: $id) {
+    members(first: 100, after: $after) {
+      nodes { email }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+
+_VIEWER_QUERY = "query { viewer { email } }"
+
+#: Pages of teams / of one team's members to walk. Stopping early can only
+#: DROP viewers (fail closed), and it is logged so it is not silent.
+_MAX_TEAM_PAGES = 5
+_MAX_MEMBER_PAGES = 10
 
 # Asks for the fields that answer the questions people actually ask about an
 # issue. The description and comments alone cannot answer "what's the status of
@@ -92,6 +137,10 @@ query RecentIssues($after: String, $filter: IssueFilter) {
       state { name type }
       assignee { name }
       team { name }
+      priorityLabel
+      estimate
+      project { name }
+      labels(first: 10) { nodes { name } }
     }
     pageInfo { hasNextPage endCursor }
   }
@@ -173,6 +222,23 @@ def _issue_meta(issue: dict) -> dict | None:
     )
 
 
+_UNRESOLVED = object()
+
+
+def _shared_emails(node: dict) -> list[str]:
+    """Who this issue was shared with individually, outside its team.
+
+    Linear's per-issue sharing (Enterprise, 2026-02): a private team's issue can
+    be shared with a named user who is not in the team. Empty everywhere else.
+    ponytail: an issue that INHERITS sharing from its parent
+    (`inheritsSharedAccess`) is trusted to report the inherited users here too;
+    if it does not, those users are withheld (fail closed). Read the parent's
+    `sharedAccess` in the same query if that turns out to be the case.
+    """
+    shared = (node.get("sharedAccess") or {}).get("sharedWithUsers") or []
+    return [str(u.get("email") or "").strip() for u in shared if (u.get("email") or "").strip()]
+
+
 def _parse_dt(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -209,6 +275,13 @@ class LinearAdapter(SourceAdapter):
             )
         self._token = resolved
         self._oauth = oauth
+        #: team id -> visibility, filled by ONE `teams` walk per adapter (i.e.
+        #: per sync). `None` until first needed, so a listing with no team ids
+        #: at all (a fixture, an empty workspace) costs nothing.
+        self._team_visibility: dict[str, str] | None = None
+        #: team id -> member emails, or None when they could not be read.
+        self._team_members: dict[str, tuple[str, ...] | None] = {}
+        self._account_email: object = _UNRESOLVED
 
     def _query(self, query: str, variables: dict | None = None) -> dict:
         auth = f"Bearer {self._token}" if self._oauth else self._token
@@ -226,6 +299,96 @@ class LinearAdapter(SourceAdapter):
         if payload.get("errors"):
             raise SourceError(f"Linear API returned errors: {payload['errors']}")
         return payload["data"]
+
+    # -- access --------------------------------------------------------------
+
+    def _visibility_of(self, team_id: str) -> str | None:
+        """public | private | restricted, or None when it could not be read."""
+        if self._team_visibility is None:
+            visibility: dict[str, str] = {}
+            cursor: str | None = None
+            try:
+                for _ in range(_MAX_TEAM_PAGES):
+                    data = self._query(_TEAMS_QUERY, {"after": cursor})["teams"]
+                    for node in data["nodes"]:
+                        visibility[node["id"]] = str(node.get("visibility") or "")
+                    if not data["pageInfo"]["hasNextPage"]:
+                        break
+                    cursor = data["pageInfo"]["endCursor"]
+                else:
+                    logger.warning("linear: team listing hit the %s-page bound", _MAX_TEAM_PAGES)
+            except SourceError:
+                logger.warning("linear: could not list teams; sharing unreadable", exc_info=True)
+            self._team_visibility = visibility
+        return self._team_visibility.get(team_id) or None
+
+    def _members_of(self, team_id: str) -> tuple[str, ...] | None:
+        if team_id in self._team_members:
+            return self._team_members[team_id]
+        emails: list[str] = []
+        cursor: str | None = None
+        members: tuple[str, ...] | None
+        try:
+            for _ in range(_MAX_MEMBER_PAGES):
+                team = self._query(_TEAM_MEMBERS_QUERY, {"id": team_id, "after": cursor})["team"]
+                if team is None:
+                    raise SourceError(f"Linear team {team_id} not visible")
+                data = team["members"]
+                emails += [n["email"] for n in data["nodes"] if n.get("email")]
+                if not data["pageInfo"]["hasNextPage"]:
+                    break
+                cursor = data["pageInfo"]["endCursor"]
+            else:
+                logger.warning(
+                    "linear: team %s has more than %s pages of members; the rest "
+                    "are withheld", team_id, _MAX_MEMBER_PAGES,
+                )
+            members = tuple(emails) or None
+        except SourceError:
+            logger.warning("linear: could not read members of team %s", team_id, exc_info=True)
+            members = None
+        self._team_members[team_id] = members
+        return members
+
+    def _connected_account(self) -> str | None:
+        """The connected account's email, for the owner-only fallback. Once, lazily."""
+        if self._account_email is _UNRESOLVED:
+            try:
+                self._account_email = (
+                    (self._query(_VIEWER_QUERY)["viewer"] or {}).get("email") or None
+                )
+            except SourceError:
+                self._account_email = None
+        return self._account_email  # type: ignore[return-value]
+
+    def _access_for(self, node: dict) -> DocAccess | None:
+        """Who may read one issue. ``None`` = could not tell AND no fallback.
+
+        A PUBLIC team's issues are visible to every workspace member, so they are
+        scope-public -- the Slack public-channel rule, and it keeps this to
+        private teams only. A PRIVATE team's issues are visible to its members
+        only (Linear: "Those who are not a member of the private team will not be
+        able to see issues associated with the team"), plus whoever the issue was
+        individually shared with. RESTRICTED (a non-private team inside a
+        private-team boundary) is treated like private: its parent's members can
+        discover and join it, and until they join we do not grant them.
+
+        Unreadable membership falls back to OWNER-ONLY, exactly as Drive does:
+        the connected account can demonstrably read the issue, nobody else is
+        granted it, and the pipeline freezes an already-indexed issue instead of
+        narrowing it.
+        """
+        team_id = ((node.get("team") or {}).get("id") or "").strip()
+        if not team_id:
+            return None
+        visibility = self._visibility_of(team_id)
+        if visibility == "public":
+            return DocAccess.scope_public()
+        members = self._members_of(team_id) if visibility else None
+        if members:
+            return DocAccess.restricted(list(members) + _shared_emails(node))
+        account = self._connected_account()
+        return DocAccess.owner_only(account) if account else None
 
     # -- interface ---------------------------------------------------------
 
@@ -246,6 +409,7 @@ class LinearAdapter(SourceAdapter):
                         title=_issue_title(node),
                         last_modified=_parse_dt(node["updatedAt"]),
                         source_uri=node["url"],
+                        access=self._access_for(node),
                     )
                 )
             page_info = data["pageInfo"]
@@ -297,6 +461,22 @@ class LinearAdapter(SourceAdapter):
                         # without them, and they ride along in a query we
                         # already make.
                         "team": (node.get("team") or {}).get("name") or "",
+                        # Chart attributes (insights/registry.ATTRS), in the
+                        # same request: "tasks by priority", "estimate points
+                        # completed per team". "No priority" is Linear's own
+                        # label for unset, so it is dropped, not charted.
+                        "priority": (
+                            node.get("priorityLabel")
+                            if node.get("priorityLabel") not in (None, "", "No priority")
+                            else ""
+                        ),
+                        "estimate": node.get("estimate"),
+                        "project": (node.get("project") or {}).get("name") or "",
+                        "labels": [
+                            n.get("name") for n in
+                            ((node.get("labels") or {}).get("nodes") or [])
+                            if isinstance(n, dict) and n.get("name")
+                        ],
                         "created_at": _parse_dt(node.get("createdAt")),
                         "completed_at": _parse_dt(node.get("completedAt")),
                         "at": _parse_dt(node.get("updatedAt")),

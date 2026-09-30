@@ -392,6 +392,16 @@ def run_external_tick() -> dict[str, int]:
     synced = run_sync_tick()
     facts = run_facts_tick()
 
+    # Drive push channels expire within a week and are never renewed for us.
+    # A lapsed one only means that connection is polled until the next tick.
+    drive_watches = 0
+    try:
+        from ..sources.drive_watch import ensure_watches
+
+        drive_watches = ensure_watches()
+    except Exception:  # noqa: BLE001 - a lapsed push, never a failed tick
+        logger.exception("External tick: Drive watch renewal failed")
+
     # Indexed facts for tenants that have not ingested since charts shipped.
     # GitHub still needs the facts-only path above (it has no documents).
     backfilled = 0
@@ -460,6 +470,7 @@ def run_external_tick() -> dict[str, int]:
         "reaped": reaped,
         "syncs_queued": synced,
         "facts_recorded": facts,
+        "drive_watches_opened": drive_watches,
         "facts_backfilled": backfilled,
         "attachments_purged": attachments_purged,
         "conversations_purged": conversations_purged,

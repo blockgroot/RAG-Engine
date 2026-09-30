@@ -480,6 +480,22 @@ ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS reauth_reason TEXT;
 ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS sync_requested_at TIMESTAMPTZ;
 ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS last_sync_at TIMESTAMPTZ;
 
+-- Drive push (`sources/drive_watch.py`): one `changes.watch` channel per Google
+-- connection. Drive is the one source that cannot push without us asking, and a
+-- channel EXPIRES (at most a week for `changes`) with no automatic renewal, so
+-- the tick re-watches before `expires_at`. `token_hash` is the SHA-256 of the
+-- secret we hand Google as the channel token; a notification whose
+-- X-Goog-Channel-Token does not hash to it is ignored. It can only ever flag a
+-- sync, but an unauthenticated flag is still a free way to spend quota.
+CREATE TABLE IF NOT EXISTS drive_watch_channels (
+    connection_id UUID PRIMARY KEY REFERENCES oauth_connections (id) ON DELETE CASCADE,
+    channel_id    TEXT NOT NULL UNIQUE,
+    resource_id   TEXT NOT NULL,
+    token_hash    TEXT NOT NULL,
+    expires_at    TIMESTAMPTZ NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Partial: only rows actually waiting are scanned, and "waiting" is the
 -- common-case empty set.
 CREATE INDEX IF NOT EXISTS idx_oauth_connections_sync_requested
@@ -574,6 +590,36 @@ CREATE TABLE IF NOT EXISTS magic_link_tokens (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_magic_link_tokens_email ON magic_link_tokens (email);
+
+-- A member's PRIOR sign-in addresses, kept when they change their email
+-- (`auth/email_change.py`). Document access is keyed on EMAIL (a file is shared
+-- with someone before they sign up), so without this a changed address stops
+-- matching every grant the person still holds in Drive/Slack/Linear. Onyx's
+-- `prior_emails`. One owner per address (PRIMARY KEY), and every row was PROVEN:
+-- it was this person's verified login until they replaced it. Read side
+-- ignores an alias another `users` row now signs in with, so an address that
+-- is reassigned never matches two people.
+CREATE TABLE IF NOT EXISTS user_email_aliases (
+    email      TEXT PRIMARY KEY,
+    user_id    UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_user_email_aliases_user ON user_email_aliases (user_id);
+
+-- A pending "change my email" request: a single-use token mailed to the NEW
+-- address. Separate from magic_link_tokens on purpose -- a consumed magic link
+-- signs in whoever owns its email, and this token must never be usable as a
+-- login. Hashed like magic links; `user_id` is bound at request time from the
+-- session, so the link proves the inbox and the session proved the account.
+CREATE TABLE IF NOT EXISTS email_change_requests (
+    token_hash  TEXT PRIMARY KEY,
+    user_id     UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    new_email   TEXT NOT NULL,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    consumed_at TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_email_change_requests_user ON email_change_requests (user_id);
 
 -- Single-use OAuth `state` values (Phase 13) — CSRF/replay protection for the
 -- admin "Connect X" flow. Stored server-side (not just a signed JWT) so a
@@ -782,6 +828,50 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_activity_facts_space
 -- is what lets the graph join a GitHub reviewer to the same person's Slack
 -- threads without ever matching on a name. NULL where the source gave none.
 ALTER TABLE activity_facts ADD COLUMN IF NOT EXISTS actor_key TEXT;
+
+-- Every other field the source ALREADY handed us for this fact (GitHub PR
+-- labels and target branch; Linear priority, estimate, labels, project), so a
+-- chart can group, filter or sum by it without a new column per field. The
+-- keys a chart may read are declared in `insights/registry.py::ATTRS`; any
+-- other key is stored and ignored. `{}` = nothing extra was captured (every
+-- row written before this column existed, until its next sync re-reads it).
+ALTER TABLE activity_facts ADD COLUMN IF NOT EXISTS attrs JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+-- Tables found INSIDE documents (a Google Sheet, a CSV, a pipe table in a
+-- Notion page or Google Doc, a table in a Word file), kept as typed rows so a
+-- chart can sum a column with SQL instead of reading numbers back out of
+-- chunk text (app/doctables, plan docs/plans/2026-09-30-open-ended-charts.md
+-- Phase 3). Hangs off `documents` and cascades with it, so access is the
+-- document's own (`visibility_predicate` on the JOIN) and a re-ingest, which
+-- replaces the document row, replaces its tables too. `columns` is the
+-- profile: `[{key: "c0", name, type: number|date|category|text, unit, ...}]`;
+-- `key` is ours and is the only thing ever spliced into SQL.
+CREATE TABLE IF NOT EXISTS doc_tables (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE,
+    document_id  UUID NOT NULL REFERENCES documents (id) ON DELETE CASCADE,
+    position     INT NOT NULL,
+    name         TEXT NOT NULL,
+    columns      JSONB NOT NULL,
+    row_count    INT NOT NULL,
+    truncated    BOOLEAN NOT NULL DEFAULT FALSE,
+    notes        TEXT[] NOT NULL DEFAULT '{}',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (document_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_doc_tables_scope ON doc_tables (org_id, workspace_id);
+
+-- One row per table row. `cells` holds normalized values by column key (a
+-- number as a JSON number, a date as ISO text, an unparseable cell absent);
+-- `raw` keeps what the document actually said, for the hover.
+CREATE TABLE IF NOT EXISTS doc_table_rows (
+    table_id UUID NOT NULL REFERENCES doc_tables (id) ON DELETE CASCADE,
+    row_no   INT NOT NULL,
+    cells    JSONB NOT NULL,
+    raw      JSONB NOT NULL,
+    PRIMARY KEY (table_id, row_no)
+);
 
 -- A chart a member asked for and kept. Personal, scoped `(org_id, user_id)`
 -- like `schedulers` and unlike every other tenant table -- a pin is one

@@ -423,7 +423,9 @@ def test_ingest_stores_the_adapter_meta_plus_links_from_the_body(monkeypatch):
     monkeypatch.setenv("GRAPH_META_REFRESH_BATCH", "0")
     store = _Store()
     ingest_source(
-        _Adapter({"d1": _doc()}), "org", provider="linear", embedder=_Embedder(), store=store,
+        # Linear is ACL-capable, so its documents must say who may read them.
+        _Adapter({"d1": _doc(access=DocAccess.scope_public())}), "org", provider="linear",
+        embedder=_Embedder(), store=store,
         contextual=ContextualSettings(enabled=False),
     )
     [written] = store.upserts

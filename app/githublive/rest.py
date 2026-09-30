@@ -119,6 +119,13 @@ def _pull_request(full_name: str, item: dict) -> PullRequest:
         merged_at=merged_at,
         closed_at=_parse_dt(item.get("closed_at")),
         url=item.get("html_url") or f"https://github.com/{full_name}/pull/{number}",
+        labels=tuple(
+            name for name in (
+                (label or {}).get("name") for label in (item.get("labels") or [])
+                if isinstance(label, dict)
+            ) if isinstance(name, str) and name.strip()
+        ),
+        base=((item.get("base") or {}).get("ref") or None),
     )
 
 
