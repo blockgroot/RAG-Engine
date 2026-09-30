@@ -79,12 +79,23 @@ def restricted_notice(
     *,
     org_id: str,
     workspace_id: str | None,
+    in_channel: bool = False,
 ) -> str:
     """Tell the asker their answer exists but is not shared with them.
 
     Names the connector and (when we have it) the connected folder — both
     already visible to them — plus who can grant access. Never the document.
+
+    ``in_channel``: the reply is posted to a Slack channel, which reads as the
+    ROOM, not the asker -- "shared with you" is false there (the asker may well
+    have access) and "ask for access" is the wrong fix. A DM answers as them.
     """
+    if in_channel:
+        return (
+            "I found Slack messages that look like they answer this, but they're "
+            "not visible to everyone in this channel, so I can't quote them here. "
+            "Ask me in a direct message and I'll answer from what you can see."
+        )
     source = _PROVIDER_LABELS.get(provider or "", "connected")
     scope_name = _connected_scope_name(provider or "", org_id, workspace_id)
     # A space has an owner who can share; company-wide content is an admin's.

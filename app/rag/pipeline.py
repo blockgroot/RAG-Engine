@@ -68,6 +68,7 @@ from .attachment_tools import (
     build_preview_block,
     run_reads,
 )
+from ..sources.slack_utils import channel_tag
 from .access_notice import live_withheld_notice, restricted_notice
 from ..guard import build_injection_guard
 from ..livetools import LiveRefresh, current_live_request
@@ -2065,6 +2066,11 @@ class RagPipeline:
         Never raises: a diagnostic must cost the wording of a refusal, never
         the refusal itself.
         """
+        # A Slack CHANNEL reply reads that channel only (`Viewer.channels`),
+        # so only that channel's threads may confirm a withheld match: a
+        # restricted Drive file elsewhere in the scope is not what this room
+        # was asking about, and "not shared with you" would be about nobody.
+        channel_tags = [channel_tag(c) for c in viewer.channels if c] or None
         try:
             match = self._store.restricted_match(
                 org_id,
@@ -2073,6 +2079,7 @@ class RagPipeline:
                 source_provider=self._source_provider,
                 viewer=viewer,
                 min_score=self._settings.similarity_threshold,
+                tags=channel_tags,
             )
         except Exception:  # noqa: BLE001
             logger.exception("restricted_match failed; falling back to the fixed refusal")
@@ -2080,7 +2087,10 @@ class RagPipeline:
         if match is None:
             return None
         return restricted_notice(
-            match.source_provider, org_id=org_id, workspace_id=workspace_id
+            match.source_provider,
+            org_id=org_id,
+            workspace_id=workspace_id,
+            in_channel=bool(channel_tags),
         )
 
     # -- Phase 8: retrieval reuse (a cheap, deterministic, non-LLM check) ---

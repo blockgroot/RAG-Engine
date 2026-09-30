@@ -109,6 +109,39 @@ def _sanitize_removals(removed_ids: list[str], stored_count: int) -> tuple[list[
     return removed_ids, False
 
 
+def _removable(adapter: SourceAdapter, removed_ids: list[str], *, provider: str) -> list[str]:
+    """Drop removals the listing cannot actually vouch for.
+
+    Absence from a listing proves deletion only when the listing was
+    COMPLETE and would have INCLUDED the document. Two adapter hooks, both
+    optional (every adapter that has neither is unchanged):
+
+    - ``listing_complete = False``: the listing stopped early (a cap, a rate
+      limit mid-channel). Nothing is deleted from it.
+    - ``may_remove(external_id)``: ``False`` when the document sits outside
+      what the listing covers at all -- a Slack thread older than the
+      backfill window is not listed, which is not the same as deleted.
+    """
+    if not removed_ids:
+        return removed_ids
+    if getattr(adapter, "listing_complete", True) is False:
+        logger.warning(
+            "ingest: %s listing was incomplete -- deleting none of the %d unlisted documents",
+            provider, len(removed_ids),
+        )
+        return []
+    may_remove = getattr(adapter, "may_remove", None)
+    if may_remove is None:
+        return removed_ids
+    kept = [eid for eid in removed_ids if may_remove(eid)]
+    if len(kept) < len(removed_ids):
+        logger.info(
+            "ingest: %s kept %d unlisted documents outside the listing's window",
+            provider, len(removed_ids) - len(kept),
+        )
+    return kept
+
+
 _EMPTY_LISTING_CONFIRM_DELAY_SECONDS = 5
 
 
@@ -204,7 +237,9 @@ def detect_source_changes(
         else:
             unchanged_n += 1
 
-    removed_ids = [eid for eid in stored if eid not in live_ids]
+    removed_ids = _removable(
+        adapter, [eid for eid in stored if eid not in live_ids], provider=provider
+    )
     if stored and not refs:
         safe_removed, suspicious = [], True
     else:
@@ -507,6 +542,7 @@ def ingest_source(
             refs, stored, to_update, unchanged
         )
 
+    removed_ids = _removable(adapter, removed_ids, provider=provider)
     removed_ids, suspicious_removal = _sanitize_removals(removed_ids, len(stored))
     if removed_ids and not _empty_listing_is_confirmed(
         adapter, stored_count=len(stored), live_count=len(refs)

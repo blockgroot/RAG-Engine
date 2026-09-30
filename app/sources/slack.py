@@ -23,6 +23,9 @@ _TIMEOUT = 15.0
 _TRUNCATION_MARKER = "\n[... earlier replies truncated: thread exceeds ingest size limit ...]"
 _MAX_HTTP_ATTEMPTS = 5
 _RETRYABLE_SLACK_ERRORS = frozenset({"ratelimited", "internal_error", "fatal_error"})
+#: Longest ``Retry-After`` we wait out. Restricted-tier history calls are
+#: 1/min, so anything shorter retries into the same window.
+_MAX_RETRY_AFTER_SECONDS = 60
 # ponytail: process-local only; a separate worker process still lists itself.
 # Upgrade: persist refs on the ingestion job row.
 _LISTING_CACHE_TTL_SECONDS = 180
@@ -293,7 +296,10 @@ class SlackAdapter(SourceAdapter):
                 last_error = "ratelimited"
                 if attempt >= _MAX_HTTP_ATTEMPTS:
                     raise SourceError(f"Slack API call to {method} failed: ratelimited")
-                time.sleep(min(_retry_after_seconds(response, attempt), 8))
+                # Honour Slack's own wait (a restricted-tier app is told ~60 s).
+                # Capping it at 8 s meant every retry landed inside the same
+                # window and the listing gave up half-read.
+                time.sleep(min(_retry_after_seconds(response, attempt), _MAX_RETRY_AFTER_SECONDS))
                 continue
 
             try:
@@ -313,7 +319,7 @@ class SlackAdapter(SourceAdapter):
             err = str(data.get("error") or "unknown")
             last_error = err
             if err in _RETRYABLE_SLACK_ERRORS and attempt < _MAX_HTTP_ATTEMPTS:
-                time.sleep(min(_retry_after_seconds(response, attempt), 8))
+                time.sleep(min(_retry_after_seconds(response, attempt), _MAX_RETRY_AFTER_SECONDS))
                 continue
             raise SourceError(f"Slack API call to {method} failed: {err}")
         raise SourceError(f"Slack API call to {method} failed: {last_error}")
@@ -344,12 +350,36 @@ class SlackAdapter(SourceAdapter):
         self._user_names[user_id] = name
         return name
 
+    #: ``False`` after a listing that stopped early (a cap, or a channel that
+    #: failed mid-way). The pipeline deletes nothing from such a listing:
+    #: an unlisted thread there is unread, not deleted.
+    listing_complete: bool = True
+
+    def may_remove(self, external_id: str) -> bool:
+        """Would the listing have included this thread? Only then is its
+        absence a deletion. A thread started before the backfill window is
+        never listed (``conversations.history`` filters on the PARENT ts), so
+        without this every thread aged out of the 90 days was deleted.
+        A channel no longer picked is removable: dropping it is the intent.
+        """
+        channel_id, _, ts = external_id.partition(":")
+        if channel_id not in self._channel_ids:
+            return True
+        try:
+            return float(ts) >= time.time() - self._settings.backfill_days * 86400
+        except ValueError:
+            return True
+
     def list_documents(self) -> list[SourceRef]:
+        self.listing_complete = True
         try:
             refs = self._list_documents_from_slack()
         except SourceError:
             cached = self._cached_listing()
             if cached:
+                # A cached listing is an old snapshot: fine to diff what it
+                # holds, never proof that anything newer is gone.
+                self.listing_complete = False
                 return cached
             raise
         if refs:
@@ -365,11 +395,21 @@ class SlackAdapter(SourceAdapter):
             cursor = None
             while True:
                 if len(refs) >= self._settings.max_documents_per_sync:
+                    self.listing_complete = False
                     return refs
                 params = {"channel": channel_id, "oldest": oldest, "limit": 200}
                 if cursor:
                     params["cursor"] = cursor
-                data = self._get("conversations.history", params)
+                try:
+                    data = self._get("conversations.history", params)
+                except SourceError:
+                    if not refs and cursor is None and channel_id == self._channel_ids[0]:
+                        raise  # nothing read at all: let the cache fallback decide
+                    # One channel failing mid-way must not cost the others, and
+                    # must not read as "its threads were deleted".
+                    logger.warning("slack: listing of %s stopped early", channel_id, exc_info=True)
+                    self.listing_complete = False
+                    break
                 for message in data.get("messages", []):
                     ts = message.get("ts")
                     if not ts or message.get("subtype") or self._is_bot_traffic(message):
@@ -397,6 +437,7 @@ class SlackAdapter(SourceAdapter):
                         )
                     )
                     if len(refs) >= self._settings.max_documents_per_sync:
+                        self.listing_complete = False
                         return refs
                 cursor = (data.get("response_metadata") or {}).get("next_cursor")
                 if not cursor:

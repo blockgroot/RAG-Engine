@@ -389,6 +389,7 @@ class PgVectorStore(VectorStore):
         source_provider: str | None = None,
         viewer: Viewer | None = None,
         min_score: float = 0.0,
+        tags: list[str] | None = None,
     ) -> RestrictedMatch | None:
         """Best-scoring chunk in scope that ``viewer`` may NOT read, if any.
 
@@ -414,6 +415,7 @@ class PgVectorStore(VectorStore):
                 WHERE c.org_id = %s::uuid
                   AND c.workspace_id IS NOT DISTINCT FROM %s::uuid
                   AND (%s::text IS NULL OR d.source_provider = %s::text)
+                  AND (%s::text[] IS NULL OR d.tags && %s::text[])
                   AND NOT {visibility_predicate("d")}
                   AND 1 - (c.embedding <=> %s) >= %s
                 ORDER BY c.embedding <=> %s
@@ -425,6 +427,8 @@ class PgVectorStore(VectorStore):
                     workspace_id,
                     source_provider,
                     source_provider,
+                    tags,
+                    tags,
                     acl,
                     vector,
                     min_score,

@@ -115,6 +115,21 @@ ALTER TABLE documents ADD COLUMN IF NOT EXISTS doc_viewers TEXT[];
 -- per candidate row inside the same WHERE clause that already pins org_id.
 CREATE INDEX IF NOT EXISTS idx_documents_viewers ON documents USING gin (doc_viewers);
 
+-- Slack channel-ACL backfill: a PRIVATE channel's threads carry a
+-- `channel:<id>` entry (sources/slack.py::_channel_entry) so a reply posted in
+-- that channel -- which reads as public_only plus that one channel -- can
+-- quote them. Threads indexed before the entry existed lack it, so the bot
+-- refused inside the very channel it was reading ("not shared with you")
+-- until each thread happened to change. The channel id is the first half of
+-- the external id, so no API call is needed. Private rows only (a public
+-- channel's threads are scope-public and need no entry); idempotent.
+UPDATE documents
+   SET doc_viewers = coalesce(doc_viewers, '{}') || ('channel:' || split_part(source_external_id, ':', 1))
+ WHERE source_provider = 'slack'
+   AND doc_is_public = FALSE
+   AND position(':' in source_external_id) > 1
+   AND NOT coalesce(doc_viewers, '{}') && ARRAY['channel:' || split_part(source_external_id, ':', 1)];
+
 -- Second Brain 1.1: the people, links and containers an adapter saw while
 -- fetching (`sources.meta`), captured with ZERO extra API calls. The knowledge
 -- graph is rebuilt from these rows and never by re-calling a provider, so a

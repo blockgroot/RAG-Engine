@@ -418,6 +418,7 @@ class VectorStore(ABC):
         source_provider: str | None = None,
         viewer: "Viewer | None" = None,
         min_score: float = 0.0,
+        tags: list[str] | None = None,
     ) -> "RestrictedMatch | None":
         """Did the ``viewer`` filter WITHHOLD something this question wanted?
 

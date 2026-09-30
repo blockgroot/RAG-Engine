@@ -2188,6 +2188,8 @@ frontend/ Next.js 15 portal · tests/ pytest
   org's `query_answer_cache` for the same reason an ingest does — a cached
   answer outlives the content it was built from, so a disconnected source keeps
   answering for the TTL (`tests/test_disconnect_purge.py`).
+- **A Slack listing deletes only what it could have listed** (`pipeline._removable`, adapter hooks `listing_complete` / `may_remove`). The restricted tier (1 history call/min) plus a retry wait capped at 8s meant a channel rate-limited mid-listing looked emptied, and a thread whose PARENT is older than `SLACK_BACKFILL_DAYS` is never listed (history filters on the parent ts) so every aged-out thread was deleted. Now: `Retry-After` honoured up to 60s, one failing channel keeps the others and marks the listing incomplete (nothing deleted), the per-sync cap or a cached fallback does the same, and out-of-window threads are kept. An adapter without the hooks is unchanged.
+- **Private Slack threads indexed before `channel:<id>` existed are backfilled in `schema.sql`** (id = first half of the external id) — without it the bot refused in its own private channel. A channel reply's withheld notice is confirmed only against THAT channel's tag (`Viewer.channels` → `restricted_match(tags=)`) and says "ask me in a DM", never "not shared with you": the room reads the reply, not the asker.
 - **Never delete on one unverified listing** — `_sanitize_removals` refuses
   to drop >50% of known docs (above a 5-doc floor); a suspicious first sync
   retries once.
