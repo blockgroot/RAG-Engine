@@ -90,12 +90,26 @@ def upsert_identities(org_id: str, people: list[dict]) -> int:
     return len(rows)
 
 
+#: "``u`` signs in with ``pi.email`` now, or did before" -- a PRIOR email
+#: (`auth/email_change.py`) is proof too: it was their verified login. An alias
+#: someone else now signs in with belongs to them, so it is skipped, which also
+#: keeps the link UPDATE from ever seeing two candidate members.
+_OWNS_EMAIL = """
+    lower(u.email) = pi.email
+    OR EXISTS (
+        SELECT 1 FROM user_email_aliases a
+         WHERE a.user_id = u.id AND a.email = pi.email
+           AND NOT EXISTS (SELECT 1 FROM users o WHERE lower(o.email) = a.email)
+    )
+"""
+
 def auto_link_by_email(org_id: str) -> int:
     """Link identities whose email is a member's login email in THIS org.
 
     Two statements, both scoped to one org:
 
-    1. link: an unlinked identity whose email equals a member's email, where
+    1. link: an unlinked identity whose email equals a member's email (or a
+       prior email of theirs, see ``_OWNS_EMAIL``), where
        that member belongs to the same org. ``users.email`` is globally unique,
        so there is at most one candidate -- and the ``u.org_id`` check is what
        stops a member of another org who happens to share the address.
@@ -107,20 +121,20 @@ def auto_link_by_email(org_id: str) -> int:
     """
     with get_connection() as conn:
         linked = conn.execute(
-            """
+            f"""
             UPDATE person_identities pi
                SET user_id = u.id, verified_by = %s
               FROM users u
              WHERE pi.org_id = %s::uuid
                AND pi.user_id IS NULL
                AND pi.email IS NOT NULL
-               AND lower(u.email) = pi.email
+               AND ({_OWNS_EMAIL})
                AND u.org_id = pi.org_id
             """,
             (VERIFIED_BY_EMAIL, org_id),
         ).rowcount
         conn.execute(
-            """
+            f"""
             UPDATE person_identities pi
                SET user_id = NULL, verified_by = NULL
              WHERE pi.org_id = %s::uuid
@@ -130,7 +144,7 @@ def auto_link_by_email(org_id: str) -> int:
                     WHERE u.id = pi.user_id
                       AND u.org_id = pi.org_id
                       AND pi.email IS NOT NULL
-                      AND lower(u.email) = pi.email
+                      AND ({_OWNS_EMAIL})
                )
             """,
             (org_id, VERIFIED_BY_EMAIL),

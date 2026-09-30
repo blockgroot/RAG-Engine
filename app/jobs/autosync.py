@@ -19,10 +19,12 @@ Two reasons to sync, and exactly two columns for them
 The poll is the FLOOR, not the plan. It exists because push is not universally
 available on a free deployment:
 
-* Slack / Linear / Notion push an event, so they sync within one tick.
-* **Drive can only be polled** — Google requires the push-notification
-  receiver's domain to be *verified in Google Cloud Console*, which a
-  ``*.onrender.com`` host can never be.
+* Slack / Linear / Notion push an event, and Drive pushes through a
+  ``changes.watch`` channel we must renew (``sources/drive_watch.py``), so a
+  change syncs within one tick. (Drive used to be poll-only because Google
+  required a verified push domain; Google has since dropped that requirement.)
+* Linear's app webhook covers PUBLIC teams only, and every channel can lapse,
+  so private-team issues and missed pushes still rely on the interval.
 * A webhook delivered while the free-tier box was cold-started is simply
   lost. The interval is what makes that a delay instead of a permanent hole.
 
@@ -68,6 +70,45 @@ def request_sync(org_id: str, provider: str, workspace_id: str | None = None) ->
             (org_id, provider, workspace_id),
         ).fetchall()
     return len(rows)
+
+
+def request_sync_connection(connection_id: str) -> int:
+    """Flag ONE connection, for a push that already names it (a Drive channel)."""
+    with get_connection() as conn:
+        return len(conn.execute(
+            "UPDATE oauth_connections SET sync_requested_at = now() "
+            "WHERE id = %s::uuid AND needs_reauth = false RETURNING 1",
+            (connection_id,),
+        ).fetchall())
+
+def request_sync_external(
+    provider: str, external_workspace_id: str, *, slack_channel: str | None = None
+) -> int:
+    """Flag every connection a webhook is about. Returns rows stamped.
+
+    A webhook names the PROVIDER'S workspace (a Slack team, a Notion
+    workspace, a Linear organization), never our org or space -- and one
+    external workspace can back several connections (org-wide plus a space).
+    All of them are stamped: a spurious sync is one cheap listing diff, a
+    missed one is an hour of staleness.
+
+    ``slack_channel`` narrows a Slack event to connections that actually
+    index that channel, so a message in #random does not sync a space that
+    only connected #engineering. ``needs_reauth`` rows are left alone: the
+    tick skips them anyway, and a flag nobody will clear is noise.
+    """
+    if not external_workspace_id:
+        return 0
+    sql = (
+        "UPDATE oauth_connections SET sync_requested_at = now() "
+        "WHERE provider = %s AND external_workspace_id = %s AND needs_reauth = false"
+    )
+    params: list = [provider, external_workspace_id]
+    if slack_channel is not None:
+        sql += " AND coalesce(source_config -> 'channel_ids', '[]'::jsonb) ? %s"
+        params.append(slack_channel)
+    with get_connection() as conn:
+        return len(conn.execute(sql + " RETURNING 1", params).fetchall())
 
 
 #: Providers with an ``oauth_connections`` row but no ingestion path at all.

@@ -723,6 +723,8 @@ def test_a_directory_failure_is_not_cached_as_an_answer(monkeypatch):
         return None if len(calls) == 1 else ("eng@corp.com",)
 
     monkeypatch.setattr(google_groups, "_fetch_groups", _fetch)
+    # No `group:` grants indexed, so no nested checks (tests/test_nested_groups.py).
+    monkeypatch.setattr(google_groups, "_candidate_groups", lambda *a: [])
 
     assert google_groups.groups_for("org", "ada@corp.com") == ()
     assert google_groups.groups_for("org", "ada@corp.com") == ("eng@corp.com",)
@@ -749,6 +751,8 @@ def test_memberships_are_cached_per_org(monkeypatch):
         return ("eng@corp.com",)
 
     monkeypatch.setattr(google_groups, "_fetch_groups", _fetch)
+    # No `group:` grants indexed, so no nested checks (tests/test_nested_groups.py).
+    monkeypatch.setattr(google_groups, "_candidate_groups", lambda *a: [])
     google_groups.groups_for("org-a", "ada@corp.com")
     google_groups.groups_for("org-b", "ada@corp.com")
     google_groups.groups_for("org-a", "ada@corp.com")

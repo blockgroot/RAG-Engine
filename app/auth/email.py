@@ -236,6 +236,38 @@ def send_magic_link_email_safe(to: str, link: str) -> None:
         logger.warning("Magic-link email to %s failed: %s", to, exc)
 
 
+
+def send_email_change_verification(to: str, link: str, *, settings: EmailSettings | None = None) -> None:
+    body = (
+        "Someone asked to change their Handbook sign-in email to this address.\n\n"
+        f"If it was you, confirm here (expires shortly, single use):\n\n{link}\n\n"
+        "If it wasn't, ignore this email -- nothing changes until the link is used.\n"
+    )
+    _dispatch(to, "Confirm your new sign-in email", body, settings)
+
+
+def send_email_change_verification_safe(to: str, link: str) -> None:
+    """Background-task wrapper: never raise into the request lifecycle."""
+    try:
+        send_email_change_verification(to, link)
+    except (ConfigurationError, ProviderError) as exc:
+        logger.warning("Email-change verification to %s failed: %s", to, exc)
+
+
+def send_email_changed_notice_safe(to: str, new_email: str) -> None:
+    """Tell the OLD address its account moved -- the one party who would notice
+    a change they did not make."""
+    body = (
+        f"Your Handbook sign-in email was changed to {new_email}.\n\n"
+        "Documents shared with this address stay readable to you. If you did not "
+        "make this change, contact your Handbook admin.\n"
+    )
+    try:
+        _dispatch(to, "Your sign-in email was changed", body, None)
+    except (ConfigurationError, ProviderError) as exc:
+        logger.warning("Email-changed notice to %s failed: %s", to, exc)
+
+
 def send_workspace_invite_email(
     to: str,
     link: str,

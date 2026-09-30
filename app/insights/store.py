@@ -12,9 +12,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from typing import TYPE_CHECKING
+
 from ..core.exceptions import ProviderError
 from ..db.connection import get_connection
+from ..security.visibility import visibility_predicate
+from ..sources.factory import ACL_CAPABLE
 from . import registry
+
+if TYPE_CHECKING:
+    from ..vectorstore.base import Viewer
 
 
 @dataclass(frozen=True)
@@ -45,6 +52,39 @@ def _scoped(sql_where: str, workspace_id: str | None) -> str:
         " AND workspace_id IS NULL" if workspace_id is None
         else " AND workspace_id = %(workspace_id)s"
     )
+
+
+def _viewer_filter(viewer: "Viewer | None") -> tuple[str, dict]:
+    """Drop facts about documents this viewer may not open. ``("", {})`` = no filter.
+
+    A chart counts `activity_facts` rows and its hover lists them, so without
+    this a count included a document the asker cannot open and the hover named
+    its title. A fact from an ACL-capable provider is kept only when its
+    DOCUMENT is visible, checked through the one predicate retrieval uses:
+    `doc_changed` facts carry the document's own external id, and Linear's
+    issue facts (keyed by identifier) carry the issue URL the document stores
+    as `source_uri`. A fact with no visible document is hidden -- a deleted or
+    never-indexed document has no sharing we can check, and hiding it fails
+    closed. GitHub and Forms facts are untouched: GitHub embeds nothing (its
+    boundary is the installation's repos) and Forms responses are never
+    indexed.
+
+    ponytail: the `OR` on url cannot use the unique index; fine at hundreds of
+    facts per chart. Store the document key on the fact if charts get slow.
+    """
+    if viewer is None or viewer.is_unrestricted:
+        return "", {}
+    clause = f"""
+           AND (activity_facts.provider <> ALL(%(acl_providers)s::text[]) OR EXISTS (
+                SELECT 1 FROM documents d
+                 WHERE d.org_id = activity_facts.org_id
+                   AND d.workspace_id IS NOT DISTINCT FROM activity_facts.workspace_id
+                   AND d.source_provider = activity_facts.provider
+                   AND (d.source_external_id = activity_facts.external_id
+                        OR d.source_uri = activity_facts.url)
+                   AND {visibility_predicate("d", param="acl")}))
+    """
+    return clause, {"acl_providers": sorted(ACL_CAPABLE), "acl": viewer.acl()}
 
 
 def _floored(inner: str, metric, *, has_series: bool) -> str:
@@ -90,8 +130,12 @@ def run_metric(
     days: int = 90,
     group_by: str | None = None,
     focus: str | None = None,
+    viewer: "Viewer | None" = None,
 ) -> list[Point]:
     """Count one registry metric in one scope over one window.
+
+    ``viewer`` narrows the count to documents that person may open
+    (`_viewer_filter`); every product call site passes one.
 
     Raises ``KeyError`` for an unknown metric and ``ValueError`` for an unknown
     period or dimension -- never a sanitized fallback. A chart drawn from a
@@ -146,6 +190,8 @@ def run_metric(
     # `group_by` it is bound as a parameter and never spliced.
     if focus is not None:
         where += " AND subject = %(focus)s"
+    access, access_params = _viewer_filter(viewer)
+    where += access
 
     inner = f"""
         SELECT date_trunc('{period}', occurred_at) AS bucket{selected},
@@ -164,6 +210,7 @@ def run_metric(
         "days": days,
         "workspace_id": workspace_id,
         "focus": focus,
+        **access_params,
     }
 
     try:
@@ -208,6 +255,7 @@ def list_facts(
     days: int,
     focus: str | None = None,
     limit: int = MAX_DETAILS,
+    viewer: "Viewer | None" = None,
 ) -> list[Fact]:
     """The newest rows this chart counted.
 
@@ -229,6 +277,8 @@ def list_facts(
     )
     if focus is not None:
         where += " AND subject = %(focus)s"
+    access, access_params = _viewer_filter(viewer)
+    where += access
 
     try:
         with get_connection() as conn:
@@ -241,7 +291,7 @@ def list_facts(
                 """,
                 {"org_id": org_id, "provider": metric.provider, "kind": metric.kind,
                  "days": days, "workspace_id": workspace_id, "focus": focus,
-                 "limit": max(1, min(int(limit), MAX_DETAILS))},
+                 "limit": max(1, min(int(limit), MAX_DETAILS)), **access_params},
             ).fetchall()
     except Exception as exc:  # noqa: BLE001
         raise ProviderError(f"insights: details of {key} failed", cause=exc) from exc
@@ -257,7 +307,8 @@ def list_facts(
 
 
 def list_subjects(
-    key: str, *, org_id: str, workspace_id: str | None, days: int
+    key: str, *, org_id: str, workspace_id: str | None, days: int,
+    viewer: "Viewer | None" = None,
 ) -> list[str]:
     """Every ``subject`` this metric actually has rows for, in this scope.
 
@@ -278,12 +329,16 @@ def list_subjects(
         """,
         workspace_id,
     )
+    # A Drive subject is a FILE TITLE, and the refusal repeats the list back
+    # ("What I do have: ..."), so an unfiltered list names withheld files.
+    access, access_params = _viewer_filter(viewer)
+    where += access
     try:
         with get_connection() as conn:
             rows = conn.execute(
                 f"SELECT DISTINCT subject FROM activity_facts {where} ORDER BY 1",
                 {"org_id": org_id, "provider": metric.provider, "kind": metric.kind,
-                 "days": days, "workspace_id": workspace_id},
+                 "days": days, "workspace_id": workspace_id, **access_params},
             ).fetchall()
     except Exception as exc:  # noqa: BLE001
         raise ProviderError(f"insights: subjects of {key} failed", cause=exc) from exc
@@ -291,7 +346,8 @@ def list_subjects(
 
 
 def first_fact_at(
-    provider: str, *, org_id: str, workspace_id: str | None
+    provider: str, *, org_id: str, workspace_id: str | None,
+    viewer: "Viewer | None" = None,
 ) -> datetime | None:
     """When measurement began for this provider in this scope.
 
@@ -304,12 +360,14 @@ def first_fact_at(
     where = _scoped(
         " WHERE org_id = %(org_id)s AND provider = %(provider)s", workspace_id
     )
+    access, access_params = _viewer_filter(viewer)
+    where += access
     try:
         with get_connection() as conn:
             row = conn.execute(
                 f"SELECT min(occurred_at) FROM activity_facts {where}",
                 {"org_id": org_id, "provider": provider,
-                 "workspace_id": workspace_id},
+                 "workspace_id": workspace_id, **access_params},
             ).fetchone()
     except Exception as exc:  # noqa: BLE001
         raise ProviderError(
