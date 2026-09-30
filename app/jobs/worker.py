@@ -39,6 +39,38 @@ def _clear_answer_cache(org_id: str, job_id: str) -> None:
         logger.warning("Job %s: could not clear the answer cache: %s", job_id, exc)
 
 
+def _build_graph(org_id: str, provider: str, workspace_id: str | None, result) -> None:
+    """Fold what this job wrote into the knowledge graph. Best-effort, always.
+
+    Built from the rows the job just stored, so it costs no provider call.
+    Removed documents need nothing: their evidence cascades with the row, and
+    the build's garbage collection drops the edges left without any. Its own
+    try/except for the ``_record_insight_facts`` reason -- a stale graph is a
+    stale graph, and failing a finished job would turn it into a retry loop.
+    """
+    external_ids = list(getattr(result, "ingested_external_ids", None) or []) + list(
+        getattr(result, "meta_refreshed_external_ids", None) or []
+    )
+    try:
+        from ..graph.builder import build_documents, collect_garbage
+
+        if external_ids:
+            build_documents(org_id, workspace_id, provider, external_ids)
+        elif getattr(result, "documents_removed", 0):
+            collect_garbage(org_id, workspace_id)
+        if provider == "slack":
+            # Membership moves without any message changing (someone joins or
+            # leaves a private channel; the listing re-stamps its threads), so
+            # it is rebuilt on EVERY Slack sync, not only when threads changed.
+            from ..graph.builder import build_memberships
+
+            build_memberships(org_id, workspace_id)
+    except Exception:  # noqa: BLE001 - see docstring
+        logger.warning(
+            "graph: could not build %s for org %s", provider, org_id, exc_info=True
+        )
+
+
 def _record_insight_facts(
     org_id: str, provider: str, workspace_id: str | None, adapter=None
 ) -> None:
@@ -206,6 +238,7 @@ def run_once() -> queue.IngestionJob | None:
             _clear_answer_cache(job.org_id, job.id)
 
         _record_insight_facts(job.org_id, provider, job.workspace_id, adapter)
+        _build_graph(job.org_id, provider, job.workspace_id, result)
 
         if (
             contextual.enabled
@@ -367,6 +400,15 @@ def run_external_tick() -> dict[str, int]:
     except Exception:  # noqa: BLE001 - a missing chart, never a failed tick
         logger.exception("External tick: document-fact backfill failed")
 
+    # Knowledge-graph entities for documents synced before the graph existed.
+    # Bounded per tick (`graph.builder.BACKFILL_BATCH`), so it converges.
+    try:
+        from ..graph.builder import backfill as backfill_graph
+
+        backfill_graph()
+    except Exception:  # noqa: BLE001 - a thinner graph, never a failed tick
+        logger.exception("External tick: graph backfill failed")
+
     # Expire in-chat attachment text. Nothing in this codebase deletes a
     # conversation, so the ON DELETE CASCADE that attachments hang off never
     # fires in practice -- without this they are write-once, keep-forever on a
@@ -390,6 +432,14 @@ def run_external_tick() -> dict[str, int]:
         conversations_purged = purge_expired_conversations()
     except Exception:  # noqa: BLE001
         logger.exception("External tick: conversation purge failed")
+
+    # Live-tools audit rows past their 90 days (Second Brain live reads).
+    try:
+        from ..livetools.audit import purge_expired as purge_live_calls
+
+        purge_live_calls()
+    except Exception:  # noqa: BLE001 - a longer log, never a failed tick
+        logger.exception("External tick: live_tool_calls purge failed")
 
     # Injection scores for chunks ingest could not score (Groq rate limit) or
     # that predate the guard. A no-op when GUARD_MODE=off.

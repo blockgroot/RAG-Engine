@@ -8,6 +8,7 @@ from datetime import datetime
 from ..config.settings import IngestSanitizeSettings, NotionSettings
 from ..core.exceptions import ConfigurationError, SourceError
 from .base import SourceAdapter, SourceDocument, SourceRef
+from .meta import build_meta, container, link, person, resolve_link
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,55 @@ _TRUNCATION_MARKER = "\n\n[... content truncated: page exceeds ingest size limit
 def _rich_text_to_text(rich_text: list[dict]) -> str:
     """Flatten a Notion ``rich_text`` array to its plain-text content."""
     return "".join(rt.get("plain_text", "") for rt in (rich_text or []))
+
+
+def _collect_rich_text(rich_text: list[dict], sink: dict | None) -> None:
+    """Record the ids a rich_text array carries before it is flattened.
+
+    `_rich_text_to_text` keeps only ``plain_text``, which turns an @-mention
+    into a bare name and a link into its label. The user id, the page id and
+    the href are only here, so they are read in the same pass (Second Brain
+    1.1) — no extra call, the blocks are already fetched.
+    """
+    if sink is None:
+        return
+    for rt in rich_text or []:
+        href = rt.get("href")
+        if href:
+            resolved = resolve_link(href)
+            if resolved:
+                sink["links"].append(resolved)
+        if rt.get("type") != "mention":
+            continue
+        mention = rt.get("mention") or {}
+        kind = mention.get("type")
+        if kind == "user":
+            user = mention.get("user") or {}
+            sink["people"].append(
+                person(
+                    "notion",
+                    role="mentioned",
+                    external_id=user.get("id"),
+                    email=(user.get("person") or {}).get("email"),
+                    name=user.get("name") or (rt.get("plain_text") or "").lstrip("@") or None,
+                )
+            )
+        elif kind in ("page", "database"):
+            target = (mention.get(kind) or {}).get("id")
+            if target:
+                sink["links"].append(link("notion", target))
+        elif kind == "link_preview":
+            resolved = resolve_link((mention.get("link_preview") or {}).get("url") or "")
+            if resolved:
+                sink["links"].append(resolved)
+
+
+def _parent_container(page: dict) -> dict | None:
+    parent = page.get("parent") or {}
+    kind = parent.get("type")
+    if kind in ("page_id", "database_id"):
+        return container("notion", kind.removesuffix("_id"), parent.get(kind))
+    return None
 
 
 def _parse_dt(value: str | None) -> datetime | None:
@@ -87,6 +137,9 @@ class NotionAdapter(SourceAdapter):
         # of the adapter, the same trick `slack.py::_display_name` uses. A
         # workspace of 500 pages edited by 8 people is 8 calls, not 500.
         self._editor_names: dict[str, str] = {}
+        #: Filled from the same `users.retrieve` reply; empty when the
+        #: integration lacks the "read user emails" capability.
+        self._editor_emails: dict[str, str] = {}
 
     def list_documents(self) -> list[SourceRef]:
         from notion_client.helpers import iterate_paginated_api
@@ -114,7 +167,8 @@ class NotionAdapter(SourceAdapter):
     def fetch_document(self, external_id: str) -> SourceDocument:
         try:
             page = self._client.pages.retrieve(page_id=external_id)
-            content = self._render_children_text(external_id)
+            sink: dict = {"people": [], "links": []}
+            content = self._render_children_text(external_id, sink=sink)
         except SourceError:
             raise
         except Exception as exc:
@@ -129,6 +183,34 @@ class NotionAdapter(SourceAdapter):
             source_uri=page.get("url"),
             last_modified=_parse_dt(page.get("last_edited_time")),
             last_editor=self._editor_name(page),
+            meta=self._page_meta(page, sink),
+        )
+
+    def _page_meta(self, page: dict, sink: dict) -> dict | None:
+        """Editor, creator, parent and in-body mentions — all already in hand.
+
+        The editor was resolved (and cached) by `_editor_name` just above. The
+        creator is recorded by id, with a name only when that same person was
+        already looked up: resolving a creator separately would be one more
+        `users.retrieve` per distinct person, which this field must never cost.
+        """
+        people = []
+        for field, role in (("last_edited_by", "editor"), ("created_by", "creator")):
+            user_id = (page.get(field) or {}).get("id")
+            if user_id:
+                people.append(
+                    person(
+                        "notion",
+                        role=role,
+                        external_id=user_id,
+                        email=self._editor_emails.get(user_id),
+                        name=self._editor_names.get(user_id) or None,
+                    )
+                )
+        return build_meta(
+            people=people + sink["people"],
+            links=sink["links"],
+            containers=[_parent_container(page)],
         )
 
     def _editor_name(self, page: dict) -> str | None:
@@ -149,6 +231,9 @@ class NotionAdapter(SourceAdapter):
         try:
             user = self._client.users.retrieve(user_id=user_id)
             name = (user.get("name") or "").strip()
+            email = ((user.get("person") or {}).get("email") or "").strip().lower()
+            if email:
+                self._editor_emails[user_id] = email
         except Exception:  # noqa: BLE001 - see docstring
             logger.debug("Notion users.retrieve(%s) failed", user_id, exc_info=True)
             name = ""
@@ -166,7 +251,7 @@ class NotionAdapter(SourceAdapter):
             ) from exc
         return _parse_dt(page.get("last_edited_time"))
 
-    def _render_children_text(self, block_id: str) -> str:
+    def _render_children_text(self, block_id: str, sink: dict | None = None) -> str:
         """Render a page or block's children into structured plain text."""
         from notion_client.helpers import iterate_paginated_api
 
@@ -177,7 +262,7 @@ class NotionAdapter(SourceAdapter):
         ):
             if budget[0] <= 0:
                 break
-            lines = self._render_block(block, depth=0, budget=budget)
+            lines = self._render_block(block, depth=0, budget=budget, sink=sink)
             if lines:
                 parts.append("\n".join(lines))
         text = "\n\n".join(parts)
@@ -185,13 +270,16 @@ class NotionAdapter(SourceAdapter):
             text += _TRUNCATION_MARKER
         return text
 
-    def _render_block(self, block: dict, depth: int, budget: list[int]) -> list[str]:
+    def _render_block(
+        self, block: dict, depth: int, budget: list[int], sink: dict | None = None
+    ) -> list[str]:
         if budget[0] <= 0:
             return []
         btype = block.get("type", "")
         data = block.get(btype, {}) or {}
         indent = "  " * depth
         text = _rich_text_to_text(data.get("rich_text", []))
+        _collect_rich_text(data.get("rich_text", []), sink)
         lines: list[str] = []
 
         if btype in ("heading_1", "heading_2", "heading_3"):
@@ -214,6 +302,8 @@ class NotionAdapter(SourceAdapter):
             lines.append("---")
         elif btype == "table_row":
             cells = data.get("cells", [])
+            for cell in cells:
+                _collect_rich_text(cell, sink)
             lines.append(f"{indent}" + " | ".join(_rich_text_to_text(c) for c in cells))
         elif btype == "child_page":
             pass
@@ -225,11 +315,13 @@ class NotionAdapter(SourceAdapter):
 
         if block.get("has_children") and btype != "child_page" and budget[0] > 0:
             child_depth = depth + 1 if btype in _INDENTING else depth
-            lines.extend(self._render_children_lines(block["id"], child_depth, budget))
+            lines.extend(self._render_children_lines(block["id"], child_depth, budget, sink))
 
         return lines
 
-    def _render_children_lines(self, block_id: str, depth: int, budget: list[int]) -> list[str]:
+    def _render_children_lines(
+        self, block_id: str, depth: int, budget: list[int], sink: dict | None = None
+    ) -> list[str]:
         from notion_client.helpers import iterate_paginated_api
 
         lines: list[str] = []
@@ -238,5 +330,5 @@ class NotionAdapter(SourceAdapter):
         ):
             if budget[0] <= 0:
                 break
-            lines.extend(self._render_block(block, depth, budget))
+            lines.extend(self._render_block(block, depth, budget, sink))
         return lines

@@ -79,12 +79,23 @@ def restricted_notice(
     *,
     org_id: str,
     workspace_id: str | None,
+    in_channel: bool = False,
 ) -> str:
     """Tell the asker their answer exists but is not shared with them.
 
     Names the connector and (when we have it) the connected folder — both
     already visible to them — plus who can grant access. Never the document.
+
+    ``in_channel``: the reply is posted to a Slack channel, which reads as the
+    ROOM, not the asker -- "shared with you" is false there (the asker may well
+    have access) and "ask for access" is the wrong fix. A DM answers as them.
     """
+    if in_channel:
+        return (
+            "I found Slack messages that look like they answer this, but they're "
+            "not visible to everyone in this channel, so I can't quote them here. "
+            "Ask me in a direct message and I'll answer from what you can see."
+        )
     source = _PROVIDER_LABELS.get(provider or "", "connected")
     scope_name = _connected_scope_name(provider or "", org_id, workspace_id)
     # A space has an owner who can share; company-wide content is an admin's.
@@ -95,4 +106,21 @@ def restricted_notice(
         f"I found documents in {where} that look like they answer this, but they "
         f"haven't been shared with you, so I can't read them on your behalf. "
         f"Ask {who} to give you access in {source}, then ask me again."
+    )
+
+
+def live_withheld_notice(provider: str | None) -> str:
+    """The item behind this answer is gone, or no longer readable (a live read said so).
+
+    A live read just told us, so -- unlike ``restricted_notice`` -- nothing has
+    to be re-confirmed. "Not found or not accessible", never "deleted": a 404
+    and Linear's ``Entity not found`` mean either, and we cannot tell which.
+    Names the connector, never the item: its title is the stale copy we just
+    decided not to use.
+    """
+    source = _PROVIDER_LABELS.get(provider or "", "connected")
+    return (
+        f"The {source} item that matched this question is no longer available — "
+        f"it was deleted, or access to it was removed — so I can't answer from it. "
+        f"If you still need it, check {source} directly or ask whoever owns it."
     )

@@ -257,6 +257,7 @@ class RestGitHubReader(GitHubReader):
                     date=_parse_dt(author.get("date")),
                     url=item.get("html_url")
                     or f"https://github.com/{full_name}/commit/{sha}",
+                    author_login=((item.get("author") or {}) or {}).get("login") or None,
                 )
             )
         return summaries

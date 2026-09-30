@@ -1798,3 +1798,102 @@ class LLMPacingSettings:
                 or DEFAULT_LLM_PACING_MAX_WAIT_SECONDS
             ),
         )
+
+
+DEFAULT_GRAPH_META_REFRESH_BATCH = 25
+
+
+@dataclass(frozen=True)
+class GraphSettings:
+    """Second Brain knowledge-graph settings (docs/plans/2026-09-23-second-brain.md).
+
+    ``meta_refresh_batch`` bounds the metadata-only refresh each ingest job runs
+    for documents indexed before people/links were captured (1.1). An unchanged
+    document is never re-fetched, so without it those rows would stay invisible
+    to the graph forever; the bound is what keeps it from turning one sync into
+    a full re-fetch of the corpus. ``0`` switches the refresh off.
+    """
+
+    meta_refresh_batch: int = DEFAULT_GRAPH_META_REFRESH_BATCH
+    #: Whether ANSWERS use the graph (step 1.6). OFF by default and kept off
+    #: until the eval shows a gain (step 1.7): the builder always runs so the
+    #: graph fills either way, and this flag only decides whether retrieval
+    #: adds the graph's ranked list.
+    retrieval_enabled: bool = False
+    #: Whether a question may be answered from SEVERAL tools at once when the
+    #: graph proves they are connected (``graph/plan.py``). Only meaningful
+    #: with ``retrieval_enabled``; on by default there, so one switch turns
+    #: the graph on and this one alone can take the cross-tool part back off.
+    connected_enabled: bool = True
+
+    @classmethod
+    def from_env(cls) -> "GraphSettings":
+        raw = os.getenv("GRAPH_META_REFRESH_BATCH")
+        try:
+            batch = int(raw) if raw not in (None, "") else DEFAULT_GRAPH_META_REFRESH_BATCH
+        except ValueError:
+            batch = DEFAULT_GRAPH_META_REFRESH_BATCH
+        return cls(
+            meta_refresh_batch=max(0, batch),
+            retrieval_enabled=env_bool("GRAPH_RETRIEVAL_ENABLED", False),
+            connected_enabled=env_bool("GRAPH_CONNECTED_ENABLED", True),
+        )
+
+
+@dataclass(frozen=True)
+class LiveToolsSettings:
+    """The live-tools gateway (docs/plans/2026-09-29-live-connector-access.md).
+
+    Three settings and no more (plan D15): everything else is a constant in
+    ``app/livetools/base.py`` until ``live_tool_calls`` shows it needs tuning.
+    Even when enabled, a live read happens only for a question asked in DEEP
+    RESEARCH mode (D0) -- normal Q&A never reaches the gateway.
+
+    ``orgs`` empty means every org; otherwise only the listed org ids, for a
+    staged rollout.
+    """
+
+    enabled: bool = False
+    providers: frozenset[str] = frozenset({"linear"})
+    orgs: frozenset[str] = frozenset()
+
+    @classmethod
+    def from_env(cls) -> "LiveToolsSettings":
+        raw_providers = os.getenv("LIVE_TOOLS_PROVIDERS")
+        providers = (
+            frozenset(p.strip().lower() for p in raw_providers.split(",") if p.strip())
+            if raw_providers not in (None, "")
+            else frozenset({"linear"})
+        )
+        raw_orgs = os.getenv("LIVE_TOOLS_ORGS") or ""
+        return cls(
+            enabled=env_bool("LIVE_TOOLS_ENABLED", False),
+            providers=providers,
+            orgs=frozenset(o.strip() for o in raw_orgs.split(",") if o.strip()),
+        )
+
+    def allows(self, org_id: str | None) -> bool:
+        """Switched on, and this org is in the rollout."""
+        return self.enabled and bool(org_id) and (not self.orgs or org_id in self.orgs)
+
+
+@dataclass(frozen=True)
+class PersonalMemorySettings:
+    """Personal memory, the Second Brain's "who is asking" layer.
+
+    OFF by default like every new layer: unset, no fact is written or read and
+    every answer is byte-identical. On, members and org admins can still turn
+    it off for themselves / the whole company (``users.memory_enabled``,
+    ``organizations.memory_enabled``). ``max_facts`` bounds each person's list:
+    past it the oldest UNPINNED fact goes.
+    """
+
+    enabled: bool = False
+    max_facts: int = 30
+
+    @classmethod
+    def from_env(cls) -> "PersonalMemorySettings":
+        return cls(
+            enabled=env_bool("PERSONAL_MEMORY_ENABLED", False),
+            max_facts=_env_positive_int("PERSONAL_MEMORY_MAX_FACTS", 30),
+        )

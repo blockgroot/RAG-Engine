@@ -22,6 +22,7 @@ import httpx
 from ..config.settings import LinearSettings
 from ..core.exceptions import ConfigurationError, SourceError
 from .base import SourceAdapter, SourceDocument, SourceRef
+from .meta import build_meta, container, person, resolve_link
 
 _API_URL = "https://api.linear.app/graphql"
 _TIMEOUT = 30.0
@@ -51,12 +52,14 @@ query Issue($id: String!) {
   issue(id: $id) {
     id identifier title url updatedAt description
     state { name type }
-    assignee { name }
-    team { name }
+    assignee { id name email }
+    creator { id name email }
+    team { id key name }
     priorityLabel
     labels { nodes { name } }
+    attachments { nodes { url } }
     comments {
-      nodes { body user { name } createdAt }
+      nodes { body user { id name email } createdAt }
     }
   }
 }
@@ -135,6 +138,39 @@ def _issue_preamble(issue: dict) -> str:
     if [label for label in labels if label]:
         bits.append("labels " + ", ".join(label for label in labels if label))
     return ". ".join(bits) + "."
+
+
+def _issue_meta(issue: dict) -> dict | None:
+    """People, team and attached links — extra fields in the one issue query.
+
+    `id`/`email` on assignee, creator and commenters and the `attachments`
+    list cost nothing but bytes: they ride the `issue` query `fetch_document`
+    already sends (Second Brain 1.1). An attachment is how Linear records a
+    linked pull request, which is the Linear→GitHub edge the graph needs.
+    """
+    people = []
+    for field, role in (("assignee", "assignee"), ("creator", "creator")):
+        user = issue.get(field) or {}
+        people.append(
+            person("linear", role=role, external_id=user.get("id"),
+                   email=user.get("email"), name=user.get("name"))
+        )
+    for comment in ((issue.get("comments") or {}).get("nodes") or []):
+        user = comment.get("user") or {}
+        people.append(
+            person("linear", role="commenter", external_id=user.get("id"),
+                   email=user.get("email"), name=user.get("name"))
+        )
+    links = [
+        resolve_link(node.get("url") or "")
+        for node in ((issue.get("attachments") or {}).get("nodes") or [])
+    ]
+    team = issue.get("team") or {}
+    return build_meta(
+        people=people,
+        links=links,
+        containers=[container("linear", "team", team.get("id"), team.get("name"))],
+    )
 
 
 def _parse_dt(value: str | None) -> datetime | None:
@@ -285,7 +321,7 @@ class LinearAdapter(SourceAdapter):
         # because the embedder scores prose.
         parts = [_issue_preamble(issue), issue.get("description") or ""]
         for comment in issue["comments"]["nodes"]:
-            author = (comment.get("user") or {}).get("name", "someone")
+            author = (comment.get("user") or {}).get("name") or "someone"
             parts.append(f"{author} commented: {comment['body']}")
         content = "\n\n".join(part for part in parts if part)
 
@@ -302,6 +338,7 @@ class LinearAdapter(SourceAdapter):
             # when unset, never "unassigned": an unknown editor must not reach
             # the prompt as a placeholder.
             last_editor=(issue.get("assignee") or {}).get("name") or None,
+            meta=_issue_meta(issue),
         )
 
     def get_last_modified(self, external_id: str) -> datetime | None:

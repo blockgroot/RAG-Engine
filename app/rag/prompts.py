@@ -95,6 +95,35 @@ WORKSPACE_PROMPT_PROFILE = PromptProfile(
     source_label=SOURCE_WORKSPACE,
 )
 
+_TOOL_NAMES = {"notion": "Notion", "google": "Google Drive", "slack": "Slack",
+               "linear": "Linear", "github": "GitHub"}
+
+
+def connected_prompt_profile(tools, source_label: str) -> PromptProfile:
+    """The framing for a CONNECTED answer, which reads more than one tool.
+
+    Every per-tool profile says "answer only from <this tool>", and a model
+    obeys it: measured with real Gemini, a question routed to Linear that
+    named Slack was handed the right Slack thread and still refused, because
+    rule 1 told it to use only issue-tracking facts. The framing must name
+    every tool the context was drawn from -- each excerpt already carries its
+    app on its provenance line. The grounding rules themselves are unchanged;
+    only the scope they refer to widens to the tools actually searched.
+    """
+    names = [_TOOL_NAMES.get(t, t) for t in sorted(tools)]
+    listed = ", ".join(names[:-1]) + (" and " if len(names) > 1 else "") + names[-1]
+    return PromptProfile(
+        persona=(
+            f"an assistant answering from this company's connected tools ({listed}); "
+            "each excerpt in CONTEXT names the app it came from"
+        ),
+        scope_adjective="company-specific",
+        scope_noun=f"company's {listed} content",
+        escalation_hint="whoever owns that document or conversation can help with this",
+        source_label=source_label,
+    )
+
+
 ATTACHMENT_PROMPT_PROFILE = PromptProfile(
     persona=(
         "an assistant answering from the file the person has just attached to "
@@ -150,8 +179,14 @@ def build_grounded_prompt(
     fallback_response: str,
     *,
     profile: PromptProfile = POLICY_PROMPT_PROFILE,
+    asker_facts: tuple[str, ...] = (),
 ) -> str:
     """Build the grounded-answer prompt (facts from CONTEXT only).
+
+    ``asker_facts`` (personal memory) sit OUTSIDE the context, after it, and
+    are framed as interpretation only: they may decide WHICH office or team a
+    question means, never supply a fact. The audit is handed CONTEXT alone,
+    so an answer resting on a memory is unsupported there by construction.
 
     ``contexts`` are retrieved chunk texts, most-relevant first. ``profile``
     supplies persona / scope nouns (policy vs workspace). Reply must open with
@@ -222,8 +257,39 @@ def build_grounded_prompt(
         "— not an exhaustive dump of every clause.\n\n"
         f"CONTEXT:\n{fenced}\n\n"
         f"{UNTRUSTED_REMINDER}\n\n"
+        f"{asker_block(asker_facts)}"
         f"QUESTION: {question}\n\n"
         "ANSWER:"
+    )
+
+
+def _rewrite_asker_block(asker_context: tuple[str, ...]) -> str:
+    facts = [scrub_untrusted_text(f) for f in asker_context if f and scrub_untrusted_text(f)]
+    if not facts:
+        return ""
+    lines = "\n".join(f"- {f}" for f in facts)
+    return (
+        "ABOUT THE ASKER (remembered from their own earlier questions):\n"
+        f"{lines}\n"
+        "Add one of these details to the standalone question ONLY when the question "
+        "is ambiguous without it -- e.g. 'what are the office hours?' -> 'what are "
+        "the office hours for the Bangalore office?'. A question that is already "
+        "specific, or unrelated to them, stays unchanged.\n\n"
+    )
+
+
+def asker_block(asker_facts: tuple[str, ...]) -> str:
+    """Personal memory for a prompt, or "" when there is none."""
+    facts = [scrub_untrusted_text(f) for f in asker_facts if f and scrub_untrusted_text(f)]
+    if not facts:
+        return ""
+    lines = "\n".join(f"- {f}" for f in facts)
+    return (
+        "ABOUT THE ASKER (remembered from their own earlier questions). Use this "
+        "ONLY to understand what they mean -- which office, team or project, and "
+        "how much detail they like. It is NOT evidence: never state it as a fact "
+        "from CONTEXT and never answer from it.\n"
+        f"{lines}\n\n"
     )
 
 
@@ -288,8 +354,17 @@ def build_decompose_prompt(question: str) -> str:
     )
 
 
-def build_rewrite_prompt(question: str, summary: str | None, recent: list[tuple[str, str]]) -> str:
-    """Build the conversation rewrite prompt."""
+def build_rewrite_prompt(
+    question: str, summary: str | None, recent: list[tuple[str, str]],
+    asker_context: tuple[str, ...] = (),
+) -> str:
+    """Build the conversation rewrite prompt.
+
+    ``asker_context`` (personal memory: team, office, role) is what lets the
+    SEARCH narrow, not only the wording: "what are the office hours?" becomes
+    "office hours for the Bangalore office" BEFORE retrieval, so the Bangalore
+    excerpt is actually among what the answer can read.
+    """
     lines: list[str] = []
     if summary:
         lines.append(f"Summary of earlier conversation:\n{summary}")
@@ -317,13 +392,15 @@ def build_rewrite_prompt(question: str, summary: str | None, recent: list[tuple[
         "- Output ONLY the rewritten question: ONE line, ending with '?'.\n"
         "- Do NOT answer it, explain it, or add any other text.\n"
         "- If the latest question is already standalone, return it unchanged.\n"
-        "- Preserve the user's intent; do not add facts not implied by context.\n\n"
+        "- Preserve the user's intent; do not add facts not implied by context"
+        + (" or by ABOUT THE ASKER" if asker_context else "") + ".\n\n"
         "If the latest message is a follow-up, resolve references into a "
         "full standalone question; if it is already standalone, return it "
         "unchanged.\n\n"
         f"{UNTRUSTED_POLICY}\n"
         f"CONVERSATION CONTEXT:\n{context_block}\n\n"
         f"{UNTRUSTED_REMINDER}\n\n"
+        f"{_rewrite_asker_block(asker_context)}"
         f"LATEST QUESTION: {question}\n\n"
         "STANDALONE QUESTION:"
     )
@@ -399,6 +476,61 @@ def build_web_decision_prompt(question: str, fallback_response: str) -> str:
         "procedures that simply aren't in the docs, do NOT call any tool and "
         f"reply with exactly this sentence: {fallback_response}\n\n"
         f"QUESTION: {question}"
+    )
+
+
+REFRESH_ITEM_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "refresh_item",
+        "description": (
+            "Read ONE of the listed company items live from its tool (Linear, "
+            "Google Drive, Notion or Slack) to get its CURRENT content. Use it only "
+            "when the question is about one of the listed items and its synced copy "
+            "may be out of date or incomplete. Pass the item's handle exactly as "
+            "listed, e.g. L1."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "handle": {"type": "string", "description": "The item's handle, e.g. L1."}
+            },
+            "required": ["handle"],
+        },
+    },
+}
+
+
+def build_live_decision_prompt(
+    question: str, catalog: str, fallback_response: str, *, web: bool
+) -> str:
+    """Live tools, refusal path: may ONE listed item be read live? (plan D6).
+
+    The catalog is handles + titles only -- titles are document text, so they
+    are fenced like any other. The model can name a handle; it can never name
+    an id, a URL or anything the list does not contain.
+    """
+    web_rule = (
+        "- If instead the question is about a REAL, NAMED, EXTERNAL entity with "
+        "public information, call web_search exactly once.\n"
+        if web else ""
+    )
+    return (
+        "The company's synced documents did not answer the user's question well "
+        "enough. Some related company items were found; their live content may "
+        "answer it. Decide what to do:\n"
+        "- If the question is about one of the ITEMS below, call refresh_item "
+        "once with that item's handle.\n"
+        f"{web_rule}"
+        "- Otherwise do not call any tool and reply with exactly this sentence: "
+        f"{fallback_response}\n\n"
+        f"{UNTRUSTED_POLICY}\n"
+        "ITEMS:\n"
+        "<<<UNTRUSTED_ITEM_CATALOG>>>\n"
+        f"{scrub_untrusted_text(catalog)}\n"
+        "<<<END_UNTRUSTED_ITEM_CATALOG>>>\n\n"
+        f"{UNTRUSTED_REMINDER}\n\n"
+        f"QUESTION: {question}\n"
     )
 
 

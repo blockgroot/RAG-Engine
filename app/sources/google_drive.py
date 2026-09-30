@@ -12,6 +12,7 @@ import httpx
 from ..config.settings import GoogleSettings
 from ..core.exceptions import ConfigurationError, SourceError
 from .base import DocAccess, SourceAdapter, SourceDocument, SourceRef
+from .meta import build_meta, container, person
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,11 @@ _SUPPORTED_MIMES = {_DOC_MIME, _PDF_MIME, _DOCX_MIME}
 # sync loop -- an unshared file is re-stamped on the next listing even though
 # its content never changed and is therefore never re-fetched.
 _PERMISSION_FIELDS = "permissions(type,emailAddress,domain,deleted)"
+# The editor's email and permissionId ride the same `files.get` the fetch
+# already makes: the id is Drive's stable per-person key and the email is what
+# links them to a Handbook account (Second Brain 1.1). Display name alone could
+# only ever be joined by NAME, which the graph must never do.
+_EDITOR_FIELDS = "lastModifyingUser(displayName,emailAddress,permissionId)"
 _LIST_FIELDS = (
     "nextPageToken,files(id,name,mimeType,modifiedTime,trashed,parents,"
     f"lastModifyingUser(displayName),{_PERMISSION_FIELDS})"
@@ -50,6 +56,23 @@ def _editor_name(file: dict) -> str | None:
     user = file.get("lastModifyingUser") or {}
     name = (user.get("displayName") or "").strip()
     return name or None
+
+
+def _file_meta(file: dict) -> dict | None:
+    """People and containers from a `files.get` payload already in hand."""
+    user = file.get("lastModifyingUser") or {}
+    return build_meta(
+        people=[
+            person(
+                "google",
+                role="editor",
+                external_id=user.get("permissionId"),
+                email=user.get("emailAddress"),
+                name=user.get("displayName"),
+            )
+        ],
+        containers=[container("google", "folder", parent) for parent in file.get("parents") or []],
+    )
 
 
 def _file_access(
@@ -215,7 +238,7 @@ class GoogleDriveAdapter(SourceAdapter):
             meta = self._get_file_metadata(
                 external_id,
                 fields=(
-                    "name,mimeType,modifiedTime,lastModifyingUser(displayName),"
+                    f"name,mimeType,modifiedTime,parents,{_EDITOR_FIELDS},"
                     f"{_PERMISSION_FIELDS}"
                 ),
             )
@@ -243,6 +266,7 @@ class GoogleDriveAdapter(SourceAdapter):
             last_modified=_parse_dt(meta.get("modifiedTime")),
             last_editor=_editor_name(meta),
             access=_file_access(meta, self._account_email),
+            meta=_file_meta(meta),
         )
 
     def get_last_modified(self, external_id: str) -> datetime | None:

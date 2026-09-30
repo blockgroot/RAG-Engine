@@ -69,6 +69,11 @@ hook, and every process boundary must `close_pool()`.
   is denormalized onto every Vespa chunk, which forces a metadata sync queue, a
   Celery fence and a `weightedSet` builder; ours is a JOIN every retrieval
   query already pays for.
+  - **The predicate has ONE spelling** (`security/visibility.py::visibility_predicate`
+    / `viewer_clause`). It was hand-written in the vector store, starter chips
+    (`api/chat.py`) and the scheduler digest (`schedulers/activity.py`); all now
+    splice the shared fragment, and `tests/test_visibility.py` fails if a copy
+    reappears anywhere in `app/`. The Second Brain graph walk must use it too.
   - **Entries are EMAILS, not `users.id`** — a file is routinely shared with
     someone who has not signed up, and the entry starts matching by itself the
     day they log in. `Viewer.acl()` (read) and `_normalize_viewers` (write) are
@@ -260,6 +265,128 @@ hook, and every process boundary must `close_pool()`.
   scope whose check already passed, so per-user keys would only cost hit rate.
   Document-level access filtering broke that premise for two kinds of answer,
   and the fix is a gated WRITE (`_is_cacheable`), not a re-keyed cache.
+
+**Second Brain capture (`sources/meta.py`, plan `docs/plans/2026-09-23-second-brain.md`)**
+— each adapter records the people, links and containers it already saw into
+`SourceDocument.meta` → `documents.source_meta` (+ `source_editor_key`;
+`activity_facts.actor_key` for facts), with ZERO extra API calls — the fakes
+pin it. Identity keys are `<provider>:<id>` or `email:<addr>`, **never a
+display name**; a name alone is dropped. `{}` = captured/empty, NULL = not yet
+captured (bounded `refresh_missing_meta` per job). **Deferred enrichment swaps
+CHUNKS ONLY** (`replace_source_document_chunks`): it used to re-save the whole
+row via `upsert_source_document` with only run tags, re-publishing restricted
+Drive files scope-wide and dropping Slack channel tags. Never re-read sharing
+from a re-fetch there — Slack reports it only on the LISTING, and ingest has
+already applied skip / owner-only / freeze to that exact row.
+
+**Second Brain graph (`app/graph/`: `identities`, `builder`, `linking`, `walk`)**
+- **`member_of` = person → PRIVATE Slack channel, evidence carries the CHANNEL's ACL** (`is_public=FALSE`, `viewers`=its `doc_viewers`), because membership is itself sensitive. Built from the database (threads' `doc_viewers` + `person_identities`), rebuilt whole per scope on EVERY Slack sync: membership moves without any message changing. Public channels get none.
+— Phase 1 of the plan, built and **OFF for answers** (`GRAPH_RETRIEVAL_ENABLED`).
+- **Identity is linked on PROOF only** (`person_identities.user_id`): the
+  connector's email equals a member's login email IN THE SAME ORG
+  (`auto_link_by_email`, which also un-links when the email stops matching), or
+  the member signed in to GitHub ("Linked accounts", `/account`). Never by name.
+  The GitHub link reuses `/auth/github/callback` (one registered URL per App),
+  routed by the STATE's provider `github_link`; the person comes from
+  `oauth_states.user_id`, never the request; the token is read once and dropped.
+- **The builder reads only the database** (`source_meta`, `activity_facts`,
+  `person_identities`), per SCOPE, never across. People are keyed per connector
+  identity; a member is one `user:<id>` entity joined by `same_person` edges,
+  so link/unlink rewrites only those (`rebuild_people`). A document entity is
+  keyed `<provider>:<external_id>` because re-ingest changes `documents.id`.
+  Rebuild = delete that document's evidence, re-derive, GC edges left with
+  none; a lost `assigned_to` is CLOSED, not deleted. Hooked into the worker,
+  GitHub facts, disconnect and the tick backfill — all best-effort.
+- **Filter at every hop** (`walk.py`): an edge is crossed only with visible
+  evidence (document evidence through `visibility_predicate`, live; other
+  evidence through `evidence_predicate`, NULL = hidden), and a DOCUMENT entity
+  is entered only if the viewer may open it — edge visibility alone leaked a
+  hidden page's title through a `references` edge evidenced by the linking
+  page. ≤2 hops, ≤50 edges, `same_person` costs no hop, `truncated` honest.
+- **The walk is RANKED and FAIR, one query per hop** (`walk._hop`,
+  `_fair_pick`). It was one recursive CTE stopped by a LIMIT, i.e. the first
+  50 rows Postgres happened to produce -- measured on staging, Sana alone had
+  ~60 edges across four tools, so Notion could spend the budget before any
+  Slack edge was read. Now: newest `_POOL_PER_NODE`=300 candidates per node,
+  scored against the QUESTION by full-text rank of the name and the document's
+  `chunks.content_tsv` (no model, no embedding -- it runs beside routing),
+  then picked round-robin ACROSS TOOLS (a NAMED tool gets two per round),
+  ≤`PER_NODE`=20 per node. Anything a bound left behind sets `truncated`,
+  including the per-node cap. 2,100 docs / 10 people: 73ms median locally.
+  The tsquery is OR over alphanumeric words, stop words dropped by Postgres'
+  own `english` config -- no word list in code.
+- **One plan per question** (`graph/plan.py`, `GraphPlan` in a ContextVar):
+  built at the chat edge IN PARALLEL with `choose_agent`, awaited ≤1.5s, and
+  REUSED by retrieval (no second walk) and generation. Needs a viewer.
+  Normal answer: graph documents + facts from the ROUTED tool only; an exact
+  identifier seed routes to its tool (`graph-named`, two tools = neither).
+  Facts are grouped per (who, relation, tool) from 3 items on, best match
+  first, ≤12 lines / 1500 chars. A graph-shaped answer is never cached.
+- **Connected answer = the routed agent reading a second tool, ONE LLM call**
+  (not N agents composing -- that is the deferred deep-research path).
+  Triggers: the question NAMES another indexed tool (its own vector+keyword
+  legs run beside the routed ones, no graph evidence needed -- staging showed
+  requiring evidence left Slack unreachable), or the routed tool REFUSED and
+  the graph proved visible documents elsewhere (one retry; the refused turn is
+  deleted first, `delete_last_turn_if`). Graph leg lifts the provider pin for
+  itself only; 2 slots reserved for the other tools; gate still best cosine.
+  The context gets `Search coverage:` lines (named tool + how many items the
+  asker can read there) so the strict prompt's own Mode A/B can say "no, not
+  in Slack" from evidence -- no canned reply, the prompt is unchanged.
+  `GRAPH_CONNECTED_ENABLED` switches it off; `done` carries
+  `connected_providers` and the pill names every tool.
+- **Three connected-answer bugs only the REAL model exposed** (end-to-end run,
+  real Gemini + embeddings, 17 scenarios, graph on vs off): (1) the routed
+  agent's profile says "only from <tool>" and the model obeyed it, refusing
+  the Slack thread it was handed -- a connected answer now gets
+  `prompts.connected_prompt_profile` naming every tool; (2) "the author of the
+  Leave Policy ... in Slack?" routed to Linear lacked the Notion fact that
+  identifies the author -- the tools holding the question's SEEDS join the
+  connected set (graph documents/facts only, no extra search leg); (3) a named
+  tool counts when CONNECTED, not only when the walk reached it (the pill said
+  Notion while Slack answered). Fake-LLM unit tests passed through all three.
+- **Naming SEVERAL tools reads all of them** (`routing.named_providers`,
+  `plan.connected_tools`). Routing keeps "two names = neither" (ambiguity), but
+  a connected answer is told explicitly where to look; each named tool gets its
+  own legs and one reserved seat (up to `top_k - 2`, the routed tool keeps two).
+  Measured, real Gemini, 4-tool questions: graph OFF answered from Linear alone
+  ("no information about Notion, Slack or Drive"), ON covered all four
+  correctly; median time to FIRST WORD 5.8s on vs 6.6s off (noise = Gemini),
+  graph plan ~20ms, retrieval +11ms. The TOTAL is longer only because chat
+  types a decided answer at `CHAT_STREAM_WORD_DELAY_MS`=50ms/word and a 4-tool
+  answer is ~40 words longer -- measure latency to the first token, never the total.
+- **In chat a chart must be ASKED for** (`resolve._wants_a_chart`): a chart or
+  refuse intent without a plot word, "chart" (not "org chart") or a count
+  phrase becomes qa. Real Gemini turned "What is Sana working on in Linear?"
+  into completed-tasks-by-team, pre-empting routing so neither the Linear
+  agent nor the graph saw it. The chart box (`fail_open=False`) is not gated.
+- **`_PLOT_ASK` matched "knowledge graph"** (`insights/resolve.py`), forcing
+  "when is the knowledge graph beta launching?" into a chart refusal although
+  the classifier said qa. Compound nouns are excluded by lookbehind.
+- **In retrieval it is ONE more RRF list** (`retrieval._graph_documents`): a
+  vector search restricted to the walk's evidence documents, viewer-filtered
+  AGAIN, so the gate is untouched. Any failure drops only its candidates.
+  Signals on the `rag.graph_signals` logger. **Switch it on only when
+  `python -m evaluation.graph_eval` says "enable"** (gain somewhere, loss nowhere)
+  with the REAL embedder.
+
+**Live connector reads = the Second Brain's second half (`app/livetools/`, plan `docs/plans/2026-09-29-live-connector-access.md`)**
+— the Second Brain is the knowledge graph PLUS live tool access, in normal Ask. No toggle: a "Deep research" composer toggle shipped and was removed (deep research is a separate, later planner+report feature). The web chat sets a `LiveRequest` ContextVar (the `GraphPlan` pattern) on every question; `LIVE_TOOLS_ENABLED` (+ `LIVE_TOOLS_PROVIDERS`, `LIVE_TOOLS_ORGS`) decides. Off = byte-identical answers. Slack, schedulers and eval never set one. On, a question whose top hits include a refreshable item waits for the read (~2 s staging) — measure first word before prod.
+- **A live read must be EARNED (mode A)** (`livetools/trigger.py`, `gateway._drop_freshly_synced`): the question classifier returns `live` in the SAME `classify_question` call (`AskIntent.needs_live` → `RoutingDecision` → `LiveRequest.needs_live`, set at the chat edge after routing) — "is SYV-5 still blocked?" yes, "leave policy?" no. No hardcoded word list (a phrase list cannot tell "has Rahul reviewed the PR?" from "how do reviews work?"); no verdict (classifier down, field missing) ⇒ the read goes ahead, so an outage costs ~2 s, never a stale answer. And a tool whose last SUCCEEDED ingest job (never `last_sync_at`, stamped on attempt) is <`FRESH_SECONDS`=15 min old is not read. Unknown freshness reads live. Mode B is ungated: the synced copy already failed there.
+- **The index finds, the live call refreshes**: mode A re-reads only documents in this request's hits, resolved to `(provider, external_id)` from `documents` pinned to org AND space — no search, no model-named target, zero extra model calls. Runs AFTER the gate passes, so a live read never rescues a gate miss. `gateway.py` is the only code that decrypts a token for it; ≤`MAX_REFRESHES`=2, 6s, 6000 chars (truncation stated).
+- **Failures decided by the PROVIDER'S reason**: Linear answers a deleted issue with HTTP 200 + `Entity not found` (and a rate limit with 400 `RATELIMITED`). Only not-found/permission WITHHOLDS the stale copy; rate limit, timeout, reauth (marks `needs_reauth`), 5xx and unknown codes fall back to the index.
+- **The gate re-check uses `RetrievalResult.gate_document_id`**, because `gate_score` is a max over ~30 candidates before rerank and the final hits cannot reproduce it. Withheld non-gate document ⇒ gate untouched; withheld gate document ⇒ all its chunks dropped, gate = best remaining cosine (can only lower it). Every leg's `.score` is a real cosine (keyword leg selects `1 - (embedding <=> q)`, pinned by a DB test).
+- **Mode B (refusal path only)**: ONE tool call offers `refresh_item(handle)` over `[L1]`/`[D1]`/`[N1]`/`[S1]` handles for the below-gate hits (titles fenced) — in the SAME call as `web_search` when web is on, so no extra serial round. Handles map only within the request (`livetools/handles.py`); an invented one resolves to nothing; echoed handles are stripped after the MODE parse. Readers: Linear, Drive (`files.get` + export; trashed/404/permission-403 withhold, `rateLimitExceeded` 403 falls back), Notion (ingest renderer, shared char budget + 12-call cap), Slack (≤15 msgs; OFF in `LIVE_TOOLS_PROVIDERS` until the D10 tier check).
+- **A live block SUPERSEDES its document's synced chunks in the prompt** (`superseded=live.refreshed` → `_generate_core`); they stay in `hits` for citations and next-turn reuse. Shipped as ADD-beside: staging measured first word ~5 s slower (prompt ~2x, two versions of one page for the model and the audit). The ~2 s read is still serial after the gate; the next lever is starting it during rerank.
+- Live blocks lead `extra_contexts`, so fence/scrub, the audit and the link rule all see them; enforce-mode guard drops a flagged block (not a withhold). A live answer is never cached; a `live_withheld` refusal says "no longer available" naming the CONNECTOR, never the item, and is deliberately NOT a gap row (deletion vs revocation is indistinguishable). `live_tool_calls` audits each read — never the token or text — 90-day sweep on the tick.
+
+**Personal memory = the Second Brain's third layer (`app/memory/personal.py`, `user_memory`)**
+— a few facts per person ("works in the Bangalore office", "prefers short answers") carried across chats. Off unless `PERSONAL_MEMORY_ENABLED`; `users.memory_enabled` and `organizations.memory_enabled` (admin) switch it off.
+- **Memory narrows the SEARCH, not just the wording**: `context` facts (team, office) go into the rewrite prompt before retrieval, and a chat's FIRST question is rewritten when one exists ("office hours?" → "…for the Bangalore office?"). Shipped prompt-only, where "office hours" still searched every office and the Bangalore excerpt was usable only if it happened to rank. `preference` facts never trigger a rewrite. No `interest` kind: one message cannot show a recurring topic, and one-off questions filled the slots.
+- **Written ONLY from the asker's own question**, never an answer (an answer can quote a document only they may read). One aux call (`STAGE_MEMORY_EXTRACT`), beside the answer, and only when `worth_reading` sees self-talk ("I'm…", "my team…", "keep it short") — most questions pay nothing. ≤3 facts per question, ≤120 chars, third person; sensitive words (health, pay, credentials, family…), links/mentions and anything the scrubber would cut are dropped; case-insensitive dedupe.
+- **Never evidence**: facts ride the grounded prompt AFTER the fenced context as "ABOUT THE ASKER — interpretation only"; the audit is handed documents alone, so a claim resting on memory is unsupported by construction. `RagResult.personalized` keeps it out of the cache (read and write). Only `context` facts reach the rewrite (see above); preferences never do.
+- **Saved automatically, never silently** (the ChatGPT/Claude pattern): `done.remembered` → "Remembered: … · Undo" under the answer (waits ≤1.5 s; a slower save is `announced = FALSE` and shown on the NEXT answer — it shipped silent, which broke the promise). Nothing is saved without a chat: a chat-less fact would never expire. `/account` lists, pins, forgets, clears; only the owner can touch a fact — an admin's only control is the company switch.
+- **Bounded and fading**: `max_facts`=30, oldest UNPINNED out; `source_conversation_id ON DELETE CASCADE` so a fact dies with its chat (30-day purge) unless pinned, which detaches it. Web chat only — Slack/schedulers never read or write it. Not built: a one-off private chat.
 
 **Retrieved context carries its provenance** (`rag/context_assemble.py::describe_hit`)
 — every chunk reaches the prompt behind one line naming the document, the app,
@@ -1727,13 +1854,14 @@ app/db/       schema.sql, connection.py (pool), migrate.py
 app/ingestion/ preprocess, chunk, contextualize, pipeline  (orchestrator)
 app/rag/      pipeline, prompts, retrieval, query_normalize, summary_fold,
               access_notice (the "not shared with you" refusal), …
-app/memory/   org-scoped conversation history + last-retrieval
+app/memory/   org-scoped conversation history + last-retrieval + personal (user facts)
 app/sources/  SourceAdapter: notion, google_drive, slack, linear + factory
               + google_forms.py (live reads, NOT an adapter — never indexed)
               + google_groups.py (asker's Group memberships → Viewer.groups)
 app/githublive/ GitHub's whole data path — live reads, no vectors
 app/agent/    Agent + per-source agents + orchestration (LangGraph) + routing
-app/security/ crypto, untrusted (scrub), rate_limit, client_ip
+app/security/ crypto, untrusted (scrub), rate_limit, client_ip,
+              visibility (the ONE doc-access predicate)
 app/auth/     OAuth providers, credentials, users, magic_link, session, email
 app/jobs/     ingestion queue + worker + scheduler_queue + autosync
 app/llm/      + pacing.py (rate-limit headroom for interactive calls)
@@ -1742,6 +1870,8 @@ app/feedback/ answer ratings + documentation gaps (one table, two writers)
 app/api/notifications.py  what needs attention, derived from connection rows
 app/insights/  registry + panels + store (SQL) + facts + github_facts +
               linear_facts + sentiment + scopes + resolve (ask box) + pins
+app/graph/     Second Brain: identities, builder, linking, walk (+ evaluation/graph_eval.py)
+app/livetools/ Second Brain live reads: gateway (only token use), linear/drive/notion/slack readers, handles, audit, context
 app/workspaces/ sub-workspace CRUD + membership (assert_member)
 app/schedulers/ store, activity (live "since T"), prompts, runner, worker
 app/api/      FastAPI — deps (session/org_id), auth, admin, chat, workspaces,
@@ -2059,11 +2189,14 @@ frontend/ Next.js 15 portal · tests/ pytest
   org's `query_answer_cache` for the same reason an ingest does — a cached
   answer outlives the content it was built from, so a disconnected source keeps
   answering for the TTL (`tests/test_disconnect_purge.py`).
+- **A Slack listing deletes only what it could have listed** (`pipeline._removable`, adapter hooks `listing_complete` / `may_remove`). The restricted tier (1 history call/min) plus a retry wait capped at 8s meant a channel rate-limited mid-listing looked emptied, and a thread whose PARENT is older than `SLACK_BACKFILL_DAYS` is never listed (history filters on the parent ts) so every aged-out thread was deleted. Now: `Retry-After` honoured up to 60s, one failing channel keeps the others and marks the listing incomplete (nothing deleted), the per-sync cap or a cached fallback does the same, and out-of-window threads are kept. An adapter without the hooks is unchanged.
+- **Private Slack threads indexed before `channel:<id>` existed are backfilled in `schema.sql`** (id = first half of the external id) — without it the bot refused in its own private channel. A channel reply's withheld notice is confirmed only against THAT channel's tag (`Viewer.channels` → `restricted_match(tags=)`) and says "ask me in a DM", never "not shared with you": the room reads the reply, not the asker.
 - **Never delete on one unverified listing** — `_sanitize_removals` refuses
   to drop >50% of known docs (above a 5-doc floor); a suspicious first sync
   retries once.
 
 **Deploy / auth**
+- **A host that cannot refresh must not flag the tenant's token** (`credentials.get_live_connection_token`): any refresh failure used to set `needs_reauth`, including a `ConfigurationError` from a missing `LINEAR_CLIENT_SECRET` on the CALLING host — it flagged staging's healthy Linear connection and stopped its auto-sync. `ConfigurationError` now re-raises untouched.
 - **Render free blocks outbound SMTP.** Use `EMAIL_SENDER=sendgrid` (free
   Single Sender, any recipient); Resend's sandbox only reaches the account
   owner, and `_safe` wrappers swallow it so a send *looks* successful.
@@ -2104,7 +2237,12 @@ partial unique indexes: org-wide vs workspace; `sync_requested_at` webhook flag
 (scoped by `org_id` **and** `user_id`, unlike every other tenant table; `model` NULL = the configured default) ·
 `conversation_attachments` (metadata + `storage_key` only — the bytes and the extracted text are Cloudinary objects, `content` NULL on every row written since) · `feedback_and_gaps` (refusals + thumbs in one table; `user_id` is `ON DELETE SET NULL`, the only tenant table that does not cascade from a person) · `activity_facts` (the ONLY numeric substrate for charts; two partial unique
 indexes on `external_id`, org-wide vs workspace) · `insight_pins` (personal,
-`(org_id, user_id)`; stores the spec, never the numbers) · `scheduler_reports` (same `(org_id, user_id)` scoping; snapshots its labels
+`(org_id, user_id)`; stores the spec, never the numbers) · `user_memory` (personal facts, private to `(org_id, user_id)`, cascades from its chat unless pinned; `users`/`organizations.memory_enabled` switches) · `person_identities`
+(one row per person per connector; `user_id` only on proof, `ON DELETE SET NULL`) ·
+`live_tool_calls` (live-read audit; no token, no text, 90 days) ·
+`kg_entities` / `kg_edges` / `kg_evidence` (the graph: IDs and relationships only,
+partial unique indexes org-wide vs space; an edge is visible only through its
+evidence) · `scheduler_reports` (same `(org_id, user_id)` scoping; snapshots its labels
 rather than joining, so an archived report survives a rename or a deleted
 space — it cascades only from the scheduler, org and user).
 
@@ -2140,9 +2278,21 @@ conversations from the index, the constrained resolver + personal pins API, and
 Forms sentiment (never indexed, owners-only, 5-response floor). Indexed
 tenants that predate charts get `activity_facts` from `backfill_all_document_facts`
 (tick + lazy on an empty Ask chart). "Show a pie of files…" recovers a spec
-when the model says qa.
+when the model says qa. Second Brain Phase 1 (`app/graph/`): capture at sync,
+identity linking + "Linked accounts", the graph builder, the access-safe walk,
+and the graph as a retrieval list — **built, OFF for answers**.
 
 **Pending / known gaps**
+- Personal memory: **built and OFF** (`PERSONAL_MEMORY_ENABLED`); the account panel and the "Remembered · Undo" line are `tsc`-checked only, and extraction has run against a fake model only — check its facts on staging with the real one. No private (memory-free) chat yet.
+- Live tools: **Phases 0–3 + the Slack reader are built and OFF** (normal Ask, behind `LIVE_TOOLS_ENABLED`). Every provider's error shapes (Linear `Entity not found`/`RATELIMITED`, Drive 403 reasons, Notion codes, Slack `error`) are from docs and tested against fakes only — walk each live on staging before trusting (plan §10). Slack is on the RESTRICTED tier (staging: `limit=200` → 15 + `has_more`), so it stays out of `LIVE_TOOLS_PROVIDERS`, and ingestion pages 13x more than it assumes. Staging verified Notion + Drive (viewer and non-viewer); Linear untested (token expired); first word re-measure pending after the supersede fix. Later by design: GitHub on the gateway, per-user tokens, MCP.
+- Second Brain: **`GRAPH_RETRIEVAL_ENABLED` stays off until
+  `python -m evaluation.graph_eval` runs with the real embedder and says
+  "enable"** (the stand-in embedder in `tests/test_graph_eval.py` only proves the
+  machinery). The "Linked accounts" page is `tsc`-checked only, never rendered.
+  `member_of` is built (`builder.build_memberships`, every Slack sync; evidence carries the channel's ACL). Phase 1d (LLM extraction) waits on 1.7 + an aux endpoint (O1), by design. Deploy needs the
+  additive schema (graph tables, `pg_trgm`, `person_identities`,
+  `oauth_states.user_id`); existing documents fill in over ticks
+  (`refresh_missing_meta` 25/job, `graph.builder.backfill` 200/tick).
 - Document-level access: **the Drive `permissions` path has never run against a
   live folder** — the field list, the grant-type mapping and the
   omitted-permissions case are written from the documented shapes and tested

@@ -241,6 +241,13 @@ def get_live_connection_token(
     except OAuthReauthRequiredError as exc:
         mark_needs_reauth(org_id, provider, workspace_id, str(exc))
         raise
+    except ConfigurationError:
+        # THIS HOST cannot refresh (e.g. LINEAR_CLIENT_SECRET unset), which
+        # says nothing about the tenant's token. Marking reauth here flagged
+        # every connection of that provider "Reconnect" after one bad deploy,
+        # and stopped auto-sync for all of them. The refresh token was never
+        # sent; it stays good for a correctly configured host.
+        raise
     except Exception as exc:  # noqa: BLE001 - map any other refresh failure to a terminal error
         wrapped = OAuthReauthRequiredError(
             f"Refreshing the {provider!r} connection failed; reconnect it to continue.",

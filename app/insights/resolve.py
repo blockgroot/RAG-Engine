@@ -95,6 +95,14 @@ class AskIntent:
     kind: str  # qa | chart | refuse | github_live
     spec: ChartSpec | None = None
     message: str | None = None
+    #: Does the question ask about the CURRENT state of something (status,
+    #: progress, done/blocked/reviewed, latest update)? Decides whether the
+    #: Second Brain re-reads the matching items live (app/livetools). Asked in
+    #: this call because it already runs for every chat question, beside the
+    #: cosine probe: a separate "should I read live?" call would cost more
+    #: than the live read it decides about. ``None`` = the model was not asked
+    #: or did not say; the gateway then reads live (only False skips).
+    needs_live: bool | None = None
 
 
 _JSON_RE = re.compile(r"\{.*\}", re.S)
@@ -252,8 +260,14 @@ def _prompt(
             else '{"intent": "qa"|"chart", "metric": "<key or null>", '
         ) +
         '"group_by": "<option or null>", "period": "<period>", '
-        '"chart": "<shape or null>", "focus": "<one named thing or null>"}\n\n'
+        '"chart": "<shape or null>", "focus": "<one named thing or null>", '
+        '"live": true|false}\n\n'
         "Rules:\n"
+        "- live=true when the question asks about the CURRENT state of a "
+        "specific item or someone's work: its status, progress, whether it is "
+        "done, blocked, reviewed or merged yet, the latest update, who is on it "
+        "now. live=false for anything settled that does not move day to day "
+        "(a policy, a how-to, who wrote a document, what a page says).\n"
         "- Never invent a metric key. Match the question to the list "
         "above, even if the wording differs from the label.\n"
         "- group_by must be one of that metric's options, or null.\n"
@@ -364,6 +378,28 @@ def classify_question(
         reply, metrics, fail_open=fail_open, github=github,
         missing=missing, providers=providers,
     )
+    return replace(
+        _finish(intent, question, metrics, fail_open=fail_open),
+        needs_live=parse_live(reply),
+    )
+
+
+def parse_live(reply: str) -> bool | None:
+    """The ``live`` field of the classifier's reply. Only a real boolean
+    counts: anything else is "not said", and the read goes ahead."""
+    match = _JSON_RE.search(reply or "")
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(0))
+    except (ValueError, TypeError):
+        return None
+    value = data.get("live") if isinstance(data, dict) else None
+    return value if isinstance(value, bool) else None
+
+
+def _finish(intent: AskIntent, question: str, metrics, *, fail_open: bool) -> AskIntent:
+    """The post-parse corrections, unchanged: plot recovery and the chat gate."""
     # A model that treats "make a pie chart of this doc" as qa will retrieve
     # the file and invent slices (or say the docs don't contain a pie tool).
     # An explicit shape with no metric is a refusal, not RAG — unless the
@@ -378,7 +414,45 @@ def classify_question(
         recovered = _fallback_spec(question, metrics)
         if recovered is not None:
             return AskIntent("chart", spec=recovered)
+    if fail_open and intent.kind in ("chart", "refuse") and not _wants_a_chart(question):
+        # In chat, a chart must be ASKED for. Measured with real Gemini: "What
+        # is Sana working on in Linear?" came back as a valid chart spec
+        # (issues_completed by team, focus "Sana") -- a count of FINISHED work
+        # answering a question about CURRENT work, and it pre-empts routing, so
+        # neither the Linear agent nor the graph ever saw the question. A wrong
+        # chart has no way back; a written answer to a vague "show me the
+        # activity" costs one re-ask with the word "chart". The dedicated chart
+        # box (fail_open=False) is not gated: asking there IS asking for one.
+        logger.info("insights: chart intent without a chart or count ask -> qa")
+        return AskIntent("qa")
     return intent
+
+
+#: A COUNT is being asked for: how many, how much, over time, ranked. With
+#: ``_PLOT_ASK`` this is the whole evidence that someone in chat wants a chart
+#: rather than an answer. "most recent" is a date, not a ranking.
+_COUNT_ASK = re.compile(
+    r"\b("
+    r"how\s+many|how\s+much|number\s+of|count(?:s|ed)?|totals?"
+    r"|most(?!\s+recent)|least|top\s+\d+|ranking|rank(?:ed)?|leaderboard"
+    r"|trends?|over\s+time|per\s+(?:day|week|month|quarter|person|author|team|repo\w*)"
+    r"|(?:by|per)\s+(?:author|person|people|team|repo\w*|channel|week|month|quarter|day|state|status)"
+    r"|breakdown|broken\s+down|compare|comparison|split"
+    r"|daily|weekly|monthly|quarterly"
+    r")\b",
+    re.I,
+)
+
+
+#: "chart" itself, as a verb or a noun -- but never "org chart", which is a
+#: document (the reason ``_PLOT_ASK`` leaves the bare word out).
+_CHART_WORD = re.compile(r"(?<!org )(?<!organisation )(?<!organization )\bchart(?:s|ed|ing)?\b", re.I)
+
+
+def _wants_a_chart(question: str) -> bool:
+    """A visual or a count was asked for -- chat's bar for accepting a chart."""
+    q = question or ""
+    return _asked_for_a_plot(q) or bool(_CHART_WORD.search(q) or _COUNT_ASK.search(q))
 
 
 #: Named plot, not the word "chart" alone ("org chart" is a document).
@@ -390,7 +464,10 @@ _PLOT_ASK = re.compile(
     r"|bar\s+charts?"
     r"|line\s+charts?"
     r"|stacked\s+bars?"
-    r"|graphs?"
+    # "graph" alone is a plot ask ("graph our commits"), but not inside a
+    # compound noun: "when is the knowledge graph beta launching?" was forced
+    # into a chart refusal although the classifier had said qa.
+    r"|(?<!knowledge )(?<!knowledge-)(?<!call )(?<!dependency )graphs?"
     r"|plots?"
     r"|visuali[sz]ations?"
     r"|visual\s+(?:reports?|representations?)"

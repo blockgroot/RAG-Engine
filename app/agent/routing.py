@@ -154,6 +154,11 @@ class RoutingDecision:
     scores: dict[str, float] = field(default_factory=dict)
     chart_spec: object | None = None
     chart_refusal: str | None = None
+    #: The classifier's view on whether this question needs LIVE data (see
+    #: ``AskIntent.needs_live``). ``None`` when the classifier did not run or
+    #: did not say. Carried here because the classifier already runs inside
+    #: routing; the chat edge hands it to the live-tools gateway.
+    needs_live: bool | None = None
 
 
 #: What a member is likely to CALL each service when they type its name.
@@ -170,6 +175,19 @@ PROVIDER_ALIASES: dict[str, tuple[str, ...]] = {
     "notion": ("notion",),
     "google": ("google drive", "google", "drive", "gdrive"),
 }
+
+
+def named_providers(text: str, available) -> set[str]:
+    """EVERY service this text names. For a connected answer, where naming
+    Notion, Slack and Linear in one question means "read all three" -- unlike
+    routing, where two names are ambiguous and ``named_provider`` picks none."""
+    lowered = (text or "").lower()
+    return {
+        provider
+        for provider in available
+        for alias in PROVIDER_ALIASES.get(provider, ())
+        if re.search(rf"\b{re.escape(alias)}\b", lowered)
+    }
 
 
 def named_provider(text: str, available) -> str | None:
@@ -585,11 +603,14 @@ def _try_insights_route(
     connected: set[str],
     org_id: str,
     workspace_id: str | None,
+    live_out: list | None = None,
 ) -> RoutingDecision | None:
     """Chart vs document vs live GitHub, decided by the classifier.
 
     Returns None when this is ordinary Q&A so the cosine router still runs.
     Never raises: a dead classifier is a document question, not a failed Ask.
+    ``live_out`` receives the same call's ``needs_live`` answer (the return
+    shape stays a decision-or-None, which every caller and test relies on).
     """
     from ..insights import panels as panel_defs
     from ..insights.resolve import classify_question
@@ -602,6 +623,8 @@ def _try_insights_route(
     except Exception:  # noqa: BLE001
         logger.warning("Agent routing: chart classifier failed", exc_info=True)
         return None
+    if live_out is not None:
+        live_out.append(getattr(intent, "needs_live", None))
     if intent.kind == "qa":
         return None
     if intent.kind == "github_live":
@@ -648,6 +671,40 @@ def _no_clear_winner(scores: dict[str, float]) -> bool:
     return not top or (len(top) > 1 and top[0] - top[1] < _FOLLOW_UP_MARGIN)
 
 
+def _graph_named_provider(graph_plan, embedded: set[str]) -> str | None:
+    """The tool holding what the question names EXACTLY, per the graph.
+
+    Only exact identifiers count (``SYV-6``, ``api#14``) -- a fuzzy title match
+    is what the cosine probe already measures, and letting it override the
+    probe would trade a measurement for a guess. Two identifiers in two tools
+    resolve to NEITHER, the ``_named_scope`` rule: the wrong tool is worse
+    than the probe. Never waits more than ``_GRAPH_WAIT_SECONDS`` for a plan
+    still being built: routing must not get slower because the graph did.
+    """
+    if graph_plan is None:
+        return None
+    plan = graph_plan
+    if hasattr(graph_plan, "result"):
+        try:
+            plan = graph_plan.result(timeout=_GRAPH_WAIT_SECONDS)
+        except Exception:  # noqa: BLE001 - a slow or failed graph costs only this hint
+            return None
+    if plan is None:
+        return None
+    from ..graph.plan import provider_of
+
+    tools = {provider_of(getattr(s, "key", "")) for s in plan.exact_seeds}
+    tools.discard(None)
+    if len(tools) != 1:
+        return None
+    tool = next(iter(tools))
+    return tool if tool in embedded else None
+
+
+#: How long routing waits for a graph plan started alongside it.
+_GRAPH_WAIT_SECONDS = 1.5
+
+
 def choose_agent(
     question: str,
     org_id: str,
@@ -655,6 +712,26 @@ def choose_agent(
     workspace_id: str | None = None,
     requested_agent: str | None = None,
     context: str | None = None,
+    graph_plan=None,
+) -> RoutingDecision:
+    """Which agent answers, plus the classifier's live-data verdict."""
+    live: list = []
+    decision = _choose_agent(
+        question, org_id, workspace_id=workspace_id, requested_agent=requested_agent,
+        context=context, graph_plan=graph_plan, live_out=live,
+    )
+    return replace(decision, needs_live=live[0] if live else None)
+
+
+def _choose_agent(
+    question: str,
+    org_id: str,
+    *,
+    workspace_id: str | None = None,
+    requested_agent: str | None = None,
+    context: str | None = None,
+    graph_plan=None,
+    live_out: list | None = None,
 ) -> RoutingDecision:
     """Decide which agent answers ``question``. Never raises.
 
@@ -685,6 +762,12 @@ def choose_agent(
        it is the least ambiguous signal available — and it must beat the vector
        probe, because a Notion page *about* a repo would otherwise outscore the
        repo itself.
+    4b. **An exact identifier the knowledge graph places in one tool**
+       (``graph_plan``: a ``GraphPlan`` or a future of one, built by the
+       caller in parallel). "Who owns SYV-6?" is a Linear question even when a
+       Notion page mentions SYV-6 more often -- the same reasoning as the named
+       repo above. Absent (no plan, flag off, no viewer) this step is skipped
+       and routing is exactly what it was.
     5. **One embedded source ⇒ no probe.** Saves an embedding and a query in
        the common single-source tenant.
     6. **Otherwise, the best-scoring provider**, if it clears the confidence
@@ -726,7 +809,7 @@ def choose_agent(
             _probe_scores, question, org_id, workspace_id, connected,
         )
 
-    visual = _try_insights_route(question, connected, org_id, workspace_id)
+    visual = _try_insights_route(question, connected, org_id, workspace_id, live_out=live_out)
     if visual is not None:
         return visual
 
@@ -738,6 +821,11 @@ def choose_agent(
 
     if len(embedded) == 1 and "github" not in connected:
         return RoutingDecision(next(iter(embedded)), "only-source")
+
+    graph_tool = _graph_named_provider(graph_plan, embedded)
+    if graph_tool is not None:
+        logger.info("Agent routing: %r names a %s item (graph)", question[:60], graph_tool)
+        return RoutingDecision(graph_tool, "graph-named")
 
     scores = (
         probe.result() if probe is not None

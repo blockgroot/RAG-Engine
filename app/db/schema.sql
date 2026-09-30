@@ -115,6 +115,35 @@ ALTER TABLE documents ADD COLUMN IF NOT EXISTS doc_viewers TEXT[];
 -- per candidate row inside the same WHERE clause that already pins org_id.
 CREATE INDEX IF NOT EXISTS idx_documents_viewers ON documents USING gin (doc_viewers);
 
+-- Slack channel-ACL backfill: a PRIVATE channel's threads carry a
+-- `channel:<id>` entry (sources/slack.py::_channel_entry) so a reply posted in
+-- that channel -- which reads as public_only plus that one channel -- can
+-- quote them. Threads indexed before the entry existed lack it, so the bot
+-- refused inside the very channel it was reading ("not shared with you")
+-- until each thread happened to change. The channel id is the first half of
+-- the external id, so no API call is needed. Private rows only (a public
+-- channel's threads are scope-public and need no entry); idempotent.
+UPDATE documents
+   SET doc_viewers = coalesce(doc_viewers, '{}') || ('channel:' || split_part(source_external_id, ':', 1))
+ WHERE source_provider = 'slack'
+   AND doc_is_public = FALSE
+   AND position(':' in source_external_id) > 1
+   AND NOT coalesce(doc_viewers, '{}') && ARRAY['channel:' || split_part(source_external_id, ':', 1)];
+
+-- Second Brain 1.1: the people, links and containers an adapter saw while
+-- fetching (`sources.meta`), captured with ZERO extra API calls. The knowledge
+-- graph is rebuilt from these rows and never by re-calling a provider, so a
+-- field not stored here does not exist for it. NULL = nothing captured yet
+-- (every row written before this shipped, until the bounded metadata refresh
+-- in `ingestion.pipeline` reaches it).
+--
+-- `source_editor_key` is the IDENTITY behind `source_last_editor`
+-- (`slack:U123`, `email:ada@x.com`), never a display name: two people called
+-- Priya are two people. `source_last_editor` stays exactly as it was for
+-- provenance lines and charts.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_meta JSONB;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_editor_key TEXT;
+
 
 -- Chunks of a document + their embedding vector. Org-scoped (denormalized org_id
 -- so every retrieval query can filter by tenant without a join).
@@ -565,6 +594,11 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 -- which workspace so the callback knows to save the resulting connection
 -- scoped to it (NULL = today's org-wide connect flow, unchanged).
 ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
+-- Second Brain 1.2: the PERSON who started a flow, for flows that bind to a
+-- person rather than a scope ("Link your GitHub account"). NULL for every
+-- connect flow. The callback reads the user from HERE, never from the request,
+-- so a captured link can only ever attach an account to whoever clicked.
+ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users (id) ON DELETE CASCADE;
 
 -- GitHub connect: after user OAuth, the callback lists every App installation
 -- this user can see and parks the user token here so the frontend can prompt
@@ -743,6 +777,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_activity_facts_space
     ON activity_facts (org_id, workspace_id, provider, kind, external_id)
     WHERE workspace_id IS NOT NULL AND external_id IS NOT NULL;
 
+-- The stable identity of `actor` (`github:<login>`, `slack:U123`), for the
+-- Second Brain graph. `actor` stays the display value charts group by; this
+-- is what lets the graph join a GitHub reviewer to the same person's Slack
+-- threads without ever matching on a name. NULL where the source gave none.
+ALTER TABLE activity_facts ADD COLUMN IF NOT EXISTS actor_key TEXT;
+
 -- A chart a member asked for and kept. Personal, scoped `(org_id, user_id)`
 -- like `schedulers` and unlike every other tenant table -- a pin is one
 -- person's shortcut, never published to anyone, which is why this feature has
@@ -905,3 +945,152 @@ CREATE INDEX IF NOT EXISTS idx_feedback_org_question
 -- `load_attachment_texts` falls back to it precisely so that cannot happen.
 ALTER TABLE conversation_attachments ADD COLUMN IF NOT EXISTS storage_key TEXT;
 ALTER TABLE conversation_attachments ALTER COLUMN content DROP NOT NULL;
+
+-- Second Brain 1.2: one row per person as each CONNECTOR knows them -- a Slack
+-- member, a Drive editor, a GitHub login -- upserted from `documents.source_meta`
+-- and `activity_facts.actor_key`. `user_id` says which Handbook member it is,
+-- and is set ONLY on proof (docs/plans/2026-09-23-second-brain.md, D4):
+--   provider_email -- the connector's email equals a member's login email IN
+--                     THE SAME ORG (magic-link login makes that email verified);
+--   oauth          -- the member signed in to that account themselves.
+-- NEVER by display name: two people called Priya stay two rows. A link changes
+-- attribution in the graph only, never what anyone may read.
+--
+-- `external_id` is the connector's stable id (Slack U123, a GitHub login
+-- lowercased), or `email:<addr>` when the connector gave only an email.
+-- `user_id` is SET NULL on delete: the identity is still a fact about who did
+-- the work after the member's account is gone.
+CREATE TABLE IF NOT EXISTS person_identities (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    provider     TEXT NOT NULL,
+    external_id  TEXT NOT NULL,
+    email        TEXT,
+    display_name TEXT,
+    user_id      UUID REFERENCES users (id) ON DELETE SET NULL,
+    verified_by  TEXT,
+    first_seen   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_seen    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (org_id, provider, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_person_identities_user
+    ON person_identities (org_id, user_id) WHERE user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_person_identities_email
+    ON person_identities (org_id, email) WHERE email IS NOT NULL;
+
+-- Second Brain 1.3: the knowledge graph (docs/plans/2026-09-23-second-brain.md).
+-- One graph per SCOPE (org-wide = workspace_id NULL, or one space), filtered
+-- per viewer at read time. It stores IDs and relationships only -- document
+-- text stays in `chunks` and sharing stays on `documents`, so nothing here can
+-- outlive a revocation: an edge is visible only through its evidence, and
+-- document evidence is checked against `documents` with the ONE visibility
+-- predicate (`security/visibility.py`) on every walk.
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- `key` is stable across re-syncs, which is why a document entity is keyed by
+-- `<provider>:<external id>` and NOT by `documents.id`: an updated document is
+-- deleted and re-inserted with a new id. `document_id` is refreshed by the
+-- builder and SET NULL when the row goes, so the entity survives a re-ingest.
+-- People are keyed per CONNECTOR identity (`identity:<provider>:<id>`); a
+-- member linked to several identities gets a `user:<id>` entity joined to each
+-- by a `same_person` edge, so linking or unlinking rewrites only those edges.
+CREATE TABLE IF NOT EXISTS kg_entities (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE,
+    kind         TEXT NOT NULL,
+    key          TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    aliases      TEXT[],
+    document_id  UUID REFERENCES documents (id) ON DELETE SET NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_kg_entities_org
+    ON kg_entities (org_id, key) WHERE workspace_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_kg_entities_space
+    ON kg_entities (org_id, workspace_id, key) WHERE workspace_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_kg_entities_name_trgm
+    ON kg_entities USING gin (name gin_trgm_ops);
+CREATE INDEX IF NOT EXISTS idx_kg_entities_aliases ON kg_entities USING gin (aliases);
+CREATE INDEX IF NOT EXISTS idx_kg_entities_document ON kg_entities (document_id);
+
+-- `valid_to` NULL = current. An assignment that changes is CLOSED, not deleted,
+-- so "who owned this before?" stays answerable; walks read current edges only.
+-- One current edge per (src, dst, relation): re-running the builder upserts
+-- instead of stacking duplicates.
+CREATE TABLE IF NOT EXISTS kg_edges (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE,
+    src_id       UUID NOT NULL REFERENCES kg_entities (id) ON DELETE CASCADE,
+    dst_id       UUID NOT NULL REFERENCES kg_entities (id) ON DELETE CASCADE,
+    relation     TEXT NOT NULL,
+    valid_from   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    valid_to     TIMESTAMPTZ,
+    last_seen    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_kg_edges_current
+    ON kg_edges (src_id, dst_id, relation) WHERE valid_to IS NULL;
+CREATE INDEX IF NOT EXISTS idx_kg_edges_src ON kg_edges (org_id, src_id);
+CREATE INDEX IF NOT EXISTS idx_kg_edges_dst ON kg_edges (org_id, dst_id);
+
+-- WHY an edge exists, and therefore WHO may see it. Exactly one kind per row:
+--   document_id -- the edge came from that document; visible iff the viewer
+--                  may open it (checked live, so a revocation hides it at once);
+--   fact_id     -- from an `activity_facts` row (GitHub), scope-level like charts;
+--   neither     -- `is_public`/`viewers` carry the rule (a `same_person` link).
+-- A NULL `is_public` on non-document evidence is NOT public: fail closed.
+CREATE TABLE IF NOT EXISTS kg_evidence (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    edge_id     UUID NOT NULL REFERENCES kg_edges (id) ON DELETE CASCADE,
+    document_id UUID REFERENCES documents (id) ON DELETE CASCADE,
+    fact_id     UUID REFERENCES activity_facts (id) ON DELETE CASCADE,
+    is_public   BOOLEAN,
+    viewers     TEXT[]
+);
+CREATE INDEX IF NOT EXISTS idx_kg_evidence_edge ON kg_evidence (edge_id);
+CREATE INDEX IF NOT EXISTS idx_kg_evidence_document ON kg_evidence (document_id);
+CREATE INDEX IF NOT EXISTS idx_kg_evidence_fact ON kg_evidence (fact_id);
+
+-- Live-tools gateway audit (docs/plans/2026-09-29-live-connector-access.md, D14):
+-- one row per live read, so "who looked at what, and what happened" is
+-- answerable. NEVER the token and NEVER the result text -- storing results
+-- would be a second copy of tenant data. Deep research only (D0).
+CREATE TABLE IF NOT EXISTS live_tool_calls (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id          UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    workspace_id    UUID REFERENCES workspaces (id) ON DELETE CASCADE,
+    user_id         UUID REFERENCES users (id) ON DELETE SET NULL,
+    conversation_id UUID,
+    provider        TEXT NOT NULL,
+    external_id     TEXT NOT NULL,
+    mode            TEXT NOT NULL,
+    outcome         TEXT NOT NULL,
+    truncated       BOOLEAN NOT NULL DEFAULT FALSE,
+    latency_ms      INT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_live_tool_calls_org_time
+    ON live_tool_calls (org_id, created_at DESC);
+
+-- Personal memory (Second Brain layer C): a few facts per person, carried
+-- across chats. Written ONLY from the person's own questions -- never from an
+-- answer, which can quote a document only they may read -- and used only to
+-- interpret the question and set tone, never as evidence. Private to
+-- (org_id, user_id). A fact dies with the chat it came from (the cascade)
+-- unless pinned, which detaches it (source_conversation_id -> NULL).
+ALTER TABLE organizations ADD COLUMN IF NOT EXISTS memory_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS memory_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+CREATE TABLE IF NOT EXISTS user_memory (
+    id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id                 UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    user_id                UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    kind                   TEXT NOT NULL,
+    text                   TEXT NOT NULL,
+    source_conversation_id UUID REFERENCES conversations (id) ON DELETE CASCADE,
+    pinned                 BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE user_memory ADD COLUMN IF NOT EXISTS announced BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_user_memory_text
+    ON user_memory (org_id, user_id, lower(text));
+CREATE INDEX IF NOT EXISTS idx_user_memory_owner ON user_memory (org_id, user_id, created_at DESC);

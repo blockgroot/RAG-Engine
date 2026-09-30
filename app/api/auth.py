@@ -37,6 +37,7 @@ from ..jobs.autosync import sync_after_connect
 from ..security.client_ip import resolve_client_ip
 from ..security.rate_limit import check_rate_limit
 from ..vectorstore import build_vector_store
+from ..auth.oauth_state import LINK_GITHUB, peek_state_provider
 from ..workspaces import assert_member
 from .deps import SESSION_COOKIE_FLAGS, SESSION_COOKIE_NAME, get_session
 from .validation import MAX_EMAIL_CHARS, MAX_NAME_CHARS, bounded
@@ -473,6 +474,15 @@ def callback(
                 ),
             )
         return _frontend_redirect(settings, _github_finish_path(None))
+
+    if is_github and peek_state_provider(state) == LINK_GITHUB:
+        # "Link your GitHub account" shares this callback: a GitHub App has one
+        # registered callback URL. Routed on the STATE's provider, and finished
+        # by consuming it under that provider, so neither flow can complete the
+        # other.
+        from .account import finish_github_link
+
+        return finish_github_link(oauth_provider, code, state, settings)
 
     try:
         org_id, workspace_id = consume_state(state, provider=provider)

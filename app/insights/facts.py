@@ -137,10 +137,11 @@ def record_document_facts(
     sql = f"""
         INSERT INTO activity_facts
             (org_id, workspace_id, provider, kind, actor, subject, occurred_at,
-             url, external_id)
+             url, external_id, actor_key)
         SELECT d.org_id, d.workspace_id, d.source_provider, %(kind)s,
                d.source_last_editor, {subject},
-               d.source_last_modified, d.source_uri, d.source_external_id
+               d.source_last_modified, d.source_uri, d.source_external_id,
+               d.source_editor_key
           FROM documents d
          WHERE d.org_id = %(org_id)s
            AND d.source_provider = %(provider)s
@@ -151,7 +152,8 @@ def record_document_facts(
         DO UPDATE SET occurred_at = EXCLUDED.occurred_at,
                       subject     = EXCLUDED.subject,
                       url         = EXCLUDED.url,
-                      actor       = EXCLUDED.actor
+                      actor       = EXCLUDED.actor,
+                      actor_key   = EXCLUDED.actor_key
     """
 
     params = {

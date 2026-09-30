@@ -48,6 +48,7 @@ from .base import OAuthProvider, OAuthTokens, compute_expires_at
 _INSTALL_URL_TEMPLATE = "https://github.com/apps/{slug}/installations/new"
 _TOKEN_URL = "https://github.com/login/oauth/access_token"
 _USER_INSTALLATIONS_URL = "https://api.github.com/user/installations"
+_USER_URL = "https://api.github.com/user"
 _API_VERSION = "2022-11-28"
 _TIMEOUT = 15.0
 
@@ -269,6 +270,40 @@ class GitHubAppProvider(OAuthProvider):
         )
 
     # -- internals ---------------------------------------------------------
+
+    def identify_user(self, code: str) -> tuple[str, str | None]:
+        """``(login, display_name)`` of whoever authorized, for account linking.
+
+        Second Brain 1.2: exchanges the code, reads ``GET /user`` once and
+        DISCARDS the token -- linking needs proof of who you are on GitHub, not
+        ongoing access, and a stored user token would be a credential with no
+        reason to exist. Works whether or not the App is installed anywhere:
+        user-to-server tokens can always read ``/user``.
+        """
+        payload = self._post_token_exchange(code)
+        token = payload.get("access_token")
+        if not token:
+            raise OAuthError(
+                f"GitHub OAuth exchange returned no access token: {payload.get('error') or payload}"
+            )
+        try:
+            response = httpx.get(
+                _USER_URL,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": _API_VERSION,
+                },
+                timeout=_TIMEOUT,
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise OAuthError(f"GitHub GET /user failed: {exc}", cause=exc) from exc
+        user = response.json() or {}
+        login = (user.get("login") or "").strip()
+        if not login:
+            raise OAuthError("GitHub did not return a login for this account")
+        return login, (user.get("name") or "").strip() or None
 
     def _post_token_exchange(self, code: str) -> dict:
         """POST the code exchange.

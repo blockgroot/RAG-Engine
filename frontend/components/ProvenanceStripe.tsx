@@ -63,14 +63,21 @@ export function ProvenanceStripe({
   agent,
   attachments,
   citations,
+  connected,
+  live,
 }: {
   source: string;
   agent?: string;
+  /** Tools a connected answer read; two or more are all named. */
+  connected?: string[];
   /** Files that were in this prompt. */
   attachments?: string[];
   /** How many corpus chunks were also in it. */
   citations?: number;
+  /** Connectors read live for this answer (Second Brain live tools). */
+  live?: { provider: string; fetched_at: string }[];
 }) {
+  const liveChip = live && live.length > 0 ? <LiveChip live={live} /> : null;
   // A file the asker attached OUTRANKS the routed agent as the pill's
   // identity, and that is a correctness fix rather than a preference. With
   // blending, a PDF question routes to whichever source scores best and the
@@ -99,6 +106,7 @@ export function ProvenanceStripe({
         <span className="provenance-dot" style={{ background: color }} />
         {kind}
         <span className="provenance-agent provenance-file">{detail}</span>
+        {liveChip}
       </span>
     );
   }
@@ -117,9 +125,13 @@ export function ProvenanceStripe({
         ? source
         : agent || source;
   const color = COLORS[identity] || COLORS.none;
-  const label = LABELS[identity] || LABELS.none;
-  const agentName =
-    grounded && source !== "web"
+  const crossTool = grounded && source !== "web" && (connected?.length ?? 0) > 1;
+  const label = crossTool
+    ? connected!.map((p) => LABELS[p] || p).join(" + ")
+    : LABELS[identity] || LABELS.none;
+  const agentName = crossTool
+    ? "Connected answer"
+    : grounded && source !== "web"
       ? agent === "insights"
         ? "Charts"
         : AGENT_NAMES[agent || ""]
@@ -133,6 +145,26 @@ export function ProvenanceStripe({
       <span className="provenance-dot" style={{ background: color }} />
       {label}
       {agentName && <span className="provenance-agent">{agentName}</span>}
+      {grounded && liveChip}
+    </span>
+  );
+}
+
+/** "· live": which connectors were read at question time, and when. Only
+ * rendered from `live_sources`, which the backend fills only for a live read
+ * that reached the prompt -- a synced copy is never labelled live. */
+function LiveChip({ live }: { live: { provider: string; fetched_at: string }[] }) {
+  const names = Array.from(new Set(live.map((l) => LABELS[l.provider] || l.provider)));
+  const when = new Date(live[0].fetched_at);
+  const time = isNaN(when.getTime())
+    ? ""
+    : when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return (
+    <span
+      className="provenance-agent provenance-live"
+      title={`Read live from ${names.join(" and ")}${time ? ` at ${time}` : ""}`}
+    >
+      {names.join(" + ")} · live
     </span>
   );
 }

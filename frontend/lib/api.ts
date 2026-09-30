@@ -132,6 +132,39 @@ export interface Attachment {
   flagged?: boolean;
 }
 
+/** One of the member's own accounts in a connected tool, linked to them. */
+export interface LinkedIdentity {
+  id: string;
+  provider: string;
+  account: string;
+  email: string | null;
+  display_name: string | null;
+  verified_by: "provider_email" | "oauth" | null;
+  can_unlink: boolean;
+}
+
+export interface LinkedIdentities {
+  identities: LinkedIdentity[];
+  github_link_available: boolean;
+}
+
+export interface MemoryFact {
+  id: string;
+  kind: "preference" | "context" | "interest";
+  text: string;
+  pinned: boolean;
+  created_at: string | null;
+}
+
+export interface PersonalMemory {
+  /** Off for the whole deployment: nothing is remembered anywhere. */
+  available: boolean;
+  org_enabled: boolean;
+  enabled: boolean;
+  can_manage_org: boolean;
+  facts: MemoryFact[];
+}
+
 export interface Me {
   user_id: string;
   org_id: string;
@@ -754,6 +787,43 @@ export const api = {
         ...(input.workspaceId ? { workspace_id: input.workspaceId } : {}),
       }),
     }),
+
+  linkedIdentities: () => request<LinkedIdentities>("/account/identities"),
+
+  /** A full-page navigation, not a fetch: it ends on GitHub's consent screen. */
+  githubLinkUrl: () => `${API_BASE_URL}/account/identities/github/link`,
+
+  unlinkIdentity: (identityId: string) =>
+    request<{ ok: boolean }>(`/account/identities/${encodeURIComponent(identityId)}`, {
+      method: "DELETE",
+    }),
+
+  personalMemory: () => request<PersonalMemory>("/account/memory"),
+
+  setMemoryEnabled: (enabled: boolean) =>
+    request<{ enabled: boolean }>("/account/memory/settings", {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
+
+  setOrgMemoryEnabled: (enabled: boolean) =>
+    request<{ org_enabled: boolean }>("/account/memory/org", {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
+
+  pinMemory: (id: string, pinned: boolean) =>
+    request<{ id: string; pinned: boolean }>(`/account/memory/${encodeURIComponent(id)}/pin`, {
+      method: "POST",
+      body: JSON.stringify({ pinned }),
+    }),
+
+  forgetMemory: (id: string) =>
+    request<{ deleted: string }>(`/account/memory/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+
+  clearMemory: () => request<{ deleted: number }>("/account/memory", { method: "DELETE" }),
 
   feedbackSummary: (days = 30) =>
     request<FeedbackSummary>(`/admin/feedback?days=${days}`),
