@@ -67,6 +67,9 @@ class InsightsAgent(Agent):
                 source=SOURCE_NONE,
                 chart=None,
             )
+        if parsed.table_id:
+            return _answer_table(parsed, org_id=org_id, workspace_id=workspace_id,
+                                 viewer=viewer)
         try:
             panel, period = _run_spec(
                 parsed,
@@ -137,6 +140,180 @@ class InsightsAgent(Agent):
             role=role,
         )
         return chunk_answer(response.answer), response
+
+
+def _answer_table(spec: ChartSpec, *, org_id, workspace_id, viewer) -> AgentResponse:
+    """A chart of a table inside a document, as an AgentResponse."""
+    try:
+        panel, period = run_table_spec(
+            spec, org_id=org_id, workspace_id=workspace_id, viewer=viewer,
+        )
+    except CannotChart as exc:
+        return AgentResponse(answer=str(exc), grounded=False, source=SOURCE_NONE, chart=None)
+    except ProviderError:
+        return AgentResponse(answer="Could not run that chart.", grounded=False,
+                             source=SOURCE_NONE, chart=None)
+    caption = panel["title"] if panel["points"] else (
+        f"{panel['title']}. No rows in that table match."
+    )
+    return AgentResponse(answer=caption, grounded=bool(panel["points"]),
+                         source=panel["provider"], chart=panel, chart_period=period)
+
+
+def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer) -> tuple[dict, str]:
+    """Run a document-table chart. Raises ``CannotChart`` / ``ProviderError``.
+
+    The table is looked up AGAIN with the viewer, here, at run time: the
+    resolver offered it through the access predicate a moment ago, but a spec
+    can also arrive as a stored dict, and a table must never be more visible
+    than its document. No viewer means no table chart at all -- the
+    unrestricted reading is for ingest and eval, never for a person.
+    """
+    from ..doctables import store as table_store
+
+    if viewer is None:
+        raise CannotChart("I can't chart that here.")
+    table = table_store.get_table(
+        spec.table_id, org_id=org_id, workspace_id=workspace_id, viewer=viewer,
+    )
+    if table is None:
+        # Deleted, re-indexed or not shared with this person: indistinguishable
+        # on purpose, and no title is repeated back.
+        raise CannotChart("That table is no longer available to chart.")
+
+    # The resolver checked these against the table it offered; a spec can
+    # also arrive as a stored dict, so the column TYPES are checked again --
+    # a sum over a text column is a SQL cast error, not a chart.
+    def _need(key, types, role):
+        col = table.column(key) if key else None
+        if key and (col is None or col.get("type") not in types):
+            raise CannotChart(f"I can't chart it that way: that column can't be the {role}.")
+    _need(spec.group_by, ("category", "date"), "breakdown")
+    _need(spec.split_by, ("category",), "second breakdown")
+    if (spec.measure or "count") != "count":
+        if not spec.value:
+            raise CannotChart("I can't chart it that way: there is no number column to add up.")
+        _need(spec.value, ("number",), "value to add up")
+    for key, _ in spec.filters:
+        _need(key, ("category",), "filter")
+    filters = tuple(
+        (key, _match_table_value(table, key, raw)) for key, raw in spec.filters
+    )
+    try:
+        points = table_store.run_table_query(
+            table, measure=spec.measure or "count", value_key=spec.value,
+            group_key=spec.group_by, split_key=spec.split_by, period=spec.period,
+            filters=filters,
+        )
+    except ValueError as exc:
+        raise CannotChart(f"I can't chart it that way. {exc}") from exc
+
+    def name(key):
+        col = table.column(key) if key else None
+        return col["name"] if col else key
+
+    value_col = table.column(spec.value) if spec.value else None
+    measure = spec.measure or "count"
+    what = "Rows" if measure == "count" else f"{measure.title()} of {name(spec.value)}"
+    title = what
+    if spec.group_by:
+        title += f" by {name(spec.group_by)}"
+        if spec.split_by:
+            title += f" and {name(spec.split_by)}"
+    for key, value in filters:
+        title += f" — {name(key)}: {value}"
+    title += f" — {table.name}"
+
+    group_col = table.column(spec.group_by) if spec.group_by else None
+    by_date = bool(group_col and group_col.get("type") == "date")
+    notes = [f"From the table in \"{table.document_title}\"."] + list(table.notes)
+    if value_col and value_col.get("unparsed"):
+        notes.append(f"{value_col['unparsed']} {name(spec.value)} cells were not "
+                     "numbers and are left out.")
+    if table.truncated:
+        notes.append("The table was longer than we keep; later rows are not counted.")
+
+    unit = "rows" if measure == "count" else (
+        (value_col or {}).get("unit") or name(spec.value)
+    )
+    panel = {
+        "id": f"table:{table.id}:{spec.group_by or '-'}:{spec.split_by or '-'}:"
+              f"{measure}:{spec.value or '-'}:"
+              + ",".join(f"{k}={v}" for k, v in filters),
+        "provider": table.provider,
+        "title": title,
+        "focus": None,
+        "chart": spec.chart,
+        # On a DATE breakdown the dates are the time axis and the split (if
+        # any) is the category; otherwise the breakdown is the category axis.
+        "group_by": (spec.split_by if by_date else spec.group_by),
+        "split_by": (None if by_date else spec.split_by),
+        "filters": [list(f) for f in filters],
+        "unit": unit,
+        "caveat": " ".join(notes),
+        "points": [
+            {"bucket": p.bucket or "", "group": p.group, "series": p.series,
+             "value": p.value}
+            for p in points
+        ],
+        "details": _table_details(table, filters, date_key=spec.group_by if by_date else None),
+        "measured_since": None,
+        "table": {"id": table.id, "name": table.name, "document": table.document_title},
+    }
+    return panel, spec.period
+
+
+def _match_table_value(table, key, raw) -> str:
+    """A typed filter value -> a value that has rows, or a refusal naming them."""
+    from ..doctables import store as table_store
+
+    values = table_store.list_values(table, key)
+    wanted = raw.strip().lower()
+    exact = [v for v in values if v.lower() == wanted]
+    if exact:
+        return exact[0]
+    squashed = _squash(wanted)
+    partial = [v for v in values if squashed and squashed in _squash(v)]
+    if len(partial) == 1:
+        return partial[0]
+    col = table.column(key) or {}
+    named = enforce_link_provenance(raw, [], ())
+    if len(partial) > 1:
+        raise CannotChart(f"\"{named}\" matches more than one: {_listed(partial)}. Which one?")
+    raise CannotChart(
+        f"{table.name} has no {col.get('name', 'value')} \"{named}\". "
+        f"What it has: {_listed(values)}."
+    )
+
+
+def _table_details(table, filters, *, date_key) -> list[dict]:
+    """The rows behind the bars, for the hover. Never fatal."""
+    from ..doctables import store as table_store
+
+    try:
+        rows = table_store.list_rows(table, filters=filters)
+    except ProviderError:
+        return []
+    names = [c.get("name", "") for c in table.columns]
+    keys = [c.get("key") for c in table.columns]
+    out = []
+    for cells, raw in rows:
+        shown = " · ".join(
+            f"{names[i]}: {raw[int(keys[i][1:])]}"
+            for i in range(len(keys))
+            if keys[i] and int(keys[i][1:]) < len(raw) and raw[int(keys[i][1:])]
+        )
+        row = {
+            "subject": shown[:300],
+            "url": table.source_uri,
+            # Cell values by column key, so the hover matches a bar on the
+            # column it is grouped by (Chart.tsx `fieldOf`).
+            "attrs": {k: str(v) for k, v in cells.items()},
+        }
+        if date_key and cells.get(date_key):
+            row["at"] = str(cells[date_key])
+        out.append(row)
+    return out
 
 
 def _as_spec(spec: ChartSpec | dict | None) -> ChartSpec | None:

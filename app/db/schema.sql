@@ -837,6 +837,42 @@ ALTER TABLE activity_facts ADD COLUMN IF NOT EXISTS actor_key TEXT;
 -- row written before this column existed, until its next sync re-reads it).
 ALTER TABLE activity_facts ADD COLUMN IF NOT EXISTS attrs JSONB NOT NULL DEFAULT '{}'::jsonb;
 
+-- Tables found INSIDE documents (a Google Sheet, a CSV, a pipe table in a
+-- Notion page or Google Doc, a table in a Word file), kept as typed rows so a
+-- chart can sum a column with SQL instead of reading numbers back out of
+-- chunk text (app/doctables, plan docs/plans/2026-09-30-open-ended-charts.md
+-- Phase 3). Hangs off `documents` and cascades with it, so access is the
+-- document's own (`visibility_predicate` on the JOIN) and a re-ingest, which
+-- replaces the document row, replaces its tables too. `columns` is the
+-- profile: `[{key: "c0", name, type: number|date|category|text, unit, ...}]`;
+-- `key` is ours and is the only thing ever spliced into SQL.
+CREATE TABLE IF NOT EXISTS doc_tables (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE,
+    document_id  UUID NOT NULL REFERENCES documents (id) ON DELETE CASCADE,
+    position     INT NOT NULL,
+    name         TEXT NOT NULL,
+    columns      JSONB NOT NULL,
+    row_count    INT NOT NULL,
+    truncated    BOOLEAN NOT NULL DEFAULT FALSE,
+    notes        TEXT[] NOT NULL DEFAULT '{}',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (document_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_doc_tables_scope ON doc_tables (org_id, workspace_id);
+
+-- One row per table row. `cells` holds normalized values by column key (a
+-- number as a JSON number, a date as ISO text, an unparseable cell absent);
+-- `raw` keeps what the document actually said, for the hover.
+CREATE TABLE IF NOT EXISTS doc_table_rows (
+    table_id UUID NOT NULL REFERENCES doc_tables (id) ON DELETE CASCADE,
+    row_no   INT NOT NULL,
+    cells    JSONB NOT NULL,
+    raw      JSONB NOT NULL,
+    PRIMARY KEY (table_id, row_no)
+);
+
 -- A chart a member asked for and kept. Personal, scoped `(org_id, user_id)`
 -- like `schedulers` and unlike every other tenant table -- a pin is one
 -- person's shortcut, never published to anyone, which is why this feature has

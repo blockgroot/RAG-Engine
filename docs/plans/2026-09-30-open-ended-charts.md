@@ -1,10 +1,11 @@
 # Open-Ended Charts Plan
 
-> **Status (2026-09-30): Phases 1 and 2 BUILT** (`app/insights/query.py`,
-> `activity_facts.attrs`, `registry.ATTRS`; tests `test_insights_query.py`,
-> `test_insights_attrs.py`). Phases 3 and 4 are still plan only. This file
-> records what was investigated, what was decided and in what order to build
-> it. The shipped chart system is described in
+> **Status (2026-09-30): Phases 1, 2 and 3 BUILT** (`app/insights/query.py`,
+> `activity_facts.attrs`, `app/doctables` + `app/insights/tables.py`; tests
+> `test_insights_query.py`, `test_insights_attrs.py`, `test_doctables.py`).
+> Phase 3 v1 reads Drive Sheets (first tab), CSVs, pipe tables in Notion/Docs
+> and Word tables; XLSX, PDF tables and multi-tab sheets are not read yet.
+> Phase 4 is still plan only. The shipped chart system is described in
 > `docs/plans/2026-09-02-visual-representation.md` and CLAUDE.md §3 "Visual
 > Representation".
 

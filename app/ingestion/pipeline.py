@@ -474,6 +474,33 @@ def _store_scores(store: VectorStore, document_id: str, scores, guard: Injection
         logger.warning("Could not store injection scores for %s", document_id, exc_info=True)
 
 
+def _store_tables(document_id, doc, *, org_id: str, workspace_id: str | None) -> None:
+    """Keep this document's tables as typed rows, for charts (app/doctables).
+
+    A re-ingest deletes and re-inserts the `documents` row, and the tables
+    cascade with it, so an edit that removed a table cannot leave its rows
+    chartable -- which is why a document with no tables costs no query here.
+    Never raises: a table that failed to store costs a chart, never the
+    document that was just indexed.
+    """
+    try:
+        from ..doctables import extract
+        from ..doctables.store import replace_document_tables
+
+        raw = doc.tables
+        if raw is None:
+            raw = extract.find_markdown_tables(doc.content or "", title=doc.title)
+        tables = [t for t in (extract.profile(r) for r in raw) if t is not None]
+        if not tables:
+            return
+        replace_document_tables(
+            document_id, org_id=org_id, workspace_id=workspace_id,
+            tables=tables[: extract.MAX_TABLES_PER_DOCUMENT],
+        )
+    except Exception:  # noqa: BLE001 - see docstring
+        logger.warning("Could not store tables of %s", doc.external_id, exc_info=True)
+
+
 def ingest_source(
     adapter: SourceAdapter,
     org_id: str,
@@ -698,6 +725,7 @@ def ingest_source(
             editor_key=meta_editor,
         )
         _store_scores(store, document_id, scores, guard)
+        _store_tables(document_id, doc, org_id=org_id, workspace_id=workspace_id)
         doc_ids.append(document_id)
         ingested_external_ids.append(doc.external_id)
         chunks_total += len(chunks)

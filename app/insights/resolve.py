@@ -25,6 +25,11 @@ from dataclasses import dataclass, replace
 from ..core.exceptions import ProviderError
 from ..security.untrusted import UNTRUSTED_POLICY, UNTRUSTED_REMINDER, scrub_untrusted_text
 from . import query, registry
+from . import tables as doc_tables
+
+#: `ChartSpec.metric` for a chart of a table inside a document. Not a registry
+#: key on purpose: nothing that expects a Metric can be handed one by mistake.
+TABLE_METRIC = "doc_table"
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +75,11 @@ class ChartSpec:
     #: ``((dim, raw_value), ...)`` -- RAW like `focus`, resolved against real
     #: rows at run time. A tuple so the spec stays hashable and frozen.
     filters: tuple[tuple[str, str], ...] = ()
+    #: A chart of a table INSIDE a document (app/doctables): the table's id,
+    #: and the number column a sum/average reads. `metric` is TABLE_METRIC,
+    #: and group_by/split_by/filters hold that table's column keys.
+    table_id: str | None = None
+    value: str | None = None
 
 
 def spec_to_dict(spec: ChartSpec) -> dict:
@@ -90,6 +100,8 @@ def spec_to_dict(spec: ChartSpec) -> dict:
         "split_by": spec.split_by,
         "measure": spec.measure,
         "filters": [list(f) for f in spec.filters],
+        "table_id": spec.table_id,
+        "value": spec.value,
     }
 
 
@@ -108,6 +120,8 @@ def spec_from_dict(data: dict) -> ChartSpec:
         split_by=data.get("split_by"),
         measure=data.get("measure"),
         filters=filters,
+        table_id=data.get("table_id"),
+        value=data.get("value"),
     )
 
 
@@ -277,7 +291,7 @@ def _missing(providers: list[str]) -> list[str]:
 
 def _prompt(
     question: str, metrics: list[registry.Metric], *, github: bool = False,
-    missing: list[str] | None = None,
+    missing: list[str] | None = None, tables: list | None = None,
 ) -> str:
     # The question is user text reaching a prompt, so it is scrubbed and fenced
     # like any other untrusted input. That is a mitigation, not the guarantee:
@@ -295,7 +309,9 @@ def _prompt(
         "shape). They do not have to name pie/bar/line — pick a default "
         "shape if they omitted one.\n"
         "A visual of topics or themes inside a document is NOT countable "
-        "here — intent=chart with metric null, never qa.\n\n"
+        "here — intent=chart with metric null, never qa"
+        + (" — unless it is FIGURES in one of the document tables listed "
+           "below" if tables else "") + ".\n\n"
         # Offered ONLY when GitHub is connected: naming an outcome the tenant
         # cannot reach invites the model to pick it, which would turn an
         # answerable document question into a dead end.
@@ -322,6 +338,18 @@ def _prompt(
             "substitute a connector they did have -- charting Notion for a "
             "question about Slack answers a question nobody asked.\n\n"
             if missing else ""
+        ) + (
+            "TABLES INSIDE DOCUMENTS the asker can open (figures written in a "
+            "sheet or a document, not app activity):\n"
+            f"{doc_tables.catalogue(tables)}\n"
+            "To chart one: intent=chart, metric null, \"table\" = its handle "
+            "(T1...), and group_by / split_by / value / filters use that "
+            "table's COLUMN NAMES exactly as listed. measure = count (rows), "
+            "sum, average, min or max; value = the number column to add up. "
+            "Prefer a table when they ask about figures IN a document (sales, "
+            "budget, revenue, headcount); prefer a metric for activity in the "
+            "apps (edits, pull requests, tasks).\n\n"
+            if tables else ""
         ) +
         f"Periods: {', '.join(registry.PERIODS)}\n"
         "Shapes: line = over time; bar = ranking; pie = share of a whole "
@@ -334,6 +362,8 @@ def _prompt(
         ) +
         '"group_by": "<option or null>", "split_by": "<option or null>", '
         '"measure": "<option or null>", "filters": {"<dim>": "<value>"}, '
+        + ('"table": "<T handle or null>", "value": "<number column or null>", '
+           if tables else "") +
         '"period": "<period>", '
         '"chart": "<shape or null>", "focus": "<one named thing or null>", '
         '"live": true|false}\n\n'
@@ -412,19 +442,26 @@ def classify_question(
     providers: list[str],
     llm=None,
     fail_open: bool = True,
+    tables: list | None = None,
 ) -> AskIntent:
     """Classify Ask as qa, a validated chart, or a visual we cannot count.
+
+    ``tables`` are document tables the asker may open (``doctables.store.
+    list_tables`` with their viewer); only those sharing a word with the
+    question are offered (``insights.tables.rank``).
 
     ``fail_open`` is for the chat router: a dead LLM must not refuse a leave
     policy question. The dedicated ``/insights/ask`` path sets it False so a
     failure stays a refusal, matching the old ask-box contract.
     """
     metrics = _available(providers)
+    offered = doc_tables.rank(question, list(tables or []))
+    handles = {f"T{i}": t for i, t in enumerate(offered, start=1)}
     # Named so the model can say "Slack is not connected" instead of "I cannot
     # chart that" -- two different facts, and the second is a lie when the
     # first is true.
     missing = _missing(providers)
-    if not metrics:
+    if not metrics and not handles:
         if fail_open:
             return AskIntent("qa")
         return AskIntent(
@@ -444,7 +481,8 @@ def classify_question(
     github = "github" in providers
     try:
         reply = llm.generate(
-            _prompt(question, metrics, github=github, missing=missing),
+            _prompt(question, metrics, github=github, missing=missing,
+                    tables=offered),
             max_tokens=MAX_TOKENS,
         )
     except Exception as exc:  # noqa: BLE001
@@ -462,7 +500,7 @@ def classify_question(
 
     intent = _parse_intent(
         reply, metrics, fail_open=fail_open, github=github,
-        missing=missing, providers=providers,
+        missing=missing, providers=providers, handles=handles,
     )
     return replace(
         _finish(intent, question, metrics, fail_open=fail_open),
@@ -645,6 +683,7 @@ def _parse_intent(
     github: bool = False,
     missing: list[str] | None = None,
     providers: list[str] | None = None,
+    handles: dict | None = None,
 ) -> AskIntent:
     """Parse and check the model's reply. Nothing gets the benefit of the doubt."""
     allowed = {m.key: m for m in metrics}
@@ -693,14 +732,33 @@ def _parse_intent(
         )
         intent = "chart" if isinstance(data.get("metric"), str) else "qa"
 
+    picked_table = bool(handles) and isinstance(data.get("table"), str)
     if intent not in ("qa", "chart"):
         # Older replies had no intent field: a metric means chart, else qa/refuse.
-        intent = "chart" if isinstance(data.get("metric"), str) else (
+        intent = "chart" if isinstance(data.get("metric"), str) or picked_table else (
             "qa" if fail_open else "chart"
         )
 
     if intent == "qa":
         return AskIntent("qa")
+
+    if picked_table:
+        # A table inside a document. Validated against THAT table's columns;
+        # a handle that was never offered is ignored and the metric path below
+        # decides, exactly as for a hallucinated metric key.
+        try:
+            pick = doc_tables.parse_pick(data, handles)
+        except doc_tables.TableRefusal as exc:
+            return AskIntent("refuse", message=f"I can't chart it that way. {exc}")
+        if pick is not None:
+            period = data.get("period")
+            if period not in registry.PERIODS:
+                period = DEFAULT_PERIOD
+            return AskIntent("chart", spec=ChartSpec(
+                metric=TABLE_METRIC, group_by=pick.group_by, period=period,
+                chart=pick.chart, split_by=pick.split_by, measure=pick.measure,
+                filters=pick.filters, table_id=pick.table_id, value=pick.value,
+            ))
 
     key = data.get("metric")
     metric = allowed.get(key) if isinstance(key, str) else None

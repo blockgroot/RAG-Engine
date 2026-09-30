@@ -1086,6 +1086,7 @@ def _stream_answer_body(
         requested_agent=requested_agent,
         context=_previous_question(org_id, conversation_id, workspace_id, session),
         graph_plan=plan_future,
+        viewer=viewer_for(session),
     )
     plan = _graph_plan_result(plan_future)
     # The classifier's live-data verdict rides the request note to the gateway

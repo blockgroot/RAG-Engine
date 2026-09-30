@@ -598,12 +598,32 @@ def _has_authorized_repos(org_id: str, workspace_id: str | None) -> bool:
     return bool(config.get("repos"))
 
 
+def _chartable_tables(org_id: str, workspace_id: str | None, viewer) -> list:
+    """Document tables THIS person may open, for the chart classifier.
+
+    No viewer means none: a table is only ever offered through the document
+    access predicate, and "no viewer" is the unrestricted reading (ingest,
+    eval), which must never reach a person's question. Never raises -- a
+    table listing that fails costs table charts, not the question.
+    """
+    if viewer is None or getattr(viewer, "is_unrestricted", False):
+        return []
+    try:
+        from ..doctables.store import list_tables
+
+        return list_tables(org_id=org_id, workspace_id=workspace_id, viewer=viewer)
+    except Exception:  # noqa: BLE001
+        logger.warning("Agent routing: could not list document tables", exc_info=True)
+        return []
+
+
 def _try_insights_route(
     question: str,
     connected: set[str],
     org_id: str,
     workspace_id: str | None,
     live_out: list | None = None,
+    viewer=None,
 ) -> RoutingDecision | None:
     """Chart vs document vs live GitHub, decided by the classifier.
 
@@ -619,7 +639,10 @@ def _try_insights_route(
     if not providers:
         return None
     try:
-        intent = classify_question(question, providers=providers, fail_open=True)
+        intent = classify_question(
+            question, providers=providers, fail_open=True,
+            tables=_chartable_tables(org_id, workspace_id, viewer),
+        )
     except Exception:  # noqa: BLE001
         logger.warning("Agent routing: chart classifier failed", exc_info=True)
         return None
@@ -713,12 +736,16 @@ def choose_agent(
     requested_agent: str | None = None,
     context: str | None = None,
     graph_plan=None,
+    viewer=None,
 ) -> RoutingDecision:
-    """Which agent answers, plus the classifier's live-data verdict."""
+    """Which agent answers, plus the classifier's live-data verdict.
+
+    ``viewer`` lets the chart classifier offer document tables the asker may
+    open; without one, none are offered."""
     live: list = []
     decision = _choose_agent(
         question, org_id, workspace_id=workspace_id, requested_agent=requested_agent,
-        context=context, graph_plan=graph_plan, live_out=live,
+        context=context, graph_plan=graph_plan, live_out=live, viewer=viewer,
     )
     return replace(decision, needs_live=live[0] if live else None)
 
@@ -732,6 +759,7 @@ def _choose_agent(
     context: str | None = None,
     graph_plan=None,
     live_out: list | None = None,
+    viewer=None,
 ) -> RoutingDecision:
     """Decide which agent answers ``question``. Never raises.
 
@@ -809,7 +837,9 @@ def _choose_agent(
             _probe_scores, question, org_id, workspace_id, connected,
         )
 
-    visual = _try_insights_route(question, connected, org_id, workspace_id, live_out=live_out)
+    visual = _try_insights_route(
+        question, connected, org_id, workspace_id, live_out=live_out, viewer=viewer,
+    )
     if visual is not None:
         return visual
 

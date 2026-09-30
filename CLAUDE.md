@@ -1825,6 +1825,7 @@ facts, a space's Ask reads that space only — no separate company dashboard.
   generated rather than counted.
 - **The model COMPOSES a chart over one metric; it no longer only picks one** (`insights/query.py`, plan `docs/plans/2026-09-30-open-ended-charts.md` Phases 1–2). A metric fixes WHAT is counted; the grammar adds `split_by` (second grouping, drawn "group · split", hover matches BOTH), `measure` (distinct people/subjects; average/longest for durations; total/average of a number attribute) and `filters` (actor/state/attribute VALUES, resolved against real rows like `focus`, then bound). Closed sets per metric, validated in the resolver AND `store.run_metric`; a protected metric (floor/owners_only/series_by = sentiment) admits none of it. Defaults are byte-identical SQL.
 - **`activity_facts.attrs` keeps what the source already returned** (GitHub PR `label`/`base` from the listing; Linear `priority`/`estimate`/`label`/`project` added to the SAME feed query — zero new requests). Only keys declared in `registry.ATTRS` are chartable; keys are spliced as JSON literals so they must be bare identifiers (pinned). A TAG groups via LEFT lateral join: an item counts under EACH tag and untagged items stay (caveat says both). Old rows are `{}` until their next sync's upsert (`DO UPDATE SET attrs`).
+- **Tables INSIDE documents are kept as typed rows** (`app/doctables`, `doc_tables`/`doc_table_rows`, plan Phase 3). Drive Sheets (first tab, one `files.export` CSV), Drive CSVs, pipe tables in Notion/Google Docs content, and Word tables (python-docx `paragraphs` skipped tables — now rendered as pipe tables for Q&A too). Types are decided per COLUMN, deterministically (Indian grouping, ₹/$/lakh/crore, day-first dates, N/A-style placeholders ignored for typing); an unparseable cell is ABSENT from a sum, never zero, and the caveat counts it. A Sheet embeds a DESCRIPTION of its columns (`extract.describe`), never its figures. A table hangs off `documents` (cascades with re-ingest) so access is the document's: offered only through `visibility_predicate` (`list_tables`), re-checked at RUN time (`get_table`), and NO viewer ⇒ no table chart (`routing._chartable_tables`, `run_table_spec`). The classifier sees ≤6 tables sharing a word with the question as `T1..` handles (`insights/tables.py`) and names columns by header text; mapping to keys (`c0`…, the only thing spliced) and type checks happen in code, twice.
 - **Chat and Slack dropped `focus` when serialising the spec into graph state** — "commits in the DAO repo" charted every repo. `resolve.spec_to_dict`/`spec_from_dict` is now the ONE serialisation; `/insights/ask` runs `insights_agent._run_spec` instead of its own copy (which also ignored focus).
 - **`ChartSpec.focus` is a FILTER, and it is the one model-supplied VALUE.**
   "chart commits in the DAO repo" used to resolve to `commits_by_author
@@ -2277,7 +2278,7 @@ partial unique indexes: org-wide vs workspace; `sync_requested_at` webhook flag
 `github_install_pending` · `query_answer_cache` · `api_rate_counters` ·
 `workspaces` / `workspace_members` · `org_signup_requests` · `schedulers`
 (scoped by `org_id` **and** `user_id`, unlike every other tenant table; `model` NULL = the configured default) ·
-`conversation_attachments` (metadata + `storage_key` only — the bytes and the extracted text are Cloudinary objects, `content` NULL on every row written since) · `feedback_and_gaps` (refusals + thumbs in one table; `user_id` is `ON DELETE SET NULL`, the only tenant table that does not cascade from a person) · `activity_facts` (the ONLY numeric substrate for charts; two partial unique
+`conversation_attachments` (metadata + `storage_key` only — the bytes and the extracted text are Cloudinary objects, `content` NULL on every row written since) · `feedback_and_gaps` (refusals + thumbs in one table; `user_id` is `ON DELETE SET NULL`, the only tenant table that does not cascade from a person) · `doc_tables` / `doc_table_rows` (tables inside documents, cascade from `documents`; `columns` profile, `cells` normalized by key, `raw` for the hover) · `activity_facts` (the numeric substrate for activity charts; two partial unique
 indexes on `external_id`, org-wide vs workspace; `attrs JSONB` = declared per-source fields) · `insight_pins` (personal,
 `(org_id, user_id)`; stores the spec, never the numbers) · `user_memory` (personal facts, private to `(org_id, user_id)`, cascades from its chat unless pinned; `users`/`organizations.memory_enabled` switches) · `person_identities`
 (one row per person per connector; `user_id` only on proof, `ON DELETE SET NULL`) ·
@@ -2354,9 +2355,11 @@ and the graph as a retrieval list — **built, OFF for answers**.
   `GOOGLE_FORMS_ENABLED` also requires every tenant to reconnect Google, so
   this is the one part of the feature that must be walked through live before
   it is trusted. **Do not chart a Sheet by embedding it** — numbers from
-  retrieved chunk text are unfalsifiable; Drive still skips
-  `application/vnd.google-apps.spreadsheet`. A form export in a connected
-  folder is Q&A fodder only if we add that MIME later, never a pie. Plan:
+  retrieved chunk text are unfalsifiable; a Sheet is now indexed as ROWS
+  (`app/doctables`) with only a column description embedded, and charted from
+  those rows. Not read yet: other tabs, XLSX (no `openpyxl`), PDF tables
+  (Docling deferred), and a Notion/Doc table indexed before this shipped
+  (captured on its next edit). Plan:
   `docs/plans/2026-09-02-visual-representation.md`.
 - Attachments: **still short of Onyx on purpose** — no Projects (a file is
   welded to one conversation, not a reusable library), no images (no vision
