@@ -119,8 +119,8 @@ wiring the day that lands, for read-side group expansion in the shape
 
 | | |
 | --- | --- |
-| **Verdict** | **DONE**. Public teams verified on staging; the private-team path needs a Business-plan workspace to test live |
-| **Last checked** | 2026-09-30 |
+| **Verdict** | **DONE**. Public teams VERIFIED on staging; the private-team path (members + workspace admins + per-issue `sharedAccess`) needs a Business-plan workspace to test live |
+| **Last checked** | 2026-10-01 |
 
 **Built** (`app/sources/linear.py::_access_for`, `tests/test_linear_access.py`). Public
 team ⇒ readable by the scope; private or restricted team ⇒ its members plus
@@ -174,8 +174,8 @@ withheld (fail closed).
 
 | | |
 | --- | --- |
-| **Verdict** | **DONE** for document-derived facts. **Not applicable** for GitHub and Forms. |
-| **Last checked** | 2026-09-30 |
+| **Verdict** | **DONE** and VERIFIED on staging (a Drive file shared with one member is counted and titled for them only). **Not applicable** for GitHub and Forms. |
+| **Last checked** | 2026-10-01 |
 
 **Built** (`app/insights/store.py::_viewer_filter`, `tests/test_insights_access.py`).
 Counts, hover rows, the subject list a refusal repeats back, and "measured since" all go
@@ -206,8 +206,8 @@ problem by two providers.
 
 | | |
 | --- | --- |
-| **Verdict** | **DONE** |
-| **Last checked** | 2026-09-30 |
+| **Verdict** | **DONE**, VERIFIED on staging by the team |
+| **Last checked** | 2026-10-01 |
 
 **Built** (`app/auth/email_change.py`, `tests/test_email_change.py`). There was no way to
 change an email at all, so an alias list alone would never have been written. `/account`
@@ -284,8 +284,16 @@ https://developers.google.com/workspace/admin/directory/reference/rest/v1/groups
 
 | | |
 | --- | --- |
-| **Verdict** | **DONE** for all four, closed until configured and never run live. Drive was previously recorded as BLOCKED; that was wrong. |
-| **Last checked** | 2026-09-30 |
+| **Verdict** | **DONE** and VERIFIED live on staging for all four (Slack, Linear, Notion, Drive). Drive was previously recorded as BLOCKED; that was wrong. |
+| **Last checked** | 2026-10-01 |
+
+**Measured on staging, 2026-10-01.** Slack message → sync queued <1 s, indexed ~20 s. Linear issue
+edit → sync queued 0.7 s. Notion new page → indexed ~30 s (Notion batches events). Drive edit →
+indexed ~3 min (Google's first ping beat the Doc's save; the edit landed on the cooled-down
+sync). A push inside the 3-min cooldown now starts by itself when it ends (`start_cooled_down_pushes`),
+not at the 10-min tick. **Linear needs NO `admin` scope** (staging runs on `read`), contradicting the
+earlier §4.1 note, BUT its OAuth-app webhook reaches only workspaces that authorize after it is
+enabled: every tenant connected before this ships must reconnect Linear once.
 
 **Built** (`app/api/webhooks.py`, `app/sources/drive_watch.py`, `app/api/slack_events.py`,
 `tests/test_webhook_sync.py`). A push flags the connection and starts its sync at once (unless it
@@ -355,6 +363,36 @@ connections whose `channel_ids` hold that channel. Setup: add the bot events
 `message.channels` and `message.groups` in the Slack app. Their scopes
 (`channels:history`, `groups:history`) are already granted, and the bot only receives
 events for channels it is in.
+
+### 3.6 GitHub answers ignore the asker's own repository access
+
+| | |
+| --- | --- |
+| **Verdict** | **OPEN (unverified)**. API route not yet checked against GitHub's reference. |
+| **Last checked** | 2026-10-01 |
+
+**What is missing.** GitHub reads live through the App installation's token, so every member
+of a scope can ask about every repository the installation authorized, whatever their own
+GitHub access is. `GitHubAgent` accepts the `Viewer` and ignores it (CLAUDE.md §3).
+
+**Why it matters.** An installation authorized on a private repository (a security fix, an
+acquisition) answers it to anyone in the space.
+
+**What would close it.** The member's GitHub login is already proven by "Linked accounts"
+(`person_identities`); a per-repo collaborator check against that login, cached per sync,
+is the Slack-channel shape. Check GitHub's collaborator-permission endpoint and the App
+permission it needs before calling this OPEN.
+
+### 3.7 The UI does not say which sources enforce per-document access
+
+| | |
+| --- | --- |
+| **Verdict** | **OPEN** |
+| **Last checked** | 2026-10-01 |
+
+CLAUDE.md §3 requires it ("a half-enforced guarantee that reads as whole is worse than
+none"); no Sources card says that Notion and GitHub access is per space, not per page or
+repository. A one-line note on those two cards.
 
 ### 4.2 Connector breadth
 
