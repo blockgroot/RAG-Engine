@@ -76,8 +76,14 @@ def record_github_facts(
 
     try:
         if reader is None:
-            from ..githublive import build_github_reader
+            from ..githublive import build_github_reader, refresh_installation_scope
 
+            # Hourly re-read of the repo list: picks up added repos and each
+            # one's `private` flag, which per-asker access depends on.
+            try:
+                refresh_installation_scope(org_id, workspace_id)
+            except Exception:  # noqa: BLE001 - the stored scope still works
+                logger.warning("insights: could not refresh GitHub scope for %s", org_id)
             reader = build_github_reader(org_id, workspace_id, settings=settings)
         repos = reader.list_repos()
     except Exception:  # noqa: BLE001 - see docstring

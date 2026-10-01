@@ -480,6 +480,22 @@ ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS reauth_reason TEXT;
 ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS sync_requested_at TIMESTAMPTZ;
 ALTER TABLE oauth_connections ADD COLUMN IF NOT EXISTS last_sync_at TIMESTAMPTZ;
 
+-- Drive push (`sources/drive_watch.py`): one `changes.watch` channel per Google
+-- connection. Drive is the one source that cannot push without us asking, and a
+-- channel EXPIRES (at most a week for `changes`) with no automatic renewal, so
+-- the tick re-watches before `expires_at`. `token_hash` is the SHA-256 of the
+-- secret we hand Google as the channel token; a notification whose
+-- X-Goog-Channel-Token does not hash to it is ignored. It can only ever flag a
+-- sync, but an unauthenticated flag is still a free way to spend quota.
+CREATE TABLE IF NOT EXISTS drive_watch_channels (
+    connection_id UUID PRIMARY KEY REFERENCES oauth_connections (id) ON DELETE CASCADE,
+    channel_id    TEXT NOT NULL UNIQUE,
+    resource_id   TEXT NOT NULL,
+    token_hash    TEXT NOT NULL,
+    expires_at    TIMESTAMPTZ NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Partial: only rows actually waiting are scanned, and "waiting" is the
 -- common-case empty set.
 CREATE INDEX IF NOT EXISTS idx_oauth_connections_sync_requested
@@ -574,6 +590,36 @@ CREATE TABLE IF NOT EXISTS magic_link_tokens (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_magic_link_tokens_email ON magic_link_tokens (email);
+
+-- A member's PRIOR sign-in addresses, kept when they change their email
+-- (`auth/email_change.py`). Document access is keyed on EMAIL (a file is shared
+-- with someone before they sign up), so without this a changed address stops
+-- matching every grant the person still holds in Drive/Slack/Linear. Onyx's
+-- `prior_emails`. One owner per address (PRIMARY KEY), and every row was PROVEN:
+-- it was this person's verified login until they replaced it. Read side
+-- ignores an alias another `users` row now signs in with, so an address that
+-- is reassigned never matches two people.
+CREATE TABLE IF NOT EXISTS user_email_aliases (
+    email      TEXT PRIMARY KEY,
+    user_id    UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_user_email_aliases_user ON user_email_aliases (user_id);
+
+-- A pending "change my email" request: a single-use token mailed to the NEW
+-- address. Separate from magic_link_tokens on purpose -- a consumed magic link
+-- signs in whoever owns its email, and this token must never be usable as a
+-- login. Hashed like magic links; `user_id` is bound at request time from the
+-- session, so the link proves the inbox and the session proved the account.
+CREATE TABLE IF NOT EXISTS email_change_requests (
+    token_hash  TEXT PRIMARY KEY,
+    user_id     UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    new_email   TEXT NOT NULL,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    consumed_at TIMESTAMPTZ,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_email_change_requests_user ON email_change_requests (user_id);
 
 -- Single-use OAuth `state` values (Phase 13) — CSRF/replay protection for the
 -- admin "Connect X" flow. Stored server-side (not just a signed JWT) so a

@@ -79,13 +79,19 @@ hook, and every process boundary must `close_pool()`.
     day they log in. `Viewer.acl()` (read) and `_normalize_viewers` (write) are
     the only two formatters and must agree; a mis-spelled entry fails CLOSED
     (the person is locked out), which is the safe direction.
+  - **A changed email keeps its old address as a PRIOR email** (`auth/email_change.py`,
+    `user_email_aliases`, Onyx's `prior_emails`; `Viewer.aliases` → `acl()`), or every
+    grant a source still records under it stops matching. The only writer is a
+    confirmed change (link mailed to the NEW address, GET page / POST act, token never a
+    login), so every alias was a verified login; an alias another `users` row now signs
+    in with is ignored on read, and `auto_link_by_email` treats aliases as proof too.
   - **`Viewer` has THREE states and collapsing any two is the leak.**
     `unrestricted()` = no filter (ingest, eval, CLI); a real email = that
     person; `public_only_viewer()` = scope-public only, whose empty ACL array
     makes `&&` false for every row. A signed-in session whose `users` row
     cannot be read gets `public_only`, never unrestricted (`deps.viewer_for`).
   - **Capture is per adapter and FAILS CLOSED** (`sources.factory.ACL_CAPABLE`,
-    `{"google", "slack"}` today). Drive's `permissions(type,emailAddress,domain,deleted)`
+    `{"google", "slack", "linear"}` today). Drive's `permissions(type,emailAddress,domain,deleted)`
     rides in the `files.list` we already make — zero extra calls, the
     `lastModifyingUser` trick again. `anyone` ⇒ scope-public, `user` ⇒ email,
     `domain` ⇒ `domain:<host>`, `group` ⇒ `group:<addr>`. An ACL-capable
@@ -238,15 +244,39 @@ hook, and every process boundary must `close_pool()`.
     it a weekly Drive report would MAIL them every file they were never shared
     on. Starter chips filter on the same predicate (`_TITLE_ACCESS_SQL`): a
     chip is a document title.
-  - **Coverage is honest and partial.** Drive enforces per-file; **Notion has
-    no per-page permission API at all** (Onyx does not sync Notion permissions
-    either), Slack (channel membership) and Linear (team membership) are
-    readable but NOT wired yet, so they stay scope-level. GitHub/Insights
-    accept the viewer and ignore it, with the reason at the call site: GitHub
-    reads live through the installation's token, and charts count
-    `activity_facts` rows, not documents — **chart counts and hover rows remain
-    scope-level**, a known gap. Say which sources enforce it in the UI: a
-    half-enforced guarantee that reads as whole is worse than none.
+  - **Coverage is honest and partial.** Drive enforces per-file, Slack per private
+    channel, Linear per private team; **Notion has no per-page permission API at all**
+    (Onyx does not sync Notion permissions either). GitHub enforces per private REPO
+    (below). Every Sources card says which (`ConnectionCard.ACCESS_NOTE`): a half-enforced
+    guarantee that reads as whole is worse than none.
+  - **A private GitHub repo answers only an asker whose LINKED login can open it**
+    (`githublive.access.restrict`, wrapping the reader for Ask AND scheduled reports). The
+    installation token reads every granted repo, so this used to answer any private repo to
+    the whole scope. Public repo = no call; private = `GET /repos/{r}/collaborators/{login}/permission`
+    (Metadata: read, which every installation has; GitHub resolves repo/team/org/enterprise
+    grants), cached 10 min per (org, repo, login), a failure hidden and never cached. The
+    CATALOG is filtered too (a private repo's name/description is what is withheld). No linked
+    login, or a Slack channel reply, = public repos only, with a refusal that says how to fix
+    it. `RepoRef.private` None (a scope stored before this) = private; the hourly facts tick
+    refreshes the scope, which records it. Charts over GitHub facts stay scope-level.
+  - **A Linear team's membership IS its issues' ACL** (`sources.linear._access_for`, the
+    Slack channel rule): a PUBLIC team is scope-public and costs no call; a PRIVATE or
+    RESTRICTED team (a non-private team inside a private-team boundary, treated as
+    members-only until they join) is its members' emails PLUS workspace admins/owners (Linear: "Private teams are visible
+    only to team members and workspace admins"; one `users` query per sync, failure = members
+    only) PLUS `sharedAccess.sharedWithUsers`
+    (per-issue sharing out of a private team, Enterprise). Team + sharing ride the issues
+    LISTING so revocation re-stamps; `teams` once and `members` once per non-public team
+    per sync; unreadable membership ⇒ owner-only (`viewer.email`), like Drive. Queries are
+    validated against Linear's published `schema.graphql`, never run live yet.
+  - **Charts go through the same predicate** (`insights.store._viewer_filter`, spliced
+    into `run_metric`, `list_facts`, `list_subjects`, `first_fact_at`): a fact from an
+    ACL-capable provider counts only when its DOCUMENT is visible, joined on
+    `external_id` (doc facts) or `url` = `source_uri` (Linear issue facts, keyed by
+    identifier). No visible document ⇒ hidden, so a DELETED Drive file drops out of
+    every member's chart history. `list_subjects` matters: a refusal repeats it back and
+    a Drive subject is a file title. `tests/test_insights_access.py` fails on any
+    product call site without `viewer=`.
   - Unchanged and still true: the controls are **what the token can reach**
     (Drive `folder_id`, Slack channel list, GitHub authorized repos, Notion's
     explicit share, Forms `form_ids`) and **who is in the scope**; a space
@@ -1318,11 +1348,39 @@ made staleness a *user chore*. Two columns on `oauth_connections` carry the
 only two reasons to sync: `sync_requested_at` (a service TOLD us — stamped by
 a webhook handler, never by the sync module) and `last_sync_at` (the interval
 elapsed).
-- **The poll is the FLOOR, not the plan.** Slack/Linear/Notion can push;
-  **Drive can never** — Google requires the push receiver's domain to be
-  verified in Cloud Console, which `*.onrender.com` cannot be. A webhook
-  delivered while the free instance was cold-started is also simply lost. The
-  interval turns both into a delay instead of a permanent hole.
+- **The poll is the FLOOR, not the plan.** All four push now (below), but a
+  webhook delivered while the free instance was cold-started is lost, Linear's
+  app webhook covers PUBLIC teams only, and a Drive channel can lapse. The
+  interval turns each into a delay instead of a permanent hole. "Drive can never
+  push" was true when written (Google required a verified receiver domain) and
+  is not now: support.google.com/googleapi/answer/7072069 says verification "is
+  no longer required".
+- **A push flags AND starts the sync** (`autosync._flag_and_start`, after the ack):
+  `sync_now` per flagged connection, unless it synced in the last
+  `PUSH_SYNC_COOLDOWN_MINUTES`=3 (Slack allows ~1 history read/min, so a busy
+  channel must not sync back to back) or a job is already active. Whatever is not
+  queued stays flagged, and `start_cooled_down_pushes` (both worker loops, every
+  `PUSH_CHECK_SECONDS`=15) starts it when the cooldown ends, skipping connections
+  with an active job, so a burst's later messages sync in ~3 min, not at the tick. Flag-only made "instant" mean "next tick,
+  ~10 min" although the in-API worker runs a queued job in seconds and the push
+  had just woken the box.
+- **Push receivers** (`api/webhooks.py`, `request_sync_external` by
+  the provider's own workspace id; `slack_events.py` for Slack). Each is 404
+  until its secret is set. Slack: a CHANNEL `message` (incl. edit/delete
+  subtypes, which may lack `channel_type`, so `C`/`G` ids count) flags only the
+  connections whose `channel_ids` hold it and is NEVER answered -- the route
+  used to answer any non-DM `message`, so subscribing `message.channels` would
+  have made the bot reply to all conversation. Notion: the unsigned first POST's
+  `verification_token` is LOGGED for the operator (paste into Notion's Verify
+  form and `NOTION_WEBHOOK_VERIFICATION_TOKEN`) and is the HMAC key for
+  `X-Notion-Signature: sha256=<hex>`. Linear: bare-hex `Linear-Signature`,
+  `webhookTimestamp` within 60 s, `organizationId` = `external_workspace_id`;
+  configured on the OAuth app, so no `admin` scope. Drive (`sources/drive_watch.py`,
+  `drive_watch_channels`): `changes.watch` per scoped connection, renewed on the
+  tick a day before its ≤7-day expiry, old channel stopped after the new one is
+  stored; no signature exists, so the channel token's SHA-256 is the proof, and
+  an unproven notification still gets 200 so Google stops retrying. The change
+  log is the ACCOUNT's, not the folder's, so any Drive edit flags a (cheap) sync.
 - **`sync_requested_at` is a FLAG, not a queue** — a busy channel stamps it per
   message and the tick reads-and-clears it, so fifty messages produce ONE job.
   That read-and-clear IS the debounce; there is no timer and no counter. A
@@ -2228,7 +2286,9 @@ frontend/ Next.js 15 portal · tests/ pytest
 source_external_id)`; `doc_is_public` DEFAULT TRUE + `doc_viewers TEXT[]` GIN
 carry document-level access, see §3) · `chunks` (`vector(1024)` + generated `content_tsv`) ·
 `conversations` / `conversation_turns` / `conversation_last_retrieval` ·
-`users` · `oauth_connections` (encrypted tokens, `source_config` JSONB, two
+`users` · `user_email_aliases` (prior sign-in emails, one owner each) ·
+`email_change_requests` (single-use, hashed, never a login) · `drive_watch_channels`
+(one Drive push channel per connection, token stored hashed) · `oauth_connections` (encrypted tokens, `source_config` JSONB, two
 partial unique indexes: org-wide vs workspace; `sync_requested_at` webhook flag
 + `last_sync_at` poll floor, see §3 Automatic freshness) · `ingestion_jobs`
 (+`phase`/`attempts`/`progress_at`/`permission_unreadable_documents`) · `magic_link_tokens` · `oauth_states` ·
@@ -2267,8 +2327,8 @@ portal; Workspace-within-a-Workspace; signup-approval queue; injection,
 latency, security and eval hardening; the Activity Scheduler; Multi-Model
 Selection (OpenRouter, ~5 models, per-request routing); automatic freshness (interval + webhook-flag sync, external tick, LLM pacing);
 in-chat file attachments (Cloudinary object store, Onyx's FileStore shape);
-document-level access filtering (Drive only: per-file viewers captured from the
-listing, one WHERE conjunct on every retrieval leg, revocation on re-listing, read-side Google
+document-level access filtering (Drive per-file, Slack private channels, Linear
+private teams + per-issue shares, charts; viewers captured from the listing, one WHERE conjunct on every retrieval leg, revocation on re-listing, read-side Google
 Group expansion behind GOOGLE_GROUPS_ENABLED, "not shared with you" refusal,
 `tests/test_doc_access.py`); the needs-attention bell (derived, owner/admin-scoped); feedback & documentation-gap tracking (automatic refusal logging on web + Slack, thumbs with three reasons, `/admin/feedback`); Visual Representation, **all five phases** — `activity_facts`, metric registry
 + panels, charts **in Ask** (no Visualizations tab; `/visualizations` redirects
@@ -2293,21 +2353,20 @@ and the graph as a retrieval list — **built, OFF for answers**.
   additive schema (graph tables, `pg_trgm`, `person_identities`,
   `oauth_states.user_id`); existing documents fill in over ticks
   (`refresh_missing_meta` 25/job, `graph.builder.backfill` 200/tick).
-- Document-level access: **the Drive `permissions` path has never run against a
-  live folder** — the field list, the grant-type mapping and the
-  omitted-permissions case are written from the documented shapes and tested
-  against fixtures only. Walk it through live before trusting it, and watch for
-  the case that will bite first: a connecting account that is only a VIEWER on
-  some files gets `permissions` omitted, so those documents are SKIPPED and
-  read as a sync that quietly indexed less. Also unwired: Slack and Linear
-  (membership is readable, nothing captures it) and charts (`activity_facts`
-  counts and hover rows stay scope-level). **Group expansion has never run
-  against a live directory** — `GOOGLE_GROUPS_ENABLED` is off, no tenant has
-  the scope, and the Admin SDK needs a Workspace-admin connection nobody has
-  confirmed they have; `groups.list?userKey=` also returns DIRECT memberships
-  only, so a nested group is still withheld. `prior_emails` aliasing (Onyx has
-  it) is still missing: change your email and every grant stops matching. **The migration must be applied to prod** — three additive
-  `IF NOT EXISTS` statements, verified against a throwaway local database.
+- Document-level access: **Drive per-file sharing is VERIFIED live** (by the
+  user, 2026-09-30). **Chart access is VERIFIED live** (staging, 2026-10-01: a Drive file shared
+  with one member is counted and titled for them only). **Linear team access is verified for PUBLIC teams only** (staging, 2026-10-01: visibility
+  read, issues left scope-public); private teams need Linear's paid Business plan, which the
+  test workspace does not have, so the members/admins path has not run live: the first sync after deploy re-stamps every
+  private-team issue, so check `permission_unreadable_documents` on that job.
+  **Group expansion has never run against a live directory** — `GOOGLE_GROUPS_ENABLED`
+  is off, no tenant has the scope, and the Admin SDK needs a Workspace-admin
+  connection nobody has confirmed they have. Nested groups go through
+  `members.hasMember` against the org's indexed `group:` grants (≤40, same domain
+  only; Google does not resolve cross-domain nesting). The email-change pages are
+  API-rendered and the `/account` panel is `tsc`-checked only. **The migration must be
+  applied to prod** — additive `IF NOT EXISTS` statements (incl. `user_email_aliases`,
+  `email_change_requests`), verified against a throwaway local database.
 - Charts: Forms is now REACHABLE from the product (picker + chips), but **the
   Google Forms path has still never run against a real form.** The
   Forms API calls, the `mimeType` listing and the scope behaviour are written
@@ -2340,11 +2399,9 @@ and the graph as a retrieval list — **built, OFF for answers**.
   diverging bar) and inline Ask charts are covered by `tsc --noEmit` only,
   never a rendered assertion. Do not add a React test stack as a side effect
   of a chart.
-- **The whole frontend remains browser-unverified.** Charts, the marketing
-  bands, the Forms picker and the phone pass are covered by `tsc --noEmit` and
-  one colour check only; the user's screenshots have been the sole rendering
-  check throughout. The touch behaviour in particular (pointer events,
-  tap-to-inspect, the flipped tip) has never run on a real phone.
+- **The frontend is checked BY HAND, not by tests** — the user walked it through
+  in the browser (2026-09-30); there is still no automated rendered assertion, so
+  a UI regression is caught by eye or not at all.
 - Charts: **no browser click-through yet** — the org-member vs space-member
   difference and the sentiment gate are asserted at the API, not in a real
   page load.
@@ -2358,9 +2415,8 @@ and the graph as a retrieval list — **built, OFF for answers**.
 - Charts: **`first_fact_at` starts on deploy day for authorship.** Counts
   backfill from `source_last_modified`; author names cannot — never captured.
   The UI says "Measured since <date>", which is the honest floor, not a fix.
-- Scheduler: **email delivery is unverified — `console` only** (a failed send
-  now costs only the notification: the report is stored and readable in-app
-  either way).
+- Scheduler: **email delivery is VERIFIED live** (the user receives reports on
+  schedule at the right address, 2026-09-30).
 - Indexed reports inherit the ingest pipeline's filters and shape: content
   dropped by `SLACK_MIN_THREAD_CHARS` can never appear in a report, Slack items
   are threads (not per-message, so no author attribution), and Notion/Drive/
@@ -2395,10 +2451,19 @@ and the graph as a retrieval list — **built, OFF for answers**.
   that fails the MODE-tag check must be replaced, not shipped.
 - Validate the 0.35 gate and 0.72 reuse threshold against production
   `rag.query_signals` logs rather than hand-measured examples.
-- **Auto-sync is polling ONLY so far** — `request_sync()` and the flag column
-  exist, but **no webhook endpoint calls them yet**, so today's worst case is
-  the 1h interval rather than one tick. Slack/Linear/Notion handlers are the
-  next step; Drive can never have one.
+- **Push receivers: all four VERIFIED live on staging (2026-10-01)** -- a message/issue edit
+  queued its sync in <1 s; a second push inside the cooldown started by itself ~3 min later.
+  **Linear's OAuth-app webhook reaches only workspaces that authorize AFTER it is enabled**:
+  staging received nothing until Linear was disconnected and reconnected. Notion: a new page indexed ~30 s after creation. Drive: the tick opened both channels; the first notification beat the Doc's save, so the edit landed on the cooled-down sync ~3 min later.
+  Previously: built and CLOSED until configured.
+  Outside the repo: Slack app events `message.channels` + `message.groups` (scopes
+  already granted, bot must be in the channel); a Notion subscription on the
+  public integration + `NOTION_WEBHOOK_VERIFICATION_TOKEN`; the Linear OAuth app's
+  webhook URL + `LINEAR_WEBHOOK_SECRET`; `DRIVE_PUSH_BASE_URL` (the API's public
+  HTTPS origin). Unverified from the docs: that a public Notion integration gets
+  events from EVERY installing workspace, and that Linear's app webhook needs no
+  `admin` scope. **Staging has no tick driver** (the GitHub workflow targets prod):
+  point cron-job.org at staging's `/internal/tick` or nothing there syncs on its own.
 - **The Check button is GONE, and `last_sync_at` replaced it on the card**
   (`credentials.OAuthConnectionInfo` -> `/admin/connections` ->
   `ConnectionCard::checkedAgo`). It was the manual override held until an

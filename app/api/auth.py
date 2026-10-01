@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import html
+import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from ..auth import email_change
+from ..auth.email import send_email_changed_notice_safe
 from ..auth import (
     GitHubAppProvider,
     build_oauth_provider,
@@ -43,6 +46,7 @@ from .deps import SESSION_COOKIE_FLAGS, SESSION_COOKIE_NAME, get_session
 from .validation import MAX_EMAIL_CHARS, MAX_NAME_CHARS, bounded
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
 
 
 def _dev_link(link: str) -> str | None:
@@ -726,6 +730,86 @@ def _result_page(message: str, *, ok: bool = True) -> str:
     <div class="{banner_class}">{html.escape(message)}</div>
     """
     return _page("Signup request", body)
+
+
+
+# -- sign-in email change (requested from /account, confirmed from the inbox) --
+
+
+def _email_change_page(message: str, *, ok: bool) -> str:
+    banner_class = "banner banner-ok" if ok else "banner banner-warn"
+    body = f"""
+    <p class="eyebrow">Sign-in email</p>
+    <h1>{"Done" if ok else "Heads up"}</h1>
+    <div class="{banner_class}">{html.escape(message)}</div>
+    """
+    return _page("Sign-in email", body)
+
+
+@router.get("/email-change/confirm", response_class=HTMLResponse)
+def confirm_email_change_page(token: str):
+    """GET renders the confirmation page; only POST changes anything, so a mail
+    scanner following the link cannot move someone's account."""
+    pending = email_change.peek_email_change(token)
+    if pending is None:
+        return HTMLResponse(
+            _email_change_page("This link is invalid, expired, or already used.", ok=False)
+        )
+    body = f"""
+    <p class="eyebrow">Sign-in email</p>
+    <h1>Change your sign-in email?</h1>
+    <p class="muted">You will sign in with the new address from now on. Documents
+    shared with the old one stay readable to you.</p>
+    <div class="card stack">
+      <div>
+        <div class="summary-row">
+          <span class="summary-label">From</span>
+          <span class="summary-value">{html.escape(pending.old_email)}</span>
+        </div>
+        <div class="summary-row">
+          <span class="summary-label">To</span>
+          <span class="summary-value">{html.escape(pending.new_email)}</span>
+        </div>
+      </div>
+      <form method="post" class="stack">
+        <input type="hidden" name="token" value="{html.escape(token)}">
+        <button class="button" type="submit">Change email</button>
+      </form>
+    </div>
+    """
+    return HTMLResponse(_page("Change sign-in email", body))
+
+
+@router.post("/email-change/confirm", response_class=HTMLResponse)
+def do_confirm_email_change(background_tasks: BackgroundTasks, token: str = Form(...)):
+    try:
+        change = email_change.confirm_email_change(token)
+    except AuthError as exc:
+        return HTMLResponse(_email_change_page(str(exc), ok=False))
+    background_tasks.add_task(send_email_changed_notice_safe, change.old_email, change.new_email)
+    background_tasks.add_task(_relink_identities, change.user_id)
+    return HTMLResponse(
+        _email_change_page(
+            f"Your sign-in email is now {change.new_email}. Use it the next time you sign in.",
+            ok=True,
+        )
+    )
+
+
+def _relink_identities(user_id: str) -> None:
+    """Keep the knowledge graph crediting this person under their new address.
+    Best-effort: a stale graph is not a failed email change."""
+    try:
+        from ..auth.users import get_user
+        from ..graph import identities
+        from ..graph.builder import rebuild_people
+
+        user = get_user(user_id)
+        if user and user.org_id:
+            identities.auto_link_by_email(user.org_id)
+            rebuild_people(user.org_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("auth: identity relink after email change failed", exc_info=True)
 
 
 @router.get("/signup-requests/approve", response_class=HTMLResponse)

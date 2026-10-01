@@ -23,6 +23,12 @@ write side (the members of each granted group), and that choice is the design:
   this only adds entries to the asker's side of the overlap, the same way
   ``domain:<host>`` already does.
 
+Nested groups: `groups.list?userKey=` returns DIRECT memberships only, so a
+second pass asks `members.hasMember` (direct OR nested, any edition, same
+scope) about the groups this org's documents are actually shared with. Those
+are the only groups whose membership can change what anyone reads, so the
+candidate set is small and known (`_nested_groups`).
+
 Every failure here means NO groups, which is the behaviour that shipped: the
 group-shared document stays withheld. That is the safe direction, and it is
 why nothing in this module raises.
@@ -33,6 +39,8 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import quote
 
 import httpx
 
@@ -42,6 +50,17 @@ from ..vectorstore.base import Viewer
 logger = logging.getLogger(__name__)
 
 _DIRECTORY_GROUPS_URL = "https://admin.googleapis.com/admin/directory/v1/groups"
+_HAS_MEMBER_URL = _DIRECTORY_GROUPS_URL + "/{group}/hasMember/{member}"
+
+#: Most `group:` grants in one org's index worth asking `hasMember` about per
+#: person. The candidate set is the groups documents were ACTUALLY shared with,
+#: which is small and admin-chosen; stopping here can only drop a nested
+#: membership, which withholds a document rather than showing it.
+MAX_NESTED_CANDIDATES = 40
+#: `hasMember` calls in flight at once. This runs while a person waits for an
+#: answer, so the checks go out together rather than one after another.
+_NESTED_WORKERS = 8
+_NESTED_TIMEOUT = 5.0
 
 #: How long a person's group list is trusted. A removal from a group keeps
 #: access for at most this long -- tighter than the hour a Drive permission
@@ -162,6 +181,101 @@ def _fetch_groups(token: str, email: str, *, timeout: float = 10.0) -> tuple[str
     return tuple(sorted(set(groups)))
 
 
+def _candidate_groups(org_id: str, domain: str) -> list[str] | None:
+    """The groups this org's documents are shared with, in the asker's domain.
+
+    These are the only groups whose membership can change what anyone reads,
+    so they are the only ones worth asking about. Same-domain only, because
+    `hasMember` resolves nesting only when the group and the member share a
+    domain (anything else is an `Invalid input` error). ``None`` = could not
+    read them.
+    """
+    from ..db.connection import get_connection
+
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT substr(v, 7)
+                  FROM documents d, unnest(d.doc_viewers) AS v
+                 WHERE d.org_id = %s::uuid
+                   AND NOT d.doc_is_public
+                   AND v LIKE 'group:%%'
+                   AND split_part(v, '@', 2) = %s
+                 ORDER BY 1
+                 LIMIT %s
+                """,
+                (org_id, domain, MAX_NESTED_CANDIDATES + 1),
+            ).fetchall()
+    except Exception:  # noqa: BLE001 - no candidates means direct groups only
+        logger.debug("Could not read candidate groups for org %s", org_id, exc_info=True)
+        return None
+    groups = [r[0] for r in rows if r[0]]
+    if len(groups) > MAX_NESTED_CANDIDATES:
+        logger.warning(
+            "org %s shares documents with more than %s groups in %s; nested "
+            "membership is checked for the first %s only, so documents shared "
+            "with the rest stay withheld from indirect members",
+            org_id, MAX_NESTED_CANDIDATES, domain, MAX_NESTED_CANDIDATES,
+        )
+    return groups[:MAX_NESTED_CANDIDATES]
+
+
+def _has_member(token: str, group: str, email: str) -> bool | None:
+    """Directory `members.hasMember`: direct OR nested. ``None`` = could not tell.
+
+    The one Directory call that answers "is this person in this group through
+    any chain of groups", on every Workspace edition. `groups.list?userKey=`
+    only takes a USER, so walking upward from a group is not available, and
+    Cloud Identity's `searchTransitiveGroups` is Enterprise-only and needs a
+    different scope (every tenant would reconnect).
+    """
+    url = _HAS_MEMBER_URL.format(group=quote(group, safe="@"), member=quote(email, safe="@"))
+    try:
+        response = httpx.get(
+            url, headers={"Authorization": f"Bearer {token}"}, timeout=_NESTED_TIMEOUT
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("hasMember(%s, %s) failed", group, email, exc_info=True)
+        return None
+    if response.status_code in (400, 404):
+        # 400 `Invalid input`: nested across domains, which Google does not
+        # resolve. 404: the group no longer exists. Both are a real "no".
+        return False
+    if response.status_code >= 300:
+        logger.debug("hasMember(%s) returned HTTP %s", group, response.status_code)
+        return None
+    try:
+        return bool(response.json().get("isMember"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _nested_groups(
+    org_id: str, token: str, email: str, *, direct: tuple[str, ...]
+) -> tuple[tuple[str, ...], bool]:
+    """Groups ``email`` reaches only THROUGH another group, and whether we know.
+
+    `groups.list?userKey=` returns direct memberships, so a file shared with
+    `all-staff@` stayed withheld from everyone who is in it by way of `eng@`.
+    Returns ``(groups, complete)``; ``complete`` is False when any check failed,
+    so the caller does not cache a partial answer for the TTL.
+    """
+    domain = email.split("@", 1)[1] if "@" in email else ""
+    if not domain:
+        return (), True
+    candidates = _candidate_groups(org_id, domain)
+    if candidates is None:
+        return (), False
+    pending = [g for g in candidates if g not in set(direct)]
+    if not pending:
+        return (), True
+    with ThreadPoolExecutor(max_workers=min(_NESTED_WORKERS, len(pending))) as pool:
+        answers = list(pool.map(lambda g: _has_member(token, g, email), pending))
+    found = tuple(g for g, is_member in zip(pending, answers) if is_member)
+    return found, all(a is not None for a in answers)
+
+
 def groups_for(org_id: str, email: str) -> tuple[str, ...]:
     """Group addresses ``email`` belongs to, or ``()`` when unknown or disabled.
 
@@ -208,12 +322,15 @@ def groups_for(org_id: str, email: str) -> tuple[str, ...]:
         # minutes because the directory blipped would lock someone out of every
         # group-shared document for that window.
         return ()
-    _store(key, fetched)
-    return fetched
+    nested, complete = _nested_groups(org_id, token, address, direct=fetched)
+    groups = tuple(sorted(set(fetched) | set(nested)))
+    if complete:
+        _store(key, groups)
+    return groups
 
 
 def viewer_for_person(org_id: str, email: str | None) -> Viewer:
-    """The ``Viewer`` for one real, identified person -- groups included.
+    """The ``Viewer`` for one real, identified person -- groups and prior emails.
 
     The single constructor for an identified viewer, so that a surface added
     later cannot quietly ship without group expansion. ``public_only`` and
@@ -223,4 +340,19 @@ def viewer_for_person(org_id: str, email: str | None) -> Viewer:
     address = (email or "").strip()
     if not address:
         return Viewer.public_only_viewer()
-    return Viewer(email=address, groups=groups_for(org_id, address))
+    return Viewer(
+        email=address,
+        groups=groups_for(org_id, address),
+        aliases=_aliases_for(org_id, address),
+    )
+
+
+def _aliases_for(org_id: str, email: str) -> tuple[str, ...]:
+    """Prior sign-in addresses; a failed read means none (fail closed)."""
+    from ..auth.email_change import aliases_for
+
+    try:
+        return aliases_for(org_id, email)
+    except Exception:  # noqa: BLE001 - never fail a question over an alias read
+        logger.warning("Could not read prior emails for a viewer", exc_info=True)
+        return ()

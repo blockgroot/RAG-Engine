@@ -85,6 +85,12 @@ class Viewer:
     #: list: a reply carries exactly the one channel it is posted in, so a
     #: private channel can never leak into another room.
     channels: tuple[str, ...] = ()
+    #: This person's PRIOR sign-in addresses (`auth.email_change`), each proven:
+    #: it was their verified login until they changed it. Access is keyed on
+    #: email, so without these a changed address stops matching every grant a
+    #: source still records under the old one. Ignored with no ``email``, like
+    #: ``groups``: an alias belongs to an identity.
+    aliases: tuple[str, ...] = ()
     #: Restrict to scope-public documents with no person attached. Needed
     #: because "no email" has TWO meanings that must not share a value: an
     #: internal caller with no filter at all, and a caller who may read only
@@ -135,13 +141,17 @@ class Viewer:
             # Lowercased because `normalize_viewers` lowercases on write: Slack
             # ids are uppercase, so an unlowered `channel:C0B...` never matched.
             return [f"channel:{c.strip().lower()}" for c in self.channels if c.strip()]
-        entries.append(email)
-        if "@" in email:
-            entries.append(f"domain:{email.split('@', 1)[1]}")
+        seen: set[str] = set()
+        for address in (email, *(a.strip().lower() for a in self.aliases)):
+            if not address:
+                continue
+            for entry in (address, f"domain:{address.split('@', 1)[1]}" if "@" in address else ""):
+                if entry and entry not in seen:
+                    seen.add(entry)
+                    entries.append(entry)
         # Spelled to match `google_drive._file_access`, which is the only
         # writer of a `group:` entry. Deduplicated because a directory that
         # lists the same group twice must not change the query's meaning.
-        seen = set(entries)
         for group in self.groups:
             entry = f"group:{group.strip().lower()}"
             if group.strip() and entry not in seen:

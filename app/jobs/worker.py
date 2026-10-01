@@ -18,6 +18,10 @@ from ..ingestion.pipeline import enrich_source_contextual, ingest_source
 from ..insights.facts import DOCUMENT_PROVIDERS, backfill_all_document_facts, record_document_facts
 from ..sources import build_source_adapter
 from . import queue
+from .autosync import start_cooled_down_pushes
+
+#: How often a worker loop starts pushes whose cooldown has ended (`autosync`).
+PUSH_CHECK_SECONDS = 15.0
 
 logger = logging.getLogger(__name__)
 
@@ -392,6 +396,16 @@ def run_external_tick() -> dict[str, int]:
     synced = run_sync_tick()
     facts = run_facts_tick()
 
+    # Drive push channels expire within a week and are never renewed for us.
+    # A lapsed one only means that connection is polled until the next tick.
+    drive_watches = 0
+    try:
+        from ..sources.drive_watch import ensure_watches
+
+        drive_watches = ensure_watches()
+    except Exception:  # noqa: BLE001 - a lapsed push, never a failed tick
+        logger.exception("External tick: Drive watch renewal failed")
+
     # Indexed facts for tenants that have not ingested since charts shipped.
     # GitHub still needs the facts-only path above (it has no documents).
     backfilled = 0
@@ -460,6 +474,7 @@ def run_external_tick() -> dict[str, int]:
         "reaped": reaped,
         "syncs_queued": synced,
         "facts_recorded": facts,
+        "drive_watches_opened": drive_watches,
         "facts_backfilled": backfilled,
         "attachments_purged": attachments_purged,
         "conversations_purged": conversations_purged,
@@ -530,12 +545,16 @@ def run_forever(
     last_reap = 0.0
     last_maintenance = 0.0
     last_sync = 0.0
+    last_push = 0.0
     last_scheduler = -float(scheduler_settings.poll_seconds)
     while True:
         now = time.monotonic()
         if now - last_reap >= reap_interval:
             queue.reap_stuck()
             last_reap = now
+        if now - last_push >= PUSH_CHECK_SECONDS:
+            start_cooled_down_pushes()
+            last_push = now
         if now - last_maintenance >= maintenance_interval:
             run_maintenance()
             last_maintenance = now
