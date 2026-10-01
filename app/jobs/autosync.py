@@ -105,6 +105,42 @@ def _flag_and_start(sql: str, params: list) -> int:
     return len(rows)
 
 
+def start_cooled_down_pushes() -> int:
+    """Start every flagged connection whose cooldown has just ended.
+
+    A push inside the cooldown only flags, and the flag used to wait for the
+    tick (~10 min) though the cooldown ends after 3. The in-API worker calls
+    this every few seconds, so the second message of a burst syncs ~3 min
+    later -- still at most one sync per cooldown, which is Slack's limit.
+    Connections with a job already queued/running are left out, so this never
+    retries an enqueue the unique index would refuse. Never raises.
+    """
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT c.id::text, c.org_id::text, c.workspace_id::text, c.provider
+                FROM oauth_connections c
+                WHERE c.sync_requested_at IS NOT NULL
+                  AND c.needs_reauth = false
+                  AND c.provider <> ALL(%s)
+                  AND (c.last_sync_at IS NULL
+                       OR c.last_sync_at < now() - make_interval(mins => %s))
+                  AND NOT EXISTS (SELECT 1 FROM ingestion_jobs j WHERE j.connection_id = c.id
+                                  AND j.status IN ('queued', 'running'))
+                """,
+                (list(UNSYNCABLE_PROVIDERS), PUSH_SYNC_COOLDOWN_MINUTES),
+            ).fetchall()
+    except Exception:  # noqa: BLE001 - the tick still clears every flag
+        logger.exception("Push sync: could not list flagged connections")
+        return 0
+    started = 0
+    for connection_id, org_id, workspace_id, provider in rows:
+        if sync_now(org_id, connection_id, provider=provider, workspace_id=workspace_id):
+            started += 1
+    return started
+
+
 def request_sync_connection(connection_id: str) -> int:
     """Flag ONE connection, for a push that already names it (a Drive channel)."""
     return _flag_and_start(

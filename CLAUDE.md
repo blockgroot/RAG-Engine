@@ -1349,7 +1349,9 @@ elapsed).
   `sync_now` per flagged connection, unless it synced in the last
   `PUSH_SYNC_COOLDOWN_MINUTES`=3 (Slack allows ~1 history read/min, so a busy
   channel must not sync back to back) or a job is already active. Whatever is not
-  queued stays flagged for the tick. Flag-only made "instant" mean "next tick,
+  queued stays flagged, and `start_cooled_down_pushes` (both worker loops, every
+  `PUSH_CHECK_SECONDS`=15) starts it when the cooldown ends, skipping connections
+  with an active job, so a burst's later messages sync in ~3 min, not at the tick. Flag-only made "instant" mean "next tick,
   ~10 min" although the in-API worker runs a queued job in seconds and the push
   had just woken the box.
 - **Push receivers** (`api/webhooks.py`, `request_sync_external` by

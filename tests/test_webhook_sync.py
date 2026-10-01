@@ -213,6 +213,44 @@ def test_inside_the_cooldown_the_change_waits_for_the_tick(org):
 
 
 @requires_db
+def test_a_flag_starts_when_its_cooldown_ends_not_at_the_tick(org, monkeypatch):
+    """The second message of a burst syncs ~3 min later, not ~10."""
+    from app.jobs import autosync
+
+    started = []
+    monkeypatch.setattr(autosync, "sync_now", lambda org_id, cid, **kw: started.append(cid) or "job")
+    workspace = f"W{uuid.uuid4().hex[:8]}"
+    conn_id = _connection(org, "notion", workspace)
+    _synced_minutes_ago(conn_id, 1)
+    request_sync_external("notion", workspace)  # inside the cooldown: flag only
+    autosync.start_cooled_down_pushes()
+    assert conn_id not in started
+
+    _synced_minutes_ago(conn_id, autosync.PUSH_SYNC_COOLDOWN_MINUTES + 1)
+    autosync.start_cooled_down_pushes()
+    assert conn_id in started
+
+
+@requires_db
+def test_a_flag_waits_while_a_sync_is_running(org, monkeypatch):
+    from app.jobs import autosync
+
+    started = []
+    monkeypatch.setattr(autosync, "sync_now", lambda org_id, cid, **kw: started.append(cid) or "job")
+    workspace = f"W{uuid.uuid4().hex[:8]}"
+    conn_id = _connection(org, "notion", workspace)
+    _synced_minutes_ago(conn_id, 10)
+    with get_connection() as conn:
+        conn.execute("UPDATE oauth_connections SET sync_requested_at = now() WHERE id = %s", (conn_id,))
+        conn.execute(
+            "INSERT INTO ingestion_jobs (org_id, connection_id, status) VALUES (%s, %s, 'running')",
+            (org, conn_id),
+        )
+    autosync.start_cooled_down_pushes()
+    assert conn_id not in started
+
+
+@requires_db
 def test_an_expired_connection_is_not_flagged(org):
     workspace = f"W{uuid.uuid4().hex[:8]}"
     dead = _connection(org, "notion", workspace, reauth=True)

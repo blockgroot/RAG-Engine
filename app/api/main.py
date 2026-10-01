@@ -69,7 +69,8 @@ def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
     ingestion polls every couple of seconds, schedulers every few minutes.
     """
     from ..jobs import queue
-    from ..jobs.worker import run_once, run_scheduler_tick
+    from ..jobs.autosync import start_cooled_down_pushes
+    from ..jobs.worker import PUSH_CHECK_SECONDS, run_once, run_scheduler_tick
 
     poll_interval = float(os.getenv("INGEST_WORKER_POLL_SECONDS", "2"))
     reap_interval = float(os.getenv("INGEST_WORKER_REAP_SECONDS", "60"))
@@ -101,6 +102,7 @@ def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
         except Exception:  # noqa: BLE001
             logger.exception("Failed to re-queue interrupted scheduler runs")
         last_reap = 0.0
+        last_push = 0.0
         # Start at -poll_seconds so the first scheduler tick happens promptly
         # after boot rather than one whole interval later — a scheduler that
         # came due while the process was down should not wait 5 more minutes.
@@ -111,6 +113,10 @@ def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
                 if now - last_reap >= reap_interval:
                     queue.reap_stuck()
                     last_reap = now
+                if now - last_push >= PUSH_CHECK_SECONDS:
+                    # A push inside the cooldown waits ~3 min here, not ~10 for the tick.
+                    start_cooled_down_pushes()
+                    last_push = now
                 if (
                     scheduler_settings.enabled
                     and now - last_scheduler >= scheduler_settings.poll_seconds
