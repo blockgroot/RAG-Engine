@@ -287,8 +287,10 @@ https://developers.google.com/workspace/admin/directory/reference/rest/v1/groups
 | **Last checked** | 2026-09-30 |
 
 **Built** (`app/api/webhooks.py`, `app/sources/drive_watch.py`, `app/api/slack_events.py`,
-`tests/test_webhook_sync.py`). Every receiver only flags `sync_requested_at`; the tick
-syncs. So latency drops from the 1h poll to the ~10-minute tick, not to instant. Each
+`tests/test_webhook_sync.py`). A push flags the connection and starts its sync at once (unless it
+synced in the last 3 minutes or a sync is already running, in which case the tick picks
+it up). So a change usually lands within seconds to a couple of minutes, not after the
+1h poll. Each
 route answers 404 until its secret is set. What has to be done outside the repo, per
 provider, is listed under each one below.
 

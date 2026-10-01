@@ -1,10 +1,12 @@
 """Push receivers: a provider says something changed, we flag a sync.
 
-Every handler here does ONE thing -- stamp ``sync_requested_at`` on the
-connection(s) the push is about -- and never ingests inline. The tick reads
-and clears the flag, so fifty pushes still make one job (CLAUDE.md §3
-Automatic freshness), and each handler answers inside the provider's deadline
-(Linear: 5 s; Slack: 3 s, handled in ``slack_events.py``).
+Every handler here does ONE thing -- flag the connection(s) the push is about
+and, after answering the provider, queue their sync (`autosync._flag_and_start`)
+-- and never ingests inline. Queuing is a no-op while a sync is active and
+skipped within 3 minutes of the last one, so fifty pushes still make one job;
+what is not queued waits on the flag for the tick (CLAUDE.md §3 Automatic
+freshness). Each handler answers inside the provider's deadline (Linear: 5 s;
+Slack: 3 s, handled in ``slack_events.py``).
 
 A push never carries content we trust: it only moves a sync earlier. That is
 why a forged or replayed push is harmless beyond one extra listing diff -- and

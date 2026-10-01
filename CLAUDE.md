@@ -1343,7 +1343,14 @@ elapsed).
   push" was true when written (Google required a verified receiver domain) and
   is not now: support.google.com/googleapi/answer/7072069 says verification "is
   no longer required".
-- **Push receivers only FLAG** (`api/webhooks.py`, `request_sync_external` by
+- **A push flags AND starts the sync** (`autosync._flag_and_start`, after the ack):
+  `sync_now` per flagged connection, unless it synced in the last
+  `PUSH_SYNC_COOLDOWN_MINUTES`=3 (Slack allows ~1 history read/min, so a busy
+  channel must not sync back to back) or a job is already active. Whatever is not
+  queued stays flagged for the tick. Flag-only made "instant" mean "next tick,
+  ~10 min" although the in-API worker runs a queued job in seconds and the push
+  had just woken the box.
+- **Push receivers** (`api/webhooks.py`, `request_sync_external` by
   the provider's own workspace id; `slack_events.py` for Slack). Each is 404
   until its secret is set. Slack: a CHANNEL `message` (incl. edit/delete
   subtypes, which may lack `channel_type`, so `C`/`G` ids count) flags only the
@@ -2435,7 +2442,8 @@ and the graph as a retrieval list — **built, OFF for answers**.
   webhook URL + `LINEAR_WEBHOOK_SECRET`; `DRIVE_PUSH_BASE_URL` (the API's public
   HTTPS origin). Unverified from the docs: that a public Notion integration gets
   events from EVERY installing workspace, and that Linear's app webhook needs no
-  `admin` scope. Latency is still bounded by the ~10-min tick, not instant.
+  `admin` scope. **Staging has no tick driver** (the GitHub workflow targets prod):
+  point cron-job.org at staging's `/internal/tick` or nothing there syncs on its own.
 - **The Check button is GONE, and `last_sync_at` replaced it on the card**
   (`credentials.OAuthConnectionInfo` -> `/admin/connections` ->
   `ConnectionCard::checkedAgo`). It was the manual override held until an
