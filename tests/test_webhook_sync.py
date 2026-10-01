@@ -95,6 +95,21 @@ def test_a_retried_delivery_still_flags(slack_client, recorded):
     assert flagged == [("slack", "T1", "C1")]
 
 
+@pytest.mark.parametrize("event", [
+    {"type": "message", "channel_type": "group", "channel": "C1", "bot_id": "B1", "text": "Searching…"},
+    {"type": "message", "subtype": "message_changed", "channel": "C1",
+     "message": {"bot_id": "B1", "text": "the answer"}},
+    {"type": "message", "channel_type": "group", "channel": "C1", "user": "U1", "text": "<@UBOT> leave?"},
+])
+def test_the_bots_own_traffic_flags_nothing(slack_client, recorded, event):
+    """Ingest never indexes it, so a sync for it would find nothing."""
+    flagged, answered = recorded
+    body = {**_slack_event(event), "authorizations": [{"user_id": "UBOT"}]}
+    raw, headers = _slack_signed(body)
+    assert slack_client.post("/slack/events", content=raw, headers=headers).status_code == 200
+    assert flagged == [] and answered == []
+
+
 def test_a_mention_and_a_dm_are_still_answered(slack_client, recorded):
     flagged, answered = recorded
     for event in (

@@ -575,6 +575,18 @@ def _handle(event: dict, team_id: str) -> None:
     post_message(token, channel, answer, thread_ts)
 
 
+def _is_bot_traffic(event: dict, bot_users: set[str]) -> bool:
+    """The bot's own post/edit, or a question TO it -- ingest never indexes
+    either (`sources.slack._is_bot_traffic`), so a sync for one finds nothing.
+    Without this every answer flagged a sync twice (placeholder, then its edit)
+    and every question a third time, each a Slack history read at 1/min."""
+    message = event.get("message") or event.get("previous_message") or event
+    if event.get("bot_id") or message.get("bot_id"):
+        return True
+    text = message.get("text") or ""
+    return any(f"<@{u}>" in text for u in bot_users)
+
+
 def _is_channel_content(event: dict) -> bool:
     """A message posted, edited or deleted in a channel (not a DM, not a mention).
 
@@ -646,6 +658,10 @@ async def slack_events(
     # BEFORE the retry drop: the flag is idempotent, so a retry of a delivery
     # that died on a cold start still lands.
     if _is_channel_content(event):
+        # `authorizations` names the bot user this delivery is for.
+        bot_users = {a.get("user_id") for a in payload.get("authorizations") or [] if a.get("user_id")}
+        if _is_bot_traffic(event, bot_users):
+            return {"ok": True}
         background.add_task(
             _flag_channel_sync, payload.get("team_id") or "", event.get("channel") or ""
         )
