@@ -2440,7 +2440,11 @@ and the graph as a retrieval list — **built, OFF for answers**.
   that fails the MODE-tag check must be replaced, not shipped.
 - Validate the 0.35 gate and 0.72 reuse threshold against production
   `rag.query_signals` logs rather than hand-measured examples.
-- **Push receivers are built and CLOSED until configured, never run live.**
+- **Push receivers: Slack and Linear VERIFIED live on staging (2026-10-01)** -- a message/issue edit
+  queued its sync in <1 s; a second push inside the cooldown started by itself ~3 min later.
+  **Linear's OAuth-app webhook reaches only workspaces that authorize AFTER it is enabled**:
+  staging received nothing until Linear was disconnected and reconnected. Notion and Drive untested.
+  Previously: built and CLOSED until configured.
   Outside the repo: Slack app events `message.channels` + `message.groups` (scopes
   already granted, bot must be in the channel); a Notion subscription on the
   public integration + `NOTION_WEBHOOK_VERIFICATION_TOKEN`; the Linear OAuth app's
