@@ -35,7 +35,7 @@ ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_last_modified TIMESTAMPTZ;
 -- Sync state is partitioned per provider (Google Integration Phase 1): without
 -- this, a Google sync in an org that also has Notion would compute
 -- removed = every Notion page id and delete the whole Notion corpus. See
--- CLAUDE.md §4 and GOOGLE_INTEGRATION_PLAN.md §3.
+-- CLAUDE.md.
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_provider TEXT;
 UPDATE documents SET source_provider = 'notion'
     WHERE source_provider IS NULL AND source_external_id IS NOT NULL;

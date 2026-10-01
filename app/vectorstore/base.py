@@ -232,7 +232,7 @@ class StoredSourceDocument:
 
     ``provider`` (e.g. ``"notion"``, ``"google"``) partitions sync state so a
     sync for one provider never diffs against another provider's rows in the
-    same org — see CLAUDE.md §4 / GOOGLE_INTEGRATION_PLAN.md §3.
+    same org — see CLAUDE.md.
     """
 
     document_id: str

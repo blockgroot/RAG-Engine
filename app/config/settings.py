@@ -1876,8 +1876,9 @@ class LiveToolsSettings:
 
     Three settings and no more (plan D15): everything else is a constant in
     ``app/livetools/base.py`` until ``live_tool_calls`` shows it needs tuning.
-    Even when enabled, a live read happens only for a question asked in DEEP
-    RESEARCH mode (D0) -- normal Q&A never reaches the gateway.
+    When enabled, a live read runs inside ordinary Ask: the question classifier
+    sets ``needs_live`` (a missing verdict still reads). The old composer
+    toggle is gone. Slack, schedulers and eval never set a ``LiveRequest``.
 
     ``orgs`` empty means every org; otherwise only the listed org ids, for a
     staged rollout.

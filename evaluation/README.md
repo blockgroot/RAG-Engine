@@ -1,5 +1,9 @@
 # Golden-set evaluation (Phase 7)
 
+> This file describes the regression harness, not the product. What Handbook does today is
+> [PRODUCT_STATUS.md](../PRODUCT_STATUS.md). The cases below still use the original policy
+> corpus so a retrieval or grounding change fails loudly.
+
 A small, deliberate regression suite for the **Policy Agent** — a tripwire that
 fails loudly when a change quietly breaks retrieval, grounding, the fallback, the
 web-search path, or conversation memory. It is **not** a benchmark; ~17 hand-picked

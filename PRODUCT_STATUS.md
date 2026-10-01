@@ -1,7 +1,8 @@
 # Product Status — October 1, 2026
 
-> **The canonical source of truth for what Handbook does today.** Verified against the
-> codebase at `main` = `5901c13` (PR #44 merged, 1 Oct 2026). Design reasoning lives in
+> **The canonical source of truth for what Handbook does today.** Product behavior verified
+> against `5901c13` (PR #44, 1 Oct 2026). This file was corrected the same day against the
+> code: chart metrics, the retrieval pool, and the test count. Design reasoning lives in
 > `CLAUDE.md`; decision history in git.
 >
 > **Keep it fresh:** whoever ships, verifies or blocks a feature updates this file in the same
@@ -64,7 +65,7 @@ rights, §11) or on an open pull request (§12).
 
 | Feature | What it does | Status | Verification | Limitations |
 |---|---|---|---|---|
-| Grounded Q&A | Retrieves the most relevant passages (vector + keyword search, re-ranking) and answers only from them | Live | Golden-set evaluation in CI; unit suite | Very broad questions in company-wide Ask use ranked passages, not every document |
+| Grounded Q&A | Retrieves the most relevant passages (vector + keyword search, re-ranking a pool of 16) and answers only from them | Live | Golden-set evaluation in CI; unit suite | Very broad questions in company-wide Ask use ranked passages, not every document |
 | Relevance gate + strict prompt | Refuses before calling the AI when nothing is close enough; the prompt refuses when passages don't answer | Live | `tests/test_grounding.py`, golden set | Threshold 0.35, calibrated on a small sample |
 | Routing | Picks which tool answers by comparing the question to each tool's content; a named tool or repo wins | Live | `tests/test_agent_routing.py` | A misroute costs a refusal, never a wrong answer |
 | Follow-ups and memory of the conversation | Rewrites "what about dental?" into a full question; summarises long chats | Live | `tests/test_conversation*.py` | — |
@@ -73,7 +74,7 @@ rights, §11) or on an open pull request (§12).
 | Model choice / bring your own model | Members pick the answering model; admins can plug in one of 14 provider presets | Live | `tests/test_model_selection.py`, `tests/test_llm_adapters.py` | Free-tier quotas of hosted models apply |
 | Chat history | Recent chats in the rail, `?c=` links, delete; each chat private to its owner | Live | `tests/test_conversation_history.py`; UI checked by hand (30 Sep) | No automated browser test |
 | File uploads | Files join retrieval for the chat they're in | Live | `tests/test_attachment*.py` | No images; no reusable file library |
-| Charts in Ask | Charts drawn from SQL over recorded activity; the AI never produces a number | Live | `tests/test_insights_*.py` | Fixed list of metrics until PR #45 (§12) |
+| Charts in Ask | Charts drawn from SQL over recorded activity; the AI never produces a number | Live | `tests/test_insights_*.py` | 12 fixed metrics (§4). A freer query shape is PR #45, not merged (§12) |
 | Spaces | Private sub-workspaces; members see only their space's content | Live | `tests/test_workspaces.py`, `tests/test_isolation.py` | — |
 | Ask in Slack | Channel answers in a thread from that channel only; DMs answer as the person | Live | `tests/test_slack_bot.py` | No thumbs in Slack (gaps are still logged) |
 | Scheduled reports | Daily/weekly/monthly, saved in-app, email notification | Live | `tests/test_scheduler_*.py`; emails verified live (30 Sep) | Reports describe current content, not diffs |
@@ -92,8 +93,9 @@ rights, §11) or on an open pull request (§12).
 
 ## 4. Knowledge & Intelligence
 
-- **RAG / knowledge retrieval.** Documents are split into passages with a short context line,
-  embedded, and searched by meaning and by keyword; results are fused and re-ranked. Each
+- **RAG / knowledge retrieval.** Documents are split into passages (256 tokens, 40 overlap)
+  with a short context line, embedded, and searched by meaning and by keyword. The two lists
+  are fused and re-ranked from a pool of 16 down to the top 5. Each
   passage reaches the AI with its document, app, last editor and date, so "who wrote this?"
   and "when was it updated?" are answerable.
 - **Second Brain** is three layers, all live:
@@ -111,6 +113,12 @@ rights, §11) or on an open pull request (§12).
     "keep it short") are saved with an Undo, used to interpret later questions, and never used as
     evidence. Sensitive topics are never stored. People manage them on `/account`; admins can turn
     memory off for the company.
+- **Charts.** Twelve fixed counts, all from SQL: Notion pages changed, Drive files changed,
+  GitHub pull requests opened, merged, reviewed, and their lead time, commits by author,
+  Linear issues completed, by state, and cycle time, Slack threads, and Forms sentiment by
+  topic. The model picks which of those to show. It never invents a number. Hover shows the
+  rows behind a bar. GitHub charts are still for the whole space, not filtered to the repos
+  one person can open.
 - **Knowledge-gap management.** Every unanswered question is recorded automatically (web and
   Slack). Admins see the most-asked ones and how many different people asked. A question
   withheld for access reasons is not counted as a gap.
@@ -249,27 +257,31 @@ access; automatic hourly sync.
 | GitHub in charts | Limitation | Charts built from GitHub activity are space-level, not per person | Not built | Filter GitHub facts by the asker's visible repos |
 | Google Forms sentiment | Built, not verified | Never run on a real form; switching it on makes every tenant reconnect Google | Verification | A live walkthrough before enabling `GOOGLE_FORMS_ENABLED` |
 | Answer fact-checker (LettuceDetect) | Built, off | Hugging Face now requires a paid plan for the CPU host | Dependency / cost | A paid CPU host |
-| More connectors (Confluence, Jira, Zendesk, Salesforce, SharePoint) | Not implemented | No blocker; not started | — | Build-out |
+| More connectors (Confluence, Jira, Zendesk, Salesforce, SharePoint) | Not on `main` | No provider blocker. A Confluence branch exists and is not the shipping product | — | Review and merge, or build the others |
 | Images in chat | Not supported | No vision path | Decided | — |
 | Frontend tests | Limitation | No automated browser tests; UI checked by hand | Tooling | A browser test setup |
 
 ## 12. In Progress
 
-**PR #45 — open-ended charts** (`feat/open-ended-charts`, open, not merged). Built on the branch:
-- **Chart query grammar:** split, measure and filters over one metric, checked before it runs,
-  so "pull requests merged per repository, split by person" works.
-- **Chart attributes:** keeps fields the tools already return (for example labels) so they can be
+**PR #45 — open-ended charts** (`feat/open-ended-charts`, open, not on `main`). The branch adds,
+on top of the 12 metrics already shipping:
+
+- **Chart query grammar** (`app/insights/query.py`): split, measure and filters over one metric,
+  checked before it runs, so "pull requests merged per repository, split by person" is a real
+  query rather than a nearest registry metric.
+- **Chart attributes:** fields the tools already return (for example labels) kept so they can be
   charted.
-- **Tables inside documents:** charts from table rows stored at sync time, for example a sales
+- **Tables inside documents** (`app/doctables/`): rows extracted at sync, for example a sales
   table in a Doc.
 
-The rule stays the same: **the AI never produces a number**. Status: under review.
+The rule on the branch is the same: **the AI never produces a number**. It is under review.
+Ask on `main` still charts only the 12 registry metrics.
 
 ## 13. Testing & Verification
 
-- **Automated suite:** 170 test files, 2,058 tests selected by CI's filter (network and real-model tests
-  excluded). The Fast tier (deterministic path-firing) ran green on PR #44 before merge. Results
-  of the run made for this audit are in the audit summary of the PR/commit that added this file.
+- **Automated suite:** 167 test modules and about 1,900 test functions, before parametrized
+  cases expand the collection. CI runs `pytest -m "not network and not live_llm"`. The fast
+  golden-set tier ran green on PR #44 before merge.
 - **Evaluation:** golden-set path-firing in CI; nightly RAGAS scoring (`evaluation/`).
 - **Live verification on staging (1 Oct 2026):** Slack private-channel access; Linear public-team
   access; chart access with two users; email change; instant updates from Slack, Linear, Notion

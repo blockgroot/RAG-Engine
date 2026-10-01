@@ -43,14 +43,19 @@ A **multi-tenant Retrieval-Augmented Generation (RAG) platform for company Q&A o
 
 | Concern | Choice | Notes |
 |---|---|---|
-| Language | Python 3.12 | `from __future__ import annotations`, type hints throughout |
-| LLM | Any **OpenAI-compatible** endpoint via the `openai` client | Config-swappable: `LLM_MODEL` + `LLM_BASE_URL` + `LLM_API_KEY`. Dev uses FreeLLMAPI at `localhost:3001`. |
-| Embeddings | **BGE-M3** (1024-dim) via `sentence-transformers`, in-process | `local` backend ($0, offline); a `remote` HTTP backend exists behind the same interface |
-| Vector DB | **Postgres + pgvector** (`pgvector/pgvector:pg17` via docker-compose) | HNSW cosine index; connection pooling |
-| Reranker | **`BAAI/bge-reranker-v2-m3`** cross-encoder, in-process | via `sentence-transformers` CrossEncoder |
-| Source | **Notion** via official `notion-client` SDK | one `SourceAdapter` interface; Drive/GitHub/Slack later |
+| Language | Python 3.11+ | `from __future__ import annotations`, type hints throughout |
+| LLM | Any **OpenAI-compatible** endpoint via the `openai` client | `LLM_ADAPTER` picks a provider from a fixed list and supplies its base URL; `LLM_MODEL` is only a parameter. `custom` is the one case that reads `LLM_BASE_URL`. Checked at boot. |
+| Model choice | OpenRouter and Groq, per request | Members pick a model; `auto` stays on the deployment's `LLM_MODEL`. Admins can save one bring-your-own preset (14 providers, fixed hosts). |
+| Embeddings | **BGE-M3** (1024-dim) | `local` (sentence-transformers) or `remote` behind the same interface. Deploy images use the remote backend when RAM is tight. |
+| Vector DB | **Postgres + pgvector** | HNSW cosine index; connection pooling. Also holds jobs, graph, facts, memory. |
+| Reranker | **`BAAI/bge-reranker-v2-m3`** | Local cross-encoder, or a remote backend. Default candidate pool is **16**, then `RAG_TOP_K` (5). |
+| Sources | Notion, Google Drive, Slack, Linear (indexed); GitHub (live, never embedded); Google Forms (sentiment labels only) | One `SourceAdapter` per indexed source. GitHub and Forms are not adapters. |
+| Access | Document sharing captured at sync | Drive per file, Slack per private channel, Linear per private team, GitHub per private repo. Notion is per space. One SQL predicate (`security/visibility.py`). |
 | Web search | **DuckDuckGo** via `ddgs` (keyless) | Tavily is the documented production swap |
-| CLI UI | **`rich`** | presentation only, confined to `scripts/cli.py` |
+| Files | Cloudinary | Chat uploads: original bytes and extracted text, private authenticated assets |
+| Email | SendGrid in production | `EMAIL_SENDER=console` prints links locally and is not a production sender |
+| Safety | Prompt policy, scrubber, link provenance, canary, safeguard model | `app/security/`, `app/guard/` |
+| Frontend | Next.js 15, plain CSS | Session only in the httpOnly cookie |
 | Tests/eval | `pytest` + optional **RAGAS** (`[eval]` extra) | |
 
 ---
@@ -105,117 +110,62 @@ There are **two end-to-end flows**: the **write path** (ingestion) and the **rea
 
 ## 5. END-TO-END FLOW A — Ingestion (the write path)
 
-**Entrypoint:** `scripts/ingest_notion.py --org "Acme Corp" --token acme`
-**Orchestrator:** `app/ingestion/pipeline.py::ingest_source(adapter, org_id, …)`
+**Entrypoints:** the Sources page (OAuth connect, then folder or channel scope), webhooks (`app/api/webhooks.py`, Slack events), and the external tick (`POST /internal/tick`). `scripts/ingest_notion.py` remains a one-off CLI. The worker is `app/jobs/`.
 
-Step by step:
+**Orchestrator:** `app/ingestion/pipeline.py`, always for one explicit `provider`. A Google sync must not delete Notion documents.
 
-1. **Resolve credential (per-org).** `build_source_adapter("notion", token_name="acme")` →
-   `NotionSettings.resolve_token("acme")` returns *only* the `NOTION_TOKEN_ACME` secret
-   (raises if missing; **never** falls back to another org's token or the global `NOTION_TOKEN`).
-2. **Create the org.** `store.create_organization(name)` → returns a new `org_id` (UUID).
-3. **Apply schema** (idempotent) via `apply_schema()`.
-4. **List documents.** `adapter.list_documents()` → Notion `search` returns only pages **shared with that integration** (access enforced by Notion, not our code). Returns `SourceRef` (metadata only — cheap).
-5. **For each document:**
-   a. `adapter.fetch_document(id)` → converts the Notion block tree to Markdown-ish plain text *inside the adapter* (`_render_block`: headings→`#`, bullets→`-`, tables→`|`-rows; `child_page` blocks are separate documents, not inlined).
-   b. `preprocess(text)` → clean text.
-   c. `chunk_text(clean, chunking)` → paragraph-aware chunks (default ~1000 chars, 150 overlap).
-   d. **Contextual retrieval (Phase 6, default on):** `contextualize_chunks(llm, clean, chunks)` prepends a short **LLM-generated context** to each chunk (one LLM call per chunk, *at ingest only*). Stored `content` becomes `"<context>\n\n<original chunk>"`, so the situating meaning enters both the vector and the keyword index. Best-effort (falls back to the raw chunk on LLM error).
-   e. `embedder.embed(chunks)` → 1024-dim BGE-M3 vectors.
-   f. `store.add_document(org_id, title, chunks, embeddings, source_uri)` → inserts a `documents` row + `chunks` rows (each stamped with `org_id`).
-6. **Result:** `IngestResult(documents_ingested, chunks_stored, documents_skipped, document_ids)`. Empty pages (no text — e.g. a parent/index page) are counted as *skipped*, not stored.
+1. **Credential.** The live token comes from the org's `oauth_connections` row (encrypted). A per-org Notion token never falls back to another org's. `needs_reauth` rows are not retried.
+2. **When it runs.** The first ingest is queued on connect (Drive and Slack wait until a folder or channel list is saved). After that, a webhook flags the connection and a sync starts unless one ran in the last 3 minutes; an hourly poll is the floor for anything a push missed. `last_sync_at` is stamped on attempt.
+3. **List, then fetch what changed.** `list_documents()` is also where sharing is captured (`DocAccess` on the ref). Unchanged documents are not re-fetched. A listing that looks like it deleted most of the corpus is refused.
+4. **For each changed document:** the adapter renders plain text; text is chunked at **256 tokens / 40 overlap** with a **4,000-character** ceiling; chunks are embedded (1024-dim) and stored with `org_id` and, when set, `workspace_id`. A short context line may be prepended at ingest. Empty documents are skipped.
+5. **Access is stored on the row**, not inferred later: `doc_is_public` and `doc_viewers`. An ACL-capable provider that cannot read sharing indexes the document for the connected account only. An already-indexed document whose sharing goes unreadable keeps its last viewer list.
+6. **After a successful job:** activity facts for charts, knowledge-graph capture, and a clear of that org's answer cache. GitHub does not ingest; its charts come from a separate live facts sync.
 
-> **Cost note:** contextual retrieval makes one LLM call per chunk, so ingestion needs the LLM endpoint up. Disable with `INGEST_CONTEXTUAL_ENABLED=false` to only embed+store.
+Contextual retrieval spends LLM calls, so background work leaves headroom for live questions (`app/llm/pacing.py`). `INGEST_CONTEXTUAL_ENABLED=false` stores bare chunks.
 
 ---
 
 ## 6. END-TO-END FLOW B — Query (the read path)
 
-**Entrypoint:** `scripts/cli.py <org_id>` → `PolicyAgent.answer(question, org_id, conversation_id)`
-**Orchestrator:** `app/rag/pipeline.py::RagPipeline.answer()`
+**Entrypoints:** `POST` chat (web), the Slack bot, and `scripts/cli.py`.
+**Router:** `app/agent/routing.py::choose_agent`, then a LangGraph node. The corpus (cosine over each connected tool) picks a document agent. A chart question goes to `InsightsAgent` (SQL). A code question, when GitHub is connected, goes to `GitHubAgent` (live tools, nothing embedded). `PolicyAgent` is a legacy fallback, not the product path.
 
-`PolicyAgent` is a **thin adapter**: it calls `RagPipeline.answer()` and maps the `RagResult` → `AgentResponse` (chunks → `Citation`s). It adds *no* logic.
+`org_id` comes from the signed session. A space id is paired with it. The asker's email (and prior emails) becomes the `Viewer` that retrieval filters on.
 
-### 6.1 The full sequence (`RagPipeline.answer`)
+### 6.1 Sequence
 
 ```mermaid
 flowchart TD
-    Q["question + org_id (+ conversation_id?)"] --> RW{"in a conversation<br/>with history?"}
-    RW -- yes --> REWRITE["_rewrite_question():<br/>LLM rewrites follow-up into a<br/>standalone question using<br/>summary + recent turns"]
-    RW -- no --> RUN
-    REWRITE --> RUN["_run(resolved, org_id)"]
-    RUN --> EMB["embed(resolved) → query_vec"]
-    EMB --> REUSE{"_try_reuse():<br/>cosine(query_vec, prev turn's chunks)<br/>≥ 0.72 ? (NO LLM)"}
-    REUSE -- yes --> HITS["reuse previous chunks<br/>(skip retrieval)"]
-    REUSE -- no --> RETRIEVE["HybridRetriever.retrieve():<br/>vector + keyword → RRF fuse<br/>→ cross-encoder rerank → top_k"]
-    RETRIEVE --> HITS
-    HITS --> GATE{"top_score ≥<br/>similarity_threshold (0.35)?"}
-    GATE -- no --> WEB{"web-search<br/>fallback fires?"}
-    WEB -- yes --> WEBANS["labelled web answer<br/>source=web"]
-    WEB -- no --> FB["fixed fallback<br/>source=none, answered=False"]
-    GATE -- yes --> GEN["build_grounded_prompt()<br/>+ llm.generate()"]
-    GEN --> REFUSE{"model emitted the<br/>fallback string?"}
-    REFUSE -- yes --> FB
-    REFUSE -- no --> ANS["grounded answer<br/>source=policy, answered=True"]
-    ANS --> POST
-    WEBANS --> POST
-    FB --> POST["if conversation:<br/>append_turn, remember chunks,<br/>update running summary"]
+    Q["question in a scope"] --> ROUTE["choose_agent"]
+    ROUTE --> CHART["InsightsAgent: SQL chart"]
+    ROUTE --> GH["GitHubAgent: one live tool round"]
+    ROUTE --> RAG["per-source RagPipeline"]
+    RAG --> RW["rewrite follow-up if needed"]
+    RW --> EMB["embed once"]
+    EMB --> REUSE{"reuse previous chunks ≥ 0.72?"}
+    REUSE -- yes --> GATE
+    REUSE -- no --> RETRIEVE["vector + keyword, RRF, rerank\nviewer filter in the SQL"]
+    RETRIEVE --> GATE{"best cosine ≥ 0.35?"}
+    GATE -- no --> REC["at most one recovery, then web or refusal"]
+    GATE -- yes --> GEN["strict grounded prompt"]
+    GEN --> LIVE["optional live re-read of a hit"]
+    LIVE --> ANS["answer, or fixed refusal"]
 ```
 
-### 6.2 The steps in words
+### 6.2 Steps that always hold
 
-1. **Query rewrite (memory, Phase 5) — only in a conversation with prior turns.**
-   `_rewrite_question()` makes one cheap LLM call turning a context-dependent
-   follow-up ("what about part-timers?") into a standalone question, using the
-   running **summary** + the last `MEMORY_RECENT_TURNS` (=3) turns verbatim. Guarded:
-   if the rewrite doesn't look like a single question, it falls back to the original.
-   The rewritten question is exposed as `RagResult.resolved_question`.
+1. **Rewrite** only when the chat has history. A first question can also be rewritten from a personal-memory *context* fact (office, team). Preferences never rewrite the search.
+2. **Reuse** at cosine **0.72** skips retrieval and still passes the gate.
+3. **Retrieval** is hybrid: vector plus keyword, fused with RRF (k=60), reranked from a pool of **16** (`RETRIEVAL_CANDIDATE_POOL`) down to `RAG_TOP_K` (5). The gate reads the **best cosine**, never an RRF score or a reranker logit. The viewer predicate is in the same `WHERE` as `org_id`, before ranking.
+4. **Gate at 0.35.** Below it, at most one recovery expansion, then one labelled web search for a real external entity, then the fixed refusal. A document the asker cannot see can replace "I don't know" with an access notice that names the connector, never the title.
+5. **Generation** uses three modes only: explicitly supported, related but not explicit, or no supporting evidence. Outside text is fenced. Links in the answer must have appeared in that text.
+6. **Live read**, when enabled, refreshes at most two hits after the gate, for a question the classifier marks as about current state. A deleted or forbidden item is withheld.
+7. **A graph plan** can add a second tool's documents to the same answer. It reuses the walk; it does not start a second agent.
+8. **The conversation is personal** (`conversations.user_id`). Turns, a running summary, and last-retrieval chunks are stored for the next turn. An ungrounded answer is logged as a documentation gap.
 
-2. **Embed once.** `_run()` embeds the (resolved) question a single time; the same
-   `query_vec` is used for both the reuse check and (if needed) vector search.
+GitHub answers are composed only from tool output (README, commit, commits, pull requests, reviews, branches). No tool call, a bad argument, or a failure returns the fixed fallback. Private repositories are readable only when the asker's linked GitHub login can open them.
 
-3. **Retrieval reuse (Phase 8) — a deterministic, NON-LLM gate before retrieval.**
-   `_try_reuse()` recomputes embeddings for the *previous turn's* chunks (stored as
-   text in `conversation_last_retrieval`) and compares by plain cosine. If the best
-   similarity ≥ `RETRIEVAL_REUSE_THRESHOLD` (**0.72**), those chunks are reused and
-   retrieval is skipped. The reuse similarity becomes `top_score`, so reused chunks
-   flow through the **unchanged** gate below — reuse only saves work, never bypasses
-   grounding. Org-scoped (never crosses tenants). Fires rarely by design (0.72 is
-   deliberately conservative — see §11).
-
-4. **Retrieval (Phase 6) — if not reused.** `HybridRetriever.retrieve()`:
-   - **Vector search** over a wide `candidate_pool` (=30), org-scoped.
-   - **Keyword search** (Postgres full-text, BM25-style `ts_rank` on a generated `content_tsv`).
-   - **Reciprocal Rank Fusion (RRF, k=60)** merges the two rank lists (rank-based, so no score normalization needed).
-   - **Cross-encoder rerank** the fused pool → final `top_k` (=5).
-   - `gate_score` = **best cosine** among candidates (== the vector top-1 the gate always used). Hybrid/rerank only reorder; they never change the gate signal.
-
-5. **Confidence gate (layer 1, Phase 3).** If `top_score < similarity_threshold` (**0.35**), evidence is insufficient for generation. Before web/fallback, **bounded retrieval recovery** may run once (see step 5b).
-
-5b. **Bounded retrieval recovery (Retrieval Discovery Gap) — at most once.** Triggered when available evidence looks insufficient: gate miss, *or* generation finds the context insufficient (current detector: `_is_refusal`; architectural definition is generation insufficiency, not that helper). An LLM produces alternative **retrieval-oriented search expressions** (preserving user intent — never answering). Re-retrieve + RRF-merge with first-pass hits; same gate applies. Recovery never reduces grounding guarantees. Expander failure → continue existing path. Happy path: zero recovery LLM calls.
-
-6. **Grounded generation (layer 2).** `build_grounded_prompt` uses three modes only: **Explicitly Supported** / **Related but Not Explicit** / **No Supporting Evidence**. Related mode may report what docs say while stating they do not explicitly answer; unsupported conclusions remain forbidden. `_is_refusal()` detects the fixed fallback. If generation finds evidence insufficient and recovery has not yet run → step 5b once, then generate again. If evidence is still insufficient after the internal path (retrieve → optional recovery → generate), call the existing web-search stage (when enabled; tool-gated for external entities) before the fixed fallback.
-
-7. **Web-search fallback (Phase 5) — when internal evidence is insufficient** (gate still fails after recovery, *or* generation refuses after gate-pass + recovery). `_gate_failed()` → `_try_web_search()`:
-   - One LLM **decision call** offering a `web_search` *tool* (real function-calling). The tool description says: call it ONLY for real, named, *external* entities (an insurer/product/company); do NOT call it for internal company info.
-   - If the model calls it: exactly **one bounded search** runs (DuckDuckGo), results are fed back, one answer call composes the reply.
-   - The answer is prefixed with an unmistakable banner (`WEB_ANSWER_LABEL`) and `source="web"`, `answered=True`.
-   - Any failure/timeout/empty/decline → the fixed internal fallback (`source="none"`, `answered=False`).
-
-8. **Persist conversation state (Phase 5/8) — only in a conversation.**
-   `append_turn()` stores the Q+A; `_remember_retrieval()` saves this turn's chunks
-   (text + locator, no embeddings) for the next reuse check; `_update_running_summary()`
-   incrementally folds the single turn that just left the verbatim window into the
-   running summary (one LLM call over `summary + one turn`, ~constant cost).
-
-### 6.3 The result object
-
-`RagResult(..., retrieval_reused, recovery_used, recovery_reason, recovery_queries, retrieval_improved, top_score_before, top_score_after, final_answer_source, latency_ms)`
-→ mapped by `PolicyAgent` to
-`AgentResponse` (same recovery diagnostics surfaced for CLI/logging).
-
-- **`source`** is the branch signal: `"policy"` | `"web"` | `"none"`.
-- **`answered`/`grounded`** is `True` for policy AND web answers; `False` only for the fixed fallback. **Branch on the bool / `source`, never on string-matching the answer.**
+Charts never let the model emit a number. `InsightsAgent` runs a whitelisted metric from `app/insights/registry.py` (12 metrics across Notion, Drive, GitHub, Linear, Slack, and Forms sentiment).
 
 ---
 
@@ -232,11 +182,10 @@ flowchart TD
 | `ingestion/` | — (orchestrator) | `pipeline.py`, `preprocessing.py`, `chunking.py`, `contextualize.py` | The write path (§5). |
 | `rag/` | — (orchestrator) | `pipeline.py`, `retrieval.py`, `prompts.py`, `factory.py` | The read path (§6). |
 | `reranker/` | `Reranker` | `local.py` (CrossEncoder) | `rerank(query, candidates, top_k)`. `bge-reranker-v2-m3` (~2.2 GB first download, then cached). |
-| `sources/` | `SourceAdapter` | `notion.py` | `list_documents` / `fetch_document` / `get_last_modified`. Format conversion lives *inside* the adapter. |
-| `memory/` | `ConversationStore` | `pg_store.py` | Org-scoped conversation history: turns, running summary, last-retrieval. `get_context`, `append_turn`, `get_turns`, `get_summary`, `set_summary_and_prune`, `get_last_retrieval`, `set_last_retrieval`. |
+| `memory/` | `ConversationStore` | `pg_store.py`, `personal.py` | Conversation history, running summary, last retrieval, and personal facts (`user_memory`). |
 | `websearch/` | `WebSearchProvider` | `duckduckgo.py` | `search(query, max_results, timeout) -> list[SearchResult]`. |
 | `agent/` | `Agent` (+ `AgentResponse`, `Citation`) | per-source agents, `github_agent.py`, `insights_agent.py`, `policy_agent.py` (legacy) | One pinned agent per source; `routing.choose_agent` picks one; LangGraph runs it. |
-| `sources/` (cont.) | `SourceAdapter` | `notion.py`, `google_drive.py`, `slack.py`, `linear.py`, `google_groups.py`, `drive_watch.py` | Each adapter captures the source's sharing (`DocAccess`) on the listing; Drive push channels. |
+| `sources/` | `SourceAdapter` | `notion.py`, `google_drive.py`, `slack.py`, `linear.py`; `google_groups.py`, `google_forms.py`, `drive_watch.py` | Indexed adapters capture sharing on the listing. Groups expand on read. Forms are labels only. Drive push channels. |
 | `githublive/` | `GitHubReader` | `rest.py`, `access.py` | GitHub read live; `access.restrict` narrows to repos the asker's linked login can open. |
 | `security/` | — | `visibility.py`, `untrusted.py`, `links.py`, `outbound.py`, `agents.md` | The one document-access predicate; untrusted-text policy, scrubbing, link provenance. |
 | `guard/` | `InjectionGuard` | `prompt_guard.py`, `safeguard.py`, `moderation.py` | Prompt-injection scoring at ingest, answer moderation. |
@@ -259,36 +208,38 @@ flowchart TD
 
 ## 8. Database schema (`app/db/schema.sql`)
 
-| Table | Responsibility | Key columns |
-|---|---|---|
-| `organizations` | Tenants; everything hangs off an org | `id` (uuid), `name`, `created_at` |
-| `documents` | A source policy file/upload, scoped to one org | `id`, `org_id`, `title`, `source_uri`, `created_at` |
-| `chunks` | Text chunks + embedding, scoped to one org | `id`, `org_id`, `document_id`, `chunk_index`, `content`, `embedding vector(1024)`, `content_tsv` (generated `tsvector`, GIN-indexed), `created_at` |
-| `conversations` | A conversation, scoped to one org | `id`, `org_id`, `summary` (running compression), `created_at` |
-| `conversation_turns` | One Q+A within a conversation | `id`, `conversation_id`, `org_id`, `turn_index`, `question`, `answer`, `created_at` |
-| `conversation_last_retrieval` | Last turn's chunks for the reuse check | `conversation_id` (PK), `org_id`, `chunks` (JSON: `{content, document_id, chunk_index, org_id}` — **no embeddings**), `updated_at` |
+The full column list lives in `schema.sql` and in CLAUDE.md §6. The groups that matter:
 
-- **Indexes:** `org_id` on `documents` and `chunks` (tenant filter); **HNSW cosine** index on `chunks.embedding` (ranking speed); GIN on `chunks.content_tsv` (keyword search).
-- **Cascades:** deleting an org removes its documents, chunks, conversations, turns, last-retrieval row; deleting a conversation removes its turns + last-retrieval row.
-- **No `users`/`auth`/OAuth tables yet** — deliberately deferred.
-- **Embedding dim is coupled to the schema:** `vector(1024)` matches BGE-M3. Change the model ⇒ change BOTH `schema.sql` and `DatabaseSettings.embedding_dim`, and recreate the table.
+| Group | Tables |
+|---|---|
+| Tenant | `organizations`, `users`, `user_email_aliases`, `workspaces`, `workspace_members` |
+| Sign-in | `magic_link_tokens`, `oauth_states`, `email_change_requests`, `org_signup_requests` |
+| Connectors | `oauth_connections` (encrypted tokens, `source_config`), `drive_watch_channels`, `github_install_pending` |
+| Corpus | `documents` (`doc_is_public`, `doc_viewers`, `source_meta`), `chunks` (`vector(1024)`, generated `content_tsv`, injection score) |
+| Ask | `conversations` (personal: `user_id`), `conversation_turns`, `conversation_last_retrieval`, `conversation_attachments` (metadata only), `query_answer_cache`, `user_memory` |
+| Charts & graph | `activity_facts`, `insight_pins`, `kg_entities`, `kg_edges`, `kg_evidence`, `person_identities` |
+| Ops | `ingestion_jobs`, `schedulers`, `scheduler_reports`, `feedback_and_gaps`, `live_tool_calls`, `api_rate_counters` |
+
+`chunks.embedding` is `vector(1024)` to match BGE-M3. Changing the model means changing `EMBEDDING_DIM` and re-ingesting. Deletes cascade from `organizations` and `workspaces`. A workspace id is nullable: `NULL` means org-wide, and a space query never also returns org-wide rows.
 
 ---
 
 ## 9. Multi-tenancy & isolation (the central invariant)
 
-**Two independent boundaries, both real:**
+Four boundaries, all in the query or in a check that runs before it:
 
-1. **At ingestion — enforced by Notion.** Each org has its **own** Notion internal integration + secret (`NOTION_TOKEN_<NAME>`). A Notion integration can only see pages explicitly shared with it, so `list_documents()` returns only that org's pages. `resolve_token(name)` returns *only* that org's secret and never falls back. (Static-token stand-in for real per-customer OAuth later.)
-2. **At query — enforced by the SQL `WHERE org_id`.** Every retrieval filters by `org_id` *before* ranking, so isolation does not depend on the vector index. The `Agent` contract makes tenant-scoping a hard requirement. Proven by `tests/test_isolation.py`.
+1. **Company.** Every tenant table has `org_id`. Retrieval filters `WHERE org_id = …` before ranking (`tests/test_isolation.py`). The id comes from the session cookie in `app/api/deps.py`, never from the client.
+2. **Space.** `workspace_id` is always paired with `org_id`. A space sees only its own rows.
+3. **Document.** `security/visibility.py` is the one spelling of "public in this scope, or shared with this person". It runs on vector search, keyword search, recent chunks, charts, starter chips, and the graph walk. People match by email, including a prior sign-in email.
+4. **Person.** Chats, reports, pins, memory, and attachments are keyed by `(org_id, user_id)`. Holding someone else's conversation id does not open their chat.
 
-**Never** expose a query path that omits `org_id`.
+What the connector token can reach (a Drive folder, a Slack channel list, GitHub's granted repos, pages shared with the Notion integration) is a separate limit from who inside the company may read a row.
 
 ---
 
 ## 10. Grounding & anti-hallucination (two layers)
 
-Neither layer alone is trusted — see CLAUDE.md §4 for the empirical reasoning (a similarity threshold can't cleanly separate "answerable" from "on-topic but unanswered" on a small sample).
+Neither layer alone is trusted. A similarity threshold cannot cleanly separate "answerable" from "on-topic but unanswered" on a small sample (CLAUDE.md §5).
 
 1. **Confidence gate (cheap, pre-LLM).** `RAG_SIMILARITY_THRESHOLD` = **0.35** (just above noise ~0.30). Below it → fallback with **no LLM call**. Catches irrelevant-context noise cheaply.
 2. **Strict prompt (fine-grained).** `prompts.py` forbids outside knowledge and orders the model to emit the *exact* fallback string when the context doesn't directly answer — even if on-topic. Handles the "related-but-doesn't-answer" case the threshold can't.
@@ -307,55 +258,50 @@ The **fixed fallback string** lives in ONE place (`RagSettings.fallback_response
 
 ## 12. Configuration reference (env vars)
 
-All read in `app/config/settings.py`. Defaults in parentheses.
+All read in `app/config/settings.py`. The annotated list is `.env.example`. Defaults in parentheses are the code defaults; production turns several features on by environment (see PRODUCT_STATUS.md).
 
 | Group | Vars |
 |---|---|
-| **LLM** | `LLM_MODEL`, `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_TIMEOUT` (60) |
-| **Embeddings** | `EMBEDDING_BACKEND` (local), `EMBEDDING_MODEL` (BAAI/bge-m3), `EMBEDDING_DEVICE`, `EMBEDDING_API_KEY`, `EMBEDDING_BASE_URL` |
-| **Database** | `DATABASE_URL`, `EMBEDDING_DIM` (1024), `DB_POOL_MIN_SIZE` (1), `DB_POOL_MAX_SIZE` (10) |
-| **Chunking** | `CHUNK_SIZE` (1000), `CHUNK_OVERLAP` (150) |
-| **Vector store** | `VECTOR_STORE_BACKEND` (pgvector) |
-| **RAG** | `RAG_TOP_K` (5), `RAG_SIMILARITY_THRESHOLD` (0.35), `RAG_FALLBACK_RESPONSE` |
-| **Notion** | `NOTION_TOKEN` (default), `NOTION_TOKEN_<NAME>` (per-org), `NOTION_CLIENT_ID/SECRET/REDIRECT_URI` (reserved, unused) |
-| **Memory** | `MEMORY_RECENT_TURNS` (3) |
-| **Retrieval (P6)** | `INGEST_CONTEXTUAL_ENABLED` (true), `RETRIEVAL_HYBRID_ENABLED` (true), `RETRIEVAL_RERANK_ENABLED` (true), `RETRIEVAL_CANDIDATE_POOL` (30), `RETRIEVAL_RRF_K` (60), `RERANKER_MODEL` (bge-reranker-v2-m3), `RERANKER_DEVICE` |
-| **Reuse (P8)** | `RETRIEVAL_REUSE_ENABLED` (true), `RETRIEVAL_REUSE_THRESHOLD` (0.72) |
-| **Web search** | `WEB_SEARCH_ENABLED` (true), `WEB_SEARCH_PROVIDER` (duckduckgo), `WEB_SEARCH_API_KEY`, `WEB_SEARCH_MAX_RESULTS` (5), `WEB_SEARCH_TIMEOUT` (8) |
+| **LLM** | `LLM_ADAPTER`, `LLM_MODEL`, `LLM_API_KEY`. `LLM_BASE_URL` only for `custom`. Boot check: `LLM_CONFIG_CHECK`. |
+| **Model choice** | OpenRouter and Groq keys. Bring-your-own is stored per org, not an env model string. |
+| **Embeddings / rerank** | `EMBEDDING_BACKEND` (local), `RERANKER_BACKEND`, `RETRIEVAL_CANDIDATE_POOL` (16), `RETRIEVAL_RRF_K` (60), `RAG_TOP_K` (5) |
+| **Database** | `DATABASE_URL`, `EMBEDDING_DIM` (1024) |
+| **Chunking** | `CHUNK_SIZE` (256), `CHUNK_OVERLAP` (40), `CHUNK_MAX_CHARS` (4000), `CHUNK_TOKEN_BACKEND` (heuristic) |
+| **RAG** | `RAG_SIMILARITY_THRESHOLD` (0.35), `RETRIEVAL_REUSE_THRESHOLD` (0.72) |
+| **Second Brain** | `GRAPH_RETRIEVAL_ENABLED` (false), `LIVE_TOOLS_ENABLED` (false), `LIVE_TOOLS_PROVIDERS` (linear), `PERSONAL_MEMORY_ENABLED` (false) |
+| **Safety** | `GUARD_MODE` (off), `RAG_AUDIT_ENABLED` (false) |
+| **Email** | `EMAIL_SENDER` (`console` in code; `sendgrid` in production) |
+| **Freshness** | `INTERNAL_TICK_SECRET`; webhook secrets for Slack, Linear, Notion; `DRIVE_PUSH_BASE_URL` |
+| **Files** | Cloudinary cloud, key, and folder — both set, or neither |
 
 ---
 
 ## 13. How to run
 
 ```bash
-# 0. Environment
-docker compose up -d                      # Postgres + pgvector
-source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-# ensure the LLM endpoint (e.g. FreeLLMAPI on localhost:3001) is up
-cp .env.example .env                       # fill in real values
-
-# 1. Ingest an org from Notion (its own token; --token = the <NAME> in NOTION_TOKEN_<NAME>)
-python scripts/ingest_notion.py --org "Acme Corp" --token acme   # prints the org_id
-
-# 2. Chat
-python scripts/cli.py                      # pick an org by ROW NUMBER or paste an org_id
-python scripts/cli.py <org_id>             # or jump straight in
-
-# 3. Tests
-python -m pytest -q -m "not network"       # full suite minus live-network cases
+cp .env.example .env          # LLM key and the rest; never commit .env
+docker compose up -d          # Postgres + pgvector
+python scripts/init_db.py
+uvicorn app.api.main:app --reload
+cd frontend && npm install && npm run dev
 ```
 
-**Adding a new org later = no code change:** new Notion integration → share pages → add `NOTION_TOKEN_<NEW>` → `ingest_notion.py --org "New Co" --token new`.
+Organizations connect Notion, Drive, Slack, Linear, and GitHub from the Sources page. Syncing then runs on its own. `python scripts/cli.py` is the terminal client. Tests:
+
+```bash
+pytest -m "not network and not live_llm"
+```
 
 ---
 
 ## 14. Extension points
 
-- **Swap the LLM provider:** change `LLM_MODEL` + `LLM_BASE_URL` + key. No code change (any OpenAI-compatible endpoint).
-- **Add a content source (Drive/GitHub/Slack):** implement `SourceAdapter` (`list_documents`/`fetch_document`/`get_last_modified`) with format conversion *inside* the adapter; add a branch in `sources/factory.py`. The ingestion pipeline never changes.
-- **Add an agent:** implement `Agent.answer()` returning `AgentResponse` and register it with routing; GitHub and Insights are the non-RAG examples.
-- **Swap the reranker / embeddings / vector store / web-search provider:** new impl behind the existing `base.py` + a factory branch.
+- **Swap the LLM:** set `LLM_ADAPTER` to a name in `app/llm/adapters.py`. Do not invent a base URL that fights the adapter.
+- **Add an indexed source:** a `SourceAdapter` plus a factory branch, and a decision about how that source's sharing is captured. GitHub is the pattern for a source that must not be embedded.
+- **Add an agent:** `Agent.answer()` → `AgentResponse`, registered with routing. A misroute must cost a refusal, not an answer from the wrong corpus.
+- **Swap embeddings, reranker, or web search:** a new impl behind the existing `base.py` and factory. An embedding-width change is a schema change and a re-ingest.
 
 ---
 
@@ -378,7 +324,7 @@ python -m pytest -q -m "not network"       # full suite minus live-network cases
 
 ## 16. Known limitations, gotchas & open issues
 
-**Gotchas (see CLAUDE.md §4 for the full list):**
+**Gotchas (see CLAUDE.md §5 for the full list):**
 - Migration must **not** use the connection pool (the pool's `configure` runs `register_vector`, which needs the `vector` extension to already exist).
 - Contextual retrieval changes stored `content` (chunk = `"<context>\n\n<original>"`), so displayed chunks include the prefix, and stored size exceeds the raw source.
 - The reranker downloads ~2.2 GB on first use, then caches.

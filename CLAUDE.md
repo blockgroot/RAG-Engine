@@ -405,7 +405,7 @@ already applied skip / owner-only / freeze to that exact row.
 - **A live read must be EARNED (mode A)** (`livetools/trigger.py`, `gateway._drop_freshly_synced`): the question classifier returns `live` in the SAME `classify_question` call (`AskIntent.needs_live` → `RoutingDecision` → `LiveRequest.needs_live`, set at the chat edge after routing) — "is SYV-5 still blocked?" yes, "leave policy?" no. No hardcoded word list (a phrase list cannot tell "has Rahul reviewed the PR?" from "how do reviews work?"); no verdict (classifier down, field missing) ⇒ the read goes ahead, so an outage costs ~2 s, never a stale answer. And a tool whose last SUCCEEDED ingest job (never `last_sync_at`, stamped on attempt) is <`FRESH_SECONDS`=15 min old is not read. Unknown freshness reads live. Mode B is ungated: the synced copy already failed there.
 - **The index finds, the live call refreshes**: mode A re-reads only documents in this request's hits, resolved to `(provider, external_id)` from `documents` pinned to org AND space — no search, no model-named target, zero extra model calls. Runs AFTER the gate passes, so a live read never rescues a gate miss. `gateway.py` is the only code that decrypts a token for it; ≤`MAX_REFRESHES`=2, 6s, 6000 chars (truncation stated).
 - **Failures decided by the PROVIDER'S reason**: Linear answers a deleted issue with HTTP 200 + `Entity not found` (and a rate limit with 400 `RATELIMITED`). Only not-found/permission WITHHOLDS the stale copy; rate limit, timeout, reauth (marks `needs_reauth`), 5xx and unknown codes fall back to the index.
-- **The gate re-check uses `RetrievalResult.gate_document_id`**, because `gate_score` is a max over ~30 candidates before rerank and the final hits cannot reproduce it. Withheld non-gate document ⇒ gate untouched; withheld gate document ⇒ all its chunks dropped, gate = best remaining cosine (can only lower it). Every leg's `.score` is a real cosine (keyword leg selects `1 - (embedding <=> q)`, pinned by a DB test).
+- **The gate re-check uses `RetrievalResult.gate_document_id`**, because `gate_score` is a max over the candidate pool before rerank and the final hits cannot reproduce it. Withheld non-gate document ⇒ gate untouched; withheld gate document ⇒ all its chunks dropped, gate = best remaining cosine (can only lower it). Every leg's `.score` is a real cosine (keyword leg selects `1 - (embedding <=> q)`, pinned by a DB test).
 - **Mode B (refusal path only)**: ONE tool call offers `refresh_item(handle)` over `[L1]`/`[D1]`/`[N1]`/`[S1]` handles for the below-gate hits (titles fenced) — in the SAME call as `web_search` when web is on, so no extra serial round. Handles map only within the request (`livetools/handles.py`); an invented one resolves to nothing; echoed handles are stripped after the MODE parse. Readers: Linear, Drive (`files.get` + export; trashed/404/permission-403 withhold, `rateLimitExceeded` 403 falls back), Notion (ingest renderer, shared char budget + 12-call cap), Slack (≤15 msgs; OFF in `LIVE_TOOLS_PROVIDERS` until the D10 tier check).
 - **A live block SUPERSEDES its document's synced chunks in the prompt** (`superseded=live.refreshed` → `_generate_core`); they stay in `hits` for citations and next-turn reuse. Shipped as ADD-beside: staging measured first word ~5 s slower (prompt ~2x, two versions of one page for the model and the audit). The ~2 s read is still serial after the gate; the next lever is starting it during rerank.
 - Live blocks lead `extra_contexts`, so fence/scrub, the audit and the link rule all see them; enforce-mode guard drops a flagged block (not a withhold). A live answer is never cached; a `live_withheld` refusal says "no longer available" naming the CONNECTOR, never the item, and is deliberately NOT a gap row (deletion vs revocation is indistinguishable). `live_tool_calls` audits each read — never the token or text — 90-day sweep on the tick.
@@ -433,8 +433,8 @@ grounded generate → `RagResult`.
   strict prompt emitting the same fallback when context doesn't answer — a
   threshold can't separate "answers" from "on-topic but doesn't" (§5).
 - **Retrieval** = contextual chunks + hybrid vector/BM25 fused with RRF
-  (k=60, rank-based so no score normalization) + cross-encoder rerank of a
-  30-candidate pool. **The gate is unchanged** — `gate_score` is still the
+  (k=60, rank-based so no score normalization) + cross-encoder rerank of the
+  candidate pool (`RETRIEVAL_CANDIDATE_POOL`, default **16**). **The gate is unchanged** — `gate_score` is still the
   best cosine, so these only reorder.
 - **Memory**: a follow-up is rewritten standalone *before* retrieval, leaving
   the gate/prompt path untouched. The summary folds one turn at a time, off
@@ -1535,13 +1535,16 @@ facts, a space's Ask reads that space only — no separate company dashboard.
   the gate nor the strict prompt can check arithmetic. So there is **no image
   generation** — a PNG of numbers cannot be filtered, re-scoped or clicked
   through, which is the entire point of the section.
-- **`registry.py` is the semantic layer** — 2 hardcoded `Metric`s so far (Notion + Drive), each a
-  FIXED aggregate fragment plus whitelisted `dims`. Same discipline as
+- **`registry.py` is the semantic layer** — 12 hardcoded `Metric`s
+  (`docs_changed`, `drive_docs_changed`, `prs_opened`, `prs_merged`,
+  `pr_reviewers`, `pr_lead_time`, `commits_by_author`, `issues_completed`,
+  `issue_states`, `issue_cycle_time`, `slack_threads`, `sentiment_by_theme`),
+  each a FIXED aggregate fragment plus whitelisted `dims`. Same discipline as
   `llm/catalog.py`. `tests/test_insights_registry.py` forbids `{`, `%` or `;`
   in any fragment and requires every `DIMENSIONS` value to be a bare
   identifier: `period` and `group_by` are grammatically identifiers, so they
   cannot be bound as `%s` and are spliced — that whitelist is the only thing
-  between them and an injection. `PERIODS` is closed at week/month/quarter.
+  between them and an injection. `PERIODS` is closed at day/week/month/quarter.
 - **A `Metric` is a definition, a `Panel` (`panels.py`) is a VIEW of one.**
   "Top editors" is `docs_changed` grouped by `actor`, not a second metric —
   otherwise every grouping is a duplicate definition to keep in agreement.
@@ -2389,6 +2392,10 @@ providers (`app/api/webhooks.py`, `app/sources/drive_watch.py`). Canonical produ
   `application/vnd.google-apps.spreadsheet`. A form export in a connected
   folder is Q&A fodder only if we add that MIME later, never a pie. Plan:
   `git history: docs/plans/2026-09-02-visual-representation.md`.
+- Charts: the 12 registry metrics above are what Ask can count today. An open
+  query grammar (split, measure, filters), extra chartable fields, and tables
+  extracted from documents are on `feat/open-ended-charts` (PR #45, not merged).
+  The rule on that branch is the same: the model never produces a number.
 - Attachments: **still short of Onyx on purpose** — no Projects (a file is
   welded to one conversation, not a reusable library), no images (no vision
   path at all), no admin-editable limits (env vars; a table + route + UI for

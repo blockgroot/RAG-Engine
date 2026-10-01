@@ -11,9 +11,9 @@
 
 ## 1. Purpose of the system
 
-The product is a **multi-tenant retrieval-augmented generation (RAG) platform** for organisation policy question-and-answer.
+The product is a **multi-tenant retrieval-augmented generation (RAG) platform** for company question-and-answer.
 
-Each tenant connects its own Notion or Google Drive corpus. Employees submit natural-language questions and receive answers **grounded exclusively in that tenant’s documents**, with citations. A separate **GitHub agent** answers repository questions from live, bounded API reads and does not embed source code.
+Each tenant connects **Notion, Google Drive, Slack, Linear and GitHub**. Employees ask in the web app or in Slack and receive answers **grounded in that tenant’s own material**, limited to what they may open in the source tool. GitHub is answered from live API reads and is not embedded. Charts count recorded activity in SQL. Current product status is `PRODUCT_STATUS.md`.
 
 The intended deployment is a **self-hosted Docker image** that an enterprise can run inside its own infrastructure. Default components are therefore local, inexpensive, and keep policy text off third-party embedding APIs unless remote inference is explicitly configured.
 
@@ -56,7 +56,7 @@ Components that violated (1) or (3) for a modest quality gain were rejected. The
 | Grounding | Cosine gate of 0.35 plus a strict prompt | Inexpensive noise filter, then a semantic sufficiency check. |
 | Conversation memory | PostgreSQL turns and an incremental summary | Follow-up questions are rewritten into standalone queries. |
 | Web fallback | DuckDuckGo via tool-calling; labelled output | No API key. Restricted to named external entities. |
-| Content sources | Notion SDK; Drive via httpx; GitHub live | Documents are ingested. Code is not. |
+| Content sources | Notion, Drive, Slack, Linear (indexed); GitHub live; Forms labels only | Sharing from Drive, Slack, Linear and GitHub is applied in the query. Notion is per space. |
 | API and interface | FastAPI and Next.js 15 | Organisation identity is taken only from the signed session cookie. |
 | Evaluation | Golden path checks, retrieval rank, optional RAGAS | Continuous integration remains fast; LLM-as-judge runs on a slower cadence. |
 
@@ -66,7 +66,7 @@ Components that violated (1) or (3) for a modest quality gain were rejected. The
 
 ### 4.1 Ingestion
 
-The source adapter fetches a page. Text is preprocessed, chunked, optionally prefixed with context, embedded in batches of 16, and stored with `org_id`. Notion and Drive are partitioned by provider, so a Google synchronisation cannot delete Notion documents.
+The source adapter fetches a changed page, thread, or issue. Text is preprocessed, chunked, optionally prefixed with context, embedded in batches of 16, and stored with `org_id` (and `workspace_id` when the row belongs to a space). Sync is partitioned by provider, so a Google synchronisation cannot delete Notion documents. Slack threads and Linear issues use the same pipeline. GitHub is not ingested.
 
 ### 4.2 Question answering
 

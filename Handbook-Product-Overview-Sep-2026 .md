@@ -20,7 +20,7 @@ The product is one question box (Ask) over every tool a company connects, organi
 - One box for every connected source; Handbook decides which source to read by measuring which one's content best matches the question. Naming a tool ("in Slack…") reads that tool.
 - Every answer names where it came from (app, document, who last edited it, when).
 - Two safety layers stop invented answers: a confidence threshold refuses before the model is called, and a strict prompt refuses when the retrieved text doesn't actually answer.
-- Search combines meaning-based and keyword search, then re-ranks the best 30 candidates.
+- Search combines meaning-based and keyword search, then re-ranks a pool of 16 passages down to the best few.
 - Follow-up questions are understood in context ("what about part-timers?"); "summarise everything discussed here" reads the whole channel or space.
 - If nothing internal matches and the question is about a real outside entity, one web search is allowed, clearly labelled as web.
 - When a document exists but isn't shared with the asker, the answer says so (naming the connector, never the document) instead of a misleading "I don't know".
