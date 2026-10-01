@@ -100,6 +100,8 @@ Local embeddings on Standard are possible, but the first request still loads mul
 
 ## 5. Email delivery
 
+> **Status (1 October 2026):** SendGrid Single Sender is the production sender (`EMAIL_SENDER=sendgrid`), verified with real mailboxes for sign-in links, report notifications and email-change confirmations. The rest of this section is the reasoning and the upgrade path to a verified domain.
+
 ### 5.1 Current problem
 
 Render free blocks outbound SMTP. `EMAIL_SENDER=smtp` never reaches credentials. Resend over HTTPS works, but the sandbox sender (`onboarding@resend.dev`) delivers only to the Resend account owner. Approval mail to the owner succeeds; magic links to anyone else fail while the API reports success.

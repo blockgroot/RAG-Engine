@@ -268,7 +268,7 @@ hook, and every process boundary must `close_pool()`.
     (per-issue sharing out of a private team, Enterprise). Team + sharing ride the issues
     LISTING so revocation re-stamps; `teams` once and `members` once per non-public team
     per sync; unreadable membership ⇒ owner-only (`viewer.email`), like Drive. Queries are
-    validated against Linear's published `schema.graphql`, never run live yet.
+    validated against Linear's published `schema.graphql`; public teams verified on staging 2026-10-01, private teams untestable without Linear's Business plan.
   - **Charts go through the same predicate** (`insights.store._viewer_filter`, spliced
     into `run_metric`, `list_facts`, `list_subjects`, `first_fact_at`): a fact from an
     ACL-capable provider counts only when its DOCUMENT is visible, joined on
@@ -296,7 +296,7 @@ hook, and every process boundary must `close_pool()`.
   Document-level access filtering broke that premise for two kinds of answer,
   and the fix is a gated WRITE (`_is_cacheable`), not a re-keyed cache.
 
-**Second Brain capture (`sources/meta.py`, plan `docs/plans/2026-09-23-second-brain.md`)**
+**Second Brain capture (`sources/meta.py`, plan `git history: docs/plans/2026-09-23-second-brain.md`)**
 — each adapter records the people, links and containers it already saw into
 `SourceDocument.meta` → `documents.source_meta` (+ `source_editor_key`;
 `activity_facts.actor_key` for facts), with ZERO extra API calls — the fakes
@@ -311,7 +311,7 @@ already applied skip / owner-only / freeze to that exact row.
 
 **Second Brain graph (`app/graph/`: `identities`, `builder`, `linking`, `walk`)**
 - **`member_of` = person → PRIVATE Slack channel, evidence carries the CHANNEL's ACL** (`is_public=FALSE`, `viewers`=its `doc_viewers`), because membership is itself sensitive. Built from the database (threads' `doc_viewers` + `person_identities`), rebuilt whole per scope on EVERY Slack sync: membership moves without any message changing. Public channels get none.
-— Phase 1 of the plan, built and **OFF for answers** (`GRAPH_RETRIEVAL_ENABLED`).
+— Phase 1 of the plan. **Live in production** (team-verified 2026-10-01); `GRAPH_RETRIEVAL_ENABLED` defaults off in code and is set in prod.
 - **Identity is linked on PROOF only** (`person_identities.user_id`): the
   connector's email equals a member's login email IN THE SAME ORG
   (`auto_link_by_email`, which also un-links when the email stops matching), or
@@ -396,12 +396,12 @@ already applied skip / owner-only / freeze to that exact row.
 - **In retrieval it is ONE more RRF list** (`retrieval._graph_documents`): a
   vector search restricted to the walk's evidence documents, viewer-filtered
   AGAIN, so the gate is untouched. Any failure drops only its candidates.
-  Signals on the `rag.graph_signals` logger. **Switch it on only when
-  `python -m evaluation.graph_eval` says "enable"** (gain somewhere, loss nowhere)
-  with the REAL embedder.
+  Signals on the `rag.graph_signals` logger. It is **on in production**
+  (team-verified 2026-10-01); re-run `python -m evaluation.graph_eval` with the REAL embedder
+  before changing how it ranks (gain somewhere, loss nowhere).
 
-**Live connector reads = the Second Brain's second half (`app/livetools/`, plan `docs/plans/2026-09-29-live-connector-access.md`)**
-— the Second Brain is the knowledge graph PLUS live tool access, in normal Ask. No toggle: a "Deep research" composer toggle shipped and was removed (deep research is a separate, later planner+report feature). The web chat sets a `LiveRequest` ContextVar (the `GraphPlan` pattern) on every question; `LIVE_TOOLS_ENABLED` (+ `LIVE_TOOLS_PROVIDERS`, `LIVE_TOOLS_ORGS`) decides. Off = byte-identical answers. Slack, schedulers and eval never set one. On, a question whose top hits include a refreshable item waits for the read (~2 s staging) — measure first word before prod.
+**Live connector reads = the Second Brain's second half (`app/livetools/`, plan `git history: docs/plans/2026-09-29-live-connector-access.md`)**
+— the Second Brain is the knowledge graph PLUS live tool access, in normal Ask. No toggle: a "Deep research" composer toggle shipped and was removed (deep research is a separate, later planner+report feature). The web chat sets a `LiveRequest` ContextVar (the `GraphPlan` pattern) on every question; `LIVE_TOOLS_ENABLED` (+ `LIVE_TOOLS_PROVIDERS`, `LIVE_TOOLS_ORGS`) decides. Off = byte-identical answers. Slack, schedulers and eval never set one. On, a question whose top hits include a refreshable item waits for the read (~2 s staging) — **live in production** (team-verified 2026-10-01).
 - **A live read must be EARNED (mode A)** (`livetools/trigger.py`, `gateway._drop_freshly_synced`): the question classifier returns `live` in the SAME `classify_question` call (`AskIntent.needs_live` → `RoutingDecision` → `LiveRequest.needs_live`, set at the chat edge after routing) — "is SYV-5 still blocked?" yes, "leave policy?" no. No hardcoded word list (a phrase list cannot tell "has Rahul reviewed the PR?" from "how do reviews work?"); no verdict (classifier down, field missing) ⇒ the read goes ahead, so an outage costs ~2 s, never a stale answer. And a tool whose last SUCCEEDED ingest job (never `last_sync_at`, stamped on attempt) is <`FRESH_SECONDS`=15 min old is not read. Unknown freshness reads live. Mode B is ungated: the synced copy already failed there.
 - **The index finds, the live call refreshes**: mode A re-reads only documents in this request's hits, resolved to `(provider, external_id)` from `documents` pinned to org AND space — no search, no model-named target, zero extra model calls. Runs AFTER the gate passes, so a live read never rescues a gate miss. `gateway.py` is the only code that decrypts a token for it; ≤`MAX_REFRESHES`=2, 6s, 6000 chars (truncation stated).
 - **Failures decided by the PROVIDER'S reason**: Linear answers a deleted issue with HTTP 200 + `Entity not found` (and a rate limit with 400 `RATELIMITED`). Only not-found/permission WITHHOLDS the stale copy; rate limit, timeout, reauth (marks `needs_reauth`), 5xx and unknown codes fall back to the index.
@@ -411,7 +411,7 @@ already applied skip / owner-only / freeze to that exact row.
 - Live blocks lead `extra_contexts`, so fence/scrub, the audit and the link rule all see them; enforce-mode guard drops a flagged block (not a withhold). A live answer is never cached; a `live_withheld` refusal says "no longer available" naming the CONNECTOR, never the item, and is deliberately NOT a gap row (deletion vs revocation is indistinguishable). `live_tool_calls` audits each read — never the token or text — 90-day sweep on the tick.
 
 **Personal memory = the Second Brain's third layer (`app/memory/personal.py`, `user_memory`)**
-— a few facts per person ("works in the Bangalore office", "prefers short answers") carried across chats. Off unless `PERSONAL_MEMORY_ENABLED`; `users.memory_enabled` and `organizations.memory_enabled` (admin) switch it off.
+— a few facts per person ("works in the Bangalore office", "prefers short answers") carried across chats. **Live in production** (team-verified 2026-10-01); `PERSONAL_MEMORY_ENABLED` defaults off in code and is set in prod; `users.memory_enabled` and `organizations.memory_enabled` (admin) switch it off.
 - **Memory narrows the SEARCH, not just the wording**: `context` facts (team, office) go into the rewrite prompt before retrieval, and a chat's FIRST question is rewritten when one exists ("office hours?" → "…for the Bangalore office?"). Shipped prompt-only, where "office hours" still searched every office and the Bangalore excerpt was usable only if it happened to rank. `preference` facts never trigger a rewrite. No `interest` kind: one message cannot show a recurring topic, and one-off questions filled the slots.
 - **Written ONLY from the asker's own question**, never an answer (an answer can quote a document only they may read). One aux call (`STAGE_MEMORY_EXTRACT`), beside the answer, and only when `worth_reading` sees self-talk ("I'm…", "my team…", "keep it short") — most questions pay nothing. ≤3 facts per question, ≤120 chars, third person; sensitive words (health, pay, credentials, family…), links/mentions and anything the scrubber would cut are dropped; case-insensitive dedupe.
 - **Never evidence**: facts ride the grounded prompt AFTER the fenced context as "ABOUT THE ASKER — interpretation only"; the audit is handed documents alone, so a claim resting on memory is unsupported by construction. `RagResult.personalized` keeps it out of the cache (read and write). Only `context` facts reach the rewrite (see above); preferences never do.
@@ -477,7 +477,7 @@ grounded generate → `RagResult`.
   drifted. The ROOT `AGENTS.md` is for coding assistants and never reaches the
   model — rules only work through the prompt.
 - **Prompt-injection defense assumes the model WILL be fooled and makes that
-  harmless** (`docs/plans/2026-09-28-prompt-injection-defense.md`; Phase 1 =
+  harmless** (`git history: docs/plans/2026-09-28-prompt-injection-defense.md`; Phase 1 =
   deterministic, no model calls). Every published detector falls to adaptive
   attacks (arXiv 2510.09023), and every real RAG leak (EchoLeak, Slack AI,
   ChatGPT, Bard) went out through a URL, so the guarantees are in code:
@@ -1938,6 +1938,12 @@ evaluation/ golden set + harness + RAGAS ([eval] extra) · scripts/ entrypoints
 frontend/ Next.js 15 portal · tests/ pytest
 ```
 
+**Docs:** `PRODUCT_STATUS.md` (canonical status: live, verified, blocked, in progress) ·
+`Handbook-Product-Overview-Sep-2026 .md` (stakeholder overview) · `ARCHITECTURE.md` (system
+reference) · `docs/what-we-use-and-why.md`, `docs/paid-upgrade-path.md`,
+`docs/challenges-and-remedies.md`. Old plans and gap trackers were removed 2026-10-01; cited as
+"git history: docs/plans/…", recover with `git log -- <path>`.
+
 ## 5. Gotchas — each of these cost real debugging time
 
 **Grounding / retrieval**
@@ -2340,33 +2346,38 @@ tenants that predate charts get `activity_facts` from `backfill_all_document_fac
 (tick + lazy on an empty Ask chart). "Show a pie of files…" recovers a spec
 when the model says qa. Second Brain Phase 1 (`app/graph/`): capture at sync,
 identity linking + "Linked accounts", the graph builder, the access-safe walk,
-and the graph as a retrieval list — **built, OFF for answers**.
+and the graph as a retrieval list — **live in production**. Second Brain live reads
+(`app/livetools/`) and personal memory (`app/memory/personal.py`) are **live in production**
+too (team-verified 2026-10-01). Prompt-injection defense (all four phases) is **enabled in
+production and tested**. Real email via SendGrid (`EMAIL_SENDER=sendgrid`) is live and tested
+with real mailboxes; `console` is the code default for local development only. PR #44
+(2026-10-01, `5901c13`) added: Linear team ACLs + admins + per-issue shares, chart access,
+email change with prior emails, nested Google Groups (off), GitHub per-asker private-repo
+access (`githublive.access`), the Sources-card access note, and push sync for all four indexed
+providers (`app/api/webhooks.py`, `app/sources/drive_watch.py`). Canonical product status:
+`PRODUCT_STATUS.md`.
 
 **Pending / known gaps**
-- Personal memory: **built and OFF** (`PERSONAL_MEMORY_ENABLED`); the account panel and the "Remembered · Undo" line are `tsc`-checked only, and extraction has run against a fake model only — check its facts on staging with the real one. No private (memory-free) chat yet.
-- Live tools: **Phases 0–3 + the Slack reader are built and OFF** (normal Ask, behind `LIVE_TOOLS_ENABLED`). Every provider's error shapes (Linear `Entity not found`/`RATELIMITED`, Drive 403 reasons, Notion codes, Slack `error`) are from docs and tested against fakes only — walk each live on staging before trusting (plan §10). Slack is on the RESTRICTED tier (staging: `limit=200` → 15 + `has_more`), so it stays out of `LIVE_TOOLS_PROVIDERS`, and ingestion pages 13x more than it assumes. Staging verified Notion + Drive (viewer and non-viewer); Linear untested (token expired); first word re-measure pending after the supersede fix. Later by design: GitHub on the gateway, per-user tokens, MCP.
-- Second Brain: **`GRAPH_RETRIEVAL_ENABLED` stays off until
-  `python -m evaluation.graph_eval` runs with the real embedder and says
-  "enable"** (the stand-in embedder in `tests/test_graph_eval.py` only proves the
-  machinery). The "Linked accounts" page is `tsc`-checked only, never rendered.
-  `member_of` is built (`builder.build_memberships`, every Slack sync; evidence carries the channel's ACL). Phase 1d (LLM extraction) waits on 1.7 + an aux endpoint (O1), by design. Deploy needs the
-  additive schema (graph tables, `pg_trgm`, `person_identities`,
-  `oauth_states.user_id`); existing documents fill in over ticks
-  (`refresh_missing_meta` 25/job, `graph.builder.backfill` 200/tick).
+- Personal memory: **live** (prod). No private (memory-free) chat yet; web chat only.
+- Live tools: **live** (prod), Linear the default provider. Slack's reader stays out of
+  `LIVE_TOOLS_PROVIDERS` (RESTRICTED tier: `limit=200` → 15 + `has_more`). Later by design:
+  GitHub on the gateway, per-user tokens, MCP.
+- Second Brain graph: **live** (prod). Phase 1d (LLM extraction) waits on an aux endpoint, by
+  design. Existing documents fill in over ticks (`refresh_missing_meta` 25/job,
+  `graph.builder.backfill` 200/tick).
 - Document-level access: **Drive per-file sharing is VERIFIED live** (by the
   user, 2026-09-30). **Chart access is VERIFIED live** (staging, 2026-10-01: a Drive file shared
   with one member is counted and titled for them only). **Linear team access is verified for PUBLIC teams only** (staging, 2026-10-01: visibility
   read, issues left scope-public); private teams need Linear's paid Business plan, which the
   test workspace does not have, so the members/admins path has not run live: the first sync after deploy re-stamps every
   private-team issue, so check `permission_unreadable_documents` on that job.
-  **Group expansion has never run against a live directory** — `GOOGLE_GROUPS_ENABLED`
-  is off, no tenant has the scope, and the Admin SDK needs a Workspace-admin
-  connection nobody has confirmed they have. Nested groups go through
-  `members.hasMember` against the org's indexed `group:` grants (≤40, same domain
-  only; Google does not resolve cross-domain nesting). The email-change pages are
-  API-rendered and the `/account` panel is `tsc`-checked only. **The migration must be
-  applied to prod** — additive `IF NOT EXISTS` statements (incl. `user_email_aliases`,
-  `email_change_requests`), verified against a throwaway local database.
+  **Email change is VERIFIED** (staging, 2026-10-01). **Group expansion is BLOCKED on an
+  admin** — `GOOGLE_GROUPS_ENABLED` is off: the Admin SDK needs a Workspace-ADMIN connection
+  nobody has confirmed, and a non-admin consent fails the whole Google reconnect. Nested groups
+  go through `members.hasMember` against the org's indexed `group:` grants (≤40, same domain
+  only; Google does not resolve cross-domain nesting). **GitHub per-asker access is merged and
+  not yet run live** (planned in prod). The schema (incl. `user_email_aliases`,
+  `email_change_requests`, `drive_watch_channels`) is additive and applied on boot.
 - Charts: Forms is now REACHABLE from the product (picker + chips), but **the
   Google Forms path has still never run against a real form.** The
   Forms API calls, the `mimeType` listing and the scope behaviour are written
@@ -2377,7 +2388,7 @@ and the graph as a retrieval list — **built, OFF for answers**.
   retrieved chunk text are unfalsifiable; Drive still skips
   `application/vnd.google-apps.spreadsheet`. A form export in a connected
   folder is Q&A fodder only if we add that MIME later, never a pie. Plan:
-  `docs/plans/2026-09-02-visual-representation.md`.
+  `git history: docs/plans/2026-09-02-visual-representation.md`.
 - Attachments: **still short of Onyx on purpose** — no Projects (a file is
   welded to one conversation, not a reusable library), no images (no vision
   path at all), no admin-editable limits (env vars; a table + route + UI for
@@ -2391,9 +2402,8 @@ and the graph as a retrieval list — **built, OFF for answers**.
   before trusting a new cloud or a credential rotation — it is what caught
   `expires_at` being dropped. Still nothing exposes `signed_url`: there is no
   download-the-original route, so the expiring-link path has no caller yet.
-- Gaps: **`/admin/feedback` and the answer thumbs are browser-unverified**
-  (`tsc --noEmit` only, like the rest of `frontend/`), Slack has no thumbs,
-  and gap grouping is exact-text — see `normalize_question`'s ceiling note
+- Gaps: **live** (feedback thumbs and `/admin/feedback` walked through by the team). Slack has
+  no thumbs, and gap grouping is exact-text — see `normalize_question`'s ceiling note
   before concluding the list is short because nothing is failing.
 - Charts: **no frontend test infrastructure** — `Chart.tsx` (including the
   diverging bar) and inline Ask charts are covered by `tsc --noEmit` only,
@@ -2422,21 +2432,11 @@ and the graph as a retrieval list — **built, OFF for answers**.
   are threads (not per-message, so no author attribution), and Notion/Drive/
   Linear chunk text carries its LLM context prefix — factual but verbose, and
   it spends the char budget.
-- No live walkthrough against real Notion/Drive/GitHub OAuth apps; the GitHub
-  one also settles **T3** (whether `state` survives the install redirect —
-  assumed, not verified).
-- Production secrets (`AUTH_JWT_SECRET`, `AUTH_ENCRYPTION_KEYS`,
-  `GITHUB_APP_PRIVATE_KEY`, `OPENROUTER_API_KEY`) are a config surface, not
-  provisioned.
-- **Prompt-injection defense: all four phases are built; none is ON in prod.**
-  Everything is dormant until `GUARD_MODE` is set; the plan is `shadow` for a
-  week first, reading `guard.flagged_hit` for false positives at 0.9, then
-  `enforce`. Before shadow: enable Groq zero data retention (chunks are tenant
-  text) and pick the backend on corpus size (see §3). Not built: the BIPIA and
-  PIArena benchmark sets, and the quarterly hand-written red team. Known weak
-  spots: Prompt Guard misses action injections (§3); a repeated Chinese
-  injection scored 0.20; uploads over 15.6K chars are unscored; the bell and
-  "check file" chip are browser-unverified (`tsc` only).
+- **Prompt-injection defense: all four phases are built and ENABLED in production**
+  (team-verified 2026-10-01; `GUARD_MODE` defaults off in code). Not built: the BIPIA and
+  PIArena benchmark sets, and the quarterly hand-written red team. Known weak spots: Prompt
+  Guard misses action injections (§3, hence `safeguard`); a repeated Chinese injection scored
+  0.20; uploads over 15.6K chars are unscored.
 - **The LettuceDetect Space cannot be deployed free**: HF made CPU Spaces
   PRO-only and Docker Spaces paid (free Gradio Spaces run on ZeroGPU at 5
   GPU-min/day). `deploy/lettucedetect-space/` is now a Gradio-SDK app for when
@@ -2460,10 +2460,11 @@ and the graph as a retrieval list — **built, OFF for answers**.
   already granted, bot must be in the channel); a Notion subscription on the
   public integration + `NOTION_WEBHOOK_VERIFICATION_TOKEN`; the Linear OAuth app's
   webhook URL + `LINEAR_WEBHOOK_SECRET`; `DRIVE_PUSH_BASE_URL` (the API's public
-  HTTPS origin). Unverified from the docs: that a public Notion integration gets
-  events from EVERY installing workspace, and that Linear's app webhook needs no
-  `admin` scope. **Staging has no tick driver** (the GitHub workflow targets prod):
-  point cron-job.org at staging's `/internal/tick` or nothing there syncs on its own.
+  HTTPS origin). Linear's app webhook needs NO `admin` scope (staging runs on `read`). Linear
+  private teams: whether an app webhook covers them is undocumented — they may arrive only via
+  the hourly poll. **Production config pending after the PR #44 merge**: the three env vars
+  above, the Slack events, Linear/Notion webhook URLs pointed at prod, and every tenant
+  reconnecting Linear once. Staging's tick is driven by cron-job.org (every 10 min).
 - **The Check button is GONE, and `last_sync_at` replaced it on the card**
   (`credentials.OAuthConnectionInfo` -> `/admin/connections` ->
   `ConnectionCard::checkedAgo`). It was the manual override held until an
@@ -2491,8 +2492,8 @@ and the graph as a retrieval list — **built, OFF for answers**.
   service.
 - **Deferred by decision:** structural citations + NLI (cost/latency);
   token-budget context assembly; Postgres RLS; HNSW tuning (both feared
-  defects were measured and did *not* reproduce); PDF/DOCX extraction; the
-  self-hosted image.
+  defects were measured and did *not* reproduce); the self-hosted image. (Drive PDF/DOCX
+  extraction is BUILT: `google_drive._SUPPORTED_MIMES`.)
 - **A failed Blueprint sync applies NOTHING from `render.yaml`**, so a block
   the plan does not support strands every unrelated change in the file. Two hit
   in a row: a top-level `region:` (see below) and `previews:`, which fails on a
@@ -2535,4 +2536,4 @@ and the graph as a retrieval list — **built, OFF for answers**.
   is the backstop: it is now 1h, so any successful deploy gives hourly syncing
   even if the blueprint never applies, unless the dashboard pins another value.
 
-_End of a phase: update §3/§5/§6/§7 — one dense line, not a narrative._
+_End of a phase: update §3/§5/§6/§7 — one dense line, not a narrative — and `PRODUCT_STATUS.md` in the same PR._

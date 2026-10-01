@@ -1,4 +1,4 @@
-"""Per-asker GitHub repository access (`githublive.access`, missing-features §3.6).
+"""Per-asker GitHub repository access (`githublive.access`, CLAUDE.md §3).
 
 The installation token reads every granted repository, so a private one was
 answerable to anyone in the scope. A public repository stays open to all; a

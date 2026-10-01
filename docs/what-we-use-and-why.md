@@ -88,7 +88,7 @@ The GitHub path does not retrieve embeddings. An answer is composed from a singl
 
 ## 5. Language model
 
-The implementation uses the official OpenAI Python client. `LLM_MODEL`, `LLM_BASE_URL`, and the API key may point at FreeLLMAPI, Gemini, OpenAI, or a self-hosted vLLM instance. Auxiliary stages (rewrite, recovery, summarisation, ingest context) may use a cheaper `LLM_AUX_MODEL`.
+The implementation uses the official OpenAI Python client. `LLM_ADAPTER` names the provider from a fixed list (Gemini, Groq, OpenAI, Anthropic, OpenRouter and others, or `custom` with `LLM_BASE_URL`), `LLM_MODEL` is the model, and a boot check refuses an unknown adapter or model. Members can also pick a model per question (OpenRouter and Groq), and admins can bring their own provider. Auxiliary stages (rewrite, recovery, summarisation, ingest context) may use a cheaper `LLM_AUX_MODEL`.
 
 **LiteLLM was not adopted.** The required capability is the OpenAI wire format, which most hosts already expose. LiteLLM would add a dependency for native features that are unused today. Should Anthropic prompt caching become necessary, a LiteLLM-backed class can be introduced behind the existing `LLMProvider` interface.
 
@@ -229,7 +229,7 @@ A workspace without a GitHub connection must not fall back to the organisation i
 
 **HTTP API.** FastAPI. Organisation identity is taken only from the signed session cookie. Chat streaming delivers an already-decided answer in chunks. Streaming raw tokens from a generation that may still be discarded (recovery, then web search) would leak a draft.
 
-**Authentication.** Magic-link sign-in and administrator-invited members. Creation of a new organisation is gated by a human-reviewed email queue: GET renders a confirmation page; POST performs the action, so mail scanners cannot approve a request. Tokens at rest are encrypted with MultiFernet; there is no external KMS.
+**Authentication.** Magic-link sign-in (delivered through SendGrid in production) and administrator-invited members. Creation of a new organisation is gated by a human-reviewed email queue: GET renders a confirmation page; POST performs the action, so mail scanners cannot approve a request. Tokens at rest are encrypted with MultiFernet; there is no external KMS.
 
 **Ingestion jobs.** PostgreSQL `FOR UPDATE SKIP LOCKED`, not Redis or Celery. Stuck jobs are reaped by silence (`progress_at`), not by elapsed start time. A job that repeatedly terminates the process is abandoned after a bounded number of attempts rather than restarting the entire service.
 

@@ -8,15 +8,18 @@
 > - **README.md** — the *user-facing quickstart* per phase.
 >
 > This file is the *system reference*. When code and this file disagree, the code wins — keep this updated.
+> **Product status (what is live, tested, blocked, in progress): [PRODUCT_STATUS.md](PRODUCT_STATUS.md).**
+> *Last updated: 1 October 2026.* §5–§6 and §8–§11 describe the core write and read paths,
+> which are unchanged in shape; later capabilities are summarised in §7 and §15.
 
 ---
 
 ## 1. What this system is
 
-A **multi-tenant Retrieval-Augmented Generation (RAG) platform for company policy Q&A.**
+A **multi-tenant Retrieval-Augmented Generation (RAG) platform for company Q&A over connected tools.**
 
-- **Tenants (organizations)** upload their policy documents (currently via **Notion**).
-- Their **employees ask natural-language questions** and get answers **grounded in that organization's own policies**, with citations.
+- **Tenants (organizations)** connect **Notion, Google Drive, Slack, Linear and GitHub** (GitHub is read live, never indexed).
+- Their **employees ask natural-language questions** — on the web or in Slack — and get answers **grounded in that organization's own content**, with sources, limited to what each person may open in the source tool.
 - **Strict tenant isolation:** one organization can never see another's content.
 - **Eventual goal:** a **self-hosted Docker image** an enterprise runs inside its own infrastructure — so the design favors components that run **locally, free, with no external paid dependency** (local embeddings, local reranker, keyless web search, a swappable LLM endpoint).
 
@@ -27,7 +30,7 @@ A **multi-tenant Retrieval-Augmented Generation (RAG) platform for company polic
 ## 2. Core design principles
 
 1. **Everything is a swappable interface + factory.** Each capability has `base.py` (abstract contract) + one or more concrete impls + `factory.py` (`build_*()` reads config, returns the impl). The rest of the app depends on the *interface*, never a concrete class.
-2. **Orchestrators have no `base.py`.** A package that only *composes* existing interfaces (e.g. `app/rag/`, `app/ingestion/`) skips the abstract contract — there's nothing to swap. It still keeps `pipeline.py` + `factory.py` for consistency. Exception: `app/agent/` *does* get a `base.py` because a second backend (a GitHub agent) is genuinely planned.
+2. **Orchestrators have no `base.py`.** A package that only *composes* existing interfaces (e.g. `app/rag/`, `app/ingestion/`) skips the abstract contract — there's nothing to swap. It still keeps `pipeline.py` + `factory.py` for consistency. Exception: `app/agent/` *does* get a `base.py` because it has many backends (one agent per source, GitHub, Insights).
 3. **Config lives in exactly one place.** `app/config/settings.py` — frozen dataclasses with `from_env()`. Nothing else calls `os.getenv` for config.
 4. **All failures raise `ProviderError`** (or a subclass in `app/core/exceptions.py`), carrying the original via `cause=` / `raise ... from`.
 5. **Tenant isolation is enforced by the query, not the index.** Every tenant-scoped read/write requires an `org_id`; retrieval filters `WHERE org_id = …` *before* ranking.
@@ -56,49 +59,44 @@ A **multi-tenant Retrieval-Augmented Generation (RAG) platform for company polic
 
 ```mermaid
 flowchart TB
-    subgraph Entrypoints["scripts/ (entrypoints)"]
-        CLI["cli.py — interactive chat"]
-        ING["ingest_notion.py — --org --token"]
+    subgraph Edges["Entry points"]
+        WEB["Next.js portal → FastAPI /chat (streaming)"]
+        SLK["Slack bot — /slack/events"]
+        HOOK["Webhooks — /webhooks/{notion,linear,google}"]
+        TICK["External tick — /internal/tick"]
+        CLI["scripts/cli.py"]
     end
 
-    subgraph Agent["app/agent/ (Agent contract)"]
-        PA["PolicyAgent — thin adapter"]
+    subgraph Agents["app/agent/ — routing + LangGraph"]
+        ROUTE["choose_agent (cosine probe + classifier)"]
+        SRCA["per-source RAG agents"]
+        GHA["GitHubAgent (live tools)"]
+        INS["InsightsAgent (charts, SQL)"]
     end
 
-    subgraph RAG["app/rag/ (orchestrator: the query path)"]
-        PIPE["RagPipeline.answer()"]
-        RET["HybridRetriever"]
-        PROMPTS["prompts.py"]
+    subgraph RAG["app/rag/ — the read path"]
+        PIPE["RagPipeline: rewrite → retrieve → gate → generate → audit"]
+        GRAPH["app/graph — knowledge graph plan + walk"]
+        LIVE["app/livetools — live re-reads"]
+        PMEM["app/memory/personal — personal memory"]
     end
 
-    subgraph Ingest["app/ingestion/ (orchestrator: the write path)"]
-        IPIPE["ingest_source()"]
-        CTX["contextualize.py"]
-        CHUNK["chunking.py / preprocessing.py"]
-    end
-
-    subgraph Capabilities["Swappable capabilities (base + impl + factory)"]
-        LLM["llm/ — LLMProvider"]
-        EMB["embeddings/ — EmbeddingProvider"]
-        VS["vectorstore/ — VectorStore"]
-        RR["reranker/ — Reranker"]
-        SRC["sources/ — SourceAdapter (Notion)"]
-        MEM["memory/ — ConversationStore"]
-        WEB["websearch/ — WebSearchProvider"]
+    subgraph Write["Write path"]
+        JOBS["app/jobs — queue, worker, autosync"]
+        IPIPE["app/ingestion — chunk, contextualize, embed"]
+        SRC["app/sources — Notion, Drive, Slack, Linear adapters (+ ACL capture)"]
     end
 
     subgraph Data["Postgres + pgvector"]
-        DB[("organizations, documents, chunks,\nconversations, conversation_turns,\nconversation_last_retrieval")]
+        DB[("documents (+doc_viewers), chunks, activity_facts,\nkg_* graph, conversations, user_memory, ...")]
     end
 
-    CLI --> PA --> PIPE
-    ING --> IPIPE
-    PIPE --> RET --> VS
-    PIPE --> EMB & LLM & MEM & WEB
-    RET --> RR
-    IPIPE --> SRC & CHUNK & CTX & EMB & VS
-    VS --> DB
-    MEM --> DB
+    WEB & SLK & CLI --> ROUTE --> SRCA & GHA & INS
+    SRCA --> PIPE --> GRAPH & LIVE & PMEM
+    PIPE --> DB
+    INS --> DB
+    HOOK & TICK --> JOBS --> IPIPE --> SRC
+    IPIPE --> DB
 ```
 
 There are **two end-to-end flows**: the **write path** (ingestion) and the **read path** (query). Everything else is a capability those two paths compose.
@@ -237,7 +235,20 @@ flowchart TD
 | `sources/` | `SourceAdapter` | `notion.py` | `list_documents` / `fetch_document` / `get_last_modified`. Format conversion lives *inside* the adapter. |
 | `memory/` | `ConversationStore` | `pg_store.py` | Org-scoped conversation history: turns, running summary, last-retrieval. `get_context`, `append_turn`, `get_turns`, `get_summary`, `set_summary_and_prune`, `get_last_retrieval`, `set_last_retrieval`. |
 | `websearch/` | `WebSearchProvider` | `duckduckgo.py` | `search(query, max_results, timeout) -> list[SearchResult]`. |
-| `agent/` | `Agent` (+ `AgentResponse`, `Citation`) | `policy_agent.py` | The formal, source-agnostic Q&A contract. `PolicyAgent` is a thin adapter over `RagPipeline`. |
+| `agent/` | `Agent` (+ `AgentResponse`, `Citation`) | per-source agents, `github_agent.py`, `insights_agent.py`, `policy_agent.py` (legacy) | One pinned agent per source; `routing.choose_agent` picks one; LangGraph runs it. |
+| `sources/` (cont.) | `SourceAdapter` | `notion.py`, `google_drive.py`, `slack.py`, `linear.py`, `google_groups.py`, `drive_watch.py` | Each adapter captures the source's sharing (`DocAccess`) on the listing; Drive push channels. |
+| `githublive/` | `GitHubReader` | `rest.py`, `access.py` | GitHub read live; `access.restrict` narrows to repos the asker's linked login can open. |
+| `security/` | — | `visibility.py`, `untrusted.py`, `links.py`, `outbound.py`, `agents.md` | The one document-access predicate; untrusted-text policy, scrubbing, link provenance. |
+| `guard/` | `InjectionGuard` | `prompt_guard.py`, `safeguard.py`, `moderation.py` | Prompt-injection scoring at ingest, answer moderation. |
+| `graph/` | — | `identities`, `builder`, `walk`, `plan` | Second Brain knowledge graph. |
+| `livetools/` | — | `gateway.py` + per-provider readers | Second Brain live connector reads. |
+| `insights/` | — | `registry`, `facts`, `store`, `resolve`, `pins` | Charts from SQL over `activity_facts`. |
+| `attachments/` | — | `extract`, `limits`, `store`, `blobstore` | Chat uploads; bytes + extracted text in Cloudinary. |
+| `feedback/` | — | `store.py` | Answer ratings and documentation gaps. |
+| `schedulers/` | — | `store`, `activity`, `runner`, `worker` | Scheduled reports, emailed via `auth/email.py` (SendGrid in prod). |
+| `jobs/` | — | `queue`, `worker`, `autosync` | Durable ingestion queue; interval + push-triggered sync. |
+| `auth/` | `OAuthProvider` | per-connector OAuth, `magic_link`, `session`, `email`, `email_change` | Sign-in, connector auth, email delivery, email change. |
+| `api/` | — | FastAPI routers incl. `slack_events.py`, `webhooks.py` | The only place `org_id` enters a request (from the session). |
 
 **Other top-level:**
 - `evaluation/` — golden-set eval (deterministic path-firing tier + RAGAS tier). Peer to `scripts/`/`tests/`.
@@ -343,7 +354,7 @@ python -m pytest -q -m "not network"       # full suite minus live-network cases
 
 - **Swap the LLM provider:** change `LLM_MODEL` + `LLM_BASE_URL` + key. No code change (any OpenAI-compatible endpoint).
 - **Add a content source (Drive/GitHub/Slack):** implement `SourceAdapter` (`list_documents`/`fetch_document`/`get_last_modified`) with format conversion *inside* the adapter; add a branch in `sources/factory.py`. The ingestion pipeline never changes.
-- **Add a second agent (e.g. GitHub):** implement `Agent.answer()` returning `AgentResponse`. The CLI and any future API consume the interface, not `PolicyAgent`.
+- **Add an agent:** implement `Agent.answer()` returning `AgentResponse` and register it with routing; GitHub and Insights are the non-RAG examples.
 - **Swap the reranker / embeddings / vector store / web-search provider:** new impl behind the existing `base.py` + a factory branch.
 
 ---
@@ -361,6 +372,7 @@ python -m pytest -q -m "not network"       # full suite minus live-network cases
 | 7 | (A) Formal `PolicyAgent` behind `Agent`; (B) Golden-set evaluation (path-firing tier + RAGAS tier) wired into CI |
 | 8 | (A) Incremental summarization; (B) retrieval reuse (deterministic non-LLM cosine check) + `conversation_last_retrieval` table |
 | 9 | (A) Single interactive `rich` CLI over `PolicyAgent` (retired `ask.py`/`chat.py`); (B) per-organization Notion credentials (`NOTION_TOKEN_<NAME>`, `resolve_token`, no fallback) + `list_organizations` |
+| 10+ | HTTP API + Next.js portal, magic-link auth, OAuth per connector, signup approval, ingestion queue; Drive, Slack, Linear adapters; GitHub live reads; spaces; per-source routing; Ask in Slack; scheduled reports; multi-model + BYOM; automatic sync; charts in Ask; attachments in Cloudinary; feedback and gaps; needs-attention bell; prompt-injection defense; Second Brain (graph, live reads, personal memory); document-level access control; push sync (PR #44, 2026-10-01). See `PRODUCT_STATUS.md` and `CLAUDE.md` §3. |
 
 ---
 
@@ -374,12 +386,15 @@ python -m pytest -q -m "not network"       # full suite minus live-network cases
 - The Phase 3 grounding test fixture disables memory + web search for determinism.
 - Reuse fires rarely on a small corpus by design (0.72 threshold).
 
-**Open issues identified in live testing (candidates for the next phase):**
-1. **Retrieval recall on poorly-phrased / typo'd / vocabulary-mismatched queries.** The query is embedded raw for *standalone* (first) questions — only conversational follow-ups are rewritten. A query like "protien suppliments reimbersed" ranked the answer chunk at ~#18–24 (vs #1 when phrased as "what can I buy with the health allowance"), so the generator never saw it and correctly refused. **Fix direction:** an LLM query-normalization/expansion step applied to *all* questions (fix typos, rephrase toward document vocabulary, split compound questions), and/or a larger candidate pool/top_k.
-2. **Over-inference on ambiguous source text.** When the retrieved chunk is genuinely ambiguous (e.g. a POSH policy whose scope says "all employees" but which aligns itself with the women-specific 2013 Act), the model may state a firm yes/no from an implicit reading and attach a citation, overstating certainty. **Fix direction:** harden the grounding prompt to distinguish *explicit* from *inferred*, hedge when support is only implicit, and surface conflicting signals across chunks. (Web-search "verification" of internal policy is explicitly **not** the fix — the org's own document is the ground truth; the web would inject contradictory external/legal generalizations.)
+**Resolved since first written:** retrieval recall on typo'd queries (query normalization,
+`app/rag/query_normalize.py`, plus hybrid search) and over-inference on ambiguous text (the
+three-mode grounded prompt, §6.2 step 6).
 
 ---
 
-## 17. Not built yet (deliberately deferred)
+## 17. Not built yet
 
-Frontend / HTTP API layer; multi-tenant **Notion OAuth** (consent flow); users/roles/auth; more source adapters (Drive/Docs/Sheets, GitHub, Slack); incremental sync (re-ingest only changed docs via `get_last_modified`); layout-aware extraction (PDF/DOCX/HTML); token-budget-aware context assembly + structured citation parsing; packaging the self-hosted Docker image. Real multi-org data entry + ingestion is the immediate next step after Phase 9.
+See `PRODUCT_STATUS.md` §11–§12 for the current list. In short: Notion per-page access
+(no provider API), Google Groups in production (needs a Workspace-admin connection), more
+connectors (Confluence, Jira, Zendesk, Salesforce, SharePoint), structural citations + NLI,
+Postgres RLS, the self-hosted Docker image, and open-ended charts (PR #45, in review).

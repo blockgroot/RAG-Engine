@@ -385,7 +385,7 @@ class RagResult:
     # in the context, or a connected answer reading other tools). Keeps it out
     # of the scope-wide cache; see `_is_cacheable`.
     graph_shaped: bool = False
-    # Second Brain live tools (docs/plans/2026-09-29-live-connector-access.md):
+    # Second Brain live tools (git history: docs/plans/2026-09-29-live-connector-access.md):
     # the connectors read LIVE for this answer, ``[{provider, fetched_at}]``.
     live_sources: list[dict] = field(default_factory=list)
     # True when this refusal is "the matching item is no longer available":

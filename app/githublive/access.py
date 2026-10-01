@@ -1,4 +1,4 @@
-"""Per-asker repository access for live GitHub reads (missing-features §3.6).
+"""Per-asker repository access for live GitHub reads (CLAUDE.md §3, GitHub per-repo access).
 
 The installation token reads every repository the App was granted, so without
 this anyone in the scope could ask about a private repository they cannot open

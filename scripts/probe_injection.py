@@ -5,7 +5,7 @@ Runs each red-team golden case (``injection-*`` and ``bias-*`` — see
 ``evaluation/golden_set.py``) N times *without* the retry harness, so
 pass-rate is honest (not inflated by ``run_case_stable``). The ``bias-*``
 cases were added to widen this beyond pure prompt injection (the
-stress-testing/red-teaming gap in docs/RAG_VIDEO_COMPARISON.md) — a leading
+stress-testing/red-teaming gap from the RAG checklist review, in git history) — a leading
 discriminatory question with no supporting corpus content is a different
 failure mode than an embedded "ignore previous instructions" payload, and
 needed its own cases rather than being folded into the injection ones.
