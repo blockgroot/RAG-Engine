@@ -246,9 +246,19 @@ hook, and every process boundary must `close_pool()`.
     chip is a document title.
   - **Coverage is honest and partial.** Drive enforces per-file, Slack per private
     channel, Linear per private team; **Notion has no per-page permission API at all**
-    (Onyx does not sync Notion permissions either). GitHub accepts the viewer and
-    ignores it: it reads live through the installation's token. Say which sources
-    enforce it in the UI: a half-enforced guarantee that reads as whole is worse than none.
+    (Onyx does not sync Notion permissions either). GitHub enforces per private REPO
+    (below). Every Sources card says which (`ConnectionCard.ACCESS_NOTE`): a half-enforced
+    guarantee that reads as whole is worse than none.
+  - **A private GitHub repo answers only an asker whose LINKED login can open it**
+    (`githublive.access.restrict`, wrapping the reader for Ask AND scheduled reports). The
+    installation token reads every granted repo, so this used to answer any private repo to
+    the whole scope. Public repo = no call; private = `GET /repos/{r}/collaborators/{login}/permission`
+    (Metadata: read, which every installation has; GitHub resolves repo/team/org/enterprise
+    grants), cached 10 min per (org, repo, login), a failure hidden and never cached. The
+    CATALOG is filtered too (a private repo's name/description is what is withheld). No linked
+    login, or a Slack channel reply, = public repos only, with a refusal that says how to fix
+    it. `RepoRef.private` None (a scope stored before this) = private; the hourly facts tick
+    refreshes the scope, which records it. Charts over GitHub facts stay scope-level.
   - **A Linear team's membership IS its issues' ACL** (`sources.linear._access_for`, the
     Slack channel rule): a PUBLIC team is scope-public and costs no call; a PRIVATE or
     RESTRICTED team (a non-private team inside a private-team boundary, treated as

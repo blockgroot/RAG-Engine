@@ -368,31 +368,38 @@ events for channels it is in.
 
 | | |
 | --- | --- |
-| **Verdict** | **OPEN (unverified)**. API route not yet checked against GitHub's reference. |
+| **Verdict** | **DONE** for Ask and scheduled reports. Charts over GitHub facts stay scope-level. Not yet run live. |
 | **Last checked** | 2026-10-01 |
 
-**What is missing.** GitHub reads live through the App installation's token, so every member
-of a scope can ask about every repository the installation authorized, whatever their own
-GitHub access is. `GitHubAgent` accepts the `Viewer` and ignores it (CLAUDE.md §3).
+**Was missing.** GitHub reads live through the App installation's token, so every member of a
+scope could ask about every repository the installation authorized, whatever their own GitHub
+access.
 
-**Why it matters.** An installation authorized on a private repository (a security fix, an
-acquisition) answers it to anyone in the space.
+**Evidence.** `GET /repos/{owner}/{repo}/collaborators/{username}/permission` needs only the
+**Metadata (read)** repository permission, which every GitHub App has, works with an
+installation token, and returns the permission "after considering all sources of grants,
+including: repo, teams, organization, and enterprise".
+https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps and
+https://docs.github.com/en/rest/collaborators/collaborators
 
-**What would close it.** The member's GitHub login is already proven by "Linked accounts"
-(`person_identities`); a per-repo collaborator check against that login, cached per sync,
-is the Slack-channel shape. Check GitHub's collaborator-permission endpoint and the App
-permission it needs before calling this OPEN.
+**Built** (`app/githublive/access.py`, `tests/test_github_access.py`). Public repositories stay
+open to everyone in the scope. A private one is used only when the asker's GitHub login, proven
+under Account → Linked accounts, can open it. The repository list the model sees is filtered
+too. No linked login, or a Slack channel reply, means public repositories only, with a message
+that says how to fix it. No new permission and no reconnect.
+
+**Ceiling.** Members who never link GitHub lose private-repository answers (fail closed, by
+design). Charts built from GitHub facts are still scope-level.
 
 ### 3.7 The UI does not say which sources enforce per-document access
 
 | | |
 | --- | --- |
-| **Verdict** | **OPEN** |
+| **Verdict** | **DONE** |
 | **Last checked** | 2026-10-01 |
 
-CLAUDE.md §3 requires it ("a half-enforced guarantee that reads as whole is worse than
-none"); no Sources card says that Notion and GitHub access is per space, not per page or
-repository. A one-line note on those two cards.
+Every Sources card now carries one line saying who may get answers from it
+(`ConnectionCard.ACCESS_NOTE`), including that Notion is per connection, not per page.
 
 ### 4.2 Connector breadth
 

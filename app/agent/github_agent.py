@@ -41,6 +41,7 @@ import re
 from collections.abc import Callable, Iterator
 
 from ..config.settings import GitHubAgentSettings, SecuritySettings
+from ..githublive.access import restrict, restricted_message
 from ..guard.moderation import answer_is_unsafe
 from ..security.links import enforce_link_provenance
 from ..security.untrusted import leaks_canary
@@ -132,11 +133,6 @@ class GitHubAgent(Agent):
         workspace_id: str | None = None,
         viewer: Viewer | None = None,
     ) -> AgentResponse:
-        # `viewer` is accepted and ignored on purpose: this agent embeds
-        # nothing and reads GitHub live through the installation's own token,
-        # so there is no indexed document whose sharing could be narrower than
-        # the scope. Access here is what the App was granted, not what we store.
-        del viewer
         # A tenant with no GitHub connection costs zero LLM calls: there is
         # nothing a model could usefully decide without repos to read.
         try:
@@ -144,10 +140,19 @@ class GitHubAgent(Agent):
         except (ConfigurationError, ProviderError):
             return self._fallback_response()
 
+        # The installation token reads every granted repository; this narrows
+        # it to the ones the ASKER can open on GitHub (`githublive.access`).
+        reader = restrict(reader, org_id, viewer)
         try:
             repos = reader.list_repos()
         except ProviderError:
             return self._fallback_response()
+        withheld = restricted_message(reader)
+        if withheld:
+            return AgentResponse(
+                answer=withheld, grounded=False, source=SOURCE_NONE, citations=[],
+                access_restricted=True,
+            )
 
         decision = self._decide_tool(question, repos)
         if decision is None:
