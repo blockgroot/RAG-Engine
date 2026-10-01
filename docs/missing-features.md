@@ -294,6 +294,11 @@ sync). A push inside the 3-min cooldown now starts by itself when it ends (`star
 not at the 10-min tick. **Linear needs NO `admin` scope** (staging runs on `read`), contradicting the
 earlier §4.1 note, BUT its OAuth-app webhook reaches only workspaces that authorize after it is
 enabled: every tenant connected before this ships must reconnect Linear once.
+Linear's docs confirm it: "each time a new organization authorizes the given application, a
+webhook will be created for that organization". **Private teams: unknown.** A workspace webhook
+covers "all public teams, or a single team", and the docs do not say which an OAuth-app webhook
+gets, so private-team changes may arrive only through the hourly re-check. Fails slow, never open;
+needs a Business-plan workspace to settle. https://linear.app/developers/webhooks
 
 **Built** (`app/api/webhooks.py`, `app/sources/drive_watch.py`, `app/api/slack_events.py`,
 `tests/test_webhook_sync.py`). A push flags the connection and starts its sync at once (unless it
