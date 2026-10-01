@@ -7,6 +7,8 @@
 | **Standing rule** | Every entry carries a **verdict**, a **last-checked date** and its **evidence**. An entry with no evidence is an opinion and does not belong here. |
 | **Related documents** | `CLAUDE.md` §7 (engineering to-dos and unverified paths), `docs/ONYX_FEATURE_PARITY_ANALYSIS.md` (what a comparable product has) |
 
+> Overall product status (every feature, production state, testing): `PRODUCT_STATUS.md`.
+
 ---
 
 ## 1. What belongs in this file
@@ -432,7 +434,7 @@ should be described to anyone outside the team as not working.
 | Google Forms sentiment | **UNVERIFIED** | 2026-09-29 | The Forms API calls, the `mimeType` listing and the scope behaviour are tested against a fake reader only. Enabling it also forces every tenant to reconnect Google. |
 | Scheduler email delivery | **VERIFIED** | 2026-09-30 | Scheduled reports arrive on time at the correct address. |
 | The entire frontend | **VERIFIED** by hand | 2026-09-30 | Walked through in the browser by the team. Still no automated rendered test, so a regression is caught by eye or not at all. |
-| Prompt-injection guard | **UNVERIFIED** in prod | 2026-09-30 | All four phases built, `GUARD_MODE` unset, so nothing is on. Plan: `GUARD_MODE=shadow` for a week, read `guard.flagged_hit` false positives, then `enforce`. |
+| Prompt-injection guard | **VERIFIED** in prod | 2026-10-01 | Enabled in production and tested by the team. |
 | The answer audit (LettuceDetect) | **DECIDED** (on hold) | 2026-09-30 | Paused by decision. Hugging Face CPU Spaces are PRO-only, so the private checker Space cannot be deployed free; the audit stays off. |
 
 ---

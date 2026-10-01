@@ -1,6 +1,6 @@
 # Handbook: Feature Overview
 
-*Last updated: 30 September 2026*
+*Last updated: 1 October 2026* · Full status, blockers and testing: `PRODUCT_STATUS.md`
 
 Handbook is an AI assistant that answers employees' questions from their company's own
 tools: Notion, Google Drive, Slack, Linear and GitHub. Every answer comes from the
@@ -19,12 +19,12 @@ This page covers what the product does today and what is still being finished.
 | **Notion**       | Pages shared with the Handbook integration                                   |
 | **Google Drive** | Docs, PDFs and Word files in a chosen folder                                 |
 | **Slack**        | Conversations in the channels an admin picks                                 |
-| **Linear**       | Issues, with their status, owner, team, priority and comments                |
+| **Linear**       | Issues, with their status, owner, team, priority, labels and comments        |
 | **GitHub**       | Repositories, commits, pull requests and reviews, read live and never copied |
 | **Google Forms** | Survey responses, used only for sentiment charts and never searchable        |
 
 
-An admin connects each tool once with a normal sign-in. Content then stays up to date on its own, with nobody having to sync manually.
+An admin connects each tool once with a normal sign-in. Content then stays up to date on its own, with nobody having to sync manually. Each tool's card on the Sources page says, in one line, who can get answers from it.
 
 ---
 
@@ -53,11 +53,11 @@ plug in their own model provider.
 
 ## 3. File uploads in chat
 
-- Employees can attach PDFs, Word documents, spreadsheets (CSV) and text files to a
-conversation.
+- Employees can attach PDFs, Word documents, spreadsheets (CSV, TSV), text, Markdown and
+JSON files to a conversation.
 - Handbook answers using the file **together with** company documents. For example, "is this
 bill claimable?" is checked against the expense policy.
-- Files are stored privately and linked to that conversation only. Oversized or unreadable
+- Files are stored privately in Cloudinary and linked to that conversation only. Oversized or unreadable
 files are refused one by one with a reason, and the rest still upload.
 
 ---
@@ -75,6 +75,8 @@ whom, when).
 - Charts are available for Notion, Drive, Slack, Linear, GitHub and Google Forms survey
 sentiment. Sentiment is visible to admins and space owners only, and never shows small
 groups where people could be identified.
+- Charts follow access rules: a file someone can't open is never counted or named in their
+chart.
 - Members can pin charts they use often.
 
 ---
@@ -111,7 +113,9 @@ tool and space the answer came from.
 shipped in GitHub" or "a daily roundup of #engineering".
 - Reports run daily, weekly or monthly, are saved in the app, and trigger an email
 notification with a link.
-- Every report says what it checked and when the source last synced,
+- Every report says what it checked and when the source last synced, so "nothing happened"
+is never confused with "nothing was checked".
+- A report only includes documents and repositories its owner can open.
 
 ---
 
@@ -135,6 +139,8 @@ chats, such as their team, office, or a preference for short answers. It says wh
 saves one , never treats these facts as an answer source, and
 people can view, pin or delete them. Admins can switch it off for the whole company.
 
+All three are live in production.
+
 ---
 
 
@@ -147,6 +153,11 @@ people can view, pin or delete them. Admins can switch it off for the whole comp
   - **Google Drive:** a file is only used in answers for people it's shared with in Drive,
   including shares to a whole domain.
   - **Slack:** private channel content is only available to that channel's members.
+  - **Linear:** issues from a private team are only available to that team's members,
+  workspace admins, and anyone the issue was shared with.
+  - **GitHub:** private repositories are only used for people whose linked GitHub account
+  (Account → Linked accounts) can open them.
+  - **Charts** follow the same rules.
   - **Notion:** access is per space. Notion doesn't let apps read who a page is shared
   with, so page-level sharing isn't possible, and comparable products have the same
   limit.
@@ -154,6 +165,9 @@ people can view, pin or delete them. Admins can switch it off for the whole comp
 "this isn't shared with you" without revealing the document's title or content.
 - **Removing access works.** When someone is unshared in the source tool, they lose
 access in Handbook on the next sync.
+- **Changing your email keeps your access.** People can change their sign-in email on their
+Account page (confirmed by a link to the new address) without losing documents shared with
+the old one.
 
 ---
 
@@ -161,8 +175,10 @@ access in Handbook on the next sync.
 
 ## 10. Staying up to date
 
-- Every connected tool is re-checked automatically about every hour, even when nobody is
-using the app.
+- **Instant updates.** Slack, Linear, Notion and Google Drive tell Handbook when something
+changes, so new content is searchable within seconds to a few minutes (measured on staging:
+Slack about 20 seconds, Notion about 30 seconds, Drive about 3 minutes).
+- Every connected tool is also re-checked automatically every hour, as a safety net.
 - When a tool is first connected, or reconnected, syncing starts immediately.
 - A **notification bell** tells admins and space owners when a connection has expired or
 needs setting up, so a tool doesn't quietly stop updating.
@@ -176,7 +192,7 @@ needs setting up, so a tool doesn't quietly stop updating.
 - **Company data is never used to train AI models** and is never shared with other
 companies.
 - **Protection against hidden instructions** (prompt injection), described in section 12.
-- **Sign-in by email link**, with no passwords. New companies go through an approval step
+- **Sign-in by email link**, sent by email (SendGrid), with no passwords. New companies go through an approval step
 before they're created.
 - **Feedback loop.** People can rate answers (with a reason when it's a thumbs-down), and
 admins see the most common unanswered questions so they know what documentation is
@@ -201,41 +217,31 @@ in the documents it used, so it can't become a phishing link.
 - **Safeguard model.** A dedicated safety model (`gpt-oss-safeguard`) scans each document
 as it's indexed and can check each final answer. Suspicious content is removed from
 answers, and the document's owner is alerted.
-- **Status:** the first three are live. The safeguard model is built and will run in
-watch mode first, logging only, before it starts removing content.
+- **Status:** all of these are live in production and tested.
 
 ---
 
-## 13. Currently being implemented
+## 13. Recently shipped and in progress
 
-These are built and deployed to **staging** for testing, but not yet merged into
-production. Both are in open pull requests and covered by automated tests.
+**Shipped 1 October 2026 (PR #44):** access rules for Linear private teams, GitHub private
+repositories and charts; changing your sign-in email; groups inside Google Groups (switched on
+once an admin connects Google); and instant updates from Slack, Notion, Linear and Google
+Drive. These were tested on staging; production setup is being finished, and each company
+reconnects Linear once to get its instant updates.
 
-**PR #44: access control and instant updates**
+**In progress, PR #45: more flexible charts** (built, under review)
 
-- **Linear private teams:** issues from a private Linear team will only be visible to
-that team's members and anyone the issue was shared with.
-- **Charts follow access rules:** charts will only count and list documents the person
-can open.
-- **Changing your email:** people will be able to change their sign-in email from their
-Account page without losing access to documents shared with their old address.
-- **Groups inside groups:** a Drive file shared with a Google Group will also be visible to
-people who belong to it through another group.
-- **Instant updates:** Slack, Notion, Linear and Google Drive will notify Handbook when
-something changes, so content refreshes within minutes instead of waiting for the
-hourly check.
+- **Ask for any combination:** for example, "pull requests merged per repository, split by
+person".
+- **More details kept:** extra details the tools already provide, such as labels, become
+chartable.
+- **Charts from tables inside documents,** such as a sales table in a Doc.
 
-**PR #45: more flexible charts**
+## 14. What we can't do yet
 
-- **Ask for any combination:** charts will no longer be limited to a fixed list. For
-example, "pull requests merged per repository, split by person" will work.
-- **More details kept:** extra details the tools already provide, such as labels, will be
-available for charting.
-- **Planned next:** charts from tables inside documents, such as a sales spreadsheet.
-
-**Being switched on after testing:** Google Group sharing, the hidden-instruction
-screening in its strictest mode, and Google Forms sentiment are built and waiting on live
-testing before they're enabled.
-
-**Later:** more connectors (Confluence, Jira, Zendesk, Salesforce, SharePoint) and a
-deeper "research mode" that produces full reports.
+- **Notion page-level sharing:** Notion doesn't let apps see who a page is shared with.
+- **Google Group sharing:** built, but needs a Google Workspace admin to connect Google.
+- **Linear private teams:** built, but testing needs Linear's paid Business plan.
+- **Google Forms sentiment:** built, not yet tried on a real survey.
+- **Later:** more connectors (Confluence, Jira, Zendesk, Salesforce, SharePoint) and a deeper
+"research mode" that produces full reports.
