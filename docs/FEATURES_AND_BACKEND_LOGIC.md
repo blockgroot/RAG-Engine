@@ -1,52 +1,51 @@
 # Handbook: Implemented Features & Backend Logic
 
-This file tracks newly implemented features, their configuration settings, and how the backend logic works in concise bullet points.
+*Last updated: 1 October 2026.* This file tracks newly implemented features, their configuration settings, and how the backend logic works in concise bullet points.
 
 ---
 
-## Feature 1: In-Chat File Attachments
+## Feature 1: In-Chat File Attachments — Live
 
 ### What Was Done
-* Added a paperclip upload button and active file chip bar to the chat interface.
-* Created the `conversation_attachments` table in PostgreSQL to store extracted text.
-* Implemented in-memory text extraction for PDF, Word (DOCX), CSV, and plain text.
-* Configured the chat route to override standard tool routing when attachments are present.
-* Added a two-tier reading system: direct prompt inclusion for short files, interactive tool paging for long files.
-* Added automated 30-day background expiration for abandoned attachments.
+* Paperclip upload button and a file chip bar in chat; several files per upload, each accepted
+  or refused on its own with a reason.
+* Files (PDF, DOCX, CSV, TSV, TXT, MD, LOG, JSON) are extracted once at upload.
+* **The original bytes and the extracted text are stored in Cloudinary** (authenticated, raw
+  assets); `conversation_attachments` keeps metadata and a `storage_key` only.
+* **An attachment joins retrieval, it does not replace it**: routing and the routed agent run
+  as normal and the file's text is added to the context, so "is this bill claimable?" is
+  checked against the bill and the expense policy together. On a relevance-gate miss the
+  answer comes from the files alone.
+* Short files go into the prompt whole; long files are paged with a `read_file` tool.
+* Uploads are screened by the prompt-injection guard (up to ~15.6K characters) and accepted
+  with a warning chip when flagged.
 
 ### Configuration Settings
 * **Max File Size:** 10 MB (`ATTACHMENT_MAX_BYTES`).
-* **Max Attachments:** 5 files per chat session (`ATTACHMENT_MAX_PER_CONVERSATION`).
-* **Short File Threshold:** 12,000 characters (~3,000 tokens) (`ATTACHMENT_INLINE_CHARS`).
+* **Max Attachments:** 5 per conversation (`ATTACHMENT_MAX_PER_CONVERSATION`).
+* **Max Tokens per file:** 120,000, checked at upload; CSV/TSV exempt (`ATTACHMENT_MAX_TOKENS`).
+* **Short File Threshold:** 12,000 characters (`ATTACHMENT_INLINE_CHARS`).
 * **Max Stored Text:** 400,000 characters per file (`ATTACHMENT_MAX_CHARS`).
-* **Expiration TTL:** 30 days before background worker purges text (`DEFAULT_ATTACHMENT_TTL_DAYS`).
+* **Expiration:** 30 days; unused uploads after 24 hours (`app/attachments/store.py`).
+* **Storage:** `CLOUDINARY_*` credentials, both-or-neither; use a separate `CLOUDINARY_FOLDER`
+  per environment.
 
 ### Backend Logic & Steps
-1. **Upload & Ownership Validation:**
-   * Checks that the conversation belongs to the user, their organization, and their workspace.
-   * Verifies file size (under 10 MB) and file count (under 5), and enforces rate limits.
-2. **In-Memory Text Extraction:**
-   * Parses text and tables in memory using `pypdf`, `python-docx`, and CSV sniffers.
-   * Discards the raw binary file bytes immediately (`del data`). No files are saved to disk or uploaded to external CDNs.
-3. **Database Storage:**
-   * Saves only clean text into `conversation_attachments` with `(conversation_id, org_id, user_id)`.
-   * Does not create vector embeddings or pollute the global company search index.
-4. **Routing Override:**
-   * Chat checks for active attachments before running routing probes.
-   * If attachments exist, vector retrieval and connected tools (Notion, Drive, Slack, GitHub) are completely bypassed.
-5. **Answer Cache Bypass:**
-   * Completely skips reading from and writing to `query_answer_cache`, ensuring private file answers never leak to coworkers asking similar questions.
-6. **AI Context Assembly:**
-   * **Files <= 12,000 chars:** Full text is injected directly into the AI prompt.
-   * **Files > 12,000 chars:** AI receives a 500-character preview and calls the `read_file` tool to inspect only the relevant character offsets.
-7. **Cleanup & Expiration:**
-   * Deleting the chat automatically deletes the attachments via `ON DELETE CASCADE`.
-   * Detaching a file via the UI removes the database row immediately.
-   * The background worker tick automatically purges any attachment text older than 30 days.
+1. **Upload & ownership validation:** the conversation must belong to the user, their org and
+   their space; size, count, token and rate limits are enforced per file.
+2. **Extraction:** `pypdf`, `python-docx` and CSV sniffing, in memory.
+3. **Storage:** a row is created first, then the original and a `plaintext_<id>` companion are
+   uploaded to Cloudinary; a storage failure deletes the row and any half-written assets.
+4. **Answering:** routing runs first; the files join the routed agent's context
+   (`rag/pipeline.py::_run`, `extra_contexts`). Every block names itself, so blending is
+   traceable.
+5. **Cache:** an answer that used an attachment is never cached.
+6. **Cleanup:** deleting the chat or detaching a file deletes the row first, then the assets
+   (best effort); the tick sweeps expired attachments and their assets.
 
 ---
 
-## Feature 2: User Feedback & Knowledge Gap Tracking
+## Feature 2: User Feedback & Knowledge Gap Tracking — Live
 
 ### What Was Done
 * Created the `feedback_and_gaps` table in PostgreSQL to store ungrounded refusals and user ratings in a single schema.
@@ -82,7 +81,13 @@ This file tracks newly implemented features, their configuration settings, and h
 
 ---
 
+## Other implemented features
+
+This file covers two features in depth. The full list of what is live, verified, blocked and in
+progress is in `PRODUCT_STATUS.md`.
+
 ## Next Features to Implement
-* Feature 3: Action Tools (Linear & GitHub Issue Creation)
-* Feature 4: Jira & Confluence Connectors
-* Feature 5: Deep Research Multi-Agent Planner
+* Action tools (Linear and GitHub issue creation) with explicit confirmation
+* Jira and Confluence connectors
+* Deep research multi-agent planner
+* Open-ended charts (PR #45, built, in review)

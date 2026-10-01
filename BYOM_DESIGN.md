@@ -1,3 +1,5 @@
+> Historical design plan, kept for its reasoning. Current status: [PRODUCT_STATUS.md](PRODUCT_STATUS.md).
+
 # Bring Your Own Model — design under review
 
 Status: **Phase 1 design, pre-review.** Branch `feat/bring-your-own-model`.

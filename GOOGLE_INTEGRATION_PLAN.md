@@ -1,3 +1,5 @@
+> Historical design plan, kept for its reasoning. Current status: [PRODUCT_STATUS.md](PRODUCT_STATUS.md).
+
 # Google Drive + Google Docs integration — implementation plan
 
 > Branch: `feature/google-integration`, based on `main` @ `876d6f8`.

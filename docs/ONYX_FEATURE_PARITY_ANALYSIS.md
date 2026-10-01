@@ -1,5 +1,7 @@
 # Onyx vs. Handbook: Feature Parity & Architectural Analysis
 
+*Last updated: 1 October 2026.* Current Handbook status of every feature: `PRODUCT_STATUS.md`.
+
 ## 1. Overview
 
 This document compares Onyx (formerly Danswer) and Handbook across architecture, feature parity, permissions, and retrieval capabilities. It outlines core differences, identifies features from Onyx that can be integrated into Handbook, and defines capabilities that are out of scope.
@@ -11,7 +13,7 @@ This document compares Onyx (formerly Danswer) and Handbook across architecture,
 | ------------------------ | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
 | Primary Objective        | Horizontal enterprise search across SaaS tools                       | Multi-tenant company Q&A, engineering intelligence, and scheduled reporting                |
 | Core Architecture        | Distributed: Vespa (vectors, BM25, ACLs) + PostgreSQL + Celery/Redis | Unified: PostgreSQL + pgvector (HNSW, fulltext, relational data, job queues)               |
-| Access Control           | Document-level ACL mirroring from external sources                   | Workspace-level isolation with org_id and workspace_id                                     |
+| Access Control           | Document-level ACL mirroring from external sources                   | Org and space isolation, plus document-level ACLs captured at sync (Drive, Slack, Linear) and per-repo checks (GitHub) |
 | Grounding Strategy       | Prompt-guided refusal with cross-encoder reranking                   | Hard mathematical cosine gate (0.35 threshold) + prompt guardrails + post-generation audit |
 | Source Data Freshness    | Static text indexing for code, tickets, and docs                     | Live REST APIs for engineering tools (GitHub) + indexed docs for knowledge bases           |
 | Intelligence Model       | Single LLM with persona system prompts                               | Pinned domain agents, live GitHub tool agent, and natural-language-to-SQL agent            |
@@ -34,7 +36,7 @@ This document compares Onyx (formerly Danswer) and Handbook across architecture,
 | Hard Mathematical Confidence Gate     | No           | Yes            | Handbook rejects irrelevant queries at score 0.35 before calling LLM.        |
 | Post-Generation Grounding Audit       | No           | Yes            | Handbook validates generated claims against source citations.                |
 | Author & Source Provenance in Context | Partial      | Yes            | Handbook injects author, update timestamp, and provider into chunk context.  |
-| In-Chat File Attachments              | Yes          | Planned        | Onyx supports drag-and-drop file queries in active chats.                    |
+| In-Chat File Attachments              | Yes          | Yes            | Handbook stores uploads in Cloudinary and blends them with retrieval.        |
 | Conversation Memory & Query Rewrite   | Yes          | Yes            | Both rewrite follow-up questions to standalone search queries.               |
 | **Connectors & Ingestion**            |              |                |                                                                              |
 | Connector Breadth                     | 50+ sources  | 6 core sources | Onyx supports a wider range of enterprise platforms.                         |
@@ -47,7 +49,7 @@ This document compares Onyx (formerly Danswer) and Handbook across architecture,
 | **Permissions & Isolation**           |              |                |                                                                              |
 | Multi-Tenant Isolation                | Yes          | Yes            | Handbook enforces org_id checks at database query level.                     |
 | Sub-Workspaces (Spaces)               | No           | Yes            | Handbook supports nested private workspaces inside organizations.            |
-| Document-Level ACL Mirroring          | Yes          | No             | Onyx mirrors file permissions from Drive and Notion into Vespa.              |
+| Document-Level ACL Mirroring          | Yes          | Yes            | Drive per file, Slack private channels, Linear private teams, GitHub per repo. Neither syncs Notion page permissions (no API). |
 | **Agents & Automation**               |              |                |                                                                              |
 | Domain-Specific Specialized Agents    | No           | Yes            | Handbook routes deterministically to Notion, Drive, Slack, or GitHub agents. |
 | Live REST Tool Agent                  | No           | Yes            | Handbook GitHubAgent queries live repository states without vector delay.    |
@@ -56,7 +58,11 @@ This document compares Onyx (formerly Danswer) and Handbook across architecture,
 | External Write Actions                | Yes          | No             | Onyx can execute write tasks (create tickets, send messages).                |
 | Scheduled Activity Reports            | No           | Yes            | Handbook sends automated background digests on defined schedules.            |
 | Slackbot Integration                  | Yes          | Yes            | Both support channel mentions and 1-on-1 direct messages.                    |
-| End-User Feedback Tracking            | Yes          | No             | Onyx tracks thumbs up/down and unresolved query metrics.                     |
+| End-User Feedback Tracking            | Yes          | Yes            | Thumbs with reasons, plus automatic documentation-gap logging.               |
+| Webhook / Push Sync                   | Yes          | Yes            | Handbook: Slack, Linear, Notion webhooks and Drive push channels.            |
+| Knowledge Graph Across Tools          | Partial      | Yes            | Handbook's Second Brain links people, documents, issues and PRs.             |
+| Personal Memory                       | Yes          | Yes            | Handbook keeps a few user-stated facts, never as evidence.                   |
+| Prompt-Injection Defense              | Partial      | Yes            | Policy file, scrubbing, link provenance, canary, safety-model scoring.       |
 
 
 ---
@@ -84,7 +90,7 @@ This document compares Onyx (formerly Danswer) and Handbook across architecture,
 ### Permission Models
 
 - **Onyx**: Pulls permission metadata (user emails and group IDs) during source crawling and indexes them alongside document chunks in Vespa. Queries are filtered against the user's identity. This handles granular file-sharing permissions but requires constant synchronization to reflect permission changes.
-- **Handbook**: Enforces permissions at the container and workspace level. Access is determined by organization and workspace membership. This eliminates the risk of cross-workspace leaks and avoids synchronization lag, but does not distinguish file-level sharing permissions within the same workspace.
+- **Handbook**: Organization and space membership first, then document-level ACLs: each document stores its viewers (emails, `domain:`, `group:`, `channel:` entries) captured from the source's own sharing at sync time, and every retrieval query adds one predicate in the same SQL that pins the tenant. Google Groups are expanded on the read side (off until an admin connection exists); GitHub is checked per repository against the asker's linked login. Notion stays space-level: its API exposes no page sharing.
 
 ---
 
@@ -104,58 +110,21 @@ This document compares Onyx (formerly Danswer) and Handbook across architecture,
 
 ## 5. Features from Onyx Adaptable to Handbook
 
+**Already adopted:** in-chat file attachments, document-level access filtering and feedback
+with documentation-gap tracking, each now live (see `PRODUCT_STATUS.md`).
 
-
-### Feature 1: In-Chat Ad-Hoc File Attachments
-
-- **Functionality**: Users upload individual files (PDF, DOCX, CSV, TXT) within an active chat thread for localized querying.
-- **Handbook Fit**: Associate uploaded documents with the specific conversation identifier. When the conversation is deleted, associated files and embeddings are automatically cleared via database cascade rules. Retrieval queries search conversation-specific files alongside or in place of workspace documents.
-
-
-
-### Feature 2: Document-Level Access Filtering
-
-- **Functionality**: Prevent users from viewing documents they cannot access in the source system (e.g., restricted Google Drive files).
-- **Handbook Fit**: Capture allowed user emails during connector synchronization and store them in an array column on the document table. Query retrieval can then include a filter matching the authenticated user's email against this array, providing document-level security within PostgreSQL without external search engines.
-
-
-
-### Feature 3: Deep Research Multi-Agent Workflow
-
-- **Functionality**: Answer complex, multi-part questions by performing multi-step retrieval across different sources and compiling a comprehensive summary.
-- **Handbook Fit**: Add an orchestrator agent that breaks complex questions into focused sub-queries, routes them to existing domain agents (Notion, Drive, Slack, GitHub), and synthesizes the returned findings into a structured report.
-
-
-
-### Feature 4: Bi-Directional Action Tools
-
-- **Functionality**: Enable the assistant to take action in connected services (e.g., creating issues or posting updates).
-- **Handbook Fit**: Add write capabilities to existing connectors (such as Linear and GitHub) with an explicit confirmation step in the user interface before executing external changes.
-
-
-
-### Feature 5: Additional Enterprise Connectors
-
-- **Functionality**: Broaden ingestion coverage to platforms commonly used alongside current integrations.
-- **Handbook Fit**: Implement Atlassian Jira and Confluence adapters using the existing source connector interface.
-
-
-
-### Feature 6: Feedback and Documentation Gap Tracking
-
-- **Functionality**: Collect user ratings on answers and identify knowledge gaps where documentation is missing.
-- **Handbook Fit**: Record user ratings and ungrounded queries (those rejected by the confidence gate) in a dedicated table, giving administrators a summary of topics that require documentation.
+**Still open:**
+- **Deep Research multi-agent workflow:** break a complex question into sub-queries across the
+  domain agents and compile a report.
+- **Bi-directional action tools:** write actions (create issues, post updates) behind an
+  explicit confirmation step.
+- **Additional enterprise connectors:** Jira and Confluence first, using the existing adapter
+  interface.
 
 ---
 
+## 6. Implementation Prioritization (remaining)
 
-
-## 7. Implementation Prioritization
-
-1. **In-Chat File Attachments**: Immediate user-facing benefit for analyzing one-off documents within existing conversations.
-2. **Feedback and Gap Tracking**: Low complexity; provides data on retrieval quality and missing information.
-3. **Document-Level Access Filtering**: Enhances security for shared Google Drive folders without infrastructure changes.
-4. **Jira and Confluence Connectors**: Extends coverage for engineering and product documentation.
-5. **Deep Research Workflow**: Combines outputs from existing agents for comprehensive analysis.
-6. **Bi-Directional Action Tools**: Introduces write functionality with required approval workflows.
-
+1. **Jira and Confluence connectors:** extend coverage for engineering and product docs.
+2. **Deep research workflow:** combine existing agents for comprehensive analysis.
+3. **Bi-directional action tools:** write functionality with required approval workflows.
