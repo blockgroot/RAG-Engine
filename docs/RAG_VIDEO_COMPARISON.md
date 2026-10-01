@@ -1,5 +1,7 @@
 # Production RAG checklist vs. this codebase
 
+> Written before several features shipped; current status of everything: `PRODUCT_STATUS.md`.
+
 Source: https://www.youtube.com/watch?v=4KiiKQ9RVvA — 8 pointers for a
 production-grade RAG system. Below: what we already have, what's partial,
 what's missing entirely. Status is judged against CLAUDE.md §2/§4/§6, not
@@ -123,6 +125,11 @@ separate verifying pass after a draft exists. Phase 20 (structural
 `{claim, chunk_id}` citations + per-claim NLI) was scoped and explicitly
 deferred pending a latency/cost decision — this is the closest match to the
 video's "gatekeeper" concept and it's sitting in the backlog, not built.
+
+> **Update, 1 October 2026:** a separate post-generation audit now exists (`app/rag/audit.py`,
+> `RAG_AUDIT_ENABLED`, LLM or LettuceDetect backend) and can only downgrade an answer. It is
+> **off** (code default and on hold by decision): the LLM backend rejected too many good
+> answers on a benchmark, and the LettuceDetect host needs a paid plan. See `PRODUCT_STATUS.md` §11.
 
 **Verdict:** functionally we prevent most of what a validator would catch
 (via the gate + prompt design), but there's no independent second-opinion
