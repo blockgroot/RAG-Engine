@@ -2378,8 +2378,8 @@ providers (`app/api/webhooks.py`, `app/sources/drive_watch.py`). Canonical produ
   admin** — `GOOGLE_GROUPS_ENABLED` is off: the Admin SDK needs a Workspace-ADMIN connection
   nobody has confirmed, and a non-admin consent fails the whole Google reconnect. Nested groups
   go through `members.hasMember` against the org's indexed `group:` grants (≤40, same domain
-  only; Google does not resolve cross-domain nesting). **GitHub per-asker access is merged and
-  not yet run live** (planned in prod). The schema (incl. `user_email_aliases`,
+  only; Google does not resolve cross-domain nesting). **GitHub per-asker access is VERIFIED in
+  production** (2026-10-01). The schema (incl. `user_email_aliases`,
   `email_change_requests`, `drive_watch_channels`) is additive and applied on boot.
 - Charts: Forms is now REACHABLE from the product (picker + chips), but **the
   Google Forms path has still never run against a real form.** The
@@ -2469,9 +2469,8 @@ providers (`app/api/webhooks.py`, `app/sources/drive_watch.py`). Canonical produ
   webhook URL + `LINEAR_WEBHOOK_SECRET`; `DRIVE_PUSH_BASE_URL` (the API's public
   HTTPS origin). Linear's app webhook needs NO `admin` scope (staging runs on `read`). Linear
   private teams: whether an app webhook covers them is undocumented — they may arrive only via
-  the hourly poll. **Production config pending after the PR #44 merge**: the three env vars
-  above, the Slack events, Linear/Notion webhook URLs pointed at prod, and every tenant
-  reconnecting Linear once. Staging's tick is driven by cron-job.org (every 10 min).
+  the hourly poll. **Configured in production 2026-10-01** (env vars, Slack events, Linear/Notion
+  webhook URLs); each tenant still reconnects Linear once. Staging's tick is driven by cron-job.org (every 10 min).
 - **The Check button is GONE, and `last_sync_at` replaced it on the card**
   (`credentials.OAuthConnectionInfo` -> `/admin/connections` ->
   `ConnectionCard::checkedAgo`). It was the manual override held until an

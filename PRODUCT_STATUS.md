@@ -58,7 +58,7 @@ rights, §11) or on an open pull request (§12).
 | Reports | Scheduled reports by email (SendGrid) | Live |
 | Feedback | Thumbs with reasons; automatic documentation-gap list for admins | Live |
 | Access | Company and space isolation; per-document access for Drive, Slack, Linear; per-repo for GitHub; charts follow access | Live / staging-verified (§6) |
-| Freshness | Instant updates from Slack, Linear, Notion and Drive, plus an hourly re-check | Live (staging-verified) |
+| Freshness | Instant updates from Slack, Linear, Notion and Drive, plus an hourly re-check | Live |
 | Security | Prompt-injection defense, link provenance, safety model, encrypted tokens, magic-link sign-in | Live |
 
 ## 3. Feature-by-Feature Status
@@ -85,7 +85,7 @@ rights, §11) or on an open pull request (§12).
 | Personal memory | Remembers a few facts a person states; Undo; manage on `/account` | Live | `tests/test_personal_memory.py` | Web chat only; no memory-free private chat mode |
 | Document-level access | Each tool's sharing rules applied before ranking | Live / staging-verified | `tests/test_doc_access.py`, `tests/test_visibility.py` | See §6 per tool |
 | Email change | Change sign-in email; old address kept so existing shares still match | Live (staging-verified 1 Oct) | `tests/test_email_change.py` | — |
-| Instant updates | Webhooks from Slack, Linear, Notion; Drive push channels | Live (staging-verified 1 Oct) | `tests/test_webhook_sync.py` | Production config pending (§10) |
+| Instant updates | Webhooks from Slack, Linear, Notion; Drive push channels | Live (configured in production 1 Oct) | `tests/test_webhook_sync.py`; staging timings §7 | Each tenant reconnects Linear once (§10) |
 | Prompt-injection defense | Policy file, scrubbing, link provenance, canary, safety model | Live | `tests/test_untrusted_*.py`, `test_link_provenance.py`, `test_injection_*.py`, `test_exfil_channels.py`, `test_red_team_corpus.py` | §8 |
 | Google Groups | Files shared with a Google Group (incl. nested) open to its members | Built, off | `tests/test_nested_groups.py` | Needs a Workspace-admin connection (§11) |
 | Google Forms sentiment | Survey sentiment charts, never searchable | Built, not verified | `tests/test_insights_sentiment.py` | Never run on a real form; needs every tenant to reconnect Google |
@@ -153,7 +153,7 @@ rights, §11) or on an open pull request (§12).
 | **Google Drive** | Docs, PDFs and Word files in one chosen folder | Google OAuth (`drive.readonly`, `documents.readonly`) | **Per file**, from Drive's own sharing: people, whole domain, anyone-with-link. Unreadable sharing falls back to the connected account only. Removals apply on the next sync | Groups need an admin (§11) | Per-file sharing verified live 30 Sep; push verified on staging 1 Oct |
 | **Slack** | Threads in channels an admin picks; the bot in channels and DMs | Slack OAuth (bot scopes incl. `chat:write`) | **Per channel**: public channels open to the space; private channels only to members. A channel reply uses only that channel's content | Short one-liners under 15 characters are not indexed | Private-channel access and push verified on staging 1 Oct |
 | **Linear** | Issues with status, assignee, team, priority, labels, comments | Linear OAuth (`read` scope) | **Per team**: public teams open to the space; private and restricted teams only to members, workspace admins and anyone an issue was shared with | Private teams untestable without the Business plan (§11) | Public teams and push verified on staging 1 Oct |
-| **GitHub** | Commits, pull requests, reviews, branches, READMEs, read live; nothing stored | GitHub App installation | **Per repository**: public repos open to the space; private repos only for people whose linked GitHub account can open them | Members must link GitHub; charts built from GitHub activity are still space-level | Automated tests; production test planned |
+| **GitHub** | Commits, pull requests, reviews, branches, READMEs, read live; nothing stored | GitHub App installation | **Per repository**: public repos open to the space; private repos only for people whose linked GitHub account can open them | Members must link GitHub; charts built from GitHub activity are still space-level | Verified in production 1 Oct |
 | **Google Forms** | Sentiment of chosen surveys, never searchable | Same Google connection, extra scope | Admins and space owners only; groups under 5 responses hidden | Never run on a real form | Automated tests only |
 
 **How access is enforced.** Every document stores who may read it, captured from the tool at
@@ -169,7 +169,7 @@ one line who can get answers from that tool.
 - **Email (SendGrid) — Live.** Sign-in links, signup approvals, scheduled report notifications
   and email-change confirmations are sent through SendGrid and verified with real mailboxes. The
   `console` sender exists only for local development.
-- **Webhooks — Live (staging-verified 1 Oct):**
+- **Webhooks — Live (configured in production 1 Oct; timings measured on staging):**
 
   | Source | How | Measured on staging |
   |---|---|---|
@@ -231,17 +231,13 @@ scored by the safety model; the answer fact-checker is off (§11).
 routing and web search; chat history; file uploads to Cloudinary; charts; spaces; Ask in Slack;
 scheduled reports with real email; feedback and gap tracking; needs-attention bell; Second
 Brain (knowledge graph, live reads, personal memory); prompt-injection defense; Drive per-file
-access; automatic hourly sync.
+access; automatic hourly sync; instant updates from Slack, Linear, Notion and Drive (configured 1 Oct).
 
-**Merged 1 Oct, needs production configuration** (verified on staging):
+**Remaining per-tenant steps** (production webhooks are configured):
 
 | Step | Who |
 |---|---|
-| Render (production): `LINEAR_WEBHOOK_SECRET`, `NOTION_WEBHOOK_VERIFICATION_TOKEN`, `DRIVE_PUSH_BASE_URL` | Admin |
-| Slack app: add bot events `message.channels`, `message.groups` | Admin |
-| Linear OAuth app: webhook URL to production; regenerate its secret | Admin |
-| Notion integration: subscription URL to production; verify with the token from the logs | Admin |
-| **Every tenant reconnects Linear once** (Linear creates the webhook only on a new authorization) | Each tenant |
+| **Every tenant reconnects Linear once** (Linear creates the webhook only on a new authorization; until then the hourly re-check covers Linear) | Each tenant |
 | Members link GitHub under Account → Linked accounts, to keep answers about private repos | Each member |
 
 ## 11. Known Limitations & Blockers
@@ -253,7 +249,7 @@ access; automatic hourly sync.
 | Linear private teams | Built, not verified | Private teams are a Linear Business-plan feature; the test workspace is on the free plan | Plan | A Business-plan workspace to walk it through |
 | Linear instant updates for private teams | Unknown | Linear's docs do not say whether an app webhook covers private teams | External (undocumented) | Settle on a Business-plan workspace; until then those changes arrive through the hourly re-check |
 | Linear instant updates for existing tenants | Needs action | An OAuth-app webhook is created only when a workspace authorizes after it is enabled | External | Each tenant reconnects Linear once |
-| GitHub private repos | Built, not verified | Each member must link their GitHub account; unlinked members get public repos only | Product rule | Members link GitHub; production test planned |
+| GitHub private repos | Live (verified in production 1 Oct) | Each member must link their GitHub account; unlinked members get public repos only | Product rule | Members link GitHub |
 | GitHub in charts | Limitation | Charts built from GitHub activity are space-level, not per person | Not built | Filter GitHub facts by the asker's visible repos |
 | Google Forms sentiment | Built, not verified | Never run on a real form; switching it on makes every tenant reconnect Google | Verification | A live walkthrough before enabling `GOOGLE_FORMS_ENABLED` |
 | Answer fact-checker (LettuceDetect) | Built, off | Hugging Face now requires a paid plan for the CPU host | Dependency / cost | A paid CPU host |
@@ -290,7 +286,7 @@ Ask on `main` still charts only the 12 registry metrics.
   email delivery; the frontend walked through by hand.
 - **Production verification (team, 1 Oct 2026):** Second Brain (graph, live reads, memory),
   prompt-injection defense, Cloudinary uploads, feedback and gaps, chat history, real email.
-- **Not yet verified live:** GitHub per-person access, Google Groups, Google Forms, Linear private
+- **Not yet verified live:** Google Groups, Google Forms, Linear private
   teams.
 
 ## 14. Current Product Snapshot
@@ -300,8 +296,7 @@ Ask on `main` still charts only the 12 registry metrics.
   Brain; per-document access for Drive, Slack and Linear, per-repo for GitHub; instant updates
   for four tools; layered prompt-injection defense.
 - **Working in production:** all of the above except what follows.
-- **Merged, awaiting production configuration:** instant updates (webhooks), Linear access rules
-  in production use, GitHub per-person access.
+- **Merged, awaiting a production test:** Linear access rules for private teams.
 - **Partially supported:** Notion access is per space, not per page; GitHub charts are space-level.
 - **Blocked or waiting on an external party:** Notion per-page access (API), Google Groups (admin),
   Linear private teams (Business plan), answer fact-checker (paid host).
