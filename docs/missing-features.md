@@ -119,13 +119,14 @@ wiring the day that lands, for read-side group expansion in the shape
 
 | | |
 | --- | --- |
-| **Verdict** | **DONE**, needs a live walkthrough |
+| **Verdict** | **DONE**. Public teams verified on staging; the private-team path needs a Business-plan workspace to test live |
 | **Last checked** | 2026-09-30 |
 
 **Built** (`app/sources/linear.py::_access_for`, `tests/test_linear_access.py`). Public
 team ⇒ readable by the scope; private or restricted team ⇒ its members plus
 `Issue.sharedAccess.sharedWithUsers`; unreadable membership ⇒ the connected account
-only. Team and sharing ride the issues listing, so revocation re-stamps on the next
+only. Workspace admins and owners are added too, since Linear's own screen says "Private teams
+are visible only to team members and workspace admins". Team and sharing ride the issues listing, so revocation re-stamps on the next
 sync. Every query validates against Linear's published `schema.graphql`; none has run
 against a live workspace yet.
 

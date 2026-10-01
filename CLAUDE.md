@@ -252,7 +252,9 @@ hook, and every process boundary must `close_pool()`.
   - **A Linear team's membership IS its issues' ACL** (`sources.linear._access_for`, the
     Slack channel rule): a PUBLIC team is scope-public and costs no call; a PRIVATE or
     RESTRICTED team (a non-private team inside a private-team boundary, treated as
-    members-only until they join) is its members' emails PLUS `sharedAccess.sharedWithUsers`
+    members-only until they join) is its members' emails PLUS workspace admins/owners (Linear: "Private teams are visible
+    only to team members and workspace admins"; one `users` query per sync, failure = members
+    only) PLUS `sharedAccess.sharedWithUsers`
     (per-issue sharing out of a private team, Enterprise). Team + sharing ride the issues
     LISTING so revocation re-stamps; `teams` once and `members` once per non-public team
     per sync; unreadable membership ⇒ owner-only (`viewer.email`), like Drive. Queries are
@@ -2340,8 +2342,9 @@ and the graph as a retrieval list — **built, OFF for answers**.
   `oauth_states.user_id`); existing documents fill in over ticks
   (`refresh_missing_meta` 25/job, `graph.builder.backfill` 200/tick).
 - Document-level access: **Drive per-file sharing is VERIFIED live** (by the
-  user, 2026-09-30). **Linear team access has never run
-  against a live workspace** either: the first sync after deploy re-stamps every
+  user, 2026-09-30). **Linear team access is verified for PUBLIC teams only** (staging, 2026-10-01: visibility
+  read, issues left scope-public); private teams need Linear's paid Business plan, which the
+  test workspace does not have, so the members/admins path has not run live: the first sync after deploy re-stamps every
   private-team issue, so check `permission_unreadable_documents` on that job.
   **Group expansion has never run against a live directory** — `GOOGLE_GROUPS_ENABLED`
   is off, no tenant has the scope, and the Admin SDK needs a Workspace-admin

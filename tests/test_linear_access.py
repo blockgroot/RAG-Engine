@@ -36,7 +36,7 @@ def _issue(iid, team, shared=()):
     }
 
 
-def _fake(monkeypatch, *, issues, teams, members, viewer="bot@corp.com", fail=()):
+def _fake(monkeypatch, *, issues, teams, members, viewer="bot@corp.com", fail=(), admins=()):
     calls: list[str] = []
 
     def post(url, json, headers, timeout):
@@ -57,6 +57,10 @@ def _fake(monkeypatch, *, issues, teams, members, viewer="bot@corp.com", fail=()
             return _Resp({"data": {"team": {"members": {
                 "nodes": [{"email": e} for e in members.get(team, [])],
                 "pageInfo": {"hasNextPage": False, "endCursor": None}}}}})
+        if name == "Admins":
+            return _Resp({"data": {"users": {
+                "nodes": [{"email": e} for e in admins],
+                "pageInfo": {"hasNextPage": False, "endCursor": None}}}})
         if name == "Viewer":
             return _Resp({"data": {"viewer": {"email": viewer}}})
         raise AssertionError(f"unexpected Linear query: {name}")
@@ -144,3 +148,30 @@ def test_a_team_failure_does_not_widen_anything(monkeypatch, visibility):
         members={}, fail=("Teams",),
     )
     assert not access["1"].is_public
+
+
+def test_workspace_admins_can_read_a_private_team(monkeypatch):
+    """Linear: "Private teams are visible only to team members and workspace
+    admins" -- an admin outside the team must not be told "not shared"."""
+    access, calls = _access(
+        monkeypatch, issues=[_issue("1", "sec"), _issue("2", "sec")], teams={"sec": "private"},
+        members={"sec": ["ada@corp.com"]}, admins=("owner@corp.com",),
+    )
+    assert access["1"] == DocAccess.restricted(["ada@corp.com", "owner@corp.com"])
+    assert calls.count("Admins") == 1
+
+
+def test_a_public_team_never_reads_the_admin_list(monkeypatch):
+    _, calls = _access(
+        monkeypatch, issues=[_issue("1", "pub")], teams={"pub": "public"}, members={},
+        admins=("owner@corp.com",),
+    )
+    assert "Admins" not in calls
+
+
+def test_an_unreadable_admin_list_keeps_the_members(monkeypatch):
+    access, _ = _access(
+        monkeypatch, issues=[_issue("1", "sec")], teams={"sec": "private"},
+        members={"sec": ["ada@corp.com"]}, fail=("Admins",),
+    )
+    assert access["1"] == DocAccess.restricted(["ada@corp.com"])

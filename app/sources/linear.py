@@ -80,6 +80,18 @@ query TeamMembers($id: String!, $after: String) {
 }
 """
 
+# Linear: "Private teams are visible only to team members and workspace admins"
+# (team-creation screen). Owners rank above admins. Disabled accounts are
+# excluded by default, as for team members.
+_ADMINS_QUERY = """
+query Admins($after: String) {
+  users(first: 100, after: $after, filter: {or: [{admin: {eq: true}}, {owner: {eq: true}}]}) {
+    nodes { email }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+"""
+
 _VIEWER_QUERY = "query { viewer { email } }"
 
 #: Pages of teams / of one team's members to walk. Stopping early can only
@@ -277,6 +289,9 @@ class LinearAdapter(SourceAdapter):
         self._team_visibility: dict[str, str] | None = None
         #: team id -> member emails, or None when they could not be read.
         self._team_members: dict[str, tuple[str, ...] | None] = {}
+        #: Workspace admins and owners, read once and only if a non-public team
+        #: shows up. ``()`` when they could not be read.
+        self._workspace_admins: tuple[str, ...] | None = None
         self._account_email: object = _UNRESOLVED
 
     def _query(self, query: str, variables: dict | None = None) -> dict:
@@ -346,6 +361,28 @@ class LinearAdapter(SourceAdapter):
         self._team_members[team_id] = members
         return members
 
+    def _admins(self) -> tuple[str, ...]:
+        """Workspace admins and owners, who see every private team in Linear.
+
+        A failure means NO admins, never a failed listing: the members are
+        still a correct (narrower) audience, so an unreadable admin list locks
+        admins out rather than letting anyone else in.
+        """
+        if self._workspace_admins is None:
+            emails: list[str] = []
+            cursor: str | None = None
+            try:
+                for _ in range(_MAX_MEMBER_PAGES):
+                    data = self._query(_ADMINS_QUERY, {"after": cursor})["users"]
+                    emails += [n["email"] for n in data["nodes"] if n.get("email")]
+                    if not data["pageInfo"]["hasNextPage"]:
+                        break
+                    cursor = data["pageInfo"]["endCursor"]
+            except SourceError:
+                logger.warning("linear: could not list workspace admins", exc_info=True)
+            self._workspace_admins = tuple(emails)
+        return self._workspace_admins
+
     def _connected_account(self) -> str | None:
         """The connected account's email, for the owner-only fallback. Once, lazily."""
         if self._account_email is _UNRESOLVED:
@@ -363,9 +400,9 @@ class LinearAdapter(SourceAdapter):
         A PUBLIC team's issues are visible to every workspace member, so they are
         scope-public -- the Slack public-channel rule, and it keeps this to
         private teams only. A PRIVATE team's issues are visible to its members
-        only (Linear: "Those who are not a member of the private team will not be
-        able to see issues associated with the team"), plus whoever the issue was
-        individually shared with. RESTRICTED (a non-private team inside a
+        and to workspace admins (Linear: "Private teams are visible only to team
+        members and workspace admins"), plus whoever the issue was individually
+        shared with. RESTRICTED (a non-private team inside a
         private-team boundary) is treated like private: its parent's members can
         discover and join it, and until they join we do not grant them.
 
@@ -382,7 +419,7 @@ class LinearAdapter(SourceAdapter):
             return DocAccess.scope_public()
         members = self._members_of(team_id) if visibility else None
         if members:
-            return DocAccess.restricted(list(members) + _shared_emails(node))
+            return DocAccess.restricted(list(members) + list(self._admins()) + _shared_emails(node))
         account = self._connected_account()
         return DocAccess.owner_only(account) if account else None
 
