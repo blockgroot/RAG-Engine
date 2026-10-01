@@ -2,8 +2,7 @@
 
 > **The canonical source of truth for what Handbook does today.** Verified against the
 > codebase at `main` = `5901c13` (PR #44 merged, 1 Oct 2026). Design reasoning lives in
-> `CLAUDE.md`; decision history in `docs/plans/` and git; per-gap verdicts with provider
-> evidence in `docs/missing-features.md`.
+> `CLAUDE.md`; decision history in git.
 >
 > **Keep it fresh:** whoever ships, verifies or blocks a feature updates this file in the same
 > pull request. Every status carries a date and how we know.

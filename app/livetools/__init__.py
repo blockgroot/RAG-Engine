@@ -1,4 +1,4 @@
-"""Second Brain live connector reads (docs/plans/2026-09-29-live-connector-access.md).
+"""Second Brain live connector reads (git history: docs/plans/2026-09-29-live-connector-access.md).
 
 **The index finds, the live call refreshes.** A live read only ever re-reads an
 object that retrieval already returned -- and therefore already cleared -- for

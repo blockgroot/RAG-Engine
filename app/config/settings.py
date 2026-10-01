@@ -739,7 +739,7 @@ class GoogleSettings:
         )
 
 
-# Phase 1 of Slack Integration Plan (docs/plans/2026-08-17-slack-integration.md):
+# Phase 1 of Slack Integration Plan (git history: docs/plans/2026-08-17-slack-integration.md):
 # bot scopes only — enough to list/join/read channels and resolve display
 # names. No `chat:write` (read-only connector, D-note in the plan's non-goals).
 # `users:read.email` (workspace-invite member picker) is the one exception to
@@ -981,7 +981,7 @@ DEFAULT_LINK_ALLOWLIST = (
 
 @dataclass(frozen=True)
 class SecuritySettings:
-    """Deterministic prompt-injection controls (docs/plans/2026-09-28-prompt-injection-defense.md).
+    """Deterministic prompt-injection controls (git history: docs/plans/2026-09-28-prompt-injection-defense.md).
 
     - ``link_allowlist``  `SECURITY_LINK_ALLOWLIST`, comma-separated hosts;
       empty string = only links that appear verbatim in the sources.
@@ -1835,7 +1835,7 @@ DEFAULT_GRAPH_META_REFRESH_BATCH = 25
 
 @dataclass(frozen=True)
 class GraphSettings:
-    """Second Brain knowledge-graph settings (docs/plans/2026-09-23-second-brain.md).
+    """Second Brain knowledge-graph settings (git history: docs/plans/2026-09-23-second-brain.md).
 
     ``meta_refresh_batch`` bounds the metadata-only refresh each ingest job runs
     for documents indexed before people/links were captured (1.1). An unchanged
@@ -1872,7 +1872,7 @@ class GraphSettings:
 
 @dataclass(frozen=True)
 class LiveToolsSettings:
-    """The live-tools gateway (docs/plans/2026-09-29-live-connector-access.md).
+    """The live-tools gateway (git history: docs/plans/2026-09-29-live-connector-access.md).
 
     Three settings and no more (plan D15): everything else is a constant in
     ``app/livetools/base.py`` until ``live_tool_calls`` shows it needs tuning.

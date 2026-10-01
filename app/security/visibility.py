@@ -6,7 +6,7 @@ out by hand in three places -- the vector store, starter chips
 (`api/chat.py`) and the scheduler's indexed digest (`schedulers/activity.py`)
 -- and a filter written out three times is a filter that will one day be
 wrong in one of them. Every reader now splices THIS fragment, and the
-Second Brain graph walk (docs/plans/2026-09-23-second-brain.md) will too, so
+Second Brain graph walk (git history: docs/plans/2026-09-23-second-brain.md) will too, so
 retrieval, chips, digests and graph evidence cannot disagree about a document.
 
 Two rules the fragment encodes, and why they live here rather than at each

@@ -296,7 +296,7 @@ hook, and every process boundary must `close_pool()`.
   Document-level access filtering broke that premise for two kinds of answer,
   and the fix is a gated WRITE (`_is_cacheable`), not a re-keyed cache.
 
-**Second Brain capture (`sources/meta.py`, plan `docs/plans/2026-09-23-second-brain.md`)**
+**Second Brain capture (`sources/meta.py`, plan `git history: docs/plans/2026-09-23-second-brain.md`)**
 — each adapter records the people, links and containers it already saw into
 `SourceDocument.meta` → `documents.source_meta` (+ `source_editor_key`;
 `activity_facts.actor_key` for facts), with ZERO extra API calls — the fakes
@@ -400,7 +400,7 @@ already applied skip / owner-only / freeze to that exact row.
   (team-verified 2026-10-01); re-run `python -m evaluation.graph_eval` with the REAL embedder
   before changing how it ranks (gain somewhere, loss nowhere).
 
-**Live connector reads = the Second Brain's second half (`app/livetools/`, plan `docs/plans/2026-09-29-live-connector-access.md`)**
+**Live connector reads = the Second Brain's second half (`app/livetools/`, plan `git history: docs/plans/2026-09-29-live-connector-access.md`)**
 — the Second Brain is the knowledge graph PLUS live tool access, in normal Ask. No toggle: a "Deep research" composer toggle shipped and was removed (deep research is a separate, later planner+report feature). The web chat sets a `LiveRequest` ContextVar (the `GraphPlan` pattern) on every question; `LIVE_TOOLS_ENABLED` (+ `LIVE_TOOLS_PROVIDERS`, `LIVE_TOOLS_ORGS`) decides. Off = byte-identical answers. Slack, schedulers and eval never set one. On, a question whose top hits include a refreshable item waits for the read (~2 s staging) — **live in production** (team-verified 2026-10-01).
 - **A live read must be EARNED (mode A)** (`livetools/trigger.py`, `gateway._drop_freshly_synced`): the question classifier returns `live` in the SAME `classify_question` call (`AskIntent.needs_live` → `RoutingDecision` → `LiveRequest.needs_live`, set at the chat edge after routing) — "is SYV-5 still blocked?" yes, "leave policy?" no. No hardcoded word list (a phrase list cannot tell "has Rahul reviewed the PR?" from "how do reviews work?"); no verdict (classifier down, field missing) ⇒ the read goes ahead, so an outage costs ~2 s, never a stale answer. And a tool whose last SUCCEEDED ingest job (never `last_sync_at`, stamped on attempt) is <`FRESH_SECONDS`=15 min old is not read. Unknown freshness reads live. Mode B is ungated: the synced copy already failed there.
 - **The index finds, the live call refreshes**: mode A re-reads only documents in this request's hits, resolved to `(provider, external_id)` from `documents` pinned to org AND space — no search, no model-named target, zero extra model calls. Runs AFTER the gate passes, so a live read never rescues a gate miss. `gateway.py` is the only code that decrypts a token for it; ≤`MAX_REFRESHES`=2, 6s, 6000 chars (truncation stated).
@@ -477,7 +477,7 @@ grounded generate → `RagResult`.
   drifted. The ROOT `AGENTS.md` is for coding assistants and never reaches the
   model — rules only work through the prompt.
 - **Prompt-injection defense assumes the model WILL be fooled and makes that
-  harmless** (`docs/plans/2026-09-28-prompt-injection-defense.md`; Phase 1 =
+  harmless** (`git history: docs/plans/2026-09-28-prompt-injection-defense.md`; Phase 1 =
   deterministic, no model calls). Every published detector falls to adaptive
   attacks (arXiv 2510.09023), and every real RAG leak (EchoLeak, Slack AI,
   ChatGPT, Bard) went out through a URL, so the guarantees are in code:
@@ -1938,6 +1938,12 @@ evaluation/ golden set + harness + RAGAS ([eval] extra) · scripts/ entrypoints
 frontend/ Next.js 15 portal · tests/ pytest
 ```
 
+**Docs:** `PRODUCT_STATUS.md` (canonical status: live, verified, blocked, in progress) ·
+`Handbook-Product-Overview-Sep-2026 .md` (stakeholder overview) · `ARCHITECTURE.md` (system
+reference) · `docs/what-we-use-and-why.md`, `docs/paid-upgrade-path.md`,
+`docs/challenges-and-remedies.md`. Old plans and gap trackers were removed 2026-10-01; cited as
+"git history: docs/plans/…", recover with `git log -- <path>`.
+
 ## 5. Gotchas — each of these cost real debugging time
 
 **Grounding / retrieval**
@@ -2382,7 +2388,7 @@ providers (`app/api/webhooks.py`, `app/sources/drive_watch.py`). Canonical produ
   retrieved chunk text are unfalsifiable; Drive still skips
   `application/vnd.google-apps.spreadsheet`. A form export in a connected
   folder is Q&A fodder only if we add that MIME later, never a pie. Plan:
-  `docs/plans/2026-09-02-visual-representation.md`.
+  `git history: docs/plans/2026-09-02-visual-representation.md`.
 - Attachments: **still short of Onyx on purpose** — no Projects (a file is
   welded to one conversation, not a reusable library), no images (no vision
   path at all), no admin-editable limits (env vars; a table + route + UI for
@@ -2530,4 +2536,4 @@ providers (`app/api/webhooks.py`, `app/sources/drive_watch.py`). Canonical produ
   is the backstop: it is now 1h, so any successful deploy gives hourly syncing
   even if the blueprint never applies, unless the dashboard pins another value.
 
-_End of a phase: update §3/§5/§6/§7 — one dense line, not a narrative._
+_End of a phase: update §3/§5/§6/§7 — one dense line, not a narrative — and `PRODUCT_STATUS.md` in the same PR._
