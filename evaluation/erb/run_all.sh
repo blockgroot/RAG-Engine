@@ -15,6 +15,12 @@ psql -d bench1 -qc "DELETE FROM query_answer_cache"
 py evaluation.erb.run_bench --system handbook --split all --runs 3
 py evaluation.erb.run_bench --system basic    --split all --runs 3
 py evaluation.erb.run_bench --system onyx     --split all --runs 3
+# Answers spoiled by the free tier (a hung call, a blind Onyx search) go back
+# in the queue; each system's second pass asks only those.
+py evaluation.erb.requeue
+py evaluation.erb.run_bench --system handbook --split all --runs 3
+py evaluation.erb.run_bench --system basic    --split all --runs 3
+py evaluation.erb.run_bench --system onyx     --split all --runs 3
 py evaluation.erb.join_tokens
 py evaluation.erb.review
 py evaluation.erb.report > /dev/null
