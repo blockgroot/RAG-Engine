@@ -259,7 +259,12 @@ def main() -> None:
              "- Groundedness is checked against the exact input the answer model received, captured by the proxy.\n"
              "- Scores use our own review prompt, so they are not comparable with the public EnterpriseRAG-Bench "
              "leaderboard. The Handbook-vs-Onyx comparison is fair: both get the identical review.\n"
-             "- Handbook ran with `RAG_MAX_ANSWER_TOKENS=2000` (production: 700) so a reasoning model is not cut off.\n"
+             "- Handbook ran at its product defaults except: `RAG_MAX_ANSWER_TOKENS=2000` (default 700, so a "
+             "reasoning model is not cut off); NO per-chunk AI context line at ingest (default on; Onyx's equivalent, "
+             "contextual RAG, is also off by default, so neither system has it); knowledge graph, live tools, "
+             "personal memory, web search and the injection guard off (they need real connectors or users, or would "
+             "let either system answer from the web). The answer cache is on, as shipped; with 200 distinct questions "
+             "and a 5-minute lifetime it never hits. Onyx ran as shipped, limited to internal search, deep research off.\n"
              "- Every raw answer, proxy call and review is kept in this folder (rule 6).\n")
     L.append((BENCH / "notes.md").read_text() if (BENCH / "notes.md").exists() else "")
     (BENCH / "REPORT.md").write_text("\n".join(L))
