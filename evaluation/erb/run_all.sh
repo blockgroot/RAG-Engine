@@ -7,6 +7,10 @@ set -eu
 cd "$(dirname "$0")/../.."
 py() { .venv/bin/python -m "$@"; }
 
+# The answer cache is on, as shipped -- but an answer cached by an EARLIER,
+# aborted run must not be served as this run's answer (0 tokens, 0 s).
+psql -d bench1 -qc "DELETE FROM query_answer_cache"
+
 # All 200 questions once; runs 2-3 only for the 50 repeat questions.
 py evaluation.erb.run_bench --system handbook --split all --runs 3
 py evaluation.erb.run_bench --system basic    --split all --runs 3
