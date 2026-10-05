@@ -9,6 +9,7 @@ py() { .venv/bin/python -m "$@"; }
 
 # All 200 questions once; runs 2-3 only for the 50 repeat questions.
 py evaluation.erb.run_bench --system handbook --split all --runs 3
+py evaluation.erb.run_bench --system basic    --split all --runs 3
 py evaluation.erb.run_bench --system onyx     --split all --runs 3
 py evaluation.erb.join_tokens
 py evaluation.erb.review

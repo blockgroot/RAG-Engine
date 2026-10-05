@@ -35,8 +35,8 @@ from dotenv import load_dotenv
 load_dotenv(".env.bench", override=True)
 
 BENCH = Path("evaluation/reports/bench1")
-SYSTEMS = ("handbook", "onyx")
-LABELS = {"handbook": "Handbook (core mode)", "onyx": "Onyx v4.8.4"}
+SYSTEMS = ("handbook", "onyx", "basic")
+LABELS = {"handbook": "Handbook (core mode)", "onyx": "Onyx v4.8.4", "basic": "Basic search, top 10 (reference)"}
 BREADTH = {"completeness", "high_level"}
 # Published price of the answer model (OpenRouter, nemotron-3-super-120b-a12b), $ per 1M tokens.
 PRICE_IN, PRICE_OUT = 0.09, 0.45
@@ -111,7 +111,7 @@ def metrics(recs: list[dict]) -> dict:
         "failed_calls": sum(r["tokens"]["failed_calls"] for r in recs),
         "errors": sum(1 for r in recs if any(r["raw"].get(k) for k in ("exception", "error", "http", "error_msg"))),
         "unreviewed": n - graded,
-        "searched_pct": None if recs and recs[0]["system"].startswith("handbook")
+        "searched_pct": None if recs and recs[0]["system"].startswith(("handbook", "basic"))
         else pct(sum(1 for r in recs if r["raw"].get("tool_calls")), n),
     }
 
@@ -192,7 +192,7 @@ def main() -> None:
              f"${PRICE_IN} / ${PRICE_OUT} per 1M input / output tokens; the run itself used a free tier. "
              "³ Free-tier rate-limit waits removed. Handbook streams only an already-decided answer, so its first "
              "word is the end of the pipeline; Onyx's is the first token of its answer call. "
-             "⁴ Onyx decides per question whether to search; Handbook always retrieves.\n")
+             "⁴ Onyx decides per question whether to search; Handbook and the basic reference always retrieve. The basic reference is plain top-10 vector search plus EnterpriseRAG-Bench's own answer prompt in one call, on Handbook's index: not a product, it shows what each product's extra steps buy.\n")
 
     L.append(f"## Run-to-run variation ({len(repeat_ids)} repeat test questions, 3 runs)\n")
     L.append(head)

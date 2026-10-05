@@ -2,6 +2,9 @@
 
 Systems:
   handbook  RagPipeline.answer, core mode (no tool pinned), single turn.
+  basic     Reference point, not a product: plain vector search over the SAME
+            Handbook index, top 10 chunks, EnterpriseRAG-Bench's own baseline
+            answer prompt, one LLM call. Shows what Handbook's extra steps buy.
   onyx      POST /chat/send-chat-message, stream=false, deep_research=false.
 
 Runs 2 and 3 ask only the manifest's ``repeat`` questions (50 test questions,
@@ -99,6 +102,41 @@ class Handbook:
         }
 
 
+class Basic:
+    TOP_K = 10
+
+    def __init__(self) -> None:
+        import httpx
+
+        from app.embeddings import build_embedding_provider
+        from app.vectorstore import build_vector_store
+
+        from .load_handbook import bench_org
+
+        self.store, self.embedder = build_vector_store(), build_embedding_provider()
+        self.org_id = bench_org(self.store)
+        self.http = httpx.Client(timeout=300)
+        self.prompt = (Path(__file__).parent / "erb_answer_prompt.txt").read_text()
+
+    def ask(self, question: str) -> dict:
+        hits = self.store.query(self.org_id, self.embedder.embed([question])[0], top_k=self.TOP_K)
+        context = "\n\n".join(f"Document: {h.document_title}\n{h.content}" for h in hits)
+        resp = self.http.post(
+            "http://localhost:4000/v1/chat/completions",
+            headers={"X-Bench-Client": "basic"},
+            json={"model": "bench-answer", "messages": [
+                {"role": "user", "content": self.prompt.format(context_documents=context, question=question)}
+            ]},
+        ).json()
+        answer = resp["choices"][0]["message"]["content"].strip() if resp.get("choices") else ""
+        return {
+            "answer": answer,
+            "document_ids": _dsids([h.document_id for h in hits]),
+            "refused": None,  # decided by the judge's bucket mapping, not here
+            "raw": {"n_chunks": len(hits), "context_chars": len(context), "error": resp.get("error")},
+        }
+
+
 class Onyx:
     def __init__(self) -> None:
         import httpx
@@ -142,7 +180,7 @@ class Onyx:
         }
 
 
-SYSTEMS = {"handbook": Handbook, "onyx": Onyx}
+SYSTEMS = {"handbook": Handbook, "basic": Basic, "onyx": Onyx}
 
 
 # --------------------------------------------------------------------------- loop
