@@ -142,7 +142,7 @@ class Onyx:
         import httpx
 
         self.base = os.environ.get("ONYX_URL", "http://localhost:3000/api").rstrip("/")
-        self.http = httpx.Client(timeout=600)
+        self.http = httpx.Client(timeout=1800)  # Onyx's agent may search several times on a hard question
         key = os.environ.get("ONYX_API_KEY")
         if key:
             self.http.headers["Authorization"] = f"Bearer {key}"

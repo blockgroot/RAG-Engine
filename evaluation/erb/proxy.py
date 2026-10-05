@@ -43,7 +43,11 @@ BODIES = LOG.with_name("bodies.jsonl")
 MAX_TRIES = 12
 
 app = FastAPI()
-_client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=10.0))
+# NVIDIA's free tier occasionally accepts a call and never answers. 150 s is
+# well past the slowest real call seen (~50 s), so a call that silent is a
+# provider hang: retried here and logged as waiting, like a 429, because it
+# is the free tier's latency, not the product's.
+_client = httpx.AsyncClient(timeout=httpx.Timeout(150.0, connect=10.0))
 
 
 def _wait_seconds(resp: httpx.Response) -> float:
@@ -108,11 +112,16 @@ def _log_body(call_id: str, body: dict, content: str | None) -> None:
 
 async def _send(body: dict, stream: bool) -> tuple[httpx.Response, float]:
     """POST upstream, waiting out 429s. Returns the response and seconds waited."""
-    waited = 0.0
+    waited, resp = 0.0, None
     headers = {"Authorization": f"Bearer {UPSTREAM_KEY}"}
     for _ in range(MAX_TRIES):
         req = _client.build_request("POST", f"{UPSTREAM}/chat/completions", json=body, headers=headers)
-        resp = await _client.send(req, stream=stream)
+        t0 = time.time()
+        try:
+            resp = await _client.send(req, stream=stream)
+        except httpx.TransportError:  # timeout or dropped connection
+            waited += time.time() - t0
+            continue
         if resp.status_code != 429:
             return resp, waited
         body_bytes = await resp.aread()
@@ -122,6 +131,8 @@ async def _send(body: dict, stream: bool) -> tuple[httpx.Response, float]:
         pause = _wait_seconds(resp)
         waited += pause
         await _sleep(pause)
+    if resp is None:
+        raise RuntimeError(f"upstream silent on {MAX_TRIES} tries")
     return resp, waited
 
 
