@@ -1,20 +1,16 @@
 #!/usr/bin/env bash
-# Benchmark 1 answer runs, one system at a time so proxy windows never overlap.
-# Resumable: re-running skips every (question, run) already recorded.
-set -u
+# Benchmark 1, end to end: answers (one system at a time, so proxy windows never
+# overlap), token join, one review call per answer, report.
+# Resumable at every step: re-running skips whatever is already recorded.
+# Needs the proxy running (python -m evaluation.erb.proxy) and Onyx up.
+set -eu
 cd "$(dirname "$0")/../.."
-run() { .venv/bin/python -m evaluation.erb.run_bench "$@"; }
+py() { .venv/bin/python -m "$@"; }
 
-run --system handbook --split dev  --runs 1
-run --system handbook --split test --runs 3
-run --system basic    --split dev  --runs 1
-run --system basic    --split test --runs 3
-run --system onyx     --split dev  --runs 1
-run --system onyx     --split test --runs 3
-# Context size vs accuracy (Handbook, dev, 1 run). top_k=5 is the run above.
-run --system handbook --split dev --runs 1 --tag topk3  --set RAG_TOP_K=3
-# The context budget (6,000 chars, sized for 5 chunks) scales with k, or a larger k is cut back to ~5.
-run --system handbook --split dev --runs 1 --tag topk10 --set RAG_TOP_K=10 --set RAG_MAX_CONTEXT_CHARS=12000
-run --system handbook --split dev --runs 1 --tag topk20 --set RAG_TOP_K=20 --set RETRIEVAL_CANDIDATE_POOL=20 --set RAG_MAX_CONTEXT_CHARS=24000
-.venv/bin/python -m evaluation.erb.join_tokens
-echo ALL_RUNS_DONE
+# All 200 questions once; runs 2-3 only for the 50 repeat questions.
+py evaluation.erb.run_bench --system handbook --split all --runs 3
+py evaluation.erb.run_bench --system onyx     --split all --runs 3
+py evaluation.erb.join_tokens
+py evaluation.erb.review
+py evaluation.erb.report > /dev/null
+echo ALL_DONE

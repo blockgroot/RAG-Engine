@@ -21,6 +21,7 @@ import json
 import os
 import re
 import time
+import uuid
 from pathlib import Path
 
 import httpx
@@ -36,6 +37,9 @@ UPSTREAM_KEY = os.getenv("BENCH_UPSTREAM_KEY") or os.environ["GROQ_API_KEY"]
 MODEL = os.getenv("BENCH_MODEL", "openai/gpt-oss-120b")
 REASONING = os.getenv("BENCH_REASONING_EFFORT", "medium")
 LOG = Path(os.getenv("BENCH_PROXY_LOG", "evaluation/reports/bench1/proxy.jsonl"))
+# Full request messages + response text per call: what the reviewer checks
+# groundedness against (the exact context the model saw). Large; never committed.
+BODIES = LOG.with_name("bodies.jsonl")
 MAX_TRIES = 12
 
 app = FastAPI()
@@ -97,6 +101,11 @@ def _log(row: dict) -> None:
         f.write(json.dumps(row) + "\n")
 
 
+def _log_body(call_id: str, body: dict, content: str | None) -> None:
+    with BODIES.open("a") as f:
+        f.write(json.dumps({"call_id": call_id, "messages": body.get("messages"), "response": content}) + "\n")
+
+
 async def _send(body: dict, stream: bool) -> tuple[httpx.Response, float]:
     """POST upstream, waiting out 429s. Returns the response and seconds waited."""
     waited = 0.0
@@ -144,6 +153,7 @@ async def chat(request: Request):
     if stream:
         body["stream_options"] = {"include_usage": True}
     row = {
+        "call_id": uuid.uuid4().hex,
         "ts_start": time.time(),
         "client": request.headers.get("x-bench-client") or request.headers.get("user-agent", "")[:60],
         "requested_model": requested_model,
@@ -164,16 +174,22 @@ async def chat(request: Request):
             row["error"] = str(data)[:300]
         row["ts_end"] = time.time()
         _log(row)
+        msg = ((data.get("choices") or [{}])[0].get("message") or {})
+        _log_body(row["call_id"], body, msg.get("content") or json.dumps(msg.get("tool_calls")))
         return JSONResponse(data, status_code=resp.status_code)
 
     async def relay():
-        usage = None
+        usage, parts = None, []
         try:
             async for line in resp.aiter_lines():
                 if line.startswith("data: ") and line != "data: [DONE]":
                     try:
                         chunk = json.loads(line[6:])
                         usage = chunk.get("usage") or (chunk.get("x_groq") or {}).get("usage") or usage
+                        delta = ((chunk.get("choices") or [{}])[0].get("delta") or {}).get("content")
+                        if delta:
+                            row.setdefault("ts_first_content", time.time())  # time to first word
+                            parts.append(delta)
                     except json.JSONDecodeError:
                         pass
                 yield line + "\n"
@@ -182,6 +198,7 @@ async def chat(request: Request):
             row.update(_usage_fields(usage))
             row["ts_end"] = time.time()
             _log(row)
+            _log_body(row["call_id"], body, "".join(parts))
 
     return StreamingResponse(relay(), status_code=resp.status_code, media_type="text/event-stream")
 

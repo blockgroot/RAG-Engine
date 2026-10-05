@@ -8,7 +8,15 @@ tone, chat naming, ...). The runner leaves a 5 s gap so they land there.
 The step label is a short fingerprint of the call's system prompt (or first
 user message when there is none); ``STAGES`` names the ones we recognise.
 
-Also writes the grader's answers files, one per system and run.
+The ANSWER CALL is the last answer-path call that is not Handbook's tone
+classifier: the call whose output the person reads. ``review.py`` checks
+groundedness against its request (``bodies.jsonl``).
+
+Time to first word (benchmarks.md §5): Handbook streams only an already-decided
+answer, so its first word is the end of the pipeline. Onyx streams its answer
+call, so its first word is that call's first content token (or its end when the
+call was not streamed). Both are reported with rate-limit waits removed -- a
+free-tier queue is not product latency.
 
 Run: .venv/bin/python -m evaluation.erb.join_tokens
 """
@@ -27,7 +35,11 @@ RUNS = BENCH / "runs"
 STAGES = [
     ("You are an assistant for this workspace", "handbook:generate"),
     ("Classify the USER MESSAGE", "handbook:tone"),
-    ("You are a helpful and precise assistant that generates answers", "basic:generate"),
+    ("You are an expert assistant who is truthful", "onyx:answer (tool choice, then final answer)"),
+    ("You are an assistant that reformulates the last", "onyx:query rewrite"),
+    ("You scope an internal search to a time filter", "onyx:time filter"),
+    ("Select the most relevant document sections", "onyx:section selection"),
+    ("Analyze the relevance of document sections", "onyx:section relevance"),
 ]
 
 
@@ -44,8 +56,12 @@ def main() -> None:
     split = {q["question_id"]: q["split"] for q in json.loads((BENCH / "manifest.json").read_text())["questions"]}
     for records_file in sorted(RUNS.glob("*.records.jsonl")):
         system = records_file.name.removesuffix(".records.jsonl")
-        records = sorted((json.loads(line) for line in records_file.open()), key=lambda r: r["q_start"])
-        joined, answers = [], defaultdict(list)
+        latest = {}  # a retried question replaces its errored row
+        for line in records_file.open():
+            r = json.loads(line)
+            latest[(r["question_id"], r["run"])] = r
+        records = sorted(latest.values(), key=lambda r: r["q_start"])
+        joined = []
         for i, rec in enumerate(records):
             # Background = the runner's 5 s gap only, never the next question
             # (which may belong to another system file).
@@ -81,13 +97,21 @@ def main() -> None:
             }
             rec["tokens"]["answer_path_total"] = rec["tokens"]["answer_path_input"] + rec["tokens"]["answer_path_output"]
             rec["tokens"]["all_total"] = rec["tokens"]["answer_path_total"] + total(bg_calls, "input_tokens") + total(bg_calls, "output_tokens")
+            answer_calls = [c for c in main_calls if stage_of(c) != "handbook:tone"]
+            ac = answer_calls[-1] if answer_calls else None
+            rec["answer_call_id"] = ac and ac.get("call_id")
+            waited = rec["tokens"]["rate_limit_wait_s"]
+            if rec["system"].startswith("handbook") or ac is None:
+                first = rec["q_end"]
+            else:
+                first = ac.get("ts_first_content") or ac["ts_end"]
+            waited_before_first = sum(c.get("waited_s") or 0 for c in main_calls if c["ts_start"] <= first)
+            rec["ttfw_s"] = round(first - rec["q_start"] - waited_before_first, 2)
+            rec["total_s"] = round(rec["seconds"] - waited, 2)
+            rec["split"] = split[rec["question_id"]]
             joined.append(rec)
-            answers[(split[rec["question_id"]], rec["run"])].append(
-                {"question_id": rec["question_id"], "answer": rec["answer"], "document_ids": rec["document_ids"]})
         (RUNS / f"{system}.joined.jsonl").write_text("".join(json.dumps(r) + "\n" for r in joined))
-        for (sp, run), rows in answers.items():
-            (RUNS / f"{system}.{sp}.run{run}.answers.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
-        print(f"{system}: {len(joined)} records, sets {sorted(answers)}")
+        print(f"{system}: {len(joined)} records")
 
 
 if __name__ == "__main__":

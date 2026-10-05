@@ -2,18 +2,19 @@
 
 Systems:
   handbook  RagPipeline.answer, core mode (no tool pinned), single turn.
-  basic     Plain vector search over the SAME Handbook index, top 10 chunks,
-            EnterpriseRAG-Bench's own baseline answer prompt, one LLM call.
-            (Their shipped baseline sends 10 FULL documents, ~12-15k tokens,
-            which Groq's free 8k-tokens-per-minute cap refuses per request.)
   onyx      POST /chat/send-chat-message, stream=false, deep_research=false.
+
+Runs 2 and 3 ask only the manifest's ``repeat`` questions (50 test questions,
+5 per type): benchmarks.md rule 4 on a subset. After 3 errored questions in a
+row the run stops -- an exhausted quota (Jina, NVIDIA) must not be recorded as
+a column of empty answers. Re-run to resume.
 
 Rules carried out here: one question at a time, a 5 s gap so background calls
 land in their own window, every raw answer kept, resumable (a crash never
 re-spends quota on finished questions). Tokens are NOT counted here — the proxy
 log is the only token source; ``join_tokens.py`` matches it to these windows.
 
-Run: .venv/bin/python -m evaluation.erb.run_bench --system handbook --split test --runs 3
+Run: .venv/bin/python -m evaluation.erb.run_bench --system handbook --split all --runs 3
 """
 
 from __future__ import annotations
@@ -36,8 +37,10 @@ GAP_SECONDS = 5.0
 def _questions(data: Path, split: str) -> list[dict]:
     manifest = json.loads(MANIFEST.read_text())
     wanted = {q["question_id"]: q["split"] for q in manifest["questions"]}
+    repeat = {q["question_id"] for q in manifest["questions"] if q["repeat"]}
     rows = [json.loads(line) for line in (data / "questions.jsonl").open()]
-    return [q for q in rows if wanted.get(q["question_id"]) in ({"dev", "test"} if split == "all" else {split})]
+    rows = [q for q in rows if wanted.get(q["question_id"]) in ({"dev", "test"} if split == "all" else {split})]
+    return [{**q, "repeat": q["question_id"] in repeat} for q in rows]
 
 
 def _dsids(document_ids: list[str]) -> list[str]:
@@ -53,6 +56,11 @@ def _dsids(document_ids: list[str]) -> list[str]:
             "SELECT id::text, source_external_id FROM documents WHERE id = ANY(%s::uuid[])", (order,)
         ).fetchall())
     return [rows[d] for d in order if rows.get(d)]
+
+
+def _errored(rec: dict) -> bool:
+    raw = rec["raw"]
+    return bool(raw.get("exception") or raw.get("error") or raw.get("http") or raw.get("error_msg"))
 
 
 # --------------------------------------------------------------------------- systems
@@ -91,41 +99,6 @@ class Handbook:
         }
 
 
-class Basic:
-    TOP_K = 10
-
-    def __init__(self) -> None:
-        import httpx
-
-        from app.embeddings import build_embedding_provider
-        from app.vectorstore import build_vector_store
-
-        from .load_handbook import bench_org
-
-        self.store, self.embedder = build_vector_store(), build_embedding_provider()
-        self.org_id = bench_org(self.store)
-        self.http = httpx.Client(timeout=300)
-        self.prompt = (Path(__file__).parent / "erb_answer_prompt.txt").read_text()
-
-    def ask(self, question: str) -> dict:
-        hits = self.store.query(self.org_id, self.embedder.embed([question])[0], top_k=self.TOP_K)
-        context = "\n\n".join(f"Document: {h.document_title}\n{h.content}" for h in hits)
-        resp = self.http.post(
-            "http://localhost:4000/v1/chat/completions",
-            headers={"X-Bench-Client": "basic"},
-            json={"model": "bench-answer", "messages": [
-                {"role": "user", "content": self.prompt.format(context_documents=context, question=question)}
-            ]},
-        ).json()
-        answer = resp["choices"][0]["message"]["content"].strip() if resp.get("choices") else ""
-        return {
-            "answer": answer,
-            "document_ids": _dsids([h.document_id for h in hits]),
-            "refused": None,  # decided by the judge's bucket mapping, not here
-            "raw": {"n_chunks": len(hits), "context_chars": len(context), "error": resp.get("error")},
-        }
-
-
 class Onyx:
     def __init__(self) -> None:
         import httpx
@@ -140,8 +113,6 @@ class Onyx:
                 "username": os.environ["ONYX_ADMIN_EMAIL"], "password": os.environ["ONYX_ADMIN_PASSWORD"]})
             r.raise_for_status()
 
-    FORCE_SEARCH = False
-
     def ask(self, question: str) -> dict:
         search_tool = int(os.environ.get("ONYX_SEARCH_TOOL_ID", "1"))
         body = {
@@ -153,8 +124,6 @@ class Onyx:
             "allowed_tool_ids": [search_tool],
             "chat_session_info": {"persona_id": int(os.environ.get("ONYX_PERSONA_ID", "0"))},
         }
-        if self.FORCE_SEARCH:
-            body["forced_tool_id"] = search_tool
         r = self.http.post(f"{self.base}/chat/send-chat-message", json=body)
         data = r.json()
         if r.status_code != 200:
@@ -173,14 +142,7 @@ class Onyx:
         }
 
 
-class OnyxForcedSearch(Onyx):
-    """Onyx with its search tool forced on every question — the variant that
-    always retrieves, like Handbook does. Reported beside Onyx as shipped."""
-
-    FORCE_SEARCH = True
-
-
-SYSTEMS = {"handbook": Handbook, "basic": Basic, "onyx": Onyx, "onyx-forced": OnyxForcedSearch}
+SYSTEMS = {"handbook": Handbook, "onyx": Onyx}
 
 
 # --------------------------------------------------------------------------- loop
@@ -206,11 +168,13 @@ def main() -> None:
     records.parent.mkdir(parents=True, exist_ok=True)
     done = set()
     if records.exists():
-        done = {(r["question_id"], r["run"]) for r in map(json.loads, records.open())}
+        # An errored question is retried on resume (join_tokens keeps the last row per question+run).
+        done = {(r["question_id"], r["run"]) for r in map(json.loads, records.open()) if not _errored(r)}
 
+    errors_in_a_row = 0
     for run in range(1, args.runs + 1):
         for i, q in enumerate(questions, 1):
-            if (q["question_id"], run) in done:
+            if (q["question_id"], run) in done or (run > 1 and not q["repeat"]):
                 continue
             t0 = time.time()
             try:
@@ -225,8 +189,11 @@ def main() -> None:
             with records.open("a") as f:
                 f.write(json.dumps(row) + "\n")
             print(f"[{name} run {run}] {i}/{len(questions)} {q['question_id']} {t1 - t0:.1f}s "
-                  f"docs={len(out['document_ids'])} {'ERR' if 'exception' in out['raw'] or 'error' in out['raw'] and out['raw']['error'] else ''}",
+                  f"docs={len(out['document_ids'])} {'ERR' if _errored(out) else ''}",
                   flush=True)
+            errors_in_a_row = errors_in_a_row + 1 if _errored(out) else 0
+            if errors_in_a_row >= 3:
+                raise SystemExit(f"3 errored questions in a row, stopping (last: {out['raw']})")
             time.sleep(GAP_SECONDS)
 
 

@@ -1,248 +1,281 @@
-"""Build REPORT.md for Benchmark 1 from the raw files only (plan §10).
+"""Build REPORT.md for Benchmark 1 from the raw files only.
 
 Inputs (all under evaluation/reports/bench1/):
-  runs/<system>.joined.jsonl                 answers + proxy tokens per question/run
-  grades/<system>.run<k>.<judge>.json        EnterpriseRAG-Bench grader output
-  manifest.json, pilot_questions.jsonl, proxy.jsonl
+  runs/<system>.joined.jsonl   answers + proxy tokens + timings per question/run
+  reviews/<system>.jsonl       one review verdict per question/run (review.py)
+  manifest.json, pilot_questions.jsonl
 
-Correct = BOTH judges say correct (strict). Each judge's own rate and their
-agreement are printed beside it, so the strict rule is visible, not hidden.
+Buckets (benchmarks.md "How to grade each answer"), from one verdict:
+  refused + correct            -> honest_idk     refused + not correct -> wrong_idk
+  answered + unsupported claim -> made_up        (a claim the context does not back)
+  answered + grounded + wrong  -> wrong          (tracked apart: wrong but not invented)
+  answered + grounded + correct, all facts -> correct, else partial
 
-Buckets (benchmarks.md "How to grade each answer"):
-  refused + judged correct   -> honest_idk     refused + judged wrong -> wrong_idk
-  answered + correct, 100%   -> correct        answered + correct, <100% -> partial
-  answered + judged wrong    -> made_up
+Main table = test split, run 1 (150 questions). Run-to-run spread = the 50
+repeat questions over 3 runs. Dev answers are kept but not reported (rule 3).
+
+Also writes handcheck.csv: a seeded 10% of reviewed test answers per system,
+for a person to check against the reviewer (rule 5).
 """
 
 from __future__ import annotations
 
+import csv
 import json
-import re
+import os
+import random
 import statistics
-from collections import defaultdict
+import subprocess
+from collections import Counter, defaultdict
+from datetime import date
 from pathlib import Path
 
-BENCH = Path("evaluation/reports/bench1")
-JUDGES = ("qwen", "gemini")
-SYSTEMS = ("handbook", "onyx", "basic")
-LABELS = {"handbook": "Handbook (core mode)", "onyx": "Onyx v4.8.4", "basic": "Basic search, top 10 chunks"}
-BREADTH = {"completeness", "high_level"}
-SWEEP_JUDGE = "gemini"  # dev-only experiment, one judge
+from dotenv import load_dotenv
 
-# Frozen after reading the dev answers. Handbook refusals come from the
-# pipeline's own flag; the other systems are detected from their text.
-REFUSAL = re.compile(
-    r"\b(i (do not|don't) (know|have)|no (relevant )?information|not (mentioned|found|available|provided|included)"
-    r"|(does|do) not (contain|include|mention|provide|specify)|unable to (find|determine|answer)"
-    r"|(couldn't|could not|cannot|can't) (find|determine|answer|locate))\b",
-    re.I,
-)
+load_dotenv(".env.bench", override=True)
+
+BENCH = Path("evaluation/reports/bench1")
+SYSTEMS = ("handbook", "onyx")
+LABELS = {"handbook": "Handbook (core mode)", "onyx": "Onyx v4.8.4"}
+BREADTH = {"completeness", "high_level"}
+# Published price of the answer model (OpenRouter, nemotron-3-super-120b-a12b), $ per 1M tokens.
+PRICE_IN, PRICE_OUT = 0.09, 0.45
+WINS = ("correct", "honest_idk")
 
 
 def load_jsonl(p: Path) -> list[dict]:
     return [json.loads(line) for line in p.open()] if p.exists() else []
 
 
-def grades_for(system: str, run: int, split: str = "test") -> dict[str, dict[str, dict]]:
-    out = {}
-    for judge in JUDGES:
-        p = BENCH / "grades" / f"{system}.{split}.run{run}.{judge}.json"
-        if p.exists():
-            out[judge] = {q["question_id"]: q for q in json.loads(p.read_text())["questions"]}
-    return out
-
-
-def refused(rec: dict) -> bool:
-    if rec["system"].startswith("handbook"):
-        return bool(rec.get("refused"))
-    text = (rec.get("answer") or "").strip()
-    return not text or (len(text) < 400 and bool(REFUSAL.search(text)))
-
-
-def bucket(rec: dict, verdicts: list[dict]) -> str | None:
-    if not verdicts:
+def bucket(v: dict | None, n_facts: int) -> str | None:
+    if not v:
         return None
-    correct = all(v["answer_correct"] for v in verdicts)
-    if refused(rec):
-        return "honest_idk" if correct else "wrong_idk"
-    if not correct:
+    if v.get("refused"):
+        return "honest_idk" if v.get("correct") else "wrong_idk"
+    if v.get("unsupported_claims"):
         return "made_up"
-    return "correct" if min(v["completeness_pct"] for v in verdicts) >= 100 else "partial"
+    if not v.get("correct"):
+        return "wrong"
+    facts = v.get("facts") or []
+    return "correct" if len(facts) >= n_facts and all(facts) else "partial"
 
 
-def spread(values: list[float], fmt: str = "{:.0f}") -> str:
-    values = [v for v in values if v is not None]
-    if not values:
-        return "n/a"
-    mean = statistics.mean(values)
-    if len(values) == 1:
-        return fmt.format(mean)
-    return f"{fmt.format(mean)} ({fmt.format(min(values))}–{fmt.format(max(values))})"
+def pct(n: int, d: int) -> float | None:
+    return 100 * n / d if d else None
 
 
-def run_metrics(recs: list[dict], grades: dict, gold: dict[str, set]) -> dict:
+def pctl(values: list[float], p: float) -> float | None:
+    values = sorted(values)
+    return values[min(len(values) - 1, int(p * len(values)))] if values else None
+
+
+def metrics(recs: list[dict]) -> dict:
     n = len(recs)
-    buckets = defaultdict(int)
-    per_judge_correct = {j: 0 for j in grades}
-    agree = 0
-    tok_all = sum(r["tokens"]["all_total"] for r in recs)
-    tok_path = sum(r["tokens"]["answer_path_total"] for r in recs)
-    prec, recall, docs_sent = [], [], []
+    b = Counter(r["bucket"] for r in recs if r["bucket"])
+    graded = sum(b.values())
+    wins = sum(b[k] for k in WINS)
+    tok = sum(r["tokens"]["all_total"] for r in recs)
+    inp = sum(r["tokens"]["answer_path_input"] + r["tokens"]["background_input"] for r in recs)
+    out = sum(r["tokens"]["answer_path_output"] + r["tokens"]["background_output"] for r in recs)
+    cost = (inp * PRICE_IN + out * PRICE_OUT) / 1e6
+    recall, prec = [], []
     for r in recs:
-        verdicts = [grades[j][r["question_id"]] for j in grades if r["question_id"] in grades[j]]
-        b = bucket(r, verdicts)
-        if b:
-            buckets[b] += 1
-        for j in grades:
-            if r["question_id"] in grades[j] and grades[j][r["question_id"]]["answer_correct"]:
-                per_judge_correct[j] += 1
-        if len(verdicts) == 2 and verdicts[0]["answer_correct"] == verdicts[1]["answer_correct"]:
-            agree += 1
-        sent = set(r["document_ids"])
-        docs_sent.append(len(sent))
-        g = gold.get(r["question_id"]) or set()
-        if g:
-            recall.append(100 * len(sent & g) / len(g))
+        sent, gold = set(r["document_ids"]), r["gold"]
+        if gold:
+            recall.append(100 * len(sent & gold) / len(gold))
             if sent:
-                prec.append(len(sent & g) / len(sent))
-    correct = buckets["correct"]
-    graded = sum(buckets.values())
+                prec.append(len(sent & gold) / len(sent))
+    facts = [100 * sum(r["verdict"]["facts"]) / len(r["verdict"]["facts"])
+             for r in recs if r["verdict"] and r["verdict"].get("facts")]
     return {
-        "n": n,
-        "graded": graded,
-        "tokens_per_correct": tok_all / correct if correct else None,
-        "tokens_per_correct_path": tok_path / correct if correct else None,
-        "tokens_per_q_all": tok_all / n if n else None,
-        "tokens_per_q_path": tok_path / n if n else None,
-        "input_per_q": sum(r["tokens"]["answer_path_input"] for r in recs) / n if n else None,
-        "output_per_q": sum(r["tokens"]["answer_path_output"] for r in recs) / n if n else None,
+        "n": n, "graded": graded,
+        "tokens_per_win": tok / wins if wins else None,
+        "tokens_per_q": tok / n if n else None,
+        "input_per_q": inp / n if n else None,
+        "output_per_q": out / n if n else None,
+        "cost_per_q": cost / n if n else None,
+        "cost_per_win": cost / wins if wins else None,
         "calls_per_q": sum(r["tokens"]["calls"] + r["tokens"]["background_calls"] for r in recs) / n if n else None,
         "max_call_input": max((r["tokens"]["max_call_input"] for r in recs), default=0),
-        "docs_sent": statistics.mean(docs_sent) if docs_sent else None,
+        "docs_sent": statistics.mean(len(set(r["document_ids"])) for r in recs) if recs else None,
         "context_precision": statistics.mean(prec) if prec else None,
         "recall": statistics.mean(recall) if recall else None,
-        "correct_pct": 100 * correct / graded if graded else None,
-        "made_up_pct": 100 * buckets["made_up"] / graded if graded else None,
-        "wrong_idk_pct": 100 * buckets["wrong_idk"] / graded if graded else None,
-        "honest_idk_pct": 100 * buckets["honest_idk"] / graded if graded else None,
-        "partial_pct": 100 * buckets["partial"] / graded if graded else None,
-        "judge_correct_pct": {j: 100 * c / n for j, c in per_judge_correct.items()},
-        "agreement_pct": 100 * agree / n if len(grades) == 2 and n else None,
+        "win_pct": pct(wins, graded),
+        **{f"{k}_pct": pct(b[k], graded) for k in ("correct", "partial", "honest_idk", "wrong_idk", "made_up", "wrong")},
+        "correct_any_pct": pct(sum(1 for r in recs if r["verdict"] and r["verdict"].get("correct")), graded),
+        "grounded_pct": pct(sum(1 for r in recs if r["verdict"] and not r["verdict"].get("unsupported_claims")), graded),
+        "facts_pct": statistics.mean(facts) if facts else None,
+        "ttfw_median": statistics.median(r["ttfw_s"] for r in recs) if recs else None,
+        "ttfw_p90": pctl([r["ttfw_s"] for r in recs], 0.9),
+        "total_median": statistics.median(r["total_s"] for r in recs) if recs else None,
         "failed_calls": sum(r["tokens"]["failed_calls"] for r in recs),
-        "errors": sum(1 for r in recs if r["raw"].get("exception") or r["raw"].get("error") or r["raw"].get("http")),
+        "errors": sum(1 for r in recs if any(r["raw"].get(k) for k in ("exception", "error", "http", "error_msg"))),
+        "unreviewed": n - graded,
+        "searched_pct": None if recs and recs[0]["system"].startswith("handbook")
+        else pct(sum(1 for r in recs if r["raw"].get("tool_calls")), n),
     }
+
+
+def fmt(v, f="{:.0f}") -> str:
+    return "n/a" if v is None else f.format(v)
 
 
 def main() -> None:
     manifest = json.loads((BENCH / "manifest.json").read_text())
-    split = {q["question_id"]: q["split"] for q in manifest["questions"]}
     questions = {q["question_id"]: q for q in load_jsonl(BENCH / "pilot_questions.jsonl")}
-    gold = {qid: set(q["expected_doc_ids"]) for qid, q in questions.items()}
-    meta = json.loads((BENCH / "settings.json").read_text())
-
-    table, steps_by_system, breadth = {}, {}, {}
+    repeat_ids = {q["question_id"] for q in manifest["questions"] if q["repeat"]}
+    by_system: dict[str, list[dict]] = {}
     for system in SYSTEMS:
-        recs = [r for r in load_jsonl(BENCH / "runs" / f"{system}.joined.jsonl") if split[r["question_id"]] == "test"]
-        runs = sorted({r["run"] for r in recs})
-        per_run = [run_metrics([r for r in recs if r["run"] == k], grades_for(system, k), gold) for k in runs]
-        table[system] = per_run
-        steps = defaultdict(lambda: [0, 0, 0])
-        for r in recs:
-            for name, s in r["tokens"]["steps"].items():
-                steps[name][0] += s["calls"]
-                steps[name][1] += s["input"]
-                steps[name][2] += s["output"]
-        steps_by_system[system] = (steps, len(recs))
-        b = [r for r in recs if r["question_type"] in BREADTH]
-        breadth[system] = (statistics.mean(r["tokens"]["all_total"] for r in b) if b else None,
-                           statistics.mean(r["tokens"]["all_total"] for r in recs if r["question_type"] not in BREADTH) if recs else None)
+        reviews = {(r["question_id"], r["run"]): r for r in load_jsonl(BENCH / "reviews" / f"{system}.jsonl")}
+        recs = []
+        for r in load_jsonl(BENCH / "runs" / f"{system}.joined.jsonl"):
+            if r["split"] != "test":
+                continue
+            q = questions[r["question_id"]]
+            r["verdict"] = (reviews.get((r["question_id"], r["run"])) or {}).get("verdict")
+            r["bucket"] = bucket(r["verdict"], len(q["answer_facts"]))
+            r["gold"] = set(q["expected_doc_ids"])
+            recs.append(r)
+        by_system[system] = recs
 
-    def col(system, key, fmt="{:.0f}"):
-        return spread([m[key] for m in table[system]], fmt)
+    run1 = {s: metrics([r for r in by_system[s] if r["run"] == 1]) for s in SYSTEMS}
+    commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
+    reviewer = next((r.get("reviewer") for s in SYSTEMS for r in load_jsonl(BENCH / "reviews" / f"{s}.jsonl")), "n/a")
+    n_test = sum(1 for q in manifest["questions"] if q["split"] == "test")
+    head = "| | " + " | ".join(LABELS[s] for s in SYSTEMS) + " |\n| --- | " + " | ".join("---" for _ in SYSTEMS) + " |"
 
-    L = []
-    L.append("# Benchmark 1: Token use and context management, Handbook vs Onyx\n")
+    L = ["# Benchmark 1: Token use and context management, Handbook vs Onyx\n"]
     L.append(f"> **Pilot, not the full benchmark.** {len(manifest['questions'])} EnterpriseRAG-Bench questions "
-             f"(25 dev / 25 test, all 10 types), {len(manifest['gold_doc_ids'])} gold + "
-             f"{len(manifest['noise_doc_ids'])} noise documents (the real corpus has ~507,000). Less noise makes search "
-             "easier, so accuracy here is higher than the full benchmark would show. Token use is measured exactly. "
-             "Free-tier judges.\n")
-    L.append(f"Generated {meta['generated']} · Handbook commit `{meta['handbook_commit']}` · Onyx `{meta['onyx_version']}` · "
-             f"answer model `{meta['answer_model']}` on {meta['answer_host']}, reasoning effort `{meta['reasoning_effort']}` · "
-             f"judges {', '.join(meta['judges'])}\n")
+             f"({len(manifest['questions']) - n_test} dev / {n_test} test, all 10 types) over "
+             f"{len(manifest['gold_doc_ids']) + len(manifest['noise_doc_ids'])} documents "
+             f"({len(manifest['gold_doc_ids'])} gold + {len(manifest['noise_doc_ids'])} noise; the real corpus has "
+             "~507,000). Less noise makes search easier, so accuracy here is higher than the full benchmark would "
+             "show. Tokens are measured exactly, from the provider's own usage field, by one proxy both systems call.\n")
+    L.append(f"Generated {date.today()} · Handbook commit `{commit}` · Onyx `v4.8.4` · answer model "
+             f"`{os.getenv('BENCH_MODEL')}` (both systems, through the proxy) · reviewer `{reviewer}` (one call per answer)\n")
 
-    L.append("## Main result (test split, mean over 3 runs, min–max in brackets)\n")
-    L.append("| | " + " | ".join(LABELS[s] for s in SYSTEMS) + " |")
-    L.append("| --- | " + " | ".join("---" for _ in SYSTEMS) + " |")
+    L.append(f"## Main result (test split, {n_test} questions, run 1)\n")
+    L.append(head)
     rows = [
-        ("**LLM tokens per correct answer** (all calls)", "tokens_per_correct", "{:,.0f}"),
-        ("LLM tokens per correct answer (answer path only)", "tokens_per_correct_path", "{:,.0f}"),
-        ("LLM tokens per question (all calls)", "tokens_per_q_all", "{:,.0f}"),
+        ("**LLM tokens per correct answer**¹", "tokens_per_win", "{:,.0f}"),
+        ("LLM tokens per question", "tokens_per_q", "{:,.0f}"),
         ("— of which input", "input_per_q", "{:,.0f}"),
         ("— of which output (incl. reasoning)", "output_per_q", "{:,.0f}"),
+        ("Cost per question, if paid²", "cost_per_q", "${:.5f}"),
+        ("Cost per correct answer, if paid²", "cost_per_win", "${:.5f}"),
         ("LLM calls per question", "calls_per_q", "{:.2f}"),
         ("Largest single request (input tokens)", "max_call_input", "{:,.0f}"),
-        ("Documents sent to the model", "docs_sent", "{:.1f}"),
-        ("Context precision (gold docs sent ÷ docs sent)", "context_precision", "{:.2f}"),
+        ("Documents retrieved (Handbook: sent to the model)", "docs_sent", "{:.1f}"),
+        ("Context precision (right docs ÷ docs retrieved)", "context_precision", "{:.2f}"),
         ("Document recall %", "recall", "{:.0f}"),
-        ("**Correct %** (both judges)", "correct_pct", "{:.0f}"),
+        ("**Win %** (correct + honest \"I don't know\")", "win_pct", "{:.0f}"),
+        ("Correct %", "correct_pct", "{:.0f}"),
         ("Partial %", "partial_pct", "{:.0f}"),
         ("Honest \"I don't know\" %", "honest_idk_pct", "{:.0f}"),
-        ("**Made up %**", "made_up_pct", "{:.0f}"),
+        ("**Made up %** (claim not in the context)", "made_up_pct", "{:.0f}"),
         ("**Wrong \"I don't know\" %**", "wrong_idk_pct", "{:.0f}"),
-        ("Judges agree on correct/incorrect %", "agreement_pct", "{:.0f}"),
-        ("Failed LLM calls / errored questions", None, None),
+        ("Wrong but grounded %", "wrong_pct", "{:.0f}"),
+        ("Main point correct % (ignoring groundedness)", "correct_any_pct", "{:.0f}"),
+        ("Grounded % (no unsupported claim)", "grounded_pct", "{:.0f}"),
+        ("Required facts present %", "facts_pct", "{:.0f}"),
+        ("Time to first word, median s³", "ttfw_median", "{:.1f}"),
+        ("Time to first word, p90 s³", "ttfw_p90", "{:.1f}"),
+        ("Total time, median s³", "total_median", "{:.1f}"),
+        ("Searched the documents %⁴", "searched_pct", "{:.0f}"),
     ]
-    for label, key, fmt in rows:
-        if key is None:
-            L.append(f"| {label} | " + " | ".join(
-                f"{sum(m['failed_calls'] for m in table[s])} / {sum(m['errors'] for m in table[s])}" for s in SYSTEMS) + " |")
-        else:
-            L.append(f"| {label} | " + " | ".join(col(s, key, fmt) for s in SYSTEMS) + " |")
-    for j in JUDGES:
-        L.append(f"| Correct % by {j} alone | " + " | ".join(
-            spread([m["judge_correct_pct"].get(j) for m in table[s]]) for s in SYSTEMS) + " |")
+    for label, key, f in rows:
+        L.append(f"| {label} | " + " | ".join(fmt(run1[s][key], f) for s in SYSTEMS) + " |")
+    L.append("| Failed LLM calls / errored questions / unreviewed | " + " | ".join(
+        f"{run1[s]['failed_calls']} / {run1[s]['errors']} / {run1[s]['unreviewed']}" for s in SYSTEMS) + " |")
+    L.append("")
+    L.append("¹ All LLM tokens (answer path + background) ÷ wins. ² At the answer model's published price, "
+             f"${PRICE_IN} / ${PRICE_OUT} per 1M input / output tokens; the run itself used a free tier. "
+             "³ Free-tier rate-limit waits removed. Handbook streams only an already-decided answer, so its first "
+             "word is the end of the pipeline; Onyx's is the first token of its answer call. "
+             "⁴ Onyx decides per question whether to search; Handbook always retrieves.\n")
+
+    L.append(f"## Run-to-run variation ({len(repeat_ids)} repeat test questions, 3 runs)\n")
+    L.append(head)
+    rep = {}
+    for s in SYSTEMS:
+        recs = [r for r in by_system[s] if r["question_id"] in repeat_ids]
+        rep[s] = (recs, [metrics([r for r in recs if r["run"] == k]) for k in (1, 2, 3)])
+
+    def spread(s, key, f):
+        vals = [m[key] for m in rep[s][1] if m["n"] and m[key] is not None]
+        if not vals:
+            return "n/a"
+        return f"{f.format(statistics.mean(vals))} ({f.format(min(vals))}–{f.format(max(vals))})"
+
+    for label, key, f in [("Win %, mean (min–max)", "win_pct", "{:.0f}"), ("Made up %", "made_up_pct", "{:.0f}"),
+                          ("Wrong \"I don't know\" %", "wrong_idk_pct", "{:.0f}"),
+                          ("Tokens per question", "tokens_per_q", "{:,.0f}")]:
+        L.append(f"| {label} | " + " | ".join(spread(s, key, f) for s in SYSTEMS) + " |")
+    same = {}
+    for s in SYSTEMS:
+        per_q = defaultdict(list)
+        for r in rep[s][0]:
+            per_q[r["question_id"]].append(r["bucket"])
+        full = [b for b in per_q.values() if len(b) == 3 and None not in b]
+        same[s] = pct(sum(1 for b in full if len(set(b)) == 1), len(full))
+    L.append("| Same bucket in all 3 runs % | " + " | ".join(fmt(same[s]) for s in SYSTEMS) + " |")
     L.append("")
 
-    L.append("## Where the tokens go (test split, per question)\n")
-    for system in SYSTEMS:
-        steps, n = steps_by_system[system]
-        if not n:
+    L.append("## By question type (test split, run 1)\n")
+    L.append("| Type | " + " | ".join(f"Win % {LABELS[s]}" for s in SYSTEMS) + " | " +
+             " | ".join(f"Tokens/q {LABELS[s]}" for s in SYSTEMS) + " |")
+    L.append("| --- |" + " --- |" * (2 * len(SYSTEMS)))
+    for t in sorted({r["question_type"] for s in SYSTEMS for r in by_system[s]}):
+        ms = [metrics([r for r in by_system[s] if r["run"] == 1 and r["question_type"] == t]) for s in SYSTEMS]
+        L.append(f"| {t}{' (breadth)' if t in BREADTH else ''} | " + " | ".join(fmt(m["win_pct"]) for m in ms) +
+                 " | " + " | ".join(fmt(m["tokens_per_q"], "{:,.0f}") for m in ms) + " |")
+    L.append("")
+
+    L.append("## Where the tokens go (test split, run 1, per question)\n")
+    for s in SYSTEMS:
+        recs = [r for r in by_system[s] if r["run"] == 1]
+        if not recs:
             continue
-        L.append(f"**{LABELS[system]}**\n")
+        steps = defaultdict(lambda: [0, 0, 0])
+        for r in recs:
+            for name, st in r["tokens"]["steps"].items():
+                steps[name][0] += st["calls"]
+                steps[name][1] += st["input"]
+                steps[name][2] += st["output"]
+        n = len(recs)
+        L.append(f"**{LABELS[s]}**\n")
         L.append("| Step | Calls / question | Input / question | Output / question |")
         L.append("| --- | --- | --- | --- |")
         for name, (c, i, o) in sorted(steps.items(), key=lambda kv: -(kv[1][1] + kv[1][2])):
             L.append(f"| {name} | {c / n:.2f} | {i / n:,.0f} | {o / n:,.0f} |")
         L.append("")
 
-    L.append("## \"Find everything\" questions, tracked apart (test split)\n")
-    L.append("| System | Tokens/question, completeness + high-level types | Tokens/question, all other types |")
-    L.append("| --- | --- | --- |")
-    for s in SYSTEMS:
-        a, b = breadth[s]
-        L.append(f"| {LABELS[s]} | {a:,.0f} | {b:,.0f} |" if a and b else f"| {LABELS[s]} | n/a | n/a |")
-    L.append("")
-
-    sweep = [("handbook-topk3", 3), ("handbook", 5), ("handbook-topk10", 10), ("handbook-topk20", 20)]
-    sweep_rows = []
-    for name, k in sweep:
-        recs = [r for r in load_jsonl(BENCH / "runs" / f"{name}.joined.jsonl") if split[r["question_id"]] == "dev" and r["run"] == 1]
-        if recs:
-            g = {j: v for j, v in grades_for(name, 1, "dev").items() if j == SWEEP_JUDGE}
-            sweep_rows.append((k, run_metrics(recs, g, gold)))
-    if sweep_rows:
-        L.append(f"## Context size vs accuracy (Handbook, dev split, 1 run, {SWEEP_JUDGE} judge)\n")
-        L.append(f"| top_k (chunks) | Tokens / question | Input / question | Correct % ({SWEEP_JUDGE}) | Recall % | Context precision |")
-        L.append("| --- | --- | --- | --- | --- | --- |")
-        for k, m in sweep_rows:
-            L.append(f"| {k} | {m['tokens_per_q_all']:,.0f} | {m['input_per_q']:,.0f} | "
-                     f"{m['judge_correct_pct'].get(SWEEP_JUDGE, 0):.0f} | {m['recall']:.0f} | {m['context_precision']:.2f} |")
-        L.append("")
-
+    L.append("## How this was run, and where it departs from benchmarks.md\n")
+    L.append("- Same answer model, same documents, same questions for both systems (rules 1, 2). Nothing was tuned "
+             "on the test split (rule 3).\n"
+             f"- **Rule 4, partly:** 3 runs on {len(repeat_ids)} test questions (5 per type), 1 run on the rest.\n"
+             "- **Rule 5, partly:** one reviewer call per answer (correctness, facts and groundedness together), not "
+             "two judges from different companies. `handcheck.csv` holds a 10% sample for a person to check.\n"
+             "- Groundedness is checked against the exact input the answer model received, captured by the proxy.\n"
+             "- Scores use our own review prompt, so they are not comparable with the public EnterpriseRAG-Bench "
+             "leaderboard. The Handbook-vs-Onyx comparison is fair: both get the identical review.\n"
+             "- Handbook ran with `RAG_MAX_ANSWER_TOKENS=2000` (production: 700) so a reasoning model is not cut off.\n"
+             "- Every raw answer, proxy call and review is kept in this folder (rule 6).\n")
     L.append((BENCH / "notes.md").read_text() if (BENCH / "notes.md").exists() else "")
     (BENCH / "REPORT.md").write_text("\n".join(L))
     print("\n".join(L))
+
+    rng = random.Random(20261005)
+    with (BENCH / "handcheck.csv").open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["system", "question_id", "question", "gold_answer", "answer", "reviewer_bucket",
+                    "reviewer_reason", "unsupported_claims", "person_agrees (y/n)", "person_note"])
+        for s in SYSTEMS:
+            pool = [r for r in by_system[s] if r["run"] == 1 and r["verdict"]]
+            for r in rng.sample(pool, max(1, len(pool) // 10)) if pool else []:
+                q = questions[r["question_id"]]
+                w.writerow([s, r["question_id"], q["question"], q["gold_answer"], r["answer"], r["bucket"],
+                            r["verdict"].get("reason"), "; ".join(r["verdict"].get("unsupported_claims") or []), "", ""])
 
 
 if __name__ == "__main__":
