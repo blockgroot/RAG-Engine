@@ -35,6 +35,8 @@ RUNS = BENCH / "runs"
 STAGES = [
     ("You are an assistant for this workspace", "handbook:generate"),
     ("Classify the USER MESSAGE", "handbook:tone"),
+    ("You analyze a user question for a company policy", "handbook:split compound question"),
+    ("You help a document-search system recover", "handbook:search recovery"),
     ("You are a helpful and precise assistant that generates answers", "basic:generate"),
     ("You are an expert assistant who is truthful", "onyx:answer (tool choice, then final answer)"),
     ("You are an assistant that reformulates the last", "onyx:query rewrite"),
