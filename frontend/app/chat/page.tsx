@@ -343,7 +343,11 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       setMessages(
         turns.flatMap((t) => [
           { role: "user" as const, text: t.question },
-          { role: "assistant" as const, text: t.answer },
+          {
+            role: "assistant" as const,
+            text: t.answer,
+            cited: t.cited && t.cited.length ? t.cited : undefined,
+          },
         ]),
       );
       setAttachments(files);

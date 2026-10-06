@@ -706,7 +706,9 @@ class RagPipeline:
 
         if conversation_id is not None and self._memory is not None:
             result = replace(result, resolved_question=resolved)
-            self._memory.append_turn(conversation_id, question, result.answer)
+            self._memory.append_turn(
+                conversation_id, question, result.answer, result.cited or None
+            )
             self._remember_retrieval(conversation_id, org_id, result)
             cid = conversation_id
             schedule_summary_fold(cid, lambda: self._update_running_summary(cid))

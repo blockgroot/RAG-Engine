@@ -396,6 +396,12 @@ CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations (org_id, user
 
 ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
 
+
+-- The source list drawn under the answer. NULL on a turn saved before this
+-- column: a reopened chat shows sources only when they were kept. The link
+-- was already checked to be http(s) when the answer was written.
+ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS cited JSONB;
+
 -- Per-org, per-provider OAuth credentials (Phase 10) — replaces hand-set
 -- NOTION_TOKEN_<NAME> env vars with an admin-driven OAuth connect flow.
 -- Tokens are encrypted at rest (see app/security/crypto.py); this table never

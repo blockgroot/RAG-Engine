@@ -13,7 +13,8 @@ be reachable without one.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from ..db.connection import get_connection
@@ -41,12 +42,49 @@ class ConversationSummaryRow:
     last_activity_at: datetime
 
 
+def cited_for_history(raw) -> list[dict]:
+    """The stored source list, with anything that is not a document link dropped.
+
+    A reopened chat renders this. A url that is not http(s) is cleared: the
+    column is ours, but a bad row must not become a link.
+    """
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return []
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        n = item.get("n")
+        doc = item.get("document_id")
+        if isinstance(n, bool) or not isinstance(n, int) or not isinstance(doc, str) or not doc:
+            continue
+        url = item.get("url")
+        if not isinstance(url, str) or not url.startswith(("https://", "http://")):
+            url = None
+        title = item.get("title")
+        provider = item.get("provider")
+        out.append({
+            "n": n,
+            "document_id": doc,
+            "title": title if isinstance(title, str) and title else None,
+            "provider": provider if isinstance(provider, str) and provider else None,
+            "url": url,
+        })
+    return out
+
+
 @dataclass(frozen=True)
 class ConversationTurnRow:
     turn_index: int
     question: str
     answer: str
     created_at: datetime
+    cited: list = field(default_factory=list)
 
 
 def list_conversations(
@@ -107,7 +145,7 @@ def get_conversation_turns(
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT t.turn_index, t.question, t.answer, t.created_at
+            SELECT t.turn_index, t.question, t.answer, t.created_at, t.cited
             FROM conversation_turns t
             JOIN conversations c ON c.id = t.conversation_id
             WHERE t.conversation_id = %s::uuid
@@ -118,7 +156,7 @@ def get_conversation_turns(
             """,
             (conversation_id, org_id, user_id, workspace_id),
         ).fetchall()
-    return [ConversationTurnRow(int(r[0]), r[1], r[2], r[3]) for r in rows]
+    return [ConversationTurnRow(int(r[0]), r[1], r[2], r[3], cited_for_history(r[4])) for r in rows]
 
 
 def delete_last_turn_if(

@@ -65,8 +65,8 @@ and names the tool, never the document.
 - **Citations.** One document is named once under the answer, with a link that opens it in its
 own tool. Two or more documents keep a small number on each sentence and the same list
 underneath. The link is the address saved when the page was indexed. A number the model invents
-is dropped. Slack shows the answer without the numbers. Opening an old chat does not bring the
-list back, because it is sent with the finished answer and is not stored on the chat.
+is dropped. Slack shows the answer without the numbers. Opening an old chat shows the same
+list, because it is stored on the turn.
 
 **Limitations:**
 

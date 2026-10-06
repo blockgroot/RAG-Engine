@@ -615,6 +615,7 @@ def get_conversation_route(
                 "question": t.question,
                 "answer": t.answer,
                 "created_at": t.created_at.isoformat(),
+                "cited": t.cited,
             }
             for t in turns
         ],

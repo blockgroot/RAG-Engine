@@ -132,10 +132,10 @@ function parseBlocks(text: string): Block[] {
 }
 
 export function AnswerText({ text, cited }: { text: string; cited?: CitedSource[] }) {
-  // Without a citation map (still streaming, a reopened chat, a report) every
-  // marker is stripped. One document is named once, under the answer, so the
-  // marks in the sentences are stripped too. Two or more keep a superscript
-  // so a sentence can point at the right line.
+  // Without a citation map (still streaming, or a turn saved before sources
+  // were kept) every marker is stripped. One document is named once under the
+  // answer, so the marks in the sentences are stripped too. Two or more keep
+  // a superscript so a sentence can point at the right line.
   const sources: Sources = new Map((cited || []).map((s) => [s.n, s]));
   const inline: Sources = sources.size > 1 ? sources : new Map();
   const cleaned = inline.size ? text : text.replace(CITATION_MARKERS, "");

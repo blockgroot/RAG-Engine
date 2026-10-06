@@ -101,3 +101,19 @@ def test_the_prompt_asks_for_markers():
     prompt = next(p for p in llm.prompts if "<<<UNTRUSTED_DOCUMENT_CONTENT>>>" in p)
     assert "add the number of the CONTEXT block" in prompt
     assert "Do not print [n]" not in prompt
+
+
+def test_a_saved_turn_keeps_the_citation_list():
+    """Reopening a chat reads this list back. Losing it is why the sources vanished."""
+    from tests.fakes import InMemoryConversationStore
+
+    memory = InMemoryConversationStore()
+    cid = memory.create_conversation("org-1")
+    _, pipeline = _pipeline(
+        "MODE: A\n\nMeals are covered up to 40 dollars a day [1].", memory=memory
+    )
+    pipeline.answer("are meals reimbursable per day?", "org-1", conversation_id=cid)
+    turn = memory.get_turns(cid)[-1]
+    assert turn.answer.endswith("[1].")
+    assert turn.cited[0]["document_id"] == "doc-1"
+    assert turn.cited[0]["n"] == 1

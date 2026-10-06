@@ -185,10 +185,12 @@ class InMemoryConversationStore(ConversationStore):
         self._last[cid] = []
         return cid
 
-    def append_turn(self, conversation_id: str, question: str, answer: str) -> int:
+    def append_turn(
+        self, conversation_id: str, question: str, answer: str, cited: list | None = None
+    ) -> int:
         turns = self._turns[conversation_id]
         index = (turns[-1].turn_index + 1) if turns else 0
-        turns.append(Turn(turn_index=index, question=question, answer=answer))
+        turns.append(Turn(turn_index=index, question=question, answer=answer, cited=list(cited or [])))
         return index
 
     def get_turns(self, conversation_id: str) -> list[Turn]:

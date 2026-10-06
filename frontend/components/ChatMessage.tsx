@@ -12,6 +12,8 @@ export interface Message {
   text: string;
   streaming?: boolean;
   done?: ChatDonePayload;
+  /** Sources for an answer loaded from history. A live answer carries them on `done`. */
+  cited?: ChatDonePayload["cited"];
 }
 
 /**
@@ -69,7 +71,7 @@ export function ChatMessageView({
         </div>
       ) : (
         <>
-          <AnswerText text={message.text} cited={message.streaming ? undefined : message.done?.cited} />
+          <AnswerText text={message.text} cited={message.streaming ? undefined : message.done?.cited ?? message.cited} />
           {points && points.length > 0 && chart && (
             <div className="chat-chart">
               <Chart

@@ -78,7 +78,7 @@ The source adapter fetches a changed page, thread, or issue. Text is preprocesse
 6. The confidence gate requires a best cosine of at least 0.35.
 7. Generation uses one of three modes: explicitly supported, related but not explicit, or no supporting evidence.
 8. A web-search tool is offered only if internal evidence remains insufficient.
-9. The model may mark a sentence with `[n]`. A number is kept only when a retrieved document sat at that block. The link is `documents.source_uri`, saved at sync. One document is named under the answer; two or more keep a superscript and the same list. The list is sent with the finished answer and is not stored on the chat. The response also carries `source` of `policy`, `web`, or `none`.
+9. The model may mark a sentence with `[n]`. A number is kept only when a retrieved document sat at that block. The link is `documents.source_uri`, saved at sync. One document is named under the answer; two or more keep a superscript and the same list. The list is stored on the turn and shown again when that chat is opened. The response also carries `source` of `policy`, `web`, or `none`.
 
 ### 4.3 GitHub
 

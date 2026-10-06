@@ -75,8 +75,8 @@ GitHub; employees get answers from *their* data.
   thread, Linear issue), http(s) only, never a URL the model wrote.
 - The web chat shows **one source as a single line under the answer**. Two or more
   sources keep a gray superscript plus that list (`frontend/components/AnswerText.tsx`).
-  The `cited` list is sent on the finished-answer event and is **not stored** on the
-  turn, so a reopened chat has no source list. Slack strips the markers.
+  The `cited` list is stored on the turn and sent again when that chat is opened.
+  Slack strips the markers.
 - Audit and moderation judge the answer with the markers removed.
 - A link in an answer survives only if it appeared verbatim in the text the model
   was shown (`security/links.py`).
