@@ -78,6 +78,10 @@ class Handbook:
         from .load_handbook import bench_org
 
         settings = replace(RagSettings.from_env(), fallback_response=WorkspaceAgentSettings.from_env().fallback_response)
+        # The settings actually in effect, on every row: a variant's --set was once
+        # silently reverted, and only the prompt size showed it.
+        self.effective = {"top_k": settings.top_k, "max_context_chars": settings.max_context_chars,
+                          "candidate_pool": os.environ.get("RETRIEVAL_CANDIDATE_POOL")}
         self.pipeline = build_rag_pipeline(
             settings=settings, prompt_profile=WORKSPACE_PROMPT_PROFILE, memory=None, web_search=None
         )
@@ -97,7 +101,8 @@ class Handbook:
                 "top_score": r.top_score,
                 "recovery_used": r.recovery_used,
                 "n_chunks": len(r.sources),
-                "context_chars": sum(len(h.content) for h in r.sources),
+                "context_chars": sum(len(h.content) for h in r.sources),  # retrieved, before the prompt cap
+                "settings": self.effective,
             },
         }
 

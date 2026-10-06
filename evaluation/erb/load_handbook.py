@@ -21,13 +21,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv(".env.bench", override=True)
-
-from app.db import get_connection  # noqa: E402
-from app.embeddings import build_embedding_provider  # noqa: E402
-from app.ingestion.chunking import chunk_text  # noqa: E402
-from app.ingestion.preprocessing import preprocess  # noqa: E402
-from app.vectorstore import build_vector_store  # noqa: E402
+from app.db import get_connection
+from app.embeddings import build_embedding_provider
+from app.ingestion.chunking import chunk_text
+from app.ingestion.preprocessing import preprocess
+from app.vectorstore import build_vector_store
 
 ORG_NAME = "bench1-erb-pilot"
 MANIFEST = Path("evaluation/reports/bench1/manifest.json")
@@ -65,6 +63,9 @@ def main() -> None:
     ap.add_argument("--data", type=Path, required=True)
     ap.add_argument("--limit", type=int, default=None)
     args = ap.parse_args()
+    # Only here, not on import: run_bench imports this module after applying a
+    # variant's --set values, and an import-time reload silently reverted them.
+    load_dotenv(".env.bench", override=True)
     assert "localhost" in os.environ["DATABASE_URL"], "benchmark must never write to the remote database"
 
     from app.db.migrate import apply_schema

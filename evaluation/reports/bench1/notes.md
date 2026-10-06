@@ -40,3 +40,23 @@ The v2 prompt (quoted evidence, wrong-source separated from invented) was tried 
 | Tokens per correct answer | 6,261 | 97,199 | 8,033 |
 
 **Verdict:** all three systems are well grounded; invention is rare (2–5% on the shared questions; 7% Handbook and 10% basic over all 150). The gap between the systems is accuracy, not invention: Onyx answers more questions right (about 19 points above Handbook on the shared 60), and it uses about 15 times the tokens per correct answer.
+
+## Follow-up: does Handbook get better if it reads more? (dev split, 50 questions, one run)
+
+Benchmark 1 suggested the Handbook-Onyx accuracy gap came from how much text the model is given (5 short passages, 6,000 characters) rather than search. To test this, Handbook was run on the 50 dev (tuning) questions with more passages: `--set RAG_TOP_K=10 RETRIEVAL_CANDIDATE_POOL=20 RAG_MAX_CONTEXT_CHARS=20000` and `RAG_TOP_K=20 ... RAG_MAX_CONTEXT_CHARS=40000`. Same model, embeddings, reranker and proxy; the answer cache was cleared before each run. All three settings were graded by Claude with the same instructions as the test split (`reviews_claude_dev/`).
+
+**First attempt was invalid and was deleted.** `load_handbook.py` reloaded `.env.bench` with override when it was imported, after the runner had applied `--set`. That put `RAG_MAX_CONTEXT_CHARS` back to 6,000 and the pool back to 16, so both variants sent the model the same ~7 passages. `context_chars` in the log counts what was retrieved, not what fit the prompt, which hid it. Fixed (the reload now happens only in the loader's own `main()`), and every Handbook row now records the settings in effect (`raw.settings`).
+
+| | Default (5) | 10 passages | 20 passages |
+| --- | --- | --- | --- |
+| Tokens per question (median) | 3,407 | 5,133 | 7,419 |
+| Tokens per correct answer | 8,561 | 12,039 | 17,613 |
+| Documents sent to the model | 2.9 | 5.4 | 12.1 |
+| Document recall % | 86 | 89 | 92 |
+| Win % | 44 | 50 | 46 |
+| Made up % | 8 | 4 | 8 |
+| Main point correct % | 76 | 80 | 78 |
+| Required facts present % | 69 | 74 | 71 |
+| Time to first word, median s | 13.2 | 15.4 | 18.6 |
+
+**Result: reading more did not clearly help.** Win % moved 44 → 50 → 46. On 50 questions that is 3 questions either way, inside the noise (±14 points). From default to 20 passages, 4 questions became wins and 3 stopped being wins. "List everything" (completeness) questions stayed at 0 of 5 in every setting, and project questions at 0–1 of 5, though those were the types the hypothesis was about. Tokens per correct answer doubled. So passage count alone is not what separates Handbook from Onyx. More likely candidates are Onyx's question rewriting and repeated searches, or the model's handling of long multi-part answers. Ten passages is the only setting with a hint of gain (+3 questions, fewer made-up claims) and would need the 150 test questions to confirm.
