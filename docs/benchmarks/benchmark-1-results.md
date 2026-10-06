@@ -170,7 +170,7 @@ The two products are built differently. **Onyx is an AI agent**: it asks the AI 
 **What this means:**
 
 - **Onyx** spends AI tokens to be flexible and thorough. It reads widely, uses the AI to judge relevance, and searches again when unsure. That buys accuracy on questions that need several documents, at about 13× the tokens and 4× the time.
-- **Handbook** does the same steps in code, so it is cheap, fast and predictable. But it gives the AI only 5 short passages, which is too little for "list everything" and big-picture questions.
+- **Handbook** does the same steps in code, so it is cheap, fast and predictable. It gives the AI 5 short passages. A follow-up test (below) showed that giving it 10 or 20 does not close the gap, so Onyx's edge comes from how it works the question, not from reading more.
 
 
 
@@ -179,15 +179,37 @@ The two products are built differently. **Onyx is an AI agent**: it asks the AI 
 1. **Handbook wins clearly on cost and speed.** It uses about 16× fewer tokens per correct answer, is about 4× faster, and stays steady from question to question.
 2. **Onyx wins on accuracy:** 72% vs 53% wins on the same 60 questions. The gap is smaller (80% vs 73%) for getting the key answer right; Handbook more often leaves out details.
 3. **Neither product invents much.** Made-up claims appear in 2–5% of answers on the shared questions. Groundedness is not what separates them.
-4. **The accuracy gap is not about finding documents.** On the shared questions, Handbook found the right documents slightly more often than Onyx (88% vs 81%). The difference is how much each gives the AI to read:
-   - **Handbook** passes 5 short passages (6,000 characters at most).
-   - **Onyx** reviews about 32 passages, and can read further into the useful ones.
+4. **The accuracy gap is not about finding documents, or about how much Handbook reads.** On the shared questions, Handbook found the right documents slightly more often than Onyx (88% vs 81%). Handbook passes 5 short passages and Onyx reviews about 32, but giving Handbook 10 or 20 passages did not clearly raise its accuracy (see the follow-up below). The likelier causes are Onyx's question rewriting and repeated searches, and how the model builds long answers with many parts.
 5. **Handbook beats the basic pipeline:** 53% vs 42% wins on the shared questions (47% vs 41% on all 150), and fewer made-up claims (7% vs 10%). Its extra steps (reranking, the confidence check, question splitting) cost about 10% more tokens and pay for themselves.
 6. **Onyx has reliability problems under load:**
    - **Its search crashed when the embedding service rate-limited it,** because of a bug in Onyx's error handling. That left 9 test answers written with no documents.
    - **Some of its AI calls never finished thinking.** In 3 answers, the AI kept reasoning until it hit the model's maximum output (about 131,000 tokens) and never gave a result. Onyx puts no limit on that call, so it can't stop it; Handbook limits its answer call.
    - **Its slowest answers took up to 28 minutes.** That happened when the agent searched again and again, and was made worse by our slow free model. A customer on a fast paid model would see much shorter times, but the extra searching would still cost tokens.
 7. **AI reviewers need checking.** Our first reviewer called 5× too many answers "made up". A second reviewer was what caught it.
+
+
+
+## Follow-up: does Handbook do better if it reads more?
+
+Since both products find the right documents about equally often, we tested whether Handbook would match Onyx if it simply gave the AI more to read. We ran Handbook on the 50 separate tuning questions with 10 and 20 passages instead of 5. Everything else stayed the same: the AI model, search and settings. Claude graded all three settings the same way.
+
+|                                   | Usual (5) | 10 passages | 20 passages |
+| --------------------------------- | --------- | ----------- | ----------- |
+| AI tokens per question (typical)  | **3,407** | 5,133       | 7,419       |
+| AI tokens per correct answer      | **8,561** | 12,039      | 17,613      |
+| Found the right documents         | 86%       | 89%         | **92%**     |
+| Wins                              | 44%       | **50%**     | 46%         |
+| Got the key answer right          | 76%       | **80%**     | 78%         |
+| Made-up claim                     | 8%        | **4%**      | 8%          |
+| Time to first word (typical)      | **13 s**  | 15 s        | 19 s        |
+
+- **Reading more did not clearly help.** Wins moved by about 3 questions out of 50, which is within normal variation. Going from 5 to 20 passages, 4 questions became correct and 3 stopped being correct.
+- **The questions it was meant to fix stayed unsolved.** "List everything" questions stayed at 0 of 5 in every setting, and project questions at 0–1 of 5.
+- **The cost doubled.** Tokens per correct answer went from about 8,600 to 17,600, and answers started about 6 seconds later.
+- **It did not make Handbook invent more.** Made-up claims stayed at 4–8%.
+- **10 passages showed a small hint of improvement,** but too small to trust on 50 questions.
+
+**What it means:** Handbook's usual 5 passages are not what holds it back. To close the gap with Onyx, the next things to look at are how the question is searched (rewriting it, searching more than once) and how the model writes answers that need many parts.
 
 
 
@@ -205,10 +227,10 @@ The two products are built differently. **Onyx is an AI agent**: it asks the AI 
 ## Recommended next steps
 
 1. **Grade the remaining 90 Onyx answers** so the hardest question types can be compared too.
-2. **Give Handbook more to read.** Test 10–20 passages instead of 5 on the separate tuning questions, to see how much of Onyx's accuracy Handbook can match while staying far cheaper.
+2. **Test smarter searching, not more reading.** Reading more did not help (see the follow-up). Try rewriting the question into a few search queries and searching again when the first pass is thin, on the tuning questions, to see how much of Onyx's accuracy Handbook can match while staying far cheaper. Optionally confirm the small 10-passage gain on the 150 test questions.
 3. **Repeat the run with a fast, non-thinking model,** to get speed numbers closer to what customers would see.
 4. **Run the full benchmark** (all 500 questions and the full document set) once we've acted on the pilot findings.
 
 ---
 
-The raw data, the detailed report (`REPORT.md`), the final reviews (`reviews_claude/`) and the run notes (`notes.md`) are in `evaluation/reports/bench1/`.
+The raw data, the detailed report (`REPORT.md`), the final reviews (`reviews_claude/`, and `reviews_claude_dev/` for the follow-up) and the run notes (`notes.md`) are in `evaluation/reports/bench1/`.

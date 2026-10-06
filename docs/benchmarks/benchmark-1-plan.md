@@ -178,6 +178,7 @@ Files to write:
 ## 9. Context-management experiments (Handbook only, dev split, 1 run)
 
 1. **Top_k sweep:** `RAG_TOP_K` = 3, 5, 10, 20, with `RETRIEVAL_CANDIDATE_POOL` ≥ top_k. Plot answer-path tokens against correctness, and report the smallest top_k after which correctness stops rising.
+   **Done (5, 10, 20; 3 skipped):** correctness did not clearly rise past 5. Win % 44 / 50 / 46, while tokens per correct answer went 8.6k / 12.0k / 17.6k. Details in `benchmark-1-results.md` (follow-up section) and `evaluation/reports/bench1/notes.md`.
 2. **Breadth questions:** tokens for `completeness` and `high_level` questions, shown separately.
 3. **Our extras:** answer-path tokens vs all tokens, to show what tone, recovery and decomposition cost.
 
