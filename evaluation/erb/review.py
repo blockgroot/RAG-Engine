@@ -17,7 +17,16 @@ public EnterpriseRAG-Bench leaderboard, which uses its own grader.
 Resumable: a reviewed (question, run) is never re-sent. A daily quota stops the
 whole run (exit 3) instead of recording failures; re-run later to resume.
 
-Run: .venv/bin/python -m evaluation.erb.review [--system handbook]
+v2 (``--version v2``, written to ``reviews_v2/``) exists because v1 failed its
+rule-5 check: a second reviewer confirmed only 5 of v1's 23 "made up" verdicts.
+v1 called a claim unsupported without showing where it looked, and counted a
+real fact taken from the wrong document as invented. v2 makes the reviewer list
+every specific claim with a verbatim supporting quote, sort it into supported /
+wrong_source / not_in_context, and the script checks each quote really is in
+the context. Only not_in_context counts as made up; wrong_source makes an
+answer wrong (or partial), never made up.
+
+Run: .venv/bin/python -m evaluation.erb.review [--version v2] [--system handbook] [--sample handcheck]
 """
 
 from __future__ import annotations
@@ -68,6 +77,68 @@ Return ONLY a JSON object with these keys:
 - "unsupported_claims": a list of the specific factual claims in the answer that the CONTEXT does not support (names, numbers, dates, decisions, statuses). Ignore general phrasing, and ignore statements that something is missing. Empty list if every claim is supported.
 - "reason": one short sentence explaining "correct".
 """
+
+
+PROMPT_V2 = """You are reviewing one answer from a company-knowledge assistant. Be careful and literal.
+
+QUESTION:
+{question}
+
+GOLD ANSWER (written by the benchmark authors):
+{gold}
+
+REQUIRED FACTS (numbered):
+{facts}
+
+THE ASSISTANT'S ANSWER:
+<<<ANSWER
+{answer}
+ANSWER>>>
+
+EVERYTHING THE ASSISTANT'S MODEL RECEIVED WHEN IT WROTE THAT ANSWER (instructions, retrieved documents, tool results). Only the documents and tool results count as evidence; the instructions do not:
+<<<CONTEXT
+{context}
+CONTEXT>>>
+
+Do this in order.
+1. List every SPECIFIC factual claim the answer makes: a name, number, date, duration, threshold, identifier, field, status, decision or causal statement. Skip general phrasing, advice, and statements that something is missing or unknown. At most 25 claims; if there are more, keep the most specific.
+2. For each claim, SEARCH THE CONTEXT before deciding, then give:
+   - "evidence": a short passage copied EXACTLY, character for character, from the CONTEXT that states it (or "" if none exists).
+   - "status", one of:
+     - "supported": the context states it (same meaning; a direct restatement, unit conversion or simple arithmetic on stated values counts).
+     - "wrong_source": the fact IS in the context, but about a different thing (another customer, incident, document, version or time) than the answer attaches it to. Quote where it appears.
+     - "not_in_context": nothing in the context states it. Only use this after searching; the evidence must then be "".
+3. Judge the answer against the GOLD ANSWER.
+
+Return ONLY a JSON object with these keys:
+- "claims": the list from steps 1-2, each {{"claim": "...", "evidence": "...", "status": "..."}}.
+- "refused": true if the answer says it cannot find, does not know, or cannot answer the question (fully, or its main part). false otherwise.
+- "correct": true if the answer's main point agrees with the GOLD ANSWER. If the gold answer says the information is not available, true only when the answer clearly says so.
+- "facts": a list of true/false, one per REQUIRED FACT in order: is that fact stated in the answer (any wording)?
+- "reason": one short sentence explaining "correct".
+"""
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def _check_v2(verdict: dict, context: str) -> dict:
+    """Derive v1's keys from the claim list, and verify every quoted passage.
+
+    A quote that is not in the context (after whitespace and case folding) is
+    marked; the reviewer cannot invent evidence unnoticed."""
+    ctx = _norm(context)
+    claims = [c for c in verdict.get("claims") or [] if isinstance(c, dict)]
+    for c in claims:
+        ev = _norm(c.get("evidence") or "")
+        c["evidence_found"] = bool(ev) and (ev in ctx or ev[:80] in ctx)
+    verdict["unsupported_claims"] = [c.get("claim") for c in claims if c.get("status") == "not_in_context"]
+    verdict["wrong_source_claims"] = [c.get("claim") for c in claims if c.get("status") == "wrong_source"]
+    verdict["quotes_checked"] = sum(1 for c in claims if c.get("status") in ("supported", "wrong_source"))
+    verdict["quotes_not_found"] = sum(1 for c in claims if c.get("status") in ("supported", "wrong_source")
+                                      and not c["evidence_found"])
+    return verdict
 
 
 def _bodies(wanted: set[str]) -> dict[str, dict]:
@@ -130,13 +201,21 @@ def _call(http: httpx.Client, prompt: str) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--system", default=None, help="only this system (default: every joined file)")
+    ap.add_argument("--version", choices=("v1", "v2"), default="v1")
+    ap.add_argument("--sample", choices=("handcheck",), default=None,
+                    help="only the run-1 answers listed in handcheck.csv (to validate a prompt cheaply)")
     ap.add_argument("--key-env", default="GEMINI_API_KEY",
                     help="env var holding the Gemini key; lets two systems be reviewed in parallel on separate quotas")
     args = ap.parse_args()
     questions = {q["question_id"]: q for q in map(json.loads, (BENCH / "pilot_questions.jsonl").open())}
     http = httpx.Client(timeout=300, headers={"Authorization": f"Bearer {os.environ[args.key_env]}"})
-    out_dir = BENCH / "reviews"
+    out_dir = BENCH / ("reviews" if args.version == "v1" else "reviews_v2")
     out_dir.mkdir(exist_ok=True)
+    template = PROMPT if args.version == "v1" else PROMPT_V2
+    sample = None
+    if args.sample:
+        import csv
+        sample = {(r["system"], r["question_id"]) for r in csv.DictReader((BENCH / "handcheck.csv").open())}
 
     for joined in sorted((BENCH / "runs").glob("*.joined.jsonl")):
         system = joined.name.removesuffix(".joined.jsonl")
@@ -148,18 +227,23 @@ def main() -> None:
         if out.exists():
             done = {(r["question_id"], r["run"]) for r in map(json.loads, out.open()) if r.get("verdict")}
         todo = [r for r in recs if (r["question_id"], r["run"]) not in done]
+        if sample is not None:
+            todo = [r for r in todo if r["run"] == 1 and (system, r["question_id"]) in sample]
         bodies = _bodies({r["answer_call_id"] for r in todo if r.get("answer_call_id")})
         for i, rec in enumerate(todo, 1):
             q = questions[rec["question_id"]]
             body = bodies.get(rec.get("answer_call_id") or "")
-            prompt = PROMPT.format(
+            context = _render(body and body["messages"])
+            prompt = template.format(
                 question=q["question"], gold=q["gold_answer"],
                 facts="\n".join(f"{n}. {f}" for n, f in enumerate(q["answer_facts"], 1)),
                 answer=rec["answer"] or "(empty answer)",
-                context=_render(body and body["messages"]),
+                context=context,
             )
             res = _call(http, prompt)
-            row = {"question_id": rec["question_id"], "run": rec["run"], "reviewer": MODEL,
+            if args.version == "v2" and res.get("verdict"):
+                res["verdict"] = _check_v2(res["verdict"], context)
+            row = {"question_id": rec["question_id"], "run": rec["run"], "reviewer": MODEL, "prompt": args.version,
                    "context_found": body is not None, **res}
             with out.open("a") as f:
                 f.write(json.dumps(row) + "\n")

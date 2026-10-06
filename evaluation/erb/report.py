@@ -35,6 +35,8 @@ from dotenv import load_dotenv
 load_dotenv(".env.bench", override=True)
 
 BENCH = Path("evaluation/reports/bench1")
+# v2 reviews replace v1 once they exist (v1 failed its rule-5 check; see review.py).
+REVIEWS = BENCH / ("reviews_v2" if (BENCH / "reviews_v2").exists() else "reviews")
 SYSTEMS = ("handbook", "onyx", "basic")
 LABELS = {"handbook": "Handbook (core mode)", "onyx": "Onyx v4.8.4", "basic": "Basic search, top 10 (reference)"}
 BREADTH = {"completeness", "high_level"}
@@ -57,6 +59,8 @@ def bucket(v: dict | None, n_facts: int) -> str | None:
         return "made_up"
     if not v.get("correct"):
         return "wrong"
+    if v.get("wrong_source_claims"):  # v2: right main point, a detail taken from the wrong document
+        return "partial"
     facts = v.get("facts") or []
     return "correct" if len(facts) >= n_facts and all(facts) else "partial"
 
@@ -143,7 +147,7 @@ def main() -> None:
     repeat_ids = {q["question_id"] for q in manifest["questions"] if q["repeat"]}
     by_system: dict[str, list[dict]] = {}
     for system in SYSTEMS:
-        reviews = {(r["question_id"], r["run"]): r for r in load_jsonl(BENCH / "reviews" / f"{system}.jsonl")}
+        reviews = {(r["question_id"], r["run"]): r for r in load_jsonl(REVIEWS / f"{system}.jsonl")}
         recs = []
         for r in load_jsonl(BENCH / "runs" / f"{system}.joined.jsonl"):
             if r["split"] != "test":
@@ -157,7 +161,7 @@ def main() -> None:
 
     run1 = {s: metrics([r for r in by_system[s] if r["run"] == 1]) for s in SYSTEMS}
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
-    reviewer = next((r.get("reviewer") for s in SYSTEMS for r in load_jsonl(BENCH / "reviews" / f"{s}.jsonl")), "n/a")
+    reviewer = next((r.get("reviewer") for s in SYSTEMS for r in load_jsonl(REVIEWS / f"{s}.jsonl")), "n/a")
     n_test = sum(1 for q in manifest["questions"] if q["split"] == "test")
     head = "| | " + " | ".join(LABELS[s] for s in SYSTEMS) + " |\n| --- | " + " | ".join("---" for _ in SYSTEMS) + " |"
 
@@ -303,6 +307,10 @@ def main() -> None:
     (BENCH / "REPORT.md").write_text("\n".join(L))
     print("\n".join(L))
 
+    # Written once: people (and the second reviewer) add columns to it, which a
+    # regenerated report must never overwrite.
+    if (BENCH / "handcheck.csv").exists():
+        return
     rng = random.Random(20261005)
     with (BENCH / "handcheck.csv").open("w", newline="") as f:
         w = csv.writer(f)
