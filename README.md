@@ -4,8 +4,8 @@ A multi-tenant AI assistant that answers employees' questions from their company
 tools — **Notion, Google Drive, Slack, Linear and GitHub** — grounded strictly in that
 company's content, never another tenant's and never the model's outside knowledge.
 
-**Current status, every feature, blockers and testing: [PRODUCT_STATUS.md](PRODUCT_STATUS.md).**
-A plain walk through each feature: [handbook-current-features.md](handbook-current-features.md).
+**Current status, every feature, blockers and testing: [PRODUCT_STATUS.md](docs/handbook/PRODUCT_STATUS.md).**
+A plain walk through each feature: [current-features.md](docs/handbook/current-features.md).
 
 ## Features
 

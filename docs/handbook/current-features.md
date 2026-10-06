@@ -1,6 +1,6 @@
 # Handbook: Current Features and Status
 
-*As of 1 October 2026 · code at* `main` *(*`526a899`*)*
+*As of 6 October 2026 · code at* `main`
 
 Handbook is an AI assistant that answers employees' questions from their company's own tools:
 Notion, Google Drive, Slack, Linear and GitHub. Every answer names its source. When the answer
@@ -13,6 +13,7 @@ tool already lets them see.
 | #   | Feature                                           | Status                                                                                                                    | Main code                                                  |
 | --- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
 | 1   | Ask: grounded answers                             | Live                                                                                                                      | `app/rag/`, `app/api/chat.py`                              |
+| 1b  | Citations on an answer                            | Live                                                                                                                      | `app/rag/cite.py`, `frontend/components/AnswerText.tsx`    |
 | 2   | Smart routing between tools                       | Live                                                                                                                      | `app/agent/routing.py`                                     |
 | 3   | Connectors (Notion, Drive, Slack, Linear, GitHub) | Live                                                                                                                      | `app/sources/`, `app/githublive/`                          |
 | 4   | Personal Spaces                                   | Live                                                                                                                      | `app/workspaces/`                                          |
@@ -61,6 +62,11 @@ Ask also handles:
 user typed are sent.
 - **Access refusals.** If the document exists but isn't shared with the asker, the answer says so
 and names the tool, never the document.
+- **Citations.** One document is named once under the answer, with a link that opens it in its
+own tool. Two or more documents keep a small number on each sentence and the same list
+underneath. The link is the address saved when the page was indexed. A number the model invents
+is dropped. Slack shows the answer without the numbers. Opening an old chat does not bring the
+list back, because it is sent with the finished answer and is not stored on the chat.
 
 **Limitations:**
 

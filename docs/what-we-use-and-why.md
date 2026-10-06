@@ -13,7 +13,7 @@
 
 The product is a **multi-tenant retrieval-augmented generation (RAG) platform** for company question-and-answer.
 
-Each tenant connects **Notion, Google Drive, Slack, Linear and GitHub**. Employees ask in the web app or in Slack and receive answers **grounded in that tenant’s own material**, limited to what they may open in the source tool. GitHub is answered from live API reads and is not embedded. Charts count recorded activity in SQL. Current product status is `PRODUCT_STATUS.md`.
+Each tenant connects **Notion, Google Drive, Slack, Linear and GitHub**. Employees ask in the web app or in Slack and receive answers **grounded in that tenant’s own material**, limited to what they may open in the source tool. GitHub is answered from live API reads and is not embedded. Charts count recorded activity in SQL. Current product status is `docs/handbook/PRODUCT_STATUS.md`.
 
 The intended deployment is a **self-hosted Docker image** that an enterprise can run inside its own infrastructure. Default components are therefore local, inexpensive, and keep policy text off third-party embedding APIs unless remote inference is explicitly configured.
 

@@ -2,11 +2,9 @@
 
 **The project rulebook is [CLAUDE.md](./CLAUDE.md). Read it first.**
 
-It is the single source of truth for architecture, conventions, schema, and
-gotchas. This file exists only so agents looking for `AGENTS.md` find their
-way there — it is deliberately not a second copy. An earlier duplicate of the
-rulebook lived here and had already drifted out of sync (it was missing an
-entire feature's section), which is exactly the failure this avoids.
+It holds the constraints: isolation, grounding, citations, and the gotchas
+that have to stay rules. What is live, and a walk through each feature, is
+[docs/handbook/PRODUCT_STATUS.md](docs/handbook/PRODUCT_STATUS.md). This file is not a second copy.
 
 ## Non-negotiables (the full reasoning is in CLAUDE.md)
 
@@ -30,5 +28,5 @@ entire feature's section), which is exactly the failure this avoids.
   `tests/test_untrusted_policy.py` fails if a prompt skips them.
 - **Bound every external walk and mark truncation.** A partial result that
   looks complete is the failure that matters.
-- **Update CLAUDE.md at the end of each phase** — one dense line, not a
-  narrative.
+- **Update `docs/handbook/PRODUCT_STATUS.md` when a feature ships.** Add a line
+  to CLAUDE.md only when a new constraint appears.
