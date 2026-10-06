@@ -23,3 +23,20 @@ A 10% sample (45 answers, 15 per system, in `handcheck.csv`) was reviewed a seco
 2. Separate "invented" from "taken from the wrong document" (which is "wrong").
 
 Then all 900 answers need to be reviewed again.
+
+## Final groundedness review (Claude, run 1)
+
+The v2 prompt (quoted evidence, wrong-source separated from invented) was tried on Gemini and still agreed with Claude on only 1 of 6 made-up calls, so run 1 was regraded by Claude instead, with the same rules: every specific claim searched for in the exact context the answer model saw; only a claim found nowhere in it counts as made up; a real fact attached to the wrong thing makes the answer partial or wrong, never made up. Run 1 quality in `REPORT.md` comes from these reviews only (`reviews_claude/`); runs 2-3 stay on Gemini v1.
+
+- **Coverage:** every Handbook and basic test answer (150 each); 60 of Onyx's 150. The session's usage limit cut Onyx's batches short. The 60 are only five types (basic 22, semantic 15, conflicting_info 8, intra_document_reasoning 8, constrained 7) and none of the hardest ones. So Onyx's quality figures in the main table are **not** comparable with the other two; the report's "Same questions" table compares all three on those 60. With 60 answers, a win % has a margin of about ±12 points (95%).
+- **Gemini over-called made up by about 5 times.** On the 360 answers both graded: Gemini flagged 143, Claude 28, and 25 of Claude's 28 were also Gemini's. The two agree on "main point correct" for 313 of 360 (87%), so the win figures were broadly right; only the made-up figures were not.
+
+| Same 60 questions | Handbook | Onyx | Basic |
+| --- | --- | --- | --- |
+| Win % | 53 | 72 | 42 |
+| Made up % | 2 | 5 | 3 |
+| Grounded % | 98 | 95 | 97 |
+| Main point correct % | 73 | 80 | 70 |
+| Tokens per correct answer | 6,261 | 97,199 | 8,033 |
+
+**Verdict:** all three systems are well grounded; invention is rare (2–5% on the shared questions; 7% Handbook and 10% basic over all 150). The gap between the systems is accuracy, not invention: Onyx answers more questions right (about 19 points above Handbook on the shared 60), and it uses about 15 times the tokens per correct answer.

@@ -6,11 +6,11 @@ Both products got the same 150 test questions, the same 1,374 documents and the 
 
 ## In short
 
-- **Handbook is far cheaper.** On a typical question it used about **13× fewer AI tokens** (3.2k vs 43k). Per correct answer it used about **18× fewer**.
+- **Handbook is far cheaper.** On a typical question it used about **13× fewer AI tokens** (3.2k vs 43k). Per correct answer it used about **16× fewer**.
 - **Handbook is about 4× faster** to the first word (about 10 s vs 42 s), and its timing is much more predictable.
-- **Onyx gives more correct answers**: 59% wins vs 46% for Handbook. Onyx is strongest on questions that need several documents.
-- **Both find the right documents about equally often** (80% vs 82%). Onyx's lead comes from reading more of what it finds, not from finding more.
-- **The "made up" numbers aren't reliable yet.** A second reviewer confirmed only 5 of 23 "made up" flags, so we are re-checking them.
+- **Onyx gives more correct answers**: 72% wins vs 53% for Handbook, on the same 60 questions.
+- **Both stick to the documents.** Made-up claims are rare in every system: 2% of Handbook's answers, 5% of Onyx's, on the same questions. The gap between them is accuracy, not invention.
+- **Handbook beats the basic pipeline** (53% vs 42% wins, fewer made-up claims), so its extra steps pay off.
 
 
 
@@ -26,31 +26,39 @@ Both products got the same 150 test questions, the same 1,374 documents and the 
   - Both products used the same AI model (NVIDIA Nemotron 3 Super) and the same search embeddings (Jina).
   - Every AI call went through one logging proxy, so tokens were counted the same way for every system.
 - **Grading:**
-  - One AI reviewer (Google Gemini) checked every answer against the correct answer and against the documents the system actually saw.
-  - A second reviewer (Anthropic Claude) re-checked a 10% sample.
+  - An AI reviewer (Anthropic Claude) checked each answer against the correct answer and against the exact documents the system saw. It looked for every name, number and date in the answer.
+  - It graded all 150 Handbook and basic answers, and 60 of Onyx's (a usage limit cut Onyx short). The 60 Onyx questions cover only 5 of the 10 types, and none of the hardest ones. So **quality is compared on those same 60 questions for all three systems.**
+  - A first reviewer (Google Gemini) proved too strict about "made up" (see Groundedness), so its grades are not used for the final quality figures.
 
 
 
 ## Results at a glance
 
+**Cost and speed (all 150 questions)**
 
 |                                          | Handbook    | Onyx    | Basic pipeline |
 | ---------------------------------------- | ----------- | ------- | -------------- |
 | AI tokens per question (typical)         | **3,231**   | 43,075  | 2,920          |
-| AI tokens per correct answer             | **7,988**   | 146,856 | 7,174          |
-| Cost per correct answer (at paid prices) | **$0.0015** | $0.0233 | $0.0015        |
 | AI calls per question (typical)          | **2**       | 8       | 1              |
 | Time to first word (typical)             | **9.7 s**   | 41.5 s  | 7.2 s          |
 | Found the right documents                | 80%         | 82%     | 80%            |
-| Wins (correct + honest "I don't know")   | 46%         | **59%** | 45%            |
-| Got the key answer right (details aside) | 59%         | **80%** | 63%            |
-| Wrongly said "I don't know"              | **1%**      | 5%      | 3%             |
 
+**Quality (the same 60 questions, graded for all three)**
+
+|                                          | Handbook    | Onyx    | Basic pipeline |
+| ---------------------------------------- | ----------- | ------- | -------------- |
+| Wins (correct + honest "I don't know")   | 53%         | **72%** | 42%            |
+| Got the key answer right (details aside) | 73%         | **80%** | 70%            |
+| Made-up claim (not in the documents)     | **2%**      | 5%      | 3%             |
+| Wrongly said "I don't know"              | 7%          | **3%**  | 10%            |
+| AI tokens per correct answer             | **6,261**   | 97,199  | 8,033          |
+| Cost per correct answer (at paid prices) | **$0.0011** | $0.0175 | $0.0016        |
 
 - "Wins" counts answers that are fully correct and stick to the documents, plus correct "I don't know" replies when the answer really isn't there.
-- "Got the key answer right" is looser: the core of the answer matches the correct answer, even if some details are missing or one claim isn't backed by the documents.
+- "Got the key answer right" is looser: the core of the answer matches the correct answer, even if some details are missing.
 - "Typical" means the median, the middle question.
 - "Cost at paid prices" uses the model's published price: $0.09 per million input tokens and $0.45 per million output tokens. The run itself was free.
+- With 60 questions, a win rate can be off by about ±12 points. Onyx's lead over Handbook (19 points) is larger than that; treat the exact figures as approximate.
 
 
 
@@ -58,12 +66,12 @@ Both products got the same 150 test questions, the same 1,374 documents and the 
 
 AI models are paid by the token. Handbook used about **3,200 tokens per question**; Onyx used about **43,000**.
 
-**AI tokens per correct answer**
+**AI tokens per correct answer** (same 60 questions)
 
 ```
-Handbook        ██                                          7,988
-Onyx            ████████████████████████████████████████  146,856
-Basic pipeline  ██                                          7,174
+Handbook        ███                                         6,261
+Onyx            ████████████████████████████████████████   97,199
+Basic pipeline  ███                                         8,033
 ```
 
 - **Most of Onyx's tokens are spent reading, not writing.** Onyx reads about 39,000 tokens per question; Handbook reads about 2,400. That comes from Onyx's design (see "Why Onyx makes so many AI calls" below), so it would be similar on any AI model.
@@ -74,49 +82,37 @@ Basic pipeline  ██                                          7,174
 
 ## Answer quality
 
-Onyx gives more correct answers overall: **59% wins vs 46%**. If we ignore missing or extra details and only ask "did it get the key answer right?", Onyx does so **80%** of the time, against 59% for Handbook. Handbook is better at not refusing by mistake: it wrongly said "I don't know" only 1% of the time, against 5% for Onyx.
+On the 60 questions graded for all three systems, Onyx gives more correct answers: **72% wins vs 53%** for Handbook and 42% for the basic pipeline. If we only ask "did it get the key answer right?", the gap narrows: **80% vs 73%**. Much of Handbook's shortfall is answers that get the main point but miss some required details. Onyx also wrongly said "I don't know" less often (3% vs 7%).
 
-**By question type (wins)**
+**By question type (wins, same 60 questions)**
 
+| What the question asks                                           | Questions | Handbook | Onyx      | Basic pipeline |
+| ---------------------------------------------------------------- | --------- | -------- | --------- | -------------- |
+| One simple fact                                                  | 22        | 15       | **17**    | 9              |
+| A fact, asked in different words than the documents use          | 15        | 6        | **12**    | 4              |
+| Documents disagree, so it must pick the current or correct one   | 8         | 4        | **6**     | 4              |
+| Several facts from one long document (a meeting, a negotiation)  | 8         | 4        | **5**     | 4              |
+| About one specific event or date ("in the Feb 12 incident…")     | 7         | 3        | 3         | **4**          |
 
-| What the question asks                                             | Handbook | Onyx    | Basic pipeline |
-| ------------------------------------------------------------------ | -------- | ------- | -------------- |
-| One simple fact                                                    | 64%      | 64%     | 50%            |
-| A fact, asked in different words than the documents use            | 47%      | **67%** | 47%            |
-| Several facts from one long document (a meeting, a negotiation)    | 53%      | **67%** | 53%            |
-| About one specific event or date ("in the Feb 12 incident…")       | **47%**  | 33%     | 60%            |
-| Documents disagree, so it must pick the current or correct one     | 40%      | **67%** | 20%            |
-| Needs every piece: a full procedure or a complete list             | 7%       | **33%** | 13%            |
-| Big-picture company questions (mission, strategy)                  | 12%      | **50%** | 12%            |
-| A customer or project situation: what happened, what we did, how to check | 0%       | **33%** | 7%             |
-| Answer is not in the documents (right reply: "I don't know")       | **100%** | 93%     | 100%           |
-| Small details from chats and notes (who owns a file, who said what) | 67%      | 73%     | 73%            |
+The groups are small, so one question moves a figure a lot. Onyx's clearest lead is on questions **worded differently from the documents**, where its question rewriting helps.
 
+**Not covered for Onyx:** the other five types, including the hardest ("list everything", big-picture, customer or project situations, small details, and questions with no answer). Across all 150 questions, Handbook won 47% and the basic pipeline 41%. On questions with no answer in the documents, both correctly said "I don't know" 87% of the time. In the first reviewer's grades, Onyx's lead was largest on the "list everything", big-picture and project types, but that has not been confirmed by the final review.
 
-Each type has about 15 questions, so one question moves a type's score by about 7 points. Read these as patterns, not exact figures.
-
-Onyx's lead is largest where the answer needs **several documents**: complete procedures and lists, big-picture questions, and customer or project situations. On simple facts the two products tie.
-
-**Consistency:** we asked 50 of the questions three times. For most of them, each system gave the same kind of result in all three runs: Handbook 68% of questions, Onyx 60%, basic pipeline 70%. Across the three runs, Handbook's win rate stayed between 42% and 48%; Onyx's ranged from 50% to 66%.
+**Consistency:** we asked 50 of the questions three times. Token use was very steady for Handbook (3,700–3,790 per question across runs) and much less so for Onyx (85,000–101,000). Graded by the first reviewer, Handbook's win rate stayed between 42% and 48% across runs; Onyx's ranged from 50% to 66%.
 
 ## Groundedness (did the answer stick to the documents?)
 
-We checked whether answers made claims the documents didn't support. Here the grading itself turned out to be the problem.
+The reviewer listed every specific claim in each answer (names, numbers, dates, owners, decisions) and searched the exact documents the system was shown. A claim counted as "made up" only if it appeared nowhere in them. A real fact attached to the wrong thing counted as a wrong answer, not an invented one.
 
+|                                       | Handbook | Onyx | Basic pipeline |
+| ------------------------------------- | -------- | ---- | -------------- |
+| Made up, same 60 questions            | **2%**   | 5%   | 3%             |
+| Made up, all graded answers           | 7% (150) | 5% (60) | 10% (150)   |
+| Fully grounded, same 60 questions     | **98%**  | 95%  | 97%            |
 
-|                                             | Handbook | Onyx     | Basic pipeline |
-| ------------------------------------------- | -------- | -------- | ------- |
-| "Made up", first reviewer (all 150 answers) | 47%      | 34%      | 33%     |
-| "Made up", first reviewer, 15-answer sample | 7 of 15  | 11 of 15 | 5 of 15 |
-| "Made up", second reviewer, same 15 answers | 2 of 15  | 4 of 15  | 0 of 15 |
+**All three systems are well grounded.** When an answer is wrong, it is almost always because the system missed or mixed up a fact, not because it invented one.
 
-
-> **Don't quote the "made up" rates above yet.** The second reviewer confirmed only 5 of the first reviewer's 23 "made up" flags. Most of the flagged claims were actually in the documents. In several cases, the answer had used a real fact from the wrong document, which makes the answer wrong, not invented. The two reviewers agreed on the overall verdict for only 51% of the sample. They broadly agreed on which answers were correct, so the accuracy results above stand.
-
-**Next step:** tighten the reviewer's instructions, then re-review all answers. The new instructions:
-
-- The reviewer must quote the passage behind any "unsupported" verdict.
-- "Took a fact from the wrong document" counts as wrong, not made up.
+**Why the earlier figures were different:** the first reviewer (Gemini) flagged 47% of Handbook's answers as made up. On the 360 answers both reviewers graded, Gemini flagged 143 and Claude 28. Most of Gemini's flags were claims that were in the documents word for word. The two reviewers agreed on whether the key answer was right 87% of the time, so the first reviewer's accuracy picture was roughly right. Only its "made up" figures were wrong.
 
 
 
@@ -180,18 +176,18 @@ The two products are built differently. **Onyx is an AI agent**: it asks the AI 
 
 ## Observations
 
-1. **Handbook wins clearly on cost and speed.** It uses about 18× fewer tokens per correct answer, is about 4× faster, and stays steady from question to question.
-2. **Onyx wins on accuracy:** by 13 points overall, and by much more on questions that need several documents.
-3. **The accuracy gap is not about finding documents.** Both products find the right ones about 80% of the time. The difference is how much each gives the AI to read:
-  - **Handbook** passes 5 short passages (6,000 characters at most).
-  - **Onyx** reviews about 32 passages, and can read further into the useful ones.
-4. **Handbook scored about the same as the basic pipeline.** On this question set, its extra steps (reranking, the confidence check, question splitting) didn't add accuracy over plain search plus one AI call. They cost little (about 10% more tokens) but didn't improve results here.
-5. **Handbook almost never refuses wrongly.** Its wrong "I don't know" rate was 1%, and it correctly said "I don't know" on every question that truly had no answer.
+1. **Handbook wins clearly on cost and speed.** It uses about 16× fewer tokens per correct answer, is about 4× faster, and stays steady from question to question.
+2. **Onyx wins on accuracy:** 72% vs 53% wins on the same 60 questions. The gap is smaller (80% vs 73%) for getting the key answer right; Handbook more often leaves out details.
+3. **Neither product invents much.** Made-up claims appear in 2–5% of answers on the shared questions. Groundedness is not what separates them.
+4. **The accuracy gap is not about finding documents.** On the shared questions, Handbook found the right documents slightly more often than Onyx (88% vs 81%). The difference is how much each gives the AI to read:
+   - **Handbook** passes 5 short passages (6,000 characters at most).
+   - **Onyx** reviews about 32 passages, and can read further into the useful ones.
+5. **Handbook beats the basic pipeline:** 53% vs 42% wins on the shared questions (47% vs 41% on all 150), and fewer made-up claims (7% vs 10%). Its extra steps (reranking, the confidence check, question splitting) cost about 10% more tokens and pay for themselves.
 6. **Onyx has reliability problems under load:**
-  - **Its search crashed when the embedding service rate-limited it,** because of a bug in Onyx's error handling. That left 9 test answers written with no documents.
-  - **Some of its AI calls never finished thinking.** In 3 answers, the AI kept reasoning until it hit the model's maximum output (about 131,000 tokens) and never gave a result. Onyx puts no limit on that call, so it can't stop it; Handbook limits its answer call.
-  - **Its slowest answers took up to 28 minutes.** That happened when the agent searched again and again, and was made worse by our slow free model. A customer on a fast paid model would see much shorter times, but the extra searching would still cost tokens.
-7. **Our AI reviewer is too strict about "made up".** It flagged real facts as invented. We're fixing its instructions before we report groundedness.
+   - **Its search crashed when the embedding service rate-limited it,** because of a bug in Onyx's error handling. That left 9 test answers written with no documents.
+   - **Some of its AI calls never finished thinking.** In 3 answers, the AI kept reasoning until it hit the model's maximum output (about 131,000 tokens) and never gave a result. Onyx puts no limit on that call, so it can't stop it; Handbook limits its answer call.
+   - **Its slowest answers took up to 28 minutes.** That happened when the agent searched again and again, and was made worse by our slow free model. A customer on a fast paid model would see much shorter times, but the extra searching would still cost tokens.
+7. **AI reviewers need checking.** Our first reviewer called 5× too many answers "made up". A second reviewer was what caught it.
 
 
 
@@ -199,7 +195,7 @@ The two products are built differently. **Onyx is an AI agent**: it asks the AI 
 
 - **It's a pilot:** 1,374 documents, not the full 500,000. Search is easier with less noise, so every accuracy figure here is higher than it would be at full scale.
 - **We used one AI model, on free services.** The model "thinks" before answering, which inflates response times, and Onyx's more than Handbook's. The token counts for reading are not affected.
-- **One AI reviewer graded everything.** A second reviewer checked 10%; no person has checked yet.
+- **Onyx's quality was graded on 60 of 150 answers,** covering only 5 question types. Quality figures for the hardest types are Handbook and basic only. No person has checked the grades yet.
 - **Some features were off in both products.**
   - **Handbook:** connected tools, the knowledge graph, personal memory and web search were off, because the benchmark is plain files.
   - **Onyx:** web search and deep-research mode were off.
@@ -208,11 +204,11 @@ The two products are built differently. **Onyx is an AI agent**: it asks the AI 
 
 ## Recommended next steps
 
-1. **Fix the reviewer and re-review every answer,** so that groundedness ("made up") can be reported reliably.
+1. **Grade the remaining 90 Onyx answers** so the hardest question types can be compared too.
 2. **Give Handbook more to read.** Test 10–20 passages instead of 5 on the separate tuning questions, to see how much of Onyx's accuracy Handbook can match while staying far cheaper.
 3. **Repeat the run with a fast, non-thinking model,** to get speed numbers closer to what customers would see.
 4. **Run the full benchmark** (all 500 questions and the full document set) once we've acted on the pilot findings.
 
 ---
 
-The raw data, the detailed report (`REPORT.md`) and the 10% double-check (`handcheck.csv`) are in `evaluation/reports/bench1/`.
+The raw data, the detailed report (`REPORT.md`), the final reviews (`reviews_claude/`) and the run notes (`notes.md`) are in `evaluation/reports/bench1/`.

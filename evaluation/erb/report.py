@@ -35,8 +35,23 @@ from dotenv import load_dotenv
 load_dotenv(".env.bench", override=True)
 
 BENCH = Path("evaluation/reports/bench1")
-# v2 reviews replace v1 once they exist (v1 failed its rule-5 check; see review.py).
-REVIEWS = BENCH / ("reviews_v2" if (BENCH / "reviews_v2").exists() else "reviews")
+# Final verdicts: Claude reviewed every test answer of run 1 (reviews_claude/),
+# after Gemini v1 failed its rule-5 check and v2 still picked the wrong answers
+# as made up (see review.py and notes.md). Gemini v1 remains only where Claude
+# did not review: runs 2-3 of the repeat questions, used for run-to-run spread.
+REVIEW_DIRS = [BENCH / "reviews", BENCH / "reviews_claude"]  # later wins
+
+
+def load_reviews(system: str) -> dict:
+    """Run 1 is graded by Claude only: an answer Claude did not grade stays
+    unreviewed rather than falling back to Gemini, so the quality figures never
+    mix the two reviewers. Gemini v1 grades only runs 2-3."""
+    out = {}
+    for d in REVIEW_DIRS:
+        for r in load_jsonl(d / f"{system}.jsonl"):
+            if r.get("verdict") and (d.name == "reviews_claude" or r["run"] != 1):
+                out[(r["question_id"], r["run"])] = r
+    return out
 SYSTEMS = ("handbook", "onyx", "basic")
 LABELS = {"handbook": "Handbook (core mode)", "onyx": "Onyx v4.8.4", "basic": "Basic search, top 10 (reference)"}
 BREADTH = {"completeness", "high_level"}
@@ -99,7 +114,8 @@ def metrics(recs: list[dict]) -> dict:
              for r in recs if r["verdict"] and r["verdict"].get("facts")]
     return {
         "n": n, "graded": graded,
-        "tokens_per_win": tok / wins if wins else None,
+        # Per question ÷ win rate, so it stays right when only a sample was graded.
+        "tokens_per_win": (tok / n) / (wins / graded) if wins else None,
         "tokens_per_q": tok / n if n else None,
         "tokens_median": statistics.median(r["tokens"]["all_total"] for r in recs) if recs else None,
         "tokens_p90": pctl([r["tokens"]["all_total"] for r in recs], 0.9),
@@ -109,7 +125,7 @@ def metrics(recs: list[dict]) -> dict:
         "input_per_q": inp / n if n else None,
         "output_per_q": out / n if n else None,
         "cost_per_q": cost / n if n else None,
-        "cost_per_win": cost / wins if wins else None,
+        "cost_per_win": (cost / n) / (wins / graded) if wins else None,
         "calls_per_q": sum(r["tokens"]["calls"] + r["tokens"]["background_calls"] for r in recs) / n if n else None,
         "max_call_input": max((r["tokens"]["max_call_input"] for r in recs), default=0),
         "docs_sent": statistics.mean(len(set(r["document_ids"])) for r in recs) if recs else None,
@@ -147,7 +163,7 @@ def main() -> None:
     repeat_ids = {q["question_id"] for q in manifest["questions"] if q["repeat"]}
     by_system: dict[str, list[dict]] = {}
     for system in SYSTEMS:
-        reviews = {(r["question_id"], r["run"]): r for r in load_jsonl(REVIEWS / f"{system}.jsonl")}
+        reviews = load_reviews(system)
         recs = []
         for r in load_jsonl(BENCH / "runs" / f"{system}.joined.jsonl"):
             if r["split"] != "test":
@@ -161,7 +177,7 @@ def main() -> None:
 
     run1 = {s: metrics([r for r in by_system[s] if r["run"] == 1]) for s in SYSTEMS}
     commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
-    reviewer = next((r.get("reviewer") for s in SYSTEMS for r in load_jsonl(REVIEWS / f"{s}.jsonl")), "n/a")
+    reviewer = "Claude (Anthropic) for every test answer of run 1; Gemini 3.1 Flash-Lite for runs 2-3"
     n_test = sum(1 for q in manifest["questions"] if q["split"] == "test")
     head = "| | " + " | ".join(LABELS[s] for s in SYSTEMS) + " |\n| --- | " + " | ".join("---" for _ in SYSTEMS) + " |"
 
@@ -173,7 +189,7 @@ def main() -> None:
              "~507,000). Less noise makes search easier, so accuracy here is higher than the full benchmark would "
              "show. Tokens are measured exactly, from the provider's own usage field, by one proxy both systems call.\n")
     L.append(f"Generated {date.today()} · Handbook commit `{commit}` · Onyx `v4.8.4` · answer model "
-             f"`{os.getenv('BENCH_MODEL')}` (both systems, through the proxy) · reviewer `{reviewer}` (one call per answer)\n")
+             f"`{os.getenv('BENCH_MODEL')}` (both systems, through the proxy) · reviewers: {reviewer}\n")
 
     L.append(f"## Main result (test split, {n_test} questions, run 1)\n")
     L.append(head)
@@ -232,6 +248,24 @@ def main() -> None:
              "Onyx: the documents its answer cited (a lower bound: an answer can use a section without citing it). "
              "⁴ Onyx decides per question whether to search; Handbook and the basic reference always retrieve. The basic reference is plain top-10 vector search plus EnterpriseRAG-Bench's own answer prompt in one call, on Handbook's index: not a product, it shows what each product's extra steps buy.\n")
 
+    # Onyx was graded on a sample whose question types differ from the full set,
+    # so quality is only comparable on the questions every system was graded on.
+    shared = set.intersection(*({r["question_id"] for r in by_system[s] if r["run"] == 1 and r["bucket"]}
+                                for s in SYSTEMS))
+    if len(shared) < n_test:
+        same = {s: metrics([r for r in by_system[s] if r["run"] == 1 and r["question_id"] in shared]) for s in SYSTEMS}
+        types = Counter(questions[q]["question_type"] for q in shared)
+        L.append(f"## Same questions, every system graded ({len(shared)} test questions, run 1)\n")
+        L.append("The main table grades every Handbook and basic answer but only a sample of Onyx's, and that sample "
+                 "has none of the hardest types. Compare quality here. Types: "
+                 + ", ".join(f"{t} {n}" for t, n in types.most_common()) + ".\n")
+        L.append(head)
+        for label, key, f in [rows[0], rows[1], rows[2]] + [x for x in rows if x[1] in (
+                "win_pct", "correct_pct", "partial_pct", "made_up_pct", "wrong_idk_pct", "wrong_pct",
+                "correct_any_pct", "grounded_pct", "facts_pct", "ttfw_median")]:
+            L.append(f"| {label} | " + " | ".join(fmt(same[s][key], f) for s in SYSTEMS) + " |")
+        L.append("")
+
     L.append(f"## Run-to-run variation ({len(repeat_ids)} repeat test questions, 3 runs)\n")
     L.append(head)
     rep = {}
@@ -258,6 +292,8 @@ def main() -> None:
         same[s] = pct(sum(1 for b in full if len(set(b)) == 1), len(full))
     L.append("| Same bucket in all 3 runs % | " + " | ".join(fmt(same[s]) for s in SYSTEMS) + " |")
     L.append("")
+    L.append("Run 1 is graded by Claude; runs 2-3 by Gemini 3.1 Flash-Lite (v1), whose made-up calls proved unreliable "
+             "(see notes). Read the made-up row and the same-bucket row here as rough; the token row is exact.\n")
 
     L.append("## By question type (test split, run 1)\n")
     L.append("| Type | " + " | ".join(f"Win % {LABELS[s]}" for s in SYSTEMS) + " | " +
