@@ -117,6 +117,11 @@ def metrics(recs: list[dict]) -> dict:
         "failed_calls": sum(r["tokens"]["failed_calls"] for r in recs),
         "errors": sum(1 for r in recs if any(r["raw"].get(k) for k in ("exception", "error", "http", "error_msg"))),
         "unreviewed": n - graded,
+        # Searched but got no documents: Onyx's search tool crashed (Jina free-tier
+        # 429 hitting an Onyx error-handling bug) on every search it tried.
+        "blind_answers": sum(1 for r in recs if r["raw"].get("tool_calls") and not r["document_ids"]),
+        "win_pct_sighted": pct(sum(1 for r in recs if r["bucket"] in WINS and not (r["raw"].get("tool_calls") and not r["document_ids"])),
+                               sum(1 for r in recs if r["bucket"] and not (r["raw"].get("tool_calls") and not r["document_ids"]))),
         "searched_pct": None if recs and recs[0]["system"].startswith(("handbook", "basic"))
         else pct(sum(1 for r in recs if r["raw"].get("tool_calls")), n),
     }
@@ -191,6 +196,8 @@ def main() -> None:
         ("Time to first word, p90 s³", "ttfw_p90", "{:.1f}"),
         ("Total time, median s³", "total_median", "{:.1f}"),
         ("Searched the documents %⁴", "searched_pct", "{:.0f}"),
+        ("Answers whose every search crashed (no documents)⁶", "blind_answers", "{:.0f}"),
+        ("Win % excluding those⁶", "win_pct_sighted", "{:.0f}"),
     ]
     for label, key, f in rows:
         L.append(f"| {label} | " + " | ".join(fmt(run1[s][key], f) for s in SYSTEMS) + " |")
@@ -204,6 +211,10 @@ def main() -> None:
              "⁵ A model call that kept reasoning until the model's 131,072-token output ceiling without answering. "
              "Onyx sends its section-selection call with no output cap; Handbook caps its answer call (8,000 here). "
              "Counted in every token figure, as it is real spend. "
+             "⁶ Onyx's search tool crashes when Jina's free tier rate-limits its embedding calls (an error-formatting "
+             "bug in Onyx: `can only concatenate str (not \"list\") to str`). When every search in an answer crashed, Onyx "
+             "answered with no documents. These were asked a second time; the ones still blind are counted in every "
+             "figure as Onyx's answer, and win % without them is shown so the free-tier effect is visible. "
              "⁴ Onyx decides per question whether to search; Handbook and the basic reference always retrieve. The basic reference is plain top-10 vector search plus EnterpriseRAG-Bench's own answer prompt in one call, on Handbook's index: not a product, it shows what each product's extra steps buy.\n")
 
     L.append(f"## Run-to-run variation ({len(repeat_ids)} repeat test questions, 3 runs)\n")
