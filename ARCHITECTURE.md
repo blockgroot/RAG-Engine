@@ -4,11 +4,12 @@
 > is, how every component works, and how data flows through it — enough for a
 > human or an AI agent to gain full context without reading the whole codebase
 > first. It complements two sibling docs:
-> - **CLAUDE.md** — the *decision log* (why each choice was made, phase by phase, plus gotchas).
+> - **CLAUDE.md** — the constraints. Feature status is `docs/handbook/`.
 > - **README.md** — the *user-facing quickstart* per phase.
 >
 > This file is the *system reference*. When code and this file disagree, the code wins — keep this updated.
-> **Product status (what is live, tested, blocked, in progress): [PRODUCT_STATUS.md](PRODUCT_STATUS.md).**
+> **Product status (what is live, tested, blocked, in progress): [PRODUCT_STATUS.md](docs/handbook/PRODUCT_STATUS.md).**
+> A walk through each feature: [current-features.md](docs/handbook/current-features.md).
 > *Last updated: 1 October 2026.* §5–§6 and §8–§11 describe the core write and read paths,
 > which are unchanged in shape; later capabilities are summarised in §7 and §15.
 
@@ -158,7 +159,7 @@ flowchart TD
 2. **Reuse** at cosine **0.72** skips retrieval and still passes the gate.
 3. **Retrieval** is hybrid: vector plus keyword, fused with RRF (k=60), reranked from a pool of **16** (`RETRIEVAL_CANDIDATE_POOL`) down to `RAG_TOP_K` (5). The gate reads the **best cosine**, never an RRF score or a reranker logit. The viewer predicate is in the same `WHERE` as `org_id`, before ranking.
 4. **Gate at 0.35.** Below it, at most one recovery expansion, then one labelled web search for a real external entity, then the fixed refusal. A document the asker cannot see can replace "I don't know" with an access notice that names the connector, never the title.
-5. **Generation** uses three modes only: explicitly supported, related but not explicit, or no supporting evidence. Outside text is fenced. Links in the answer must have appeared in that text.
+5. **Generation** uses three modes only: explicitly supported, related but not explicit, or no supporting evidence. Outside text is fenced. Links in the answer must have appeared in that text. A `[n]` marker is kept only when a retrieved chunk sat at that block; the link is `documents.source_uri` from sync. One cited document is named under the answer; two or more keep a superscript. The citation list is sent on the finished answer and is not stored on the turn.
 6. **Live read**, when enabled, refreshes at most two hits after the gate, for a question the classifier marks as about current state. A deleted or forbidden item is withheld.
 7. **A graph plan** can add a second tool's documents to the same answer. It reuses the walk; it does not start a second agent.
 8. **The conversation is personal** (`conversations.user_id`). Turns, a running summary, and last-retrieval chunks are stored for the next turn. An ungrounded answer is logged as a documentation gap.
@@ -340,7 +341,7 @@ three-mode grounded prompt, §6.2 step 6).
 
 ## 17. Not built yet
 
-See `PRODUCT_STATUS.md` §11–§12 for the current list. In short: Notion per-page access
+See `docs/handbook/PRODUCT_STATUS.md` for the current list. In short: Notion per-page access
 (no provider API), Google Groups in production (needs a Workspace-admin connection), more
-connectors (Confluence, Jira, Zendesk, Salesforce, SharePoint), structural citations + NLI,
+connectors (Confluence, Jira, Zendesk, Salesforce, SharePoint), NLI proof that a cited sentence is supported (inline citations are built),
 Postgres RLS, the self-hosted Docker image, and open-ended charts (PR #45, in review).

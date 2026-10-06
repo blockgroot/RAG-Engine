@@ -10,7 +10,7 @@ main repo.
 Docker Spaces are paid. A free Gradio Space runs on ZeroGPU, which is the wrong
 hardware for this checker. The app in this folder is ready for a **paid private
 CPU Space**. Until that exists, `RAG_AUDIT_ENABLED` stays off. Product status:
-`PRODUCT_STATUS.md` (answer fact-checker).
+`docs/handbook/PRODUCT_STATUS.md` (answer fact-checker).
 
 `app.py` starts the checker on port 7860.
 

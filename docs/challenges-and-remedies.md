@@ -5,7 +5,7 @@
 | **Document** | 1 of 3 |
 | **Subject** | Failures encountered while building and operating the system, and the remedies that remain in the code |
 | **Audience** | Engineers repeating a similar stack, and reviewers asking why a bound or gauge exists |
-| **Related documents** | (2) `docs/paid-upgrade-path.md`; (3) `docs/what-we-use-and-why.md`. Incident-level detail remains in `CLAUDE.md` §5. Product status is `PRODUCT_STATUS.md`. |
+| **Related documents** | (2) `docs/paid-upgrade-path.md`; (3) `docs/what-we-use-and-why.md`. The constraints that remain are in `CLAUDE.md`. Product status is `docs/handbook/PRODUCT_STATUS.md`. |
 
 This is not a complete diary of every defect. It groups failures by **class**, because the reusable lesson is the class, not the ticket.
 

@@ -214,7 +214,9 @@ scored by the safety model; the answer fact-checker is off (§11).
 ## 9. User Experience
 
 - **Ask** is one box with a source pill that names the tool and space each answer came from.
-- **Citations:** one source is named once under the answer. Two or more keep a gray superscript after the sentence, matched to a Sources list. The link is the stored document.
+- **Citations:** one source is named once under the answer. Two or more keep a gray superscript
+  after the sentence, matched to a Sources list. The link is the address stored at sync. The
+  list is sent with the finished answer and is not stored on the chat. Slack strips the numbers.
 - **Chat history** in the left rail, with linkable, deletable, private chats.
 - **Uploads** attach to a chat with a per-file result.
 - **Charts** appear in the chat; hover shows the rows behind each bar.
