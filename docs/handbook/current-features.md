@@ -73,7 +73,7 @@ list back, because it is sent with the finished answer and is not stored on the 
 - Very broad questions asked company-wide use the top passages, not every document.
 - Summaries are capped at 120 passages or 60,000 characters, oldest dropped first.
 
-**Code:** `app/rag/pipeline.py`, `app/rag/retrieval.py`, `app/rag/access_notice.py`, `app/api/chat.py`
+**Code:** `app/rag/pipeline.py`, `app/rag/cite.py`, `frontend/components/AnswerText.tsx`, `app/rag/retrieval.py`, `app/rag/access_notice.py`, `app/api/chat.py`
 
 ## 2. Smart routing between tools
 

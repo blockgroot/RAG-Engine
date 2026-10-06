@@ -20,11 +20,11 @@
 A **multi-tenant Retrieval-Augmented Generation (RAG) platform for company Q&A over connected tools.**
 
 - **Tenants (organizations)** connect **Notion, Google Drive, Slack, Linear and GitHub** (GitHub is read live, never indexed).
-- Their **employees ask natural-language questions** — on the web or in Slack — and get answers **grounded in that organization's own content**, with sources, limited to what each person may open in the source tool.
+- Their **employees ask natural-language questions** — on the web or in Slack — and get answers **grounded in that organization's own content**, limited to what each person may open in the source tool. One cited document is named under the answer. Two or more keep a small number on the sentence. The link is the address stored when that page was indexed.
 - **Strict tenant isolation:** one organization can never see another's content.
 - **Eventual goal:** a **self-hosted Docker image** an enterprise runs inside its own infrastructure — so the design favors components that run **locally, free, with no external paid dependency** (local embeddings, local reranker, keyless web search, a swappable LLM endpoint).
 
-**Why RAG, not fine-tuning:** policies are *facts that change* (leave rules, reimbursement limits). RAG retrieves the current document text at question time, so updating a policy is just re-ingesting a file — no retraining, and answers cite sources.
+**Why RAG, not fine-tuning:** policies are *facts that change* (leave rules, reimbursement limits). RAG retrieves the current document text at question time, so updating a policy is just re-ingesting a file — no retraining. The answer then names the page it used, and the link is the one stored at sync.
 
 ---
 
@@ -181,7 +181,7 @@ Charts never let the model emit a number. `InsightsAgent` runs a whitelisted met
 | `db/` | — | `connection.py`, `schema.sql`, `migrate.py` | Pooled psycopg connections (`register_vector` in the pool's `configure` hook). `apply_schema()` uses a **direct** connection (migration must not use the pool). `close_pool()` at every process exit. |
 | `vectorstore/` | `VectorStore` | `PgVectorStore` | `create_organization`, `add_document`, `query` (vector), `keyword_search` (optional), `list_organizations` (optional). All tenant-scoped reads require `org_id`. |
 | `ingestion/` | — (orchestrator) | `pipeline.py`, `preprocessing.py`, `chunking.py`, `contextualize.py` | The write path (§5). |
-| `rag/` | — (orchestrator) | `pipeline.py`, `retrieval.py`, `prompts.py`, `factory.py` | The read path (§6). |
+| `rag/` | — (orchestrator) | `pipeline.py`, `retrieval.py`, `prompts.py`, `cite.py`, `factory.py` | The read path (§6), including inline citations. |
 | `reranker/` | `Reranker` | `local.py` (CrossEncoder) | `rerank(query, candidates, top_k)`. `bge-reranker-v2-m3` (~2.2 GB first download, then cached). |
 | `memory/` | `ConversationStore` | `pg_store.py`, `personal.py` | Conversation history, running summary, last retrieval, and personal facts (`user_memory`). |
 | `websearch/` | `WebSearchProvider` | `duckduckgo.py` | `search(query, max_results, timeout) -> list[SearchResult]`. |
@@ -319,7 +319,7 @@ pytest -m "not network and not live_llm"
 | 7 | (A) Formal `PolicyAgent` behind `Agent`; (B) Golden-set evaluation (path-firing tier + RAGAS tier) wired into CI |
 | 8 | (A) Incremental summarization; (B) retrieval reuse (deterministic non-LLM cosine check) + `conversation_last_retrieval` table |
 | 9 | (A) Single interactive `rich` CLI over `PolicyAgent` (retired `ask.py`/`chat.py`); (B) per-organization Notion credentials (`NOTION_TOKEN_<NAME>`, `resolve_token`, no fallback) + `list_organizations` |
-| 10+ | HTTP API + Next.js portal, magic-link auth, OAuth per connector, signup approval, ingestion queue; Drive, Slack, Linear adapters; GitHub live reads; spaces; per-source routing; Ask in Slack; scheduled reports; multi-model + BYOM; automatic sync; charts in Ask; attachments in Cloudinary; feedback and gaps; needs-attention bell; prompt-injection defense; Second Brain (graph, live reads, personal memory); document-level access control; push sync (PR #44, 2026-10-01). See `PRODUCT_STATUS.md` and `CLAUDE.md` §3. |
+| 10+ | HTTP API + Next.js portal, magic-link auth, OAuth per connector, signup approval, ingestion queue; Drive, Slack, Linear adapters; GitHub live reads; spaces; per-source routing; Ask in Slack; scheduled reports; multi-model + BYOM; automatic sync; charts in Ask; attachments in Cloudinary; feedback and gaps; needs-attention bell; prompt-injection defense; Second Brain (graph, live reads, personal memory); document-level access control; push sync (PR #44, 2026-10-01); inline citations. See `docs/handbook/PRODUCT_STATUS.md` and `CLAUDE.md`. |
 
 ---
 

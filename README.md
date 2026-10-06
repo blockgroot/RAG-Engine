@@ -13,6 +13,10 @@ A plain walk through each feature: [current-features.md](docs/handbook/current-f
   strict prompt; honest "I don't know" and "not shared with you" refusals; follow-ups,
   whole-space summaries, web search for external topics, per-question model choice and
   bring-your-own-model.
+- **Citations** — one document is named once under the answer, and that line opens it.
+  Two or more documents keep a small number on each sentence, matched to the same list.
+  The link is the address saved when the page was indexed, never one the model wrote.
+  Slack shows the text without the numbers.
 - **Connectors** — Notion, Google Drive (Docs, PDF, Word), Slack, Linear (indexed) and GitHub
   (read live, never stored); Google Forms for sentiment charts only.
 - **Access control** — tenant and space isolation, plus each tool's own sharing: Drive per
@@ -45,7 +49,7 @@ app/
   db/           Postgres schema + pooled connection
   ingestion/    preprocessing, chunking, contextualization
   vectorstore/  pgvector storage, hybrid search, the Viewer (access) model
-  rag/          query pipeline: rewrite -> retrieve -> gate -> generate -> audit
+  rag/          query pipeline: rewrite -> retrieve -> gate -> generate -> cite -> audit
   memory/       conversation history, summaries, personal memory
   websearch/    external web search fallback (DuckDuckGo)
   sources/      Notion / Drive / Slack / Linear adapters, Google Groups, Drive push channels
@@ -69,7 +73,7 @@ tests/          pytest suite
 evaluation/     golden-set regression evaluation (+ RAGAS)
 ```
 
-See [CLAUDE.md](CLAUDE.md) for the design rationale behind each decision.
+See [CLAUDE.md](CLAUDE.md) for the constraints behind each decision.
 
 ## Tech stack
 

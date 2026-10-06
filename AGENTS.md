@@ -15,6 +15,9 @@ that have to stay rules. What is live, and a walk through each feature, is
   the signed session cookie. Never from client input.
 - **Don't weaken grounding.** The 0.35 confidence gate and the strict prompt
   are two independent layers; leave both intact.
+- **Citations.** Keep a number only when a retrieved document sat at that block.
+  The link is the stored source address, never a URL the model wrote. One source
+  is a line under the answer; two or more keep a superscript.
 - **New capability = new package** (`base.py` + impl + `factory.py`). An
   orchestrator that only composes existing interfaces skips `base.py`.
 - **All config** is a `from_env()` dataclass in `app/config/settings.py`.

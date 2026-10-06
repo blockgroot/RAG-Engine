@@ -231,7 +231,7 @@ scored by the safety model; the answer fact-checker is off (§11).
 ## 10. Production Status
 
 **Enabled and working in production (team-verified, 30 Sep – 1 Oct 2026):** Ask with grounding,
-routing and web search; chat history; file uploads to Cloudinary; charts; spaces; Ask in Slack;
+citations, routing and web search; chat history; file uploads to Cloudinary; charts; spaces; Ask in Slack;
 scheduled reports with real email; feedback and gap tracking; needs-attention bell; Second
 Brain (knowledge graph, live reads, personal memory); prompt-injection defense; Drive per-file
 access; automatic hourly sync; instant updates from Slack, Linear, Notion and Drive (configured 1 Oct).

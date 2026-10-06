@@ -17,7 +17,7 @@ Each tenant connects **Notion, Google Drive, Slack, Linear and GitHub**. Employe
 
 The intended deployment is a **self-hosted Docker image** that an enterprise can run inside its own infrastructure. Default components are therefore local, inexpensive, and keep policy text off third-party embedding APIs unless remote inference is explicitly configured.
 
-RAG is used in preference to fine-tuning because policies are facts that change. A policy update is a re-ingestion, not a retraining cycle, and answers can cite the source page.
+RAG is used in preference to fine-tuning because policies are facts that change. A policy update is a re-ingestion, not a retraining cycle. The answer names the page it used: one page as a line under the answer, two or more as a number on the sentence. The link is the address stored at sync.
 
 ---
 
@@ -78,7 +78,7 @@ The source adapter fetches a changed page, thread, or issue. Text is preprocesse
 6. The confidence gate requires a best cosine of at least 0.35.
 7. Generation uses one of three modes: explicitly supported, related but not explicit, or no supporting evidence.
 8. A web-search tool is offered only if internal evidence remains insufficient.
-9. The response includes citations and `source` of `policy`, `web`, or `none`.
+9. The model may mark a sentence with `[n]`. A number is kept only when a retrieved document sat at that block. The link is `documents.source_uri`, saved at sync. One document is named under the answer; two or more keep a superscript and the same list. The list is sent with the finished answer and is not stored on the chat. The response also carries `source` of `policy`, `web`, or `none`.
 
 ### 4.3 GitHub
 
