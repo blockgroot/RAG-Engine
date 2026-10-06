@@ -95,6 +95,7 @@ def main() -> None:
                 "unmetered_calls": sum(1 for c in calls if c.get("input_tokens") is None),
                 "failed_calls": sum(1 for c in calls if c.get("status") != 200),
                 "max_call_input": max((c.get("input_tokens") or 0 for c in calls), default=0),
+                "max_call_output": max((c.get("output_tokens") or 0 for c in calls), default=0),
                 "rate_limit_wait_s": round(sum(c.get("waited_s") or 0 for c in calls), 1),
                 "steps": dict(steps),
             }

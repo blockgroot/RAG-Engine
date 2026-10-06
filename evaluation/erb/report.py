@@ -41,6 +41,7 @@ BREADTH = {"completeness", "high_level"}
 # Published price of the answer model (OpenRouter, nemotron-3-super-120b-a12b), $ per 1M tokens.
 PRICE_IN, PRICE_OUT = 0.09, 0.45
 WINS = ("correct", "honest_idk")
+RUNAWAY_TOKENS = 100_000
 
 
 def load_jsonl(p: Path) -> list[dict]:
@@ -91,6 +92,11 @@ def metrics(recs: list[dict]) -> dict:
         "n": n, "graded": graded,
         "tokens_per_win": tok / wins if wins else None,
         "tokens_per_q": tok / n if n else None,
+        "tokens_median": statistics.median(r["tokens"]["all_total"] for r in recs) if recs else None,
+        "tokens_p90": pctl([r["tokens"]["all_total"] for r in recs], 0.9),
+        # A call that hit the model's output ceiling without answering (seen on
+        # Onyx's uncapped section-selection call: 131,072 reasoning tokens).
+        "runaway_answers": sum(1 for r in recs if r["tokens"].get("max_call_output", 0) >= RUNAWAY_TOKENS),
         "input_per_q": inp / n if n else None,
         "output_per_q": out / n if n else None,
         "cost_per_q": cost / n if n else None,
@@ -158,7 +164,10 @@ def main() -> None:
     L.append(head)
     rows = [
         ("**LLM tokens per correct answer**¹", "tokens_per_win", "{:,.0f}"),
-        ("LLM tokens per question", "tokens_per_q", "{:,.0f}"),
+        ("LLM tokens per question (mean)", "tokens_per_q", "{:,.0f}"),
+        ("LLM tokens per question (median)", "tokens_median", "{:,.0f}"),
+        ("LLM tokens per question (p90)", "tokens_p90", "{:,.0f}"),
+        ("Answers with a runaway call (≥100k output tokens)⁵", "runaway_answers", "{:.0f}"),
         ("— of which input", "input_per_q", "{:,.0f}"),
         ("— of which output (incl. reasoning)", "output_per_q", "{:,.0f}"),
         ("Cost per question, if paid²", "cost_per_q", "${:.5f}"),
@@ -192,6 +201,9 @@ def main() -> None:
              f"${PRICE_IN} / ${PRICE_OUT} per 1M input / output tokens; the run itself used a free tier. "
              "³ Free-tier rate-limit waits removed. Handbook streams only an already-decided answer, so its first "
              "word is the end of the pipeline; Onyx's is the first token of its answer call. "
+             "⁵ A model call that kept reasoning until the model's 131,072-token output ceiling without answering. "
+             "Onyx sends its section-selection call with no output cap; Handbook caps its answer call (8,000 here). "
+             "Counted in every token figure, as it is real spend. "
              "⁴ Onyx decides per question whether to search; Handbook and the basic reference always retrieve. The basic reference is plain top-10 vector search plus EnterpriseRAG-Bench's own answer prompt in one call, on Handbook's index: not a product, it shows what each product's extra steps buy.\n")
 
     L.append(f"## Run-to-run variation ({len(repeat_ids)} repeat test questions, 3 runs)\n")
