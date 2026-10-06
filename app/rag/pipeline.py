@@ -83,6 +83,7 @@ from ..security.outbound import user_worded_query
 from ..security.untrusted import leaks_canary, scrub_untrusted_text
 from .audit import lettuce_verdict, parse_audit_verdict
 from .retrieval import HybridRetriever, RetrievalResult, gate_document
+from .cite import link_citations, strip_citations
 from .context_assemble import assemble_context_texts, describe_hit
 from .decompose import looks_compound, parse_sub_questions
 from .scope_intent import OVERVIEW, classify_scope_intent
@@ -396,6 +397,9 @@ class RagResult:
     # True when personal memory was in the prompt: the answer was interpreted
     # for ONE person, so it is never served to the next asker on the same key.
     personalized: bool = False
+    # Inline citations (`rag/cite.py`): ``[{n, document_id, title, provider,
+    # url}]`` for every valid ``[n]`` marker left in ``answer``.
+    cited: list[dict] = field(default_factory=list)
 
 
 def _without_withheld(
@@ -1667,6 +1671,10 @@ class RagPipeline:
                 [describe_hit(h) for h in prompt_hits],
                 0 if whole_read else self._settings.max_context_chars,
             )
+            # The budget keeps a PREFIX, so block i is prompt_hits[i].
+            blocks: list = list(prompt_hits[: len(contexts)])
+        else:
+            blocks = [None] * len(contexts)
         # Files the asker attached go in FIRST, ahead of retrieved chunks.
         # They are the reason they uploaded: "is this bill claimable?" is a
         # question about the bill, answered against the policy -- so the
@@ -1676,8 +1684,10 @@ class RagPipeline:
         # draw on both and still say where each sentence came from.
         if extra_contexts:
             contexts = list(extra_contexts) + contexts
+            blocks = [None] * len(extra_contexts) + blocks
         if graph_facts:
             contexts = list(contexts) + [graph_facts]
+            blocks = blocks + [None]
         tone_source = user_question or question
         # Tone runs ALONGSIDE generation, not in front of it: the grounded
         # prompt does not use it, only the (rare) empathy opener composed
@@ -1757,12 +1767,14 @@ class RagPipeline:
             logger.warning("security.canary_leak stage=generate org=%s", org_id)
             answered, answer = False, self._settings.fallback_response
         moderation = None
+        cited: list[dict] = []
         if answered:
             # Before the audit, so the audit judges the text that will ship.
             answer = enforce_link_provenance(answer, contexts, self._link_allowlist)
+            answer, cited = link_citations(answer, blocks)
             # In parallel with the audit below (Task 4.1); a no-op when off.
             moderation = _AUX_POOL.submit(
-                answer_is_unsafe, answer, org_id=org_id, stage="generate"
+                answer_is_unsafe, strip_citations(answer), org_id=org_id, stage="generate"
             )
 
         audit_used = False
@@ -1776,7 +1788,8 @@ class RagPipeline:
             and budget.can_spend(self._budget_settings.min_stage_seconds)
         ):
             verdict = self._audit_answer(
-                question, contexts, answer, org_id=org_id, conversation_id=conversation_id
+                question, contexts, strip_citations(answer),
+                org_id=org_id, conversation_id=conversation_id,
             )
             if verdict is not None and verdict.grounded is not None:
                 audit_used = True
@@ -1814,6 +1827,7 @@ class RagPipeline:
             audit_downgraded=audit_downgraded,
             audit_reason=audit_reason,
             personalized=bool(asker),
+            cited=cited if answered else [],
         )
 
     def _audit_answer(

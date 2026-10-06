@@ -88,6 +88,7 @@ class RagPipelineAgent(Agent):
             resolved_question=result.resolved_question,
             access_restricted=result.access_restricted,
             live_sources=list(result.live_sources),
+            cited=list(result.cited),
             live_withheld=result.live_withheld,
             top_score=result.top_score,
             retrieval_reused=result.retrieval_reused,

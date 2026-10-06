@@ -48,6 +48,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, 
 from ..agent.routing import _NO_MATCH, choose_agent, choose_scope
 from ..feedback import record_gap
 from ..guard.live import watch_question
+from ..rag.cite import strip_citations
 from ..auth.credentials import get_live_connection_token
 from ..auth.users import get_user_by_email
 from ..sources.google_groups import viewer_for_person
@@ -188,6 +189,9 @@ def _to_slack_mrkdwn(text: str) -> str:
     Slack AI exfiltration (PromptArmor, 2024) was exactly a model-written
     `<url|text>`. Escaped, both arrive as inert text.
     """
+    # Inline citation markers are for the web chat's chips; in Slack a bare
+    # "[2]" points at nothing the reader can open.
+    text = strip_citations(text)
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     out: list[str] = []
     for line in text.split("\n"):

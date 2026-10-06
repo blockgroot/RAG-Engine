@@ -820,6 +820,9 @@ def _stream_attachment_answer(
             "chart": None,
             "chart_period": None,
             "live_sources": list(getattr(response, "live_sources", None) or []),
+            # The documents behind the answer's [n] markers; the UI draws a
+            # chip only for a number listed here and strips the rest.
+            "cited": list(getattr(response, "cited", None) or []),
         },
     )
 
@@ -1235,6 +1238,7 @@ def _stream_answer_body(
             # Which connectors answered LIVE, and when. Empty when nothing was
             # refreshed -- the indexed copy answered.
             "live_sources": list(getattr(result, "live_sources", None) or []),
+            "cited": list(getattr(result, "cited", None) or []),
             # Personal memory saved from this question, announced so saving is
             # never silent; the pill offers Undo.
             "remembered": _remembered(memory_turn),
