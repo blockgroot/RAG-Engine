@@ -1139,6 +1139,40 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 .answer-list li + li { margin-top: 0.45rem; }
 .chat-answer strong { font-weight: 700; color: var(--ink); }
 
+/* Inline citations: a number after a sentence, opening the source document. */
+.cite-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.15rem;
+  height: 1.15rem;
+  padding: 0 0.3rem;
+  margin-left: 0.2rem;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: 0.15em;
+  text-decoration: none;
+}
+a.cite-chip:hover, a.cite-chip:focus-visible { background: var(--accent); color: var(--accent-ink); }
+.cite-chip-static { margin: 0 0.45rem 0 0; flex: none; }
+.answer-sources {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0.75rem 0 0;
+  border-top: 1px solid var(--border);
+  font-size: 0.8rem;
+}
+.answer-sources li { display: flex; align-items: center; min-width: 0; }
+.answer-sources li + li { margin-top: 0.35rem; }
+.answer-sources a, .answer-sources span:last-child {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-muted);
+}
+.answer-sources a:hover { color: var(--accent-strong); text-decoration: underline; }
+
 .provenance-pill {
   display: inline-flex;
   align-items: center;

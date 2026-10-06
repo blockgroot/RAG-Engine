@@ -259,6 +259,8 @@ access; automatic hourly sync; instant updates from Slack, Linear, Notion and Dr
 
 ## 12. In Progress
 
+**Inline citations** (`feat/inline-citations`, not on `main`). Answers in the web chat carry numbered chips after each sentence; a chip opens the source document in its own tool (Notion, Drive, Slack, Linear), and a numbered Sources list sits under the answer. Only numbers that point at a retrieved document are kept, and links come from the stored document, never from the model. Slack shows answers without markers. Not yet checked in a browser.
+
 **PR #45 — open-ended charts** (`feat/open-ended-charts`, open, not on `main`). The branch adds,
 on top of the 12 metrics already shipping:
 

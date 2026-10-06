@@ -153,7 +153,8 @@ class PgVectorStore(VectorStore):
                        d.source_last_editor,
                        d.source_last_modified,
                        coalesce(d.doc_is_public, TRUE),
-                       c.injection_score
+                       c.injection_score,
+                       d.source_uri
                 FROM chunks c
                 LEFT JOIN documents d ON d.id = c.document_id
                 WHERE c.org_id = %s::uuid
@@ -200,6 +201,7 @@ class PgVectorStore(VectorStore):
                 last_modified=row[8],
                 doc_is_public=bool(row[9]),
                 injection_score=row[10],
+                source_uri=row[11],
             )
             for row in rows
         ]
@@ -277,7 +279,8 @@ class PgVectorStore(VectorStore):
                        d.source_last_editor,
                        d.source_last_modified,
                        coalesce(d.doc_is_public, TRUE),
-                       m.injection_score
+                       m.injection_score,
+                       d.source_uri
                 FROM matched m
                 LEFT JOIN documents d ON d.id = m.document_id
                 """,
@@ -316,6 +319,7 @@ class PgVectorStore(VectorStore):
                     last_modified=row[8],
                     doc_is_public=bool(row[9]),
                     injection_score=row[10],
+                    source_uri=row[11],
                 )
             )
         return out

@@ -418,6 +418,8 @@ already applied skip / owner-only / freeze to that exact row.
 - **Saved automatically, never silently** (the ChatGPT/Claude pattern): `done.remembered` → "Remembered: … · Undo" under the answer (waits ≤1.5 s; a slower save is `announced = FALSE` and shown on the NEXT answer — it shipped silent, which broke the promise). Nothing is saved without a chat: a chat-less fact would never expire. `/account` lists, pins, forgets, clears; only the owner can touch a fact — an admin's only control is the company switch.
 - **Bounded and fading**: `max_facts`=30, oldest UNPINNED out; `source_conversation_id ON DELETE CASCADE` so a fact dies with its chat (30-day purge) unless pinned, which detaches it. Web chat only — Slack/schedulers never read or write it. Not built: a one-off private chat.
 
+**Inline citations: the model's `[n]` counts only when it points at a retrieved document** (`rag/cite.py`). The grounded prompt already numbered every CONTEXT block and forbade markers; it now asks for `[n]` after each sentence. `link_citations` keeps a number only if a RetrievedChunk sat at that block (attachments, live blocks, graph facts = `None` = dropped), renumbers per DOCUMENT in reading order, and takes the link from `documents.source_uri` (now on `RetrievedChunk`, http(s) only), NEVER from the answer text, the link-provenance rule's reasoning. The audit and moderation judge `strip_citations(answer)`; Slack strips markers; `RagResult.cited` -> `done.cited` -> `AnswerText` chips + a Sources list, and any number not in `cited` (streaming, reopened chats, reports) is stripped as before. Onyx does the same (`[[1]](link)` + a citation map); proving each cited sentence (NLI) is still deferred.
+
 **Retrieved context carries its provenance** (`rag/context_assemble.py::describe_hit`)
 — every chunk reaches the prompt behind one line naming the document, the app,
 who last edited it and when. All of it was already on the `documents` row each
@@ -2496,7 +2498,7 @@ providers (`app/api/webhooks.py`, `app/sources/drive_watch.py`). Canonical produ
 - Render free gives **750 instance-hours/month**; an always-warm service is
   ~730, so this design consumes essentially the whole allowance for one
   service.
-- **Deferred by decision:** structural citations + NLI (cost/latency);
+- **Deferred by decision:** NLI proof that a cited sentence is supported (cost/latency; inline `[n]` citations are BUILT, `rag/cite.py`);
   token-budget context assembly; Postgres RLS; HNSW tuning (both feared
   defects were measured and did *not* reproduce); the self-hosted image. (Drive PDF/DOCX
   extraction is BUILT: `google_drive._SUPPORTED_MIMES`.)

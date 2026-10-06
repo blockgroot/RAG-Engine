@@ -69,7 +69,7 @@ export function ChatMessageView({
         </div>
       ) : (
         <>
-          <AnswerText text={message.text} />
+          <AnswerText text={message.text} cited={message.streaming ? undefined : message.done?.cited} />
           {points && points.length > 0 && chart && (
             <div className="chat-chart">
               <Chart

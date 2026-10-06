@@ -1,6 +1,6 @@
 import { fileKindLabel } from "@/lib/fileKind";
 
-const LABELS: Record<string, string> = {
+export const LABELS: Record<string, string> = {
   policy: "Company documents",
   workspace: "Workspace content",
   web: "Web search",
