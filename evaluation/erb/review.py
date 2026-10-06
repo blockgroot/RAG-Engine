@@ -130,9 +130,11 @@ def _call(http: httpx.Client, prompt: str) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--system", default=None, help="only this system (default: every joined file)")
+    ap.add_argument("--key-env", default="GEMINI_API_KEY",
+                    help="env var holding the Gemini key; lets two systems be reviewed in parallel on separate quotas")
     args = ap.parse_args()
     questions = {q["question_id"]: q for q in map(json.loads, (BENCH / "pilot_questions.jsonl").open())}
-    http = httpx.Client(timeout=300, headers={"Authorization": f"Bearer {os.environ['GEMINI_API_KEY']}"})
+    http = httpx.Client(timeout=300, headers={"Authorization": f"Bearer {os.environ[args.key_env]}"})
     out_dir = BENCH / "reviews"
     out_dir.mkdir(exist_ok=True)
 
