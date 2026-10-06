@@ -12,29 +12,38 @@ const HEADING = /^\s{0,3}(#{1,4})\s+(.*)$/;
 
 type Sources = Map<number, CitedSource>;
 
-function sourceLabel(s: CitedSource): string {
-  const app = s.provider ? LABELS[s.provider] || s.provider : null;
-  return [s.title || "Untitled document", app].filter(Boolean).join(" · ");
+function sourceTitle(s: CitedSource): string {
+  return s.title || "Untitled document";
 }
 
-function CitationChip({ source }: { source: CitedSource }) {
+function sourceApp(s: CitedSource): string | null {
+  return s.provider ? LABELS[s.provider] || s.provider : null;
+}
+
+function sourceLabel(s: CitedSource): string {
+  return [sourceTitle(s), sourceApp(s)].filter(Boolean).join(" · ");
+}
+
+function CitationMark({ source }: { source: CitedSource }) {
   const label = sourceLabel(source);
-  // Only a link the server took from the stored document; no url = no link,
-  // which beats a chip that opens nothing.
+  // Superscript, the usual reference mark. A filled chip on every sentence
+  // reads as a button and crowds a list that all cites one page; the document
+  // is named once, under the answer. Only a link taken from the stored document.
+  const mark = <sup>{source.n}</sup>;
   return source.url ? (
     <a
-      className="cite-chip"
+      className="cite-ref"
       href={source.url}
       target="_blank"
       rel="noopener noreferrer"
       title={label}
       aria-label={`Source ${source.n}: ${label}`}
     >
-      {source.n}
+      {mark}
     </a>
   ) : (
-    <span className="cite-chip" title={label} aria-label={`Source ${source.n}: ${label}`}>
-      {source.n}
+    <span className="cite-ref" title={label} aria-label={`Source ${source.n}: ${label}`}>
+      {mark}
     </span>
   );
 }
@@ -45,7 +54,7 @@ function renderMarkers(text: string, keyPrefix: string, sources: Sources): React
   for (const m of text.matchAll(MARKER)) {
     const source = sources.get(Number(m[1]));
     if (m.index! > last) out.push(text.slice(last, m.index));
-    if (source) out.push(<CitationChip key={`${keyPrefix}-c${m.index}`} source={source} />);
+    if (source) out.push(<CitationMark key={`${keyPrefix}-c${m.index}`} source={source} />);
     last = m.index! + m[0].length;
   }
   if (last < text.length) out.push(text.slice(last));
@@ -124,9 +133,12 @@ function parseBlocks(text: string): Block[] {
 
 export function AnswerText({ text, cited }: { text: string; cited?: CitedSource[] }) {
   // Without a citation map (still streaming, a reopened chat, a report) every
-  // marker is stripped, as before; with one, only listed numbers become chips.
+  // marker is stripped. One document is named once, under the answer, so the
+  // marks in the sentences are stripped too. Two or more keep a superscript
+  // so a sentence can point at the right line.
   const sources: Sources = new Map((cited || []).map((s) => [s.n, s]));
-  const cleaned = sources.size ? text : text.replace(CITATION_MARKERS, "");
+  const inline: Sources = sources.size > 1 ? sources : new Map();
+  const cleaned = inline.size ? text : text.replace(CITATION_MARKERS, "");
   const blocks = parseBlocks(cleaned);
 
   return (
@@ -136,7 +148,7 @@ export function AnswerText({ text, cited }: { text: string; cited?: CitedSource[
           const Tag = block.level === 3 ? "h3" : "h4";
           return (
             <Tag key={blockIndex} className="answer-heading">
-              {renderInline(block.text, `${blockIndex}`, sources)}
+              {renderInline(block.text, `${blockIndex}`, inline)}
             </Tag>
           );
         }
@@ -144,32 +156,44 @@ export function AnswerText({ text, cited }: { text: string; cited?: CitedSource[
           return (
             <ul key={blockIndex} className="answer-list">
               {block.items.map((item, i) => (
-                <li key={i}>{renderInline(item, `${blockIndex}-${i}`, sources)}</li>
+                <li key={i}>{renderInline(item, `${blockIndex}-${i}`, inline)}</li>
               ))}
             </ul>
           );
         }
         return (
           <p key={blockIndex} className="answer-paragraph">
-            {renderInline(block.text, `${blockIndex}`, sources)}
+            {renderInline(block.text, `${blockIndex}`, inline)}
           </p>
         );
       })}
       {sources.size > 0 && (
-        <ol className="answer-sources" aria-label="Sources">
-          {[...sources.values()].map((s) => (
-            <li key={s.n}>
-              <span className="cite-chip cite-chip-static">{s.n}</span>
-              {s.url ? (
-                <a href={s.url} target="_blank" rel="noopener noreferrer">
-                  {sourceLabel(s)}
-                </a>
-              ) : (
-                <span>{sourceLabel(s)}</span>
-              )}
-            </li>
-          ))}
-        </ol>
+        <section className="answer-sources" aria-label="Sources">
+          <p className="answer-sources-label">Sources</p>
+          <ol>
+            {[...sources.values()].map((s) => {
+              const app = sourceApp(s);
+              const body = (
+                <>
+                  <span className="answer-source-title">{sourceTitle(s)}</span>
+                  {app && <span className="answer-source-app">{app}</span>}
+                </>
+              );
+              return (
+                <li key={s.n}>
+                  <span className="answer-source-n">{s.n}.</span>
+                  {s.url ? (
+                    <a href={s.url} target="_blank" rel="noopener noreferrer">
+                      {body}
+                    </a>
+                  ) : (
+                    <span className="answer-source-plain">{body}</span>
+                  )}
+                </li>
+              );
+            })}
+          </ol>
+        </section>
       )}
     </div>
   );
