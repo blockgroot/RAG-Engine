@@ -356,7 +356,7 @@ class PgVectorStore(VectorStore):
                 f"""
                 SELECT c.content, c.document_id::text, c.chunk_index,
                        c.org_id::text, d.title, d.source_external_id,
-                       c.injection_score
+                       c.injection_score, d.source_provider, d.source_uri
                 FROM chunks c
                 JOIN documents d ON d.id = c.document_id
                 WHERE c.org_id = %s::uuid
@@ -380,6 +380,8 @@ class PgVectorStore(VectorStore):
                 document_title=(str(r[4]).strip() if r[4] else None),
                 source_external_id=(str(r[5]).strip() if r[5] else None),
                 injection_score=r[6],
+                source_provider=r[7],
+                source_uri=r[8],
             )
             for r in rows
         ]
