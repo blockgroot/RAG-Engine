@@ -79,11 +79,16 @@ def metrics(recs: list[dict]) -> dict:
     inp = sum(r["tokens"]["answer_path_input"] + r["tokens"]["background_input"] for r in recs)
     out = sum(r["tokens"]["answer_path_output"] + r["tokens"]["background_output"] for r in recs)
     cost = (inp * PRICE_IN + out * PRICE_OUT) / 1e6
-    recall, prec = [], []
+    recall, prec, recall_used = [], [], []
     for r in recs:
         sent, gold = set(r["document_ids"]), r["gold"]
+        # Same funnel stage for every system: the documents the answer was written
+        # from. Handbook/basic: what was sent to the model. Onyx: what it cited
+        # (its document_ids are every search result, most of which it discards).
+        used = set(d for d in r["raw"].get("cited") or [] if d) if r["system"].startswith("onyx") else sent
         if gold:
             recall.append(100 * len(sent & gold) / len(gold))
+            recall_used.append(100 * len(used & gold) / len(gold))
             if sent:
                 prec.append(len(sent & gold) / len(sent))
     facts = [100 * sum(r["verdict"]["facts"]) / len(r["verdict"]["facts"])
@@ -106,6 +111,7 @@ def metrics(recs: list[dict]) -> dict:
         "docs_sent": statistics.mean(len(set(r["document_ids"])) for r in recs) if recs else None,
         "context_precision": statistics.mean(prec) if prec else None,
         "recall": statistics.mean(recall) if recall else None,
+        "recall_used": statistics.mean(recall_used) if recall_used else None,
         "win_pct": pct(wins, graded),
         **{f"{k}_pct": pct(b[k], graded) for k in ("correct", "partial", "honest_idk", "wrong_idk", "made_up", "wrong")},
         "correct_any_pct": pct(sum(1 for r in recs if r["verdict"] and r["verdict"].get("correct")), graded),
@@ -181,7 +187,8 @@ def main() -> None:
         ("Largest single request (input tokens)", "max_call_input", "{:,.0f}"),
         ("Documents retrieved (Handbook: sent to the model)", "docs_sent", "{:.1f}"),
         ("Context precision (right docs ÷ docs retrieved)", "context_precision", "{:.2f}"),
-        ("Document recall %", "recall", "{:.0f}"),
+        ("Document recall %, retrieved (anywhere in the search results)⁷", "recall", "{:.0f}"),
+        ("Document recall %, used for the answer⁷", "recall_used", "{:.0f}"),
         ("**Win %** (correct + honest \"I don't know\")", "win_pct", "{:.0f}"),
         ("Correct %", "correct_pct", "{:.0f}"),
         ("Partial %", "partial_pct", "{:.0f}"),
@@ -215,6 +222,10 @@ def main() -> None:
              "bug in Onyx: `can only concatenate str (not \"list\") to str`). When every search in an answer crashed, Onyx "
              "answered with no documents. These were asked a second time; the ones still blind are counted in every "
              "figure as Onyx's answer, and win % without them is shown so the free-tier effect is visible. "
+             "⁷ Retrieved: Handbook and basic send everything they retrieve to the model, so both rows match for them; "
+             "Onyx retrieves ~45–50 documents across all its searches, shows its selection step ~32 sections from "
+             "~26 of them, keeps ~2, and cites ~1. Used for the answer = Handbook/basic: the documents sent to the model; "
+             "Onyx: the documents its answer cited (a lower bound: an answer can use a section without citing it). "
              "⁴ Onyx decides per question whether to search; Handbook and the basic reference always retrieve. The basic reference is plain top-10 vector search plus EnterpriseRAG-Bench's own answer prompt in one call, on Handbook's index: not a product, it shows what each product's extra steps buy.\n")
 
     L.append(f"## Run-to-run variation ({len(repeat_ids)} repeat test questions, 3 runs)\n")
