@@ -1,4 +1,4 @@
-"""Token-counting pass-through for Benchmark 1 (docs/benchmark-1-tokens-vs-onyx.md §6.1).
+"""Token-counting pass-through for Benchmark 1 (docs/benchmarks/benchmark-1-plan.md §6.1).
 
 Every system under test (Handbook, Onyx, baselines) sends its chat calls here,
 so all of them are counted the same way, from the provider's own ``usage``
