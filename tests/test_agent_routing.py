@@ -472,9 +472,20 @@ def test_chart_mode_never_falls_back_to_a_document_answer(monkeypatch):
     monkeypatch.setattr("app.insights.resolve.classify_question",
                         lambda q, **k: AskIntent("qa"))
 
-    decision = routing.choose_agent("chart of team happiness", ORG, chart_mode=True)
+    decision = routing.choose_agent("what is our leave policy?", ORG, chart_mode=True)
 
-    assert (decision.agent_key, decision.reason) == (INSIGHTS_KEY, "chart-refuse")
+    assert (decision.agent_key, decision.reason) == (INSIGHTS_KEY, "chart-mode-text-question")
+    assert decision.chart_refusal.startswith("**Chart mode only builds charts**")
+
+
+def test_chart_mode_names_what_can_be_charted_when_it_cannot_count(monkeypatch):
+    from app.insights.resolve import AskIntent
+
+    _stub(monkeypatch, connected={"linear"})
+    monkeypatch.setattr("app.insights.resolve.classify_question",
+                        lambda q, **k: AskIntent("chart", spec=None))
+    decision = routing.choose_agent("chart of team happiness", ORG, chart_mode=True)
+    assert decision.reason == "chart-refuse"
     assert decision.chart_refusal.startswith("**This can't be shown as a chart**")
 
 

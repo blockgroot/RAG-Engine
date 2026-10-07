@@ -66,6 +66,8 @@ export interface ChatDonePayload {
   remembered?: { id: string; text: string }[];
   /** Asked for a chart (or a count) outside Chart mode: offer to turn it on. */
   chart_hint?: boolean;
+  /** A text question asked in Chart mode: offer to turn Chart off. */
+  ask_hint?: boolean;
 }
 
 export interface ChatStreamHandlers {
