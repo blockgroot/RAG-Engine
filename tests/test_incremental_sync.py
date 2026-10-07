@@ -67,8 +67,7 @@ def test_detect_source_changes_metadata_only():
 def test_detect_source_changes_partitions_by_provider():
     """A Google-scoped diff must never see another provider's rows in the same org.
 
-    This is the regression test for the defect fixed in Phase 1 of
-    GOOGLE_INTEGRATION_PLAN.md: before partitioning by provider, a Google sync
+    Before sync state was partitioned by provider, a Google sync
     in an org that also had Notion documents would compute
     ``removed = every_notion_page_id`` and delete them all.
     """

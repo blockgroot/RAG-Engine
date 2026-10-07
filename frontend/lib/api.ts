@@ -103,6 +103,8 @@ export interface ConversationTurn {
   question: string;
   answer: string;
   created_at: string;
+  /** Sources drawn under this answer. Empty on a turn saved before they were kept. */
+  cited?: { n: number; document_id: string; title: string | null; provider: string | null; url: string | null }[];
 }
 
 export interface RejectedFile {

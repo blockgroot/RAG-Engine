@@ -4,7 +4,7 @@ Unlike ``app/sources/`` (Notion, Google Drive), GitHub content is never
 ingested, chunked, embedded, or stored. Every answer is composed from a bounded,
 live API read decided by the LLM through real function-calling, in the same
 shape as the Phase 5 web-search fallback. See
-``docs/plans/2026-08-05-github-integration.md`` revision 1 for why the README is
+``git history: docs/plans/2026-08-05-github-integration.md`` revision 1 for why the README is
 fetched live rather than indexed: it is small and rarely changes, so an index
 would buy nothing while adding a sync lifecycle and a staleness window that live
 fetching cannot have.

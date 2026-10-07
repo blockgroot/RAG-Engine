@@ -105,6 +105,19 @@ function manageExternalHref(
   return null;
 }
 
+/** Who may get answers from this source -- said on the card because the
+ * guarantee differs per source, and a half-enforced one that reads as whole
+ * is worse than none (CLAUDE.md §3, document-level access). */
+const ACCESS_NOTE: Record<Provider, string> = {
+  google: "Each file is only used in answers for people it's shared with in Drive.",
+  slack: "Private channels are only used in answers for their members.",
+  linear: "Issues from a private team are only used in answers for that team's members and workspace admins.",
+  github:
+    "Private repositories are only used in answers for people whose linked GitHub account can open them (Account → Linked accounts).",
+  notion:
+    "Everyone here can get answers from every page shared with this connection: Notion doesn't tell apps who else a page is shared with.",
+};
+
 function manageExternalLabel(): string {
   return "Manage";
 }
@@ -557,6 +570,12 @@ export function ConnectionCard({
             />
           </div>
         )}
+
+      {connection && (
+        <p className="muted" style={{ marginTop: "0.65rem", fontSize: "0.85rem" }}>
+          {ACCESS_NOTE[provider]}
+        </p>
+      )}
 
       {folderHint && !changingFolder && !changingChannels && (
         <p className="muted" style={{ marginTop: "0.65rem" }}>

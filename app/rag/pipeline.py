@@ -83,6 +83,7 @@ from ..security.outbound import user_worded_query
 from ..security.untrusted import leaks_canary, scrub_untrusted_text
 from .audit import lettuce_verdict, parse_audit_verdict
 from .retrieval import HybridRetriever, RetrievalResult, gate_document
+from .cite import link_citations, strip_citations
 from .context_assemble import assemble_context_texts, describe_hit
 from .decompose import looks_compound, parse_sub_questions
 from .scope_intent import OVERVIEW, classify_scope_intent
@@ -385,7 +386,7 @@ class RagResult:
     # in the context, or a connected answer reading other tools). Keeps it out
     # of the scope-wide cache; see `_is_cacheable`.
     graph_shaped: bool = False
-    # Second Brain live tools (docs/plans/2026-09-29-live-connector-access.md):
+    # Second Brain live tools (git history: docs/plans/2026-09-29-live-connector-access.md):
     # the connectors read LIVE for this answer, ``[{provider, fetched_at}]``.
     live_sources: list[dict] = field(default_factory=list)
     # True when this refusal is "the matching item is no longer available":
@@ -396,6 +397,9 @@ class RagResult:
     # True when personal memory was in the prompt: the answer was interpreted
     # for ONE person, so it is never served to the next asker on the same key.
     personalized: bool = False
+    # Inline citations (`rag/cite.py`): ``[{n, document_id, title, provider,
+    # url}]`` for every valid ``[n]`` marker left in ``answer``.
+    cited: list[dict] = field(default_factory=list)
 
 
 def _without_withheld(
@@ -702,7 +706,9 @@ class RagPipeline:
 
         if conversation_id is not None and self._memory is not None:
             result = replace(result, resolved_question=resolved)
-            self._memory.append_turn(conversation_id, question, result.answer)
+            self._memory.append_turn(
+                conversation_id, question, result.answer, result.cited or None
+            )
             self._remember_retrieval(conversation_id, org_id, result)
             cid = conversation_id
             schedule_summary_fold(cid, lambda: self._update_running_summary(cid))
@@ -947,6 +953,7 @@ class RagPipeline:
             # below them. Inside `contexts`, so the audit and the link rule
             # both see them (plan D9).
             extra_contexts=live.blocks + attachment_contexts,
+            extra_blocks=live.cite_blocks + [None] * len(attachment_contexts),
             superseded=live.refreshed,
         )
         audit_used, audit_downgraded, audit_reason = (
@@ -1017,6 +1024,7 @@ class RagPipeline:
                 budget=budget,
                 user_question=tone_question,
                 extra_contexts=live.blocks + attachment_contexts,
+                extra_blocks=live.cite_blocks + [None] * len(attachment_contexts),
                 superseded=live.refreshed,
             )
             audit_used, audit_downgraded, audit_reason = (
@@ -1610,6 +1618,7 @@ class RagPipeline:
         user_question: str | None = None,
         contexts: list[str] | None = None,
         extra_contexts: list[str] | None = None,
+        extra_blocks: list | None = None,
         profile: PromptProfile | None = None,
         superseded: frozenset[str] = frozenset(),
     ) -> RagResult:
@@ -1667,6 +1676,10 @@ class RagPipeline:
                 [describe_hit(h) for h in prompt_hits],
                 0 if whole_read else self._settings.max_context_chars,
             )
+            # The budget keeps a PREFIX, so block i is prompt_hits[i].
+            blocks: list = list(prompt_hits[: len(contexts)])
+        else:
+            blocks = [None] * len(contexts)
         # Files the asker attached go in FIRST, ahead of retrieved chunks.
         # They are the reason they uploaded: "is this bill claimable?" is a
         # question about the bill, answered against the policy -- so the
@@ -1676,8 +1689,16 @@ class RagPipeline:
         # draw on both and still say where each sentence came from.
         if extra_contexts:
             contexts = list(extra_contexts) + contexts
+            # A live read is the indexed document, so its block can be cited.
+            # An attachment has no stored address and stays uncitable. A
+            # mismatched list would point a number at the wrong document.
+            lead = list(extra_blocks) if extra_blocks is not None else []
+            if len(lead) != len(extra_contexts):
+                lead = [None] * len(extra_contexts)
+            blocks = lead + blocks
         if graph_facts:
             contexts = list(contexts) + [graph_facts]
+            blocks = blocks + [None]
         tone_source = user_question or question
         # Tone runs ALONGSIDE generation, not in front of it: the grounded
         # prompt does not use it, only the (rare) empathy opener composed
@@ -1757,12 +1778,14 @@ class RagPipeline:
             logger.warning("security.canary_leak stage=generate org=%s", org_id)
             answered, answer = False, self._settings.fallback_response
         moderation = None
+        cited: list[dict] = []
         if answered:
             # Before the audit, so the audit judges the text that will ship.
             answer = enforce_link_provenance(answer, contexts, self._link_allowlist)
+            answer, cited = link_citations(answer, blocks)
             # In parallel with the audit below (Task 4.1); a no-op when off.
             moderation = _AUX_POOL.submit(
-                answer_is_unsafe, answer, org_id=org_id, stage="generate"
+                answer_is_unsafe, strip_citations(answer), org_id=org_id, stage="generate"
             )
 
         audit_used = False
@@ -1776,7 +1799,8 @@ class RagPipeline:
             and budget.can_spend(self._budget_settings.min_stage_seconds)
         ):
             verdict = self._audit_answer(
-                question, contexts, answer, org_id=org_id, conversation_id=conversation_id
+                question, contexts, strip_citations(answer),
+                org_id=org_id, conversation_id=conversation_id,
             )
             if verdict is not None and verdict.grounded is not None:
                 audit_used = True
@@ -1814,6 +1838,7 @@ class RagPipeline:
             audit_downgraded=audit_downgraded,
             audit_reason=audit_reason,
             personalized=bool(asker),
+            cited=cited if answered else [],
         )
 
     def _audit_answer(
@@ -2234,7 +2259,8 @@ class RagPipeline:
         result = self._generate(
             question, chosen, top_score, retrieval_reused=False, org_id=org_id,
             conversation_id=conversation_id, budget=budget, user_question=user_question,
-            extra_contexts=live.blocks, superseded=live.refreshed,
+            extra_contexts=live.blocks, extra_blocks=live.cite_blocks,
+            superseded=live.refreshed,
         )
         if not result.answered:
             return None, web

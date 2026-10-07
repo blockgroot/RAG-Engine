@@ -72,25 +72,95 @@ def request_sync(org_id: str, provider: str, workspace_id: str | None = None) ->
     return len(rows)
 
 
+#: A push starts its sync at once only if the connection has not synced in this
+#: many minutes; otherwise the flag waits for the next tick. A busy Slack
+#: channel pushes once per message, and Slack allows our app about one history
+#: read a minute, so syncing on EVERY push would run syncs back to back into
+#: that limit. Inside the gap the change still lands, one tick later.
+PUSH_SYNC_COOLDOWN_MINUTES = 3
+
+_FLAG_RETURNING = (
+    " RETURNING id::text, org_id::text, workspace_id::text, provider,"
+    " (last_sync_at IS NULL OR last_sync_at < now() - make_interval(mins => %s))"
+)
+
+
+def _flag_and_start(sql: str, params: list) -> int:
+    """Stamp the flag, then queue a sync right away where the cooldown allows.
+
+    The flag used to be ALL a push did, so a change waited for the next tick
+    (~10 min) even though the in-API worker runs a queued job within seconds
+    and the push itself has just woken the instance. Queuing here is
+    ``sync_now``: a no-op while a sync is already active (a burst still makes
+    one job), and on success it clears the flag. When it does not queue -- an
+    active job, the cooldown, a failure -- the flag stays for the tick, which
+    is what makes this an addition and never the only path. Callers run it
+    AFTER the provider has been answered, so the ack deadline is unaffected.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(sql + _FLAG_RETURNING, [*params, PUSH_SYNC_COOLDOWN_MINUTES]).fetchall()
+    for connection_id, org_id, workspace_id, provider, cooled_down in rows:
+        if cooled_down:
+            sync_now(org_id, connection_id, provider=provider, workspace_id=workspace_id)
+    return len(rows)
+
+
+def start_cooled_down_pushes() -> int:
+    """Start every flagged connection whose cooldown has just ended.
+
+    A push inside the cooldown only flags, and the flag used to wait for the
+    tick (~10 min) though the cooldown ends after 3. The in-API worker calls
+    this every few seconds, so the second message of a burst syncs ~3 min
+    later -- still at most one sync per cooldown, which is Slack's limit.
+    Connections with a job already queued/running are left out, so this never
+    retries an enqueue the unique index would refuse. Never raises.
+    """
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT c.id::text, c.org_id::text, c.workspace_id::text, c.provider
+                FROM oauth_connections c
+                WHERE c.sync_requested_at IS NOT NULL
+                  AND c.needs_reauth = false
+                  AND c.provider <> ALL(%s)
+                  AND (c.last_sync_at IS NULL
+                       OR c.last_sync_at < now() - make_interval(mins => %s))
+                  AND NOT EXISTS (SELECT 1 FROM ingestion_jobs j WHERE j.connection_id = c.id
+                                  AND j.status IN ('queued', 'running'))
+                """,
+                (list(UNSYNCABLE_PROVIDERS), PUSH_SYNC_COOLDOWN_MINUTES),
+            ).fetchall()
+    except Exception:  # noqa: BLE001 - the tick still clears every flag
+        logger.exception("Push sync: could not list flagged connections")
+        return 0
+    started = 0
+    for connection_id, org_id, workspace_id, provider in rows:
+        if sync_now(org_id, connection_id, provider=provider, workspace_id=workspace_id):
+            started += 1
+    return started
+
+
 def request_sync_connection(connection_id: str) -> int:
     """Flag ONE connection, for a push that already names it (a Drive channel)."""
-    with get_connection() as conn:
-        return len(conn.execute(
-            "UPDATE oauth_connections SET sync_requested_at = now() "
-            "WHERE id = %s::uuid AND needs_reauth = false RETURNING 1",
-            (connection_id,),
-        ).fetchall())
+    return _flag_and_start(
+        "UPDATE oauth_connections SET sync_requested_at = now() "
+        "WHERE id = %s::uuid AND needs_reauth = false",
+        [connection_id],
+    )
+
 
 def request_sync_external(
     provider: str, external_workspace_id: str, *, slack_channel: str | None = None
 ) -> int:
-    """Flag every connection a webhook is about. Returns rows stamped.
+    """Flag every connection a webhook is about, and start their syncs. Returns rows.
 
     A webhook names the PROVIDER'S workspace (a Slack team, a Notion
     workspace, a Linear organization), never our org or space -- and one
     external workspace can back several connections (org-wide plus a space).
-    All of them are stamped: a spurious sync is one cheap listing diff, a
-    missed one is an hour of staleness.
+    All of them are flagged: a spurious sync is one cheap listing diff, a
+    missed one is an hour of staleness. Each then starts at once unless it
+    synced within ``PUSH_SYNC_COOLDOWN_MINUTES`` (see ``_flag_and_start``).
 
     ``slack_channel`` narrows a Slack event to connections that actually
     index that channel, so a message in #random does not sync a space that
@@ -107,8 +177,7 @@ def request_sync_external(
     if slack_channel is not None:
         sql += " AND coalesce(source_config -> 'channel_ids', '[]'::jsonb) ? %s"
         params.append(slack_channel)
-    with get_connection() as conn:
-        return len(conn.execute(sql + " RETURNING 1", params).fetchall())
+    return _flag_and_start(sql, params)
 
 
 #: Providers with an ``oauth_connections`` row but no ingestion path at all.

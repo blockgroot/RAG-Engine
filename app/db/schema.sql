@@ -35,7 +35,7 @@ ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_last_modified TIMESTAMPTZ;
 -- Sync state is partitioned per provider (Google Integration Phase 1): without
 -- this, a Google sync in an org that also has Notion would compute
 -- removed = every Notion page id and delete the whole Notion corpus. See
--- CLAUDE.md §4 and GOOGLE_INTEGRATION_PLAN.md §3.
+-- CLAUDE.md.
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_provider TEXT;
 UPDATE documents SET source_provider = 'notion'
     WHERE source_provider IS NULL AND source_external_id IS NOT NULL;
@@ -395,6 +395,12 @@ ALTER TABLE conversations ADD COLUMN IF NOT EXISTS folded_through INT;
 CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations (org_id, user_id);
 
 ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
+
+
+-- The source list drawn under the answer. NULL on a turn saved before this
+-- column: a reopened chat shows sources only when they were kept. The link
+-- was already checked to be http(s) when the answer was written.
+ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS cited JSONB;
 
 -- Per-org, per-provider OAuth credentials (Phase 10) — replaces hand-set
 -- NOTION_TOKEN_<NAME> env vars with an admin-driven OAuth connect flow.
@@ -1039,7 +1045,7 @@ ALTER TABLE conversation_attachments ALTER COLUMN content DROP NOT NULL;
 -- Second Brain 1.2: one row per person as each CONNECTOR knows them -- a Slack
 -- member, a Drive editor, a GitHub login -- upserted from `documents.source_meta`
 -- and `activity_facts.actor_key`. `user_id` says which Handbook member it is,
--- and is set ONLY on proof (docs/plans/2026-09-23-second-brain.md, D4):
+-- and is set ONLY on proof (git history: docs/plans/2026-09-23-second-brain.md, D4):
 --   provider_email -- the connector's email equals a member's login email IN
 --                     THE SAME ORG (magic-link login makes that email verified);
 --   oauth          -- the member signed in to that account themselves.
@@ -1068,7 +1074,7 @@ CREATE INDEX IF NOT EXISTS idx_person_identities_user
 CREATE INDEX IF NOT EXISTS idx_person_identities_email
     ON person_identities (org_id, email) WHERE email IS NOT NULL;
 
--- Second Brain 1.3: the knowledge graph (docs/plans/2026-09-23-second-brain.md).
+-- Second Brain 1.3: the knowledge graph (git history: docs/plans/2026-09-23-second-brain.md).
 -- One graph per SCOPE (org-wide = workspace_id NULL, or one space), filtered
 -- per viewer at read time. It stores IDs and relationships only -- document
 -- text stays in `chunks` and sharing stays on `documents`, so nothing here can
@@ -1141,7 +1147,7 @@ CREATE INDEX IF NOT EXISTS idx_kg_evidence_edge ON kg_evidence (edge_id);
 CREATE INDEX IF NOT EXISTS idx_kg_evidence_document ON kg_evidence (document_id);
 CREATE INDEX IF NOT EXISTS idx_kg_evidence_fact ON kg_evidence (fact_id);
 
--- Live-tools gateway audit (docs/plans/2026-09-29-live-connector-access.md, D14):
+-- Live-tools gateway audit (git history: docs/plans/2026-09-29-live-connector-access.md, D14):
 -- one row per live read, so "who looked at what, and what happened" is
 -- answerable. NEVER the token and NEVER the result text -- storing results
 -- would be a second copy of tenant data. Deep research only (D0).

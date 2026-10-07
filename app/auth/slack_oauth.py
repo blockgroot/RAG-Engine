@@ -1,6 +1,6 @@
 """Slack implementation of the ``OAuthProvider`` interface.
 
-Phase 1 of the Slack Integration Plan (docs/plans/2026-08-17-slack-integration.md,
+Phase 1 of the Slack Integration Plan (git history: docs/plans/2026-08-17-slack-integration.md,
 decision D6): one bot token per Slack team, installed once via the standard
 "Add to Slack" v2 OAuth flow. This module only gets the bot token connected
 and saved — no channel picker, no adapter, no ingestion yet (later phases).

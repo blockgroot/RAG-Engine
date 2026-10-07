@@ -4,7 +4,7 @@ An adapter already SEES the people, links and containers around a document —
 Drive's `lastModifyingUser`, a Slack thread's authors and `<@U…>` mentions, a
 Notion page's parent and `mention` objects, a Linear issue's assignee and
 attached pull requests — and until now it threw all of it away after rendering
-text. The knowledge graph (docs/plans/2026-09-23-second-brain.md) is rebuilt
+text. The knowledge graph (git history: docs/plans/2026-09-23-second-brain.md) is rebuilt
 from the DATABASE, never by re-calling a provider, so whatever is not captured
 here does not exist for it.
 

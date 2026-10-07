@@ -48,6 +48,7 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, 
 from ..agent.routing import _NO_MATCH, choose_agent, choose_scope
 from ..feedback import record_gap
 from ..guard.live import watch_question
+from ..rag.cite import strip_citations
 from ..auth.credentials import get_live_connection_token
 from ..auth.users import get_user_by_email
 from ..sources.google_groups import viewer_for_person
@@ -189,6 +190,9 @@ def _to_slack_mrkdwn(text: str) -> str:
     Slack AI exfiltration (PromptArmor, 2024) was exactly a model-written
     `<url|text>`. Escaped, both arrive as inert text.
     """
+    # Inline citation markers are for the web chat's chips; in Slack a bare
+    # "[2]" points at nothing the reader can open.
+    text = strip_citations(text)
     text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     out: list[str] = []
     for line in text.split("\n"):
@@ -567,6 +571,18 @@ def _handle(event: dict, team_id: str) -> None:
     post_message(token, channel, answer, thread_ts)
 
 
+def _is_bot_traffic(event: dict, bot_users: set[str]) -> bool:
+    """The bot's own post/edit, or a question TO it -- ingest never indexes
+    either (`sources.slack._is_bot_traffic`), so a sync for one finds nothing.
+    Without this every answer flagged a sync twice (placeholder, then its edit)
+    and every question a third time, each a Slack history read at 1/min."""
+    message = event.get("message") or event.get("previous_message") or event
+    if event.get("bot_id") or message.get("bot_id"):
+        return True
+    text = message.get("text") or ""
+    return any(f"<@{u}>" in text for u in bot_users)
+
+
 def _is_channel_content(event: dict) -> bool:
     """A message posted, edited or deleted in a channel (not a DM, not a mention).
 
@@ -638,6 +654,10 @@ async def slack_events(
     # BEFORE the retry drop: the flag is idempotent, so a retry of a delivery
     # that died on a cold start still lands.
     if _is_channel_content(event):
+        # `authorizations` names the bot user this delivery is for.
+        bot_users = {a.get("user_id") for a in payload.get("authorizations") or [] if a.get("user_id")}
+        if _is_bot_traffic(event, bot_users):
+            return {"ok": True}
         background.add_task(
             _flag_channel_sync, payload.get("team_id") or "", event.get("channel") or ""
         )

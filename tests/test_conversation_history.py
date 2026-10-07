@@ -137,3 +137,85 @@ def test_the_fold_marker_only_moves_forward():
     memory.set_summary_folded_through(cid, "s", 5)
     memory.set_summary_folded_through(cid, "s", 2)
     assert memory.get_folded_through(cid) == 5
+
+
+def test_a_reopened_turn_returns_its_sources_and_drops_a_bad_link(monkeypatch):
+    """The history payload is what the page draws. A non-http url must not survive."""
+    from datetime import datetime, timezone
+
+    raw = [
+        {
+            "n": 1,
+            "document_id": "d-leave",
+            "title": "Leave Policy",
+            "provider": "notion",
+            "url": "https://notion.so/leave",
+        },
+        {
+            "n": 2,
+            "document_id": "d-bad",
+            "title": "Nope",
+            "provider": "notion",
+            "url": "javascript:alert(1)",
+        },
+        {"n": "1", "document_id": "d-x"},
+    ]
+    conn = _Conn(rows=[(0, "q", "Leave [1].", datetime.now(timezone.utc), raw)])
+    monkeypatch.setattr(store, "get_connection", lambda: conn)
+    turns = store.get_conversation_turns(
+        conversation_id="c", org_id="o", user_id="u", workspace_id=None
+    )
+    assert "t.cited" in conn.sql[0]
+    assert turns[0].cited == [
+        {
+            "n": 1,
+            "document_id": "d-leave",
+            "title": "Leave Policy",
+            "provider": "notion",
+            "url": "https://notion.so/leave",
+        },
+        {
+            "n": 2,
+            "document_id": "d-bad",
+            "title": "Nope",
+            "provider": "notion",
+            "url": None,
+        },
+    ]
+
+
+def test_append_turn_writes_the_citation_list(monkeypatch):
+    """The column is the only reason a reopened chat can draw its sources."""
+    from app.memory.pg_store import PgConversationStore
+
+    class _Write:
+        def __init__(self):
+            self.sql: list[str] = []
+            self.params: list[tuple] = []
+            self._n = 0
+
+        def execute(self, sql, params):
+            self.sql.append(" ".join(sql.split()))
+            self.params.append(params)
+            self._n += 1
+            return self
+
+        def fetchone(self):
+            return ("org",) if self._n == 1 else (0,)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    conn = _Write()
+    monkeypatch.setattr("app.memory.pg_store.get_connection", lambda settings=None: conn)
+    PgConversationStore().append_turn(
+        "cid",
+        "q",
+        "Leave [1].",
+        [{"n": 1, "document_id": "d-leave", "title": "Leave", "provider": "notion", "url": "https://notion.so/leave"}],
+    )
+    assert "cited" in conn.sql[-1]
+    assert '"document_id": "d-leave"' in conn.params[-1][-1]

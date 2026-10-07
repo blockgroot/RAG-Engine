@@ -215,6 +215,9 @@ class RetrievedChunk:
     doc_is_public: bool = True
     # Prompt-injection probability from ingest (`app/guard/`); None = unscored.
     injection_score: float | None = None
+    # The document's address in its own tool (Notion page, Drive file, Slack
+    # thread, Linear issue): what an inline citation opens (`rag/cite.py`).
+    source_uri: str | None = None
 
 
 @dataclass(frozen=True)
@@ -232,7 +235,7 @@ class StoredSourceDocument:
 
     ``provider`` (e.g. ``"notion"``, ``"google"``) partitions sync state so a
     sync for one provider never diffs against another provider's rows in the
-    same org — see CLAUDE.md §4 / GOOGLE_INTEGRATION_PLAN.md §3.
+    same org — see CLAUDE.md.
     """
 
     document_id: str

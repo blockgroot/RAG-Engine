@@ -1,6 +1,6 @@
 """Layout-aware chunking: Markdown tables split by row, not by sentence/word.
 
-Smart-chunking gap #1 (docs/RAG_VIDEO_COMPARISON.md). Before this, an
+Smart-chunking gap #1 (the RAG checklist review, in git history). Before this, an
 oversized table block fell into ``_hard_split``, which has no notion of a
 table row — it would explode the table word-by-word across chunks, losing
 column headers and row alignment entirely. Now an oversized table is packed

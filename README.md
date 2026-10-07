@@ -1,72 +1,88 @@
-# RAG Engine
+# Handbook (RAG Engine)
 
-A multi-tenant Retrieval-Augmented Generation platform for company policy Q&A.
-Each organization uploads its own documents; employees ask questions and get
-answers grounded strictly in their own company's content — never another
-tenant's, and never the model's outside knowledge.
+A multi-tenant AI assistant that answers employees' questions from their company's own
+tools — **Notion, Google Drive, Slack, Linear and GitHub** — grounded strictly in that
+company's content, never another tenant's and never the model's outside knowledge.
+
+**Current status, every feature, blockers and testing: [PRODUCT_STATUS.md](docs/handbook/PRODUCT_STATUS.md).**
+A plain walk through each feature: [current-features.md](docs/handbook/current-features.md).
 
 ## Features
 
-- **Multi-tenant isolation** — every query is scoped by `org_id` (and
-  optionally a nested `workspace_id`), enforced at the query level.
-- **Grounded answers** — a confidence gate plus a strict prompt stop the
-  model from answering off-topic or hallucinating; unanswerable questions get
-  a fixed fallback instead of a guess.
-- **Better retrieval** — contextual chunking, hybrid vector + keyword search
-  (Reciprocal Rank Fusion), and cross-encoder reranking.
-- **Conversation memory** — multi-turn chat with follow-up question
-  rewriting and incrementally maintained summaries.
-- **Web search fallback** — real, named external entities can be answered via
-  a bounded web search, clearly labelled as non-internal.
-- **External sources** — Notion and Google Drive out of the box, behind a
-  common adapter interface for adding more.
-- **Auth & admin** — magic-link login, per-org OAuth connections, an admin
-  panel, and a durable ingestion job queue.
-- **HTTP API + web frontend** — a FastAPI backend with streaming chat, and a
-  Next.js portal for login, chat, and admin.
+- **Grounded Ask** — hybrid vector + keyword retrieval, re-ranking, a confidence gate and a
+  strict prompt; honest "I don't know" and "not shared with you" refusals; follow-ups,
+  whole-space summaries, web search for external topics, per-question model choice and
+  bring-your-own-model.
+- **Citations** — one document is named once under the answer, and that line opens it.
+  Two or more documents keep a small number on each sentence, matched to the same list.
+  The link is the address saved when the page was indexed, never one the model wrote.
+  Slack shows the text without the numbers.
+- **Connectors** — Notion, Google Drive (Docs, PDF, Word), Slack, Linear (indexed) and GitHub
+  (read live, never stored); Google Forms for sentiment charts only.
+- **Access control** — tenant and space isolation, plus each tool's own sharing: Drive per
+  file, Slack per private channel, Linear per private team, GitHub per private repository;
+  charts, reports, live reads and the knowledge graph follow the same rules.
+- **Instant updates** — webhooks from Slack, Linear and Notion and Drive push channels, with an
+  hourly re-check as the floor.
+- **Second Brain** — a knowledge graph across tools, live re-reads of current state, and
+  personal memory.
+- **Charts in Ask** — numbers from SQL over recorded activity, never from the model.
+- **File uploads in chat** — stored privately in Cloudinary, used together with company documents.
+- **Ask in Slack**, **scheduled reports** by email (SendGrid), **spaces**, **feedback and
+  documentation-gap tracking**, a **needs-attention bell**, and **chat history**.
+- **Security** — magic-link sign-in, encrypted tokens, signed webhooks, and layered
+  prompt-injection defense (policy file, scrubbing, link provenance, canary, safety model).
 
 ## Architecture
 
-Every capability (LLM, embeddings, vector store, reranker, sources, auth,
-web search) is a small interface with one or more concrete implementations,
-selected by a `build_*()` factory from config — so swapping a provider is a
-config change, not a code change.
+Every capability (LLM, embeddings, vector store, reranker, sources, auth, web search) is a
+small interface with concrete implementations selected by a `build_*()` factory from config,
+so swapping a provider is a config change, not a code change.
 
 ```
 app/
-  config/       # typed settings, read from env
-  core/         # shared exception types
-  llm/          # LLM provider interface + OpenAI-compatible client
-  embeddings/   # local (sentence-transformers) or remote embedding backend
-  db/           # Postgres schema + pooled connection + migrations
-  ingestion/    # preprocessing, chunking, contextualization
-  vectorstore/  # pgvector-backed storage, hybrid search
-  reranker/     # cross-encoder reranking
-  rag/          # the query pipeline: retrieve -> gate -> generate
-  memory/       # conversation history + summarization
-  websearch/    # external-entity web search fallback
-  sources/      # Notion / Google Drive adapters
-  agent/        # PolicyAgent — the RAG pipeline behind a generic agent contract
-  auth/         # magic-link login, OAuth, sessions
-  jobs/         # ingestion job queue + worker
-  workspaces/   # sub-workspace membership and scoping
-  api/          # FastAPI app (auth, chat, admin, workspaces)
-scripts/        # CLI, ingestion, worker, and demo entrypoints
-frontend/       # Next.js portal
-tests/          # pytest suite
-evaluation/     # golden-set regression evaluation
+  config/       typed settings — the only place env is read
+  core/         shared exception types
+  llm/          OpenAI-compatible client, adapters, per-request model routing, pacing
+  embeddings/   local (sentence-transformers) or remote embedding backend
+  reranker/     local or remote cross-encoder
+  db/           Postgres schema + pooled connection
+  ingestion/    preprocessing, chunking, contextualization
+  vectorstore/  pgvector storage, hybrid search, the Viewer (access) model
+  rag/          query pipeline: rewrite -> retrieve -> gate -> generate -> cite -> audit
+  memory/       conversation history, summaries, personal memory
+  websearch/    external web search fallback (DuckDuckGo)
+  sources/      Notion / Drive / Slack / Linear adapters, Google Groups, Drive push channels
+  githublive/   GitHub live reads + per-asker repository access
+  agent/        per-source agents, routing, LangGraph orchestration
+  graph/        Second Brain knowledge graph (identities, builder, walk, plan)
+  livetools/    Second Brain live connector reads
+  insights/     charts: metric registry, facts, SQL store, resolver
+  attachments/  chat uploads: extraction, limits, Cloudinary blob store
+  feedback/     answer ratings + documentation gaps
+  schedulers/   scheduled reports
+  guard/        prompt-injection scoring and answer moderation
+  security/     untrusted-text policy, scrubbing, link provenance, visibility predicate
+  auth/         magic links, OAuth per connector, sessions, email, email change
+  jobs/         ingestion queue, worker, automatic sync
+  workspaces/   spaces (sub-workspaces) and membership
+  api/          FastAPI routes, incl. Slack events and webhooks
+scripts/        CLI, ingestion, worker and verification entrypoints
+frontend/       Next.js portal
+tests/          pytest suite
+evaluation/     golden-set regression evaluation (+ RAGAS)
 ```
 
-See [CLAUDE.md](CLAUDE.md) for the detailed design rationale and full
-project history.
+See [CLAUDE.md](CLAUDE.md) for the constraints behind each decision.
 
 ## Tech stack
 
 - **Backend:** Python, FastAPI
 - **Database:** PostgreSQL + [pgvector](https://github.com/pgvector/pgvector)
-- **Embeddings:** BGE-M3 (local via `sentence-transformers`, or remote)
-- **LLM:** any OpenAI-compatible endpoint (OpenAI, Gemini, Claude, or
-  self-hosted) via a `base_url` swap — no code changes
+- **Embeddings:** BGE-M3 locally, or a remote OpenAI-compatible embedding API (e.g. Jina)
+- **LLM:** any provider on the fixed `LLM_ADAPTER` list (Gemini, Groq, OpenAI, Anthropic, …);
+  OpenRouter and Groq for per-question model choice
+- **Storage & services:** Cloudinary (uploads), SendGrid (email), Render (API), Vercel (frontend)
 - **Frontend:** Next.js (App Router), plain CSS
 
 ## Getting started
@@ -119,8 +135,8 @@ cd frontend && npm install && npm run dev
 python scripts/ingest_notion.py --org "Acme Corp" --token acme
 ```
 
-Organizations can also connect Notion or Google Drive from the admin panel
-once the API and frontend are running.
+Organizations connect Notion, Google Drive, Slack, Linear and GitHub from the Sources page
+once the API and frontend are running; syncing then runs on its own.
 
 ## Configuration
 
@@ -136,13 +152,16 @@ for the full list with inline documentation. The essentials:
 | `AUTH_ENCRYPTION_KEYS` | OAuth token encryption key(s)             |
 | `FRONTEND_URL` / `API_CORS_ORIGINS` | Frontend origin (magic links, CORS) |
 | `NEXT_PUBLIC_API_BASE_URL` / `API_PROXY_TARGET` | Frontend `/api` rewrite → FastAPI (see `frontend/.env.example`) |
+| `EMAIL_SENDER` | `sendgrid` in production (`console` prints links locally, for development only) |
+| `INTERNAL_TICK_SECRET` | Authenticates the external tick that drives automatic sync |
+| `SLACK_SIGNING_SECRET`, `LINEAR_WEBHOOK_SECRET`, `NOTION_WEBHOOK_VERIFICATION_TOKEN`, `DRIVE_PUSH_BASE_URL` | Instant updates; each receiver is closed until set |
 
 `.env` is git-ignored and must never be committed.
 
 ## Testing
 
 ```bash
-pytest tests/ -v
+pytest -m "not network and not live_llm"   # what CI runs
 ```
 
 Golden-set regression evaluation (path-firing checks + optional RAGAS

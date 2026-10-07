@@ -24,11 +24,16 @@ from dataclasses import dataclass, field
 
 @dataclass(frozen=True)
 class Turn:
-    """One question + its answer within a conversation."""
+    """One question + its answer within a conversation.
+
+    ``cited`` is the source list the web chat drew under the answer. The
+    rewriter never reads it. Empty on a turn saved before sources were kept.
+    """
 
     turn_index: int
     question: str
     answer: str
+    cited: list = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -88,8 +93,14 @@ class ConversationStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def append_turn(self, conversation_id: str, question: str, answer: str) -> int:
-        """Append a turn; return its 0-based ``turn_index``."""
+    def append_turn(
+        self, conversation_id: str, question: str, answer: str, cited: list | None = None
+    ) -> int:
+        """Append a turn; return its 0-based ``turn_index``.
+
+        ``cited`` is the source list for that answer. None stores nothing,
+        which is what a turn with no sources looks like.
+        """
         raise NotImplementedError
 
     @abstractmethod

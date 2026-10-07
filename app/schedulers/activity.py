@@ -345,21 +345,28 @@ def fetch_github_activity(
     repo should not cost the user every other repo's activity, and it must
     not silently make the report look complete either.
     """
-    # Accepted and ignored: GitHub embeds nothing, so there is no indexed
-    # document whose sharing could be narrower than the connection's own.
-    del viewer
-
     from ..githublive import build_github_reader
+    from ..githublive.access import restrict
     from ..githublive.scope import load_scope
 
     scope = load_scope(org_id, workspace_id)
-    reader = build_github_reader(org_id, workspace_id)
+    full = build_github_reader(org_id, workspace_id)
+    # A report is its owner reading on a timer, so it reads only the
+    # repositories the owner can open on GitHub (`githublive.access`).
+    reader = restrict(full, org_id, viewer)
+    visible = list(scope.repos) if reader is full else reader.list_repos()
 
-    repos = list(scope.repos)[:MAX_REPOS]
+    repos = list(visible)[:MAX_REPOS]
     notes: list[str] = []
-    if len(scope.repos) > MAX_REPOS:
+    hidden = getattr(reader, "hidden", 0)
+    if hidden:
         notes.append(
-            f"Only the first {MAX_REPOS} of {len(scope.repos)} authorized "
+            f"{hidden} private repositories were left out: your linked GitHub account "
+            "cannot open them, or no GitHub account is linked (Account → Linked accounts)."
+        )
+    if len(visible) > MAX_REPOS:
+        notes.append(
+            f"Only the first {MAX_REPOS} of {len(visible)} authorized "
             "repositories were checked."
         )
 

@@ -1,10 +1,12 @@
 """Push receivers: a provider says something changed, we flag a sync.
 
-Every handler here does ONE thing -- stamp ``sync_requested_at`` on the
-connection(s) the push is about -- and never ingests inline. The tick reads
-and clears the flag, so fifty pushes still make one job (CLAUDE.md §3
-Automatic freshness), and each handler answers inside the provider's deadline
-(Linear: 5 s; Slack: 3 s, handled in ``slack_events.py``).
+Every handler here does ONE thing -- flag the connection(s) the push is about
+and, after answering the provider, queue their sync (`autosync._flag_and_start`)
+-- and never ingests inline. Queuing is a no-op while a sync is active and
+skipped within 3 minutes of the last one, so fifty pushes still make one job;
+what is not queued waits on the flag for the tick (CLAUDE.md §3 Automatic
+freshness). Each handler answers inside the provider's deadline (Linear: 5 s;
+Slack: 3 s, handled in ``slack_events.py``).
 
 A push never carries content we trust: it only moves a sync earlier. That is
 why a forged or replayed push is harmless beyond one extra listing diff -- and
@@ -45,7 +47,9 @@ def _not_found() -> HTTPException:
 def _flag(provider: str, external_id: str) -> None:
     """Background: never raises, since the provider has already been answered."""
     try:
-        request_sync_external(provider, external_id)
+        if not request_sync_external(provider, external_id):
+            # Signed and fresh but about no connection: the id we stored differs.
+            logger.warning("webhooks: %s event for %r matched no connection", provider, external_id)
     except Exception:  # noqa: BLE001 - a missed flag costs one poll interval
         logger.warning("webhooks: could not flag %s %s", provider, external_id, exc_info=True)
 
@@ -125,6 +129,7 @@ async def linear_webhook(
     body = await request.body()
     expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
     if not linear_signature or not hmac.compare_digest(expected, linear_signature):
+        logger.warning("linear webhook: bad signature (header %s)", "present" if linear_signature else "missing")
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Bad signature")
     payload = _json(body)
     try:
@@ -132,6 +137,7 @@ async def linear_webhook(
     except (TypeError, ValueError):
         sent_at = 0
     if abs(time.time() * 1000 - sent_at) > _LINEAR_MAX_SKEW_MS:
+        logger.warning("linear webhook: stale delivery, %.0fs old", (time.time() * 1000 - sent_at) / 1000)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Stale delivery")
 
     # `organizationId` is the workspace the OAuth exchange stored as

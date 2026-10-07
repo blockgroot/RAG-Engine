@@ -4,13 +4,18 @@ The endpoint behind `RAG_AUDIT_BACKEND=lettuce`. It flags the parts of an
 answer the retrieved context does not support. See `app/rag/audit.py` in the
 main repo.
 
-## Deploy (free, nothing runs locally)
+## Deploy
 
-Docker Spaces are paid; a **Gradio** Space is free and simply runs
-`python app.py`, which starts our own server on port 7860.
+**Not free, and not enabled.** Hugging Face made CPU Spaces a paid plan, and
+Docker Spaces are paid. A free Gradio Space runs on ZeroGPU, which is the wrong
+hardware for this checker. The app in this folder is ready for a **paid private
+CPU Space**. Until that exists, `RAG_AUDIT_ENABLED` stays off. Product status:
+`docs/handbook/PRODUCT_STATUS.md` (answer fact-checker).
 
-1. On huggingface.co: **New Space → Gradio → Blank**, hardware **CPU basic
-   (free)**, visibility **Private**. It must be private: every request carries a
+`app.py` starts the checker on port 7860.
+
+1. On huggingface.co: **New Space → Gradio → Blank**, hardware **a paid CPU
+   Space**, visibility **Private**. It must be private: every request carries a
    tenant's retrieved documents.
 2. Space → **Files → Add file → Upload files**: `app.py` and
    `requirements.txt` from this folder. Keep the README Hugging Face created
@@ -28,8 +33,9 @@ Docker Spaces are paid; a **Gradio** Space is free and simply runs
 
 ## Known limits
 
-- **Free Spaces sleep after 48h with no traffic.** A request to a sleeping
-  Space times out (8s), which SKIPS the check, so answers keep flowing.
+- **A sleeping Space skips the check.** A request that times out (8s) does not
+  block the answer; the audit is skipped. Measure CPU latency on the paid Space
+  before turning `RAG_AUDIT_ENABLED` on.
 - **The model downloads on each cold start** (~1.6GB, HF to HF, so fast, but
   the first request after a wake is slow).
 - **CPU speed is not measured yet.** If the large model is too slow, set the

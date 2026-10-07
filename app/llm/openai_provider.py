@@ -248,6 +248,15 @@ class OpenAICompatProvider(LLMProvider):
                     "RAG_MAX_ANSWER_TOKENS or use a non-reasoning model."
                 )
             raise LLMProviderError(f"LLM returned an empty message content: {detail}")
+        if getattr(choice, "finish_reason", None) == "length":
+            # Non-empty but CUT: the reader sees an answer ending mid-word
+            # ("a combination of pre-") and nothing else says why.
+            logger.warning(
+                "llm.truncated model=%s max_tokens=%s completion_tokens=%s -- raise "
+                "RAG_MAX_ANSWER_TOKENS or use a non-reasoning model",
+                self.last_resolved_model or self.model, kwargs.get("max_tokens"),
+                self.last_usage.output_tokens,
+            )
 
         return content
 

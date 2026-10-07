@@ -369,6 +369,22 @@ def test_no_live_request_never_reads_live(monkeypatch):
     assert result.live_sources == []
 
 
+def test_a_live_answer_links_the_stored_document(monkeypatch, live_request):
+    _live(monkeypatch, LiveRefresh(reads=[LiveRead(
+        "linear", "doc-linear", "uuid-5", base.OK,
+        text="Live from Linear\nSYV-5 status In Review. https://evil.example",
+        fetched_at=datetime(2026, 9, 29, 12, 4, tzinfo=timezone.utc),
+        title="SYV-5",
+        source_uri="https://linear.app/syvora/issue/SYV-5",
+    )]))
+    _, pipeline = _pipeline()
+    result = pipeline.answer("leave tracker status?", "org-1")
+    assert result.cited == [{
+        "n": 1, "document_id": "doc-linear", "title": "SYV-5",
+        "provider": "linear", "url": "https://linear.app/syvora/issue/SYV-5",
+    }]
+
+
 def test_the_live_block_replaces_the_synced_copy(monkeypatch, live_request):
     _live(monkeypatch, LiveRefresh(reads=[_ok()]))
     llm, pipeline = _pipeline()
@@ -560,7 +576,9 @@ def test_targets_resolve_only_this_scopes_documents(store, monkeypatch):
         targets = gateway._targets(hits, request, ON)
         # The space's document is invisible from company scope; Notion is not
         # refreshable in Phase 1.
-        assert targets == [(company_linear, "linear", "u-company")]
+        assert [(t[0], t[1], t[2]) for t in targets] == [
+            (company_linear, "linear", "u-company")]
+        assert targets[0][3] == "SYV-5"
 
         # End to end with the audit row written for real.
         monkeypatch.setattr(gateway, "_token", lambda req, p: (SECRET, None))

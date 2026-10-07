@@ -45,6 +45,9 @@ class Citation:
     content: str
     reference: str
     score: float | None = None
+    #: http(s) address from the source itself (a GitHub html URL). Never a URL
+    #: the model wrote.
+    url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -108,6 +111,9 @@ class AgentResponse:
     #: and the cache for the reason `access_restricted` is).
     live_sources: list[dict] = field(default_factory=list)
     live_withheld: bool = False
+    #: Inline citations: the documents behind the answer's ``[n]`` markers
+    #: (``rag/cite.py``), ``[{n, document_id, title, provider, url}]``.
+    cited: list[dict] = field(default_factory=list)
     #: Set only by InsightsAgent. SQL points + shape; never model-drawn SVG.
     chart: dict | None = None
     chart_period: str | None = None

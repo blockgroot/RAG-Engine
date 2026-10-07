@@ -18,6 +18,10 @@ from ..ingestion.pipeline import enrich_source_contextual, ingest_source
 from ..insights.facts import DOCUMENT_PROVIDERS, backfill_all_document_facts, record_document_facts
 from ..sources import build_source_adapter
 from . import queue
+from .autosync import start_cooled_down_pushes
+
+#: How often a worker loop starts pushes whose cooldown has ended (`autosync`).
+PUSH_CHECK_SECONDS = 15.0
 
 logger = logging.getLogger(__name__)
 
@@ -541,12 +545,16 @@ def run_forever(
     last_reap = 0.0
     last_maintenance = 0.0
     last_sync = 0.0
+    last_push = 0.0
     last_scheduler = -float(scheduler_settings.poll_seconds)
     while True:
         now = time.monotonic()
         if now - last_reap >= reap_interval:
             queue.reap_stuck()
             last_reap = now
+        if now - last_push >= PUSH_CHECK_SECONDS:
+            start_cooled_down_pushes()
+            last_push = now
         if now - last_maintenance >= maintenance_interval:
             run_maintenance()
             last_maintenance = now

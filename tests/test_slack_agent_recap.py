@@ -208,3 +208,29 @@ def test_recap_prompt_labels_each_thread_with_its_channel():
     assert "(#eng-standup)" in prompt
     assert "shipped the thing" in prompt
     assert "no channel here" in prompt
+
+
+def test_a_recap_cites_the_threads_it_summarised():
+    """Recency questions answer here, not on the main path, so citations must too."""
+    chunks = [
+        RetrievedChunk(
+            content="Shipped the export feature today.", score=0.0, document_id="d1",
+            chunk_index=0, org_id=_ORG, document_title="#eng: export",
+            source_provider="slack", source_uri="https://slack.com/archives/C1/p1",
+        ),
+        RetrievedChunk(
+            content="Cache fix is in review.", score=0.0, document_id="d2",
+            chunk_index=0, org_id=_ORG, document_title="#eng: cache",
+            source_provider="slack", source_uri="https://slack.com/archives/C1/p2",
+        ),
+    ]
+    llm = RecordingLLM(answer="- Cache fix is in review [2].\n- Export shipped [1][7].")
+    response = SlackAgent(_pipeline(_EmptyQueryStore(recap_chunks=chunks), llm)).answer(
+        "Catch me up", _ORG
+    )
+
+    assert response.answer == "- Cache fix is in review [1].\n- Export shipped [2]."
+    assert [(c["document_id"], c["url"]) for c in response.cited] == [
+        ("d2", "https://slack.com/archives/C1/p2"),
+        ("d1", "https://slack.com/archives/C1/p1"),
+    ]

@@ -80,16 +80,20 @@ def refresh(
         return LiveRefresh()
 
 
-def _targets(hits: list, request: LiveRequest, settings: LiveToolsSettings) -> list[tuple[str, str, str]]:
-    """``[(document_id, provider, external_id)]``, at most MAX_REFRESHES."""
-    return [c[:3] for c in candidates(hits, request, settings, limit=base.MAX_REFRESHES)]
+def _targets(hits: list, request: LiveRequest, settings: LiveToolsSettings) -> list[tuple]:
+    """Refreshable hits, at most MAX_REFRESHES.
+
+    Each row is ``(document_id, provider, external_id, title, source_uri)``.
+    The address is the indexed document's, so a live answer can cite it.
+    """
+    return candidates(hits, request, settings, limit=base.MAX_REFRESHES)
 
 
 def candidates(
     hits: list, request: LiveRequest, settings: LiveToolsSettings | None = None,
     *, limit: int = base.CANDIDATE_DOCUMENTS,
-) -> list[tuple[str, str, str, str]]:
-    """``[(document_id, provider, external_id)]`` for the best refreshable hits.
+) -> list[tuple]:
+    """``[(document_id, provider, external_id, title, source_uri)]`` for the best refreshable hits.
 
     Looked up from ``documents`` by id, pinned to the request's org AND space:
     the hit says WHICH document, the row says where it lives. Reused hits
@@ -108,7 +112,8 @@ def candidates(
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT id::text, source_provider, source_external_id, coalesce(title, '')
+            SELECT id::text, source_provider, source_external_id, coalesce(title, ''),
+                   source_uri
             FROM documents
             WHERE org_id = %s::uuid
               AND workspace_id IS NOT DISTINCT FROM %s::uuid
@@ -117,12 +122,12 @@ def candidates(
             (request.org_id, request.workspace_id, order),
         ).fetchall()
     settings = settings or LiveToolsSettings.from_env()
-    found = {r[0]: (r[1], r[2], r[3]) for r in rows}
+    found = {r[0]: (r[1], r[2], r[3], r[4]) for r in rows}
     out = []
     for doc in order:
-        provider, external_id, title = found.get(doc, (None, None, ""))
+        provider, external_id, title, source_uri = found.get(doc, (None, None, "", None))
         if provider in READERS and provider in settings.providers and external_id:
-            out.append((doc, provider, external_id, title))
+            out.append((doc, provider, external_id, title, source_uri))
         if len(out) >= limit:
             break
     return out
@@ -137,7 +142,7 @@ def _drop_freshly_synced(targets, request: LiveRequest) -> list:
     space. A lookup failure keeps the targets -- reading live is the safe
     direction when freshness is unknown.
     """
-    providers = sorted({provider for _, provider, _ in targets})
+    providers = sorted({t[1] for t in targets})
     try:
         with get_connection() as conn:
             rows = conn.execute(
@@ -166,24 +171,28 @@ def _drop_freshly_synced(targets, request: LiveRequest) -> list:
 def _read_all(targets, request: LiveRequest, guard_settings: GuardSettings | None,
               mode: str = "refresh") -> list[LiveRead]:
     tokens: dict[str, tuple[str | None, str | None]] = {}
-    for _, provider, _ in targets:
+    for item in targets:
+        provider = item[1]
         if provider not in tokens:
             tokens[provider] = _token(request, provider)
 
     started = time.perf_counter()
     futures = []
-    for doc, provider, external_id in targets:
+    for item in targets:
+        doc, provider, external_id = item[0], item[1], item[2]
+        title = item[3] if len(item) > 3 else ""
+        source_uri = item[4] if len(item) > 4 else None
         token, failure = tokens[provider]
         if token is None:
-            futures.append((doc, provider, external_id, None, failure))
+            futures.append((doc, provider, external_id, title, source_uri, None, failure))
             continue
         future = _POOL.submit(
             contextvars.copy_context().run, READERS[provider], token, external_id
         )
-        futures.append((doc, provider, external_id, future, None))
+        futures.append((doc, provider, external_id, title, source_uri, future, None))
 
     reads: list[LiveRead] = []
-    for doc, provider, external_id, future, failure in futures:
+    for doc, provider, external_id, title, source_uri, future, failure in futures:
         if future is None:
             result = ProviderRead(failure or base.NOT_CONNECTED)
         else:
@@ -199,7 +208,7 @@ def _read_all(targets, request: LiveRequest, guard_settings: GuardSettings | Non
         if result.reason and result.outcome != base.OK:
             logger.info("livetools.reason provider=%s outcome=%s reason=%s",
                         provider, result.outcome, result.reason)
-        reads.append(_to_live_read(doc, provider, external_id, result))
+        reads.append(_to_live_read(doc, provider, external_id, result, title, source_uri))
 
     reads = _screen(reads, request, guard_settings)
     latency = round((time.perf_counter() - started) * 1000)
@@ -234,7 +243,8 @@ def _mark_reauth(request: LiveRequest, provider: str) -> None:
         logger.warning("could not mark %s needs_reauth", provider, exc_info=True)
 
 
-def _to_live_read(doc: str, provider: str, external_id: str, result: ProviderRead) -> LiveRead:
+def _to_live_read(doc: str, provider: str, external_id: str, result: ProviderRead,
+                  title: str = "", source_uri: str | None = None) -> LiveRead:
     if result.outcome != base.OK or not result.text.strip():
         outcome = result.outcome if result.outcome != base.OK else base.ERROR
         return LiveRead(provider, doc, external_id, outcome)
@@ -249,7 +259,8 @@ def _to_live_read(doc: str, provider: str, external_id: str, result: ProviderRea
         f"indexed copy of the same item)"
     )
     return LiveRead(provider, doc, external_id, base.OK, text=f"{header}\n{body}",
-                    fetched_at=fetched, truncated=truncated)
+                    fetched_at=fetched, truncated=truncated, title=title or "",
+                    source_uri=source_uri)
 
 
 def _screen(reads: list[LiveRead], request: LiveRequest,

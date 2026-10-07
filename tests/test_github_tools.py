@@ -75,6 +75,7 @@ def test_pull_requests_name_the_author_and_the_merger_separately():
     assert "by ada" in text
     assert "merged" in text and "by grace" in text
     assert citations[0].reference == "acme/api#1"
+    assert citations[0].url == "https://github.com/acme/api/pull/1"
 
 
 def test_an_unmerged_pull_request_is_not_described_as_merged():

@@ -616,6 +616,7 @@ def get_conversation_route(
                 "question": t.question,
                 "answer": t.answer,
                 "created_at": t.created_at.isoformat(),
+                "cited": t.cited,
             }
             for t in turns
         ],
@@ -821,6 +822,9 @@ def _stream_attachment_answer(
             "chart": None,
             "chart_period": None,
             "live_sources": list(getattr(response, "live_sources", None) or []),
+            # The documents behind the answer's [n] markers; the UI draws a
+            # chip only for a number listed here and strips the rest.
+            "cited": list(getattr(response, "cited", None) or []),
         },
     )
 
@@ -924,6 +928,34 @@ def _invoke_with_plan(graph_input: dict, plan):
         return _agent_graph().invoke(graph_input)["response"]
     finally:
         graph_plan.reset_plan(token)
+
+
+def _keep_standalone_turn(
+    agent_key: str,
+    conversation_id: str | None,
+    question: str,
+    answer: str,
+    cited: list | None = None,
+) -> None:
+    """Write a turn for an agent that never enters ``RagPipeline``.
+
+    The pipeline is the only other place a turn is saved. GitHub and charts
+    do not use it, and a conversation with no turn is left out of the history
+    list, so the chat vanishes on reload. A failure here must not drop the
+    answer the person is already reading.
+    """
+    if agent_key not in ("github", "insights") or not conversation_id or not (answer or "").strip():
+        return
+    try:
+        from ..memory import build_conversation_store
+
+        store = build_conversation_store()
+        if "cited" in store.append_turn.__code__.co_varnames:
+            store.append_turn(conversation_id, question, answer, cited or None)
+        else:
+            store.append_turn(conversation_id, question, answer)
+    except Exception:  # noqa: BLE001 - the answer already exists; losing the save is the old bug
+        logger.warning("could not save %s turn", agent_key, exc_info=True)
 
 
 def _drop_refusal_turn(org_id, conversation_id, question, answer) -> None:
@@ -1161,6 +1193,11 @@ def _stream_answer_body(
         yield _sse_event("error", {"message": _user_facing_llm_error(exc)})
         return
 
+    # A connected retry was answered by the pipeline, which already saved its
+    # own turn. Saving again would put the question in the history twice.
+    if not retry_tools:
+        _keep_standalone_turn(decision.agent_key, conversation_id, question, result.answer, getattr(result, "cited", None))
+
     # A question that came back ungrounded is a documentation gap, and it is
     # recorded here without anyone having to report it -- the gaps people
     # quietly give up on are exactly the ones that never get reported.
@@ -1230,6 +1267,7 @@ def _stream_answer_body(
             # Which connectors answered LIVE, and when. Empty when nothing was
             # refreshed -- the indexed copy answered.
             "live_sources": list(getattr(result, "live_sources", None) or []),
+            "cited": list(getattr(result, "cited", None) or []),
             # Personal memory saved from this question, announced so saving is
             # never silent; the pill offers Undo.
             "remembered": _remembered(memory_turn),

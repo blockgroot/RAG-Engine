@@ -424,6 +424,24 @@ class RestGitHubReader(GitHubReader):
 
     # -- HTTP --------------------------------------------------------------
 
+    def repo_permission(self, full_name: str, login: str) -> str:
+        """``login``'s effective access to ``full_name``: admin/write/read/none.
+
+        GitHub resolves every grant (repo, team, org, enterprise) and needs only
+        the Metadata permission every installation has. 404 = no access.
+        Raises ``httpx.HTTPError`` on anything else, so a failure is never
+        mistaken for an answer.
+        """
+        response = httpx.get(
+            f"{GITHUB_API_BASE}/repos/{full_name}/collaborators/{login}/permission",
+            headers=github_headers(self._token),
+            timeout=self._settings.timeout,
+        )
+        if response.status_code == 404:
+            return "none"
+        response.raise_for_status()
+        return str(response.json().get("permission") or "none")
+
     def _request(
         self,
         url: str,

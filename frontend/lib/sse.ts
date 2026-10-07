@@ -1,5 +1,13 @@
 import { API_BASE_URL, type InsightPanel } from "./api";
 
+export interface CitedSource {
+  n: number;
+  document_id: string;
+  title: string | null;
+  provider: string | null;
+  url: string | null;
+}
+
 export interface ChatDonePayload {
   answer: string;
   grounded: boolean;
@@ -49,6 +57,10 @@ export interface ChatDonePayload {
   /** Connectors read LIVE for this answer (Second Brain live tools). Empty when the
    *  indexed copy answered, so "live" is never claimed for a synced copy. */
   live_sources?: { provider: string; fetched_at: string }[];
+  /** The documents behind the answer's [n] markers, numbered in reading order.
+   *  The server keeps only numbers that pointed at a retrieved document, and
+   *  `url` comes from the stored document, never from the model's text. */
+  cited?: CitedSource[];
   /** Personal memory saved from THIS question -- shown with Undo, so saving
    *  is never silent. */
   remembered?: { id: string; text: string }[];

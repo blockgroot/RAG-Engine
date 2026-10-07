@@ -343,7 +343,11 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       setMessages(
         turns.flatMap((t) => [
           { role: "user" as const, text: t.question },
-          { role: "assistant" as const, text: t.answer },
+          {
+            role: "assistant" as const,
+            text: t.answer,
+            cited: t.cited && t.cited.length ? t.cited : undefined,
+          },
         ]),
       );
       setAttachments(files);
@@ -523,9 +527,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     setMessages((prev) => [...prev, { role: "assistant", text: "", streaming: true }]);
 
     // Always create a conversation now. Which agent answers is decided by the
-    // BACKEND, per question, so the client cannot know in advance whether this
-    // one goes to GitHub (which keeps no memory and simply ignores the id).
-    // Guessing wrong the other way would silently drop follow-up context.
+    // backend, per question, including GitHub. The id is what the history
+    // list reopens.
     const convId = await ensureConversation();
 
     await streamChat(

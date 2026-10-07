@@ -95,6 +95,21 @@ def test_a_retried_delivery_still_flags(slack_client, recorded):
     assert flagged == [("slack", "T1", "C1")]
 
 
+@pytest.mark.parametrize("event", [
+    {"type": "message", "channel_type": "group", "channel": "C1", "bot_id": "B1", "text": "Searching…"},
+    {"type": "message", "subtype": "message_changed", "channel": "C1",
+     "message": {"bot_id": "B1", "text": "the answer"}},
+    {"type": "message", "channel_type": "group", "channel": "C1", "user": "U1", "text": "<@UBOT> leave?"},
+])
+def test_the_bots_own_traffic_flags_nothing(slack_client, recorded, event):
+    """Ingest never indexes it, so a sync for it would find nothing."""
+    flagged, answered = recorded
+    body = {**_slack_event(event), "authorizations": [{"user_id": "UBOT"}]}
+    raw, headers = _slack_signed(body)
+    assert slack_client.post("/slack/events", content=raw, headers=headers).status_code == 200
+    assert flagged == [] and answered == []
+
+
 def test_a_mention_and_a_dm_are_still_answered(slack_client, recorded):
     flagged, answered = recorded
     for event in (
@@ -137,13 +152,102 @@ def _flagged(connection_id) -> bool:
         ).fetchone()[0]
 
 
+def _jobs(connection_id) -> int:
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT count(*) FROM ingestion_jobs WHERE connection_id = %s", (connection_id,)
+        ).fetchone()[0]
+
+
+def _synced_minutes_ago(connection_id, minutes):
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE oauth_connections SET last_sync_at = now() - make_interval(mins => %s) "
+            "WHERE id = %s", (minutes, connection_id),
+        )
+
+
 @requires_db
-def test_only_connections_indexing_the_channel_are_flagged(org):
+def test_only_connections_indexing_the_channel_are_synced(org):
     team = f"T{uuid.uuid4().hex[:8]}"
     eng = _connection(org, "slack", team, config={"channel_ids": ["C-ENG"]})
     assert request_sync_external("slack", team, slack_channel="C-RANDOM") == 0
+    assert _jobs(eng) == 0
     assert request_sync_external("slack", team, slack_channel="C-ENG") == 1
-    assert _flagged(eng)
+    assert _jobs(eng) == 1
+
+
+@requires_db
+def test_a_push_starts_the_sync_at_once_instead_of_waiting_for_the_tick(org):
+    workspace = f"W{uuid.uuid4().hex[:8]}"
+    conn_id = _connection(org, "notion", workspace)
+    _synced_minutes_ago(conn_id, 60)
+    request_sync_external("notion", workspace)
+    assert _jobs(conn_id) == 1
+    assert not _flagged(conn_id)  # sync_now cleared it: the work is queued
+
+
+@requires_db
+def test_a_burst_makes_one_job_and_leaves_the_rest_for_the_tick(org):
+    """Fifty messages must not mean fifty syncs: while one is queued or
+    running, further pushes only leave the flag for the next tick."""
+    workspace = f"W{uuid.uuid4().hex[:8]}"
+    conn_id = _connection(org, "notion", workspace)
+    request_sync_external("notion", workspace)
+    _synced_minutes_ago(conn_id, 60)  # cooled down, but a job is still active
+    for _ in range(5):
+        request_sync_external("notion", workspace)
+    assert _jobs(conn_id) == 1
+    assert _flagged(conn_id)
+
+
+@requires_db
+def test_inside_the_cooldown_the_change_waits_for_the_tick(org):
+    """A busy channel must not run syncs back to back into Slack's rate limit."""
+    workspace = f"W{uuid.uuid4().hex[:8]}"
+    conn_id = _connection(org, "notion", workspace)
+    _synced_minutes_ago(conn_id, 1)
+    request_sync_external("notion", workspace)
+    assert _jobs(conn_id) == 0
+    assert _flagged(conn_id)
+
+
+@requires_db
+def test_a_flag_starts_when_its_cooldown_ends_not_at_the_tick(org, monkeypatch):
+    """The second message of a burst syncs ~3 min later, not ~10."""
+    from app.jobs import autosync
+
+    started = []
+    monkeypatch.setattr(autosync, "sync_now", lambda org_id, cid, **kw: started.append(cid) or "job")
+    workspace = f"W{uuid.uuid4().hex[:8]}"
+    conn_id = _connection(org, "notion", workspace)
+    _synced_minutes_ago(conn_id, 1)
+    request_sync_external("notion", workspace)  # inside the cooldown: flag only
+    autosync.start_cooled_down_pushes()
+    assert conn_id not in started
+
+    _synced_minutes_ago(conn_id, autosync.PUSH_SYNC_COOLDOWN_MINUTES + 1)
+    autosync.start_cooled_down_pushes()
+    assert conn_id in started
+
+
+@requires_db
+def test_a_flag_waits_while_a_sync_is_running(org, monkeypatch):
+    from app.jobs import autosync
+
+    started = []
+    monkeypatch.setattr(autosync, "sync_now", lambda org_id, cid, **kw: started.append(cid) or "job")
+    workspace = f"W{uuid.uuid4().hex[:8]}"
+    conn_id = _connection(org, "notion", workspace)
+    _synced_minutes_ago(conn_id, 10)
+    with get_connection() as conn:
+        conn.execute("UPDATE oauth_connections SET sync_requested_at = now() WHERE id = %s", (conn_id,))
+        conn.execute(
+            "INSERT INTO ingestion_jobs (org_id, connection_id, status) VALUES (%s, %s, 'running')",
+            (org, conn_id),
+        )
+    autosync.start_cooled_down_pushes()
+    assert conn_id not in started
 
 
 @requires_db
