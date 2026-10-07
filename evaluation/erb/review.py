@@ -45,7 +45,10 @@ from dotenv import load_dotenv
 load_dotenv(".env.bench", override=True)
 
 BENCH = Path(os.getenv("BENCH_DIR", "evaluation/reports/bench1"))
-BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
+# Any OpenAI-compatible reviewer. Benchmark 1: Gemini; Benchmark 2: Gemma 4 31B on
+# Ollama Cloud (BENCH_REVIEW_BASE=https://ollama.com/v1, --key-env OLLAMA_API_KEY),
+# a different company from that run's answer model, so no model grades itself.
+BASE = os.getenv("BENCH_REVIEW_BASE", "https://generativelanguage.googleapis.com/v1beta/openai").rstrip("/")
 MODEL = os.getenv("BENCH_REVIEW_MODEL", "gemini-3.1-flash-lite")
 MAX_CONTEXT_CHARS = 400_000  # ~120k tokens; marked when cut
 

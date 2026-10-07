@@ -146,7 +146,9 @@ async def _send(body: dict, stream: bool) -> tuple[httpx.Response, float]:
             return resp, waited
         # With several keys the next attempt goes to another project, so only
         # a short pause is needed before trying it.
-        pause = _wait_seconds(resp) / len(UPSTREAM_KEYS)
+        # A 503 is the whole model being busy, not one project's quota, so
+        # another key does not help: give the overload time to pass.
+        pause = 10.0 if resp.status_code == 503 else _wait_seconds(resp) / len(UPSTREAM_KEYS)
         waited += pause
         await _sleep(pause)
     if resp is None:
@@ -201,6 +203,8 @@ async def chat(request: Request):
 
     if not stream:
         data = resp.json()
+        if isinstance(data, list):  # Gemini wraps error bodies in a list
+            data = data[0] if data and isinstance(data[0], dict) else {"error": data}
         row.update(_usage_fields(data.get("usage")))
         if resp.status_code != 200:
             row["error"] = str(data)[:300]
