@@ -110,14 +110,8 @@ Onyx got the key answer right and Handbook did not on 33 questions. More than ha
 
 Handbook got the key answer right and Onyx did not on 34 questions. In 30 of them, Onyx's answer contained made-up claims.
 
-- **It says "I don't know" when the answer isn't there.**
-  - The benchmark has 15 questions whose answer is deliberately missing from the documents.
-  - Handbook said "I don't know" to all 15. Onyx said it to only 1 and answered the other 14 with invented details.
-  - Across all 150 questions, Onyx said "I don't know" only 5 times; Handbook said it 29 times.
-- **It sticks to the documents.**
-  - Handbook made up claims in 11% of answers; Onyx did in 47%.
-  - When Onyx is wrong, it is usually confidently wrong, presenting an invented cause, number or version as fact.
-  - For a company knowledge tool, that is worse than "I don't know", because the person asking cannot tell an invented detail from a real one.
+- **It says "I don't know" when the answer isn't there.** On the 15 questions with no answer in the documents, Handbook said so every time. Onyx said so once, and invented an answer for the other 14.
+- **It sticks to the documents.** Made-up claims appeared in 11% of Handbook's answers, against 47% of Onyx's. When Onyx is wrong it is usually confidently wrong, which is riskier than "I don't know".
 - **Why the difference:**
   - Handbook has a confidence check that says "I don't know" without calling the AI when nothing matches well enough.
   - It also has a strict instruction to answer only from the passages it was given.
