@@ -160,7 +160,7 @@ def test_a_reopened_turn_returns_its_sources_and_drops_a_bad_link(monkeypatch):
         },
         {"n": "1", "document_id": "d-x"},
     ]
-    conn = _Conn(rows=[(0, "q", "Leave [1].", datetime.now(timezone.utc), raw, None)])
+    conn = _Conn(rows=[(0, "q", "Leave [1].", datetime.now(timezone.utc), raw, None, None)])
     monkeypatch.setattr(store, "get_connection", lambda: conn)
     turns = store.get_conversation_turns(
         conversation_id="c", org_id="o", user_id="u", workspace_id=None
@@ -261,10 +261,40 @@ def test_a_reopened_turn_returns_its_chart(monkeypatch):
 
     stored = {"panel": {"chart": "bar", "points": [{"group": "High", "value": 4}]},
               "period": "week"}
-    conn = _Conn(rows=[(0, "q", "a", datetime.now(timezone.utc), None, stored)])
+    conn = _Conn(rows=[(0, "q", "a", datetime.now(timezone.utc), None, stored, None)])
     monkeypatch.setattr(store, "get_connection", lambda: conn)
     [turn] = store.get_conversation_turns(
         conversation_id="c", org_id="o", user_id="u", workspace_id=None
     )
     assert "t.chart" in conn.sql[0]
     assert turn.chart == stored
+
+
+def test_a_reopened_turn_keeps_who_answered(monkeypatch):
+    """The pill under an answer must survive a reload, not only the text."""
+    from datetime import datetime, timezone
+
+    meta = {"source": "notion", "agent": "notion", "connected_providers": ["notion", "slack"],
+            "model": "Qwen 3.8 27B", "citation_count": 3}
+    conn = _Conn(rows=[(0, "q", "a", datetime.now(timezone.utc), None, None, meta)])
+    monkeypatch.setattr(store, "get_connection", lambda: conn)
+    [turn] = store.get_conversation_turns(
+        conversation_id="c", org_id="o", user_id="u", workspace_id=None
+    )
+    assert "t.meta" in conn.sql[0]
+    assert turn.meta == meta
+
+
+def test_the_stored_pill_keeps_counts_not_passages():
+    payload = {"source": "notion", "agent": "notion", "answer": "x",
+               "citations": [{"content": "secret passage", "reference": "r", "score": 1}] * 2,
+               "attachments": [], "model": None, "live_sources": []}
+    meta = store.meta_for_storage(payload)
+    assert meta == {"source": "notion", "agent": "notion", "citation_count": 2}
+    assert "secret passage" not in str(meta)
+
+
+def test_a_bad_stored_pill_is_not_drawn():
+    assert store.meta_for_history("not json") is None
+    assert store.meta_for_history({"agent": "notion"}) is None  # no source
+    assert store.meta_for_history(None) is None

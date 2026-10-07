@@ -1,5 +1,6 @@
 "use client";
 
+import type { TurnMeta } from "@/lib/api";
 import { ChatDonePayload } from "@/lib/sse";
 import { AnswerFeedback } from "./AnswerFeedback";
 import { AnswerText } from "./AnswerText";
@@ -17,6 +18,8 @@ export interface Message {
   /** The chart for an answer loaded from history. A live answer carries it on `done`. */
   chart?: ChatDonePayload["chart"];
   chartPeriod?: string;
+  /** Who answered, for an answer loaded from history. */
+  meta?: TurnMeta;
 }
 
 /**
@@ -56,7 +59,7 @@ export function ChatMessageView({
 
   return (
     <div className="chat-bubble chat-bubble-assistant" data-thinking={thinking || undefined}>
-      {message.done && (
+      {message.done ? (
         <ProvenanceStripe
           source={message.done.source}
           agent={message.done.agent}
@@ -65,7 +68,17 @@ export function ChatMessageView({
           citations={message.done.citations?.length}
           live={message.done.live_sources}
         />
-      )}
+      ) : message.meta ? (
+        // A reopened answer: the same pill, from what the turn kept.
+        <ProvenanceStripe
+          source={message.meta.source}
+          agent={message.meta.agent}
+          connected={message.meta.connected_providers}
+          attachments={message.meta.attachments}
+          citations={message.meta.citation_count}
+          live={message.meta.live_sources}
+        />
+      ) : null}
       {thinking ? (
         <div className="chat-thinking" role="status" aria-live="polite">
           <span className="chat-thinking-dots" aria-hidden>
@@ -108,8 +121,10 @@ export function ChatMessageView({
             </div>
           )}
           {message.streaming && <span className="chat-stream-caret" aria-hidden />}
-          {message.done?.model && (
-            <span className="chat-model-tag">Answered by {message.done.model}</span>
+          {(message.done?.model ?? message.meta?.model) && (
+            <span className="chat-model-tag">
+              Answered by {message.done?.model ?? message.meta?.model}
+            </span>
           )}
           {message.done?.chart_hint && onEnableChart && (
             <button type="button" className="chat-chart-hint" onClick={onEnableChart}>

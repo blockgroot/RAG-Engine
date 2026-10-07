@@ -628,6 +628,7 @@ def get_conversation_route(
                 "created_at": t.created_at.isoformat(),
                 "cited": t.cited,
                 "chart": t.chart,
+                "meta": t.meta,
             }
             for t in turns
         ],
@@ -687,6 +688,25 @@ def create_conversation(
 def _sse_event(event: str, data: dict | str) -> str:
     payload = json.dumps(data)
     return f"event: {event}\ndata: {payload}\n\n"
+
+
+def _done_event(conversation_id: str | None, question: str, payload: dict) -> str:
+    """The ``done`` event, with who answered kept on the turn it closes.
+
+    The pill under an answer (which agent, which tools, which files, what was
+    read live, which model) used to exist only in this event, so a reopened
+    chat showed answers with no provenance at all. The turn is already saved
+    by now (the pipeline or ``_keep_standalone_turn``); this labels it. Never
+    raises: losing the label must not lose the answer.
+    """
+    if conversation_id:
+        try:
+            conversation_store.set_last_turn_meta(
+                conversation_id, question, conversation_store.meta_for_storage(payload)
+            )
+        except Exception:  # noqa: BLE001 - see docstring
+            logger.warning("could not label the turn", exc_info=True)
+    return _sse_event("done", payload)
 
 
 def _answering_model() -> str | None:
@@ -808,8 +828,9 @@ def _stream_attachment_answer(
             gate_score=response.top_score,
         )
 
-    yield _sse_event(
-        "done",
+    yield _done_event(
+        conversation_id,
+        question,
         {
             "answer": response.answer,
             "grounded": response.grounded,
@@ -1274,8 +1295,9 @@ def _stream_answer_body(
         yield _sse_event("token", chunk)
         if delay:
             time.sleep(delay)
-    yield _sse_event(
-        "done",
+    yield _done_event(
+        conversation_id,
+        question,
         {
             "answer": result.answer,
             "grounded": result.grounded,

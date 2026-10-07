@@ -675,3 +675,27 @@ def test_chart_mode_reaches_routing(client_and_session, monkeypatch):
     client.post("/chat/stream", json={"question": "PRs by label", "mode": "chart"},
                 cookies=cookies)
     assert seen["chart_mode"] is True
+
+
+def test_the_done_event_labels_the_saved_turn(monkeypatch):
+    """A reopened chat draws the pill from what the turn kept."""
+    from app.api import chat
+
+    seen = {}
+    monkeypatch.setattr(chat.conversation_store, "set_last_turn_meta",
+                        lambda cid, q, meta: seen.update(cid=cid, q=q, meta=meta))
+    event = chat._done_event("conv-1", "what is the leave policy?",
+                             {"source": "notion", "agent": "notion", "citations": [{}]})
+    assert event.startswith("event: done")
+    assert seen == {"cid": "conv-1", "q": "what is the leave policy?",
+                    "meta": {"source": "notion", "agent": "notion", "citation_count": 1}}
+
+
+def test_a_failed_label_never_costs_the_answer(monkeypatch):
+    from app.api import chat
+
+    def boom(*a, **k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(chat.conversation_store, "set_last_turn_meta", boom)
+    assert chat._done_event("conv-1", "q", {"source": "none"}).startswith("event: done")

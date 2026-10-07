@@ -107,6 +107,18 @@ export interface ConversationTurn {
   cited?: { n: number; document_id: string; title: string | null; provider: string | null; url: string | null }[];
   /** The chart drawn with this answer, as it was drawn. Absent when there was none. */
   chart?: { panel: InsightPanel; period: string | null } | null;
+  /** Who answered, for the provenance pill. Absent on a turn saved before it was kept. */
+  meta?: TurnMeta | null;
+}
+
+export interface TurnMeta {
+  source: string;
+  agent?: string;
+  connected_providers?: string[];
+  attachments?: string[];
+  live_sources?: { provider: string; fetched_at: string }[];
+  model?: string | null;
+  citation_count: number;
 }
 
 export interface RejectedFile {
