@@ -356,6 +356,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             cited: t.cited && t.cited.length ? t.cited : undefined,
             chart: t.chart?.panel ?? undefined,
             chartPeriod: t.chart?.period ?? undefined,
+            meta: t.meta ?? undefined,
           },
         ]),
       );

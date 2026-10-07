@@ -59,6 +59,53 @@ def chart_for_storage(panel, period) -> dict | None:
     return json.loads(json.dumps(stored, default=str))
 
 
+#: What a reopened answer needs to draw its provenance pill. Counts, not
+#: content: the passages themselves are never stored on the turn.
+_META_KEYS = ("source", "agent", "connected_providers", "attachments", "live_sources", "model")
+
+
+def meta_for_storage(payload: dict) -> dict:
+    """The provenance pill's inputs from a ``done`` payload."""
+    meta = {k: payload.get(k) for k in _META_KEYS if payload.get(k) not in (None, [], "")}
+    meta["citation_count"] = len(payload.get("citations") or [])
+    return json.loads(json.dumps(meta, default=str))
+
+
+def meta_for_history(raw) -> dict | None:
+    """The stored pill, or None for anything that is not one."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    if not isinstance(raw, dict) or not isinstance(raw.get("source"), str):
+        return None
+    out = {k: raw[k] for k in _META_KEYS if k in raw}
+    count = raw.get("citation_count")
+    out["citation_count"] = count if isinstance(count, int) else 0
+    return out
+
+
+def set_last_turn_meta(conversation_id: str, question: str, meta: dict) -> None:
+    """Label the conversation's latest turn, only if it is this question's.
+
+    Matched on the question too: a turn that failed to save must not lend its
+    label to the answer before it.
+    """
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE conversation_turns SET meta = %s::jsonb
+            WHERE conversation_id = %s::uuid
+              AND question = %s
+              AND turn_index = (SELECT MAX(turn_index) FROM conversation_turns
+                                WHERE conversation_id = %s::uuid)
+            """,
+            (json.dumps(meta), conversation_id, question, conversation_id),
+        )
+        conn.commit()
+
+
 def chart_for_history(raw) -> dict | None:
     """The stored chart, or None for anything that is not one."""
     if isinstance(raw, str):
@@ -117,6 +164,7 @@ class ConversationTurnRow:
     created_at: datetime
     cited: list = field(default_factory=list)
     chart: dict | None = None
+    meta: dict | None = None
 
 
 def list_conversations(
@@ -177,7 +225,7 @@ def get_conversation_turns(
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT t.turn_index, t.question, t.answer, t.created_at, t.cited, t.chart
+            SELECT t.turn_index, t.question, t.answer, t.created_at, t.cited, t.chart, t.meta
             FROM conversation_turns t
             JOIN conversations c ON c.id = t.conversation_id
             WHERE t.conversation_id = %s::uuid
@@ -190,7 +238,7 @@ def get_conversation_turns(
         ).fetchall()
     return [
         ConversationTurnRow(int(r[0]), r[1], r[2], r[3], cited_for_history(r[4]),
-                            chart_for_history(r[5]))
+                            chart_for_history(r[5]), meta_for_history(r[6]))
         for r in rows
     ]
 

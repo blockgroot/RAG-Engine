@@ -80,6 +80,8 @@ GitHub; employees get answers from *their* data.
   The `cited` list is stored on the turn and sent again when that chat is opened.
   So is the chart (`conversation_turns.chart`), as drawn: a snapshot, not a spec,
   so a reopened chart never disagrees with the answer beside it.
+  So is who answered (`conversation_turns.meta`: source, agent, tools, files, live
+  reads, model, a passage COUNT), written by the `done` event; never the passages.
   Slack strips the markers.
 - Audit and moderation judge the answer with the markers removed.
 - A link in an answer survives only if it appeared verbatim in the text the model

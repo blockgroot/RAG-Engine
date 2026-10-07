@@ -409,6 +409,11 @@ ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS cited JSONB;
 -- beside it. NULL for a turn without a chart or saved before this column.
 ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS chart JSONB;
 
+-- Who answered: the provenance pill's inputs (source, agent, tools, files,
+-- live reads, model, how many passages). Written when the answer finishes;
+-- NULL on a turn saved before this column, which reopens without a pill.
+ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS meta JSONB;
+
 -- Per-org, per-provider OAuth credentials (Phase 10) — replaces hand-set
 -- NOTION_TOKEN_<NAME> env vars with an admin-driven OAuth connect flow.
 -- Tokens are encrypted at rest (see app/security/crypto.py); this table never
