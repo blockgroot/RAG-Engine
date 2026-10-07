@@ -347,6 +347,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             role: "assistant" as const,
             text: t.answer,
             cited: t.cited && t.cited.length ? t.cited : undefined,
+            chart: t.chart?.panel ?? undefined,
+            chartPeriod: t.chart?.period ?? undefined,
           },
         ]),
       );

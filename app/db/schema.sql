@@ -402,6 +402,13 @@ ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS workspace_id UUID REFERE
 -- was already checked to be http(s) when the answer was written.
 ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS cited JSONB;
 
+-- The chart drawn with the answer, as it was drawn: `{"panel": …, "period": …}`.
+-- A SNAPSHOT, unlike `pinned_charts` (which stores the spec so it stays
+-- current): a turn is a record of what was answered, and its text talks about
+-- these numbers -- re-running would let the chart disagree with the words
+-- beside it. NULL for a turn without a chart or saved before this column.
+ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS chart JSONB;
+
 -- Per-org, per-provider OAuth credentials (Phase 10) — replaces hand-set
 -- NOTION_TOKEN_<NAME> env vars with an admin-driven OAuth connect flow.
 -- Tokens are encrypted at rest (see app/security/crypto.py); this table never

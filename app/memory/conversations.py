@@ -42,6 +42,37 @@ class ConversationSummaryRow:
     last_activity_at: datetime
 
 
+#: A stored chart larger than this keeps its bars and drops its hover rows: a
+#: turn row is read on every reopen, and a few hundred detail rows is the
+#: bulk of a panel.
+MAX_CHART_BYTES = 200_000
+
+
+def chart_for_storage(panel, period) -> dict | None:
+    """What a turn keeps of the chart it drew. None when nothing was drawn
+    (``points`` None means the panel failed; empty means nothing to draw)."""
+    if not isinstance(panel, dict) or not panel.get("points"):
+        return None
+    stored = {"panel": panel, "period": period}
+    if len(json.dumps(stored, default=str)) > MAX_CHART_BYTES:
+        stored = {"panel": {**panel, "details": []}, "period": period}
+    return json.loads(json.dumps(stored, default=str))
+
+
+def chart_for_history(raw) -> dict | None:
+    """The stored chart, or None for anything that is not one."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    if not isinstance(raw, dict) or not isinstance(raw.get("panel"), dict):
+        return None
+    if not isinstance(raw["panel"].get("points"), list):
+        return None
+    return {"panel": raw["panel"], "period": raw.get("period") or None}
+
+
 def cited_for_history(raw) -> list[dict]:
     """The stored source list, with anything that is not a document link dropped.
 
@@ -85,6 +116,7 @@ class ConversationTurnRow:
     answer: str
     created_at: datetime
     cited: list = field(default_factory=list)
+    chart: dict | None = None
 
 
 def list_conversations(
@@ -145,7 +177,7 @@ def get_conversation_turns(
     with get_connection() as conn:
         rows = conn.execute(
             """
-            SELECT t.turn_index, t.question, t.answer, t.created_at, t.cited
+            SELECT t.turn_index, t.question, t.answer, t.created_at, t.cited, t.chart
             FROM conversation_turns t
             JOIN conversations c ON c.id = t.conversation_id
             WHERE t.conversation_id = %s::uuid
@@ -156,7 +188,11 @@ def get_conversation_turns(
             """,
             (conversation_id, org_id, user_id, workspace_id),
         ).fetchall()
-    return [ConversationTurnRow(int(r[0]), r[1], r[2], r[3], cited_for_history(r[4])) for r in rows]
+    return [
+        ConversationTurnRow(int(r[0]), r[1], r[2], r[3], cited_for_history(r[4]),
+                            chart_for_history(r[5]))
+        for r in rows
+    ]
 
 
 def delete_last_turn_if(

@@ -14,6 +14,9 @@ export interface Message {
   done?: ChatDonePayload;
   /** Sources for an answer loaded from history. A live answer carries them on `done`. */
   cited?: ChatDonePayload["cited"];
+  /** The chart for an answer loaded from history. A live answer carries it on `done`. */
+  chart?: ChatDonePayload["chart"];
+  chartPeriod?: string;
 }
 
 /**
@@ -45,7 +48,7 @@ export function ChatMessageView({
   }
 
   const thinking = Boolean(message.streaming && !message.text.trim());
-  const chart = message.done?.chart;
+  const chart = message.done?.chart ?? message.chart;
   const points = chart?.points;
 
   return (
@@ -77,7 +80,7 @@ export function ChatMessageView({
               <Chart
                 chart={chart.chart}
                 points={points}
-                period={message.done?.chart_period || "month"}
+                period={message.done?.chart_period || message.chartPeriod || "month"}
                 unit={chart.unit}
                 groupBy={chart.group_by}
                 splitBy={chart.split_by}

@@ -617,6 +617,7 @@ def get_conversation_route(
                 "answer": t.answer,
                 "created_at": t.created_at.isoformat(),
                 "cited": t.cited,
+                "chart": t.chart,
             }
             for t in turns
         ],
@@ -936,6 +937,7 @@ def _keep_standalone_turn(
     question: str,
     answer: str,
     cited: list | None = None,
+    chart: dict | None = None,
 ) -> None:
     """Write a turn for an agent that never enters ``RagPipeline``.
 
@@ -950,7 +952,12 @@ def _keep_standalone_turn(
         from ..memory import build_conversation_store
 
         store = build_conversation_store()
-        if "cited" in store.append_turn.__code__.co_varnames:
+        params = store.append_turn.__code__.co_varnames
+        if "chart" in params:
+            # The chart is saved with the turn, so a reopened chat shows it
+            # again instead of the text alone.
+            store.append_turn(conversation_id, question, answer, cited or None, chart)
+        elif "cited" in params:
             store.append_turn(conversation_id, question, answer, cited or None)
         else:
             store.append_turn(conversation_id, question, answer)
@@ -1196,7 +1203,12 @@ def _stream_answer_body(
     # A connected retry was answered by the pipeline, which already saved its
     # own turn. Saving again would put the question in the history twice.
     if not retry_tools:
-        _keep_standalone_turn(decision.agent_key, conversation_id, question, result.answer, getattr(result, "cited", None))
+        _keep_standalone_turn(
+            decision.agent_key, conversation_id, question, result.answer,
+            getattr(result, "cited", None),
+            conversation_store.chart_for_storage(
+                getattr(result, "chart", None), getattr(result, "chart_period", None)),
+        )
 
     # A question that came back ungrounded is a documentation gap, and it is
     # recorded here without anyone having to report it -- the gaps people
