@@ -1068,6 +1068,42 @@ class GuardSettings:
 
 
 @dataclass(frozen=True)
+class DocTablesSettings:
+    """Charts from figures INSIDE documents (``app/doctables``).
+
+    Tables a document already has are always kept (no AI, exact). Figures
+    written in SENTENCES need an AI to read them, so that adapter is opt-in:
+
+    - ``text_enabled``  `DOCTABLES_TEXT_ENABLED`: read figures from prose.
+      Off by default because it spends background LLM quota -- one call per
+      document that passes the cheap figures check, re-run only when the
+      document changes. Never runs inside ingestion.
+    - ``text_batch``  documents read per tick (`DOCTABLES_TEXT_BATCH`). Small:
+      it shares the background budget with contextualization, and live
+      questions keep `LLM_RESERVE_RPM` regardless.
+    - ``text_max_chars``  how much of a document the AI is shown
+      (`DOCTABLES_TEXT_MAX_CHARS`). Longer documents are read up to the limit
+      and the chart says so.
+    - ``text_max_attempts``  a document that keeps failing is given up on
+      after this many tries, so one bad page cannot hold the queue.
+    """
+
+    text_enabled: bool = False
+    text_batch: int = 5
+    text_max_chars: int = 12000
+    text_max_attempts: int = 3
+
+    @classmethod
+    def from_env(cls) -> "DocTablesSettings":
+        return cls(
+            text_enabled=env_bool("DOCTABLES_TEXT_ENABLED", False),
+            text_batch=max(1, int(os.getenv("DOCTABLES_TEXT_BATCH") or 5)),
+            text_max_chars=max(1000, int(os.getenv("DOCTABLES_TEXT_MAX_CHARS") or 12000)),
+            text_max_attempts=max(1, int(os.getenv("DOCTABLES_TEXT_MAX_ATTEMPTS") or 3)),
+        )
+
+
+@dataclass(frozen=True)
 class AuditSettings:
     """Post-generation groundedness audit — the validation-layer gap (CLAUDE.md
     §6 Phase 20, previously deferred pending a latency/cost decision).

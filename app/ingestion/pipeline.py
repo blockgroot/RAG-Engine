@@ -475,28 +475,40 @@ def _store_scores(store: VectorStore, document_id: str, scores, guard: Injection
 
 
 def _store_tables(document_id, doc, *, org_id: str, workspace_id: str | None) -> None:
-    """Keep this document's tables as typed rows, for charts (app/doctables).
+    """Hand the document to the dataset adapters (app/doctables), for charts.
 
-    A re-ingest deletes and re-inserts the `documents` row, and the tables
-    cascade with it, so an edit that removed a table cannot leave its rows
-    chartable -- which is why a document with no tables costs no query here.
-    Never raises: a table that failed to store costs a chart, never the
-    document that was just indexed.
+    A FOREGROUND adapter (tables the document already has; no AI) runs here.
+    A BACKGROUND adapter (figures in sentences; needs AI) is only asked the
+    cheap ``wants`` question here and, if yes, the document is queued for the
+    tick -- ingestion never waits on a model call for charts.
+
+    A re-ingest deletes and re-inserts the `documents` row and its tables
+    cascade with it, so an adapter with nothing to say costs no query. Never
+    raises: a chart that failed to store must not cost the indexed document.
     """
     try:
-        from ..doctables import extract
+        from ..doctables import base, factory
         from ..doctables.store import replace_document_tables
 
-        raw = doc.tables
-        if raw is None:
-            raw = extract.find_markdown_tables(doc.content or "", title=doc.title)
-        tables = [t for t in (extract.profile(r) for r in raw) if t is not None]
-        if not tables:
-            return
-        replace_document_tables(
-            document_id, org_id=org_id, workspace_id=workspace_id,
-            tables=tables[: extract.MAX_TABLES_PER_DOCUMENT],
+        text = base.DocumentText(
+            external_id=doc.external_id, title=doc.title, content=doc.content or "",
+            tables=tuple(doc.tables) if doc.tables is not None else None,
         )
+        for adapter in factory.build_dataset_adapters():
+            if not adapter.wants(text):
+                continue
+            if adapter.background:
+                from ..doctables.queue import enqueue
+
+                enqueue(document_id, org_id=org_id, workspace_id=workspace_id,
+                        origin=adapter.origin, text=text)
+                continue
+            tables = adapter.extract(text)
+            if tables:
+                replace_document_tables(
+                    document_id, org_id=org_id, workspace_id=workspace_id,
+                    tables=tables, origin=adapter.origin,
+                )
     except Exception:  # noqa: BLE001 - see docstring
         logger.warning("Could not store tables of %s", doc.external_id, exc_info=True)
 

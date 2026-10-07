@@ -863,10 +863,19 @@ CREATE TABLE IF NOT EXISTS doc_tables (
     row_count    INT NOT NULL,
     truncated    BOOLEAN NOT NULL DEFAULT FALSE,
     notes        TEXT[] NOT NULL DEFAULT '{}',
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (document_id, position)
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_doc_tables_scope ON doc_tables (org_id, workspace_id);
+
+-- Which dataset adapter wrote the table (`app/doctables/base.py`): `table` = a
+-- table the document already had (exact), `text` = figures an AI read out of
+-- sentences, each row kept only when its cells appear in the quoted sentence.
+-- Each adapter replaces only its OWN tables, so the background text pass can
+-- never wipe the tables ingestion stored, and vice versa.
+ALTER TABLE doc_tables ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'table';
+ALTER TABLE doc_tables DROP CONSTRAINT IF EXISTS doc_tables_document_id_position_key;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_doc_tables_origin
+    ON doc_tables (document_id, origin, position);
 
 -- One row per table row. `cells` holds normalized values by column key (a
 -- number as a JSON number, a date as ISO text, an unparseable cell absent);
@@ -878,6 +887,32 @@ CREATE TABLE IF NOT EXISTS doc_table_rows (
     raw      JSONB NOT NULL,
     PRIMARY KEY (table_id, row_no)
 );
+-- The exact sentence a `text` row was read from, shown on hover so a reader
+-- can check the figure against the document. NULL for a real table's rows.
+ALTER TABLE doc_table_rows ADD COLUMN IF NOT EXISTS quote TEXT;
+
+-- Documents waiting for a BACKGROUND dataset adapter (the text adapter: an AI
+-- reads figures out of sentences). Ingestion only flags a document here after
+-- a cheap no-AI check, so it never waits on a model; the tick works through a
+-- few per run (`doctables/queue.py`). `text` is a bounded copy of what
+-- ingestion already had, so the tick never re-fetches from the source, and it
+-- is cleared once the document is done or given up on. Cascades with the
+-- document: a re-ingest (new `documents.id`) re-flags it from scratch.
+CREATE TABLE IF NOT EXISTS doc_text_queue (
+    document_id  UUID PRIMARY KEY REFERENCES documents (id) ON DELETE CASCADE,
+    org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE,
+    origin       TEXT NOT NULL,
+    external_id  TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    text         TEXT,
+    status       TEXT NOT NULL DEFAULT 'pending',   -- pending | done | failed
+    attempts     INT NOT NULL DEFAULT 0,
+    claimed_at   TIMESTAMPTZ,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_doc_text_queue_pending
+    ON doc_text_queue (updated_at) WHERE status = 'pending';
 
 -- A chart a member asked for and kept. Personal, scoped `(org_id, user_id)`
 -- like `schedulers` and unlike every other tenant table -- a pin is one

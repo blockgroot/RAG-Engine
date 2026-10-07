@@ -86,6 +86,8 @@ class Table:
     raw: tuple[tuple[str, ...], ...]
     truncated: bool = False
     notes: tuple[str, ...] = field(default=())
+    #: Per row, the exact sentence it was read from (text adapter only).
+    quotes: tuple[str | None, ...] = field(default=())
 
 
 # --------------------------------------------------------------------------

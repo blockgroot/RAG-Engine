@@ -61,6 +61,8 @@ class TableRef:
     document_title: str
     provider: str
     source_uri: str | None
+    #: Which adapter wrote it: "table" (exact) or "text" (read from sentences).
+    origin: str = "table"
 
     def column(self, key: str) -> dict | None:
         return next((c for c in self.columns if c.get("key") == key), None)
@@ -84,6 +86,7 @@ def _visible(viewer) -> tuple[str, dict]:
 
 def replace_document_tables(
     document_id: str, *, org_id: str, workspace_id: str | None, tables: list[Table],
+    origin: str = "table",
 ) -> int:
     """Swap this document's tables for ``tables``. Returns rows written.
 
@@ -95,25 +98,33 @@ def replace_document_tables(
     written = 0
     try:
         with get_connection() as conn:
-            conn.execute("DELETE FROM doc_tables WHERE document_id = %s", (document_id,))
+            # Only this adapter's tables: the text pass must never wipe the
+            # tables ingestion stored, and a re-read of a sheet must never
+            # wipe figures read from the same document's prose.
+            conn.execute(
+                "DELETE FROM doc_tables WHERE document_id = %s AND origin = %s",
+                (document_id, origin),
+            )
             for position, table in enumerate(tables):
                 row = conn.execute(
                     """
                     INSERT INTO doc_tables
                         (org_id, workspace_id, document_id, position, name,
-                         columns, row_count, truncated, notes)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         columns, row_count, truncated, notes, origin)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                     """,
                     (org_id, workspace_id, document_id, position, table.name,
                      Jsonb([c.as_dict() for c in table.columns]), len(table.cells),
-                     table.truncated, list(table.notes)),
+                     table.truncated, list(table.notes), origin),
                 ).fetchone()
+                quotes = list(table.quotes) + [None] * (len(table.cells) - len(table.quotes))
                 conn.cursor().executemany(
-                    "INSERT INTO doc_table_rows (table_id, row_no, cells, raw) "
-                    "VALUES (%s, %s, %s, %s)",
-                    [(row[0], i, Jsonb(cells), Jsonb(list(raw)))
-                     for i, (cells, raw) in enumerate(zip(table.cells, table.raw))],
+                    "INSERT INTO doc_table_rows (table_id, row_no, cells, raw, quote) "
+                    "VALUES (%s, %s, %s, %s, %s)",
+                    [(row[0], i, Jsonb(cells), Jsonb(list(raw)), quote)
+                     for i, (cells, raw, quote) in enumerate(
+                         zip(table.cells, table.raw, quotes))],
                 )
                 written += len(table.cells)
             conn.commit()
@@ -131,7 +142,7 @@ def list_tables(
     access, params = _visible(viewer)
     sql = f"""
         SELECT t.id, t.name, t.columns, t.row_count, t.truncated, t.notes,
-               d.title, d.source_provider, d.source_uri
+               d.title, d.source_provider, d.source_uri, t.origin
           FROM doc_tables t
           JOIN documents d ON d.id = t.document_id
          WHERE t.org_id = %(org_id)s
@@ -152,7 +163,7 @@ def list_tables(
         TableRef(
             id=str(r[0]), name=r[1], columns=tuple(r[2] or ()), row_count=r[3],
             truncated=bool(r[4]), notes=tuple(r[5] or ()), document_title=r[6],
-            provider=r[7], source_uri=r[8],
+            provider=r[7], source_uri=r[8], origin=r[9] or "table",
         )
         for r in rows
     ]
@@ -171,7 +182,7 @@ def get_table(table_id: str, *, org_id: str, workspace_id: str | None, viewer) -
             r = conn.execute(
                 f"""
                 SELECT t.id, t.name, t.columns, t.row_count, t.truncated, t.notes,
-                       d.title, d.source_provider, d.source_uri
+                       d.title, d.source_provider, d.source_uri, t.origin
                   FROM doc_tables t JOIN documents d ON d.id = t.document_id
                  WHERE t.id = %(table_id)s AND t.org_id = %(org_id)s
                    {_scoped("t", workspace_id)} {access}
@@ -186,7 +197,7 @@ def get_table(table_id: str, *, org_id: str, workspace_id: str | None, viewer) -
     return TableRef(
         id=str(r[0]), name=r[1], columns=tuple(r[2] or ()), row_count=r[3],
         truncated=bool(r[4]), notes=tuple(r[5] or ()), document_title=r[6],
-        provider=r[7], source_uri=r[8],
+        provider=r[7], source_uri=r[8], origin=r[9] or "table",
     )
 
 
