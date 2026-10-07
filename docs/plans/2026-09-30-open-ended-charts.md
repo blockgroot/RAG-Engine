@@ -1,12 +1,17 @@
 # Open-Ended Charts Plan
 
-> **Status (2026-09-30): Phases 1, 2 and 3 BUILT** (`app/insights/query.py`,
+> **Status (2026-10-07): Phases 1–4 BUILT** (`app/insights/query.py`,
 > `activity_facts.attrs` with every simple field kept (`insights/fields.py`) and
 > discovered per scope (`insights/attr_catalog.py`), `app/doctables` + `app/insights/tables.py`; tests
 > `test_insights_query.py`, `test_insights_attrs.py`, `test_doctables.py`).
 > Phase 3 v1 reads Drive Sheets (first tab), CSVs, pipe tables in Notion/Docs
 > and Word tables; XLSX, PDF tables and multi-tab sheets are not read yet.
-> Phase 4 is still plan only. The shipped chart system is described in
+> Phase 4 BUILT (2026-10-07) as a dataset adapter, not at question time:
+> `doctables/text_adapter.py` reads figures from sentences on the background
+> tick (`doctables/queue.py`, `doc_text_queue`), keeps a row only when its quote
+> is in the document and every cell is in the quote, stores it with
+> `origin = 'text'` and the quote, and the chart is titled "(taken from text)"
+> with each sentence on hover. Off by default: `DOCTABLES_TEXT_ENABLED`. The shipped chart system is described in
 > `docs/plans/2026-09-02-visual-representation.md` and CLAUDE.md §3 "Visual
 > Representation".
 

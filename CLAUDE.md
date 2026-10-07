@@ -130,6 +130,13 @@ list of what may be charted. Chat and Slack pass a
 spec through `resolve.spec_to_dict`, never a hand-built dict (that dropped `focus`).
 A document table is exactly as visible as its document: offered only through the
 visibility predicate, re-checked at run time, and never offered without a viewer.
+Document tables are filled by dataset adapters (`doctables/base.py`); each
+adapter replaces only its own `origin`. Ingestion never calls a model for
+charts: an AI adapter (`background = True`) only enqueues, and the tick reads
+`doc_text_queue` within the background budget. A figure read from prose is kept
+only when its quote is in the document and every cell is in its quote; a
+mismatch is dropped, never repaired, and the chart says "taken from text".
+`DOCTABLES_TEXT_ENABLED` stays off unless background quota is budgeted for it.
 A Sheet embeds a description of its columns, never its figures. An unparseable
 cell is absent from a sum, never zero. `points: null` means the panel failed; `[]`
 means it ran and was empty. There is no `space` dimension. Sentiment is
