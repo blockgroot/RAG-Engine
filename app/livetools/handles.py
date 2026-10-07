@@ -19,7 +19,7 @@ def mint(candidates: list[tuple[str, str, str, str]]) -> dict[str, tuple[str, st
     """``{"L1": (document_id, provider, title)}`` for this request's candidates."""
     out: dict[str, tuple[str, str, str]] = {}
     counts: dict[str, int] = {}
-    for doc, provider, _external_id, title in candidates:
+    for doc, provider, _external_id, title in (row[:4] for row in candidates):
         letter = _PREFIX.get(provider)
         if letter is None:
             continue

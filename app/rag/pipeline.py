@@ -953,6 +953,7 @@ class RagPipeline:
             # below them. Inside `contexts`, so the audit and the link rule
             # both see them (plan D9).
             extra_contexts=live.blocks + attachment_contexts,
+            extra_blocks=live.cite_blocks + [None] * len(attachment_contexts),
             superseded=live.refreshed,
         )
         audit_used, audit_downgraded, audit_reason = (
@@ -1023,6 +1024,7 @@ class RagPipeline:
                 budget=budget,
                 user_question=tone_question,
                 extra_contexts=live.blocks + attachment_contexts,
+                extra_blocks=live.cite_blocks + [None] * len(attachment_contexts),
                 superseded=live.refreshed,
             )
             audit_used, audit_downgraded, audit_reason = (
@@ -1616,6 +1618,7 @@ class RagPipeline:
         user_question: str | None = None,
         contexts: list[str] | None = None,
         extra_contexts: list[str] | None = None,
+        extra_blocks: list | None = None,
         profile: PromptProfile | None = None,
         superseded: frozenset[str] = frozenset(),
     ) -> RagResult:
@@ -1686,7 +1689,13 @@ class RagPipeline:
         # draw on both and still say where each sentence came from.
         if extra_contexts:
             contexts = list(extra_contexts) + contexts
-            blocks = [None] * len(extra_contexts) + blocks
+            # A live read is the indexed document, so its block can be cited.
+            # An attachment has no stored address and stays uncitable. A
+            # mismatched list would point a number at the wrong document.
+            lead = list(extra_blocks) if extra_blocks is not None else []
+            if len(lead) != len(extra_contexts):
+                lead = [None] * len(extra_contexts)
+            blocks = lead + blocks
         if graph_facts:
             contexts = list(contexts) + [graph_facts]
             blocks = blocks + [None]
@@ -2250,7 +2259,8 @@ class RagPipeline:
         result = self._generate(
             question, chosen, top_score, retrieval_reused=False, org_id=org_id,
             conversation_id=conversation_id, budget=budget, user_question=user_question,
-            extra_contexts=live.blocks, superseded=live.refreshed,
+            extra_contexts=live.blocks, extra_blocks=live.cite_blocks,
+            superseded=live.refreshed,
         )
         if not result.answered:
             return None, web

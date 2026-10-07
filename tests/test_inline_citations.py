@@ -95,6 +95,23 @@ def test_a_number_pointing_at_an_attached_file_is_not_a_citation():
     assert len(result.cited) == 1 and result.cited[0]["n"] == 1
 
 
+def test_a_live_read_cites_the_stored_document_not_a_url_in_the_text():
+    live = RetrievedChunk(
+        content="x", score=0.9, document_id="d-linear", chunk_index=0, org_id="org",
+        document_title="SYV-5", source_provider="linear",
+        source_uri="https://linear.app/syvora/issue/SYV-5",
+    )
+    text, cited = link_citations(
+        "SYV-5 is in progress [1]. See https://evil.example.",
+        [live],
+    )
+    assert text == "SYV-5 is in progress [1]. See https://evil.example."
+    assert cited == [{
+        "n": 1, "document_id": "d-linear", "title": "SYV-5",
+        "provider": "linear", "url": "https://linear.app/syvora/issue/SYV-5",
+    }]
+
+
 def test_the_prompt_asks_for_markers():
     llm, pipeline = _pipeline("MODE: A\n\nMeals are covered [1].")
     pipeline.answer("are meals reimbursable per day?", "org-1")

@@ -69,8 +69,10 @@ GitHub; employees get answers from *their* data.
   and the strict prompt refuses when the passages do not answer. Do not raise the
   gate. Do not feed RRF scores or reranker logits into it. Reuse stays at 0.72.
 - **Citations** (`app/rag/cite.py`). The model may write `[n]` after a sentence.
-  A number is kept only when a retrieved chunk sat at that block. Attachments, live
-  blocks and graph facts are not citable. Numbers are renumbered per document.
+  A number is kept only when a document sat at that block. A live read of an
+  indexed document is that document, and a GitHub live read uses the address
+  the API returned. Attachments and graph facts are not citable. Numbers are
+  renumbered per document.
   The link is `documents.source_uri` from sync (Notion page, Drive file, Slack
   thread, Linear issue), http(s) only, never a URL the model wrote.
 - The web chat shows **one source as a single line under the answer**. Two or more

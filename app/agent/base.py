@@ -45,6 +45,9 @@ class Citation:
     content: str
     reference: str
     score: float | None = None
+    #: http(s) address from the source itself (a GitHub html URL). Never a URL
+    #: the model wrote.
+    url: str | None = None
 
 
 @dataclass(frozen=True)

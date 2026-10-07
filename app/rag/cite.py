@@ -4,9 +4,10 @@ The grounded prompt already numbers every CONTEXT block ``[1]``, ``[2]``...
 The model may put those numbers after a sentence; this module is the only
 place they become citations, and it trusts nothing the model wrote:
 
-- a number counts only if a RETRIEVED CHUNK sat at that position in this
-  prompt -- an invented number, or one pointing at an attached file, a live
-  block or the graph facts, is dropped (those have no document to open);
+- a number counts only if a document sat at that position in this prompt.
+  A live read of an indexed document is that document. An invented number,
+  an attached file, or the graph facts is dropped (those have no document
+  to open);
 - the link comes from ``documents.source_uri`` on the hit, never from the
   answer text, so a citation cannot be steered to an attacker's URL the way a
   model-written link can (the same reason ``security/links.py`` exists);
@@ -36,8 +37,9 @@ def link_citations(answer: str, blocks: list[Any]) -> tuple[str, list[dict]]:
     """Renumber valid markers and return ``(answer, cited)``.
 
     ``blocks[i]`` is the retrieved chunk behind CONTEXT block ``[i + 1]``, or
-    ``None`` for a block that is not a document (attachment, live read, graph
-    facts). ``cited`` is ``[{n, document_id, title, provider, url}]`` in
+    ``None`` for a block that is not a document (attachment, graph facts).
+    A live read is citable: it carries the indexed document's id, title and
+    ``source_uri``. ``cited`` is ``[{n, document_id, title, provider, url}]`` in
     reading order.
     """
     order: dict[str, int] = {}

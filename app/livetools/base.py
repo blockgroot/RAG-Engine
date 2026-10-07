@@ -57,6 +57,19 @@ class LiveRead:
     text: str = ""
     fetched_at: datetime | None = None
     truncated: bool = False
+    #: From the indexed ``documents`` row, so a citation opens the same address
+    #: a synced answer would. Never taken from the live text.
+    title: str = ""
+    source_uri: str | None = None
+
+    @property
+    def document_title(self) -> str | None:
+        text = (self.title or "").strip()
+        return text or None
+
+    @property
+    def source_provider(self) -> str:
+        return self.provider
 
 
 @dataclass(frozen=True)
@@ -65,10 +78,18 @@ class LiveRefresh:
 
     reads: list[LiveRead] = field(default_factory=list)
 
+    def _shown(self) -> list[LiveRead]:
+        return [r for r in self.reads if r.outcome == OK and r.text]
+
     @property
     def blocks(self) -> list[str]:
         """Prompt-ready live blocks, in hit order."""
-        return [r.text for r in self.reads if r.outcome == OK and r.text]
+        return [r.text for r in self._shown()]
+
+    @property
+    def cite_blocks(self) -> list[LiveRead]:
+        """The same reads, as citation targets. Aligned with ``blocks``."""
+        return self._shown()
 
     @property
     def refreshed(self) -> frozenset[str]:

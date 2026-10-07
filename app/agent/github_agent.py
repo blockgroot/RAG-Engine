@@ -80,6 +80,34 @@ ReaderBuilder = Callable[..., GitHubReader]
 _MODE_TAG_RE = re.compile(r"^\s*MODE:\s*([ABC])\s*\n+(.*)", re.IGNORECASE | re.DOTALL)
 
 
+def cited_links(citations: list[Citation]) -> list[dict]:
+    """Sources under the answer. The address is the one GitHub returned."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for c in citations:
+        url = (c.url or "").strip()
+        if not url.startswith(("https://", "http://")) or url in seen:
+            continue
+        seen.add(url)
+        ref = c.reference
+        if ref.endswith("#readme"):
+            title = f"{ref[:-7]} README"
+        elif ref.endswith("#about"):
+            title = ref[:-6]
+        elif c.content and len(c.content) <= 80 and "\n" not in c.content:
+            title = c.content
+        else:
+            title = ref
+        out.append({
+            "n": len(out) + 1,
+            "document_id": ref,
+            "title": title,
+            "provider": "github",
+            "url": url,
+        })
+    return out
+
+
 def _citations_are_about_only(citations: list[Citation]) -> bool:
     """True when every citation is catalog metadata (``repo#about``), no README/commits."""
     if not citations:
@@ -198,6 +226,7 @@ class GitHubAgent(Agent):
             grounded=True,
             source=SOURCE_GITHUB,
             citations=citations,
+            cited=cited_links(citations),
             response_mode=mode,
         )
 
@@ -275,11 +304,13 @@ class GitHubAgent(Agent):
             # Honest second look, still nothing. Don't dress it up.
             return None
 
+        recovered_citations = list(citations) + list(commit_citations)
         return AgentResponse(
             answer=answer,
             grounded=True,
             source=SOURCE_GITHUB,
-            citations=list(citations) + list(commit_citations),
+            citations=recovered_citations,
+            cited=cited_links(recovered_citations),
             response_mode=mode,
             recovery_used=True,
             recovery_reason=RECOVERY_REASON_INSUFFICIENT_EVIDENCE,
@@ -494,6 +525,7 @@ class GitHubAgent(Agent):
             Citation(
                 content=about_body[:500],
                 reference=f"{matched.full_name}#about",
+                url=f"https://github.com/{matched.full_name}",
             )
         ]
 
@@ -511,7 +543,8 @@ class GitHubAgent(Agent):
             header += " (truncated — only the beginning is shown)"
         parts = [f"{header}:\n\n{readme.content}"]
         citations = [
-            Citation(content=readme.content[:500], reference=f"{readme.repo}#readme")
+            Citation(content=readme.content[:500], reference=f"{readme.repo}#readme",
+                     url=readme.url)
         ]
         meta = cls._format_repo_metadata(readme.repo, known_repos or [])
         if meta is not None:
@@ -547,6 +580,7 @@ class GitHubAgent(Agent):
             Citation(
                 content=commit.message[:500],
                 reference=f"{commit.repo}@{commit.sha}",
+                url=commit.url,
             )
         ]
 
@@ -601,7 +635,7 @@ class GitHubAgent(Agent):
             )
 
         citations = [
-            Citation(content=p.title[:200], reference=f"{p.repo}#{p.number}")
+            Citation(content=p.title[:200], reference=f"{p.repo}#{p.number}", url=p.url)
             for p in items[:5]
         ]
         return "\n".join(lines), citations
@@ -621,7 +655,8 @@ class GitHubAgent(Agent):
             # someone asking was after, so this does NOT fall back.
             return (
                 f"Pull request #{pull_number} in {repo} has no reviews yet.",
-                [Citation(content="no reviews", reference=f"{repo}#{pull_number}")],
+                [Citation(content="no reviews", reference=f"{repo}#{pull_number}",
+                          url=f"https://github.com/{repo}/pull/{pull_number}")],
             )
 
         # Keeps each person's VERDICT, not their first event: GitHub returns
@@ -636,7 +671,8 @@ class GitHubAgent(Agent):
         for who, verdict in seen.items():
             lines.append(f"- {who}: {verdict.replace('_', ' ').lower()}")
         return "\n".join(lines), [
-            Citation(content=", ".join(seen), reference=f"{repo}#{pull_number}")
+            Citation(content=", ".join(seen), reference=f"{repo}#{pull_number}",
+                     url=f"https://github.com/{repo}/pull/{pull_number}")
         ]
 
     @staticmethod
@@ -653,6 +689,7 @@ class GitHubAgent(Agent):
             Citation(
                 content=", ".join(b.name for b in branches[:20]),
                 reference=f"{repo} branches",
+                url=f"https://github.com/{repo}",
             )
         ]
 
@@ -673,7 +710,7 @@ class GitHubAgent(Agent):
                 f"{commit.message}"
             )
         citations = [
-            Citation(content=c.message[:200], reference=f"{c.repo}@{c.sha}")
+            Citation(content=c.message[:200], reference=f"{c.repo}@{c.sha}", url=c.url)
             for c in commits[:5]
         ]
         return "\n".join(lines), citations
