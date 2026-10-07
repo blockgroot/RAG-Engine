@@ -78,6 +78,8 @@ GitHub; employees get answers from *their* data.
 - The web chat shows **one source as a single line under the answer**. Two or more
   sources keep a gray superscript plus that list (`frontend/components/AnswerText.tsx`).
   The `cited` list is stored on the turn and sent again when that chat is opened.
+  So is the chart (`conversation_turns.chart`), as drawn: a snapshot, not a spec,
+  so a reopened chart never disagrees with the answer beside it.
   Slack strips the markers.
 - Audit and moderation judge the answer with the markers removed.
 - A link in an answer survives only if it appeared verbatim in the text the model

@@ -105,6 +105,8 @@ export interface ConversationTurn {
   created_at: string;
   /** Sources drawn under this answer. Empty on a turn saved before they were kept. */
   cited?: { n: number; document_id: string; title: string | null; provider: string | null; url: string | null }[];
+  /** The chart drawn with this answer, as it was drawn. Absent when there was none. */
+  chart?: { panel: InsightPanel; period: string | null } | null;
 }
 
 export interface RejectedFile {
