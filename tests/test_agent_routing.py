@@ -30,9 +30,9 @@ from .conftest import requires_db
 
 ORG = "11111111-1111-1111-1111-111111111111"
 
-#: Captured at import, because the autouse fixture below stubs the route
-#: off for every cosine test. The github_live tests need the real one.
-_real_insights_route = routing._try_insights_route
+#: Captured at import, because the autouse fixture below stubs the question
+#: check off for every cosine test. The github_live tests need the real one.
+_real_question_route = routing._try_question_route
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +41,7 @@ def _encryption_key(monkeypatch):
 
     monkeypatch.setenv("AUTH_ENCRYPTION_KEYS", Fernet.generate_key().decode())
     # Cosine-routing tests must not spend a live classifier call.
-    monkeypatch.setattr(routing, "_try_insights_route", lambda *a, **k: None)
+    monkeypatch.setattr(routing, "_try_question_route", lambda *a, **k: None)
 
 
 def _stub(monkeypatch, *, connected: set[str], scores: dict | None = None, repos=None):
@@ -447,47 +447,66 @@ def test_the_probe_uses_the_same_model_as_retrieval(monkeypatch):
     routing.reset_probe_embedder_for_tests()
 
 
-def test_a_chart_intent_beats_the_only_connected_source(monkeypatch):
+def test_chart_mode_goes_straight_to_a_chart(monkeypatch):
     """The metric's provider is the connector. Cosine would send this to Linear
     RAG, which would invent a total from issue text."""
+    from app.insights.resolve import AskIntent
+
     _stub(monkeypatch, connected={"linear"})
-    spec = ChartSpec(
-        metric="issues_completed",
-        group_by="subject",
-        period="month",
-        chart="pie",
-    )
-    monkeypatch.setattr(
-        routing,
-        "_try_insights_route",
-        lambda q, c, o, w, **k: routing.RoutingDecision(INSIGHTS_KEY, "chart", chart_spec=spec),
-    )
+    spec = ChartSpec(metric="issues_completed", group_by="subject", period="month",
+                     chart="pie")
+    monkeypatch.setattr("app.insights.resolve.classify_question",
+                        lambda q, **k: AskIntent("chart", spec=spec))
 
-    decision = routing.choose_agent("share of completed work by team", ORG)
+    decision = routing.choose_agent("share of completed work by team", ORG, chart_mode=True)
 
-    assert decision.agent_key == INSIGHTS_KEY
-    assert decision.reason == "chart"
+    assert (decision.agent_key, decision.reason) == (INSIGHTS_KEY, "chart")
     assert decision.chart_spec == spec
 
 
-def test_an_uncountable_visual_still_routes_to_insights(monkeypatch):
-    """RAG must not invent a number when the classifier wanted a chart."""
-    _stub(monkeypatch, connected={"linear", "notion"})
-    monkeypatch.setattr(
-        routing,
-        "_try_insights_route",
-        lambda q, c, o, w, **k: routing.RoutingDecision(
-            INSIGHTS_KEY,
-            "chart-refuse",
-            chart_refusal="I can't chart that from your connected apps.",
-        ),
-    )
+def test_chart_mode_never_falls_back_to_a_document_answer(monkeypatch):
+    """RAG must not invent a number when a chart was asked for."""
+    from app.insights.resolve import AskIntent
 
-    decision = routing.choose_agent("chart of team happiness", ORG)
+    _stub(monkeypatch, connected={"linear", "notion"}, scores={"notion": 0.9})
+    monkeypatch.setattr("app.insights.resolve.classify_question",
+                        lambda q, **k: AskIntent("qa"))
 
-    assert decision.agent_key == INSIGHTS_KEY
-    assert decision.reason == "chart-refuse"
-    assert decision.chart_refusal is not None
+    decision = routing.choose_agent("chart of team happiness", ORG, chart_mode=True)
+
+    assert (decision.agent_key, decision.reason) == (INSIGHTS_KEY, "chart-refuse")
+    assert decision.chart_refusal.startswith("**This can't be shown as a chart**")
+
+
+def test_chart_mode_does_not_offer_a_live_code_read(monkeypatch):
+    seen = {}
+
+    def classify(q, **k):
+        from app.insights.resolve import AskIntent
+
+        seen.update(k)
+        return AskIntent("refuse", message="no")
+
+    _stub(monkeypatch, connected={"github"})
+    monkeypatch.setattr("app.insights.resolve.classify_question", classify)
+    routing.choose_agent("chart who owns the auth code", ORG, chart_mode=True)
+    assert seen["offer_github"] is False and seen["fail_open"] is False
+
+
+def test_normal_ask_never_runs_the_chart_classifier(monkeypatch):
+    """Charts have their own mode; Ask must not pay for the chart prompt."""
+    def boom(*a, **k):
+        raise AssertionError("the chart classifier ran outside Chart mode")
+
+    _stub(monkeypatch, connected={"linear", "notion"}, scores={"notion": 0.8})
+    monkeypatch.setattr("app.insights.resolve.classify_question", boom)
+    monkeypatch.setattr(routing, "_try_question_route", _real_question_route)
+    monkeypatch.setattr("app.insights.resolve.classify_route",
+                        lambda q, **k: __import__("app.insights.resolve", fromlist=["x"]).AskIntent("qa", needs_live=True))
+
+    decision = routing.choose_agent("how many issues did we close?", ORG)
+    assert decision.agent_key == "notion"
+    assert decision.needs_live is True
 
 
 # ---------------------------------------------------------------------------
@@ -507,9 +526,9 @@ def test_a_classified_code_question_routes_to_github(monkeypatch):
     _stub(monkeypatch, connected={"github", "notion"}, scores={"notion": 0.8})
     # The autouse fixture stubs the whole route off; restore the real one so
     # the new branch is actually exercised.
-    monkeypatch.setattr(routing, "_try_insights_route", _real_insights_route)
+    monkeypatch.setattr(routing, "_try_question_route", _real_question_route)
     monkeypatch.setattr(
-        "app.insights.resolve.classify_question",
+        "app.insights.resolve.classify_route",
         lambda q, **k: AskIntent("github_live"),
     )
     monkeypatch.setattr(routing, "_has_authorized_repos", lambda *a, **k: True)
@@ -525,9 +544,9 @@ def test_a_code_question_with_no_authorized_repos_falls_through(monkeypatch):
     from app.insights.resolve import AskIntent
 
     _stub(monkeypatch, connected={"github", "notion"}, scores={"notion": 0.8})
-    monkeypatch.setattr(routing, "_try_insights_route", _real_insights_route)
+    monkeypatch.setattr(routing, "_try_question_route", _real_question_route)
     monkeypatch.setattr(
-        "app.insights.resolve.classify_question",
+        "app.insights.resolve.classify_route",
         lambda q, **k: AskIntent("github_live"),
     )
     monkeypatch.setattr(routing, "_has_authorized_repos", lambda *a, **k: False)
@@ -562,7 +581,7 @@ def test_the_repo_check_never_raises(monkeypatch):
 
 
 def test_code_intent_still_routes_when_the_classifier_says_qa(monkeypatch):
-    """The floor. `classify_question` fails open, so a dead or rate-limited
+    """The floor. `classify_route` fails open, so a dead or rate-limited
     classifier silently un-routes GitHub -- the keyword rules must remain."""
     _stub(monkeypatch, connected={"github", "notion"}, scores={"notion": 0.20})
 
@@ -592,7 +611,7 @@ def test_a_weak_follow_up_is_routed_with_the_turn_it_follows(monkeypatch):
         return {"google": 0.53, "notion": 0.56}   # flat, and above the gate
 
     monkeypatch.setattr(routing, "_probe_scores", probe)
-    monkeypatch.setattr(routing, "_try_insights_route", lambda *a, **k: None)
+    monkeypatch.setattr(routing, "_try_question_route", lambda *a, **k: None)
 
     decision = routing.choose_agent(
         "Elaborate and describe in detail.", ORG,
@@ -605,7 +624,7 @@ def test_a_weak_follow_up_is_routed_with_the_turn_it_follows(monkeypatch):
 
 def test_a_new_topic_in_the_same_chat_is_routed_on_its_own_words(monkeypatch):
     _stub(monkeypatch, connected={"notion", "linear"})
-    monkeypatch.setattr(routing, "_try_insights_route", lambda *a, **k: None)
+    monkeypatch.setattr(routing, "_try_question_route", lambda *a, **k: None)
     monkeypatch.setattr(
         routing, "_probe_scores",
         lambda text, *a, **k: {"linear": 0.75, "notion": 0.63} if "SYV-5" in text
@@ -617,18 +636,19 @@ def test_a_new_topic_in_the_same_chat_is_routed_on_its_own_words(monkeypatch):
     assert (decision.agent_key, decision.reason) == ("notion", "best-match")
 
 
-def test_a_chart_asked_of_a_model_without_charts_names_the_ones_that_can(monkeypatch):
+def test_chart_mode_on_a_model_without_charts_names_the_ones_that_can(monkeypatch):
     """A model that cannot build charts must not make the QUESTION look unchartable."""
     from app.llm.routed import use_model
 
     def boom(*a, **k):
         raise AssertionError("the classifier must not run on a model without charts")
 
+    _stub(monkeypatch, connected={"linear"})
     monkeypatch.setattr("app.insights.resolve.classify_question", boom)
     monkeypatch.setenv("LLM_MODEL", "gemini-2.5-flash")
     use_model("cohere/north-mini-code:free")
     try:
-        decision = _real_insights_route("chart Linear issues by priority", {"linear"}, "org", None)
+        decision = routing.choose_agent("Linear issues by priority", ORG, chart_mode=True)
     finally:
         use_model(None)
     assert decision.reason == "chart-model-unsupported"
@@ -636,24 +656,12 @@ def test_a_chart_asked_of_a_model_without_charts_names_the_ones_that_can(monkeyp
     assert "gemini-2.5-flash or Qwen 3.8 27B" in decision.chart_refusal
 
 
-def test_a_model_without_charts_still_routes_a_plain_question(monkeypatch):
-    from app.agent.routing import _chart_unsupported_model
-    from app.llm.routed import use_model
-
-    use_model("cohere/north-mini-code:free")
-    try:
-        assert _chart_unsupported_model("what is the leave policy?") is None
-    finally:
-        use_model(None)
-
-
 @pytest.mark.parametrize("model", [None, "qwen/qwen3.8-27b", "acme-own-model"])
 def test_models_that_build_charts_are_not_stopped(model):
-    from app.agent.routing import _chart_unsupported_model
     from app.llm.routed import use_model
 
     use_model(model)
     try:
-        assert _chart_unsupported_model("chart issues by priority") is None
+        assert routing._chart_unsupported_model() is None
     finally:
         use_model(None)

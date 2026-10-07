@@ -64,6 +64,8 @@ export interface ChatDonePayload {
   /** Personal memory saved from THIS question -- shown with Undo, so saving
    *  is never silent. */
   remembered?: { id: string; text: string }[];
+  /** Asked for a chart (or a count) outside Chart mode: offer to turn it on. */
+  chart_hint?: boolean;
 }
 
 export interface ChatStreamHandlers {
@@ -78,7 +80,9 @@ export async function streamChat(
   handlers: ChatStreamHandlers,
   workspaceId?: string | null,
   agent?: "policy" | "github" | "slack" | "linear" | "notion" | "google",
-  model?: string | null
+  model?: string | null,
+  /** "chart" = Chart mode: the answer is a chart or a plain refusal. */
+  mode?: "chart",
 ): Promise<void> {
   let response: Response;
   try {
@@ -94,6 +98,7 @@ export async function streamChat(
         // Omitted entirely on "auto" so the request is byte-identical to one
         // sent before this feature existed.
         ...(model && model !== "auto" ? { model } : {}),
+        ...(mode ? { mode } : {}),
       }),
     });
   } catch {

@@ -513,6 +513,9 @@ export interface ModelChoice {
   id: string;
   label: string;
   note: string;
+  /** Builds charts. `null` for the company's own model: not ours to judge,
+   *  so Chart mode offers it with a note. */
+  charts?: boolean | null;
 }
 
 // ---------------------------------------------------------------------------

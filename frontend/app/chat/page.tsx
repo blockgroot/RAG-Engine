@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname, useParams, useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { AskHeroArt } from "@/components/AskHeroArt";
-import { ChatMessageView, Message } from "@/components/ChatMessage";
+import { ChartIcon, ChatMessageView, Message } from "@/components/ChatMessage";
 import { SpacePanel } from "@/components/SpacePanel";
 import { useMe } from "@/lib/useMe";
 import { streamChat } from "@/lib/sse";
@@ -113,6 +113,13 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // that has since left the catalog is discarded on load rather than sent and
   // rejected with a 400.
   const [model, setModel] = useState<string>("auto");
+  // Chart mode: like attaching a file, a choice made beside the message box.
+  // On, the answer is a chart or a plain refusal; off, charts are never
+  // guessed, so a normal question skips the chart check entirely.
+  const [chartMode, setChartMode] = useState(false);
+  // Said once when turning Chart on moved the picker off a model that cannot
+  // build charts, so the switch is never silent.
+  const [modelNote, setModelNote] = useState<string | null>(null);
   const [workspaceGithub, setWorkspaceGithub] = useState(false);
   const [workspaceSlack, setWorkspaceSlack] = useState(false);
   const [workspaceLinear, setWorkspaceLinear] = useState(false);
@@ -576,7 +583,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       workspaceId,
       // No agent pinned: the backend measures which source fits the question.
       undefined,
-      model
+      model,
+      chartMode ? "chart" : undefined,
     );
 
   }
@@ -668,7 +676,22 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       : workspaceId
         ? "Answers are drawn from the documents connected to this space. You can also ask for a chart of what this space has recorded."
         : "Leave, benefits, remote work and more — answered from your connected documents. Ask for a chart when you want a count.";
-  const composerPlaceholder = "Ask a question, or ask for a chart…";
+  const composerPlaceholder = chartMode
+    ? "Describe the chart — e.g. Linear issues by priority"
+    : "Ask a question…";
+  // In Chart mode only models that build charts are offered; the company's own
+  // model stays, marked, because we cannot know in advance.
+  const pickerModels = chartMode ? models.filter((m) => m.charts !== false) : models;
+
+  function toggleChartMode(on: boolean) {
+    setChartMode(on);
+    setModelNote(null);
+    const current = models.find((m) => m.id === model);
+    if (on && current && current.charts === false) {
+      setModel("auto");
+      setModelNote(`Charts use ${defaultLabel} — ${current.label} can't build them.`);
+    }
+  }
 
   return (
     <AppShell me={me} variant="app">
@@ -788,6 +811,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                   // message.
                   question={messages[i - 1]?.role === "user" ? messages[i - 1].text : ""}
                   workspaceId={workspaceId}
+                  onEnableChart={() => toggleChartMode(true)}
                 />
               ))}
               <div ref={bottomRef} aria-hidden className="chat-scroll-anchor" />
@@ -879,6 +903,17 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
           >
             {uploading ? <span className="composer-spinner" aria-hidden /> : <PaperclipIcon />}
           </button>
+          <button
+            type="button"
+            className={`chat-composer-chart${chartMode ? " is-on" : ""}`}
+            onClick={() => toggleChartMode(!chartMode)}
+            disabled={busy}
+            aria-pressed={chartMode}
+            title={chartMode ? "Chart mode is on — answers are charts" : "Turn on Chart mode"}
+          >
+            <ChartIcon />
+            <span>Chart</span>
+          </button>
           <input
             id="ask-input"
             className="chat-composer-input"
@@ -900,6 +935,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                 value={model}
                 onChange={(e) => {
                   setModel(e.target.value);
+                  setModelNote(null);
                   localStorage.setItem("chat.model", e.target.value);
                 }}
                 disabled={busy}
@@ -909,9 +945,9 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                 }
               >
                 <option value="auto">{defaultLabel}</option>
-                {models.map((m) => (
+                {pickerModels.map((m) => (
                   <option key={m.id} value={m.id}>
-                    {m.label}
+                    {chartMode && m.charts == null ? `${m.label} (may not support charts)` : m.label}
                   </option>
                 ))}
               </select>
@@ -944,6 +980,11 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             )}
           </button>
         </form>
+        {modelNote && (
+          <p className="muted chat-model-note" role="status">
+            {modelNote}
+          </p>
+        )}
       </div>
     </AppShell>
   );

@@ -875,6 +875,43 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 .chat-composer-attach:hover:not(:disabled) { color: var(--ink); background: var(--surface-muted); }
 .chat-composer-attach:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* Chart mode toggle, beside the attach control: a choice made before asking,
+   like attaching a file. On = the answer is a chart or a plain refusal. */
+.chat-composer-chart {
+  flex: none;
+  height: 2.1rem;
+  padding: 0 0.7rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-muted);
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: color 0.18s var(--ease), background 0.18s var(--ease), border-color 0.18s var(--ease);
+}
+.chat-composer-chart:hover:not(:disabled) { color: var(--ink); background: var(--surface-muted); }
+.chat-composer-chart.is-on { color: var(--ink); background: var(--surface-muted); border-color: var(--border); }
+.chat-composer-chart:disabled { opacity: 0.4; cursor: not-allowed; }
+@media (max-width: 520px) { .chat-composer-chart span { display: none; } .chat-composer-chart { padding: 0 0.5rem; } }
+.chat-chart-hint {
+  margin-top: 0.6rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--ink);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.chat-chart-hint:hover { background: var(--surface-muted); }
+.chat-model-note { margin: 0.4rem 0 0; font-size: 0.82rem; text-align: center; }
+
 .attach-row {
   display: flex;
   flex-wrap: wrap;

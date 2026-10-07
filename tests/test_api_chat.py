@@ -99,7 +99,7 @@ def client_and_session(store, org_cleanup, monkeypatch):
     # tests never construct the real embedding/reranker singletons.
     monkeypatch.setattr("app.api.chat.get_policy_agent", lambda: policy)
     monkeypatch.setattr("app.api.chat.get_workspace_agent", lambda: workspace)
-    monkeypatch.setattr("app.agent.routing._try_insights_route", lambda *a, **k: None)
+    monkeypatch.setattr("app.agent.routing._try_question_route", lambda *a, **k: None)
 
     client = TestClient(app)
     return client, {"session": token}, org_id, memory
@@ -595,7 +595,8 @@ def test_a_visual_question_streams_a_chart_not_rag(client_and_session, monkeypat
             "question": (
                 "create a visual representation of task completion "
                 "in team aggregated by team"
-            )
+            ),
+            "mode": "chart",
         },
         cookies=cookies,
     )
@@ -634,7 +635,7 @@ def test_a_chart_intent_that_cannot_chart_does_not_fall_through_to_rag(
 
     response = client.post(
         "/chat/stream",
-        json={"question": "show me a chart of team happiness"},
+        json={"question": "show me a chart of team happiness", "mode": "chart"},
         cookies=cookies,
     )
     assert response.status_code == 200
@@ -643,3 +644,34 @@ def test_a_chart_intent_that_cannot_chart_does_not_fall_through_to_rag(
     assert done["grounded"] is False
     assert done["chart"] is None
     assert "tasks completed" in done["answer"].lower()
+
+
+def test_a_chart_asked_in_normal_ask_points_to_chart_mode(client_and_session, monkeypatch):
+    """No routing and no model call: the words already say what they want."""
+    client, cookies, _, _ = client_and_session
+
+    def boom(*a, **k):
+        raise AssertionError("routing must not run for the Chart mode hint")
+
+    monkeypatch.setattr("app.api.chat.choose_agent", boom)
+    response = client.post("/chat/stream", json={"question": "chart PRs by label"},
+                           cookies=cookies)
+    done = json.loads([d for e, d in _parse_sse(response.text) if e == "done"][0])
+    assert done["chart_hint"] is True
+    assert done["answer"].startswith("**Charts are in Chart mode**")
+
+
+def test_chart_mode_reaches_routing(client_and_session, monkeypatch):
+    from app.agent.routing import RoutingDecision
+
+    client, cookies, _, _ = client_and_session
+    seen = {}
+
+    def choose(*a, **k):
+        seen.update(k)
+        return RoutingDecision("insights", "chart-refuse", chart_refusal="no")
+
+    monkeypatch.setattr("app.api.chat.choose_agent", choose)
+    client.post("/chat/stream", json={"question": "PRs by label", "mode": "chart"},
+                cookies=cookies)
+    assert seen["chart_mode"] is True

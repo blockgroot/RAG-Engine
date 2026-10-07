@@ -317,7 +317,7 @@ def test_reserved_slots_seat_other_tools_but_keep_the_routed_majority():
 
 
 def _routing_stub(monkeypatch, connected, scores):
-    monkeypatch.setattr(routing, "_try_insights_route", lambda *a, **k: None)
+    monkeypatch.setattr(routing, "_try_question_route", lambda *a, **k: None)
     monkeypatch.setattr(routing, "_connected_providers", lambda *a, **k: connected)
     monkeypatch.setattr(routing, "_probe_scores", lambda *a, **k: scores)
     monkeypatch.setattr(routing, "_named_repo", lambda *a, **k: None)

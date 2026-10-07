@@ -130,6 +130,12 @@ emails; ≤40 keys) and the chartable set is DISCOVERED per scope and viewer
 (`insights/attr_catalog.py`); `registry.ATTRS` is display hints only, never a
 list of what may be charted. Chat and Slack pass a
 spec through `resolve.spec_to_dict`, never a hand-built dict (that dropped `focus`).
+Charts are built only in Chart mode (chat sends `mode: "chart"`; Slack: a question
+naming a chart, graph or plot). Chart mode answers with a chart or a refusal, never
+a document answer. Ask never runs the chart classifier: its question check
+(`resolve.classify_route`) decides only a live GitHub read and `needs_live`, and a
+"chart …" asked outside Chart mode gets the hint with no model call.
+`ModelChoice.charts` marks the catalogued models that build charts.
 A document table is exactly as visible as its document: offered only through the
 visibility predicate, re-checked at run time, and never offered without a viewer.
 Document tables are filled by dataset adapters (`doctables/base.py`); each
