@@ -1330,6 +1330,8 @@ def _stream_answer_body(
             # refreshed -- the indexed copy answered.
             "live_sources": list(getattr(result, "live_sources", None) or []),
             "cited": list(getattr(result, "cited", None) or []),
+            # A text question asked in Chart mode: offer to turn it off.
+            "ask_hint": decision.reason == "chart-mode-text-question",
             # "How many …" answered in words: offer Chart mode beside it.
             "chart_hint": (
                 not chart_mode and decision.agent_key != INSIGHTS_KEY

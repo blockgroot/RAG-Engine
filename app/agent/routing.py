@@ -709,7 +709,12 @@ def _chart_mode_route(
     """Chart mode: the asker chose a chart, so the answer is a chart or a
     plain refusal -- never a document answer, never a guess. Never raises."""
     from ..insights import panels as panel_defs
-    from ..insights.resolve import CannotChart, chart_mode_refusal, classify_question
+    from ..insights.resolve import (
+        CHART_MODE_TEXT_QUESTION,
+        CannotChart,
+        chart_mode_refusal,
+        classify_question,
+    )
 
     unsupported = _chart_unsupported_model()
     if unsupported:
@@ -734,6 +739,10 @@ def _chart_mode_route(
         return RoutingDecision(INSIGHTS_KEY, "chart", chart_spec=intent.spec)
     if intent.kind == "refuse" and intent.message:
         return RoutingDecision(INSIGHTS_KEY, "chart-refuse", chart_refusal=intent.message)
+    if intent.kind in ("qa", "github_live"):
+        # They asked for words in Chart mode: say so, and how to get them.
+        return RoutingDecision(INSIGHTS_KEY, "chart-mode-text-question",
+                               chart_refusal=CHART_MODE_TEXT_QUESTION)
     return RoutingDecision(INSIGHTS_KEY, "chart-refuse",
                            chart_refusal=chart_mode_refusal(providers))
 

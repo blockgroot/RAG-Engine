@@ -36,6 +36,7 @@ export function ChatMessageView({
   question,
   workspaceId,
   onEnableChart,
+  onDisableChart,
 }: {
   message: Message;
   /** The chat this answer belongs to. Feedback is stored against it, and the
@@ -48,6 +49,8 @@ export function ChatMessageView({
   workspaceId?: string | null;
   /** Turns on Chart mode, for the hint under an answer. Absent = no button. */
   onEnableChart?: () => void;
+  /** Turns Chart mode off, for a text question asked in Chart mode. */
+  onDisableChart?: () => void;
 }) {
   if (message.role === "user") {
     return <div className="chat-bubble chat-bubble-user">{message.text}</div>;
@@ -129,6 +132,11 @@ export function ChatMessageView({
           {message.done?.chart_hint && onEnableChart && (
             <button type="button" className="chat-chart-hint" onClick={onEnableChart}>
               <ChartIcon /> Turn on Chart
+            </button>
+          )}
+          {message.done?.ask_hint && onDisableChart && (
+            <button type="button" className="chat-chart-hint" onClick={onDisableChart}>
+              Turn off Chart
             </button>
           )}
           {message.done?.remembered && message.done.remembered.length > 0 && (

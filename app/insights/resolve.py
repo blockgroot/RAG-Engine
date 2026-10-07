@@ -310,7 +310,16 @@ def asks_for_a_count(question: str) -> bool:
 #: as a failure.
 CHART_MODE_HINT = (
     "**Charts are in Chart mode**\n"
-    "Turn on Chart next to the message box and ask again."
+    "Choose + then Create a chart, and ask again."
+)
+
+
+#: Chart mode's reply to a question that wants words, not a chart ("what is
+#: our leave policy?"). Said plainly, with the way out, so Chart mode never
+#: reads as the product failing to answer.
+CHART_MODE_TEXT_QUESTION = (
+    "**Chart mode only builds charts**\n"
+    "Turn off Chart to ask this as a normal question."
 )
 
 
