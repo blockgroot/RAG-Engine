@@ -52,7 +52,7 @@ function syncDetail(job: JobRecord | undefined): string {
     }
     return `${done} of ${total} pages done.`;
   }
-  if (total === 0) return "Nothing new to bring in — finishing up.";
+  if (total === 0) return "No new pages found — finishing up.";
   return "This usually takes under a minute. Search quality may keep improving briefly in the background.";
 }
 

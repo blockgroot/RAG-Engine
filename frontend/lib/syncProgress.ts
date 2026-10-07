@@ -23,7 +23,7 @@ export function syncPagesDetail(job: JobRecord | undefined): string {
     }
     return `${done} of ${total} pages done.`;
   }
-  if (total === 0) return "Nothing new to bring in — finishing up.";
+  if (total === 0) return "No changes since the last sync — finishing up.";
   if (job?.status === "queued") return "Waiting for the sync worker…";
   return "This can take a few minutes for large folders.";
 }
@@ -34,7 +34,9 @@ export function updateCompleteMessage(job: JobRecord | undefined): string {
     return `Updated · ${docCount} page${docCount === 1 ? "" : "s"}`;
   }
   if (job?.total_documents === 0) {
-    return "Nothing found to bring in — check the source has content, then try again.";
+    // Zero pages to work on means nothing is new or changed since the last
+    // sync -- after a reconnect that is the normal case, not a problem.
+    return "Up to date · No changes since the last sync. You can ask questions now.";
   }
   return "Already up to date";
 }

@@ -615,3 +615,45 @@ def test_a_new_topic_in_the_same_chat_is_routed_on_its_own_words(monkeypatch):
         "What is our leave policy?", ORG, context="What's the status of SYV-5?"
     )
     assert (decision.agent_key, decision.reason) == ("notion", "best-match")
+
+
+def test_a_chart_asked_of_a_model_without_charts_names_the_ones_that_can(monkeypatch):
+    """A model that cannot build charts must not make the QUESTION look unchartable."""
+    from app.llm.routed import use_model
+
+    def boom(*a, **k):
+        raise AssertionError("the classifier must not run on a model without charts")
+
+    monkeypatch.setattr("app.insights.resolve.classify_question", boom)
+    monkeypatch.setenv("LLM_MODEL", "gemini-2.5-flash")
+    use_model("cohere/north-mini-code:free")
+    try:
+        decision = _real_insights_route("chart Linear issues by priority", {"linear"}, "org", None)
+    finally:
+        use_model(None)
+    assert decision.reason == "chart-model-unsupported"
+    assert decision.chart_refusal.startswith("**Cohere North Mini doesn't support charts**")
+    assert "gemini-2.5-flash or Qwen 3.8 27B" in decision.chart_refusal
+
+
+def test_a_model_without_charts_still_routes_a_plain_question(monkeypatch):
+    from app.agent.routing import _chart_unsupported_model
+    from app.llm.routed import use_model
+
+    use_model("cohere/north-mini-code:free")
+    try:
+        assert _chart_unsupported_model("what is the leave policy?") is None
+    finally:
+        use_model(None)
+
+
+@pytest.mark.parametrize("model", [None, "qwen/qwen3.8-27b", "acme-own-model"])
+def test_models_that_build_charts_are_not_stopped(model):
+    from app.agent.routing import _chart_unsupported_model
+    from app.llm.routed import use_model
+
+    use_model(model)
+    try:
+        assert _chart_unsupported_model("chart issues by priority") is None
+    finally:
+        use_model(None)

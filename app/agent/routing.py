@@ -635,6 +635,30 @@ def _chart_fields(org_id: str, workspace_id: str | None, viewer) -> dict | None:
         return None
 
 
+def _chart_unsupported_model(question: str) -> str | None:
+    """The message for a chart asked of a model that cannot build one, else None.
+
+    Checked before the classifier runs: on such a model it answers in prose or
+    picks nothing, and the member is told their QUESTION can't be charted when
+    the same question works on another model. Only an explicit visual ask
+    ("chart", "graph", "plot") is stopped; a count question still goes on.
+    """
+    from ..config.settings import LLMSettings
+    from ..insights.resolve import asks_for_a_visual, unsupported_model_message
+    from ..llm import catalog
+    from ..llm.routed import selected_model
+
+    model = selected_model()
+    if catalog.supports_charts(model) or not asks_for_a_visual(question):
+        return None
+    choice = catalog.get(model)
+    label = choice.label if choice else model
+    alternatives = [LLMSettings.from_env().model or "the default model"] + [
+        m.label for m in catalog.chart_models()
+    ]
+    return unsupported_model_message(label, alternatives)
+
+
 def _try_insights_route(
     question: str,
     connected: set[str],
@@ -656,6 +680,10 @@ def _try_insights_route(
     providers = [p for p in sorted(connected) if panel_defs.for_provider(p)]
     if not providers:
         return None
+    unsupported = _chart_unsupported_model(question)
+    if unsupported:
+        return RoutingDecision(INSIGHTS_KEY, "chart-model-unsupported",
+                               chart_refusal=unsupported)
     try:
         intent = classify_question(
             question, providers=providers, fail_open=True,

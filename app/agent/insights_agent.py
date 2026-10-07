@@ -59,9 +59,10 @@ class InsightsAgent(Agent):
         if parsed is None:
             return AgentResponse(
                 answer=(
-                    "I can't chart that. Charts count activity from your "
-                    "connected apps, not topics inside a document. Ask as a "
-                    "normal question if you want the file's contents."
+                    "**This can't be shown as a chart**\n"
+                    "Charts are built from activity in your connected apps and "
+                    "from figures in document tables, not from topics in text. "
+                    "To ask what a document says, ask without \"chart\"."
                 ),
                 grounded=False,
                 source=SOURCE_NONE,

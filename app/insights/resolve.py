@@ -263,13 +263,36 @@ def _unavailable_message(provider: str) -> str:
 def _refusal(metrics: list[registry.Metric]) -> str:
     labels = ", ".join(sorted(m.label.lower() for m in metrics)) or "nothing yet"
     return (
-        "I can't chart that. Charts count activity from your connected apps "
-        "(edits, pull requests, tasks, conversations) — not topics or themes "
-        "inside a document.\n\n"
-        f"What I can show: {labels}.\n\n"
-        "If you want what's in a file, ask as a normal question without "
-        "asking for a pie, bar, or line chart."
+        "**This can't be shown as a chart**\n"
+        "Charts are built from activity in your connected apps and from figures "
+        "in document tables, not from topics or themes in text.\n\n"
+        f"Available here: {labels}.\n"
+        "To ask what a document says, ask without \"chart\", \"graph\", "
+        "\"pie\" or \"plot\"."
     )
+
+
+def unsupported_model_message(label: str, alternatives: list[str]) -> str:
+    """The selected model cannot build charts; name the ones that can.
+
+    Said plainly rather than as a chart refusal: "this can't be charted"
+    blames the question, when the same question works on another model.
+    """
+    names = [a for a in alternatives if a]
+    if len(names) > 1:
+        options = ", ".join(names[:-1]) + f" or {names[-1]}"
+    else:
+        options = names[0] if names else "the default model"
+    return (
+        f"**{label} doesn't support charts**\n"
+        f"Switch to {options} in the model picker and ask again."
+    )
+
+
+def asks_for_a_visual(question: str) -> bool:
+    """The question names a chart, graph or plot -- not merely a count."""
+    q = question or ""
+    return _asked_for_a_plot(q) or bool(_CHART_WORD.search(q))
 
 
 #: Every connector that has chartable metrics at all. Compared against what
