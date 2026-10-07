@@ -45,6 +45,11 @@ class ModelChoice:
     #: OpenRouter both serve Llama under different slugs, and only one of them
     #: accepts OpenRouter's routing preferences.
     backend: str = BACKEND_OPENROUTER
+    #: Builds charts. The chart classifier needs a strict JSON reply naming a
+    #: metric and fields from a list; on staging only the default model and
+    #: Qwen did that reliably -- the others answered in prose or picked
+    #: nothing, and the member saw a refusal that blamed their question.
+    charts: bool = False
 
 
 # Free-tier OpenRouter ids, each VERIFIED against a live key by
@@ -128,6 +133,7 @@ GROQ_MODELS: tuple[ModelChoice, ...] = (
         label="Qwen 3.8 27B",
         note="Strong general reasoning at low latency.",
         backend=BACKEND_GROQ,
+        charts=True,
     ),
 )
 
@@ -166,6 +172,18 @@ def normalize(model_id: str | None) -> str | None:
 def get(model_id: str) -> ModelChoice | None:
     """The catalogued choice for an id, or ``None`` if it is not offered."""
     return _BY_ID.get(model_id)
+
+
+def supports_charts(model_id: str | None) -> bool:
+    """True for the default model, an org's own model (not ours to judge), or
+    a catalogued model verified to build charts."""
+    choice = _BY_ID.get(model_id) if model_id else None
+    return choice is None or choice.charts
+
+
+def chart_models() -> list[ModelChoice]:
+    """Catalogued models that build charts, to name in the refusal."""
+    return [m for m in ALL_MODELS if m.charts]
 
 
 def available(backends: set[str]) -> list[ModelChoice]:

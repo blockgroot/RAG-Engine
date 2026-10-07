@@ -250,7 +250,7 @@ def test_a_pie_of_document_topics_is_refused_not_sent_to_rag():
     assert intent.kind == "refuse"
     assert intent.spec is None
     message = (intent.message or "").lower()
-    assert "can't chart" in message
+    assert "can't be shown as a chart" in message
     assert "document" in message
     assert "file" in message
     assert "pie" in message
