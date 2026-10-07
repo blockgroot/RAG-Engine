@@ -200,6 +200,7 @@ def as_dicts(backends: set[str] | None = None) -> list[dict]:
     """Catalog shape for ``GET /chat/models``."""
     models = available(backends) if backends is not None else list(ALL_MODELS)
     return [
-        {"id": m.id, "label": m.label, "note": m.note, "backend": m.backend}
+        {"id": m.id, "label": m.label, "note": m.note, "backend": m.backend,
+         "charts": m.charts}
         for m in models
     ]

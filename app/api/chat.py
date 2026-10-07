@@ -66,7 +66,13 @@ from ..llm.routed import answering_model, selected_model, use_model
 from ..db.connection import get_connection
 from ..feedback import record_gap
 from ..guard.live import ATTACHMENT_WARNING, is_flagged, watch_question
-from ..insights.resolve import spec_to_dict
+from ..agent.orchestration import INSIGHTS_KEY
+from ..insights.resolve import (
+    CHART_MODE_HINT,
+    asks_for_a_count,
+    asks_for_a_visual,
+    spec_to_dict,
+)
 from ..security.rate_limit import check_rate_limit
 from ..security.visibility import visibility_predicate
 from ..workspaces import assert_member
@@ -152,12 +158,16 @@ def list_models(session: SessionClaims = Depends(get_session)):
                 "label": f"Your company's model — {own['model']}",
                 "note": f"Configured by your admin ({own.get('preset_label') or 'custom'}).",
                 "backend": "custom",
+                # Not ours to judge: offered in Chart mode with a note.
+                "charts": None,
             }
         )
 
     return {
         "default": catalog.AUTO,
         "default_label": LLMSettings.from_env().model or "Auto",
+        # The default model builds charts; Chart mode always offers it.
+        "default_charts": True,
         "models": models,
     }
 
@@ -984,6 +994,7 @@ def _stream_answer(
     requested_agent: str | None = None,
     model: str | None = None,
     session: SessionClaims | None = None,
+    chart_mode: bool = False,
 ) -> Iterator[str]:
     # Who is asking, for the Second Brain's live reads (app/livetools). Whether
     # anything is read live is decided by LIVE_TOOLS_ENABLED and the gateway,
@@ -1004,7 +1015,7 @@ def _stream_answer(
     try:
         yield from _stream_answer_body(
             question, org_id, conversation_id, workspace_id, requested_agent,
-            model, session, memory_turn,
+            model, session, memory_turn, chart_mode=chart_mode,
         )
     finally:
         # Starlette may close the generator from another copied context, where
@@ -1081,6 +1092,7 @@ def _stream_answer_body(
     model: str | None,
     session: SessionClaims | None,
     memory_turn=None,
+    chart_mode: bool = False,
 ) -> Iterator[str]:
     # Set inside the generator, NOT in the route that returns the
     # StreamingResponse: Starlette runs a sync generator via
@@ -1091,6 +1103,21 @@ def _stream_answer_body(
     use_model(model, org_id=org_id)
     # Logged, never refused (see guard/live.py for the measured reason).
     watch_question(question)
+
+    # "Chart …" with Chart mode off: charts are only built in Chart mode, so
+    # say where they are at once rather than spend a model call on a written
+    # answer that reads as a failure. Not saved as a turn: it answers nothing.
+    if not chart_mode and requested_agent is None and asks_for_a_visual(question):
+        for chunk in _word_chunks(CHART_MODE_HINT):
+            yield _sse_event("token", chunk)
+        yield _sse_event("done", {
+            "answer": CHART_MODE_HINT, "grounded": False, "source": "none",
+            "citations": [], "resolved_question": None, "latency_ms": 0,
+            "agent": INSIGHTS_KEY, "routing_reason": "chart-mode-off",
+            "model": None, "chart": None, "chart_period": None,
+            "live_sources": [], "cited": [], "chart_hint": True,
+        })
+        return
 
     # Loaded BEFORE routing but no longer instead of it. An attached file used
     # to short-circuit `choose_agent` entirely, on the reasoning that someone
@@ -1126,6 +1153,7 @@ def _stream_answer_body(
         context=_previous_question(org_id, conversation_id, workspace_id, session),
         graph_plan=plan_future,
         viewer=viewer_for(session),
+        chart_mode=chart_mode,
     )
     plan = _graph_plan_result(plan_future)
     # The classifier's live-data verdict rides the request note to the gateway
@@ -1150,7 +1178,7 @@ def _stream_answer_body(
 
     # Routed FIRST, then blended: the router picks which corpus supports the
     # question, and the attached files join whatever it retrieves.
-    if attached:
+    if attached and not chart_mode:
         yield from _stream_attachment_answer(
             question, attached, org_id, conversation_id, workspace_id, decision, session
         )
@@ -1280,6 +1308,11 @@ def _stream_answer_body(
             # refreshed -- the indexed copy answered.
             "live_sources": list(getattr(result, "live_sources", None) or []),
             "cited": list(getattr(result, "cited", None) or []),
+            # "How many …" answered in words: offer Chart mode beside it.
+            "chart_hint": (
+                not chart_mode and decision.agent_key != INSIGHTS_KEY
+                and asks_for_a_count(question)
+            ),
             # Personal memory saved from this question, announced so saving is
             # never silent; the pill offers Undo.
             "remembered": _remembered(memory_turn),
@@ -1341,6 +1374,8 @@ def chat_stream(
             requested_agent=requested_agent,
             model=model,
             session=session,
+            # Chat's Chart toggle. Anything else is normal Ask.
+            chart_mode=body.get("mode") == "chart",
         ),
         media_type="text/event-stream",
     )

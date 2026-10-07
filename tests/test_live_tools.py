@@ -477,7 +477,7 @@ def test_the_chat_edge_identifies_the_asker_for_every_question(monkeypatch):
 
     seen = []
 
-    def body(*args):
+    def body(*args, **kwargs):
         seen.append(current_live_request())
         yield "event: done\ndata: {}\n\n"
 

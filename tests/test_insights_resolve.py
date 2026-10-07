@@ -640,3 +640,47 @@ def test_classify_question_carries_the_live_verdict():
     )
     assert intent.kind == "qa"
     assert intent.needs_live is True
+
+
+# --------------------------------------------------------------------------
+# Ask's small question check (charts have their own mode)
+# --------------------------------------------------------------------------
+
+
+def test_the_question_check_reads_code_and_live():
+    intent = resolve.classify_route("who owns the auth module?", github=True,
+                                    llm=FakeLLM('{"code": true, "live": false}'))
+    assert (intent.kind, intent.needs_live) == ("github_live", False)
+
+
+def test_the_question_check_never_picks_github_when_it_is_not_connected():
+    llm = FakeLLM('{"code": true, "live": true}')
+    intent = resolve.classify_route("who owns the auth module?", github=False, llm=llm)
+    assert (intent.kind, intent.needs_live) == ("qa", True)
+    assert '"code"' not in llm.prompts[-1]
+
+
+def test_a_failed_question_check_is_a_document_question():
+    class Dead:
+        def generate(self, *a, **k):
+            raise RuntimeError("429")
+
+    intent = resolve.classify_route("is SYV-5 blocked?", github=True, llm=Dead())
+    assert (intent.kind, intent.needs_live) == ("qa", None)
+
+
+def test_the_question_check_carries_no_chart_catalogue():
+    prompt = resolve._route_prompt("chart PRs", github=True)
+    assert "metric" not in prompt and "TABLES" not in prompt
+
+
+@pytest.mark.parametrize("question, visual, count", [
+    ("chart PRs by label", True, False),
+    ("plot revenue by month", True, False),
+    ("how many PRs merged last week?", False, True),
+    ("what is our org chart?", False, False),
+    ("what is the leave policy?", False, False),
+])
+def test_chart_words_and_count_words(question, visual, count):
+    assert resolve.asks_for_a_visual(question) is visual
+    assert resolve.asks_for_a_count(question) is count

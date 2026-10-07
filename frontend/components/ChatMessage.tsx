@@ -32,6 +32,7 @@ export function ChatMessageView({
   conversationId,
   question,
   workspaceId,
+  onEnableChart,
 }: {
   message: Message;
   /** The chat this answer belongs to. Feedback is stored against it, and the
@@ -42,6 +43,8 @@ export function ChatMessageView({
    *  reading a downvote is not holding half an exchange. */
   question?: string;
   workspaceId?: string | null;
+  /** Turns on Chart mode, for the hint under an answer. Absent = no button. */
+  onEnableChart?: () => void;
 }) {
   if (message.role === "user") {
     return <div className="chat-bubble chat-bubble-user">{message.text}</div>;
@@ -108,6 +111,11 @@ export function ChatMessageView({
           {message.done?.model && (
             <span className="chat-model-tag">Answered by {message.done.model}</span>
           )}
+          {message.done?.chart_hint && onEnableChart && (
+            <button type="button" className="chat-chart-hint" onClick={onEnableChart}>
+              <ChartIcon /> Turn on Chart
+            </button>
+          )}
           {message.done?.remembered && message.done.remembered.length > 0 && (
             <RememberedNote facts={message.done.remembered} />
           )}
@@ -122,5 +130,14 @@ export function ChatMessageView({
         </>
       )}
     </div>
+  );
+}
+
+export function ChartIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" stroke="currentColor" strokeWidth="2"
+        strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   );
 }

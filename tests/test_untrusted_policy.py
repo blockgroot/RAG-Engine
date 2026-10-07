@@ -18,6 +18,7 @@ import pytest
 from app.ingestion.contextualize import _build_prompt as contextualize_prompt
 from app.insights import sentiment
 from app.insights.resolve import _prompt as resolve_prompt
+from app.insights.resolve import _route_prompt
 from app.rag import prompts
 from app.schedulers.activity import ActivityDigest
 from app.schedulers.prompts import build_scheduler_report_prompt
@@ -48,6 +49,7 @@ def _built_prompts() -> dict[str, str]:
             "summarise", ActivityDigest(text=ATTACK), "slack"
         ),
         "chart_resolver": resolve_prompt(ATTACK, []),
+        "ask_question_check": _route_prompt(ATTACK, github=True),
         # Memory: earlier answers repeat document text, so they are fenced too.
         "rewrite": prompts.build_rewrite_prompt("and them?", ATTACK, [("q?", ATTACK)]),
         "summary_fold": prompts.build_summary_prompt(ATTACK, [("q?", ATTACK)]),
