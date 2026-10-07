@@ -49,7 +49,9 @@ DROP = [p.strip() for p in os.getenv("BENCH_DROP_PARAMS", "").split(",") if p.st
 STREAM_OPTIONS = os.getenv("BENCH_STREAM_OPTIONS", "1") != "0"
 # Full request messages + response text per call: what the reviewer checks
 # groundedness against (the exact context the model saw). Large; never committed.
-BODIES = LOG.with_name("bodies.jsonl")
+# proxy.jsonl -> bodies.jsonl; a second proxy's proxy.handbook.jsonl -> bodies.handbook.jsonl,
+# so two proxies running side by side never interleave lines in one file.
+BODIES = LOG.with_name(LOG.name.replace("proxy", "bodies", 1))
 MAX_TRIES = 12
 
 app = FastAPI()

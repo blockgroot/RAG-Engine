@@ -146,8 +146,7 @@ def _check_v2(verdict: dict, context: str) -> dict:
 
 def _bodies(wanted: set[str]) -> dict[str, dict]:
     out = {}
-    path = BENCH / "bodies.jsonl"
-    if path.exists():
+    for path in sorted(BENCH.glob("bodies*.jsonl")):  # one file per proxy
         for line in path.open():
             row = json.loads(line)
             if row["call_id"] in wanted:

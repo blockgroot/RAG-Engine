@@ -35,4 +35,4 @@ bench_answer_check.jsonl
 
 # Benchmark 1: full LLM request bodies, hundreds of MB
 evaluation/reports/bench1/bodies.jsonl
-evaluation/reports/bench2/bodies.jsonl
+evaluation/reports/bench2/bodies*.jsonl

@@ -149,7 +149,7 @@ class Basic:
         hits = self.store.query(self.org_id, self.embedder.embed([question])[0], top_k=self.TOP_K)
         context = "\n\n".join(f"Document: {h.document_title}\n{h.content}" for h in hits)
         resp = self.http.post(
-            "http://localhost:4000/v1/chat/completions",
+            os.environ.get("LLM_BASE_URL", "http://localhost:4000/v1").rstrip("/") + "/chat/completions",
             headers={"X-Bench-Client": "basic"},
             json={"model": "bench-answer", "messages": [
                 {"role": "user", "content": self.prompt.format(context_documents=context, question=question)}

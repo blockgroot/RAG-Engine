@@ -56,10 +56,15 @@ def stage_of(row: dict) -> str:
 
 
 def main() -> None:
-    proxy = sorted((json.loads(line) for line in (BENCH / "proxy.jsonl").open()), key=lambda r: r["ts_start"])
+    shared = sorted((json.loads(line) for line in (BENCH / "proxy.jsonl").open()), key=lambda r: r["ts_start"])
     split = {q["question_id"]: q["split"] for q in json.loads((BENCH / "manifest.json").read_text())["questions"]}
     for records_file in sorted(RUNS.glob("*.records.jsonl")):
         system = records_file.name.removesuffix(".records.jsonl")
+        # A system run at the same time as another has its own proxy and log
+        # (proxy.<system>.jsonl): calls are matched to questions by time, so two
+        # systems in one log would take each other's calls.
+        own = BENCH / f"proxy.{system}.jsonl"
+        proxy = sorted((json.loads(line) for line in own.open()), key=lambda r: r["ts_start"]) if own.exists() else shared
         latest = {}  # a retried question replaces its errored row
         for line in records_file.open():
             r = json.loads(line)
