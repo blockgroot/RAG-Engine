@@ -22,7 +22,7 @@ Handbook ran with the accuracy changes that came out of Benchmark 1:
 - **With this model, Handbook and Onyx are equally accurate.** Each got the key answer right on about 65% of the 150 questions (Handbook 65.3%, Onyx 64.7%). In Benchmark 1, Onyx led by 7 points on the same measure.
 - **Handbook is still far cheaper and faster:** about **16× fewer AI tokens** per question (4.2k vs 69k), and **about 2× faster** to the first word (6 s vs 11 s).
 - **Onyx almost never says "I don't know".** It did so in only 5 of 150 answers.
-  - On the 15 questions whose answer is not in the documents, Onyx answered 14 anyway, with invented details such as a blockchain contract address.
+  - On the 15 questions whose answer is not in the documents, Onyx answered 14 anyway, with invented details.
   - Handbook correctly said "I don't know" to all 15.
 - **Onyx made things up far more often with this model:** 47% of its answers contained at least one invented claim, against 11% for Handbook. A second reviewer (Claude) saw the same pattern on a sample.
 - **Onyx is still clearly better on broad questions.** These are questions about a whole project, a big-picture summary, or "list everything". This is where Handbook lags most.
@@ -92,172 +92,60 @@ Handbook ran with the accuracy changes that came out of Benchmark 1:
 | Wrongly said "I don't know"                 | 9.3%      | **2.7%**  | 8.0%           |
 | At least one made-up claim                  | **10.7%** | 47.3%     | 18.7%          |
 
-**The same 60 questions as Benchmark 1** (the ones Onyx was graded on there)
-
-|                          | Handbook  | Onyx    | Basic pipeline |
-| ------------------------ | --------- | ------- | -------------- |
-| Got the key answer right | 72%       | **77%** | 68%            |
-| AI tokens per question   | **4,089** | 50,436  | 2,362          |
-
-**Head to head, question by question** (key answer right, all 150)
-
-| Outcome                              | Questions |
-| ------------------------------------ | --------- |
-| Both right                           | 64        |
-| Only Onyx right                      | 33        |
-| Only Handbook right                  | 34        |
-| Both wrong                           | 19        |
-
-The overall tie hides a real split. **Each product wins about a third of the questions the other loses**, and on different kinds of question.
-
-
-
 ## Where Onyx is better than Handbook
 
-Onyx got the key answer right and Handbook did not on **33 questions**. More than half are broad questions:
+Onyx got the key answer right and Handbook did not on 33 questions. More than half of them were broad questions.
 
-| Question type                                       | Onyx right, Handbook wrong |
-| --------------------------------------------------- | -------------------------- |
-| A whole project or customer situation               | 9                          |
-| "List everything" about a topic                     | 5                          |
-| A big-picture summary                               | 3                          |
-| Several facts from one long document                | 4                          |
-| Documents disagree, so it must pick the current one | 4                          |
-| Other types                                         | 8                          |
-
-**What Onyx does better:**
-
-1. **It gathers many documents for broad questions.**
-   - Onyx searches several times with rewritten queries, then has the AI pick the useful sections from about 50 results.
-   - On project questions it got 10 of 15 right; Handbook got 2.
-   - On "list everything" questions it got 7 of 15; Handbook got 5.
-   - On big-picture questions it got 4 of 8; Handbook got 1.
-2. **It rarely gives up.** It wrongly said "I don't know" on 3% of questions, against Handbook's 9%. When the answer is in the documents, Onyx keeps looking until it finds it.
-3. **It handles conflicting documents slightly better,** getting 14 of 15 such questions right against Handbook's 11. Onyx reads more, so it more often sees both the old and the new version and can tell which is current.
-4. **It includes slightly more of the required facts** (70.5% vs 69.7%), because its answers draw on more text.
+- **Broad questions.** These are questions about a whole project, a big-picture summary, or "list everything" on a topic.
+  - Onyx searches several times with rewritten queries, then has the AI pick the useful sections from about 50 results.
+  - That gathers the many documents these questions need.
+  - On project questions it got 10 of 15 right; Handbook got 2.
+- **It rarely gives up when the answer exists.** Onyx wrongly said "I don't know" on 3% of questions, against Handbook's 9%.
+- **Documents that disagree.** Onyx got 14 of 15 such questions right; Handbook got 11. Because it reads more, Onyx more often sees both the old and the new version and can tell which is current.
+- **Slightly more of the required facts** (70.5% vs 69.7%), because its answers draw on more text.
 
 
 
 ## Where Handbook is better than Onyx
 
-Handbook got the key answer right and Onyx did not on **34 questions**. In 30 of them, Onyx's answer contained made-up claims.
+Handbook got the key answer right and Onyx did not on 34 questions. In 30 of them, Onyx's answer contained made-up claims.
 
-| Question type                                | Handbook right, Onyx wrong |
-| -------------------------------------------- | -------------------------- |
-| The answer is not in the documents           | 14                         |
-| Narrow questions with conditions             | 6                          |
-| Several facts from one long document         | 3                          |
-| "List everything" about a topic              | 3                          |
-| Mixed, other                                 | 3                          |
-| Other types                                  | 5                          |
-
-**What Handbook does better:**
-
-1. **It says "I don't know" when the answer isn't there.** It was right on all 15 unanswerable questions; Onyx was right on 1. See the next section.
-2. **It sticks to the documents.** It made up claims in 11% of answers; Onyx did in 47%. When Onyx gets something wrong, it is usually confidently wrong: it invents a cause, a number or a version and presents it as fact.
-3. **It is better on narrow questions with conditions**, such as "in a Private deployment…" or "in the March incident…": 10 of 15, against Onyx's 6. On these, Onyx's date filter sometimes threw away every document (see "Observations").
-4. **It is cheaper, faster and steadier.**
-   - 16× fewer tokens per question.
-   - About 2× faster to the first word.
-   - Its most expensive question used about 10,000 tokens, against Onyx's 410,000.
-5. **It always searches.** Onyx skipped searching entirely on 5 questions and answered from general knowledge. All 5 answers were made up; one gave a watering schedule for a houseplant that contradicted the company's own document.
+- **It says "I don't know" when the answer isn't there.**
+  - The benchmark has 15 questions whose answer is deliberately missing from the documents.
+  - Handbook said "I don't know" to all 15. Onyx said it to only 1 and answered the other 14 with invented details.
+  - Across all 150 questions, Onyx said "I don't know" only 5 times; Handbook said it 29 times.
+- **It sticks to the documents.**
+  - Handbook made up claims in 11% of answers; Onyx did in 47%.
+  - When Onyx is wrong, it is usually confidently wrong, presenting an invented cause, number or version as fact.
+  - For a company knowledge tool, that is worse than "I don't know", because the person asking cannot tell an invented detail from a real one.
+- **Why the difference:**
+  - Handbook has a confidence check that says "I don't know" without calling the AI when nothing matches well enough.
+  - It also has a strict instruction to answer only from the passages it was given.
+  - Onyx's answer instructions ask the model to be helpful, and gpt-oss fills the gaps from its general knowledge.
+- **Narrow questions with conditions.** Handbook got 10 of 15 right; Onyx got 6. On some of these, Onyx's date filter removed every document (see "Observations").
+- **It always searches.** Onyx skipped the search entirely on 5 questions and answered from general knowledge; all 5 answers were made up.
+- **It is cheaper, faster and steadier.** It uses 16× fewer tokens per question and is about 2× faster to the first word. Its most expensive question used about 10,000 tokens, against Onyx's 410,000.
 
 
 
 ## Where Handbook lags, and why
 
-We looked at each of the 33 questions that Onyx got right and Handbook got wrong, and sorted them by cause:
+We looked at each of the 33 questions that Onyx got right and Handbook got wrong.
 
-| Why Handbook got it wrong                                                                | Questions |
-| ---------------------------------------------------------------------------------------- | --------- |
-| **Broad question, too few documents read.** It needed 3–8 documents; Handbook used 2–5.  | **17**    |
-| **Had the right document, but said "I don't know"**                                      | 6         |
-| **Had the right document, but picked the wrong detail** or mixed in another incident     | 5         |
-| **Search missed the right document**                                                     | 3         |
-| **Documents disagreed, and it presented the outdated one as current**                    | 2         |
+- **Broad questions (17 of 33): the main gap.**
+  - Handbook gives the AI its 5 best passages from a handful of documents, while these questions can need 6–8 documents.
+  - It usually found some of the right documents but not all, so its answer covered only part of the topic.
+  - Benchmark 1's follow-up showed that simply reading 10 or 20 passages does not fix this; searching more widely for broad questions should.
+- **Too cautious (6 of 33).**
+  - The right document was in front of the AI, but it still said "I don't know", usually on questions with several parts that it could only partly answer.
+  - It is the same strictness that makes Handbook reliable on unanswerable questions, taken too far.
+- **Picked the wrong detail (5 of 33).**
+  - The right document was there, but the answer used a nearby fact, or mixed in a detail from a similar case.
+  - The new "keep each fact with its own document" rule reduced this but did not remove it.
+- **Search missed the right document (3 of 33).** The right document never reached the AI.
+- **Outdated information (2 of 33).** Two documents disagreed, and Handbook presented the older version as current.
 
-**1. Broad questions (17 of 33): the main gap.**
-
-- Handbook gives the AI its 5 best passages from a handful of documents. A project or "list everything" question can need 6–8 documents.
-- In these 17 cases Handbook usually found some of the right documents, but not all, so its answer covered part of the topic. For example:
-  - Asked which customers had exceptions, it named Northstar Bank but missed Helio Health and QuantaGov.
-  - Asked for a rollout's requirements, it missed most of the specific thresholds.
-- Onyx's repeated searching and section-picking gather the rest.
-- Benchmark 1's follow-up showed that simply giving Handbook 10 or 20 passages did not fix this. What helps is **searching more widely, only for broad questions**.
-
-**2. Too cautious (6 of 33).**
-
-- The right document was in front of the AI, and it still replied "I don't have anything about that".
-- This is the same strictness that makes Handbook perfect on unanswerable questions. Here it went too far: on questions with several parts, the AI refused when it could only answer some of them.
-- In one of the 6, Claude judged the refusal correct, so the true count may be 5.
-
-**3. Picked the wrong detail (5 of 33).**
-
-- The right document was there, but the answer took a nearby fact. For example, it gave a load-balancer change as the fix instead of the MTU change in the same document.
-- Sometimes it mixed in a detail from a similar incident.
-- The new "keep each fact with its own document" rule reduced this but did not remove it.
-
-**4. Search misses (3 of 33).** The right document never reached the AI. This is the smallest group.
-
-**5. Outdated information (2 of 33).** Two documents disagreed, and Handbook presented the older version as current.
-
-**What this means:** Handbook's search is not the main problem; it found the right documents more often than Onyx (83% vs 78%). Handbook lags because it **reads too narrowly on broad questions**, and is **sometimes too ready to say "I don't know"**.
-
-
-
-## Onyx almost never says "I don't know"
-
-This is the clearest finding of this run.
-
-- **Onyx said "I don't know" in 5 of its 150 answers.** Handbook said it in 29, and the basic pipeline in 27.
-- **The benchmark has 15 questions whose answer is deliberately missing from the documents.** The right reply is to say so.
-
-| Questions with no answer in the documents | Handbook | Onyx | Basic pipeline |
-| ----------------------------------------- | -------- | ---- | -------------- |
-| Said "I don't know" (correct)             | **15**   | 1    | **15**         |
-| Gave an answer anyway                     | 0        | 14   | 0              |
-
-**All 14 of Onyx's answers there were graded as containing made-up claims.** Two examples:
-
-- **Asked which blockchain network and smart-contract address a feature uses** (the documents say neither), Onyx answered with a formatted table: "Ethereum Mainnet" and a contract address starting `0xA1B2c3D4e5F6…`. Both are invented. Handbook replied: "I don't have anything about that in this workspace's connected content."
-- **Asked for the exact format of a security token** that no document describes, Onyx produced a full table of fields, types and encodings, all invented.
-
-**Why it happens:**
-
-- **Onyx's answer instructions ask the model to be helpful,** and gpt-oss fills the gaps from its general knowledge.
-- **Handbook has two guards against this.**
-  - A confidence check: if nothing matches well enough, it says "I don't know" without calling the AI at all.
-  - A strict instruction to answer only from the passages it was given.
-
-**Why it matters:** for a company knowledge tool, a confident wrong answer is worse than "I don't know". The person asking cannot tell the invented contract address from a real one.
-
-**The cost for Handbook:** it wrongly said "I don't know" on 9% of questions whose answer was in the documents, against Onyx's 3% (see "Where Handbook lags").
-
-
-
-## Answer quality by question type
-
-Key answer right, all 150 questions:
-
-| What the question asks                                         | Questions | Handbook | Onyx   | Basic pipeline |
-| -------------------------------------------------------------- | --------- | -------- | ------ | -------------- |
-| One simple fact                                                | 22        | 17       | **19** | 15             |
-| A fact, asked in different words than the documents use        | 15        | 11       | **12** | 9              |
-| Documents disagree, so it must pick the current or correct one | 15        | 11       | **14** | 11             |
-| Several facts from one long document                           | 15        | 11       | **12** | 10             |
-| Narrow questions with conditions ("in a Private deployment…")  | 15        | **10**   | 6      | 9              |
-| "List everything" about a topic                                | 15        | 5        | **7**  | 4              |
-| A whole project or customer situation                          | 15        | 2        | **10** | 3              |
-| A big-picture summary                                          | 8         | 1        | **4**  | 1              |
-| Mixed, other                                                   | 15        | **15**   | 12     | **15**         |
-| The answer is not in the documents                             | 15        | **15**   | 1      | **15**         |
-
-The groups are small (8–22 questions), so one question moves a figure a lot. The two clear patterns:
-
-- **Onyx leads on broad questions:** whole projects, big-picture summaries, and "list everything".
-- **Handbook leads where the answer is narrow or missing.**
-
-
+**Overall:** search is not Handbook's main problem; it found the right documents more often than Onyx (83% vs 78%). It lags because it reads too narrowly on broad questions and is sometimes too quick to say "I don't know".
 
 ## Token usage
 
@@ -328,7 +216,7 @@ What we actually saw during the run.
 2. **Onyx answers almost everything, including what it doesn't know.** It answered 14 of the 15 unanswerable questions with invented details, and said "I don't know" only 5 times in 150.
 3. **Onyx sometimes skips the search entirely.** On 5 questions, its model decided no search was needed and answered from general knowledge. All 5 were graded as made up.
 4. **Onyx's date filter can throw away every document.**
-   - **What happened:** on 8 questions, Onyx's model turned a date in the question into a search filter that kept only documents updated in that period. Examples: "the March 2026 incident" → only March 2026; "the 2026-01-15 game day" → only that day; "H1 2025".
+   - **What happened:** on 8 questions, Onyx's model turned a date in the question into a search filter that kept only documents updated in that period.
    - **The effect:** our test documents carry different dates, so the search came back empty.
      - In 4 of the 8, Onyx said it had nothing.
      - In the other 4, it answered anyway and was graded as making things up.
