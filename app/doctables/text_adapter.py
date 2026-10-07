@@ -53,7 +53,9 @@ TEXT_NOTE = (
 
 _FIGURE = re.compile(
     r"(?:[₹$€£]|\brs\.?|\binr\b|\busd\b|\beur\b)\s*\d"
-    r"|\d[\d,]*(?:\.\d+)?\s*(?:%|\bk\b|\bmn?\b|\bbn\b|\blakhs?\b|\blac\b|\bcr\b|\bcrores?\b)",
+    # The unit may touch the number ("12k", "3.2bn"): no word boundary BEFORE
+    # it, only after, so "5min" or "3kg" is still not a figure.
+    r"|\d[\d,]*(?:\.\d+)?\s*(?:%|(?:k|mn?|bn|lakhs?|lac|cr|crores?)\b)",
     re.I,
 )
 #: Anything a figure can be written as, for comparing a cell to its quote.

@@ -65,6 +65,15 @@ def test_a_sheet_is_never_sent_to_the_ai():
     assert not TextAdapter().wants(_doc(tables=("parsed",)))
 
 
+@pytest.mark.parametrize("text, wanted", [
+    ("Revenue was 12k in Q1, 15k in Q2 and 18k in Q3.", True),
+    ("Spend: 5m, then 3.2bn, then 2crore.", True),
+    ("Took 5min, weighed 3kg, 40 people came in 2026.", False),
+])
+def test_a_unit_written_against_the_number_counts(text, wanted):
+    assert TextAdapter().wants(_doc(text)) is wanted
+
+
 def test_figures_inside_a_pipe_table_do_not_count():
     md = "| Q | Revenue |\n|---|---|\n| Q1 | ₹12L |\n| Q2 | ₹15L |\n| Q3 | ₹18L |\n"
     assert not TextAdapter().wants(_doc(md))
