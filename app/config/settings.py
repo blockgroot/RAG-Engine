@@ -31,6 +31,10 @@ DEFAULT_RAG_SCOPE_WHOLE_MAX_CHARS = 60000
 DEFAULT_RAG_SIMILARITY_THRESHOLD = 0.35
 DEFAULT_RAG_MAX_CONTEXT_CHARS = 6000
 DEFAULT_RAG_MAX_ANSWER_TOKENS = 700
+# Chunks either side of the best hits added to their block (0 = off). Benchmark 1
+# found Handbook usually had the right document but only one 256-token piece of
+# it, so the detail in the next paragraph was missing.
+DEFAULT_RAG_NEIGHBOR_CHUNKS = 0
 DEFAULT_MEMORY_FOLD_WAIT_SECONDS = 2.0
 DEFAULT_RAG_FALLBACK_RESPONSE = (
     "I don't have information on that in the available policy documents."
@@ -392,6 +396,10 @@ class RagSettings:
     max_answer_tokens: int | None = DEFAULT_RAG_MAX_ANSWER_TOKENS
     scope_whole_max_chunks: int = DEFAULT_RAG_SCOPE_WHOLE_MAX_CHUNKS
     scope_whole_max_chars: int = DEFAULT_RAG_SCOPE_WHOLE_MAX_CHARS
+    neighbor_chunks: int = DEFAULT_RAG_NEIGHBOR_CHUNKS
+    # Tell the model not to attach one document's facts to another's subject
+    # (Benchmark 1: wrong-document facts were the second-largest loss).
+    focus_rule: bool = False
 
     @classmethod
     def from_env(cls) -> "RagSettings":
@@ -418,6 +426,8 @@ class RagSettings:
                 os.getenv("RAG_MAX_CONTEXT_CHARS") or DEFAULT_RAG_MAX_CONTEXT_CHARS
             ),
             max_answer_tokens=max_answer_tokens,
+            neighbor_chunks=int(os.getenv("RAG_NEIGHBOR_CHUNKS") or DEFAULT_RAG_NEIGHBOR_CHUNKS),
+            focus_rule=env_bool("RAG_FOCUS_RULE", False),
         )
 
 
@@ -961,12 +971,17 @@ class RecoverySettings:
 
     enabled: bool = DEFAULT_RECOVERY_ENABLED
     max_queries: int = DEFAULT_RECOVERY_MAX_QUERIES
+    # Also search with the alternative wordings up front, not only after a
+    # failure: a document worded differently from the question can be missed
+    # while the search still scores "good enough" to skip recovery.
+    proactive: bool = False
 
     @classmethod
     def from_env(cls) -> "RecoverySettings":
         return cls(
             enabled=env_bool("RECOVERY_ENABLED", DEFAULT_RECOVERY_ENABLED),
             max_queries=int(os.getenv("RECOVERY_MAX_QUERIES") or DEFAULT_RECOVERY_MAX_QUERIES),
+            proactive=env_bool("RECOVERY_PROACTIVE", False),
         )
 
 
@@ -1467,6 +1482,11 @@ class RetrievalSettings:
     rerank_enabled: bool = DEFAULT_RETRIEVAL_RERANK_ENABLED
     candidate_pool: int = DEFAULT_RETRIEVAL_CANDIDATE_POOL
     rrf_k: int = DEFAULT_RETRIEVAL_RRF_K
+    # Drop a reranked hit scoring below this fraction of the best hit's
+    # reranker score (0 = off). Benchmark 1: the answer model mixed in facts
+    # from weak, off-topic passages. Uncalibrated, so off until the logged
+    # ``rerank_scores`` show where gold and distractor passages separate.
+    rerank_min_ratio: float = 0.0
 
     @classmethod
     def from_env(cls) -> "RetrievalSettings":
@@ -1477,6 +1497,7 @@ class RetrievalSettings:
                 os.getenv("RETRIEVAL_CANDIDATE_POOL") or DEFAULT_RETRIEVAL_CANDIDATE_POOL
             ),
             rrf_k=int(os.getenv("RETRIEVAL_RRF_K") or DEFAULT_RETRIEVAL_RRF_K),
+            rerank_min_ratio=float(os.getenv("RETRIEVAL_RERANK_MIN_RATIO") or 0.0),
         )
 
 

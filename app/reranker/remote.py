@@ -11,6 +11,8 @@ embeddings already sit on the same host when ``EMBEDDING_BACKEND=remote``.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import httpx
 
 from ..core.exceptions import ConfigurationError, ProviderError
@@ -98,7 +100,11 @@ class RemoteReranker(Reranker):
             if idx in seen:
                 continue
             seen.add(idx)
-            ordered.append(candidates[idx])
+            relevance = item.get("relevance_score")
+            ordered.append(
+                replace(candidates[idx], rerank_score=float(relevance))
+                if isinstance(relevance, (int, float)) else candidates[idx]
+            )
             if len(ordered) >= top_k:
                 break
 

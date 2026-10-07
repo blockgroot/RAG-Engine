@@ -10,6 +10,8 @@ fit behind this same interface if latency matters more than quality.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from ..core.exceptions import ConfigurationError, ProviderError
 from ..vectorstore.base import RetrievedChunk
 from .base import Reranker
@@ -64,4 +66,4 @@ class CrossEncoderReranker(Reranker):
         ranked = sorted(
             zip(candidates, scores), key=lambda pair: float(pair[1]), reverse=True
         )
-        return [chunk for chunk, _ in ranked[:top_k]]
+        return [replace(chunk, rerank_score=float(s)) for chunk, s in ranked[:top_k]]

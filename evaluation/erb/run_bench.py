@@ -46,6 +46,20 @@ def _questions(data: Path, split: str) -> list[dict]:
     return [{**q, "repeat": q["question_id"] in repeat} for q in rows]
 
 
+def _dsid_map(document_ids: list[str]) -> list[str | None]:
+    """Like ``_dsids`` but one entry per id, in the same order (None when unknown)."""
+    from app.db import get_connection
+
+    if not document_ids:
+        return []
+    with get_connection() as conn:
+        rows = dict(conn.execute(
+            "SELECT id::text, source_external_id FROM documents WHERE id = ANY(%s::uuid[])",
+            (list(set(document_ids)),),
+        ).fetchall())
+    return [rows.get(d) for d in document_ids]
+
+
 def _dsids(document_ids: list[str]) -> list[str]:
     """Row ids of the chunks sent to the model -> benchmark dsids, in prompt order.
     Search hits carry ``documents.id``, not ``source_external_id``."""
@@ -81,7 +95,10 @@ class Handbook:
         # The settings actually in effect, on every row: a variant's --set was once
         # silently reverted, and only the prompt size showed it.
         self.effective = {"top_k": settings.top_k, "max_context_chars": settings.max_context_chars,
-                          "candidate_pool": os.environ.get("RETRIEVAL_CANDIDATE_POOL")}
+                          "candidate_pool": os.environ.get("RETRIEVAL_CANDIDATE_POOL"),
+                          "rerank_min_ratio": os.environ.get("RETRIEVAL_RERANK_MIN_RATIO"),
+                          "neighbor_chunks": settings.neighbor_chunks, "focus_rule": settings.focus_rule,
+                          "proactive_rephrase": os.environ.get("RECOVERY_PROACTIVE")}
         self.pipeline = build_rag_pipeline(
             settings=settings, prompt_profile=WORKSPACE_PROMPT_PROFILE, memory=None, web_search=None
         )
@@ -102,6 +119,9 @@ class Handbook:
                 "recovery_used": r.recovery_used,
                 "n_chunks": len(r.sources),
                 "context_chars": sum(len(h.content) for h in r.sources),  # retrieved, before the prompt cap
+                # Per source, in prompt order: the data for choosing RETRIEVAL_RERANK_MIN_RATIO.
+                "rerank_scores": [[d, h.rerank_score] for d, h in zip(
+                    _dsid_map([h.document_id for h in r.sources]), r.sources)],
                 "settings": self.effective,
             },
         }

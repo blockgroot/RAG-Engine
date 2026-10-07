@@ -71,6 +71,8 @@ def test_remote_reranker_reorders_and_preserves_cosine(monkeypatch: pytest.Monke
     # Cosine scores must survive for the confidence gate.
     assert out[0].score == 0.40
     assert out[1].score == 0.42
+    # The reranker's own score rides alongside, never in place of the cosine.
+    assert [c.rerank_score for c in out] == [0.9, 0.8]
     assert captured["path"] == "/rerank"
     assert captured["json"]["model"] == "jina-reranker-v3"
     assert captured["json"]["top_n"] == 2

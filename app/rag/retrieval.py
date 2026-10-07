@@ -171,7 +171,10 @@ class HybridRetriever:
         # can be reserved a slot; a normal answer is byte-identical to before.
         keep = len(pool_candidates) if graph_cross else top_k
         if self._reranker is not None and self._settings.rerank_enabled:
-            final = self._reranker.rerank(rerank_q, pool_candidates, keep)
+            final = _drop_weak(
+                self._reranker.rerank(rerank_q, pool_candidates, keep),
+                self._settings.rerank_min_ratio,
+            )
         else:
             final = pool_candidates[:keep]
         if graph_cross:
@@ -401,6 +404,24 @@ class HybridRetriever:
 
         ordered = sorted(rrf_scores, key=lambda key: rrf_scores[key], reverse=True)
         return [chunk_by_key[key] for key in ordered]
+
+
+def _drop_weak(hits: list[RetrievedChunk], ratio: float) -> list[RetrievedChunk]:
+    """Keep hits whose reranker score is at least ``ratio`` x the best one's.
+
+    The best hit always stays, so this can thin the prompt but never empty it,
+    and the gate (computed before reranking) is untouched. Off at 0, and a no-op
+    when the reranker gave no scores or the best score is not positive (a
+    ratio of a non-positive number means nothing).
+    """
+    if ratio <= 0 or not hits:
+        return hits
+    best = hits[0].rerank_score
+    if best is None or best <= 0:
+        return hits
+    return [hits[0]] + [
+        h for h in hits[1:] if h.rerank_score is not None and h.rerank_score >= ratio * best
+    ]
 
 
 def gate_document(chunks) -> str | None:

@@ -180,8 +180,13 @@ def build_grounded_prompt(
     *,
     profile: PromptProfile = POLICY_PROMPT_PROFILE,
     asker_facts: tuple[str, ...] = (),
+    focus_rule: bool = False,
 ) -> str:
     """Build the grounded-answer prompt (facts from CONTEXT only).
+
+    ``focus_rule`` adds rule 6: the blocks usually come from several documents,
+    and Benchmark 1's second-largest loss was a real fact attached to the wrong
+    customer, incident or version. Off, the prompt is unchanged.
 
     ``asker_facts`` (personal memory) sit OUTSIDE the context, after it, and
     are framed as interpretation only: they may decide WHICH office or team a
@@ -256,7 +261,16 @@ def build_grounded_prompt(
         "follows. Never stop at a bare one-line answer when CONTEXT holds such "
         "details. With more than two or three facts, use a short lead-in plus "
         "markdown bullets ('- ' one fact each). Prefer about 3–5 focused points "
-        "— not an exhaustive dump of every clause.\n\n"
+        "— not an exhaustive dump of every clause.\n"
+        + (
+            "6. CONTEXT blocks often come from different documents about different "
+            "customers, incidents, teams, versions or dates. Answer from the "
+            "block(s) about the specific thing the QUESTION names. Never attach a "
+            "fact from one document to a different subject, and do not combine "
+            "facts from different documents unless the QUESTION asks for that.\n"
+            if focus_rule else ""
+        )
+        + "\n"
         f"CONTEXT:\n{fenced}\n\n"
         f"{UNTRUSTED_REMINDER}\n\n"
         f"{asker_block(asker_facts)}"

@@ -124,6 +124,11 @@ WEB_ANSWER_LABEL = "🌐 From a web search (NOT your organization's policy docum
 RECOVERY_REASON_GATE_MISS = _RECOVERY_REASON_GATE_MISS
 RECOVERY_REASON_INSUFFICIENT_EVIDENCE = _RECOVERY_REASON_INSUFFICIENT_EVIDENCE
 
+#: How many of the best hits get their neighbouring chunks (RAG_NEIGHBOR_CHUNKS).
+#: The top two cover the answer's main document and a close second; the rest
+#: stay single chunks, which is what keeps the prompt near its old size.
+_NEIGHBOR_TOP_HITS = 2
+
 _MAX_RECOVERY_QUERY_LEN = 200
 
 _MODE_TAG_RE = re.compile(r"^\s*MODE:\s*([ABC])\s*\n+(.*)", re.IGNORECASE | re.DOTALL)
@@ -792,6 +797,7 @@ class RagPipeline:
 
         sub_questions: list[str] = [retrieval_question]
         question_decomposed = False
+        recovery_queries: list[str] = []
 
         reused = (
             None
@@ -813,10 +819,23 @@ class RagPipeline:
                 ]
             else:
                 sub_questions = [retrieval_question]
+            search_queries = sub_questions
+            if (
+                not question_decomposed
+                and self._recovery_settings.proactive
+                and budget.can_spend(min_stage)
+            ):
+                # Alternative wordings searched alongside the question, then the
+                # whole pool reranked against the ORIGINAL question, so a
+                # rephrase can add candidates but never decide the ranking.
+                recovery_queries = self._expand_recovery_queries(
+                    question, [], org_id=org_id, conversation_id=conversation_id
+                )
+                search_queries = [retrieval_question, *recovery_queries]
             hits, top_score, gate_doc = self._retrieve_for_subquestions(
                 org_id,
                 question,
-                sub_questions,
+                search_queries,
                 workspace_id=workspace_id,
                 date_range=date_range,
                 tags=tags,
@@ -827,7 +846,6 @@ class RagPipeline:
         top_score_before = top_score
         recovery_used = False
         recovery_reason: str | None = None
-        recovery_queries: list[str] = []
         audit_used = False
         audit_downgraded = False
         audit_reason: str | None = None
@@ -940,7 +958,11 @@ class RagPipeline:
 
         result = self._generate(
             question,
-            hits,
+            # Reused hits are last turn's sources, which already carry their
+            # neighbours; expanding again would repeat them.
+            hits if retrieval_reused else self._with_neighbors(
+                hits, org_id, workspace_id=workspace_id, viewer=viewer
+            ),
             top_score,
             retrieval_reused=retrieval_reused,
             org_id=org_id,
@@ -1013,7 +1035,9 @@ class RagPipeline:
                 )
             result = self._generate(
                 question,
-                hits,
+                self._with_neighbors(
+                    hits, org_id, workspace_id=workspace_id, viewer=viewer
+                ),
                 top_score,
                 retrieval_reused=False,
                 org_id=org_id,
@@ -1048,6 +1072,64 @@ class RagPipeline:
             )
 
         return _finalize(result)
+
+    def _with_neighbors(
+        self,
+        hits: list[RetrievedChunk],
+        org_id: str,
+        *,
+        workspace_id: str | None,
+        viewer: Viewer | None,
+    ) -> list[RetrievedChunk]:
+        """The best hits with the chunks either side joined into their block.
+
+        Benchmark 1: Handbook usually had the right document, but only one
+        256-token piece of it, and the answer missed the detail in the next
+        paragraph. Joining neighbours keeps one block per hit, so a citation
+        [n] still points at a document that was really retrieved. The context
+        budget still applies after this and keeps a prefix, so depth on the
+        best hits pushes the weakest hits out rather than growing the prompt.
+
+        Runs after the gate and never changes a score. A neighbour passes the
+        same org, workspace and viewer filter as retrieval, and the injection
+        screen. A whole read already holds every chunk, so it is left alone.
+        Any failure returns ``hits`` unchanged.
+        """
+        n = self._settings.neighbor_chunks
+        if n <= 0 or not hits or len(hits) > self._settings.top_k:
+            return hits
+        top = hits[:_NEIGHBOR_TOP_HITS]
+        taken = {(h.document_id, h.chunk_index) for h in top}
+        wanted = [
+            (h.document_id, h.chunk_index + d)
+            for h in top
+            for d in range(-n, n + 1)
+            if d and h.chunk_index + d >= 0
+        ]
+        try:
+            found = self._store.chunks_at(
+                org_id, wanted, workspace_id=workspace_id, viewer=viewer
+            )
+        except Exception:  # noqa: BLE001 - an extra read must never cost an answer
+            logger.warning("neighbour read skipped", exc_info=True)
+            return hits
+        by_key = {
+            (c.document_id, c.chunk_index): c
+            for c in _screen_hits(found, org_id, self._guard_settings)
+        }
+        joined: list[RetrievedChunk] = []
+        for h in top:
+            parts = []
+            for d in range(-n, n + 1):
+                key = (h.document_id, h.chunk_index + d)
+                if d == 0:
+                    parts.append(h.content)
+                elif key in by_key and key not in taken:
+                    taken.add(key)
+                    parts.append(by_key[key].content)
+            joined.append(replace(h, content="\n".join(parts)))
+        rest = [h for h in hits[len(top):] if (h.document_id, h.chunk_index) not in taken]
+        return joined + rest
 
     def _gate_miss(
         self, hits: list[RetrievedChunk], top_score: float | None
@@ -1712,6 +1794,7 @@ class RagPipeline:
             # which is a wrong contact for a file the asker uploaded --
             # exactly the failure PromptProfile.escalation_hint documents.
             profile=profile or self._prompt_profile,
+            focus_rule=self._settings.focus_rule,
         )
         answer_cap = self._settings.max_answer_tokens
         raw = self._generate_text(
