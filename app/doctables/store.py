@@ -305,8 +305,9 @@ def list_values(table: TableRef, key: str) -> list[str]:
 
 def list_rows(
     table: TableRef, *, filters: tuple[tuple[str, str], ...] = (), limit: int = MAX_DETAILS,
-) -> list[tuple[dict, list[str]]]:
-    """The first rows behind a chart, ``(cells, raw)``, in document order."""
+) -> list[tuple[dict, list[str], str | None]]:
+    """The first rows behind a chart, ``(cells, raw, quote)``, in document
+    order. ``quote`` is the sentence a text-adapter row was read from."""
     where, params = "", {"table_id": table.id, "limit": max(1, min(limit, MAX_DETAILS))}
     for dim, value in filters:
         where += f" AND {_col(dim)} = %(f_{dim})s"
@@ -314,10 +315,10 @@ def list_rows(
     try:
         with get_connection() as conn:
             rows = conn.execute(
-                f"SELECT r.cells, r.raw FROM doc_table_rows r "
+                f"SELECT r.cells, r.raw, r.quote FROM doc_table_rows r "
                 f"WHERE r.table_id = %(table_id)s {where} ORDER BY r.row_no LIMIT %(limit)s",
                 params,
             ).fetchall()
     except Exception as exc:  # noqa: BLE001
         raise ProviderError("doctables: could not list rows", cause=exc) from exc
-    return [(r[0] or {}, list(r[1] or [])) for r in rows]
+    return [(r[0] or {}, list(r[1] or []), r[2]) for r in rows]

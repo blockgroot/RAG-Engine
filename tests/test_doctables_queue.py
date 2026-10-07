@@ -128,7 +128,20 @@ def test_the_tick_reads_figures_and_keeps_the_ingested_table(org, text_on):
     assert set(tables) == {"table", "text"}
     text = tables["text"]
     rows = table_store.list_rows(text)
-    assert [cells["c1"] for cells, _ in rows] == [1200000, 1500000, 1800000]
+    assert [cells["c1"] for cells, _, _ in rows] == [1200000, 1500000, 1800000]
+    assert rows[1][2] == "In Q2 revenue grew to ₹15L"
+    # The chart says where its numbers came from, and the hover quotes them.
+    from app.agent.insights_agent import run_table_spec
+    from app.insights.resolve import TABLE_METRIC, ChartSpec
+
+    spec = ChartSpec(metric=TABLE_METRIC, group_by="c0", period="month", chart="bar",
+                     measure="sum", value="c1", table_id=text.id)
+    panel, _ = run_table_spec(spec, org_id=org, workspace_id=None, viewer=VIEWER)
+    assert panel["title"].endswith("(taken from text)")
+    assert "read from sentences" in panel["caveat"]
+    assert panel["details"][0]["subject"] == "“Q1 revenue was ₹12L”"
+    assert {p["group"]: p["value"] for p in panel["points"]} == {
+        "Q1": 1200000, "Q2": 1500000, "Q3": 1800000}
     # A second tick has nothing left to do.
     assert queue.run_pending(ON, llm=llm, wait_for_slot=lambda: True) == 0
     assert llm.calls == 1

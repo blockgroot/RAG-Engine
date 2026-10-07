@@ -223,6 +223,10 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer) -> tuple[di
     for key, value in filters:
         title += f" — {name(key)}: {value}"
     title += f" — {table.name}"
+    if table.origin == "text":
+        # In the title, not only the caveat: figures an AI read from prose
+        # must never look like figures from a real table at a glance.
+        title += " (taken from text)"
 
     group_col = table.column(spec.group_by) if spec.group_by else None
     by_date = bool(group_col and group_col.get("type") == "date")
@@ -258,7 +262,8 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer) -> tuple[di
         ],
         "details": _table_details(table, filters, date_key=spec.group_by if by_date else None),
         "measured_since": None,
-        "table": {"id": table.id, "name": table.name, "document": table.document_title},
+        "table": {"id": table.id, "name": table.name, "document": table.document_title,
+                  "origin": table.origin},
     }
     return panel, spec.period
 
@@ -297,12 +302,16 @@ def _table_details(table, filters, *, date_key) -> list[dict]:
     names = [c.get("name", "") for c in table.columns]
     keys = [c.get("key") for c in table.columns]
     out = []
-    for cells, raw in rows:
+    for cells, raw, quote in rows:
         shown = " · ".join(
             f"{names[i]}: {raw[int(keys[i][1:])]}"
             for i in range(len(keys))
             if keys[i] and int(keys[i][1:]) < len(raw) and raw[int(keys[i][1:])]
         )
+        if quote:
+            # A figure read from prose shows the sentence it came from, so a
+            # reader can check it against the document in one glance.
+            shown = f"“{quote}”"
         row = {
             "subject": shown[:300],
             "url": table.source_uri,

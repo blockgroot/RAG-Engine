@@ -80,8 +80,10 @@ def catalogue(tables: list[TableRef]) -> str:
                 cols.append(f"{c['name']} (number{unit})")
             elif kind == "date":
                 cols.append(f"{c['name']} (date)")
+        kind = (" (figures read from the document's sentences)"
+                if getattr(table, "origin", "table") == "text" else "")
         lines.append(
-            f"- T{i}: \"{table.name}\" in \"{table.document_title}\" "
+            f"- T{i}: \"{table.name}\" in \"{table.document_title}\"{kind} "
             f"[{table.provider}], {table.row_count} rows. Columns: {'; '.join(cols)}"
         )
     return "\n".join(lines)
