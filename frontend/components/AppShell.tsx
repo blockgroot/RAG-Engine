@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
 import { BrandMark } from "@/components/BrandMark";
 import { NotificationBell } from "@/components/NotificationBell";
 import { RailChats } from "@/components/RailChats";
@@ -117,6 +118,20 @@ export function AppShell({
 }) {
   const pathname = usePathname();
   const router = useRouter();
+  // Phones: the sidebar is a drawer behind a menu button (the ChatGPT and
+  // Claude pattern) instead of a stack of navigation above every page.
+  const [navOpen, setNavOpen] = useState(false);
+  useEffect(() => {
+    setNavOpen(false);
+  }, [pathname]);
+  useEffect(() => {
+    if (!navOpen) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setNavOpen(false);
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [navOpen]);
   async function handleSignOut() {
     try {
       await api.logout();
@@ -140,12 +155,47 @@ export function AppShell({
   const initial = (firstName || me?.org_name || "F").trim().charAt(0).toUpperCase();
 
   return (
-    <div className={`app-shell ${showMainNav ? "app-shell-nav" : "app-shell-simple"}`}>
+    <div
+      className={`app-shell ${showMainNav ? "app-shell-nav" : "app-shell-simple"}${
+        navOpen ? " rail-open" : ""
+      }`}
+    >
       <a href="#main-content" className="skip-link">
         Skip to main content
       </a>
 
-      <aside className="app-rail" aria-label="Primary">
+      {showMainNav && (
+        <header className="mobile-bar">
+          <button
+            type="button"
+            className="mobile-bar-menu"
+            onClick={() => setNavOpen(true)}
+            aria-label="Open menu"
+            aria-expanded={navOpen}
+            aria-controls="app-rail"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden>
+              <path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+            </svg>
+          </button>
+          <Link href={homeHref} className="mobile-bar-brand">
+            <BrandMark />
+            <span>Handbook</span>
+          </Link>
+        </header>
+      )}
+      {navOpen && <div className="rail-backdrop" onClick={() => setNavOpen(false)} aria-hidden />}
+
+      <aside
+        className="app-rail"
+        id="app-rail"
+        aria-label="Primary"
+        onClick={(e) => {
+          // Picking a destination closes the drawer, including a chat in the
+          // history list that only changes the query string.
+          if ((e.target as HTMLElement).closest("a")) setNavOpen(false);
+        }}
+      >
         <div className="rail-atmosphere" aria-hidden>
           <span className="rail-glow rail-glow-a" />
           <span className="rail-glow rail-glow-b" />

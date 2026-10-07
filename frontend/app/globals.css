@@ -942,10 +942,6 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
   cursor: pointer;
 }
 .composer-mode-chip-remove:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 18%, transparent); }
-@media (max-width: 520px) {
-  .composer-mode-chip > span { display: none; }
-  .composer-menu { min-width: 15rem; }
-}
 .chat-chart-hint {
   margin-top: 0.6rem;
   display: inline-flex;
@@ -8423,3 +8419,117 @@ a.people-card:hover { color: inherit; }
 #nav-company ~ .rail-link .rail-ico {
   opacity: 0.72;
 }
+
+/* —— Ask composer on phones ——
+   One row could not hold the text field, the + menu, the Chart chip, the
+   model picker and Send: the field shrank to a few letters. Phones get the
+   layout ChatGPT and Claude use there -- the text field on its own full
+   row, the controls on a row beneath it. Last in the file so it wins over
+   the pill styling above. */
+@media (max-width: 640px) {
+  .chat-composer {
+    flex-wrap: wrap;
+    row-gap: 0.2rem;
+    border-radius: 22px;
+    padding: 0.4rem 0.4rem 0.4rem 0.45rem;
+  }
+  .chat-composer-input {
+    order: -1;
+    flex: 1 0 100%;
+    padding: 0.55rem 0.55rem 0.25rem;
+    /* 16px keeps iOS Safari from zooming the page when the field is tapped. */
+    font-size: 16px;
+  }
+  .composer-model-wrap { margin-left: auto; min-width: 0; }
+  /* The controls row must hold +, the Chart chip, the picker and Send on a
+     360px phone: the picker gives way first, with an ellipsis. */
+  .composer-model { max-width: 7.5rem; text-overflow: ellipsis; }
+  .chat-composer-send { width: 2.4rem; height: 2.4rem; }
+  .composer-menu { left: 0; min-width: min(17rem, calc(100vw - 3rem)); }
+  .chat-model-note { padding: 0 0.5rem; }
+}
+@media (max-width: 360px) {
+  .composer-mode-chip > span { display: none; }
+}
+
+/* —— App shell on phones and small tablets ——
+   The sidebar stacked above every page used to take ~700px before the
+   content started. Below 860px it becomes a drawer behind a menu button in
+   a slim top bar, the pattern ChatGPT and Claude use, so the page (and the
+   chat's message box) gets the whole screen and nothing is hidden: the
+   drawer still holds the navigation, the chat history and the account. */
+.mobile-bar, .rail-backdrop { display: none; }
+@media (max-width: 860px) {
+  .app-shell-nav {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .mobile-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: none;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.94);
+    backdrop-filter: blur(12px);
+    z-index: 20;
+  }
+  .mobile-bar-menu {
+    width: 2.4rem;
+    height: 2.4rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--ink);
+    cursor: pointer;
+  }
+  .mobile-bar-menu:hover { background: var(--surface-muted); }
+  .mobile-bar-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 700;
+    color: var(--ink);
+    text-decoration: none;
+  }
+  .mobile-bar-brand .brand-mark { width: 1.9rem; height: 1.9rem; }
+  .app-shell-nav .app-rail {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: min(84vw, 20rem);
+    height: 100dvh;
+    transform: translateX(-104%);
+    transition: transform 0.25s var(--ease);
+    animation: none;
+    z-index: 60;
+    overflow-y: auto;
+    border-bottom: none;
+  }
+  .app-shell-nav.rail-open .app-rail {
+    transform: none;
+    box-shadow: 0 24px 60px -20px rgba(16, 24, 40, 0.45);
+  }
+  .rail-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 55;
+    background: rgba(16, 24, 40, 0.38);
+  }
+  /* Inside the drawer the navigation is a column again, hints included. */
+  .app-shell-nav .rail-nav { flex-direction: column; flex-wrap: nowrap; }
+  .app-shell-nav .rail-label { width: auto; }
+  .app-shell-nav .rail-link-hint { display: block; }
+  .app-shell-nav .app-main { flex: 1; min-height: 0; height: auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-shell-nav .app-rail { transition: none; }
+}
+
