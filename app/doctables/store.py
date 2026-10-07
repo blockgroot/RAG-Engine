@@ -322,3 +322,35 @@ def list_rows(
     except Exception as exc:  # noqa: BLE001
         raise ProviderError("doctables: could not list rows", cause=exc) from exc
     return [(r[0] or {}, list(r[1] or []), r[2]) for r in rows]
+
+
+def mark_checked(document_id: str) -> None:
+    """Record that the dataset adapters have looked at this document."""
+    with get_connection() as conn:
+        conn.execute("UPDATE documents SET tables_checked_at = now() WHERE id = %s",
+                     (document_id,))
+        conn.commit()
+
+
+def list_unchecked(
+    *, org_id: str, provider: str, workspace_id: str | None, limit: int,
+) -> list[tuple[str, str]]:
+    """``(document_id, external_id)`` of indexed documents the adapters have
+    never looked at, newest first: the documents questions are about."""
+    if limit <= 0:
+        return []
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, source_external_id FROM documents
+            WHERE org_id = %s::uuid
+              AND source_provider = %s
+              AND workspace_id IS NOT DISTINCT FROM %s::uuid
+              AND source_external_id IS NOT NULL
+              AND tables_checked_at IS NULL
+            ORDER BY source_last_modified DESC NULLS LAST
+            LIMIT %s
+            """,
+            (org_id, provider, workspace_id, limit),
+        ).fetchall()
+    return [(str(r[0]), r[1]) for r in rows]

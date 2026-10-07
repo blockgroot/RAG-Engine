@@ -914,6 +914,15 @@ CREATE TABLE IF NOT EXISTS doc_text_queue (
 CREATE INDEX IF NOT EXISTS idx_doc_text_queue_pending
     ON doc_text_queue (updated_at) WHERE status = 'pending';
 
+-- When the dataset adapters last looked at a document. NULL = never: every
+-- document indexed before charts read tables, because an UNCHANGED document
+-- is never re-fetched by a sync. `ingestion.pipeline.backfill_tables` re-reads
+-- a bounded batch of those per sync, newest first; a re-ingest makes a new
+-- row, stamped by ingestion itself.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS tables_checked_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_documents_tables_unchecked
+    ON documents (org_id, source_provider) WHERE tables_checked_at IS NULL;
+
 -- A chart a member asked for and kept. Personal, scoped `(org_id, user_id)`
 -- like `schedulers` and unlike every other tenant table -- a pin is one
 -- person's shortcut, never published to anyone, which is why this feature has

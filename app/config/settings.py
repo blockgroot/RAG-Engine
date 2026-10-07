@@ -1086,12 +1086,17 @@ class DocTablesSettings:
       and the chart says so.
     - ``text_max_attempts``  a document that keeps failing is given up on
       after this many tries, so one bad page cannot hold the queue.
+    - ``backfill_batch``  already-indexed documents re-read for tables per
+      sync (`DOCTABLES_BACKFILL_BATCH`, 0 = off). A sync skips unchanged
+      documents, so without this a sheet indexed before charts read tables
+      would never be charted. One source fetch each, no re-embedding.
     """
 
     text_enabled: bool = False
     text_batch: int = 5
     text_max_chars: int = 12000
     text_max_attempts: int = 3
+    backfill_batch: int = 20
 
     @classmethod
     def from_env(cls) -> "DocTablesSettings":
@@ -1100,6 +1105,7 @@ class DocTablesSettings:
             text_batch=max(1, int(os.getenv("DOCTABLES_TEXT_BATCH") or 5)),
             text_max_chars=max(1000, int(os.getenv("DOCTABLES_TEXT_MAX_CHARS") or 12000)),
             text_max_attempts=max(1, int(os.getenv("DOCTABLES_TEXT_MAX_ATTEMPTS") or 3)),
+            backfill_batch=max(0, int(os.getenv("DOCTABLES_BACKFILL_BATCH") or 20)),
         )
 
 

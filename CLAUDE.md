@@ -137,6 +137,9 @@ charts: an AI adapter (`background = True`) only enqueues, and the tick reads
 only when its quote is in the document and every cell is in its quote; a
 mismatch is dropped, never repaired, and the chart says "taken from text".
 `DOCTABLES_TEXT_ENABLED` stays off unless background quota is budgeted for it.
+A sync skips unchanged documents, so `documents.tables_checked_at` marks what the
+adapters have read; `backfill_tables` re-fetches a bounded batch of unchecked
+ones per sync (tables only, no re-embedding) and a failed fetch stays unchecked.
 A Sheet embeds a description of its columns, never its figures. An unparseable
 cell is absent from a sum, never zero. `points: null` means the panel failed; `[]`
 means it ran and was empty. There is no `space` dimension. Sentiment is
