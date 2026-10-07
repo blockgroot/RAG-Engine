@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import contextvars
+
 import json
 import logging
 import os
+import dataclasses
 import time
+from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Iterator
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -41,15 +46,27 @@ def _word_chunks(text: str) -> Iterator[str]:
 
 from ..agent.github_agent import GitHubAgent
 from ..agent.orchestration import build_agent_graph, route_agent_key
-from ..agent.routing import choose_agent
+from ..agent.routing import (
+    _ROUTING_POOL,
+    EMBEDDED_PROVIDERS,
+    _connected_providers,
+    choose_agent,
+    named_providers,
+)
 from ..agent.rag_pipeline_agent import RagPipelineAgent
+from ..config.settings import GraphSettings
 from ..core.exceptions import AuthError, LLMProviderError, ProviderError
+from ..graph import plan as graph_plan
+from ..livetools import LiveRequest, current_live_request, reset_live_request, use_live_request
+from ..memory import personal as personal_memory
 from ..memory import conversations as conversation_store
 from ..llm import catalog
 from ..llm import org_model
 from ..llm.routed import answering_model, selected_model, use_model
 from ..db.connection import get_connection
 from ..feedback import record_gap
+from ..guard.live import ATTACHMENT_WARNING, is_flagged, watch_question
+from ..insights.resolve import spec_to_dict
 from ..security.rate_limit import check_rate_limit
 from ..security.visibility import visibility_predicate
 from ..workspaces import assert_member
@@ -599,6 +616,7 @@ def get_conversation_route(
                 "question": t.question,
                 "answer": t.answer,
                 "created_at": t.created_at.isoformat(),
+                "cited": t.cited,
             }
             for t in turns
         ],
@@ -686,8 +704,11 @@ def _conversation_attachments(
     try:
         from ..attachments import load_attachment_texts
 
+        # A flagged file (enforce mode) leads with a warning, so every path
+        # that quotes it -- inline, paged, head-only -- carries it too.
         return [
-            (a.filename, a.content or "", a.truncated)
+            (a.filename, (ATTACHMENT_WARNING if is_flagged(a.injection_score) else "")
+             + (a.content or ""), a.truncated)
             for a in load_attachment_texts(
                 org_id=org_id,
                 conversation_id=conversation_id,
@@ -763,7 +784,7 @@ def _stream_attachment_answer(
         if delay:
             time.sleep(delay)
 
-    if not response.grounded and not response.access_restricted:
+    if not response.grounded and not response.access_restricted and not getattr(response, "live_withheld", False):
         record_gap(
             org_id=org_id,
             question=question,
@@ -800,6 +821,10 @@ def _stream_attachment_answer(
             "model": _answering_model(),
             "chart": None,
             "chart_period": None,
+            "live_sources": list(getattr(response, "live_sources", None) or []),
+            # The documents behind the answer's [n] markers; the UI draws a
+            # chip only for a number listed here and strips the rest.
+            "cited": list(getattr(response, "cited", None) or []),
         },
     )
 
@@ -829,6 +854,121 @@ def _previous_question(
     return turns[-1].question if turns else None
 
 
+def _start_graph_plan(org_id, workspace_id, question, session):
+    """Start this question's graph walk on the routing pool, or return None.
+
+    Needs a real viewer: a routing or retrieval choice informed by content the
+    asker cannot read is a leak, so no session means no graph at all.
+    """
+    if session is None:
+        return None
+    try:
+        settings = GraphSettings.from_env()
+        if not settings.retrieval_enabled:
+            return None
+        viewer = viewer_for(session)
+        return _ROUTING_POOL.submit(
+            contextvars.copy_context().run,
+            graph_plan.build_plan,
+            org_id,
+            workspace_id,
+            question,
+            viewer,
+            settings=settings,
+        )
+    except Exception:  # noqa: BLE001 - the graph may only ever add
+        logger.warning("graph plan not started", exc_info=True)
+        return None
+
+
+#: How long the chat edge waits for a plan still being built after routing.
+#: Past it, retrieval simply walks on its own, exactly as it did before plans.
+_GRAPH_PLAN_WAIT_SECONDS = 1.5
+
+
+def _graph_plan_result(future):
+    if future is None:
+        return None
+    try:
+        return future.result(timeout=_GRAPH_PLAN_WAIT_SECONDS)
+    except Exception:  # noqa: BLE001 - slow or failed: the answer goes on without it
+        logger.info("graph plan not ready; continuing without it")
+        return None
+
+
+def _named_connected_tools(question: str, org_id: str, workspace_id: str | None) -> set[str]:
+    """Every indexed tool the question NAMES that is connected in this scope.
+
+    Deliberately not limited to tools the graph already reached: the asker
+    naming Slack is reason enough to search Slack. Limited to CONNECTED
+    tools, or the pill would claim a tool that contributed nothing. The
+    connection lookup runs only when a tool is actually named.
+    """
+    named = named_providers(question, EMBEDDED_PROVIDERS)
+    if not named:
+        return set()
+    try:
+        return named & _connected_providers(org_id, workspace_id)
+    except Exception:  # noqa: BLE001 - a named tool may only ever add
+        logger.warning("could not read connections for a named tool", exc_info=True)
+        return set()
+
+
+def _graph_connected_enabled() -> bool:
+    try:
+        return GraphSettings.from_env().connected_enabled
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _invoke_with_plan(graph_input: dict, plan):
+    """Run the agent graph with ``plan`` as this request's graph plan."""
+    token = graph_plan.use_plan(plan)
+    try:
+        return _agent_graph().invoke(graph_input)["response"]
+    finally:
+        graph_plan.reset_plan(token)
+
+
+def _keep_standalone_turn(
+    agent_key: str,
+    conversation_id: str | None,
+    question: str,
+    answer: str,
+    cited: list | None = None,
+) -> None:
+    """Write a turn for an agent that never enters ``RagPipeline``.
+
+    The pipeline is the only other place a turn is saved. GitHub and charts
+    do not use it, and a conversation with no turn is left out of the history
+    list, so the chat vanishes on reload. A failure here must not drop the
+    answer the person is already reading.
+    """
+    if agent_key not in ("github", "insights") or not conversation_id or not (answer or "").strip():
+        return
+    try:
+        from ..memory import build_conversation_store
+
+        store = build_conversation_store()
+        if "cited" in store.append_turn.__code__.co_varnames:
+            store.append_turn(conversation_id, question, answer, cited or None)
+        else:
+            store.append_turn(conversation_id, question, answer)
+    except Exception:  # noqa: BLE001 - the answer already exists; losing the save is the old bug
+        logger.warning("could not save %s turn", agent_key, exc_info=True)
+
+
+def _drop_refusal_turn(org_id, conversation_id, question, answer) -> None:
+    if not conversation_id:
+        return
+    try:
+        conversation_store.delete_last_turn_if(
+            conversation_id=conversation_id, org_id=org_id, question=question, answer=answer
+        )
+    except Exception:  # noqa: BLE001 - a duplicate turn beats a failed answer
+        logger.warning("could not drop the refused turn", exc_info=True)
+
+
 def _stream_answer(
     question: str,
     org_id: str,
@@ -838,6 +978,103 @@ def _stream_answer(
     model: str | None = None,
     session: SessionClaims | None = None,
 ) -> Iterator[str]:
+    # Who is asking, for the Second Brain's live reads (app/livetools). Whether
+    # anything is read live is decided by LIVE_TOOLS_ENABLED and the gateway,
+    # not here. Set inside the generator, for the reason `use_model` is.
+    live_token = use_live_request(
+        LiveRequest(
+            org_id=org_id,
+            workspace_id=workspace_id,
+            user_id=session.user_id if session else None,
+            conversation_id=conversation_id,
+        )
+    )
+    # Personal memory (Second Brain layer C): this person's facts shape how
+    # the question is READ, and the question itself -- never the answer -- is
+    # read for new ones, alongside the answer rather than in front of it.
+    facts, memory_turn = _start_personal_memory(question, org_id, conversation_id, session)
+    facts_token = personal_memory.use_asker_facts(tuple((f.kind, f.text) for f in facts))
+    try:
+        yield from _stream_answer_body(
+            question, org_id, conversation_id, workspace_id, requested_agent,
+            model, session, memory_turn,
+        )
+    finally:
+        # Starlette may close the generator from another copied context, where
+        # the token is not valid; there the copy dies with the call anyway.
+        for reset, token in ((reset_live_request, live_token),
+                             (personal_memory.reset_asker_facts, facts_token)):
+            try:
+                reset(token)
+            except ValueError:
+                pass
+
+
+#: Extraction runs beside the answer; the answer waits at most this long
+#: for it before `done`, so "Remembered: ..." can be shown in the moment.
+_MEMORY_GRACE_SECONDS = 1.5
+_MEMORY_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="personal-memory")
+
+
+@dataclass
+class _MemoryTurn:
+    org_id: str
+    user_id: str
+    #: Facts saved earlier but never shown (their extraction outlived the
+    #: grace period): announced on THIS answer, so saving is never silent.
+    pending: list
+    future: object | None = None
+
+
+def _start_personal_memory(question, org_id, conversation_id, session):
+    """``(facts, turn|None)``. Never raises; off => ``([], None)``."""
+    user_id = session.user_id if session else None
+    try:
+        if not personal_memory.is_active(org_id, user_id):
+            return [], None
+        facts = personal_memory.list_facts(org_id, user_id)
+    except Exception:  # noqa: BLE001 - memory may only ever add
+        logger.warning("personal memory unavailable", exc_info=True)
+        return [], None
+    turn = _MemoryTurn(org_id, user_id, pending=[f for f in facts if not f.announced])
+    if conversation_id and personal_memory.worth_reading(question):
+        turn.future = _MEMORY_POOL.submit(
+            personal_memory.remember_from_question, question, org_id=org_id,
+            user_id=user_id, conversation_id=conversation_id,
+            known=tuple(f.text for f in facts),
+        )
+    return facts, turn
+
+
+def _remembered(turn) -> list[dict]:
+    """Facts to show as "Remembered: ... · Undo": any saved earlier but never
+    shown, plus this question's if extraction finished within the grace. A
+    slower one stays unannounced and appears on the NEXT answer."""
+    if turn is None:
+        return []
+    facts = list(turn.pending)
+    if turn.future is not None:
+        try:
+            facts += list(turn.future.result(timeout=_MEMORY_GRACE_SECONDS))
+        except Exception:  # noqa: BLE001 - includes the timeout
+            pass
+    try:
+        personal_memory.mark_announced(turn.org_id, turn.user_id, [f.id for f in facts])
+    except Exception:  # noqa: BLE001 - shown twice beats not shown
+        logger.warning("could not mark memory announced", exc_info=True)
+    return [{"id": f.id, "text": f.text} for f in facts]
+
+
+def _stream_answer_body(
+    question: str,
+    org_id: str,
+    conversation_id: str | None,
+    workspace_id: str | None,
+    requested_agent: str | None,
+    model: str | None,
+    session: SessionClaims | None,
+    memory_turn=None,
+) -> Iterator[str]:
     # Set inside the generator, NOT in the route that returns the
     # StreamingResponse: Starlette runs a sync generator via
     # iterate_in_threadpool, so a ContextVar set before the response is
@@ -845,6 +1082,8 @@ def _stream_answer(
     # here also resets it per stream, so a pooled thread cannot leak one
     # request's model choice into the next.
     use_model(model, org_id=org_id)
+    # Logged, never refused (see guard/live.py for the measured reason).
+    watch_question(question)
 
     # Loaded BEFORE routing but no longer instead of it. An attached file used
     # to short-circuit `choose_agent` entirely, on the reasoning that someone
@@ -866,13 +1105,35 @@ def _stream_answer(
     # the decision back in as `requested_agent` needs no graph change: a direct
     # key is honoured, and "workspace"/"policy" fall through to the same
     # default `_route` already computed.
+    # The knowledge graph is walked ONCE, alongside routing rather than after
+    # it (app/graph/plan.py): routing reads its exact identifiers, retrieval
+    # reuses its documents instead of walking again, and the answer states its
+    # facts. None when GRAPH_RETRIEVAL_ENABLED is off -- then nothing below
+    # changes at all.
+    plan_future = _start_graph_plan(org_id, workspace_id, question, session)
     decision = choose_agent(
         question,
         org_id,
         workspace_id=workspace_id,
         requested_agent=requested_agent,
         context=_previous_question(org_id, conversation_id, workspace_id, session),
+        graph_plan=plan_future,
+        viewer=viewer_for(session),
     )
+    plan = _graph_plan_result(plan_future)
+    # The classifier's live-data verdict rides the request note to the gateway
+    # (reset with it when the stream ends: the outer token restores the value
+    # from before this stream).
+    current = current_live_request()
+    if current is not None:
+        use_live_request(dataclasses.replace(current, needs_live=getattr(decision, "needs_live", None)))
+    connected: set[str] | None = None
+    if plan is not None and _graph_connected_enabled():
+        connected = graph_plan.connected_tools(
+            plan, decision.agent_key, _named_connected_tools(question, org_id, workspace_id)
+        )
+        if connected:
+            plan = plan.connected(connected, search=connected - {decision.agent_key})
     logger.info(
         "Chat routing: agent=%s reason=%s scores=%s",
         decision.agent_key,
@@ -889,32 +1150,40 @@ def _stream_answer(
         return
 
     spec = getattr(decision, "chart_spec", None)
-    chart_spec = None
-    if spec is not None:
-        chart_spec = {
-            "metric": spec.metric,
-            "group_by": spec.group_by,
-            "period": spec.period,
-            "chart": spec.chart,
-        }
+    chart_spec = spec_to_dict(spec) if spec is not None else None
 
+    graph_input = {
+        "question": question,
+        "org_id": org_id,
+        "conversation_id": conversation_id,
+        "workspace_id": workspace_id,
+        "requested_agent": decision.agent_key,
+        "stream": True,
+        "chart_spec": chart_spec,
+        "chart_refusal": getattr(decision, "chart_refusal", None),
+        "user_id": session.user_id if session else None,
+        "role": session.role if session else None,
+        "viewer": viewer_for(session),
+    }
     try:
-        state = _agent_graph().invoke(
-            {
-                "question": question,
-                "org_id": org_id,
-                "conversation_id": conversation_id,
-                "workspace_id": workspace_id,
-                "requested_agent": decision.agent_key,
-                "stream": True,
-                "chart_spec": chart_spec,
-                "chart_refusal": getattr(decision, "chart_refusal", None),
-                "user_id": session.user_id if session else None,
-                "role": session.role if session else None,
-                "viewer": viewer_for(session),
-            }
+        result = _invoke_with_plan(graph_input, plan)
+        # ESCALATION: the routed tool refused, and the graph already proved
+        # the question connects to documents the asker can open in OTHER
+        # tools. One retry, as a connected answer -- never a loop, and never
+        # on a withheld document (that refusal is about access, not about
+        # which tool was asked). The refusal turn is removed first so the chat
+        # keeps one turn per question and the retry's own follow-up rewrite
+        # does not read the question it is answering as history.
+        retry_tools = (
+            graph_plan.escalation_tools(plan, decision.agent_key)
+            if plan is not None and _graph_connected_enabled()
+            and not result.grounded and not result.access_restricted
+            else None
         )
-        result = state["response"]
+        if retry_tools:
+            _drop_refusal_turn(org_id, conversation_id, question, result.answer)
+            connected = retry_tools
+            result = _invoke_with_plan(graph_input, plan.connected(retry_tools))
     except LLMProviderError as exc:
         logger.warning("Chat LLM failure: %s", exc, exc_info=True)
         yield _sse_event("error", {"message": _user_facing_llm_error(exc)})
@@ -923,6 +1192,11 @@ def _stream_answer(
         logger.warning("Chat provider failure: %s", exc, exc_info=True)
         yield _sse_event("error", {"message": _user_facing_llm_error(exc)})
         return
+
+    # A connected retry was answered by the pipeline, which already saved its
+    # own turn. Saving again would put the question in the history twice.
+    if not retry_tools:
+        _keep_standalone_turn(decision.agent_key, conversation_id, question, result.answer, getattr(result, "cited", None))
 
     # A question that came back ungrounded is a documentation gap, and it is
     # recorded here without anyone having to report it -- the gaps people
@@ -938,7 +1212,11 @@ def _stream_answer(
     # this person simply has not been given access. Logging it would put
     # "how much leave do I have left?" on the admin's list of things nobody
     # has documented, which is the one thing that list must not contain.
-    if not result.grounded and not result.access_restricted:
+    # A live read that withheld the item is not a gap either -- deliberately,
+    # though a real deletion might be one: "not found or not accessible"
+    # cannot tell deletion from revoked access, and a false gap sends an admin
+    # to rewrite a document that exists (live-tools plan D8a).
+    if not result.grounded and not result.access_restricted and not getattr(result, "live_withheld", False):
         record_gap(
             org_id=org_id,
             question=question,
@@ -974,7 +1252,11 @@ def _stream_answer(
             # `reason` is exposed too: a misroute is otherwise indistinguishable
             # from a source genuinely not having the answer.
             "agent": decision.agent_key,
-            "routing_reason": decision.reason,
+            "routing_reason": "graph-connected" if connected else decision.reason,
+            # The tools a connected answer read, so the pill can name all of
+            # them: an answer drawn from Notion AND Slack labelled "Notion" is
+            # unattributable in exactly the way `agent` exists to prevent.
+            "connected_providers": sorted(connected) if connected else None,
             # What actually answered, resolved — never the word "auto".
             # Under a router or a provider fallback the served model differs
             # from the requested one, and "which model wrote this?" has to be
@@ -982,6 +1264,13 @@ def _stream_answer(
             "model": _answering_model(),
             "chart": getattr(result, "chart", None),
             "chart_period": getattr(result, "chart_period", None),
+            # Which connectors answered LIVE, and when. Empty when nothing was
+            # refreshed -- the indexed copy answered.
+            "live_sources": list(getattr(result, "live_sources", None) or []),
+            "cited": list(getattr(result, "cited", None) or []),
+            # Personal memory saved from this question, announced so saving is
+            # never silent; the pill offers Undo.
+            "remembered": _remembered(memory_turn),
         },
     )
 

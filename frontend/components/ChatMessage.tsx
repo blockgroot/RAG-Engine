@@ -5,12 +5,15 @@ import { AnswerFeedback } from "./AnswerFeedback";
 import { AnswerText } from "./AnswerText";
 import { Chart } from "./Chart";
 import { ProvenanceStripe } from "./ProvenanceStripe";
+import { RememberedNote } from "./RememberedNote";
 
 export interface Message {
   role: "user" | "assistant";
   text: string;
   streaming?: boolean;
   done?: ChatDonePayload;
+  /** Sources for an answer loaded from history. A live answer carries them on `done`. */
+  cited?: ChatDonePayload["cited"];
 }
 
 /**
@@ -51,8 +54,10 @@ export function ChatMessageView({
         <ProvenanceStripe
           source={message.done.source}
           agent={message.done.agent}
+          connected={message.done.connected_providers ?? undefined}
           attachments={message.done.attachments}
           citations={message.done.citations?.length}
+          live={message.done.live_sources}
         />
       )}
       {thinking ? (
@@ -66,7 +71,7 @@ export function ChatMessageView({
         </div>
       ) : (
         <>
-          <AnswerText text={message.text} />
+          <AnswerText text={message.text} cited={message.streaming ? undefined : message.done?.cited ?? message.cited} />
           {points && points.length > 0 && chart && (
             <div className="chat-chart">
               <Chart
@@ -75,6 +80,7 @@ export function ChatMessageView({
                 period={message.done?.chart_period || "month"}
                 unit={chart.unit}
                 groupBy={chart.group_by}
+                splitBy={chart.split_by}
                 // The rows the bars are made of. They belong in the HOVER --
                 // repeating a chart's contents underneath it makes the card a
                 // table with a picture on top.
@@ -98,6 +104,9 @@ export function ChatMessageView({
           {message.streaming && <span className="chat-stream-caret" aria-hidden />}
           {message.done?.model && (
             <span className="chat-model-tag">Answered by {message.done.model}</span>
+          )}
+          {message.done?.remembered && message.done.remembered.length > 0 && (
+            <RememberedNote facts={message.done.remembered} />
           )}
           {message.done && conversationId && question && (
             <AnswerFeedback

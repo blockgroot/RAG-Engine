@@ -119,7 +119,30 @@ def _pull_request(full_name: str, item: dict) -> PullRequest:
         merged_at=merged_at,
         closed_at=_parse_dt(item.get("closed_at")),
         url=item.get("html_url") or f"https://github.com/{full_name}/pull/{number}",
+        labels=tuple(
+            name for name in (
+                (label or {}).get("name") for label in (item.get("labels") or [])
+                if isinstance(label, dict)
+            ) if isinstance(name, str) and name.strip()
+        ),
+        base=((item.get("base") or {}).get("ref") or None),
+        fields=_chart_fields(item),
     )
+
+
+def _chart_fields(item: dict) -> tuple[tuple[str, object], ...]:
+    """Every simple field of a pull request payload, for charts.
+
+    The author, merger and state already have real columns, so they are not
+    stored twice. Lists are frozen to tuples so the PullRequest stays
+    hashable.
+    """
+    from ..insights.fields import simple_fields
+
+    found = simple_fields(item, skip=("user", "merged_by", "state", "merged"))
+    return tuple(sorted(
+        (k, tuple(v) if isinstance(v, list) else v) for k, v in found.items()
+    ))
 
 
 def _is_safe_sha(sha: str) -> bool:
@@ -416,6 +439,24 @@ class RestGitHubReader(GitHubReader):
         return reviews
 
     # -- HTTP --------------------------------------------------------------
+
+    def repo_permission(self, full_name: str, login: str) -> str:
+        """``login``'s effective access to ``full_name``: admin/write/read/none.
+
+        GitHub resolves every grant (repo, team, org, enterprise) and needs only
+        the Metadata permission every installation has. 404 = no access.
+        Raises ``httpx.HTTPError`` on anything else, so a failure is never
+        mistaken for an answer.
+        """
+        response = httpx.get(
+            f"{GITHUB_API_BASE}/repos/{full_name}/collaborators/{login}/permission",
+            headers=github_headers(self._token),
+            timeout=self._settings.timeout,
+        )
+        if response.status_code == 404:
+            return "none"
+        response.raise_for_status()
+        return str(response.json().get("permission") or "none")
 
     def _request(
         self,

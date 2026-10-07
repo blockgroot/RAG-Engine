@@ -6,7 +6,7 @@ out by hand in three places -- the vector store, starter chips
 (`api/chat.py`) and the scheduler's indexed digest (`schedulers/activity.py`)
 -- and a filter written out three times is a filter that will one day be
 wrong in one of them. Every reader now splices THIS fragment, and the
-Second Brain graph walk (docs/plans/2026-09-23-second-brain.md) will too, so
+Second Brain graph walk (git history: docs/plans/2026-09-23-second-brain.md) will too, so
 retrieval, chips, digests and graph evidence cannot disagree about a document.
 
 Two rules the fragment encodes, and why they live here rather than at each
@@ -25,20 +25,23 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # the vector store imports this module; avoid a cycle
     from ..vectorstore.base import Viewer
 
-_PREDICATE = "({prefix}doc_is_public OR {prefix}doc_viewers && %s::text[])"
+_PREDICATE = "({prefix}doc_is_public OR {prefix}doc_viewers && {param}::text[])"
 
 
-def visibility_predicate(alias: str | None = "d") -> str:
-    """The bare predicate, parenthesised, with ONE ``%s`` for the ACL array.
+def visibility_predicate(alias: str | None = "d", *, param: str | None = None) -> str:
+    """The bare predicate, parenthesised, with ONE placeholder for the ACL array.
 
     ``alias`` is the `documents` table alias; ``None`` means the columns are
     referenced unqualified (a query that selects from `documents` alone).
+    ``param`` names the placeholder for a query using NAMED parameters
+    (``%(param)s``); by default it is positional (``%s``).
     No leading ``AND`` so it can also be negated -- `restricted_match` asks for
     exactly what this predicate removes, so "withheld" can never mean anything
     else.
     """
     prefix = f"{alias}." if alias else ""
-    return _PREDICATE.format(prefix=prefix)
+    placeholder = f"%({param})s" if param else "%s"
+    return _PREDICATE.format(prefix=prefix, param=placeholder)
 
 
 _EVIDENCE_PREDICATE = "({prefix}is_public IS TRUE OR {prefix}viewers && %s::text[])"

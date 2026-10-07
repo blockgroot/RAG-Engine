@@ -47,12 +47,16 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, 
 
 from ..agent.routing import _NO_MATCH, choose_agent, choose_scope
 from ..feedback import record_gap
+from ..guard.live import watch_question
+from ..rag.cite import strip_citations
 from ..auth.credentials import get_live_connection_token
 from ..auth.users import get_user_by_email
 from ..sources.google_groups import viewer_for_person
+from ..jobs.autosync import request_sync_external
 from ..vectorstore.base import Viewer
 from ..config.settings import SlackSettings
 from ..core.exceptions import ProviderError
+from ..insights.resolve import spec_to_dict
 from ..db.connection import get_connection
 from ..sources.slack_utils import channel_tag, post_message, update_message
 from .deps import get_slack_agent
@@ -179,7 +183,17 @@ def _to_slack_mrkdwn(text: str) -> str:
     Markdown for the web UI, so converting here is right -- asking the model
     for a per-surface format would make the answer's shape depend on where it
     was asked, and it would forget.
+
+    Escaped FIRST, per Slack's own rule (`&` then `<` then `>`): in mrkdwn
+    `<https://evil?d=…|click here>` is a disguised link and `<!channel>` pings
+    the room, and the model's text is steerable by any document it read — the
+    Slack AI exfiltration (PromptArmor, 2024) was exactly a model-written
+    `<url|text>`. Escaped, both arrive as inert text.
     """
+    # Inline citation markers are for the web chat's chips; in Slack a bare
+    # "[2]" points at nothing the reader can open.
+    text = strip_citations(text)
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     out: list[str] = []
     for line in text.split("\n"):
         stripped = line.lstrip()
@@ -241,6 +255,7 @@ def _answer(
     COUNT(DISTINCT user_id). Slack has no thumbs yet, so this surface writes
     gaps and never ratings.
     """
+    watch_question(question)  # logged, never refused (guard/live.py)
     # A CHANNEL reply is read by everyone in the room, so it may only ever be
     # built from documents the whole scope can read. Answering a channel as the
     # ASKER would publish their private documents to every other member --
@@ -298,16 +313,7 @@ def _answer(
     # holding nothing -- which answers "I can't chart that", a flat denial of
     # something the router had already resolved.
     spec = getattr(decision, "chart_spec", None)
-    chart_spec = (
-        {
-            "metric": spec.metric,
-            "group_by": spec.group_by,
-            "period": spec.period,
-            "chart": spec.chart,
-        }
-        if spec is not None
-        else None
-    )
+    chart_spec = spec_to_dict(spec) if spec is not None else None
 
     state = build_agent_graph(_agent_getters()).invoke(
         {
@@ -565,6 +571,47 @@ def _handle(event: dict, team_id: str) -> None:
     post_message(token, channel, answer, thread_ts)
 
 
+def _is_bot_traffic(event: dict, bot_users: set[str]) -> bool:
+    """The bot's own post/edit, or a question TO it -- ingest never indexes
+    either (`sources.slack._is_bot_traffic`), so a sync for one finds nothing.
+    Without this every answer flagged a sync twice (placeholder, then its edit)
+    and every question a third time, each a Slack history read at 1/min."""
+    message = event.get("message") or event.get("previous_message") or event
+    if event.get("bot_id") or message.get("bot_id"):
+        return True
+    text = message.get("text") or ""
+    return any(f"<@{u}>" in text for u in bot_users)
+
+
+def _is_channel_content(event: dict) -> bool:
+    """A message posted, edited or deleted in a channel (not a DM, not a mention).
+
+    `channel_type` is "channel"/"group" on a posted message, but Slack's own
+    examples for `message_changed`/`message_deleted` omit it, so an edit falls
+    back to the channel id: `C`/`G` are channels, `D` is a DM.
+    """
+    if event.get("type") != "message":
+        return False
+    kind = event.get("channel_type")
+    if kind in ("channel", "group"):
+        return True
+    return kind is None and str(event.get("channel") or "")[:1] in ("C", "G")
+
+
+def _flag_channel_sync(team_id: str, channel: str) -> None:
+    """Stamp `sync_requested_at` for connections indexing this channel.
+
+    Never raises: a missed flag costs one poll interval, and the ack has
+    already gone out.
+    """
+    if not team_id or not channel:
+        return
+    try:
+        request_sync_external("slack", team_id, slack_channel=channel)
+    except Exception:  # noqa: BLE001
+        logger.warning("slack.events: could not flag a sync for %s", channel, exc_info=True)
+
+
 @router.post("/events")
 async def slack_events(
     request: Request,
@@ -595,6 +642,27 @@ async def slack_events(
     if payload.get("type") == "url_verification":
         return {"challenge": payload.get("challenge")}
 
+    event = payload.get("event") or {}
+
+    # A message in a CHANNEL (public `message.channels`, private
+    # `message.groups`) is content changing, not a question: flag a sync of the
+    # connections that index that channel and never answer it -- answering
+    # every channel message would make the bot reply to all conversation. The
+    # bot's questions arrive as `app_mention`, which is handled below. Edits
+    # and deletions (`message_changed` / `message_deleted` subtypes) are
+    # content changes too, so the subtype filter does not apply here. Done
+    # BEFORE the retry drop: the flag is idempotent, so a retry of a delivery
+    # that died on a cold start still lands.
+    if _is_channel_content(event):
+        # `authorizations` names the bot user this delivery is for.
+        bot_users = {a.get("user_id") for a in payload.get("authorizations") or [] if a.get("user_id")}
+        if _is_bot_traffic(event, bot_users):
+            return {"ok": True}
+        background.add_task(
+            _flag_channel_sync, payload.get("team_id") or "", event.get("channel") or ""
+        )
+        return {"ok": True}
+
     # Slack retries up to 3 times when an ack misses its 3-second deadline,
     # and on a free instance a cold start misses it routinely. The first
     # delivery has ALREADY started answering by then, so honouring a retry
@@ -606,7 +674,6 @@ async def slack_events(
         logger.info("slack.bot ignoring retry #%s", x_slack_retry_num)
         return {"ok": True}
 
-    event = payload.get("event") or {}
     # Never react to our own posts (or any bot's): the bot's reply is itself a
     # message event, so answering one would loop forever.
     if event.get("bot_id") or event.get("subtype"):

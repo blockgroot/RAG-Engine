@@ -44,6 +44,8 @@ class Seed:
     name: str
     exact: bool
     score: float
+    #: ``kg_entities.key`` -- says which tool the entity lives in.
+    key: str = ""
 
 
 def question_identifiers(question: str) -> tuple[list[str], list[str], list[str]]:
@@ -69,8 +71,8 @@ def link_question(
     node_ok, node_params = openable_entity_sql("x", acl)
 
     sql = f"""
-        SELECT id::text, kind, name, exact, score FROM (
-            SELECT x.id, x.kind, x.name,
+        SELECT id::text, kind, name, exact, score, key FROM (
+            SELECT x.id, x.kind, x.name, x.key,
                    (x.aliases && %s::text[]
                     OR (x.kind = 'pr' AND EXISTS (
                         SELECT 1 FROM unnest(%s::text[]) p
@@ -101,4 +103,4 @@ def link_question(
     ]
     with get_connection() as conn:
         rows = conn.execute(sql, params).fetchall()
-    return [Seed(r[0], r[1], r[2], bool(r[3]), float(r[4] or 0)) for r in rows]
+    return [Seed(r[0], r[1], r[2], bool(r[3]), float(r[4] or 0), r[5] or "") for r in rows]

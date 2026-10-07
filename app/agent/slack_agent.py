@@ -45,7 +45,12 @@ from collections.abc import Iterator
 
 from ..core.answer_sources import SOURCE_SLACK
 from ..core.streaming import chunk_answer
+from ..config.settings import SecuritySettings
+from ..rag.cite import link_citations, strip_citations
 from ..rag.prompts import build_slack_recap_prompt
+from ..guard.moderation import answer_is_unsafe
+from ..security.links import enforce_link_provenance
+from ..security.untrusted import leaks_canary
 from .base import AgentResponse
 from ..vectorstore.base import Viewer
 from .rag_pipeline_agent import RagPipelineAgent
@@ -192,6 +197,16 @@ class SlackAgent(RagPipelineAgent):
             return None
         if not text or fallback.lower() in text.lower():
             return None
+        if leaks_canary(text):
+            logger.warning("security.canary_leak stage=slack_recap")
+            return None
+        text = enforce_link_provenance(
+            text, [c.content for c in chunks], SecuritySettings.from_env().link_allowlist
+        )
+        # The recap prompt numbers threads in this same order, so block i is chunks[i].
+        text, cited = link_citations(text, list(chunks))
+        if answer_is_unsafe(strip_citations(text), org_id=None, stage="slack_recap"):
+            return None
 
         return AgentResponse(
             answer=text,
@@ -199,4 +214,5 @@ class SlackAgent(RagPipelineAgent):
             source=SOURCE_SLACK,
             citations=[self._to_citation(c) for c in chunks],
             resolved_question=question,
+            cited=cited,
         )

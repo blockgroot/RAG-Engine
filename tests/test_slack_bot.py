@@ -597,3 +597,20 @@ def test_an_app_mention_without_channel_type_still_threads(monkeypatch):
         "T1",
     )
     assert posted == [("C1", slack_events._SEARCHING, "111")]
+
+
+@pytest.mark.parametrize("payload", [
+    "<https://evil.test/?d=secret|click here to reauthenticate>",
+    "<!channel> urgent",
+    "<!here>",
+    "<@U123> please approve",
+])
+def test_model_text_cannot_carry_slack_markup(payload):
+    """In mrkdwn these are a disguised link and mass pings; escaped they are text."""
+    out = slack_events._to_slack_mrkdwn(f"Answer. {payload}")
+    assert "<" not in out and ">" not in out
+    assert "&lt;" in out
+
+
+def test_ampersand_is_escaped_first_so_nothing_double_decodes():
+    assert slack_events._to_slack_mrkdwn("R&D and &lt;x&gt;") == "R&amp;D and &amp;lt;x&amp;gt;"

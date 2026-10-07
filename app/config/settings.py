@@ -95,6 +95,11 @@ DEFAULT_RECOVERY_ENABLED = True
 DEFAULT_RECOVERY_MAX_QUERIES = 2
 
 DEFAULT_AUDIT_ENABLED = False
+AUDIT_BACKENDS = ("llm", "lettuce")
+# Best balanced-accuracy cutoff measured on 60 RAGTruth-QA examples
+# (scripts/bench_answer_check.py) was 0.61; re-measure on your own labels.
+DEFAULT_AUDIT_LETTUCE_THRESHOLD = 0.6
+DEFAULT_AUDIT_LETTUCE_TIMEOUT = 8.0
 
 DEFAULT_DECOMPOSE_ENABLED = True
 
@@ -177,21 +182,38 @@ class LLMSettings:
     #: can only approximate: separate endpoints cannot contend at all.
     aux_base_url: str | None = None
     aux_api_key: str | None = None
+    #: WHICH provider the model is served by, named from a fixed list
+    #: (``app/llm/adapters.py``). The adapter owns the base URL, so the
+    #: provider is a validated choice rather than something implied by a
+    #: free-text URL + model name. ``None`` = legacy: ``LLM_BASE_URL`` is used
+    #: as-is, exactly as before this field existed, so an unmigrated deploy
+    #: keeps working (with a startup warning).
+    adapter: str | None = None
+    #: The same for background work; with ``LLM_AUX_API_KEY`` it replaces
+    #: ``LLM_AUX_BASE_URL``.
+    aux_adapter: str | None = None
+    #: What the boot-time config check does (``scripts/check_llm_config.py``):
+    #: ``strict`` refuses to start on a config it can PROVE is wrong (unknown
+    #: adapter, a model the provider does not list), ``warn`` only logs,
+    #: ``off`` skips it. An unreachable model list is never a failure.
+    config_check: str = "strict"
 
     @property
     def aux_has_own_endpoint(self) -> bool:
         """True when background work draws from a different rate limit.
 
-        Requires BOTH a base_url and a key: a base_url with the main key would
-        send the wrong credential to the wrong host (a 401 on every
-        contextualization, degrading silently to un-prefixed chunks), and a key
-        with no base_url would send a foreign key to the main endpoint. Half-
-        configured therefore means "not configured", never "partly applied".
+        Requires BOTH an endpoint (a base_url or an adapter, which supplies
+        one) and a key: an endpoint with the main key would send the wrong
+        credential to the wrong host (a 401 on every contextualization,
+        degrading silently to un-prefixed chunks), and a key with no endpoint
+        would send a foreign key to the main endpoint. Half-configured
+        therefore means "not configured", never "partly applied".
         """
-        return bool(self.aux_base_url and self.aux_api_key)
+        return bool((self.aux_base_url or self.aux_adapter) and self.aux_api_key)
 
     @classmethod
     def from_env(cls) -> "LLMSettings":
+        check = (os.getenv("LLM_CONFIG_CHECK") or "strict").strip().lower()
         return cls(
             model=os.getenv("LLM_MODEL"),
             aux_model=os.getenv("LLM_AUX_MODEL") or None,
@@ -200,6 +222,9 @@ class LLMSettings:
             timeout=float(os.getenv("LLM_TIMEOUT") or DEFAULT_TIMEOUT),
             aux_base_url=os.getenv("LLM_AUX_BASE_URL") or None,
             aux_api_key=os.getenv("LLM_AUX_API_KEY") or None,
+            adapter=(os.getenv("LLM_ADAPTER") or "").strip().lower() or None,
+            aux_adapter=(os.getenv("LLM_AUX_ADAPTER") or "").strip().lower() or None,
+            config_check=check if check in ("strict", "warn", "off") else "strict",
         )
 
 
@@ -714,7 +739,7 @@ class GoogleSettings:
         )
 
 
-# Phase 1 of Slack Integration Plan (docs/plans/2026-08-17-slack-integration.md):
+# Phase 1 of Slack Integration Plan (git history: docs/plans/2026-08-17-slack-integration.md):
 # bot scopes only — enough to list/join/read channels and resolve display
 # names. No `chat:write` (read-only connector, D-note in the plan's non-goals).
 # `users:read.email` (workspace-invite member picker) is the one exception to
@@ -945,6 +970,145 @@ class RecoverySettings:
         )
 
 
+#: Hosts an answer may link to even when the link was not in its sources: the
+#: connected tools' own domains. Query strings are still cut (see
+#: `security/links.py`), so an allowlisted host cannot carry data out.
+DEFAULT_LINK_ALLOWLIST = (
+    "notion.so", "notion.site", "docs.google.com", "drive.google.com",
+    "slack.com", "linear.app", "github.com",
+)
+
+
+@dataclass(frozen=True)
+class SecuritySettings:
+    """Deterministic prompt-injection controls (git history: docs/plans/2026-09-28-prompt-injection-defense.md).
+
+    - ``link_allowlist``  `SECURITY_LINK_ALLOWLIST`, comma-separated hosts;
+      empty string = only links that appear verbatim in the sources.
+    """
+
+    link_allowlist: tuple[str, ...] = DEFAULT_LINK_ALLOWLIST
+
+    @classmethod
+    def from_env(cls) -> "SecuritySettings":
+        raw = os.getenv("SECURITY_LINK_ALLOWLIST")
+        if raw is None:
+            return cls()
+        hosts = tuple(h.strip().lower().lstrip(".") for h in raw.split(",") if h.strip())
+        return cls(link_allowlist=hosts)
+
+
+GUARD_MODES = ("off", "shadow", "enforce")
+GUARD_BACKENDS = ("prompt_guard", "safeguard")
+DEFAULT_GUARD_MODEL = "meta-llama/llama-prompt-guard-2-86m"
+
+
+@dataclass(frozen=True)
+class GuardSettings:
+    """Injection scoring of untrusted text (Phase 2+ of the injection plan).
+
+    Llama Prompt Guard 2 (86M) on Groq's free tier, with the ``GROQ_API_KEY``
+    the model picker already uses. 86M, not 22M: measured, 22M scored a
+    Spanish injection 0.43 where 86M scored 0.999. Free-tier limits are 14.4K
+    requests/day and 15K tokens/min — a big first sync overflows the minute
+    budget, which leaves those chunks unscored for the backfill, never fails
+    the ingest.
+
+    - ``backend``  ``prompt_guard`` (default: Llama Prompt Guard 2, 14.4K
+      requests/day, catches override WORDING) or ``safeguard``
+      (`gpt-oss-safeguard-20b` with our policy, 1,000/day, catches ACTION
+      injections Prompt Guard misses -- see ``guard/safeguard.py``). Each chunk
+      stores which model scored it, so switching rescans via the backfill.
+    - ``mode``  ``off`` (default: no calls at all), ``shadow`` (score, store,
+      log — never change an answer), ``enforce`` (Phase 3).
+    - ``threshold``  a chunk scoring at or above this is "flagged". The RAW
+      score is stored, so changing this needs no rescan. 0.9, not 0.5:
+      measured, a real IT page ("Ignore the old reset email and use the new
+      portal") scored 0.70 while a planted "Note to AI assistants: ignore prior
+      instructions" scored 0.999.
+    - ``backfill_batch``  chunks scored per tick for rows ingest left NULL.
+    - ``answer_check``  `GUARD_ANSWER_CHECK`: also run the finished answer past
+      `gpt-oss-safeguard-20b` (`guard/moderation.py`). Off by default: its free
+      tier is 1,000 requests/day, one per answer.
+    """
+
+    mode: str = "off"
+    backend: str = "prompt_guard"
+    model: str = DEFAULT_GUARD_MODEL
+    threshold: float = 0.9
+    timeout: float = 5.0
+    backfill_batch: int = 40
+    answer_check: bool = False
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode != "off"
+
+    @classmethod
+    def from_env(cls) -> "GuardSettings":
+        from ..core.exceptions import ConfigurationError
+
+        mode = (os.getenv("GUARD_MODE") or "off").strip().lower()
+        if mode not in GUARD_MODES:
+            raise ConfigurationError(f"GUARD_MODE={mode!r} is not one of {', '.join(GUARD_MODES)}")
+        backend = (os.getenv("GUARD_BACKEND") or "prompt_guard").strip().lower()
+        if backend not in GUARD_BACKENDS:
+            raise ConfigurationError(
+                f"GUARD_BACKEND={backend!r} is not one of {', '.join(GUARD_BACKENDS)}"
+            )
+        return cls(
+            mode=mode,
+            backend=backend,
+            model=os.getenv("GUARD_MODEL") or DEFAULT_GUARD_MODEL,
+            threshold=float(os.getenv("GUARD_THRESHOLD") or 0.9),
+            timeout=float(os.getenv("GUARD_TIMEOUT") or 5.0),
+            backfill_batch=int(os.getenv("GUARD_BACKFILL_BATCH") or 40),
+            answer_check=env_bool("GUARD_ANSWER_CHECK", False),
+        )
+
+
+@dataclass(frozen=True)
+class DocTablesSettings:
+    """Charts from figures INSIDE documents (``app/doctables``).
+
+    Tables a document already has are always kept (no AI, exact). Figures
+    written in SENTENCES need an AI to read them, so that adapter is opt-in:
+
+    - ``text_enabled``  `DOCTABLES_TEXT_ENABLED`: read figures from prose.
+      Off by default because it spends background LLM quota -- one call per
+      document that passes the cheap figures check, re-run only when the
+      document changes. Never runs inside ingestion.
+    - ``text_batch``  documents read per tick (`DOCTABLES_TEXT_BATCH`). Small:
+      it shares the background budget with contextualization, and live
+      questions keep `LLM_RESERVE_RPM` regardless.
+    - ``text_max_chars``  how much of a document the AI is shown
+      (`DOCTABLES_TEXT_MAX_CHARS`). Longer documents are read up to the limit
+      and the chart says so.
+    - ``text_max_attempts``  a document that keeps failing is given up on
+      after this many tries, so one bad page cannot hold the queue.
+    - ``backfill_batch``  already-indexed documents re-read for tables per
+      sync (`DOCTABLES_BACKFILL_BATCH`, 0 = off). A sync skips unchanged
+      documents, so without this a sheet indexed before charts read tables
+      would never be charted. One source fetch each, no re-embedding.
+    """
+
+    text_enabled: bool = False
+    text_batch: int = 5
+    text_max_chars: int = 12000
+    text_max_attempts: int = 3
+    backfill_batch: int = 20
+
+    @classmethod
+    def from_env(cls) -> "DocTablesSettings":
+        return cls(
+            text_enabled=env_bool("DOCTABLES_TEXT_ENABLED", False),
+            text_batch=max(1, int(os.getenv("DOCTABLES_TEXT_BATCH") or 5)),
+            text_max_chars=max(1000, int(os.getenv("DOCTABLES_TEXT_MAX_CHARS") or 12000)),
+            text_max_attempts=max(1, int(os.getenv("DOCTABLES_TEXT_MAX_ATTEMPTS") or 3)),
+            backfill_batch=max(0, int(os.getenv("DOCTABLES_BACKFILL_BATCH") or 20)),
+        )
+
+
 @dataclass(frozen=True)
 class AuditSettings:
     """Post-generation groundedness audit — the validation-layer gap (CLAUDE.md
@@ -960,13 +1124,47 @@ class AuditSettings:
 
     - ``enabled``  kill-switch; off means byte-identical behaviour to before
       this existed.
+    - ``backend``  ``llm`` (the prompt above, the default) or ``lettuce`` — a
+      LettuceDetect span classifier behind our own HTTP endpoint
+      (``deploy/lettucedetect-space/``). Measured on RAGTruth-QA it rejected
+      1/30 grounded answers where the LLM audit rejected 12/30, and it spends
+      none of the 15 rpm LLM quota. The endpoint receives tenant chunks, so it
+      must be one WE run (a private Space), never a public demo.
+    - ``lettuce_threshold``  a flagged span at or above this confidence
+      downgrades the answer.
     """
 
     enabled: bool = DEFAULT_AUDIT_ENABLED
+    backend: str = "llm"
+    lettuce_url: str | None = None
+    lettuce_token: str | None = None
+    lettuce_threshold: float = DEFAULT_AUDIT_LETTUCE_THRESHOLD
+    lettuce_timeout: float = DEFAULT_AUDIT_LETTUCE_TIMEOUT
 
     @classmethod
     def from_env(cls) -> "AuditSettings":
-        return cls(enabled=env_bool("RAG_AUDIT_ENABLED", DEFAULT_AUDIT_ENABLED))
+        from ..core.exceptions import ConfigurationError
+
+        backend = (os.getenv("RAG_AUDIT_BACKEND") or "llm").strip().lower()
+        if backend not in AUDIT_BACKENDS:
+            raise ConfigurationError(
+                f"RAG_AUDIT_BACKEND={backend!r} is not one of {', '.join(AUDIT_BACKENDS)}"
+            )
+        url = (os.getenv("RAG_AUDIT_LETTUCE_URL") or "").strip() or None
+        if backend == "lettuce" and not url:
+            raise ConfigurationError("RAG_AUDIT_BACKEND=lettuce needs RAG_AUDIT_LETTUCE_URL")
+        return cls(
+            enabled=env_bool("RAG_AUDIT_ENABLED", DEFAULT_AUDIT_ENABLED),
+            backend=backend,
+            lettuce_url=url,
+            lettuce_token=os.getenv("RAG_AUDIT_LETTUCE_TOKEN") or None,
+            lettuce_threshold=float(
+                os.getenv("RAG_AUDIT_LETTUCE_THRESHOLD") or DEFAULT_AUDIT_LETTUCE_THRESHOLD
+            ),
+            lettuce_timeout=float(
+                os.getenv("RAG_AUDIT_LETTUCE_TIMEOUT") or DEFAULT_AUDIT_LETTUCE_TIMEOUT
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -1598,6 +1796,36 @@ class AutoSyncSettings:
         )
 
 
+
+@dataclass(frozen=True)
+class WebhookSettings:
+    """Push receivers for Notion, Linear and Drive (`app/api/webhooks.py`).
+
+    Every field unset means that receiver is CLOSED (404) and the provider is
+    polled on the auto-sync interval exactly as before -- the INTERNAL_TICK_SECRET
+    posture: an unconfigured secret closes a route rather than leaving an
+    unauthenticated one open.
+    """
+
+    #: The `verification_token` Notion POSTs once when the subscription is
+    #: created; it is also the HMAC key for `X-Notion-Signature`.
+    notion_verification_token: str | None = None
+    #: The signing secret of the Linear webhook (OAuth-app webhook settings, or
+    #: a workspace webhook), used for `Linear-Signature`.
+    linear_secret: str | None = None
+    #: Public HTTPS base URL of THIS API, where Google delivers Drive push
+    #: notifications (`<base>/webhooks/google`). Unset = Drive is poll-only.
+    drive_push_base_url: str | None = None
+
+    @classmethod
+    def from_env(cls) -> "WebhookSettings":
+        base = (os.getenv("DRIVE_PUSH_BASE_URL") or "").strip().rstrip("/")
+        return cls(
+            notion_verification_token=(os.getenv("NOTION_WEBHOOK_VERIFICATION_TOKEN") or None),
+            linear_secret=(os.getenv("LINEAR_WEBHOOK_SECRET") or None),
+            drive_push_base_url=base or None,
+        )
+
 # LLM request pacing. The aux (ingest) provider shares the main provider's key
 # and endpoint, so background contextualization and a member's live question
 # compete for ONE rate limit. Free Gemini is 15 rpm, and a 429 on the answer
@@ -1649,7 +1877,7 @@ DEFAULT_GRAPH_META_REFRESH_BATCH = 25
 
 @dataclass(frozen=True)
 class GraphSettings:
-    """Second Brain knowledge-graph settings (docs/plans/2026-09-23-second-brain.md).
+    """Second Brain knowledge-graph settings (git history: docs/plans/2026-09-23-second-brain.md).
 
     ``meta_refresh_batch`` bounds the metadata-only refresh each ingest job runs
     for documents indexed before people/links were captured (1.1). An unchanged
@@ -1664,6 +1892,11 @@ class GraphSettings:
     #: graph fills either way, and this flag only decides whether retrieval
     #: adds the graph's ranked list.
     retrieval_enabled: bool = False
+    #: Whether a question may be answered from SEVERAL tools at once when the
+    #: graph proves they are connected (``graph/plan.py``). Only meaningful
+    #: with ``retrieval_enabled``; on by default there, so one switch turns
+    #: the graph on and this one alone can take the cross-tool part back off.
+    connected_enabled: bool = True
 
     @classmethod
     def from_env(cls) -> "GraphSettings":
@@ -1675,4 +1908,65 @@ class GraphSettings:
         return cls(
             meta_refresh_batch=max(0, batch),
             retrieval_enabled=env_bool("GRAPH_RETRIEVAL_ENABLED", False),
+            connected_enabled=env_bool("GRAPH_CONNECTED_ENABLED", True),
+        )
+
+
+@dataclass(frozen=True)
+class LiveToolsSettings:
+    """The live-tools gateway (git history: docs/plans/2026-09-29-live-connector-access.md).
+
+    Three settings and no more (plan D15): everything else is a constant in
+    ``app/livetools/base.py`` until ``live_tool_calls`` shows it needs tuning.
+    When enabled, a live read runs inside ordinary Ask: the question classifier
+    sets ``needs_live`` (a missing verdict still reads). The old composer
+    toggle is gone. Slack, schedulers and eval never set a ``LiveRequest``.
+
+    ``orgs`` empty means every org; otherwise only the listed org ids, for a
+    staged rollout.
+    """
+
+    enabled: bool = False
+    providers: frozenset[str] = frozenset({"linear"})
+    orgs: frozenset[str] = frozenset()
+
+    @classmethod
+    def from_env(cls) -> "LiveToolsSettings":
+        raw_providers = os.getenv("LIVE_TOOLS_PROVIDERS")
+        providers = (
+            frozenset(p.strip().lower() for p in raw_providers.split(",") if p.strip())
+            if raw_providers not in (None, "")
+            else frozenset({"linear"})
+        )
+        raw_orgs = os.getenv("LIVE_TOOLS_ORGS") or ""
+        return cls(
+            enabled=env_bool("LIVE_TOOLS_ENABLED", False),
+            providers=providers,
+            orgs=frozenset(o.strip() for o in raw_orgs.split(",") if o.strip()),
+        )
+
+    def allows(self, org_id: str | None) -> bool:
+        """Switched on, and this org is in the rollout."""
+        return self.enabled and bool(org_id) and (not self.orgs or org_id in self.orgs)
+
+
+@dataclass(frozen=True)
+class PersonalMemorySettings:
+    """Personal memory, the Second Brain's "who is asking" layer.
+
+    OFF by default like every new layer: unset, no fact is written or read and
+    every answer is byte-identical. On, members and org admins can still turn
+    it off for themselves / the whole company (``users.memory_enabled``,
+    ``organizations.memory_enabled``). ``max_facts`` bounds each person's list:
+    past it the oldest UNPINNED fact goes.
+    """
+
+    enabled: bool = False
+    max_facts: int = 30
+
+    @classmethod
+    def from_env(cls) -> "PersonalMemorySettings":
+        return cls(
+            enabled=env_bool("PERSONAL_MEMORY_ENABLED", False),
+            max_facts=_env_positive_int("PERSONAL_MEMORY_MAX_FACTS", 30),
         )

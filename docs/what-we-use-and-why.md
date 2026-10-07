@@ -11,13 +11,13 @@
 
 ## 1. Purpose of the system
 
-The product is a **multi-tenant retrieval-augmented generation (RAG) platform** for organisation policy question-and-answer.
+The product is a **multi-tenant retrieval-augmented generation (RAG) platform** for company question-and-answer.
 
-Each tenant connects its own Notion or Google Drive corpus. Employees submit natural-language questions and receive answers **grounded exclusively in that tenant’s documents**, with citations. A separate **GitHub agent** answers repository questions from live, bounded API reads and does not embed source code.
+Each tenant connects **Notion, Google Drive, Slack, Linear and GitHub**. Employees ask in the web app or in Slack and receive answers **grounded in that tenant’s own material**, limited to what they may open in the source tool. GitHub is answered from live API reads and is not embedded. Charts count recorded activity in SQL. Current product status is `docs/handbook/PRODUCT_STATUS.md`.
 
 The intended deployment is a **self-hosted Docker image** that an enterprise can run inside its own infrastructure. Default components are therefore local, inexpensive, and keep policy text off third-party embedding APIs unless remote inference is explicitly configured.
 
-RAG is used in preference to fine-tuning because policies are facts that change. A policy update is a re-ingestion, not a retraining cycle, and answers can cite the source page.
+RAG is used in preference to fine-tuning because policies are facts that change. A policy update is a re-ingestion, not a retraining cycle. The answer names the page it used: one page as a line under the answer, two or more as a number on the sentence. The link is the address stored at sync.
 
 ---
 
@@ -56,7 +56,7 @@ Components that violated (1) or (3) for a modest quality gain were rejected. The
 | Grounding | Cosine gate of 0.35 plus a strict prompt | Inexpensive noise filter, then a semantic sufficiency check. |
 | Conversation memory | PostgreSQL turns and an incremental summary | Follow-up questions are rewritten into standalone queries. |
 | Web fallback | DuckDuckGo via tool-calling; labelled output | No API key. Restricted to named external entities. |
-| Content sources | Notion SDK; Drive via httpx; GitHub live | Documents are ingested. Code is not. |
+| Content sources | Notion, Drive, Slack, Linear (indexed); GitHub live; Forms labels only | Sharing from Drive, Slack, Linear and GitHub is applied in the query. Notion is per space. |
 | API and interface | FastAPI and Next.js 15 | Organisation identity is taken only from the signed session cookie. |
 | Evaluation | Golden path checks, retrieval rank, optional RAGAS | Continuous integration remains fast; LLM-as-judge runs on a slower cadence. |
 
@@ -66,7 +66,7 @@ Components that violated (1) or (3) for a modest quality gain were rejected. The
 
 ### 4.1 Ingestion
 
-The source adapter fetches a page. Text is preprocessed, chunked, optionally prefixed with context, embedded in batches of 16, and stored with `org_id`. Notion and Drive are partitioned by provider, so a Google synchronisation cannot delete Notion documents.
+The source adapter fetches a changed page, thread, or issue. Text is preprocessed, chunked, optionally prefixed with context, embedded in batches of 16, and stored with `org_id` (and `workspace_id` when the row belongs to a space). Sync is partitioned by provider, so a Google synchronisation cannot delete Notion documents. Slack threads and Linear issues use the same pipeline. GitHub is not ingested.
 
 ### 4.2 Question answering
 
@@ -78,7 +78,7 @@ The source adapter fetches a page. Text is preprocessed, chunked, optionally pre
 6. The confidence gate requires a best cosine of at least 0.35.
 7. Generation uses one of three modes: explicitly supported, related but not explicit, or no supporting evidence.
 8. A web-search tool is offered only if internal evidence remains insufficient.
-9. The response includes citations and `source` of `policy`, `web`, or `none`.
+9. The model may mark a sentence with `[n]`. A number is kept only when a retrieved document sat at that block. The link is `documents.source_uri`, saved at sync. One document is named under the answer; two or more keep a superscript and the same list. The list is stored on the turn and shown again when that chat is opened. The response also carries `source` of `policy`, `web`, or `none`.
 
 ### 4.3 GitHub
 
@@ -88,7 +88,7 @@ The GitHub path does not retrieve embeddings. An answer is composed from a singl
 
 ## 5. Language model
 
-The implementation uses the official OpenAI Python client. `LLM_MODEL`, `LLM_BASE_URL`, and the API key may point at FreeLLMAPI, Gemini, OpenAI, or a self-hosted vLLM instance. Auxiliary stages (rewrite, recovery, summarisation, ingest context) may use a cheaper `LLM_AUX_MODEL`.
+The implementation uses the official OpenAI Python client. `LLM_ADAPTER` names the provider from a fixed list (Gemini, Groq, OpenAI, Anthropic, OpenRouter and others, or `custom` with `LLM_BASE_URL`), `LLM_MODEL` is the model, and a boot check refuses an unknown adapter or model. Members can also pick a model per question (OpenRouter and Groq), and admins can bring their own provider. Auxiliary stages (rewrite, recovery, summarisation, ingest context) may use a cheaper `LLM_AUX_MODEL`.
 
 **LiteLLM was not adopted.** The required capability is the OpenAI wire format, which most hosts already expose. LiteLLM would add a dependency for native features that are unused today. Should Anthropic prompt caching become necessary, a LiteLLM-backed class can be introduced behind the existing `LLMProvider` interface.
 
@@ -229,7 +229,7 @@ A workspace without a GitHub connection must not fall back to the organisation i
 
 **HTTP API.** FastAPI. Organisation identity is taken only from the signed session cookie. Chat streaming delivers an already-decided answer in chunks. Streaming raw tokens from a generation that may still be discarded (recovery, then web search) would leak a draft.
 
-**Authentication.** Magic-link sign-in and administrator-invited members. Creation of a new organisation is gated by a human-reviewed email queue: GET renders a confirmation page; POST performs the action, so mail scanners cannot approve a request. Tokens at rest are encrypted with MultiFernet; there is no external KMS.
+**Authentication.** Magic-link sign-in (delivered through SendGrid in production) and administrator-invited members. Creation of a new organisation is gated by a human-reviewed email queue: GET renders a confirmation page; POST performs the action, so mail scanners cannot approve a request. Tokens at rest are encrypted with MultiFernet; there is no external KMS.
 
 **Ingestion jobs.** PostgreSQL `FOR UPDATE SKIP LOCKED`, not Redis or Celery. Stuck jobs are reaped by silence (`progress_at`), not by elapsed start time. A job that repeatedly terminates the process is abandoned after a bounded number of attempts rather than restarting the entire service.
 

@@ -6,6 +6,8 @@ import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { useMe } from "@/lib/useMe";
 import { LinkedIdentities, LinkedIdentity, api } from "@/lib/api";
+import { MemoryPanel } from "@/components/MemoryPanel";
+import { SignInEmailPanel } from "@/components/SignInEmailPanel";
 
 const TOOL_NAMES: Record<string, string> = {
   github: "GitHub",
@@ -171,6 +173,10 @@ function AccountContent() {
             </div>
           </section>
         )}
+
+        <SignInEmailPanel />
+
+        <MemoryPanel />
       </main>
     </AppShell>
   );

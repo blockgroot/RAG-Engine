@@ -986,6 +986,52 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
   transition: background 0.2s var(--ease), color 0.2s var(--ease),
     border-color 0.2s var(--ease);
 }
+.provenance-live { font-weight: 600; }
+
+/* Personal memory: "Remembered: ... · Undo" under an answer. Quiet on purpose
+   -- it confirms, it does not compete with the answer. */
+.chat-remembered {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.6rem;
+  margin-top: 0.6rem;
+  font-size: 0.78rem;
+  color: var(--ink-muted);
+}
+.chat-remembered-label { font-weight: 600; }
+.chat-remembered-fact {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.chat-remembered-undo,
+.chat-remembered-manage {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent-strong);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.chat-remembered-error { color: var(--danger, #b42318); }
+.memory-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+.memory-switch-org {
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+.memory-actions { display: flex; gap: 0.4rem; justify-content: flex-end; }
+
 .composer-model:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 13%, transparent);
   color: var(--accent-strong);
@@ -1092,6 +1138,70 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 .answer-list li { margin: 0; padding-left: 0.15rem; }
 .answer-list li + li { margin-top: 0.45rem; }
 .chat-answer strong { font-weight: 700; color: var(--ink); }
+
+/* Inline citations. A superscript is the reference mark; the document is
+   named once under the answer. A filled chip on every sentence reads as a
+   button and crowds a list that all cites the same page. */
+.cite-ref {
+  margin-left: 0.12em;
+  color: var(--ink-muted);
+  font-weight: 650;
+  text-decoration: none;
+  font-variant-numeric: tabular-nums;
+}
+.cite-ref sup {
+  font-size: 0.72em;
+  line-height: 0;
+}
+a.cite-ref:hover, a.cite-ref:focus-visible { color: var(--accent-strong); }
+a.cite-ref:hover sup, a.cite-ref:focus-visible sup { text-decoration: underline; }
+.answer-sources {
+  margin: 0.95rem 0 0;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--border);
+}
+.answer-sources-label {
+  margin: 0 0 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+.answer-sources ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.84rem;
+}
+.answer-sources li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  min-width: 0;
+}
+.answer-source-n {
+  flex: none;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.78rem;
+}
+.answer-sources li + li { margin-top: 0.28rem; }
+.answer-sources a, .answer-sources .answer-source-plain {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  color: var(--ink);
+  text-decoration: none;
+}
+.answer-source-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.answer-source-app { color: var(--ink-muted); }
+.answer-source-app::before { content: "·"; margin: 0 0.35rem; }
+.answer-sources a:hover .answer-source-title { color: var(--accent-strong); text-decoration: underline; }
 
 .provenance-pill {
   display: inline-flex;

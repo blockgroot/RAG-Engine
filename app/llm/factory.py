@@ -8,8 +8,8 @@ Callers do ``build_llm_provider()`` and get back something satisfying the
 from __future__ import annotations
 
 from ..config.settings import LLMSettings
+from . import adapters
 from .base import LLMProvider
-from .openai_provider import OpenAICompatProvider
 from .routed import RoutedLLMProvider
 
 
@@ -26,12 +26,31 @@ def build_llm_provider(settings: LLMSettings | None = None) -> LLMProvider:
     """
     settings = settings or LLMSettings.from_env()
     return RoutedLLMProvider(
-        OpenAICompatProvider(
-            model=settings.model,
-            api_key=settings.api_key,
-            base_url=settings.base_url,
-            timeout=settings.timeout,
+        adapters.build_provider(main_endpoint(settings), timeout=settings.timeout)
+    )
+
+
+def main_endpoint(settings: LLMSettings) -> adapters.Endpoint:
+    """The main model's endpoint, resolved through ``LLM_ADAPTER``."""
+    return adapters.resolve(
+        settings.adapter, base_url=settings.base_url, model=settings.model,
+        api_key=settings.api_key,
+    )
+
+
+def aux_endpoint(settings: LLMSettings) -> adapters.Endpoint:
+    """The background model's endpoint: its own when fully configured, else
+    the main one with ``LLM_AUX_MODEL`` swapped in."""
+    model = settings.aux_model or settings.model
+    if settings.aux_has_own_endpoint:
+        return adapters.resolve(
+            settings.aux_adapter, base_url=settings.aux_base_url, model=model,
+            api_key=settings.aux_api_key, env_prefix="LLM_AUX",
         )
+    main = main_endpoint(settings)
+    return adapters.Endpoint(
+        adapter=main.adapter, base_url=main.base_url, model=model,
+        api_key=main.api_key, kind=main.kind,
     )
 
 
@@ -44,7 +63,8 @@ def build_aux_llm_provider(settings: LLMSettings | None = None) -> LLMProvider:
     (CLAUDE.md §3). ``test_model_selection`` asserts it by reading this
     function's source, so do not name the routing wrapper here even in prose.
 
-    Uses ``LLM_AUX_BASE_URL``/``LLM_AUX_API_KEY`` when BOTH are set, so
+    Uses its own endpoint (``LLM_AUX_ADAPTER`` or ``LLM_AUX_BASE_URL``, plus
+    ``LLM_AUX_API_KEY``) when BOTH halves are set, so
     background work can draw from its own rate limit. Unset — the default —
     falls back to the main endpoint, byte-identical to the behaviour before
     those settings existed. Falling back per-field would be worse than not
@@ -53,11 +73,4 @@ def build_aux_llm_provider(settings: LLMSettings | None = None) -> LLMProvider:
     exactly the class of failure this codebase keeps paying for.
     """
     settings = settings or LLMSettings.from_env()
-    model = settings.aux_model or settings.model
-    own_endpoint = settings.aux_has_own_endpoint
-    return OpenAICompatProvider(
-        model=model,
-        api_key=settings.aux_api_key if own_endpoint else settings.api_key,
-        base_url=settings.aux_base_url if own_endpoint else settings.base_url,
-        timeout=settings.timeout,
-    )
+    return adapters.build_provider(aux_endpoint(settings), timeout=settings.timeout)

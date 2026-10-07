@@ -4,7 +4,7 @@ Integration Plan).
 Google Drive has no equivalent of Notion's "whatever's shared with the
 integration" model — a Drive OAuth grant that isn't scoped down to a specific
 folder is both a tenant-isolation risk and broader than Google's OAuth scope
-policy expects. The settled design (see CLAUDE.md / GOOGLE_INTEGRATION_PLAN.md)
+policy expects. The settled design (see CLAUDE.md)
 is: the admin pastes a folder URL or raw id into the Sources page, and we parse
 it into a folder id here, once, so both the admin API and the Drive adapter
 work from the same normalized id. Kept as a standalone module (no adapter

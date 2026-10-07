@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from starlette.concurrency import run_in_threadpool
 
 from ..attachments import (
     SUPPORTED_EXTENSIONS,
@@ -28,6 +29,7 @@ from ..attachments import (
 )
 from ..core.exceptions import AuthError
 from ..config.settings import AttachmentSettings
+from ..guard.live import is_flagged, score_attachment
 from ..security.rate_limit import check_rate_limit
 from ..workspaces import assert_member
 from ..auth.session import SessionClaims
@@ -182,6 +184,10 @@ async def _store_one(
         if too_long:
             return None, too_long
 
+        # Scored once, off the event loop (a blocking Groq call). A flagged file
+        # is still accepted: members upload vendor PDFs legitimately.
+        injection_score = await run_in_threadpool(score_attachment, text)
+
         try:
             attachment = save_attachment(
                 org_id=session.org_id,
@@ -195,6 +201,7 @@ async def _store_one(
                 # so a lost plaintext asset can be re-extracted rather than
                 # lost with it.
                 data=data,
+                injection_score=injection_score,
             )
         except AttachmentStorageError:
             logger.exception("Attachment: storage failure for %s", filename)
@@ -207,6 +214,7 @@ async def _store_one(
         "filename": attachment.filename,
         "char_count": attachment.char_count,
         "truncated": attachment.truncated,
+        "flagged": is_flagged(attachment.injection_score),
     }, None
 
 
@@ -224,6 +232,7 @@ def get_attachments(
                 "filename": a.filename,
                 "char_count": a.char_count,
                 "truncated": a.truncated,
+                "flagged": is_flagged(a.injection_score),
             }
             for a in list_attachments(
                 org_id=session.org_id,

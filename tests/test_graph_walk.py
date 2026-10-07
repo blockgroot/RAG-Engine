@@ -215,3 +215,130 @@ def test_a_linear_id_in_the_question_links_exactly(pg, org):
     assert seed.exact and seed.name.startswith("ENG-142")
     fuzzy = link_question(org, None, "anything on the token refresh fails bug?", viewer(ADA))
     assert fuzzy and fuzzy[0].name.startswith("ENG-142")
+
+
+def test_links_and_document_tools_carry_nothing_the_walk_hid(chain):
+    """The plan's facts and its per-tool documents come from these two fields."""
+    seed = _entity(chain, "google:public")
+    for_bo = walk(chain, None, [seed], viewer(BO))
+    assert set(for_bo.document_providers) == set(for_bo.document_ids)
+    assert set(for_bo.document_providers.values()) == {"google"}
+    named = {n for link_ in for_bo.links for n in (link_.src_name, link_.dst_name)}
+    assert "Secret memo" not in named and "Beyond" not in named
+    assert for_bo.links and all(l.src_key and l.dst_key for l in for_bo.links)
+    for_ada = walk(chain, None, [seed], viewer(ADA))
+    assert "Secret memo" in {n for l in for_ada.links for n in (l.src_name, l.dst_name)}
+
+
+def test_a_built_plan_states_no_fact_about_a_hidden_document(chain):
+    from app.config.settings import GraphSettings
+    from app.graph.plan import build_plan
+
+    on = GraphSettings(retrieval_enabled=True)
+    bo = build_plan(chain, None, "what is in the Public plan", viewer(BO), settings=on)
+    ada = build_plan(chain, None, "what is in the Public plan", viewer(ADA), settings=on)
+    assert bo is not None and bo.facts("google")
+    assert not any("Secret memo" in f for f in bo.facts("google"))
+    assert any("Secret memo" in f for f in ada.facts("google"))
+    # Another tool's answer is told nothing from Drive.
+    assert bo.facts("notion") == [] and bo.documents_for("notion") == []
+
+
+# --------------------------------------------------------------------------
+# Scale: one busy person across tools (the hub case the old LIMIT walk failed)
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def hub(pg, org):
+    """Sana wrote the Leave Policy, 80 other Notion pages and 5 Slack threads.
+
+    One Notion page is about a remote-work stipend (in its TEXT, not its
+    title); one Slack thread is about the scheduler.
+    """
+    from app.auth.users import invite_member
+
+    sana = invite_member(f"sana-{uuid.uuid4().hex[:6]}@example.com", org)
+    notion_me = person("notion", role="author", external_id="N1", email=sana.email, name="Sana")
+    slack_me = person("slack", role="author", external_id="U1", email=sana.email, name="Sana")
+
+    def doc(provider, ext, title, text):
+        pg.upsert_source_document(
+            org, provider=provider, external_id=ext, title=title, chunks=[text],
+            embeddings=[_vector()], source_meta=build_meta(
+                people=[notion_me if provider == "notion" else slack_me]),
+        )
+
+    doc("notion", "leave", "Leave Policy", "How annual leave accrues and carries over.")
+    notion_ids = ["leave"]
+    for i in range(80):
+        text = ("Employees get a monthly remote work stipend for home office costs."
+                if i == 57 else f"Procedure number {i} for the office.")
+        doc("notion", f"p{i}", f"Handbook page {i}", text)
+        notion_ids.append(f"p{i}")
+    slack_ids = []
+    for i in range(5):
+        text = ("I added the scheduler flow yesterday for Slack, GitHub and Linear."
+                if i == 3 else f"Standup notes {i}.")
+        doc("slack", f"C1:{i}.0", f"#rag-updates: thread {i}", text)
+        slack_ids.append(f"C1:{i}.0")
+    builder.build_documents(org, None, "notion", notion_ids)
+    builder.build_documents(org, None, "slack", slack_ids)
+    return org
+
+
+def _walked_titles(result):
+    return {e.name for e in result.entities}
+
+
+def test_a_busy_person_does_not_crowd_out_their_other_tools(hub):
+    from app.graph.walk import MAX_EDGES, PER_NODE
+
+    seed = _entity(hub, "notion:leave")
+    result = walk(hub, None, [seed], viewer(ADA))
+    tools = set(result.document_providers.values())
+    assert tools == {"notion", "slack"}  # Slack reached despite 80 Notion pages
+    assert result.edges <= MAX_EDGES and result.truncated
+    notion_authored = [l for l in result.links
+                       if l.relation == "authored" and l.dst_key.startswith("notion:")]
+    assert len(notion_authored) <= PER_NODE + 1  # the hub is capped (+ the seed's own edge)
+
+
+def test_the_walk_picks_what_the_question_is_about(hub):
+    seed = _entity(hub, "notion:leave")
+    result = walk(hub, None, [seed], viewer(ADA),
+                  question="Who wrote about the remote work stipend?")
+    assert "Handbook page 57" in _walked_titles(result)  # found by its TEXT, 1 of 80
+    best = [l for l in result.links if l.dst_name == "Handbook page 57"]
+    assert best and best[0].score > 0
+
+
+def test_naming_a_tool_walks_that_tool_first(hub):
+    seed = _entity(hub, "notion:leave")
+    result = walk(hub, None, [seed], viewer(ADA), max_edges=12,
+                  question="Has the author of the Leave Policy discussed the scheduler in Slack?",
+                  focus={"slack"})
+    assert "#rag-updates: thread 3" in _walked_titles(result)
+    slack = [l for l in result.links if l.dst_key.startswith("slack:")]
+    notion = [l for l in result.links if l.dst_key.startswith("notion:") and l.depth == 2]
+    assert len(slack) >= len(notion)
+
+
+def test_a_plan_groups_a_hubs_facts_and_states_coverage(hub):
+    from app.config.settings import GraphSettings
+    from app.graph.plan import build_plan
+
+    plan = build_plan(hub, None, "Has the author of the Leave Policy discussed it in Slack?",
+                      viewer(ADA), settings=GraphSettings(retrieval_enabled=True))
+    assert plan.coverage == (("slack", 5),)
+    connected = plan.connected({"notion", "slack"}, search={"slack"})
+    facts = connected.facts("notion")
+    grouped = [f for f in facts if "items found, including" in f]
+    assert grouped, facts  # one line per (who, relation, tool), not 80
+    assert len(facts) <= 12
+    assert connected.coverage_lines() == [
+        "Slack was searched for this question: 5 items there are readable by the asker, "
+        "and the closest matches are included in this context."
+    ]
+    # A normal Notion answer still sees nothing of Slack.
+    assert not any("Slack" in f for f in plan.facts("notion"))

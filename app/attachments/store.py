@@ -31,6 +31,8 @@ class Attachment:
     #: Absent on a listing (``list_attachments``), present when the pipeline
     #: asks for the text it is about to put in a prompt.
     content: str | None = None
+    #: Prompt-injection probability from upload; None = unscored.
+    injection_score: float | None = None
 
 
 def save_attachment(
@@ -43,6 +45,7 @@ def save_attachment(
     content: str,
     truncated: bool,
     data: bytes | None = None,
+    injection_score: float | None = None,
 ) -> Attachment:
     """Store one attachment: metadata here, bytes and text in the object store.
 
@@ -62,8 +65,8 @@ def save_attachment(
         row = conn.execute(
             "INSERT INTO conversation_attachments "
             "(conversation_id, org_id, user_id, filename, content_type, "
-            " content, char_count, truncated) "
-            "VALUES (%s, %s, %s, %s, %s, NULL, %s, %s) "
+            " content, char_count, truncated, injection_score) "
+            "VALUES (%s, %s, %s, %s, %s, NULL, %s, %s, %s) "
             "RETURNING id::text",
             (
                 conversation_id,
@@ -73,6 +76,7 @@ def save_attachment(
                 content_type,
                 len(content),
                 truncated,
+                injection_score,
             ),
         ).fetchone()
     attachment_id = row[0]
@@ -102,7 +106,9 @@ def save_attachment(
             )
         raise
 
-    return Attachment(attachment_id, filename, len(content), truncated)
+    return Attachment(
+        attachment_id, filename, len(content), truncated, injection_score=injection_score
+    )
 
 
 def list_attachments(
@@ -112,13 +118,13 @@ def list_attachments(
     keeps a 60k-char blob out of every page render."""
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT id::text, filename, char_count, truncated "
+            "SELECT id::text, filename, char_count, truncated, injection_score "
             "FROM conversation_attachments "
             "WHERE conversation_id = %s AND org_id = %s AND user_id = %s "
             "ORDER BY created_at",
             (conversation_id, org_id, user_id),
         ).fetchall()
-    return [Attachment(r[0], r[1], r[2], r[3]) for r in rows]
+    return [Attachment(r[0], r[1], r[2], r[3], injection_score=r[4]) for r in rows]
 
 
 def load_attachment_texts(
@@ -142,7 +148,8 @@ def load_attachment_texts(
     """
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT id::text, filename, char_count, truncated, content, storage_key "
+            "SELECT id::text, filename, char_count, truncated, content, storage_key, "
+            "injection_score "
             "FROM conversation_attachments "
             "WHERE conversation_id = %s AND org_id = %s AND user_id = %s "
             "ORDER BY created_at",
@@ -150,10 +157,12 @@ def load_attachment_texts(
         ).fetchall()
 
     loaded: list[Attachment] = []
-    for attachment_id, filename, char_count, truncated, content, storage_key in rows:
+    for attachment_id, filename, char_count, truncated, content, storage_key, score in rows:
         text = _resolve_text(attachment_id, filename, content, storage_key)
         if text:
-            loaded.append(Attachment(attachment_id, filename, char_count, truncated, text))
+            loaded.append(
+                Attachment(attachment_id, filename, char_count, truncated, text, score)
+            )
     return loaded
 
 

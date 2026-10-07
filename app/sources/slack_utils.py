@@ -42,6 +42,12 @@ _MAX_CHANNEL_MEMBERS = 500
 _CHANNEL_TAG_PREFIX = "slack:channel:"
 
 
+# Every bot message is sent with previews OFF. Slack fetches a URL to build a
+# preview, so a URL steered into an answer is a zero-click leak: the fetch
+# alone delivers whatever the query string carries to the attacker's server.
+_NO_UNFURL = {"unfurl_links": False, "unfurl_media": False}
+
+
 def channel_tag(channel_id: str) -> str:
     """The `documents.tags` label for one Slack channel."""
     return f"{_CHANNEL_TAG_PREFIX}{channel_id}"
@@ -60,7 +66,7 @@ def post_message(
     real answer (`update_message`); ``None`` when the post failed, which the
     caller must read as "there is nothing to update".
     """
-    payload: dict = {"channel": channel, "text": text}
+    payload: dict = {"channel": channel, "text": text, **_NO_UNFURL}
     if thread_ts:
         payload["thread_ts"] = thread_ts
     try:
@@ -97,7 +103,7 @@ def update_message(token: str, channel: str, ts: str, text: str) -> bool:
     try:
         response = httpx.post(
             f"{_API_BASE}/chat.update",
-            json={"channel": channel, "ts": ts, "text": text},
+            json={"channel": channel, "ts": ts, "text": text, **_NO_UNFURL},
             headers={"Authorization": f"Bearer {token}"},
             timeout=_TIMEOUT,
         )

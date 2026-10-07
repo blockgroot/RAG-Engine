@@ -25,7 +25,7 @@ from ..insights import pins, registry, resolve, scopes
 from ..insights import store as insight_store
 from ..security.rate_limit import check_rate_limit
 from ..workspaces.store import assert_member
-from .deps import SessionClaims, get_session
+from .deps import SessionClaims, get_session, viewer_for
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +135,9 @@ def dashboard(
     if found is None:
         raise HTTPException(status_code=404, detail="No such scope.")
 
+    # Resolved once for every panel: each count is narrowed to documents this
+    # person may open, the same rule retrieval applies.
+    viewer = viewer_for(session)
     out = []
     for provider in found.providers:
         for panel in panel_defs.for_provider(provider):
@@ -151,6 +154,7 @@ def dashboard(
                     period=period,
                     days=days,
                     group_by=panel.group_by,
+                    viewer=viewer,
                 )
             except ProviderError:
                 # One broken panel must not blank the page. It reports itself
@@ -161,7 +165,8 @@ def dashboard(
                 continue
 
             begun = insight_store.first_fact_at(
-                provider, org_id=session.org_id, workspace_id=workspace_id
+                provider, org_id=session.org_id, workspace_id=workspace_id,
+                viewer=viewer,
             )
             out.append(_panel_payload(provider, panel, points, begun))
 
@@ -240,46 +245,28 @@ def answer_chart_question(
             "message": "I can't chart that here.",
         }
 
-    days = _WINDOW_DAYS[spec.period]
+    # The SAME runner Ask chat uses, not a second copy: this route used to
+    # call `run_metric` itself and silently dropped `focus` (and would have
+    # dropped every grammar slot), charting all repositories for "commits in
+    # the DAO repo".
+    from ..agent.insights_agent import _run_spec
+
     try:
-        points = insight_store.run_metric(
-            spec.metric,
-            org_id=session.org_id,
-            workspace_id=workspace_id,
-            period=spec.period,
-            days=days,
-            group_by=spec.group_by,
+        panel, period = _run_spec(
+            spec, org_id=session.org_id, workspace_id=workspace_id,
+            user_id=session.user_id, role=session.role,
+            viewer=viewer_for(session),
         )
+    except resolve.CannotChart as exc:
+        return {"charted": False, "message": str(exc)}
     except ProviderError:
         logger.warning("insights: ask ran %s and failed", spec.metric, exc_info=True)
         raise HTTPException(status_code=502, detail="Could not run that chart.")
 
-    metric = registry.get(spec.metric)
-    begun = insight_store.first_fact_at(
-        metric.provider, org_id=session.org_id, workspace_id=workspace_id
-    )
     return {
         "charted": True,
-        "spec": {
-            "metric": spec.metric,
-            "group_by": spec.group_by,
-            "period": spec.period,
-        },
-        "panel": {
-            "id": f"ask:{spec.metric}:{spec.group_by or 'time'}",
-            "provider": metric.provider,
-            "title": _ask_title(metric, spec.group_by),
-            "chart": spec.chart,
-            "group_by": spec.group_by,
-            "unit": metric.unit,
-            "caveat": metric.caveat,
-            "points": [
-                {"bucket": p.bucket, "group": p.group, "series": p.series,
-                 "value": p.value}
-                for p in points
-            ],
-            "measured_since": begun.isoformat() if begun else None,
-        },
+        "spec": {**resolve.spec_to_dict(spec), "period": period},
+        "panel": panel,
     }
 
 

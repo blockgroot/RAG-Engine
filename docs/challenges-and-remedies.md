@@ -5,7 +5,7 @@
 | **Document** | 1 of 3 |
 | **Subject** | Failures encountered while building and operating the system, and the remedies that remain in the code |
 | **Audience** | Engineers repeating a similar stack, and reviewers asking why a bound or gauge exists |
-| **Related documents** | (2) `docs/paid-upgrade-path.md`; (3) `docs/what-we-use-and-why.md`. Incident-level detail remains in `CLAUDE.md` §4. |
+| **Related documents** | (2) `docs/paid-upgrade-path.md`; (3) `docs/what-we-use-and-why.md`. The constraints that remain are in `CLAUDE.md`. Product status is `docs/handbook/PRODUCT_STATUS.md`. |
 
 This is not a complete diary of every defect. It groups failures by **class**, because the reusable lesson is the class, not the ticket.
 
@@ -114,7 +114,7 @@ Redis was considered and not added. The costs were unnecessary work, not a slow 
 | --- | --- | --- |
 | Login appeared to succeed then immediately log out | `SameSite=Lax` cookie set on `onrender.com` is not sent from `vercel.app` | Browser origin is `/api`; Next.js rewrites to FastAPI. OAuth callbacks use the frontend host. Do not set `NEXT_PUBLIC_API_BASE_URL` to the Render URL. |
 | SMTP “network unreachable” | Render free firewalls ports 25/465/587 | HTTPS senders (`sendgrid` or `resend`). Do not debug Gmail passwords for `Errno 101`. |
-| Magic links never arrived except to the operator | Resend sandbox delivers only to the Resend account owner | SendGrid Single Sender, or a verified domain. `send_*_email_safe` swallows provider errors, so the UI can report success. |
+| Magic links never arrived except to the operator | Resend sandbox delivers only to the Resend account owner | **Done in production:** SendGrid (`EMAIL_SENDER=sendgrid`), verified with real mailboxes. `console` is local development only. `send_*_email_safe` still swallows provider errors, so a failed send can look successful in the UI. |
 | GitHub connect 422 on GitHub’s own redirect | Callback required `code` and `state`. App install redirects with `installation_id` + `setup_action` | Optional params; explicit branches. No `code` → finish-connect message. `code` without `state` → refuse (no trustworthy tenant). Non-GitHub providers still 400. |
 | Workspace GitHub showed the company repos | Install id from a company org was bound to a personal space; `_pick_installation` fell back to `installations[0]` | Prefer user account; do not fall back; reject a workspace install id equal to the org-wide row. Compare install ids, not account type. |
 | Spoofed `installation_id` | GitHub documents that the query parameter can be forged | Verify against `GET /user/installations`; persist identity from that response only. |
@@ -141,6 +141,7 @@ These did not take the site down. They produced wrong or missing answers and wer
 | Follow-up reuse could not separate “same fact” (~0.63) from “adjacent topic” (~0.67) | Reuse threshold 0.72 (conservative). Reused chunks still pass the 0.35 gate |
 | Similarity 0.35 cannot tell “answers” from “on-topic but unanswered” | Gate stays a noise filter; the prompt refuses related-but-unanswered cases. Golden set: no false negatives; unanswerables caught by the prompt |
 | Indirect prompt injection via retrieved text | Fence untrusted content; sandwich reminder; narrow heuristic scrub. Partial mitigation; not dual-LLM quarantine |
+| A model-written link could send the reader to an attacker's URL | A citation link is only `documents.source_uri` from sync. An invented `[n]` is dropped. One document is named under the answer; two or more keep a superscript |
 
 ---
 

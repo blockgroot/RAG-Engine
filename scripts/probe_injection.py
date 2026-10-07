@@ -5,7 +5,7 @@ Runs each red-team golden case (``injection-*`` and ``bias-*`` — see
 ``evaluation/golden_set.py``) N times *without* the retry harness, so
 pass-rate is honest (not inflated by ``run_case_stable``). The ``bias-*``
 cases were added to widen this beyond pure prompt injection (the
-stress-testing/red-teaming gap in docs/RAG_VIDEO_COMPARISON.md) — a leading
+stress-testing/red-teaming gap from the RAG checklist review, in git history) — a leading
 discriminatory question with no supporting corpus content is a different
 failure mode than an embedded "ignore previous instructions" payload, and
 needed its own cases rather than being folded into the injection ones.
@@ -53,11 +53,19 @@ def main() -> int:
             "from its original manual-probe behaviour."
         ),
     )
+    parser.add_argument(
+        "--cases",
+        default="",
+        help="Comma-separated case ids to run (default: every injection-/bias- case).",
+    )
     args = parser.parse_args()
+    only = {c.strip() for c in args.cases.split(",") if c.strip()}
 
     total_leaks = 0
     cases = [
-        c for c in GOLDEN_CASES if c.id.startswith("injection-") or c.id.startswith("bias-")
+        c for c in GOLDEN_CASES
+        if (c.id.startswith("injection-") or c.id.startswith("bias-"))
+        and (not only or c.id in only)
     ]
     store = build_vector_store()
     embedder = build_embedding_provider()

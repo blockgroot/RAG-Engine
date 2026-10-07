@@ -11,6 +11,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field, replace
+from urllib.parse import urlparse
 
 import numpy as np
 
@@ -18,12 +19,14 @@ from ..config.settings import (
     AttachmentSettings,
     AuditSettings,
     DecomposeSettings,
+    GuardSettings,
     MemorySettings,
     QueryNormSettings,
     RagSettings,
     RecoverySettings,
     RequestBudgetSettings,
     ReuseSettings,
+    SecuritySettings,
     ToneSettings,
     WebSearchSettings,
 )
@@ -65,9 +68,22 @@ from .attachment_tools import (
     build_preview_block,
     run_reads,
 )
-from .access_notice import restricted_notice
-from .audit import parse_audit_verdict
-from .retrieval import HybridRetriever, RetrievalResult
+from ..sources.slack_utils import channel_tag
+from .access_notice import live_withheld_notice, restricted_notice
+from ..guard import build_injection_guard
+from ..livetools import LiveRefresh, current_live_request
+from ..memory.personal import current_asker_context, current_asker_facts
+from ..livetools import refresh as live_refresh
+from ..livetools.handles import mint as mint_handles
+from ..livetools.handles import resolve as resolve_handle
+from ..livetools.handles import strip_handles
+from ..guard.moderation import answer_is_unsafe
+from ..security.links import enforce_link_provenance, strip_links
+from ..security.outbound import user_worded_query
+from ..security.untrusted import leaks_canary, scrub_untrusted_text
+from .audit import lettuce_verdict, parse_audit_verdict
+from .retrieval import HybridRetriever, RetrievalResult, gate_document
+from .cite import link_citations, strip_citations
 from .context_assemble import assemble_context_texts, describe_hit
 from .decompose import looks_compound, parse_sub_questions
 from .scope_intent import OVERVIEW, classify_scope_intent
@@ -86,11 +102,14 @@ from .question_tone import (
 )
 from .prompts import (
     POLICY_PROMPT_PROFILE,
+    REFRESH_ITEM_TOOL,
     WEB_SEARCH_TOOL,
     PromptProfile,
+    build_live_decision_prompt,
     build_audit_prompt,
     build_decompose_prompt,
     ATTACHMENT_PROMPT_PROFILE,
+    connected_prompt_profile,
     build_attachment_paging_prompt,
     build_grounded_prompt,
     build_recovery_queries_prompt,
@@ -147,10 +166,99 @@ def _is_cacheable(result: "RagResult") -> bool:
       it would be served verbatim to a member who cannot open that document;
     * a "these documents are not shared with you" notice, which is a statement
       about ONE person's access and is wrong for everybody else.
+
+    Web answers are never written either. Their sources are pages anyone can
+    publish, `sources=[]` made the check above vacuously true, and a cached
+    one is served to the whole scope for the TTL: one poisoned search result
+    would have become everybody's answer.
     """
+    if result.source == SOURCE_WEB:
+        return False
     if not all(getattr(hit, "doc_is_public", True) for hit in result.sources):
         return False
+    # Graph facts are walked AS the asker (who wrote what, what links where),
+    # and a connected answer reads other tools the cache key does not name --
+    # either would be served verbatim to the next person on the same key.
+    if getattr(result, "graph_shaped", False):
+        return False
+    # A live read is one moment, read for one asker (plan D13); a withheld
+    # object is about that moment too.
+    if getattr(result, "live_sources", None) or getattr(result, "live_withheld", False):
+        return False
+    if getattr(result, "personalized", False):
+        return False
     return not getattr(result, "access_restricted", False)
+
+
+#: Heads the graph-facts context block. Named as what it is, so the model can
+#: say "Sana wrote the Leave Policy" and the reader can see where that came from.
+GRAPH_FACTS_HEADER = (
+    "Known connections (from the company's own tools: who wrote, edited, "
+    "commented on or links to what):"
+)
+
+
+#: Heads the search-coverage lines: which named tools were searched, and how
+#: much they hold for this asker. Facts, not an instruction -- the strict
+#: prompt's own modes decide what to say about them.
+SEARCH_COVERAGE_HEADER = "Search coverage:"
+
+
+def _graph_facts_block(org_id: str | None, routed: str | None) -> tuple[str | None, bool]:
+    """``(context_block, graph_shaped)`` for this request's graph plan.
+
+    Read from the plan the chat edge built -- never a second walk. A normal
+    answer gets only facts inside its own tool; a connected one gets the
+    tools it was widened to (``GraphPlan.facts``). ``graph_shaped`` is True
+    whenever the plan changed what this answer could see, so it is not cached.
+    """
+    try:
+        from ..graph.plan import current_plan
+
+        plan = current_plan()
+        if plan is None or plan.org_id != org_id:
+            return None, False
+        lines = plan.facts(routed)
+        # What was searched is stated only on a connected answer: that is
+        # the answer reading the tool the question named.
+        searched = plan.coverage_lines() if plan.cross is not None else []
+        shaped = bool(lines) or bool(searched) or plan.cross is not None
+        if not lines and not searched:
+            return None, shaped
+        parts = []
+        if lines:
+            parts.append(GRAPH_FACTS_HEADER + "\n" + "\n".join(f"- {line}" for line in lines))
+        if searched:
+            parts.append(SEARCH_COVERAGE_HEADER + "\n" + "\n".join(f"- {line}" for line in searched))
+        return "\n\n".join(parts), shaped
+    except Exception:  # noqa: BLE001 - facts may only ever add
+        logger.warning("graph facts skipped", exc_info=True)
+        return None, False
+
+
+def _cross_plan_active() -> bool:
+    """A connected answer is running: its answer must not come FROM the cache
+    either, since the cache key names one tool and this answer reads several."""
+    try:
+        from ..graph.plan import current_plan
+
+        plan = current_plan()
+        return plan is not None and plan.cross is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _connected_tools(org_id: str | None) -> frozenset[str]:
+    """The tools a connected answer is reading, or empty for a normal one."""
+    try:
+        from ..graph.plan import current_plan
+
+        plan = current_plan()
+        if plan is None or plan.cross is None or plan.org_id != org_id:
+            return frozenset()
+        return frozenset(plan.cross)
+    except Exception:  # noqa: BLE001
+        return frozenset()
 
 
 def _tone_retry_addendum(mode: str) -> str:
@@ -274,6 +382,47 @@ class RagResult:
     # company's documentation) and the cache needs it to not serve one
     # person's access situation to everyone else.
     access_restricted: bool = False
+    # True when this request's knowledge-graph plan shaped the answer (facts
+    # in the context, or a connected answer reading other tools). Keeps it out
+    # of the scope-wide cache; see `_is_cacheable`.
+    graph_shaped: bool = False
+    # Second Brain live tools (git history: docs/plans/2026-09-29-live-connector-access.md):
+    # the connectors read LIVE for this answer, ``[{provider, fetched_at}]``.
+    live_sources: list[dict] = field(default_factory=list)
+    # True when this refusal is "the matching item is no longer available":
+    # a live read said the object behind the answer is gone or no longer
+    # readable. Like ``access_restricted`` it rides the result so nothing
+    # matches on text: not cached, and not logged as a documentation gap.
+    live_withheld: bool = False
+    # True when personal memory was in the prompt: the answer was interpreted
+    # for ONE person, so it is never served to the next asker on the same key.
+    personalized: bool = False
+    # Inline citations (`rag/cite.py`): ``[{n, document_id, title, provider,
+    # url}]`` for every valid ``[n]`` marker left in ``answer``.
+    cited: list[dict] = field(default_factory=list)
+
+
+def _without_withheld(
+    hits: list[RetrievedChunk],
+    top_score: float | None,
+    gate_document_id: str | None,
+    withheld: dict[str, str],
+) -> tuple[list[RetrievedChunk], float | None]:
+    """Drop withheld documents' chunks; re-check the gate only if it was theirs.
+
+    ``top_score`` is a max over every first-stage candidate, so the remaining
+    hits cannot reproduce it (plan D8a). A withheld document that did NOT earn
+    the gate leaves it untouched. One that DID gives way to the best cosine of
+    what remains -- a max over at most top_k hits, so it can only come out
+    lower than a full recompute: it can turn an answer into a refusal, never a
+    refusal into an answer. A hit with no score is skipped, never trusted.
+    """
+    if not withheld:
+        return hits, top_score
+    kept = [h for h in hits if h.document_id not in withheld]
+    if gate_document_id is None or gate_document_id in withheld:
+        top_score = max((h.score for h in kept if h.score is not None), default=None)
+    return kept, top_score
 
 
 @dataclass(frozen=True)
@@ -283,6 +432,33 @@ class _RecoveryAttempt:
     hits: list[RetrievedChunk]
     gate_score: float | None
     queries: list[str]
+    gate_document_id: str | None = None
+
+
+def _screen_hits(hits, org_id: str | None, guard: GuardSettings) -> list:
+    """Log every flagged chunk; in ``enforce`` mode also drop it.
+
+    Shadow (Task 2.6) logs and returns ``hits`` unchanged: run it a week on the
+    real corpus first, because the false-positive rate on real company
+    documents decides the threshold, not a benchmark. Enforce (Task 3.1) drops
+    the chunk AFTER retrieval, so the 0.35 gate score is untouched, and a
+    dropped chunk's links then fail the provenance rule because they are no
+    longer in the prompt. NULL (unscored) passes: a Groq outage must not empty
+    the corpus. Logs ids and the score only -- never the chunk text.
+    """
+    if not guard.enabled:
+        return hits
+    kept = []
+    for h in hits:
+        if h.injection_score is not None and h.injection_score >= guard.threshold:
+            logger.warning(
+                "guard.flagged_hit mode=%s org=%s doc=%s chunk=%s score=%.3f",
+                guard.mode, org_id, h.document_id, h.chunk_index, h.injection_score,
+            )
+            if guard.mode == "enforce":
+                continue
+        kept.append(h)
+    return kept
 
 
 class RagPipeline:
@@ -340,6 +516,9 @@ class RagPipeline:
         self._source_provider = source_provider
         self._prompt_profile = prompt_profile or POLICY_PROMPT_PROFILE
         self._audit_settings = audit_settings or AuditSettings.from_env()
+        self._link_allowlist = SecuritySettings.from_env().link_allowlist
+        self._guard_settings = GuardSettings.from_env()
+        self._injection_guard = build_injection_guard(self._guard_settings)
 
     def _provider_for_stage(self, stage: str) -> LLMProvider:
         return self._llm_aux if stage in AUX_LLM_STAGES else self._llm
@@ -400,13 +579,15 @@ class RagPipeline:
         provider string could drift from the corpus its answers claim to come
         from. ``workspace_id`` is still the caller's, exactly as on ``answer``.
         """
-        return self._store.recent_chunks(
+        chunks = self._store.recent_chunks(
             org_id,
             self._source_provider,
             viewer=viewer,
             workspace_id=workspace_id,
             limit=limit,
         )
+        # The recap builds its own prompt, so it screens here, not in _generate.
+        return _screen_hits(chunks, org_id, self._guard_settings)
 
     def generate_raw(self, prompt: str) -> str:
         """One un-gated LLM call on this pipeline's provider.
@@ -468,12 +649,20 @@ class RagPipeline:
             context = self._memory.get_context(
                 conversation_id, self._memory_settings.recent_turns
             )
-            if not context.is_empty():
+            # Personal memory narrows the SEARCH, not only the wording: with
+            # a remembered team/office the question is rewritten even on a
+            # chat's first turn, so "office hours?" searches for Bangalore's.
+            if not context.is_empty() or current_asker_context():
                 resolved = self._rewrite_question(
                     question, context, org_id=org_id, conversation_id=conversation_id
                 )
 
-        if conversation_id is None:
+        if (
+            conversation_id is None
+            and not _cross_plan_active()
+            and current_live_request() is None
+            and not current_asker_facts()
+        ):
             cached = self._query_cache.get(
                 org_id,
                 resolved,
@@ -517,7 +706,9 @@ class RagPipeline:
 
         if conversation_id is not None and self._memory is not None:
             result = replace(result, resolved_question=resolved)
-            self._memory.append_turn(conversation_id, question, result.answer)
+            self._memory.append_turn(
+                conversation_id, question, result.answer, result.cited or None
+            )
             self._remember_retrieval(conversation_id, org_id, result)
             cid = conversation_id
             schedule_summary_fold(cid, lambda: self._update_running_summary(cid))
@@ -611,6 +802,7 @@ class RagPipeline:
         )
         if reused is not None:
             hits, top_score = reused.hits, reused.gate_score
+            gate_doc = reused.gate_document_id
             retrieval_reused = True
         else:
             retrieval_reused = False
@@ -623,7 +815,7 @@ class RagPipeline:
                 ]
             else:
                 sub_questions = [retrieval_question]
-            hits, top_score = self._retrieve_for_subquestions(
+            hits, top_score, gate_doc = self._retrieve_for_subquestions(
                 org_id,
                 question,
                 sub_questions,
@@ -664,8 +856,13 @@ class RagPipeline:
                 audit_used=audit_used,
                 audit_downgraded=audit_downgraded,
                 audit_reason=audit_reason,
+                # Mode B (refusal path) sets its own; mode A's are added here.
+                live_sources=result.live_sources or (
+                    live.sources if result.answered and result.source != SOURCE_WEB else []
+                ),
             )
 
+        live = LiveRefresh()
         if self._gate_miss(hits, top_score):
             if self._recovery_available(recovery_used) and budget.can_spend(min_stage):
                 attempt = self._recover_once(
@@ -684,6 +881,7 @@ class RagPipeline:
                 recovery_reason = RECOVERY_REASON_GATE_MISS
                 recovery_queries = list(attempt.queries)
                 hits, top_score = attempt.hits, attempt.gate_score
+                gate_doc = attempt.gate_document_id
             elif self._recovery_available(recovery_used):
                 budget_exhausted = True
             if self._gate_miss(hits, top_score):
@@ -713,6 +911,32 @@ class RagPipeline:
                         workspace_id=workspace_id,
                         viewer=viewer,
                         query_vec=query_vec,
+                        user_question=tone_question,
+                    )
+                )
+
+        # Second Brain live tools: re-read what retrieval found, live. Off
+        # (LIVE_TOOLS_ENABLED unset) or no LiveRequest => `live_refresh`
+        # returns nothing and nothing below changes. Refreshed AFTER the gate passed, so a live read can never
+        # rescue a question the corpus could not ground -- it only freshens
+        # or withholds what the gate already admitted.
+        live = live_refresh(hits, current_live_request(), guard_settings=self._guard_settings)
+        if live.withheld:
+            hits, top_score = _without_withheld(hits, top_score, gate_doc, live.withheld)
+            if self._gate_miss(hits, top_score):
+                return _finalize(
+                    self._gate_failed(
+                        question,
+                        hits=hits,
+                        top_score=top_score,
+                        budget=budget,
+                        conversation_id=conversation_id,
+                        org_id=org_id,
+                        workspace_id=workspace_id,
+                        viewer=viewer,
+                        query_vec=query_vec,
+                        user_question=tone_question,
+                        live_withheld=next(iter(live.withheld.values())),
                     )
                 )
 
@@ -725,7 +949,12 @@ class RagPipeline:
             conversation_id=conversation_id,
             budget=budget,
             user_question=tone_question,
-            extra_contexts=attachment_contexts,
+            # Live blocks lead: they are the current state of the very items
+            # below them. Inside `contexts`, so the audit and the link rule
+            # both see them (plan D9).
+            extra_contexts=live.blocks + attachment_contexts,
+            extra_blocks=live.cite_blocks + [None] * len(attachment_contexts),
+            superseded=live.refreshed,
         )
         audit_used, audit_downgraded, audit_reason = (
             result.audit_used,
@@ -753,6 +982,8 @@ class RagPipeline:
             recovery_reason = RECOVERY_REASON_INSUFFICIENT_EVIDENCE
             recovery_queries = list(attempt.queries)
             hits, top_score = attempt.hits, attempt.gate_score
+            gate_doc = attempt.gate_document_id
+            hits, top_score = _without_withheld(hits, top_score, gate_doc, live.withheld)
             if self._gate_miss(hits, top_score):
                 # The corpus has nothing, but the asker handed us a document.
                 # Refusing here would be the old bug in a new place: "what's
@@ -780,6 +1011,7 @@ class RagPipeline:
                         workspace_id=workspace_id,
                         viewer=viewer,
                         query_vec=query_vec,
+                        user_question=tone_question,
                     )
                 )
             result = self._generate(
@@ -791,7 +1023,9 @@ class RagPipeline:
                 conversation_id=conversation_id,
                 budget=budget,
                 user_question=tone_question,
-                extra_contexts=attachment_contexts,
+                extra_contexts=live.blocks + attachment_contexts,
+                extra_blocks=live.cite_blocks + [None] * len(attachment_contexts),
+                superseded=live.refreshed,
             )
             audit_used, audit_downgraded, audit_reason = (
                 result.audit_used,
@@ -813,6 +1047,7 @@ class RagPipeline:
                     workspace_id=workspace_id,
                     viewer=viewer,
                     query_vec=query_vec,
+                    user_question=tone_question,
                 )
             )
 
@@ -943,13 +1178,15 @@ class RagPipeline:
         date_range: DateRange | None = None,
         tags: list[str] | None = None,
         viewer: Viewer | None = None,
-    ) -> tuple[list[RetrievedChunk], float | None]:
+    ) -> tuple[list[RetrievedChunk], float | None, str | None]:
+        """``(hits, gate_score, gate_document_id)`` for one query."""
         whole = self._whole_scope(
             org_id, query_text, query_vec,
             workspace_id=workspace_id, tags=tags, viewer=viewer,
         )
         if whole is not None:
-            return whole
+            # A whole read's gate is the max over exactly these hits.
+            return whole[0], whole[1], gate_document(whole[0])
         if self._retriever is not None:
             retrieval = self._retriever.retrieve(
                 org_id,
@@ -960,7 +1197,7 @@ class RagPipeline:
                 tags=tags,
                 viewer=viewer,
             )
-            return retrieval.hits, retrieval.gate_score
+            return retrieval.hits, retrieval.gate_score, retrieval.gate_document_id
         hits = self._store.query(
             org_id,
             query_vec,
@@ -972,7 +1209,7 @@ class RagPipeline:
             viewer=viewer,
         )
         top_score = hits[0].score if hits else None
-        return hits, top_score
+        return hits, top_score, gate_document(hits[:1])
 
     def _maybe_decompose(
         self,
@@ -1011,8 +1248,8 @@ class RagPipeline:
         tags: list[str] | None = None,
         viewer: Viewer | None = None,
         known_vectors: dict[str, list[float]] | None = None,
-    ) -> tuple[list[RetrievedChunk], float | None]:
-        """Retrieve for one or more sub-questions."""
+    ) -> tuple[list[RetrievedChunk], float | None, str | None]:
+        """Retrieve for one or more sub-questions: ``(hits, gate, gate_document_id)``."""
         known = known_vectors or {}
 
         if len(sub_questions) == 1:
@@ -1050,7 +1287,7 @@ class RagPipeline:
                 tags=tags,
                 viewer=viewer,
             )
-            return retrieval.hits, retrieval.gate_score
+            return retrieval.hits, retrieval.gate_score, retrieval.gate_document_id
 
         merged: dict[tuple[str, int], RetrievedChunk] = {}
         for q_text, q_vec in zip(sub_questions, vectors):
@@ -1072,7 +1309,7 @@ class RagPipeline:
             : self._settings.top_k
         ]
         top_score = hits[0].score if hits else None
-        return hits, top_score
+        return hits, top_score, gate_document(hits[:1])
 
 
 
@@ -1347,12 +1584,33 @@ class RagPipeline:
         )
         return contexts
 
-    def _generate(
+    def _generate(self, question: str, hits: list[RetrievedChunk], top_score, **kw) -> RagResult:
+        """Grounded generation, plus the graph's facts when a plan is active.
+
+        Facts ride only on RETRIEVED answers with hits (never the attachment
+        path's own ``contexts``), go AFTER the chunks so the documents lead,
+        and never touch the gate: the caller already decided to generate.
+        """
+        facts, shaped = (None, False)
+        if kw.get("contexts") is None and hits:
+            facts, shaped = _graph_facts_block(kw.get("org_id"), self._source_provider)
+            tools = _connected_tools(kw.get("org_id"))
+            if tools and kw.get("profile") is None:
+                # A connected answer reads several tools, so it cannot keep the
+                # routed agent's "only from <tool>" framing (see prompts).
+                kw["profile"] = connected_prompt_profile(
+                    tools, self._prompt_profile.source_label
+                )
+        result = self._generate_core(question, hits, top_score, graph_facts=facts, **kw)
+        return replace(result, graph_shaped=True) if shaped else result
+
+    def _generate_core(
         self,
         question: str,
         hits: list[RetrievedChunk],
         top_score: float | None,
         *,
+        graph_facts: str | None = None,
         retrieval_reused: bool,
         org_id: str | None = None,
         conversation_id: str | None = None,
@@ -1360,7 +1618,9 @@ class RagPipeline:
         user_question: str | None = None,
         contexts: list[str] | None = None,
         extra_contexts: list[str] | None = None,
+        extra_blocks: list | None = None,
         profile: PromptProfile | None = None,
+        superseded: frozenset[str] = frozenset(),
     ) -> RagResult:
         # `contexts` is supplied only by `answer_from_attachments`, where the
         # text came from a file the asker handed us rather than from
@@ -1388,15 +1648,38 @@ class RagPipeline:
             # line per chunk) could only ever disagree with it. One budget,
             # enforced in one place.
             whole_read = len(hits) > self._settings.top_k
+            screened = _screen_hits(hits, org_id, self._guard_settings)
+            if hits and not screened and not extra_contexts:
+                # Everything retrieved was flagged: refuse without a model call
+                # rather than ask it to answer from nothing.
+                return RagResult(
+                    answer=self._settings.fallback_response,
+                    answered=False,
+                    source=SOURCE_NONE,
+                    sources=[],
+                    top_score=top_score,
+                    retrieval_reused=retrieval_reused,
+                )
+            hits = screened
+            # A document read LIVE this request is in
+            # `extra_contexts` already; its synced chunks would put a second,
+            # older version of the same page in the prompt and double what the
+            # model and the audit read. They stay in `hits` -- citations and
+            # the next turn's reuse still need to know the document was used.
+            prompt_hits = [h for h in hits if h.document_id not in superseded]
             contexts = assemble_context_texts(
                 # Title AND provenance: the provider, who last edited it and
                 # when. All of it was already on the JOINed document row and
                 # was being dropped, so "who wrote this?" refused against data
                 # we had. The date is also what lets a whole read answer
                 # "what happened recently?" at all.
-                [describe_hit(h) for h in hits],
+                [describe_hit(h) for h in prompt_hits],
                 0 if whole_read else self._settings.max_context_chars,
             )
+            # The budget keeps a PREFIX, so block i is prompt_hits[i].
+            blocks: list = list(prompt_hits[: len(contexts)])
+        else:
+            blocks = [None] * len(contexts)
         # Files the asker attached go in FIRST, ahead of retrieved chunks.
         # They are the reason they uploaded: "is this bill claimable?" is a
         # question about the bill, answered against the policy -- so the
@@ -1406,6 +1689,16 @@ class RagPipeline:
         # draw on both and still say where each sentence came from.
         if extra_contexts:
             contexts = list(extra_contexts) + contexts
+            # A live read is the indexed document, so its block can be cited.
+            # An attachment has no stored address and stays uncitable. A
+            # mismatched list would point a number at the wrong document.
+            lead = list(extra_blocks) if extra_blocks is not None else []
+            if len(lead) != len(extra_contexts):
+                lead = [None] * len(extra_contexts)
+            blocks = lead + blocks
+        if graph_facts:
+            contexts = list(contexts) + [graph_facts]
+            blocks = blocks + [None]
         tone_source = user_question or question
         # Tone runs ALONGSIDE generation, not in front of it: the grounded
         # prompt does not use it, only the (rare) empathy opener composed
@@ -1419,10 +1712,12 @@ class RagPipeline:
             budget=budget,
         )
 
+        asker = current_asker_facts()
         prompt = build_grounded_prompt(
             question=question,
             contexts=contexts,
             fallback_response=self._settings.fallback_response,
+            asker_facts=asker,
             # An override only for the attachment path: the agent's own
             # profile carries its escalation hint ("your HR team can help"),
             # which is a wrong contact for a file the asker uploaded --
@@ -1438,6 +1733,10 @@ class RagPipeline:
             max_tokens=answer_cap,
         ).strip()
         mode, text = _parse_tagged_mode(raw)
+        if current_live_request() is not None:
+            # Live tools: a handle the model echoed ("per [L1]") is
+            # machinery, never text for the reader, the cache or a turn (D4a).
+            text = strip_handles(text)
 
         tone_retry_used = False
         min_stage = self._budget_settings.min_stage_seconds
@@ -1473,6 +1772,21 @@ class RagPipeline:
 
         answered = not self._is_refusal(text, self._settings.fallback_response)
         answer = text if answered else self._settings.fallback_response
+        if answered and leaks_canary(answer):
+            # The model repeated its own instructions: what an injection asking
+            # for "your system prompt" gets. Nothing of it ships.
+            logger.warning("security.canary_leak stage=generate org=%s", org_id)
+            answered, answer = False, self._settings.fallback_response
+        moderation = None
+        cited: list[dict] = []
+        if answered:
+            # Before the audit, so the audit judges the text that will ship.
+            answer = enforce_link_provenance(answer, contexts, self._link_allowlist)
+            answer, cited = link_citations(answer, blocks)
+            # In parallel with the audit below (Task 4.1); a no-op when off.
+            moderation = _AUX_POOL.submit(
+                answer_is_unsafe, strip_citations(answer), org_id=org_id, stage="generate"
+            )
 
         audit_used = False
         audit_downgraded = False
@@ -1485,7 +1799,8 @@ class RagPipeline:
             and budget.can_spend(self._budget_settings.min_stage_seconds)
         ):
             verdict = self._audit_answer(
-                question, contexts, answer, org_id=org_id, conversation_id=conversation_id
+                question, contexts, strip_citations(answer),
+                org_id=org_id, conversation_id=conversation_id,
             )
             if verdict is not None and verdict.grounded is not None:
                 audit_used = True
@@ -1495,7 +1810,18 @@ class RagPipeline:
                     answered = False
                     answer = self._settings.fallback_response
 
+        if answered and moderation is not None:
+            try:
+                unsafe = moderation.result(timeout=self._guard_settings.timeout + 1)
+            except Exception:  # noqa: BLE001 - fail open
+                unsafe = False
+            if unsafe:
+                answered, answer = False, self._settings.fallback_response
+
         if answered and opener:
+            # Composed after the link rule ran, so it gets its own pass: it is
+            # written from the question alone and never needs a link.
+            opener = enforce_link_provenance(opener, [], ())
             answer = compose_supportive_answer(opener, answer)
 
         return RagResult(
@@ -1511,6 +1837,8 @@ class RagPipeline:
             audit_used=audit_used,
             audit_downgraded=audit_downgraded,
             audit_reason=audit_reason,
+            personalized=bool(asker),
+            cited=cited if answered else [],
         )
 
     def _audit_answer(
@@ -1523,6 +1851,8 @@ class RagPipeline:
         conversation_id: str | None,
     ):
         """One bounded groundedness check. ``None`` on any failure (skip audit)."""
+        if self._audit_settings.backend == "lettuce":
+            return lettuce_verdict(self._audit_settings, question, contexts, answer)
         try:
             raw = self._generate_text(
                 STAGE_AUDIT,
@@ -1563,6 +1893,7 @@ class RagPipeline:
                 hits=list(prior_hits),
                 gate_score=prior_hits[0].score if prior_hits else None,
                 queries=[],
+                gate_document_id=gate_document(prior_hits[:1]),
             )
 
         ranked_lists: list[list[RetrievedChunk]] = []
@@ -1576,11 +1907,12 @@ class RagPipeline:
                 hits=list(prior_hits),
                 gate_score=prior_hits[0].score if prior_hits else None,
                 queries=queries,
+                gate_document_id=gate_document(prior_hits[:1]),
             )
 
         for q_text, q_vec in zip(queries, vectors):
             try:
-                hits, _ = self._retrieve_once(
+                hits, _, _ = self._retrieve_once(
                     org_id,
                     q_text,
                     q_vec,
@@ -1603,8 +1935,11 @@ class RagPipeline:
             fused = HybridRetriever._rrf_fuse(ranked_lists, k=60)
 
         gate_score = max((c.score for c in fused), default=None)
+        gate_doc = gate_document(fused)
         fused = fused[: self._settings.top_k]
-        return _RecoveryAttempt(hits=fused, gate_score=gate_score, queries=queries)
+        return _RecoveryAttempt(
+            hits=fused, gate_score=gate_score, queries=queries, gate_document_id=gate_doc
+        )
 
     def _expand_recovery_queries(
         self,
@@ -1665,15 +2000,39 @@ class RagPipeline:
         workspace_id: str | None = None,
         viewer: Viewer | None = None,
         query_vec: list[float] | None = None,
+        user_question: str | None = None,
+        live_withheld: str | None = None,
     ) -> RagResult:
         """Internal evidence insufficient: try web search (if enabled), else fallback.
 
         The single funnel every refusal passes through, which is why the
         withheld-documents check lives here and not at the three call sites.
+        ``live_withheld`` names the connector whose live read said the item
+        behind this answer is gone or no longer readable (a live read said so).
         """
         min_stage = self._budget_settings.min_stage_seconds
+        web_decided = False
         if (
-            self._web_search is not None
+            not live_withheld
+            and hits
+            and current_live_request() is not None
+            and budget.can_spend(min_stage * 2)
+        ):
+            # Live tools, mode B (plan D6): may ONE of the related items be
+            # read live? Offered only here, on the way to a refusal, and in the
+            # same tool call as the web decision when web search is on.
+            outcome, web_decided = self._try_live_decision(
+                question, hits, top_score, budget=budget, org_id=org_id,
+                conversation_id=conversation_id, user_question=user_question,
+            )
+            if outcome is not None:
+                return outcome
+        # A live-withheld item is internal and the provider just said it is
+        # gone: the web cannot know better, and must not replace that notice.
+        if (
+            not live_withheld
+            and not web_decided
+            and self._web_search is not None
             and self._web_search_settings.enabled
             and budget.can_spend(min_stage * 2)
         ):
@@ -1682,6 +2041,7 @@ class RagPipeline:
                 top_score,
                 org_id=org_id,
                 conversation_id=conversation_id,
+                user_question=user_question,
             )
             if web is not None:
                 return web
@@ -1691,7 +2051,10 @@ class RagPipeline:
         # true reason for it. One extra query, on refusals only.
         answer = self._settings.fallback_response
         access_restricted = False
-        if org_id and query_vec is not None and viewer is not None:
+        if live_withheld:
+            # The provider just told us; no second query needed to confirm it.
+            answer = live_withheld_notice(live_withheld)
+        elif org_id and query_vec is not None and viewer is not None:
             notice = self._withheld_notice(
                 org_id, query_vec, workspace_id=workspace_id, viewer=viewer
             )
@@ -1707,6 +2070,7 @@ class RagPipeline:
             top_score=top_score,
             budget_exhausted=not budget.can_spend(min_stage),
             access_restricted=access_restricted,
+            live_withheld=bool(live_withheld),
         )
 
     def _withheld_notice(
@@ -1727,6 +2091,11 @@ class RagPipeline:
         Never raises: a diagnostic must cost the wording of a refusal, never
         the refusal itself.
         """
+        # A Slack CHANNEL reply reads that channel only (`Viewer.channels`),
+        # so only that channel's threads may confirm a withheld match: a
+        # restricted Drive file elsewhere in the scope is not what this room
+        # was asking about, and "not shared with you" would be about nobody.
+        channel_tags = [channel_tag(c) for c in viewer.channels if c] or None
         try:
             match = self._store.restricted_match(
                 org_id,
@@ -1735,6 +2104,7 @@ class RagPipeline:
                 source_provider=self._source_provider,
                 viewer=viewer,
                 min_score=self._settings.similarity_threshold,
+                tags=channel_tags,
             )
         except Exception:  # noqa: BLE001
             logger.exception("restricted_match failed; falling back to the fixed refusal")
@@ -1742,7 +2112,10 @@ class RagPipeline:
         if match is None:
             return None
         return restricted_notice(
-            match.source_provider, org_id=org_id, workspace_id=workspace_id
+            match.source_provider,
+            org_id=org_id,
+            workspace_id=workspace_id,
+            in_channel=bool(channel_tags),
         )
 
     # -- Phase 8: retrieval reuse (a cheap, deterministic, non-LLM check) ---
@@ -1795,7 +2168,129 @@ class RagPipeline:
             for i in order
         ][: self._settings.top_k]
         # gate_score == best cosine among reused chunks, mirroring fresh retrieval.
-        return RetrievalResult(hits=hits, gate_score=best)
+        return RetrievalResult(hits=hits, gate_score=best, gate_document_id=gate_document(hits[:1]))
+
+    def _try_live_decision(
+        self,
+        question: str,
+        hits: list[RetrievedChunk],
+        top_score: float | None,
+        *,
+        budget: RequestBudget,
+        org_id: str | None,
+        conversation_id: str | None,
+        user_question: str | None,
+    ) -> tuple[RagResult | None, bool]:
+        """Mode B: ``(result, web_decided)``. Never raises.
+
+        The model sees handles and titles for the related items retrieval
+        already cleared for this asker, and may name ONE. The gateway resolves
+        the handle from this request's own map, reads it live, and the answer
+        is generated by the unchanged grounded path -- strict prompt, audit,
+        link rule -- with the live block in its context. ``web_decided`` is
+        True when the same call chose (or declined) the web instead, so the
+        caller does not ask the web question twice.
+        """
+        from ..config.settings import LiveToolsSettings
+        from ..livetools.gateway import candidates as live_candidates
+
+        request = current_live_request()
+        try:
+            settings = LiveToolsSettings.from_env()
+            if request is None or not request.user_id or not settings.allows(request.org_id):
+                return None, False
+            minted = mint_handles(live_candidates(hits, request, settings))
+        except Exception:  # noqa: BLE001 - mode B may only ever add
+            logger.warning("live decision skipped", exc_info=True)
+            return None, False
+        if not minted:
+            return None, False
+
+        from ..rag.context_assemble import _PROVIDER_LABEL
+
+        catalog = "\n".join(
+            f"[{h}] {title or 'Untitled'} ({_PROVIDER_LABEL.get(provider, provider)})"
+            for h, (_doc, provider, title) in minted.items()
+        )
+        web = self._web_search is not None and self._web_search_settings.enabled
+        tools = [REFRESH_ITEM_TOOL] + ([WEB_SEARCH_TOOL] if web else [])
+        prompt = build_live_decision_prompt(
+            question, catalog, self._settings.fallback_response, web=web
+        )
+        try:
+            # Machinery, like the web decision: pinned to the default model.
+            with default_model_only():
+                decision = self._llm.generate_with_tools(
+                    [{"role": "user", "content": prompt}], tools=tools, tool_choice="auto"
+                )
+            log_llm_call(STAGE_WEB_DECISION, self._llm, org_id=org_id,
+                         conversation_id=conversation_id)
+        except LLMProviderError:
+            return None, False
+
+        calls = list(decision.tool_calls or [])
+        if not calls:
+            return None, web  # declined both: the web question was asked too
+        call = calls[0]
+        if call.name == "web_search":
+            if not web:
+                return None, False
+            return self._try_web_search(question, top_score, org_id=org_id,
+                                        conversation_id=conversation_id,
+                                        user_question=user_question,
+                                        decision=decision), True
+        if call.name != "refresh_item":
+            return None, web
+        document_id = resolve_handle(_safe_json_args(call.arguments).get("handle"), minted)
+        if document_id is None:
+            logger.info("livetools.unknown_handle org=%s", org_id)
+            return None, web
+        chosen = [h for h in hits if h.document_id == document_id]
+        live = live_refresh(chosen, request, guard_settings=self._guard_settings, mode="model")
+        if document_id in live.withheld:
+            return self._gate_failed(
+                question, hits=[h for h in hits if h.document_id != document_id],
+                top_score=top_score, budget=budget, org_id=org_id,
+                conversation_id=conversation_id, user_question=user_question,
+                live_withheld=live.withheld[document_id],
+            ), True
+        if not live.blocks:
+            return None, web
+        result = self._generate(
+            question, chosen, top_score, retrieval_reused=False, org_id=org_id,
+            conversation_id=conversation_id, budget=budget, user_question=user_question,
+            extra_contexts=live.blocks, extra_blocks=live.cite_blocks,
+            superseded=live.refreshed,
+        )
+        if not result.answered:
+            return None, web
+        return replace(result, live_sources=live.sources), True
+
+    def _screen_web_results(self, results: list) -> list:
+        """Drop (enforce) or log (shadow) snippets that read like an injection.
+
+        One batched call, only on the rare gate-miss web path that already
+        spends two model calls (Task 3.3). A guard failure keeps every result:
+        link provenance and the web fence still apply to them.
+        """
+        guard = self._injection_guard
+        if guard is None or not results:
+            return results
+        try:
+            scores = guard.score([f"{r.title}\n{r.snippet}" for r in results])
+        except Exception:  # noqa: BLE001 - fail open
+            return results
+        kept = []
+        for r, score in zip(results, scores):
+            if score is not None and score >= self._guard_settings.threshold:
+                logger.warning(
+                    "guard.flagged_web mode=%s score=%.3f host=%s",
+                    self._guard_settings.mode, score, urlparse(r.url).hostname,
+                )
+                if self._guard_settings.mode == "enforce":
+                    continue
+            kept.append(r)
+        return kept
 
     def _remember_retrieval(
         self, conversation_id: str, org_id: str, result: RagResult
@@ -1837,12 +2332,20 @@ class RagPipeline:
         *,
         org_id: str | None = None,
         conversation_id: str | None = None,
+        user_question: str | None = None,
+        decision=None,
     ) -> RagResult | None:
         """One decision call + at most one search + one answer call.
 
         Any failure (model declines, search error/timeout, empty results) returns
         ``None`` so the caller falls back to the fixed internal response.
+        ``decision``: a tool decision already made -- live tools ask the
+        web question in the same call as the live-read question.
         """
+        if decision is not None:
+            return self._run_web_search(decision, question, top_score, org_id=org_id,
+                                        conversation_id=conversation_id,
+                                        user_question=user_question)
         decision_prompt = build_web_decision_prompt(
             question, self._settings.fallback_response
         )
@@ -1868,8 +2371,22 @@ class RagPipeline:
 
         if not decision.tool_calls:
             return None  # model judged the question internal -> fixed fallback
+        return self._run_web_search(decision, question, top_score, org_id=org_id,
+                                    conversation_id=conversation_id,
+                                    user_question=user_question)
 
-        query = self._extract_query(decision.tool_calls[0].arguments, question)
+    def _run_web_search(
+        self, decision, question: str, top_score: float | None, *,
+        org_id: str | None, conversation_id: str | None, user_question: str | None,
+    ) -> RagResult | None:
+        """The search + answer half of the web path, for a decision in hand."""
+        query = user_worded_query(
+            self._extract_query(decision.tool_calls[0].arguments, question),
+            self._user_texts(user_question or question, conversation_id),
+        )
+        if query is None:
+            logger.info("security.web_query_dropped: mostly words the user never typed")
+            return None
 
         try:
             results = self._web_search.search(
@@ -1879,6 +2396,7 @@ class RagPipeline:
             )
         except WebSearchError:
             return None  # graceful degradation on failure/timeout
+        results = self._screen_web_results(results or [])
         if not results:
             return None
 
@@ -1895,6 +2413,14 @@ class RagPipeline:
         except LLMProviderError:
             return None
 
+        # The Sources list is appended by us from the search results, never by
+        # the model; only the model's own prose is checked.
+        if leaks_canary(raw):
+            logger.warning("security.canary_leak stage=web org=%s", org_id)
+            return None
+        raw = enforce_link_provenance(raw, [results_block], self._link_allowlist)
+        if answer_is_unsafe(raw, org_id=org_id, stage="web"):
+            return None
         return RagResult(
             answer=self._format_web_answer(raw, results),
             answered=True,
@@ -1902,6 +2428,21 @@ class RagPipeline:
             sources=[],
             top_score=top_score,
         )
+
+    def _user_texts(self, latest: str, conversation_id: str | None) -> list[str]:
+        """The asker's own words in this conversation: the web query's word list.
+
+        Earlier QUESTIONS only -- never answers, the summary or documents --
+        so a follow-up ("and their CEO?") can still search for the company the
+        user named two turns ago. One memory read, on the rare web path only.
+        """
+        texts = [latest]
+        if conversation_id and self._memory is not None:
+            try:
+                texts += [t.question for t in self._memory.get_turns(conversation_id)]
+            except Exception:  # noqa: BLE001 - fewer words, never a failed answer
+                logger.warning("web query: could not read earlier questions", exc_info=True)
+        return texts
 
     @staticmethod
     def _extract_query(arguments: str, default: str) -> str:
@@ -1952,7 +2493,9 @@ class RagPipeline:
         conversation_id: str | None = None,
     ) -> str:
         recent = [(t.question, t.answer) for t in context.recent_turns]
-        prompt = build_rewrite_prompt(question, context.summary, recent)
+        prompt = build_rewrite_prompt(
+            question, context.summary, recent, asker_context=current_asker_context()
+        )
         try:
             rewritten = self._generate_text(
                 STAGE_REWRITE,
@@ -2019,6 +2562,9 @@ class RagPipeline:
             ).strip()
         except LLMProviderError:
             return
+        # Model-written, from turns that may carry injected document text, and
+        # stored: cleaned the way any untrusted text is before it is kept.
+        summary = strip_links(scrub_untrusted_text(summary))
         if summary:
             self._memory.set_summary_folded_through(
                 conversation_id, summary, falling_out[-1].turn_index

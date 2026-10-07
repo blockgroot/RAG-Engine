@@ -85,6 +85,12 @@ class Viewer:
     #: list: a reply carries exactly the one channel it is posted in, so a
     #: private channel can never leak into another room.
     channels: tuple[str, ...] = ()
+    #: This person's PRIOR sign-in addresses (`auth.email_change`), each proven:
+    #: it was their verified login until they changed it. Access is keyed on
+    #: email, so without these a changed address stops matching every grant a
+    #: source still records under the old one. Ignored with no ``email``, like
+    #: ``groups``: an alias belongs to an identity.
+    aliases: tuple[str, ...] = ()
     #: Restrict to scope-public documents with no person attached. Needed
     #: because "no email" has TWO meanings that must not share a value: an
     #: internal caller with no filter at all, and a caller who may read only
@@ -132,14 +138,20 @@ class Viewer:
             # group says "this PERSON belongs to X" and needs an identity to
             # mean anything, while a channel says "this REPLY is being read by
             # the members of X" and needs none.
-            return [f"channel:{c.strip()}" for c in self.channels if c.strip()]
-        entries.append(email)
-        if "@" in email:
-            entries.append(f"domain:{email.split('@', 1)[1]}")
+            # Lowercased because `normalize_viewers` lowercases on write: Slack
+            # ids are uppercase, so an unlowered `channel:C0B...` never matched.
+            return [f"channel:{c.strip().lower()}" for c in self.channels if c.strip()]
+        seen: set[str] = set()
+        for address in (email, *(a.strip().lower() for a in self.aliases)):
+            if not address:
+                continue
+            for entry in (address, f"domain:{address.split('@', 1)[1]}" if "@" in address else ""):
+                if entry and entry not in seen:
+                    seen.add(entry)
+                    entries.append(entry)
         # Spelled to match `google_drive._file_access`, which is the only
         # writer of a `group:` entry. Deduplicated because a directory that
         # lists the same group twice must not change the query's meaning.
-        seen = set(entries)
         for group in self.groups:
             entry = f"group:{group.strip().lower()}"
             if group.strip() and entry not in seen:
@@ -147,7 +159,7 @@ class Viewer:
                 entries.append(entry)
         # Spelled to match `sources.slack._channel_entry`, the only writer.
         for channel in self.channels:
-            entry = f"channel:{channel.strip()}"
+            entry = f"channel:{channel.strip().lower()}"
             if channel.strip() and entry not in seen:
                 seen.add(entry)
                 entries.append(entry)
@@ -201,6 +213,11 @@ class RetrievedChunk:
     # its key, deliberately -- so the write is gated instead). Defaults True,
     # which is what a fake, a reuse hit or a legacy row honestly is.
     doc_is_public: bool = True
+    # Prompt-injection probability from ingest (`app/guard/`); None = unscored.
+    injection_score: float | None = None
+    # The document's address in its own tool (Notion page, Drive file, Slack
+    # thread, Linear issue): what an inline citation opens (`rag/cite.py`).
+    source_uri: str | None = None
 
 
 @dataclass(frozen=True)
@@ -218,7 +235,7 @@ class StoredSourceDocument:
 
     ``provider`` (e.g. ``"notion"``, ``"google"``) partitions sync state so a
     sync for one provider never diffs against another provider's rows in the
-    same org — see CLAUDE.md §4 / GOOGLE_INTEGRATION_PLAN.md §3.
+    same org — see CLAUDE.md.
     """
 
     document_id: str
@@ -416,6 +433,7 @@ class VectorStore(ABC):
         source_provider: str | None = None,
         viewer: "Viewer | None" = None,
         min_score: float = 0.0,
+        tags: list[str] | None = None,
     ) -> "RestrictedMatch | None":
         """Did the ``viewer`` filter WITHHOLD something this question wanted?
 
@@ -482,6 +500,24 @@ class VectorStore(ABC):
         Optional capability. ``tags`` behaves exactly as on ``add_document``.
         """
         raise NotImplementedError("this vector store does not support source document upsert")
+
+    def set_injection_scores(
+        self, document_id: str, scores: dict[int, float | None], model: str
+    ) -> None:
+        """Store injection scores for chunks of ``document_id``, keyed by chunk index.
+
+        A ``None`` score leaves that chunk NULL (unscored), so the backfill
+        retries it. Optional capability; default raises.
+        """
+        raise NotImplementedError("this vector store does not store injection scores")
+
+    def list_unscored_chunks(self, model: str, limit: int) -> list[tuple[str, int, str]]:
+        """``(document_id, chunk_index, content)`` never scored by ``model``, in random order.
+
+        Cross-tenant on purpose: it feeds the tick's backfill, which writes a
+        score back to the same row and returns nothing to anyone.
+        """
+        raise NotImplementedError("this vector store does not store injection scores")
 
     def acknowledge_source_document(
         self,

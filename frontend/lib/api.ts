@@ -103,6 +103,8 @@ export interface ConversationTurn {
   question: string;
   answer: string;
   created_at: string;
+  /** Sources drawn under this answer. Empty on a turn saved before they were kept. */
+  cited?: { n: number; document_id: string; title: string | null; provider: string | null; url: string | null }[];
 }
 
 export interface RejectedFile {
@@ -127,6 +129,16 @@ export interface Attachment {
    *  Shown in the chip: a partial file that looks complete is the failure the
    *  whole feature is arranged against. */
   truncated: boolean;
+  /** Parts of the file read like instructions to an AI. Still used as a
+   *  source, but the model is told to treat all of it as data. */
+  flagged?: boolean;
+}
+
+/** The address you sign in with, and the ones you used before. Documents shared
+ *  with a prior address stay readable to you. */
+export interface SignInEmails {
+  email: string | null;
+  prior: string[];
 }
 
 /** One of the member's own accounts in a connected tool, linked to them. */
@@ -143,6 +155,23 @@ export interface LinkedIdentity {
 export interface LinkedIdentities {
   identities: LinkedIdentity[];
   github_link_available: boolean;
+}
+
+export interface MemoryFact {
+  id: string;
+  kind: "preference" | "context" | "interest";
+  text: string;
+  pinned: boolean;
+  created_at: string | null;
+}
+
+export interface PersonalMemory {
+  /** Off for the whole deployment: nothing is remembered anywhere. */
+  available: boolean;
+  org_enabled: boolean;
+  enabled: boolean;
+  can_manage_org: boolean;
+  facts: MemoryFact[];
 }
 
 export interface Me {
@@ -505,6 +534,8 @@ export type InsightPanel = {
   title: string;
   chart: string;
   group_by: string | null;
+  /** A second grouping from the query grammar; drawn as "group · split". */
+  split_by?: string | null;
   unit: string;
   caveat: string;
   /** null means the panel failed; [] means it ran and there is nothing to
@@ -530,6 +561,7 @@ export type InsightPanel = {
     state?: string | null;
     at?: string | null;
     url?: string | null;
+    attrs?: Record<string, unknown>;
   }[];
 };
 
@@ -568,7 +600,7 @@ export type ConnectorFreshness = {
 };
 
 export type Notification = {
-  kind: "reauth" | "scope";
+  kind: "reauth" | "scope" | "injection";
   severity: "high" | "medium";
   provider: string;
   scope: string;
@@ -770,6 +802,20 @@ export const api = {
 
   linkedIdentities: () => request<LinkedIdentities>("/account/identities"),
 
+  signInEmails: () => request<SignInEmails>("/account/emails"),
+
+  /** Mails a confirmation link to the NEW address; nothing changes until it is used. */
+  requestEmailChange: (email: string) =>
+    request<{ status: "sent"; message: string; dev_link: string | null }>("/account/email", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+
+  removePriorEmail: (email: string) =>
+    request<{ removed: string }>(`/account/emails/${encodeURIComponent(email)}`, {
+      method: "DELETE",
+    }),
+
   /** A full-page navigation, not a fetch: it ends on GitHub's consent screen. */
   githubLinkUrl: () => `${API_BASE_URL}/account/identities/github/link`,
 
@@ -777,6 +823,33 @@ export const api = {
     request<{ ok: boolean }>(`/account/identities/${encodeURIComponent(identityId)}`, {
       method: "DELETE",
     }),
+
+  personalMemory: () => request<PersonalMemory>("/account/memory"),
+
+  setMemoryEnabled: (enabled: boolean) =>
+    request<{ enabled: boolean }>("/account/memory/settings", {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
+
+  setOrgMemoryEnabled: (enabled: boolean) =>
+    request<{ org_enabled: boolean }>("/account/memory/org", {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
+
+  pinMemory: (id: string, pinned: boolean) =>
+    request<{ id: string; pinned: boolean }>(`/account/memory/${encodeURIComponent(id)}/pin`, {
+      method: "POST",
+      body: JSON.stringify({ pinned }),
+    }),
+
+  forgetMemory: (id: string) =>
+    request<{ deleted: string }>(`/account/memory/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+
+  clearMemory: () => request<{ deleted: number }>("/account/memory", { method: "DELETE" }),
 
   feedbackSummary: (days = 30) =>
     request<FeedbackSummary>(`/admin/feedback?days=${days}`),

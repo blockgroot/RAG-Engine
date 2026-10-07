@@ -152,7 +152,9 @@ class PgVectorStore(VectorStore):
                        d.source_provider,
                        d.source_last_editor,
                        d.source_last_modified,
-                       coalesce(d.doc_is_public, TRUE)
+                       coalesce(d.doc_is_public, TRUE),
+                       c.injection_score,
+                       d.source_uri
                 FROM chunks c
                 LEFT JOIN documents d ON d.id = c.document_id
                 WHERE c.org_id = %s::uuid
@@ -198,6 +200,8 @@ class PgVectorStore(VectorStore):
                 last_editor=(str(row[7]).strip() if row[7] else None),
                 last_modified=row[8],
                 doc_is_public=bool(row[9]),
+                injection_score=row[10],
+                source_uri=row[11],
             )
             for row in rows
         ]
@@ -248,7 +252,8 @@ class PgVectorStore(VectorStore):
                            c.document_id,
                            c.chunk_index,
                            c.org_id,
-                           c.embedding
+                           c.embedding,
+                           c.injection_score
                     FROM chunks c
                     LEFT JOIN documents fd ON fd.id = c.document_id
                     WHERE c.org_id = %s::uuid
@@ -273,7 +278,9 @@ class PgVectorStore(VectorStore):
                        d.source_provider,
                        d.source_last_editor,
                        d.source_last_modified,
-                       coalesce(d.doc_is_public, TRUE)
+                       coalesce(d.doc_is_public, TRUE),
+                       m.injection_score,
+                       d.source_uri
                 FROM matched m
                 LEFT JOIN documents d ON d.id = m.document_id
                 """,
@@ -311,6 +318,8 @@ class PgVectorStore(VectorStore):
                     last_editor=(str(row[7]).strip() if row[7] else None),
                     last_modified=row[8],
                     doc_is_public=bool(row[9]),
+                    injection_score=row[10],
+                    source_uri=row[11],
                 )
             )
         return out
@@ -346,7 +355,8 @@ class PgVectorStore(VectorStore):
             rows = conn.execute(
                 f"""
                 SELECT c.content, c.document_id::text, c.chunk_index,
-                       c.org_id::text, d.title, d.source_external_id
+                       c.org_id::text, d.title, d.source_external_id,
+                       c.injection_score, d.source_provider, d.source_uri
                 FROM chunks c
                 JOIN documents d ON d.id = c.document_id
                 WHERE c.org_id = %s::uuid
@@ -369,6 +379,9 @@ class PgVectorStore(VectorStore):
                 org_id=r[3],
                 document_title=(str(r[4]).strip() if r[4] else None),
                 source_external_id=(str(r[5]).strip() if r[5] else None),
+                injection_score=r[6],
+                source_provider=r[7],
+                source_uri=r[8],
             )
             for r in rows
         ]
@@ -382,6 +395,7 @@ class PgVectorStore(VectorStore):
         source_provider: str | None = None,
         viewer: Viewer | None = None,
         min_score: float = 0.0,
+        tags: list[str] | None = None,
     ) -> RestrictedMatch | None:
         """Best-scoring chunk in scope that ``viewer`` may NOT read, if any.
 
@@ -407,6 +421,7 @@ class PgVectorStore(VectorStore):
                 WHERE c.org_id = %s::uuid
                   AND c.workspace_id IS NOT DISTINCT FROM %s::uuid
                   AND (%s::text IS NULL OR d.source_provider = %s::text)
+                  AND (%s::text[] IS NULL OR d.tags && %s::text[])
                   AND NOT {visibility_predicate("d")}
                   AND 1 - (c.embedding <=> %s) >= %s
                 ORDER BY c.embedding <=> %s
@@ -418,6 +433,8 @@ class PgVectorStore(VectorStore):
                     workspace_id,
                     source_provider,
                     source_provider,
+                    tags,
+                    tags,
                     acl,
                     vector,
                     min_score,
@@ -560,6 +577,38 @@ class PgVectorStore(VectorStore):
             )
 
         return str(document_id)
+
+    def set_injection_scores(
+        self, document_id: str, scores: dict[int, float | None], model: str
+    ) -> None:
+        rows = [(score, model, document_id, i) for i, score in scores.items() if score is not None]
+        if not rows:
+            return
+        with get_connection(self._settings) as conn:
+            conn.cursor().executemany(
+                """
+                UPDATE chunks SET injection_score = %s, injection_model = %s
+                WHERE document_id = %s::uuid AND chunk_index = %s
+                """,
+                rows,
+            )
+
+    def list_unscored_chunks(self, model: str, limit: int) -> list[tuple[str, int, str]]:
+        # Random, not oldest-first: a chunk that fails every time (a dead
+        # window) would otherwise sit at the head and starve the rest.
+        # ponytail: full scan + sort of chunks per tick; add a partial index
+        # WHERE injection_score IS NULL if the table gets large.
+        with get_connection(self._settings) as conn:
+            rows = conn.execute(
+                """
+                SELECT document_id, chunk_index, content FROM chunks
+                WHERE injection_model IS DISTINCT FROM %s
+                ORDER BY random()
+                LIMIT %s
+                """,
+                (model, limit),
+            ).fetchall()
+        return [(str(d), int(i), c) for d, i, c in rows]
 
     def acknowledge_source_document(
         self,

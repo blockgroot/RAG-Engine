@@ -143,6 +143,11 @@ class SourceDocument:
     # adapter captured nothing, which the graph reads as "no edges", not "none
     # exist".
     meta: dict | None = None
+    # Tables the adapter parsed itself (``doctables.extract.RawTable``) --
+    # a Sheet or CSV, where the adapter holds the rows before they are
+    # flattened into text. ``None`` = let the pipeline look for pipe tables
+    # in ``content`` instead (Notion, Google Docs, Word).
+    tables: list | None = None
 
 
 class SourceAdapter(ABC):

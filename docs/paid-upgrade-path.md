@@ -20,7 +20,7 @@ Current defaults exist to keep policy text on-host and to run without a card. Th
 1. Language-model **quota and variance** (approximately 15 requests per minute; flaky refusals).
 2. **Process memory and CPU** (512 MB / 0.1 vCPU; local BGE-M3 cannot fit).
 3. **Cold start** after about 15 minutes idle on Render free.
-4. **Unofficial or sandboxed** side channels (DuckDuckGo rate limits; Resend sandbox; SMTP blocked).
+4. **Web search** still uses keyless DuckDuckGo, which rate-limits. Mail is no longer in this list: production sends through SendGrid (`EMAIL_SENDER=sendgrid`). `console` only prints links for local development. Render free still blocks SMTP, which is why the sender is HTTPS.
 
 Items that look like upgrades but do not remove those failures (Pinecone, Redis, LiteLLM, LangChain) are listed last as non-goals.
 
@@ -32,7 +32,7 @@ Items that look like upgrades but do not remove those failures (Pinecone, Redis,
 | --- | --- | --- | --- |
 | 1 | Paid Gemini API (same model family) | Usage; Flash-Lite is $0.25 / $1.50 per 1M input/output tokens | 15 rpm cap, 41 s backoff, evaluation flake, ingest contextualisation stalls |
 | 2 | Render **Standard** web service (2 GB), not Starter | $25 / month compute on Hobby workspace | Cold start *and* the 512 MB ceiling that made ingest fatal |
-| 3 | SendGrid (or verified Resend domain) | Free Single Sender, or low tens of dollars with a domain | Magic-link and approval mail that never arrives |
+| 3 | SendGrid — **already in production** (Single Sender). Next, only if deliverability needs it: a verified domain | Free Single Sender today; a domain is the optional next step | Magic links, approvals, report mail and email-change mail already arrive. A domain adds SPF/DKIM alignment |
 | 4 | Tavily **Project** if web fallback is used in production | $30 / month (4,000 credits) | DuckDuckGo throttling; advisory web evaluation |
 | 5 | Jina remote embed + rerank, *or* a host with at least 2 GB for local models | Jina typically $0.05 / 1M tokens after a one-time 10M grant; or included in (2) | Multi-GB weights on a 512 MB box; first-request model load |
 | 6 | Optional: `LLM_AUX_MODEL` on Flash-Lite, answers on a stronger paid model | Flash plus a higher Gemini or OpenAI/Anthropic tier | Bookkeeping cost versus answer quality |
@@ -100,19 +100,21 @@ Local embeddings on Standard are possible, but the first request still loads mul
 
 ## 5. Email delivery
 
-### 5.1 Current problem
+> **Status (1 October 2026):** SendGrid Single Sender is the production sender (`EMAIL_SENDER=sendgrid`), verified with real mailboxes for sign-in links, report notifications and email-change confirmations. The rest of this section is the reasoning and the upgrade path to a verified domain.
 
-Render free blocks outbound SMTP. `EMAIL_SENDER=smtp` never reaches credentials. Resend over HTTPS works, but the sandbox sender (`onboarding@resend.dev`) delivers only to the Resend account owner. Approval mail to the owner succeeds; magic links to anyone else fail while the API reports success.
+### 5.1 The problem this solved
+
+Render free blocks outbound SMTP. `EMAIL_SENDER=smtp` never reached anyone. Resend's sandbox sender delivered only to the Resend account owner, while the API still reported success. That is why production does not use either.
 
 ### 5.2 Recommended: SendGrid Single Sender, then a domain
 
 | Option | Cost | Fit |
 | --- | --- | --- |
-| SendGrid Single Sender Verification | Free | One `EMAIL_SMTP_FROM` may reach any recipient without DNS. Weaker alignment (no SPF/DKIM on a custom domain). Correct next step. |
+| SendGrid Single Sender Verification | Free | **In production now.** One from-address may reach any recipient without DNS. Weaker alignment (no SPF/DKIM on a custom domain). |
 | Resend with a verified domain | Domain plus Resend plan | Equivalent once DNS exists; do not stay on the sandbox. |
 | Render paid plus SMTP | Compute plus Gmail or SendGrid SMTP | Unnecessary: HTTPS senders already work on free compute. Paying Render does not require returning to SMTP. |
 
-Set `EMAIL_SENDER=sendgrid` and `EMAIL_SENDGRID_API_KEY`. This is independent of language-model spend and unblocks signup, invites, and login.
+Production already sets `EMAIL_SENDER=sendgrid`. A verified sending domain is the only remaining mail upgrade, and only if alignment becomes the problem.
 
 ---
 
@@ -182,7 +184,7 @@ Supabase (or Neon) session-pooler Postgres remains appropriate. Upgrade the **da
 | Pinecone | Managed vectors | Second isolation path; Postgres already holds vectors. |
 | Redis | Faster cache | Query-path work was eliminated; `query_answer_cache` is Postgres. |
 | Always-on LLM query rewrite | Better than SymSpell | Permanent latency; buy model quota first, then re-measure. |
-| Dual-LLM NLI (Phase 20) | Citation verification | Cost and latency after token logs justify it—not an early purchase. |
+| Dual-LLM NLI (Phase 20) | Proof that a cited sentence is supported | Inline citations are already built. NLI is extra cost and latency, after token logs justify it. |
 
 ---
 
@@ -209,7 +211,7 @@ A self-hosted customer image inverts this: spend on GPU or RAM inside their netw
 
 All of the following are environment changes. No retrieval or isolation logic should move.
 
-1. **LLM.** Paid Gemini key; `LLM_BASE_URL` to Google’s OpenAI-compatible endpoint; optional `LLM_AUX_MODEL` for rewrite and ingest.
+1. **LLM.** Paid Gemini key with `LLM_ADAPTER` set to that provider (the adapter supplies the base URL). Optional `LLM_AUX_MODEL` for rewrite and ingest. `LLM_BASE_URL` is only for `custom`.
 2. **Compute.** New Render service at Standard (region next to Postgres); update Vercel `API_PROXY_TARGET`; delete the free instance. Region is immutable.
 3. **Mail.** `EMAIL_SENDER=sendgrid` plus key; verify the from-address.
 4. **Web.** `WEB_SEARCH_PROVIDER=tavily` plus `WEB_SEARCH_API_KEY`.

@@ -54,6 +54,9 @@ class RepoRef:
     full_name: str
     description: str | None = None
     topics: tuple[str, ...] = ()
+    #: GitHub's `private` flag. ``None`` = not recorded (a scope stored before
+    #: per-asker access existed), which `githublive.access` treats as private.
+    private: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -103,6 +106,7 @@ def fetch_installation_repos(
                 full_name=item["full_name"],
                 description=item.get("description"),
                 topics=tuple(item.get("topics") or ()),
+                private=item.get("private"),
             )
             for item in batch
             if item.get("full_name")
@@ -129,6 +133,7 @@ def scope_to_config(scope: InstallationScope) -> dict:
                 "full_name": repo.full_name,
                 "description": repo.description,
                 "topics": list(repo.topics),
+                "private": getattr(repo, "private", None),
             }
             for repo in scope.repos
         ],
@@ -153,6 +158,7 @@ def scope_from_config(config: dict | None) -> InstallationScope:
                 full_name=item.get("full_name", ""),
                 description=item.get("description"),
                 topics=tuple(item.get("topics") or ()),
+                private=item.get("private"),
             )
             for item in (config.get("repos") or [])
             if item.get("full_name")

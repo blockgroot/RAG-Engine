@@ -425,10 +425,11 @@ def test_list_documents_includes_pdf_and_docx(monkeypatch):
     pdf = _file("pdf-1", "Policy.pdf", PDF_MIME)
     docx_file = _file("docx-1", "Policy.docx", DOCX_MIME)
     sheet = _file("sheet-1", "Budget", "application/vnd.google-apps.spreadsheet")
+    slides = _file("slides-1", "Deck", "application/vnd.google-apps.presentation")
 
     def fake_get(url, *, params=None, headers=None, timeout=None):
         if params["q"].startswith("'root'"):
-            return FakeResponse({"files": [doc, pdf, docx_file, sheet]})
+            return FakeResponse({"files": [doc, pdf, docx_file, sheet, slides]})
         raise AssertionError(f"unexpected call: {params}")
 
     monkeypatch.setattr("app.sources.google_drive.httpx.get", fake_get)
@@ -436,7 +437,8 @@ def test_list_documents_includes_pdf_and_docx(monkeypatch):
     adapter = GoogleDriveAdapter(token="tok", folder_id="root")
     refs = {r.external_id: r for r in adapter.list_documents()}
 
-    assert set(refs) == {"doc-1", "pdf-1", "docx-1"}  # sheet excluded
+    # Sheets are indexed as TABLES now (app/doctables); slides still are not.
+    assert set(refs) == {"doc-1", "pdf-1", "docx-1", "sheet-1"}
     assert refs["doc-1"].source_uri == "https://docs.google.com/document/d/doc-1/edit"
     assert refs["pdf-1"].source_uri == "https://drive.google.com/file/d/pdf-1/view"
     assert refs["docx-1"].source_uri == "https://drive.google.com/file/d/docx-1/view"
@@ -486,10 +488,32 @@ def test_fetch_document_docx_extracts_real_text():
 
 def test_fetch_document_unsupported_mime_raises_source_error(monkeypatch):
     def fake_get(url, *, params=None, headers=None, timeout=None):
-        return FakeResponse({"name": "Budget", "mimeType": "application/vnd.google-apps.spreadsheet"})
+        return FakeResponse({"name": "Deck", "mimeType": "application/vnd.google-apps.presentation"})
 
     monkeypatch.setattr("app.sources.google_drive.httpx.get", fake_get)
 
     adapter = GoogleDriveAdapter(token="tok", folder_id="root")
     with pytest.raises(SourceError):
-        adapter.fetch_document("sheet-1")
+        adapter.fetch_document("slides-1")
+
+
+def test_a_sheet_is_fetched_as_a_table_in_one_export(monkeypatch):
+    """One metadata call and ONE export -- no per-tab or per-cell requests --
+    and the embedded content describes the columns, never the figures."""
+    calls = []
+
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        calls.append(url.rsplit("/", 1)[-1])
+        if url.endswith("/export"):
+            assert params == {"mimeType": "text/csv"}
+            return FakeResponse(text="Region,Revenue\nNorth,\"1,20,000\"\nSouth,\"90,000\"\n")
+        return FakeResponse({"name": "Sales", "mimeType": "application/vnd.google-apps.spreadsheet",
+                             "modifiedTime": "2026-02-01T00:00:00.000Z",
+                             "permissions": [{"type": "anyone"}]})
+
+    monkeypatch.setattr("app.sources.google_drive.httpx.get", fake_get)
+
+    doc = GoogleDriveAdapter(token="tok", folder_id="root").fetch_document("sheet-1")
+    assert calls == ["sheet-1", "export"]
+    assert "Revenue" in doc.content and "1,20,000" not in doc.content
+    assert doc.tables and doc.tables[0].header == ["Region", "Revenue"]

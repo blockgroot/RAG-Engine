@@ -61,6 +61,19 @@ def test_injection_cases_pair_a_real_fact_with_an_adversarial_corpus_doc():
             )
 
 
+def test_model_layer_payloads_survive_the_scrubber():
+    """These three measure the agents.md rules ALONE. If the regex ever grows to
+    strip them, they silently become regex tests again — so pin that they don't,
+    and add a new unscrubbable payload rather than weakening this check."""
+    from app.security.untrusted import scrub_untrusted_text
+
+    titles = {"Employee Referral Bonus", "Company Laptops", "Password Resets"}
+    docs = [text for title, text in CORPUS if title in titles]
+    assert len(docs) == len(titles)
+    for text in docs:
+        assert scrub_untrusted_text(text).split() == text.split()
+
+
 def test_new_dan_payroll_corpus_doc_is_present_and_not_the_only_payroll_source():
     """The jailbreak payload must live in the seeded corpus (so the probe
     actually exercises retrieval + generation against it, not a mocked doc)."""

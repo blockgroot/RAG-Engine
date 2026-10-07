@@ -12,10 +12,12 @@ from ..config.settings import (
     ChunkingSettings,
     ContextualSettings,
     GraphSettings,
+    GuardSettings,
     KeywordExtractionSettings,
 )
 from ..embeddings import build_embedding_provider
 from ..embeddings.base import EmbeddingProvider
+from ..guard import InjectionGuard, build_injection_guard
 from ..ingestion.chunking import chunk_text
 from ..ingestion.sanitize import sanitize_ingest_text
 from ..ingestion.contextualize import contextualize_chunks
@@ -105,6 +107,39 @@ def _sanitize_removals(removed_ids: list[str], stored_count: int) -> tuple[list[
     if len(removed_ids) / stored_count > _MAX_REMOVAL_FRACTION:
         return [], True
     return removed_ids, False
+
+
+def _removable(adapter: SourceAdapter, removed_ids: list[str], *, provider: str) -> list[str]:
+    """Drop removals the listing cannot actually vouch for.
+
+    Absence from a listing proves deletion only when the listing was
+    COMPLETE and would have INCLUDED the document. Two adapter hooks, both
+    optional (every adapter that has neither is unchanged):
+
+    - ``listing_complete = False``: the listing stopped early (a cap, a rate
+      limit mid-channel). Nothing is deleted from it.
+    - ``may_remove(external_id)``: ``False`` when the document sits outside
+      what the listing covers at all -- a Slack thread older than the
+      backfill window is not listed, which is not the same as deleted.
+    """
+    if not removed_ids:
+        return removed_ids
+    if getattr(adapter, "listing_complete", True) is False:
+        logger.warning(
+            "ingest: %s listing was incomplete -- deleting none of the %d unlisted documents",
+            provider, len(removed_ids),
+        )
+        return []
+    may_remove = getattr(adapter, "may_remove", None)
+    if may_remove is None:
+        return removed_ids
+    kept = [eid for eid in removed_ids if may_remove(eid)]
+    if len(kept) < len(removed_ids):
+        logger.info(
+            "ingest: %s kept %d unlisted documents outside the listing's window",
+            provider, len(removed_ids) - len(kept),
+        )
+    return kept
 
 
 _EMPTY_LISTING_CONFIRM_DELAY_SECONDS = 5
@@ -202,7 +237,9 @@ def detect_source_changes(
         else:
             unchanged_n += 1
 
-    removed_ids = [eid for eid in stored if eid not in live_ids]
+    removed_ids = _removable(
+        adapter, [eid for eid in stored if eid not in live_ids], provider=provider
+    )
     if stored and not refs:
         safe_removed, suspicious = [], True
     else:
@@ -402,6 +439,143 @@ def _reindex_slack_docs_missing_channel_prefix(
     return to_update + extra, max(0, unchanged - len(extra))
 
 
+def _guard_document(
+    guard: InjectionGuard | None, threshold: float, raw_chunks: list[str], *, external_id: str
+) -> tuple[list[float | None] | None, bool]:
+    """Injection scores for a document's raw chunks, and whether it is flagged.
+
+    Scored BEFORE contextualization: a flagged document skips it WHOLE,
+    because every contextualize call carries the full document text -- skipping
+    only the flagged chunk would still hand the poison to our own model. A
+    guard failure is ``(None, False)``: unscored, never a failed ingest.
+    """
+    if guard is None:
+        return None, False
+    try:
+        scores = guard.score(raw_chunks)
+    except Exception:  # noqa: BLE001 - scoring must never fail an ingest job
+        logger.warning("Injection scoring failed for %s; left unscored", external_id, exc_info=True)
+        return None, False
+    flagged = [i for i, sc in enumerate(scores) if sc is not None and sc >= threshold]
+    if flagged:
+        logger.warning(
+            "Injection guard flagged %s chunk(s) of %s (max %.2f); stored without context",
+            len(flagged), external_id, max(scores[i] for i in flagged),
+        )
+    return scores, bool(flagged)
+
+
+def _store_scores(store: VectorStore, document_id: str, scores, guard: InjectionGuard | None) -> None:
+    if guard is None or scores is None:
+        return
+    try:
+        store.set_injection_scores(document_id, dict(enumerate(scores)), guard.model)
+    except Exception:  # noqa: BLE001 - a missing score is retried by the backfill
+        logger.warning("Could not store injection scores for %s", document_id, exc_info=True)
+
+
+def _store_tables(document_id, doc, *, org_id: str, workspace_id: str | None) -> None:
+    """Hand the document to the dataset adapters (app/doctables), for charts.
+
+    A FOREGROUND adapter (tables the document already has; no AI) runs here.
+    A BACKGROUND adapter (figures in sentences; needs AI) is only asked the
+    cheap ``wants`` question here and, if yes, the document is queued for the
+    tick -- ingestion never waits on a model call for charts.
+
+    A re-ingest deletes and re-inserts the `documents` row and its tables
+    cascade with it, so an adapter with nothing to say costs no query. Never
+    raises: a chart that failed to store must not cost the indexed document.
+    """
+    try:
+        from ..doctables import base, factory
+        from ..doctables.store import replace_document_tables
+
+        text = base.DocumentText(
+            external_id=doc.external_id, title=doc.title, content=doc.content or "",
+            tables=tuple(doc.tables) if doc.tables is not None else None,
+        )
+        for adapter in factory.build_dataset_adapters():
+            if not adapter.wants(text):
+                continue
+            if adapter.background:
+                from ..doctables.queue import enqueue
+
+                enqueue(document_id, org_id=org_id, workspace_id=workspace_id,
+                        origin=adapter.origin, text=text)
+                continue
+            tables = adapter.extract(text)
+            if tables:
+                replace_document_tables(
+                    document_id, org_id=org_id, workspace_id=workspace_id,
+                    tables=tables, origin=adapter.origin,
+                )
+    except Exception:  # noqa: BLE001 - see docstring
+        logger.warning("Could not store tables of %s", doc.external_id, exc_info=True)
+    try:
+        # Stamped even when an adapter failed: the failure is logged, and a
+        # document that always fails must not take a backfill slot forever.
+        from ..doctables.store import mark_checked
+
+        mark_checked(document_id)
+    except Exception:  # noqa: BLE001 - see docstring
+        logger.warning("Could not stamp tables check of %s", doc.external_id, exc_info=True)
+
+
+def backfill_tables(
+    adapter: SourceAdapter,
+    *,
+    org_id: str,
+    provider: str,
+    workspace_id: str | None = None,
+    skip_ids: set[str] | None = None,
+    live_ids: set[str] | None = None,
+    batch: int | None = None,
+) -> int:
+    """Read tables from already-indexed documents, a bounded batch per sync.
+
+    A sync never re-fetches an UNCHANGED document, so a sheet indexed before
+    charts read tables would otherwise never be charted. This re-fetches up to
+    ``DOCTABLES_BACKFILL_BATCH`` documents the adapters have never looked at
+    and hands each to ``_store_tables`` -- tables only: no re-chunking, no
+    re-embedding, access untouched. Same shape as ``refresh_missing_meta``.
+
+    Never raises. A document the source refuses stays unstamped and is tried
+    on a later sync; ``live_ids`` keeps one the source no longer lists from
+    taking a slot every time.
+    """
+    from ..config.settings import DocTablesSettings
+    from ..doctables import store as table_store
+
+    limit = DocTablesSettings.from_env().backfill_batch if batch is None else batch
+    if limit <= 0:
+        return 0
+    skip_ids = skip_ids or set()
+    try:
+        candidates = table_store.list_unchecked(
+            org_id=org_id, provider=provider, workspace_id=workspace_id,
+            limit=limit + len(skip_ids) + 50,
+        )
+    except Exception:  # noqa: BLE001 - see docstring
+        logger.warning("backfill_tables: listing failed for %s", provider, exc_info=True)
+        return 0
+    eligible = [
+        (doc_id, ext) for doc_id, ext in candidates
+        if ext not in skip_ids and (live_ids is None or ext in live_ids)
+    ]
+    done = 0
+    for document_id, external_id in eligible[:limit]:
+        try:
+            doc = adapter.fetch_document(external_id)
+        except Exception:  # noqa: BLE001 - see docstring
+            logger.info("backfill_tables: could not fetch %s/%s", provider, external_id)
+            continue
+        _store_tables(document_id, doc, org_id=org_id, workspace_id=workspace_id)
+        done += 1
+    if done:
+        logger.info("backfill_tables: read %d %s document(s)", done, provider)
+    return done
+
+
 def ingest_source(
     adapter: SourceAdapter,
     org_id: str,
@@ -417,6 +591,7 @@ def ingest_source(
     workspace_id: str | None = None,
     tags: list[str] | None = None,
     on_progress: ProgressCallback | None = None,
+    guard: InjectionGuard | None = None,
 ) -> IngestResult:
     """Ingest documents from ``adapter`` into ``org_id``.
 
@@ -430,6 +605,8 @@ def ingest_source(
     contextual = contextual or ContextualSettings.from_env()
     keywords = keywords or KeywordExtractionSettings.from_env()
     apply_contextual_inline = contextual.enabled and not contextual.defer
+    guard = guard or build_injection_guard()
+    guard_threshold = GuardSettings.from_env().threshold
     if apply_contextual_inline and llm is None:
         llm = build_aux_llm_provider()
 
@@ -467,6 +644,7 @@ def ingest_source(
             refs, stored, to_update, unchanged
         )
 
+    removed_ids = _removable(adapter, removed_ids, provider=provider)
     removed_ids, suspicious_removal = _sanitize_removals(removed_ids, len(stored))
     if removed_ids and not _empty_listing_is_confirmed(
         adapter, stored_count=len(stored), live_count=len(refs)
@@ -480,8 +658,8 @@ def ingest_source(
             "(pagination race, indexing lag, rate limit) rather than a real "
             "mass unshare/delete. Skipping removal this run; re-run once the "
             "source's listing is confirmed stable if pages were genuinely "
-            "removed.",
-            org_id, provider, workspace_id,
+            "removed. (listed=%d stored=%d)",
+            org_id, provider, workspace_id, len(refs), len(stored),
         )
 
     removed_n = (
@@ -573,7 +751,10 @@ def ingest_source(
             report("indexing", done, total_work)
             continue
 
-        if apply_contextual_inline and llm is not None:
+        scores, flagged = _guard_document(
+            guard, guard_threshold, raw_chunks, external_id=doc.external_id
+        )
+        if apply_contextual_inline and llm is not None and not flagged:
             if len(chunks) > contextual.max_chunks:
                 logger.warning(
                     "Skipping contextual enrichment for %s (%s chunks > max_chunks=%s); "
@@ -618,6 +799,8 @@ def ingest_source(
             source_meta=meta,
             editor_key=meta_editor,
         )
+        _store_scores(store, document_id, scores, guard)
+        _store_tables(document_id, doc, org_id=org_id, workspace_id=workspace_id)
         doc_ids.append(document_id)
         ingested_external_ids.append(doc.external_id)
         chunks_total += len(chunks)
@@ -644,6 +827,14 @@ def ingest_source(
         adapter,
         store,
         refreshed=meta_refreshed,
+        org_id=org_id,
+        provider=provider,
+        workspace_id=workspace_id,
+        skip_ids={r.external_id for r, _ in work},
+        live_ids={r.external_id for r in refs},
+    )
+    backfill_tables(
+        adapter,
         org_id=org_id,
         provider=provider,
         workspace_id=workspace_id,
@@ -746,6 +937,7 @@ def enrich_source_contextual(
     workspace_id: str | None = None,
     tags: list[str] | None = None,
     on_progress: ProgressCallback | None = None,
+    guard: InjectionGuard | None = None,
 ) -> int:
     """Re-apply deferred contextual retrieval to pages already stored."""
     if not external_ids:
@@ -757,6 +949,8 @@ def enrich_source_contextual(
     embedder = embedder or build_embedding_provider()
     store = store or build_vector_store()
     llm = llm or build_aux_llm_provider()
+    guard = guard or build_injection_guard()
+    guard_threshold = GuardSettings.from_env().threshold
 
     def report(phase: str, processed: int, total: int) -> None:
         if on_progress is None:
@@ -788,6 +982,13 @@ def enrich_source_contextual(
                 report("enriching", i, total)
                 continue
             raw_chunks = chunks
+            # A flagged document keeps its plain, already-scored rows.
+            scores, flagged = _guard_document(
+                guard, guard_threshold, raw_chunks, external_id=external_id
+            )
+            if flagged:
+                report("enriching", i, total)
+                continue
             chunks = contextualize_chunks(
                 llm,
                 clean,
@@ -810,14 +1011,17 @@ def enrich_source_contextual(
             # Re-reading the sharing from this re-fetch is NOT a fix: Slack
             # reports sharing only on the listing, and ingest has already
             # applied the skip / owner-only / freeze rules to this very row.
-            if store.replace_source_document_chunks(
+            document_id = store.replace_source_document_chunks(
                 org_id,
                 provider=provider,
                 external_id=doc.external_id,
                 chunks=chunks,
                 embeddings=embeddings,
                 workspace_id=workspace_id,
-            ) is not None:
+            )
+            if document_id is not None:
+                # Replacing the chunk rows dropped their ingest-time scores.
+                _store_scores(store, document_id, scores, guard)
                 enriched += 1
         except Exception:  # noqa: BLE001 - one bad page must not abort enrich
             pass

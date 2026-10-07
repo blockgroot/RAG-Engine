@@ -18,6 +18,10 @@ from ..ingestion.pipeline import enrich_source_contextual, ingest_source
 from ..insights.facts import DOCUMENT_PROVIDERS, backfill_all_document_facts, record_document_facts
 from ..sources import build_source_adapter
 from . import queue
+from .autosync import start_cooled_down_pushes
+
+#: How often a worker loop starts pushes whose cooldown has ended (`autosync`).
+PUSH_CHECK_SECONDS = 15.0
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +62,13 @@ def _build_graph(org_id: str, provider: str, workspace_id: str | None, result) -
             build_documents(org_id, workspace_id, provider, external_ids)
         elif getattr(result, "documents_removed", 0):
             collect_garbage(org_id, workspace_id)
+        if provider == "slack":
+            # Membership moves without any message changing (someone joins or
+            # leaves a private channel; the listing re-stamps its threads), so
+            # it is rebuilt on EVERY Slack sync, not only when threads changed.
+            from ..graph.builder import build_memberships
+
+            build_memberships(org_id, workspace_id)
     except Exception:  # noqa: BLE001 - see docstring
         logger.warning(
             "graph: could not build %s for org %s", provider, org_id, exc_info=True
@@ -385,6 +396,16 @@ def run_external_tick() -> dict[str, int]:
     synced = run_sync_tick()
     facts = run_facts_tick()
 
+    # Drive push channels expire within a week and are never renewed for us.
+    # A lapsed one only means that connection is polled until the next tick.
+    drive_watches = 0
+    try:
+        from ..sources.drive_watch import ensure_watches
+
+        drive_watches = ensure_watches()
+    except Exception:  # noqa: BLE001 - a lapsed push, never a failed tick
+        logger.exception("External tick: Drive watch renewal failed")
+
     # Indexed facts for tenants that have not ingested since charts shipped.
     # GitHub still needs the facts-only path above (it has no documents).
     backfilled = 0
@@ -426,6 +447,31 @@ def run_external_tick() -> dict[str, int]:
     except Exception:  # noqa: BLE001
         logger.exception("External tick: conversation purge failed")
 
+    # Live-tools audit rows past their 90 days (Second Brain live reads).
+    try:
+        from ..livetools.audit import purge_expired as purge_live_calls
+
+        purge_live_calls()
+    except Exception:  # noqa: BLE001 - a longer log, never a failed tick
+        logger.exception("External tick: live_tool_calls purge failed")
+
+    # Injection scores for chunks ingest could not score (Groq rate limit) or
+    # that predate the guard. A no-op when GUARD_MODE=off.
+    injection_scored = 0
+    try:
+        from ..guard.backfill import backfill_injection_scores
+
+        injection_scored = backfill_injection_scores()
+    except Exception:  # noqa: BLE001 - an unscored chunk, never a failed tick
+        logger.exception("External tick: injection-score backfill failed")
+
+    # Figures in sentences (app/doctables text adapter), read in the
+    # background so ingestion never waits on a model. A no-op unless
+    # DOCTABLES_TEXT_ENABLED; never raises.
+    from ..doctables.queue import run_pending as read_document_figures
+
+    figures_read = read_document_figures()
+
     scheduler_settings = SchedulerSettings.from_env()
     schedulers_ran = (
         run_scheduler_tick(scheduler_settings) if scheduler_settings.enabled else 0
@@ -435,9 +481,12 @@ def run_external_tick() -> dict[str, int]:
         "reaped": reaped,
         "syncs_queued": synced,
         "facts_recorded": facts,
+        "drive_watches_opened": drive_watches,
         "facts_backfilled": backfilled,
         "attachments_purged": attachments_purged,
         "conversations_purged": conversations_purged,
+        "injection_scored": injection_scored,
+        "figures_read": figures_read,
         "schedulers_ran": schedulers_ran,
     }
 
@@ -504,12 +553,16 @@ def run_forever(
     last_reap = 0.0
     last_maintenance = 0.0
     last_sync = 0.0
+    last_push = 0.0
     last_scheduler = -float(scheduler_settings.poll_seconds)
     while True:
         now = time.monotonic()
         if now - last_reap >= reap_interval:
             queue.reap_stuck()
             last_reap = now
+        if now - last_push >= PUSH_CHECK_SECONDS:
+            start_cooled_down_pushes()
+            last_push = now
         if now - last_maintenance >= maintenance_interval:
             run_maintenance()
             last_maintenance = now

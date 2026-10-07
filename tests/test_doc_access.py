@@ -723,6 +723,8 @@ def test_a_directory_failure_is_not_cached_as_an_answer(monkeypatch):
         return None if len(calls) == 1 else ("eng@corp.com",)
 
     monkeypatch.setattr(google_groups, "_fetch_groups", _fetch)
+    # No `group:` grants indexed, so no nested checks (tests/test_nested_groups.py).
+    monkeypatch.setattr(google_groups, "_candidate_groups", lambda *a: [])
 
     assert google_groups.groups_for("org", "ada@corp.com") == ()
     assert google_groups.groups_for("org", "ada@corp.com") == ("eng@corp.com",)
@@ -749,6 +751,8 @@ def test_memberships_are_cached_per_org(monkeypatch):
         return ("eng@corp.com",)
 
     monkeypatch.setattr(google_groups, "_fetch_groups", _fetch)
+    # No `group:` grants indexed, so no nested checks (tests/test_nested_groups.py).
+    monkeypatch.setattr(google_groups, "_candidate_groups", lambda *a: [])
     google_groups.groups_for("org-a", "ada@corp.com")
     google_groups.groups_for("org-b", "ada@corp.com")
     google_groups.groups_for("org-a", "ada@corp.com")
@@ -1249,7 +1253,11 @@ def test_the_bot_may_read_the_channel_it_is_replying_in():
     from app.sources.slack import _channel_entry
 
     in_channel = Viewer(public_only=True, channels=("C2",))
-    assert in_channel.acl() == [_channel_entry("C2")]
+    # Compared with the STORED spelling, not the writer's: `normalize_viewers`
+    # lowercases on write, and a raw uppercase Slack id never matched in prod.
+    assert in_channel.acl() == _normalize_viewers([_channel_entry("C2")])
+    person = Viewer(email="ada@x.com", channels=("C0BQNQP5VNE",))
+    assert set(_normalize_viewers([_channel_entry("C0BQNQP5VNE")])) <= set(person.acl())
     # It is not a person: no email, no domain, no other channel.
     assert not any("@" in entry for entry in in_channel.acl())
 
