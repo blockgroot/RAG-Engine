@@ -112,10 +112,7 @@ Handbook got the key answer right and Onyx did not on 34 questions. In 30 of the
 
 - **It says "I don't know" when the answer isn't there.** On the 15 questions with no answer in the documents, Handbook said so every time. Onyx said so once, and invented an answer for the other 14.
 - **It sticks to the documents.** Made-up claims appeared in 11% of Handbook's answers, against 47% of Onyx's. When Onyx is wrong it is usually confidently wrong, which is riskier than "I don't know".
-- **Why the difference:**
-  - Handbook has a confidence check that says "I don't know" without calling the AI when nothing matches well enough.
-  - It also has a strict instruction to answer only from the passages it was given.
-  - Onyx's answer instructions ask the model to be helpful, and gpt-oss fills the gaps from its general knowledge.
+- **Why the difference.** Handbook's confidence check and strict answer rules stop it from guessing. Onyx asks the model to be helpful, so it fills gaps from general knowledge.
 - **Narrow questions with conditions.** Handbook got 10 of 15 right; Onyx got 6. On some of these, Onyx's date filter removed every document (see "Observations").
 - **It always searches.** Onyx skipped the search entirely on 5 questions and answered from general knowledge; all 5 answers were made up.
 - **It is cheaper, faster and steadier.** It uses 16× fewer tokens per question and is about 2× faster to the first word. Its most expensive question used about 10,000 tokens, against Onyx's 410,000.
