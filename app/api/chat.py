@@ -929,6 +929,34 @@ def _invoke_with_plan(graph_input: dict, plan):
         graph_plan.reset_plan(token)
 
 
+def _keep_standalone_turn(
+    agent_key: str,
+    conversation_id: str | None,
+    question: str,
+    answer: str,
+    cited: list | None = None,
+) -> None:
+    """Write a turn for an agent that never enters ``RagPipeline``.
+
+    The pipeline is the only other place a turn is saved. GitHub and charts
+    do not use it, and a conversation with no turn is left out of the history
+    list, so the chat vanishes on reload. A failure here must not drop the
+    answer the person is already reading.
+    """
+    if agent_key not in ("github", "insights") or not conversation_id or not (answer or "").strip():
+        return
+    try:
+        from ..memory import build_conversation_store
+
+        store = build_conversation_store()
+        if "cited" in store.append_turn.__code__.co_varnames:
+            store.append_turn(conversation_id, question, answer, cited or None)
+        else:
+            store.append_turn(conversation_id, question, answer)
+    except Exception:  # noqa: BLE001 - the answer already exists; losing the save is the old bug
+        logger.warning("could not save %s turn", agent_key, exc_info=True)
+
+
 def _drop_refusal_turn(org_id, conversation_id, question, answer) -> None:
     if not conversation_id:
         return
@@ -1169,6 +1197,11 @@ def _stream_answer_body(
         logger.warning("Chat provider failure: %s", exc, exc_info=True)
         yield _sse_event("error", {"message": _user_facing_llm_error(exc)})
         return
+
+    # A connected retry was answered by the pipeline, which already saved its
+    # own turn. Saving again would put the question in the history twice.
+    if not retry_tools:
+        _keep_standalone_turn(decision.agent_key, conversation_id, question, result.answer, getattr(result, "cited", None))
 
     # A question that came back ungrounded is a documentation gap, and it is
     # recorded here without anyone having to report it -- the gaps people
