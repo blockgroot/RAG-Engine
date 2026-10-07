@@ -36,7 +36,7 @@ load_dotenv(".env.bench", override=True)
 BENCH = Path(os.getenv("BENCH_DIR", "evaluation/reports/bench1"))
 MANIFEST = BENCH / "manifest.json"
 OUT = BENCH / "runs"
-GAP_SECONDS = 5.0
+GAP_SECONDS = float(os.getenv("BENCH_GAP_SECONDS", "5"))  # raise when a free embedding tier rate-limits bursts
 
 
 def _questions(data: Path, split: str) -> list[dict]:
