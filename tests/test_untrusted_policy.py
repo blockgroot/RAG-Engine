@@ -54,6 +54,7 @@ def _built_prompts() -> dict[str, str]:
         "github_decision": prompts.build_github_decision_prompt("q?", ATTACK),
         "live_decision": prompts.build_live_decision_prompt("q?", ATTACK, "idk", web=True),
         "memory_extract": __import__("app.memory.personal", fromlist=["x"]).build_extract_prompt(ATTACK, ()),
+        "doctables_text": __import__("app.doctables.text_adapter", fromlist=["x"]).build_prompt("t", ATTACK),
     }
 
 

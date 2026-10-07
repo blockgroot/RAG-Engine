@@ -208,7 +208,7 @@ _SCALE = {"k": 1e3, "m": 1e6, "mn": 1e6, "bn": 1e9, "b": 1e9,
 _NUMBER = re.compile(
     r"^(?P<neg>-)?(?P<cur1>[₹$€£]|rs\.?|inr|usd|eur|gbp)?\s*(?P<neg2>-)?"
     r"(?P<num>\d[\d,\s]*(?:\.\d+)?|\.\d+)\s*"
-    r"(?P<scale>k|mn|m|bn|b|lakhs?|lac|crores?|cr)?\s*"
+    r"(?P<scale>k|mn|m|bn|b|lakhs?|lac|l|crores?|cr)?\s*"
     r"(?P<cur2>[₹$€£]|inr|usd|eur|gbp)?\s*(?P<pct>%)?$",
     re.I,
 )
@@ -237,6 +237,11 @@ def parse_number(value: str) -> tuple[float | None, str]:
     except ValueError:
         return None, ""
     scale = (match.group("scale") or "").lower()
+    if scale == "l":
+        # "₹12L" is lakh; a bare "12L" may be litres, so only with a currency.
+        if not (match.group("cur1") or match.group("cur2")):
+            return None, ""
+        scale = "lakh"
     number *= _SCALE.get(scale, 1)
     if negative or match.group("neg") or match.group("neg2"):
         number = -number
