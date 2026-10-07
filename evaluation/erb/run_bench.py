@@ -32,8 +32,10 @@ from dotenv import load_dotenv
 
 load_dotenv(".env.bench", override=True)
 
-MANIFEST = Path("evaluation/reports/bench1/manifest.json")
-OUT = Path("evaluation/reports/bench1/runs")
+# BENCH_DIR keeps each benchmark's results apart (bench1 = Nemotron, bench2 = Mistral).
+BENCH = Path(os.getenv("BENCH_DIR", "evaluation/reports/bench1"))
+MANIFEST = BENCH / "manifest.json"
+OUT = BENCH / "runs"
 GAP_SECONDS = 5.0
 
 

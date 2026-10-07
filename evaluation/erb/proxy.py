@@ -17,6 +17,7 @@ Run:  .venv/bin/python -m evaluation.erb.proxy   (reads .env.bench)
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -33,10 +34,19 @@ from fastapi.responses import JSONResponse, StreamingResponse
 load_dotenv(".env.bench")
 
 UPSTREAM = os.getenv("BENCH_UPSTREAM_BASE", "https://api.groq.com/openai/v1").rstrip("/")
-UPSTREAM_KEY = os.getenv("BENCH_UPSTREAM_KEY") or os.environ["GROQ_API_KEY"]
+# Comma-separated keys are used in turn, one per request: each free-tier project
+# has its own per-minute limit (Gemini: 5/min), so N projects give N times the rate.
+UPSTREAM_KEYS = [k.strip() for k in (os.getenv("BENCH_UPSTREAM_KEY") or os.environ["GROQ_API_KEY"]).split(",") if k.strip()]
+_next_key = itertools.cycle(UPSTREAM_KEYS)
 MODEL = os.getenv("BENCH_MODEL", "openai/gpt-oss-120b")
 REASONING = os.getenv("BENCH_REASONING_EFFORT", "medium")
 LOG = Path(os.getenv("BENCH_PROXY_LOG", "evaluation/reports/bench1/proxy.jsonl"))
+# Request fields the upstream rejects (comma-separated), dropped from every call
+# the same way for every system. Mistral, for one, refuses some OpenAI-only fields.
+DROP = [p.strip() for p in os.getenv("BENCH_DROP_PARAMS", "").split(",") if p.strip()]
+# OpenAI's way to get usage on a stream. Providers that always send it, or reject
+# the field, set BENCH_STREAM_OPTIONS=0.
+STREAM_OPTIONS = os.getenv("BENCH_STREAM_OPTIONS", "1") != "0"
 # Full request messages + response text per call: what the reviewer checks
 # groundedness against (the exact context the model saw). Large; never committed.
 BODIES = LOG.with_name("bodies.jsonl")
@@ -92,11 +102,15 @@ def _fingerprint(body: dict) -> dict:
 def _usage_fields(usage: dict | None) -> dict:
     usage = usage or {}
     details = usage.get("completion_tokens_details") or {}
-    return {
-        "input_tokens": usage.get("prompt_tokens"),
-        "output_tokens": usage.get("completion_tokens"),
-        "reasoning_tokens": details.get("reasoning_tokens"),
-    }
+    prompt, completion = usage.get("prompt_tokens"), usage.get("completion_tokens")
+    reasoning = details.get("reasoning_tokens")
+    # Gemini's OpenAI endpoint leaves thinking out of completion_tokens and only
+    # counts it in total_tokens. Recover it, and count it as output like every
+    # other provider does, so a thinking model is never under-counted.
+    hidden = (usage.get("total_tokens") or 0) - (prompt or 0) - (completion or 0)
+    if reasoning is None and hidden > 0 and completion is not None:
+        reasoning, completion = hidden, completion + hidden
+    return {"input_tokens": prompt, "output_tokens": completion, "reasoning_tokens": reasoning}
 
 
 def _log(row: dict) -> None:
@@ -113,8 +127,8 @@ def _log_body(call_id: str, body: dict, content: str | None) -> None:
 async def _send(body: dict, stream: bool) -> tuple[httpx.Response, float]:
     """POST upstream, waiting out 429s. Returns the response and seconds waited."""
     waited, resp = 0.0, None
-    headers = {"Authorization": f"Bearer {UPSTREAM_KEY}"}
     for _ in range(MAX_TRIES):
+        headers = {"Authorization": f"Bearer {next(_next_key)}"}
         req = _client.build_request("POST", f"{UPSTREAM}/chat/completions", json=body, headers=headers)
         t0 = time.time()
         try:
@@ -122,13 +136,17 @@ async def _send(body: dict, stream: bool) -> tuple[httpx.Response, float]:
         except httpx.TransportError:  # timeout or dropped connection
             waited += time.time() - t0
             continue
-        if resp.status_code != 429:
+        # 503 is Gemini's "high demand, try again": the provider's queue, not the
+        # product, so it is waited out like a 429.
+        if resp.status_code not in (429, 503):
             return resp, waited
         body_bytes = await resp.aread()
         if b"Request too large" in body_bytes:
             # One request bigger than the per-minute cap: waiting cannot fix it.
             return resp, waited
-        pause = _wait_seconds(resp)
+        # With several keys the next attempt goes to another project, so only
+        # a short pause is needed before trying it.
+        pause = _wait_seconds(resp) / len(UPSTREAM_KEYS)
         waited += pause
         await _sleep(pause)
     if resp is None:
@@ -160,8 +178,11 @@ async def chat(request: Request):
     body.pop("reasoning", None)
     if REASONING:
         body["reasoning_effort"] = REASONING
+    for param in DROP:
+        body.pop(param, None)
     stream = bool(body.get("stream"))
-    if stream:
+    body.pop("stream_options", None)
+    if stream and STREAM_OPTIONS:
         body["stream_options"] = {"include_usage": True}
     row = {
         "call_id": uuid.uuid4().hex,

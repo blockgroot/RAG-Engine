@@ -44,7 +44,7 @@ from dotenv import load_dotenv
 
 load_dotenv(".env.bench", override=True)
 
-BENCH = Path("evaluation/reports/bench1")
+BENCH = Path(os.getenv("BENCH_DIR", "evaluation/reports/bench1"))
 BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
 MODEL = os.getenv("BENCH_REVIEW_MODEL", "gemini-3.1-flash-lite")
 MAX_CONTEXT_CHARS = 400_000  # ~120k tokens; marked when cut

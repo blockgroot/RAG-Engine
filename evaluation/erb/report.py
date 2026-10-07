@@ -34,7 +34,7 @@ from dotenv import load_dotenv
 
 load_dotenv(".env.bench", override=True)
 
-BENCH = Path("evaluation/reports/bench1")
+BENCH = Path(os.getenv("BENCH_DIR", "evaluation/reports/bench1"))
 # Final verdicts: Claude reviewed every test answer of run 1 (reviews_claude/),
 # after Gemini v1 failed its rule-5 check and v2 still picked the wrong answers
 # as made up (see review.py and notes.md). Gemini v1 remains only where Claude

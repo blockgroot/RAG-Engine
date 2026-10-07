@@ -17,9 +17,10 @@ Run: .venv/bin/python -m evaluation.erb.requeue
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
-RUNS = Path("evaluation/reports/bench1/runs")
+RUNS = Path(os.getenv("BENCH_DIR", "evaluation/reports/bench1")) / "runs"
 SLOW_SECONDS = 150
 
 

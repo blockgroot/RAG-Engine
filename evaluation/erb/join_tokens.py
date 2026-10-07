@@ -24,10 +24,11 @@ Run: .venv/bin/python -m evaluation.erb.join_tokens
 from __future__ import annotations
 
 import json
+import os
 from collections import defaultdict
 from pathlib import Path
 
-BENCH = Path("evaluation/reports/bench1")
+BENCH = Path(os.getenv("BENCH_DIR", "evaluation/reports/bench1"))
 RUNS = BENCH / "runs"
 
 # Prefix of system (or first user) message -> step name. Unmatched calls keep
