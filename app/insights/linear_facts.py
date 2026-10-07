@@ -127,22 +127,10 @@ def _issue_rows(org_id, workspace_id, issue) -> list[tuple]:
 
 
 def _issue_attrs(issue: dict) -> Jsonb:
-    """The declared Linear attributes (registry.ATTRS), from the feed row.
-    Absent values are omitted: an unset priority must not chart as a
-    priority called "None"."""
-    attrs: dict = {}
-    for key in ("priority", "project"):
-        value = (issue.get(key) or "").strip() if isinstance(issue.get(key), str) else ""
-        if value:
-            attrs[key] = value
-    estimate = issue.get("estimate")
-    if isinstance(estimate, (int, float)) and not isinstance(estimate, bool):
-        attrs["estimate"] = estimate
-    labels = [l.strip() for l in (issue.get("labels") or []) if isinstance(l, str) and l.strip()]
-    if labels:
-        attrs["label"] = labels
-    return Jsonb(attrs)
-
+    """Every simple field of the issue (`insights.fields`), as the feed
+    already returned it -- see `sources.linear._chart_fields`."""
+    fields = issue.get("fields")
+    return Jsonb(dict(fields) if isinstance(fields, dict) else {})
 
 def _write(rows: list[tuple], workspace_id: str | None) -> int:
     """Upsert every row in one statement.

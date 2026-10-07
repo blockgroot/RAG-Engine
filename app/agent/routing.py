@@ -617,6 +617,24 @@ def _chartable_tables(org_id: str, workspace_id: str | None, viewer) -> list:
         return []
 
 
+def _chart_fields(org_id: str, workspace_id: str | None, viewer) -> dict | None:
+    """The recorded fields that actually exist in this scope, per metric
+    (`insights.attr_catalog`), so the classifier is offered what the data
+    holds rather than a hand-kept list. ``None`` (no viewer, or the read
+    failed) falls back to the display hints. Never raises."""
+    if viewer is None:
+        return None
+    try:
+        from ..insights import attr_catalog
+
+        return attr_catalog.by_metric(attr_catalog.discover_scope(
+            org_id=org_id, workspace_id=workspace_id, viewer=viewer,
+        ))
+    except Exception:  # noqa: BLE001
+        logger.warning("Agent routing: could not read recorded fields", exc_info=True)
+        return None
+
+
 def _try_insights_route(
     question: str,
     connected: set[str],
@@ -642,6 +660,7 @@ def _try_insights_route(
         intent = classify_question(
             question, providers=providers, fail_open=True,
             tables=_chartable_tables(org_id, workspace_id, viewer),
+            fields=_chart_fields(org_id, workspace_id, viewer),
         )
     except Exception:  # noqa: BLE001
         logger.warning("Agent routing: chart classifier failed", exc_info=True)

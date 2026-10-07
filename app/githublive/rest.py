@@ -126,7 +126,23 @@ def _pull_request(full_name: str, item: dict) -> PullRequest:
             ) if isinstance(name, str) and name.strip()
         ),
         base=((item.get("base") or {}).get("ref") or None),
+        fields=_chart_fields(item),
     )
+
+
+def _chart_fields(item: dict) -> tuple[tuple[str, object], ...]:
+    """Every simple field of a pull request payload, for charts.
+
+    The author, merger and state already have real columns, so they are not
+    stored twice. Lists are frozen to tuples so the PullRequest stays
+    hashable.
+    """
+    from ..insights.fields import simple_fields
+
+    found = simple_fields(item, skip=("user", "merged_by", "state", "merged"))
+    return tuple(sorted(
+        (k, tuple(v) if isinstance(v, list) else v) for k, v in found.items()
+    ))
 
 
 def _is_safe_sha(sha: str) -> bool:

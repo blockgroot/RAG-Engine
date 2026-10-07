@@ -191,10 +191,11 @@ def _allowed_shapes(metric: registry.Metric) -> tuple[str, ...]:
     return ("line", "bar", "pie")
 
 
-def _catalogue(metrics: list[registry.Metric]) -> str:
+def _catalogue(metrics: list[registry.Metric], fields: dict | None = None) -> str:
+    fields = fields or {}
     lines = []
     for metric in metrics:
-        dims = ", ".join(query.group_dims(metric)) or "none"
+        dims = ", ".join(query.group_dims(metric, fields.get(metric.key))) or "none"
         shapes = ", ".join(_allowed_shapes(metric))
         line = (
             f"- {metric.key} [{metric.provider}]: {metric.label}. "
@@ -202,19 +203,19 @@ def _catalogue(metrics: list[registry.Metric]) -> str:
         )
         # Offered only where they apply, so the model is never shown a slot
         # this metric would refuse.
-        measures = list(query.measures_for(metric))
+        measures = list(query.measures_for(metric, fields.get(metric.key)))
         if len(measures) > 1:
             line += f". measure: {', '.join(measures)}"
-        if query.split_dims(metric):
-            line += f". split_by: {', '.join(query.split_dims(metric))}"
-        if query.filter_dims(metric):
-            line += f". filters: {', '.join(query.filter_dims(metric))}"
+        if query.split_dims(metric, fields.get(metric.key)):
+            line += f". split_by: {', '.join(query.split_dims(metric, fields.get(metric.key)))}"
+        if query.filter_dims(metric, fields.get(metric.key)):
+            line += f". filters: {', '.join(query.filter_dims(metric, fields.get(metric.key)))}"
         lines.append(line)
     # Named once, so "label" in three metrics' option lists is not a mystery
     # and the model learns a tag breakdown counts an item under each tag.
     declared = {}
     for metric in metrics:
-        for a in query.readable_attrs(metric):
+        for a in query.readable_attrs(metric, fields.get(metric.key)):
             declared.setdefault((a.provider, a.key), a)
     if declared:
         lines.append("Fields recorded from the apps (usable where listed above):")
@@ -292,6 +293,7 @@ def _missing(providers: list[str]) -> list[str]:
 def _prompt(
     question: str, metrics: list[registry.Metric], *, github: bool = False,
     missing: list[str] | None = None, tables: list | None = None,
+    fields: dict | None = None,
 ) -> str:
     # The question is user text reaching a prompt, so it is scrubbed and fenced
     # like any other untrusted input. That is a mitigation, not the guarantee:
@@ -330,7 +332,7 @@ def _prompt(
         "Available countable things (pick ONLY from this list; the "
         "connector is the tag in brackets). This list is the contract, "
         "not a set of example questions:\n"
-        f"{_catalogue(metrics)}\n\n"
+        f"{_catalogue(metrics, fields)}\n\n"
         + (
             "NOT CONNECTED in this scope: " + ", ".join(missing) + ".\n"
             "If the question is about one of THOSE, reply "
@@ -443,6 +445,7 @@ def classify_question(
     llm=None,
     fail_open: bool = True,
     tables: list | None = None,
+    fields: dict | None = None,
 ) -> AskIntent:
     """Classify Ask as qa, a validated chart, or a visual we cannot count.
 
@@ -482,7 +485,7 @@ def classify_question(
     try:
         reply = llm.generate(
             _prompt(question, metrics, github=github, missing=missing,
-                    tables=offered),
+                    tables=offered, fields=fields),
             max_tokens=MAX_TOKENS,
         )
     except Exception as exc:  # noqa: BLE001
@@ -500,7 +503,7 @@ def classify_question(
 
     intent = _parse_intent(
         reply, metrics, fail_open=fail_open, github=github,
-        missing=missing, providers=providers, handles=handles,
+        missing=missing, providers=providers, handles=handles, fields=fields,
     )
     return replace(
         _finish(intent, question, metrics, fail_open=fail_open),
@@ -684,6 +687,7 @@ def _parse_intent(
     missing: list[str] | None = None,
     providers: list[str] | None = None,
     handles: dict | None = None,
+    fields: dict | None = None,
 ) -> AskIntent:
     """Parse and check the model's reply. Nothing gets the benefit of the doubt."""
     allowed = {m.key: m for m in metrics}
@@ -762,6 +766,9 @@ def _parse_intent(
 
     key = data.get("metric")
     metric = allowed.get(key) if isinstance(key, str) else None
+    # The recorded fields this scope actually has for that metric (None =
+    # the display hints only, i.e. no discovery was run).
+    metric_fields = (fields or {}).get(key) if fields is not None else None
     if metric is None:
         logger.info("insights: refused unresolvable chart request (%r)", key)
         return AskIntent("refuse", message=refusal)
@@ -770,12 +777,12 @@ def _parse_intent(
     if group_by in ("", "null", "none"):
         group_by = None
     if group_by is not None:
-        if not isinstance(group_by, str) or group_by not in query.group_dims(metric):
+        if not isinstance(group_by, str) or group_by not in query.group_dims(metric, metric_fields):
             return AskIntent(
                 "refuse",
                 message=(
                     f"I can show {metric.label.lower()}, but not broken down that "
-                    f"way. Options: {', '.join(query.group_dims(metric)) or 'none'}."
+                    f"way. Options: {', '.join(query.group_dims(metric, metric_fields)) or 'none'}."
                 ),
             )
 
@@ -807,18 +814,18 @@ def _parse_intent(
         # A split with no first grouping: the model put the one breakdown in
         # the wrong slot. Moved, not dropped -- validation still checks it.
         group_by, split_by = split_by, None
-        if group_by not in query.group_dims(metric):
+        if group_by not in query.group_dims(metric, metric_fields):
             return AskIntent(
                 "refuse",
                 message=(
                     f"I can show {metric.label.lower()}, but not broken down that "
-                    f"way. Options: {', '.join(query.group_dims(metric)) or 'none'}."
+                    f"way. Options: {', '.join(query.group_dims(metric, metric_fields)) or 'none'}."
                 ),
             )
     try:
         query.validate(
             metric, group_by=group_by, split_by=split_by, measure=measure,
-            filters=filters,
+            filters=filters, attrs=metric_fields,
         )
     except ValueError as exc:
         # Refused with the options, never corrected: charting a plain count

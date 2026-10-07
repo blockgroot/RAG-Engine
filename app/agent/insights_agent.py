@@ -21,7 +21,7 @@ from ..core.exceptions import ProviderError
 from ..core.streaming import chunk_answer
 from ..insights import registry, scopes, store
 from ..insights.facts import DOCUMENT_PROVIDERS, record_document_facts
-from ..insights import query
+from ..insights import attr_catalog, query
 from ..insights.resolve import ChartSpec, CannotChart, spec_from_dict
 from ..vectorstore.base import Viewer
 from .base import Agent, AgentResponse
@@ -370,14 +370,14 @@ def _backfill_and_retry(
 
 
 def _details(
-    spec, *, org_id, workspace_id, days, focus, viewer=None, filters=(),
+    spec, *, org_id, workspace_id, days, focus, viewer=None, filters=(), attrs=None,
 ) -> list[dict]:
     """Never fatal: a chart without its rows is still a chart, and losing the
     answer to keep the annotation would be the wrong trade."""
     try:
         facts = store.list_facts(
             spec.metric, org_id=org_id, workspace_id=workspace_id,
-            days=days, focus=focus, viewer=viewer, filters=filters,
+            days=days, focus=focus, viewer=viewer, filters=filters, attrs=attrs,
         )
     except (ProviderError, KeyError):
         logger.warning("insights: could not read details of %s", spec.metric)
@@ -436,7 +436,7 @@ def _resolve_focus(spec, metric, *, org_id, workspace_id, days, viewer=None) -> 
     )
 
 
-def _resolve_filters(spec, metric, *, org_id, workspace_id, days, viewer=None):
+def _resolve_filters(spec, metric, *, org_id, workspace_id, days, viewer=None, attrs=None):
     """Each grammar filter's raw value, matched to a value with rows.
 
     Same contract as ``focus``: "only Sana's" becomes the stored actor
@@ -449,7 +449,7 @@ def _resolve_filters(spec, metric, *, org_id, workspace_id, days, viewer=None):
     for dim, raw in spec.filters:
         value = _resolve_value(
             dim, raw, spec, metric, org_id=org_id,
-            workspace_id=workspace_id, days=days, viewer=viewer,
+            workspace_id=workspace_id, days=days, viewer=viewer, attrs=attrs,
         )
         if value is not None:
             out.append((dim, value))
@@ -461,7 +461,7 @@ _DIM_NOUN = {"actor": "person", "state": "state"}
 
 
 def _resolve_value(
-    dim, raw, spec, metric, *, org_id, workspace_id, days, viewer=None,
+    dim, raw, spec, metric, *, org_id, workspace_id, days, viewer=None, attrs=None,
 ) -> str | None:
     wanted = raw.strip().lower()
     try:
@@ -473,7 +473,7 @@ def _resolve_value(
         else:
             values = store.list_values(
                 spec.metric, dim, org_id=org_id, workspace_id=workspace_id,
-                days=days, viewer=viewer,
+                days=days, viewer=viewer, attrs=attrs,
             )
     except ProviderError:
         # Cannot verify, so do not filter. A whole chart beats a wrong one.
@@ -617,19 +617,19 @@ def _caption(
     return title
 
 
-def _grammar_caveat(metric, group_by, split_by) -> str:
+def _grammar_caveat(metric, group_by, split_by, attrs=None) -> str:
     """The metric's caveat, plus the one a TAG breakdown adds: an item with
     two labels is in two bars, so the bars sum to more than the items. A
     chart whose bars over-add without saying so reads as a miscount."""
     notes = [metric.caveat] if metric.caveat else []
     for dim in (group_by, split_by):
-        if query.is_tag(metric, dim):
+        if query.is_tag(metric, dim, attrs):
             notes.append(
-                f"An item with several {registry.attr(metric, dim).label}s counts "
+                f"An item with several {query.find_attr(metric, dim, attrs).label}s counts "
                 f"under each, so the bars can add up to more than the total."
             )
             break
-    if any(registry.attr(metric, d) for d in (group_by, split_by) if d):
+    if any(query.find_attr(metric, d, attrs) for d in (group_by, split_by) if d):
         notes.append(
             "Recorded from each item's next sync after this field was added; "
             "older items with no value show as Unknown."
@@ -637,8 +637,8 @@ def _grammar_caveat(metric, group_by, split_by) -> str:
     return " ".join(notes)
 
 
-def _dim_label(metric, dim: str) -> str:
-    found = registry.attr(metric, dim)
+def _dim_label(metric, dim: str, attrs=None) -> str:
+    found = query.find_attr(metric, dim, attrs)
     if found is not None:
         return found.label
     return {
@@ -652,20 +652,21 @@ def _dim_label(metric, dim: str) -> str:
 def _ask_title(
     metric, group_by: str | None, *, split_by: str | None = None,
     measure: str | None = None, filters: tuple[tuple[str, str], ...] = (),
+    attrs=None,
 ) -> str:
     """Says every slice applied. A split, a distinct count or a person filter
     that the title omits reads as the plain chart -- the same failure as a
     focus the title omits."""
-    chosen = query.measures_for(metric).get(measure) if measure else None
+    chosen = query.measures_for(metric, attrs).get(measure) if measure else None
     title = metric.label
     if chosen is not None and chosen.label:
         title = f"{chosen.label} — {metric.label.lower()}"
     if group_by:
-        title += f" by {_dim_label(metric, group_by)}"
+        title += f" by {_dim_label(metric, group_by, attrs)}"
         if split_by:
-            title += f" and {_dim_label(metric, split_by)}"
+            title += f" and {_dim_label(metric, split_by, attrs)}"
     for dim, value in filters:
-        title += f" — {_dim_label(metric, dim)}: {value}"
+        title += f" — {_dim_label(metric, dim, attrs)}: {value}"
     return title
 
 
@@ -700,13 +701,23 @@ def _run_spec(
     if spec.focus:
         focus = _resolve_focus(spec, metric, org_id=org_id,
                                workspace_id=workspace_id, days=days, viewer=viewer)
-    filters = _resolve_filters(spec, metric, org_id=org_id,
-                               workspace_id=workspace_id, days=days, viewer=viewer)
     split_by = spec.split_by if group_by else None
     measure = spec.measure
+    # The recorded fields this scope actually has (attr_catalog), read ONCE
+    # and handed to every step below -- validation, the query, refinement,
+    # the hover rows, the title -- so they all agree on what exists. Only read
+    # when the spec names something beyond the built-in columns.
+    attrs = None
+    if store._needs_attrs(group_by=group_by, split_by=split_by,
+                          measure=measure, filters=spec.filters):
+        attrs = attr_catalog.for_metric(
+            metric, org_id=org_id, workspace_id=workspace_id, viewer=viewer,
+        )
+    filters = _resolve_filters(spec, metric, org_id=org_id, workspace_id=workspace_id,
+                               days=days, viewer=viewer, attrs=attrs)
     try:
         query.validate(metric, group_by=group_by, split_by=split_by,
-                       measure=measure, filters=filters)
+                       measure=measure, filters=filters, attrs=attrs)
     except ValueError as exc:
         # The resolver validated this already; a spec arriving another way
         # (a stored dict, a future caller) is refused the same way.
@@ -728,6 +739,7 @@ def _run_spec(
         split_by=split_by,
         measure=measure,
         filters=filters,
+        attrs=attrs,
     )
 
     # A period that puts EVERYTHING in one bucket draws as a single point --
@@ -749,7 +761,7 @@ def _run_spec(
                 spec.metric, org_id=org_id, workspace_id=workspace_id,
                 period=finer, days=finer_window,
                 group_by=group_by, focus=focus, viewer=viewer,
-                split_by=split_by, measure=measure, filters=filters,
+                split_by=split_by, measure=measure, filters=filters, attrs=attrs,
             )
         except (ProviderError, ValueError):
             break
@@ -768,13 +780,14 @@ def _run_spec(
     )
     title = _ask_title(
         metric, group_by, split_by=split_by, measure=measure, filters=filters,
+        attrs=attrs,
     )
     if focus:
         # In the title, because a filtered chart that looks unfiltered is the
         # same failure as charting the wrong thing.
         title = f"{title} — {focus}"
 
-    chosen = query.measures_for(metric)[measure or query.default_measure(metric)]
+    chosen = query.measures_for(metric, attrs)[measure or query.default_measure(metric)]
     panel = {
         "id": (
             f"ask:{spec.metric}:{group_by or 'time'}:{split_by or '-'}:"
@@ -791,7 +804,7 @@ def _run_spec(
         "split_by": split_by,
         "filters": [list(f) for f in filters],
         "unit": chosen.unit,
-        "caveat": _grammar_caveat(metric, group_by, split_by),
+        "caveat": _grammar_caveat(metric, group_by, split_by, attrs),
         "points": [
             {"bucket": p.bucket, "group": p.group, "series": p.series, "value": p.value}
             for p in points
@@ -802,7 +815,7 @@ def _run_spec(
         # the counted row.
         "details": _details(
             spec, org_id=org_id, workspace_id=workspace_id, days=days, focus=focus,
-            viewer=viewer, filters=filters,
+            viewer=viewer, filters=filters, attrs=attrs,
         ),
         "measured_since": begun.isoformat() if begun else None,
     }

@@ -169,7 +169,7 @@ def test_the_catalogue_offers_slots_only_where_they_apply():
     assert "measure:" not in sentiment and "split_by:" not in sentiment
     assert "filters:" not in sentiment
     merged = next(l for l in prompt.splitlines() if l.startswith("- prs_merged"))
-    assert "measure: count, people, subjects" in merged
+    assert "measure: count," in merged and "people, subjects" in merged
     assert "split_by: actor, subject" in merged
 
 

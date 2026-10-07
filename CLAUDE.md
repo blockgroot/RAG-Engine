@@ -120,8 +120,13 @@ document table in `doc_tables`/`doc_table_rows`). The model never emits a number
 an axis or a date: it fills in a spec, and code validates it twice (resolver and
 store) and refuses rather than corrects. Metric fragments must not contain `{`,
 `%` or `;`. Only our own identifiers are spliced into SQL (`registry.DIMENSIONS`,
-`registry.ATTRS` keys, table column keys `c0`…); every value, including a filter
-the asker typed, is resolved against real rows and bound. Chat and Slack pass a
+attribute keys matching `fields.KEY_RE` — normalized at write, checked again at
+read — and table column keys `c0`…); every value, including a filter the asker
+typed, is resolved against real rows and bound. Facts keep every SIMPLE field a
+source returned (`insights/fields.py`: no bodies, ids, links, timestamps or
+emails; ≤40 keys) and the chartable set is DISCOVERED per scope and viewer
+(`insights/attr_catalog.py`); `registry.ATTRS` is display hints only, never a
+list of what may be charted. Chat and Slack pass a
 spec through `resolve.spec_to_dict`, never a hand-built dict (that dropped `focus`).
 A document table is exactly as visible as its document: offered only through the
 visibility predicate, re-checked at run time, and never offered without a viewer.

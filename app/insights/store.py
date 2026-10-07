@@ -121,15 +121,37 @@ def _floored(inner: str, metric, *, has_series: bool) -> str:
     """
 
 
-def _filter_clause(metric, filters: tuple[tuple[str, str], ...]) -> tuple[str, dict]:
+def _needs_attrs(group_by, split_by, measure, filters, dim=None) -> bool:
+    """Does this request name anything beyond the built-in columns?"""
+    named = [group_by, split_by, dim] + [d for d, _ in filters]
+    return any(n and n not in registry.DIMENSIONS for n in named) or bool(
+        measure and (measure.startswith("total_") or measure.startswith("average_"))
+    )
+
+
+def _attrs_for(metric, attrs, *, org_id, workspace_id, viewer, **request):
+    """The discovered fields, read only when the request names one.
+
+    A field is usable only if it occurs in THIS scope's rows (and the viewer's),
+    so the store discovers them itself rather than trusting a caller's list --
+    no call site can compile SQL over a field that is not there.
+    """
+    if attrs is not None or not _needs_attrs(**request):
+        return attrs
+    from .attr_catalog import for_metric
+
+    return for_metric(metric, org_id=org_id, workspace_id=workspace_id, viewer=viewer)
+
+
+def _filter_clause(metric, filters: tuple[tuple[str, str], ...], attrs=None) -> tuple[str, dict]:
     """One `` AND ...`` per filter, from `query.filter_sql`. The column or JSON
     key and the parameter NAME both come from declarations, so the only
     caller text is the bound value."""
     sql, params = "", {}
     for dim, value in filters:
-        if dim not in query.filter_dims(metric):
+        if dim not in query.filter_dims(metric, attrs):
             raise ValueError(f"unknown filter {dim!r}")
-        sql += query.filter_sql(metric, dim, f"f_{dim}")
+        sql += query.filter_sql(metric, dim, f"f_{dim}", attrs)
         params[f"f_{dim}"] = value
     return sql, params
 
@@ -147,6 +169,7 @@ def run_metric(
     split_by: str | None = None,
     measure: str | None = None,
     filters: tuple[tuple[str, str], ...] = (),
+    attrs=None,
 ) -> list[Point]:
     """Count one registry metric in one scope over one window.
 
@@ -169,11 +192,15 @@ def run_metric(
         raise ValueError(
             f"unknown period {period!r}; expected one of {registry.PERIODS}"
         )
+    attrs = _attrs_for(
+        metric, attrs, org_id=org_id, workspace_id=workspace_id, viewer=viewer,
+        group_by=group_by, split_by=split_by, measure=measure, filters=filters,
+    )
     query.validate(
         metric, group_by=group_by, split_by=split_by, measure=measure,
-        filters=filters,
+        filters=filters, attrs=attrs,
     )
-    chosen = query.measures_for(metric)[measure or query.default_measure(metric)]
+    chosen = query.measures_for(metric, attrs)[measure or query.default_measure(metric)]
     select = chosen.select or metric.select
 
     # Every expression below comes from `query.dim_sql`: a whitelisted column,
@@ -182,7 +209,7 @@ def run_metric(
     joins = ""
     column = None
     if group_by:
-        column, join = query.dim_sql(metric, group_by)
+        column, join = query.dim_sql(metric, group_by, attrs)
         joins += join
     # Aliased because the suppression floor wraps this query and has to name
     # the columns. "group" is quoted -- it is a reserved word.
@@ -203,7 +230,7 @@ def run_metric(
             if series_column is None:
                 raise ValueError(f"{key} has unknown second dimension {second!r}")
         else:
-            series_column, join = query.dim_sql(metric, second)
+            series_column, join = query.dim_sql(metric, second, attrs)
             joins += join
     selected += (
         f", {series_column}::text AS series" if series_column
@@ -228,7 +255,7 @@ def run_metric(
     # `group_by` it is bound as a parameter and never spliced.
     if focus is not None:
         where += " AND subject = %(focus)s"
-    filter_sql, filter_params = _filter_clause(metric, filters)
+    filter_sql, filter_params = _filter_clause(metric, filters, attrs)
     where += filter_sql
     access, access_params = _viewer_filter(viewer)
     where += access
@@ -301,6 +328,7 @@ def list_facts(
     limit: int = MAX_DETAILS,
     viewer: "Viewer | None" = None,
     filters: tuple[tuple[str, str], ...] = (),
+    attrs=None,
 ) -> list[Fact]:
     """The newest rows this chart counted.
 
@@ -324,7 +352,11 @@ def list_facts(
         where += " AND subject = %(focus)s"
     # The hover lists what the bars counted, so it narrows exactly as they do:
     # Sana's PRs must not be shown behind a chart filtered to someone else.
-    filter_sql, filter_params = _filter_clause(metric, filters)
+    attrs = _attrs_for(
+        metric, attrs, org_id=org_id, workspace_id=workspace_id, viewer=viewer,
+        group_by=None, split_by=None, measure=None, filters=filters,
+    )
+    filter_sql, filter_params = _filter_clause(metric, filters, attrs)
     where += filter_sql
     access, access_params = _viewer_filter(viewer)
     where += access
@@ -348,7 +380,7 @@ def list_facts(
 
     # Only DECLARED attributes travel with the hover: `attrs` may hold keys a
     # chart never reads, and the payload is not the place to find out.
-    declared = {a.key for a in query.readable_attrs(metric)}
+    declared = {a.key for a in query.readable_attrs(metric, attrs)}
     return [
         Fact(
             subject=r[0], actor=r[1], state=r[2],
@@ -381,6 +413,7 @@ def list_subjects(
 def list_values(
     key: str, dim: str, *, org_id: str, workspace_id: str | None, days: int,
     viewer: "Viewer | None" = None,
+    attrs=None,
 ) -> list[str]:
     """Every value of ``dim`` this metric has rows for, in this scope.
 
@@ -390,9 +423,13 @@ def list_values(
     Viewer-filtered because the refusal repeats the list back.
     """
     metric = registry.get(key)
-    if dim not in registry.DIMENSIONS and dim not in query.filter_dims(metric):
+    attrs = _attrs_for(
+        metric, attrs, org_id=org_id, workspace_id=workspace_id, viewer=viewer,
+        group_by=None, split_by=None, measure=None, filters=(), dim=dim,
+    )
+    if dim not in registry.DIMENSIONS and dim not in query.filter_dims(metric, attrs):
         raise ValueError(f"unknown dimension {dim!r}")
-    column, joins = query.dim_sql(metric, dim)
+    column, joins = query.dim_sql(metric, dim, attrs)
     where = _scoped(
         f"""
          WHERE org_id = %(org_id)s

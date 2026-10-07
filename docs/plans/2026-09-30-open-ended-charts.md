@@ -1,7 +1,8 @@
 # Open-Ended Charts Plan
 
 > **Status (2026-09-30): Phases 1, 2 and 3 BUILT** (`app/insights/query.py`,
-> `activity_facts.attrs`, `app/doctables` + `app/insights/tables.py`; tests
+> `activity_facts.attrs` with every simple field kept (`insights/fields.py`) and
+> discovered per scope (`insights/attr_catalog.py`), `app/doctables` + `app/insights/tables.py`; tests
 > `test_insights_query.py`, `test_insights_attrs.py`, `test_doctables.py`).
 > Phase 3 v1 reads Drive Sheets (first tab), CSVs, pipe tables in Notion/Docs
 > and Word tables; XLSX, PDF tables and multi-tab sheets are not read yet.

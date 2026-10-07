@@ -153,11 +153,25 @@ query RecentIssues($after: String, $filter: IssueFilter) {
       estimate
       project { name }
       labels(first: 10) { nodes { name } }
+      cycle { number name }
+      projectMilestone { name }
+      creator { name }
+      slaType
+      customerTicketCount
     }
     pageInfo { hasNextPage endCursor }
   }
 }
 """ % _PAGE_SIZE
+
+
+def _chart_fields(node: dict) -> dict:
+    from ..insights.fields import simple_fields
+
+    return simple_fields(
+        node, skip=("state", "assignee", "team", "identifier", "title", "url",
+                    "sharedAccess"),
+    )
 
 
 def _issue_title(node: dict) -> str:
@@ -498,22 +512,13 @@ class LinearAdapter(SourceAdapter):
                         # without them, and they ride along in a query we
                         # already make.
                         "team": (node.get("team") or {}).get("name") or "",
-                        # Chart attributes (insights/registry.ATTRS), in the
-                        # same request: "tasks by priority", "estimate points
-                        # completed per team". "No priority" is Linear's own
-                        # label for unset, so it is dropped, not charted.
-                        "priority": (
-                            node.get("priorityLabel")
-                            if node.get("priorityLabel") not in (None, "", "No priority")
-                            else ""
-                        ),
-                        "estimate": node.get("estimate"),
-                        "project": (node.get("project") or {}).get("name") or "",
-                        "labels": [
-                            n.get("name") for n in
-                            ((node.get("labels") or {}).get("nodes") or [])
-                            if isinstance(n, dict) and n.get("name")
-                        ],
+                        # Every simple field of the node, for charts
+                        # (insights/fields.py): priority, estimate, labels,
+                        # project, cycle, milestone... -- whatever the query
+                        # returns, with no list kept here. The columns the
+                        # facts already have (state, assignee, team) are not
+                        # stored twice.
+                        "fields": _chart_fields(node),
                         "created_at": _parse_dt(node.get("createdAt")),
                         "completed_at": _parse_dt(node.get("completedAt")),
                         "at": _parse_dt(node.get("updatedAt")),

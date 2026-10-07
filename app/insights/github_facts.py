@@ -221,18 +221,15 @@ def _pull_rows(org_id, workspace_id, pull) -> list[tuple]:
 
 
 def _pull_attrs(pull) -> Jsonb:
-    """The declared GitHub attributes (registry.ATTRS): labels and target
-    branch, both from the payload already in hand. An absent value is
-    omitted, never stored as "none" -- that would chart as a real branch."""
-    attrs = {}
-    labels = list(getattr(pull, "labels", ()) or ())
-    if labels:
-        attrs["label"] = labels
-    base = getattr(pull, "base", None)
-    if base:
-        attrs["base"] = base
-    return Jsonb(attrs)
-
+    """Every simple field of the pull request (`insights.fields`), as parsed
+    from the payload already in hand -- no extra call. For a merged PR that
+    is the DETAIL payload `_fill_mergers` fetched, which also carries
+    additions, deletions and changed files. An absent value is omitted,
+    never stored as "none" -- that would chart as a real value."""
+    return Jsonb({
+        k: list(v) if isinstance(v, tuple) else v
+        for k, v in (getattr(pull, "fields", ()) or ())
+    })
 
 def _review_rows(org_id, workspace_id, pull, reviews) -> list[tuple]:
     """One row per reviewer per pull request, not per review event.
