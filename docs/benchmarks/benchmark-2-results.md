@@ -10,7 +10,12 @@ We kept everything else as close as possible:
 - the same 1,374 documents;
 - the same unmodified Onyx (v4.8.4).
 
-Handbook ran with the accuracy changes that came out of Benchmark 1.
+Handbook ran with the accuracy changes that came out of Benchmark 1:
+
+1. **Reads the surrounding text.** For its two best passages, Handbook also reads the paragraph just before and just after, so an answer split across paragraphs isn't cut in half.
+2. **Keeps each fact with its own document.** A new rule tells the AI never to take a fact from one document and present it as belonging to another, for example mixing up two similar incidents.
+3. **Searches with other wordings from the start.** Before searching, Handbook asks the AI for two other ways to phrase the question and searches with all three. This finds documents that use different words than the person asking. Before, it only tried other wordings after a search failed.
+4. **Can drop weak results.** A cutoff can remove passages that score far below the best one. It was **off** in this run; its scores were recorded so the right value can be chosen later.
 
 ## In short
 
