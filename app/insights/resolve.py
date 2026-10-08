@@ -230,6 +230,9 @@ def _catalogue(metrics: list[registry.Metric], fields: dict | None = None,
         if builtin:
             line += ". where " + ", ".join(
                 f"{d} = {query.dim_label(metric, d)}" for d in builtin)
+        if "progress" in metric.dims:
+            line += (". progress = two bars, Open (not finished) and Closed "
+                     "(finished), for done vs remaining")
         # The REAL names with activity, so a focus or a person filter is
         # picked from what exists rather than guessed from the wording.
         known = names.get((metric.provider, metric.kind)) or {}
@@ -503,6 +506,8 @@ def _prompt(
             "(T1...), and group_by / split_by / value / filters use that "
             "table's COLUMN NAMES exactly as listed. measure = count (rows), "
             "sum, average, min or max; value = the number column to add up. "
+            "In a TABLE, a time scale (per month, weekly, over time) IS a "
+            "breakdown: group_by = the table's date column, with that period. "
             "Prefer a table when they ask about figures IN a document (sales, "
             "budget, revenue, headcount); prefer a metric for activity in the "
             "apps (edits, pull requests, tasks).\n\n"
@@ -535,8 +540,9 @@ def _prompt(
         "- Never invent a metric key. Match the question to the list "
         "above, even if the wording differs from the label.\n"
         "- group_by must be one of that metric's options, or null.\n"
-        "- A time scale (per week, weekly, per month) is the PERIOD, not a "
-        "breakdown: \"files edited per week\" is group_by null, period week. "
+        "- For a metric (not a table), a time scale (per week, weekly, per "
+        "month) is the PERIOD, not a breakdown: \"files edited per week\" is "
+        "group_by null, period week. "
         "Set group_by only when they asked for a breakdown, and copy the exact "
         "words of their question that asked for it into breakdown_words "
         "(\"by person\", \"who edited the most\"); null when they did not.\n"

@@ -40,7 +40,16 @@ def test_dimensions_are_whitelisted_column_names():
     text -- only from this fixed set."""
     for key, metric in registry.METRICS.items():
         for dim in metric.dims:
-            assert dim in registry.DIMENSIONS, f"{key} allows unknown dim {dim!r}"
+            assert dim in registry.DIMENSIONS or dim in registry.DERIVED_DIMENSIONS, (
+                f"{key} allows unknown dim {dim!r}")
+
+
+def test_derived_dimensions_are_fixed_sql_with_nothing_to_bind_or_break():
+    """A derived dimension (``progress``) is spliced like a column, so it must
+    be a constant of ours: no placeholders, no statement breaks, no braces."""
+    for name, sql in registry.DERIVED_DIMENSIONS.items():
+        assert not any(ch in sql for ch in "%;{}"), f"{name!r} is not a safe constant"
+        assert name.isidentifier()
 
 
 def test_dimension_targets_are_bare_identifiers():
