@@ -414,7 +414,7 @@ def _missing(providers: list[str]) -> list[str]:
 def _prompt(
     question: str, metrics: list[registry.Metric], *, github: bool = False,
     missing: list[str] | None = None, tables: list | None = None,
-    fields: dict | None = None,
+    fields: dict | None = None, chart_mode: bool = False,
 ) -> str:
     # The question is user text reaching a prompt, so it is scrubbed and fenced
     # like any other untrusted input. That is a mitigation, not the guarantee:
@@ -422,11 +422,23 @@ def _prompt(
     # assuming the prompt LOST.
     fenced = scrub_untrusted_text(question)[:500]
     return (
-        "Decide whether this question needs a COUNTED chart or a document "
-        "answer.\n\n"
-        "intent=qa: they want an explanation, a policy, what someone said, "
-        "or anything that lives in prose. Do not force a chart. "
-        "\"org chart\" means a document, not a plot.\n"
+        (
+            # Chart mode: the asker CHOSE a chart. The job is to pick what to
+            # count, not to second-guess the choice -- a small model asked
+            # "chart or prose?" answered prose for "Pull requests merged per
+            # week".
+            "They switched on Chart mode: they want a CHART. Pick what to count "
+            "from the list below.\n\n"
+            "intent=qa ONLY when the question plainly asks for a written answer "
+            "(a policy, an explanation, what someone said) and nothing listed "
+            "could be counted for it.\n"
+            if chart_mode else
+            "Decide whether this question needs a COUNTED chart or a document "
+            "answer.\n\n"
+            "intent=qa: they want an explanation, a policy, what someone said, "
+            "or anything that lives in prose. Do not force a chart. "
+            "\"org chart\" means a document, not a plot.\n"
+        ) +
         "intent=chart: they want a counted visual of activity from a "
         "connected app (a graph, breakdown, ranking, share, or named "
         "shape). They do not have to name pie/bar/line — pick a default "
@@ -622,7 +634,7 @@ def classify_question(
     try:
         reply = llm.generate(
             _prompt(question, metrics, github=github, missing=missing,
-                    tables=offered, fields=fields),
+                    tables=offered, fields=fields, chart_mode=not fail_open),
             max_tokens=MAX_TOKENS,
         )
     except Exception as exc:  # noqa: BLE001
@@ -788,6 +800,14 @@ def _parse_intent(
             "qa" if fail_open else "chart"
         )
 
+    if intent == "qa" and not fail_open and (
+        picked_table or (isinstance(data.get("metric"), str) and data.get("metric") in allowed)
+    ):
+        # An explicit chart request (Chart mode, the chart box) where the model
+        # said "prose" but named a real metric or table from the list: the
+        # pick is the answer. Validated below like any other pick.
+        logger.info("insights: qa with a valid pick in a chart request -> chart")
+        intent = "chart"
     if intent == "qa":
         return AskIntent("qa")
 
