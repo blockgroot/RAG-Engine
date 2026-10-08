@@ -690,6 +690,26 @@ def _sse_event(event: str, data: dict | str) -> str:
     return f"event: {event}\ndata: {payload}\n\n"
 
 
+def _shown_live(result) -> list[dict]:
+    """The live reads the ANSWER uses: those whose document it cites.
+
+    A live read that the answer did not draw on still happened, but a
+    "Notion · live" chip beside an answer whose sources are all Slack claims a
+    contribution nothing on the page backs up. Shown per provider, once.
+    """
+    cited = {c.get("document_id") for c in (getattr(result, "cited", None) or [])}
+    shown: list[dict] = []
+    seen: set[str] = set()
+    for read in getattr(result, "live_sources", None) or []:
+        doc = read.get("document_id")
+        provider = read.get("provider")
+        if (doc is not None and doc not in cited) or provider in seen:
+            continue
+        seen.add(provider)
+        shown.append({"provider": provider, "fetched_at": read.get("fetched_at")})
+    return shown
+
+
 def _done_event(conversation_id: str | None, question: str, payload: dict) -> str:
     """The ``done`` event, with who answered kept on the turn it closes.
 
@@ -853,7 +873,7 @@ def _stream_attachment_answer(
             "model": _answering_model(),
             "chart": None,
             "chart_period": None,
-            "live_sources": list(getattr(response, "live_sources", None) or []),
+            "live_sources": _shown_live(response),
             # The documents behind the answer's [n] markers; the UI draws a
             # chip only for a number listed here and strips the rest.
             "cited": list(getattr(response, "cited", None) or []),
@@ -1328,7 +1348,7 @@ def _stream_answer_body(
             "chart_period": getattr(result, "chart_period", None),
             # Which connectors answered LIVE, and when. Empty when nothing was
             # refreshed -- the indexed copy answered.
-            "live_sources": list(getattr(result, "live_sources", None) or []),
+            "live_sources": _shown_live(result),
             "cited": list(getattr(result, "cited", None) or []),
             # A text question asked in Chart mode: offer to turn it off.
             "ask_hint": decision.reason == "chart-mode-text-question",

@@ -699,3 +699,18 @@ def test_a_failed_label_never_costs_the_answer(monkeypatch):
 
     monkeypatch.setattr(chat.conversation_store, "set_last_turn_meta", boom)
     assert chat._done_event("conv-1", "q", {"source": "none"}).startswith("event: done")
+
+
+def test_live_is_claimed_only_for_a_read_the_answer_cites():
+    """"Notion · live" showed beside an answer whose sources were all Slack."""
+    from types import SimpleNamespace
+
+    from app.api.chat import _shown_live
+
+    reads = [{"provider": "notion", "fetched_at": "t1", "document_id": "n1"},
+             {"provider": "linear", "fetched_at": "t2", "document_id": "l1"},
+             {"provider": "linear", "fetched_at": "t3", "document_id": "l2"}]
+    result = SimpleNamespace(live_sources=reads,
+                             cited=[{"document_id": "l1"}, {"document_id": "l2"}, {"document_id": "s1"}])
+    assert _shown_live(result) == [{"provider": "linear", "fetched_at": "t2"}]
+    assert _shown_live(SimpleNamespace(live_sources=reads, cited=[])) == []
