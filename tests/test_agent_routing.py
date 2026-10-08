@@ -676,3 +676,25 @@ def test_models_that_build_charts_are_not_stopped(model):
         assert routing._chart_unsupported_model() is None
     finally:
         use_model(None)
+
+
+
+def test_named_tools_decide_where_the_answer_comes_from(monkeypatch):
+    """"Latest updates in Linear and Drive" was routed to Slack, whose
+    #rag-updates channel scored highest on "updates", and cited only Slack."""
+    _stub(monkeypatch, connected={"linear", "google", "slack", "notion"},
+          scores={"slack": 0.71, "linear": 0.52, "google": 0.48, "notion": 0.4})
+    decision = routing.choose_agent(
+        "Fetch me the latest updates in linear and drive, what's the current status?", ORG)
+    assert (decision.agent_key, decision.reason) == ("linear", "tools-named")
+
+
+def test_one_named_tool_is_routed_there(monkeypatch):
+    _stub(monkeypatch, connected={"linear", "slack"}, scores={"slack": 0.9, "linear": 0.2})
+    decision = routing.choose_agent("what changed in linear this week?", ORG)
+    assert (decision.agent_key, decision.reason) == ("linear", "tool-named")
+
+
+def test_no_named_tool_still_uses_the_probe(monkeypatch):
+    _stub(monkeypatch, connected={"linear", "slack"}, scores={"slack": 0.9, "linear": 0.2})
+    assert routing.choose_agent("what did we decide about the offsite?", ORG).agent_key == "slack"

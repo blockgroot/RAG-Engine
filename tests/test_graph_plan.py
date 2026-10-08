@@ -126,6 +126,14 @@ def test_predictive_connection_needs_a_named_indexed_tool():
     assert gp.connected_tools(None, "notion", "slack") is None
 
 
+def test_several_named_tools_are_exactly_where_to_look():
+    """"The latest in Linear and Drive" read Slack and Notion too, because the
+    graph's seed tools were added to any connected answer."""
+    plan = _plan()
+    assert gp.connected_tools(plan, "linear", {"linear", "google"}) == {"linear", "google"}
+    assert gp.connected_tools(plan, "linear", {"google", "notion"}) == {"linear", "google", "notion"}
+
+
 def test_escalation_only_when_other_tools_have_evidence():
     assert gp.escalation_tools(_plan(), "notion") == {"notion", "slack"}
     assert gp.escalation_tools(_plan(), "linear") == {"linear", "notion", "slack"}

@@ -94,7 +94,10 @@ Each of these shipped a real bug. The fix is the rule.
 **Retrieval.** A store fake must accept `viewer=`. `Viewer.acl()` lowercases every
 entry. `doc_viewers && '{}'` is false, which is what makes public-only work.
 `Viewer(email=None)` is unrestricted; do not conflate it with public-only.
-A successful ingest clears that org's `query_answer_cache`. The bot's own Slack
+A tool the question NAMES decides routing: one named tool is routed there;
+several are probed among themselves and the connected answer reads exactly those,
+never a tool the asker did not mention. Adjacent markers citing one document
+collapse to one. A successful ingest clears that org's `query_answer_cache`. The bot's own Slack
 traffic is not indexed. Query-norm max edit distance is 1, and the normalized
 string is never the web-search query.
 
