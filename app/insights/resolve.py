@@ -503,6 +503,10 @@ def _prompt(
         "- Never invent a metric key. Match the question to the list "
         "above, even if the wording differs from the label.\n"
         "- group_by must be one of that metric's options, or null.\n"
+        "- \"per week\", \"weekly\", \"per month\" set the PERIOD, not a "
+        "breakdown: \"files edited per week\" is group_by null, period week. "
+        "Group only when they ask BY something (\"by person\", \"by team\") "
+        "or who/which ranks first.\n"
         "- focus = ONE thing they narrowed to: a repository, channel, team, "
         "page or file NAME. \"commits in the DAO repo\" is focus=\"DAO\", "
         "not a grouping. Null when they asked about everything.\n"
@@ -635,9 +639,57 @@ def classify_question(
         missing=missing, providers=providers, handles=handles, fields=fields,
     )
     return replace(
-        _finish(intent, question, metrics, fail_open=fail_open),
+        _honour_time_ask(_finish(intent, question, metrics, fail_open=fail_open), question),
         needs_live=parse_live(reply),
     )
+
+
+#: "per week", "weekly", "by month", "each day": the asker named the TIME
+#: scale. Group 1 or 2 is the period.
+_TIME_ASK = re.compile(
+    r"\b(?:per|each|every|a|by)\s+(day|week|month|quarter)\b"
+    r"|\b(daily|weekly|monthly|quarterly)\b",
+    re.I,
+)
+_ADVERB_PERIOD = {"daily": "day", "weekly": "week", "monthly": "month", "quarterly": "quarter"}
+#: Asking for a breakdown or a ranking: "by person", "who", "top 5".
+_BREAKDOWN_ASK = re.compile(
+    r"\b(?:by|per)\s+(?!(?:day|week|month|quarter)\b)\w+"
+    r"|\b(?:who|whom|which|top\s+\d+|ranking|rank(?:ed)?|leaderboard|most|least"
+    r"|split|broken\s+down|breakdown|each\s+(?:person|team|repo\w*|channel|label|project))\b",
+    re.I,
+)
+
+
+def _honour_time_ask(intent: AskIntent, question: str) -> AskIntent:
+    """A trend asked for is a trend drawn.
+
+    "Drive files edited per week" came back from a small model as files BY
+    PERSON -- a valid breakdown, so validation passed, but not the question:
+    one editor drew a single bar instead of the weekly trend. When the
+    question names a time scale and asks for no breakdown, the breakdown the
+    model added is removed and the period is the one they named. Code, not
+    the prompt, because the prompt is what a small model ignored.
+    """
+    spec = intent.spec
+    if intent.kind != "chart" or spec is None or spec.table_id:
+        return intent
+    match = _TIME_ASK.search(question or "")
+    if match is None or _BREAKDOWN_ASK.search(question or ""):
+        return intent
+    metric = registry.METRICS.get(spec.metric)
+    if metric is None or metric.chart == "diverging_bar":
+        return intent  # sentiment is drawn by topic, never as a trend
+    period = (match.group(1) or _ADVERB_PERIOD[match.group(2).lower()]).lower()
+    if spec.group_by is None and spec.split_by is None and spec.period == period:
+        return intent
+    chart = spec.chart if spec.chart in ("line", "bar", "stacked_bar") else _chart_for(metric, None)
+    if spec.group_by is not None and chart == "bar":
+        chart = _chart_for(metric, None)  # the leaderboard shape the breakdown chose
+    logger.info("insights: %r is a trend per %s; dropped breakdown %r",
+                question[:60], period, spec.group_by)
+    return replace(intent, spec=replace(spec, group_by=None, split_by=None, period=period,
+                                        chart=chart))
 
 
 def parse_live(reply: str) -> bool | None:
