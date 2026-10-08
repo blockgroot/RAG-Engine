@@ -35,7 +35,8 @@ import {
   pick,
 } from "./chartColors";
 
-const PAD = { top: 16, right: 16, bottom: 30, left: 44 };
+// `right` leaves room for the last date label, centred on the last point.
+const PAD = { top: 22, right: 40, bottom: 30, left: 44 };
 const HEIGHT = 240;
 
 /** Widest a chart grows to. Past this a 4-point line is a lot of white space
@@ -127,8 +128,12 @@ function pivot(points: Point[]) {
 /** A y-axis that ends on a round number, so the top gridline is readable. */
 function niceMax(value: number): number {
   if (value <= 0) return 1;
-  const magnitude = 10 ** Math.floor(Math.log10(value));
-  return Math.ceil(value / magnitude) * magnitude;
+  // Headroom above the tallest value: a peak that lands exactly on the top
+  // gridline puts its dot and its value label on the plot's edge, where the
+  // label is cut off (a max of 3 drew "3" half outside the chart).
+  const target = value * 1.15;
+  const magnitude = 10 ** Math.floor(Math.log10(target));
+  return Math.ceil(target / magnitude) * magnitude;
 }
 
 /**
@@ -358,20 +363,21 @@ export function Chart({
     );
   }
 
-  // Only when even the finest bucket leaves ONE value: a lone bar has nothing
-  // to compare against and a one-slice pie is a circle labelled 100%.
-  if ((leaderboard || chart === "pie") && ranked.length === 1 && buckets.length <= 1) {
-    const only = ranked[0];
-    const name = series.find((s) => (s.trim() || "Unknown") === only.name) ?? "";
+  // One group in one period is still drawn as a chart -- a single column on
+  // a real axis, with its readout -- never a bare number, which read as a
+  // chart that failed to draw. A one-slice pie (a circle labelled 100%) is
+  // the one shape that says nothing, so it becomes that column too.
+  if (chart === "pie" && ranked.length === 1 && buckets.length <= 1) {
     return (
-      <Stat
-        label={only.name}
-        value={only.value}
+      <CategoryBars
+        rows={ranked}
         unit={unit}
-        buckets={buckets}
+        palette={palette}
+        measured={measured}
+        containerRef={ref}
+        details={details}
+        groupBy={groupBy}
         period={period}
-        seriesName={name}
-        at={at}
       />
     );
   }
@@ -487,6 +493,9 @@ export function Chart({
   }
 
   const stacked = chart === "stacked_bar";
+  // One or two points do not make a line: a lone dot at the top of an empty
+  // plot reads as a broken chart. Columns until there is a trend to trace.
+  const shape = chart === "line" && buckets.length < 3 ? "bar" : chart;
   const totals = buckets.map((b) =>
     stacked
       ? series.reduce((sum, s) => sum + at(b, s), 0)
@@ -536,7 +545,7 @@ export function Chart({
           const vx = ((event.clientX - box.left) / box.width) * width;
           const slot = plotW / Math.max(1, buckets.length);
           const index =
-            chart === "line"
+            shape === "line"
               ? Math.round(((vx - PAD.left) / plotW) * (buckets.length - 1))
               : Math.floor((vx - PAD.left) / slot);
           setNear(Math.max(0, Math.min(buckets.length - 1, index)));
@@ -560,8 +569,8 @@ export function Chart({
 
         {near != null && (
           <line
-            x1={chart === "line" ? x(near) : PAD.left + (plotW / buckets.length) * (near + 0.5)}
-            x2={chart === "line" ? x(near) : PAD.left + (plotW / buckets.length) * (near + 0.5)}
+            x1={shape === "line" ? x(near) : PAD.left + (plotW / buckets.length) * (near + 0.5)}
+            x2={shape === "line" ? x(near) : PAD.left + (plotW / buckets.length) * (near + 0.5)}
             y1={PAD.top}
             y2={PAD.top + plotH}
             className="chart-guide"
@@ -583,7 +592,7 @@ export function Chart({
           </g>
         ))}
 
-        {chart === "line"
+        {shape === "line"
           ? series.map((name, si) => {
               const path = buckets
                 .map(
@@ -651,7 +660,9 @@ export function Chart({
             })
           : buckets.map((b, i) => {
               const slot = plotW / buckets.length;
-              const barW = Math.max(6, slot * 0.6);
+              // Capped like CategoryBars: one week is a column, not a slab
+              // across the whole plot.
+              const barW = Math.max(6, Math.min(64, slot * 0.6));
               const cx = PAD.left + slot * i + slot / 2 - barW / 2;
               let cursor = PAD.top + plotH;
               return (
@@ -707,7 +718,7 @@ export function Chart({
           const step = Math.ceil(buckets.length / 8);
           if (i % step !== 0) return null;
           const slot = plotW / buckets.length;
-          const cx = chart === "line" ? x(i) : PAD.left + slot * i + slot / 2;
+          const cx = shape === "line" ? x(i) : PAD.left + slot * i + slot / 2;
           return (
             <text
               key={b}
@@ -740,7 +751,7 @@ export function Chart({
         />
       )}
 
-      {chart === "line" && series.length > 1 && (
+      {shape === "line" && series.length > 1 && (
         <ul className="chart-legend">
           {series.map((name, si) => (
             <li key={name || "all"}>
@@ -1030,82 +1041,6 @@ function CategoryBars({
           y={cursor.y}
         />
       )}
-    </div>
-  );
-}
-
-
-function Stat({
-  label,
-  value,
-  unit,
-  buckets,
-  period,
-  seriesName,
-  at,
-}: {
-  label: string;
-  value: number;
-  unit?: string;
-  buckets: string[];
-  period: string;
-  seriesName: string;
-  at: (bucket: string, series: string) => number;
-}) {
-  /**
-   * One group, rendered as the number it is.
-   *
-   * Reached when a ranking or a share resolves to a single group -- a real
-   * situation on a small team, a new connector or a filtered chart, and the
-   * one case where the ordinary shapes actively mislead: a lone bar has
-   * nothing to compare against and a one-slice pie is a circle labelled
-   * 100%. The trend is drawn beside it because "4 commits" and "4 commits,
-   * all in one week" are different facts.
-   */
-  const values = buckets.map((b) => at(b, seriesName));
-  const peak = Math.max(...values, 1);
-  const W = 220;
-  const H = 44;
-  const step = buckets.length > 1 ? W / (buckets.length - 1) : 0;
-  const path = values
-    .map((v, i) => `${i === 0 ? "M" : "L"} ${i * step} ${H - (v / peak) * (H - 6) - 3}`)
-    .join(" ");
-
-  return (
-    <div className="chart-stat">
-      <div>
-        <p className="chart-stat-value">{withUnit(value, unit)}</p>
-        <p className="chart-stat-label">{label}</p>
-      </div>
-      {buckets.length > 1 && (
-        <svg
-          className="chart-stat-spark"
-          viewBox={`0 0 ${W} ${H}`}
-          width={W}
-          height={H}
-          role="img"
-          aria-label={`trend over ${buckets.length} ${period}s`}
-        >
-          <path
-            d={`${path} L ${W} ${H} L 0 ${H} Z`}
-            fill="var(--chart-1)"
-            opacity={0.12}
-            stroke="none"
-          />
-          <path d={path} fill="none" stroke="var(--chart-1)" strokeWidth={2} />
-        </svg>
-      )}
-      {buckets.length > 1 && (
-        <p className="chart-stat-range">
-          {formatBucket(buckets[0], period)} – {formatBucket(buckets[buckets.length - 1], period)}
-        </p>
-      )}
-      {/* Without this a single number reads as a chart that failed to draw. */}
-      <p className="chart-stat-why">
-        {buckets.length > 1
-          ? "Only one result so far, so there is nothing to compare it with."
-          : `Only one result in one ${period}, so there is nothing to compare yet. Try asking per week, or over a longer range.`}
-      </p>
     </div>
   );
 }
