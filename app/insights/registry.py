@@ -120,6 +120,23 @@ SUBJECT_LABELS = {
 }
 
 
+#: Dimensions COMPUTED from a row rather than read from a column, kept apart
+#: from ``DIMENSIONS`` so that one stays bare column names. Fixed SQL of our
+#: own; no caller text ever reaches it.
+#:
+#: ``progress``: finished or not, by the SOURCE's own state type (Linear:
+#: completed and canceled are finished), never by state names -- "completed
+#: vs remaining" is two bars whatever a team calls its states. A row the
+#: source gave no type is left out (NULL), not guessed.
+DERIVED_DIMENSIONS = {
+    "progress": (
+        "(CASE WHEN activity_facts.attrs->>'state_type' IN ('completed', 'canceled') "
+        "THEN 'Closed' WHEN coalesce(activity_facts.attrs->>'state_type', '') <> '' "
+        "THEN 'Open' END)"
+    ),
+}
+
+
 def subject_label(provider: str) -> str:
     return SUBJECT_LABELS.get(provider, "subject")
 
@@ -276,7 +293,7 @@ _add(Metric(
     label="Where the work sits",
     chart="stacked_bar",
     kind="issue_state",
-    dims=("state", "subject", "actor"),
+    dims=("state", "progress", "subject", "actor"),
     unit="issues",
     caveat=_LINEAR_CAP,
 ))

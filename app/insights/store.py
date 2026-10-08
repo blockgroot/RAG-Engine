@@ -124,7 +124,8 @@ def _floored(inner: str, metric, *, has_series: bool) -> str:
 def _needs_attrs(group_by, split_by, measure, filters, dim=None) -> bool:
     """Does this request name anything beyond the built-in columns?"""
     named = [group_by, split_by, dim] + [d for d, _ in filters]
-    return any(n and n not in registry.DIMENSIONS for n in named) or bool(
+    return any(n and n not in registry.DIMENSIONS and n not in registry.DERIVED_DIMENSIONS
+               for n in named) or bool(
         measure and (measure.startswith("total_") or measure.startswith("average_"))
     )
 
@@ -387,10 +388,22 @@ def list_facts(
             subject=r[0], actor=r[1], state=r[2],
             occurred_at=r[3].isoformat() if r[3] else "",
             url=r[4],
-            attrs={k: v for k, v in (r[5] or {}).items() if k in declared},
+            attrs=_with_progress(metric, {k: v for k, v in (r[5] or {}).items()
+                                          if k in declared}, r[5] or {}),
         )
         for r in rows
     ]
+
+
+def _with_progress(metric, shown: dict, stored: dict) -> dict:
+    """Put the row's Open/Closed on the hover row when the metric can be
+    grouped by it, decided exactly as the SQL decides (`DIMENSIONS`)."""
+    if "progress" not in metric.dims:
+        return shown
+    kind = (stored.get("state_type") or "").strip().lower()
+    if kind:
+        shown = {**shown, "progress": "Closed" if kind in FINISHED_STATE_TYPES else "Open"}
+    return shown
 
 
 def list_subjects(
