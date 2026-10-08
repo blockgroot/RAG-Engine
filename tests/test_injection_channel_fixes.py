@@ -43,7 +43,8 @@ def test_a_reflected_chart_focus_never_carries_a_link(monkeypatch):
     monkeypatch.setattr(insights_agent.store, "list_subjects", lambda *a, **k: ["acme/api"])
     spec = ChartSpec(metric="m", group_by=None, period="week", chart="bar",
                      focus="https://evil.test/?d=x")
-    metric = SimpleNamespace(label="Commits")
+    from app.insights import registry
+    metric = registry.get("commits_by_author")
     with pytest.raises(CannotChart) as err:
         insights_agent._resolve_focus(spec, metric, org_id="o", workspace_id=None, days=30)
     assert "evil.test" not in str(err.value)

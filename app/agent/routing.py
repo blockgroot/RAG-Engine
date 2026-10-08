@@ -678,6 +678,24 @@ def _chart_fields(org_id: str, workspace_id: str | None, viewer) -> dict | None:
         return None
 
 
+def _chart_names(org_id: str, workspace_id: str | None, viewer) -> dict | None:
+    """The real teams, repositories, channels and people with activity in
+    this scope, so the classifier picks a focus from what exists ("our team"
+    is nobody's name). ``None`` without a viewer or on failure. Never raises."""
+    if viewer is None:
+        return None
+    try:
+        from ..insights import scopes, store as fact_store
+
+        return fact_store.scope_names(
+            org_id=org_id, workspace_id=workspace_id,
+            days=max(scopes.WINDOW_DAYS.values()), viewer=viewer,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("Agent routing: could not read names for charts", exc_info=True)
+        return None
+
+
 def _chart_unsupported_model() -> str | None:
     """The message for Chart mode on a model that cannot build charts, else None.
 
@@ -782,6 +800,7 @@ def _chart_mode_route(
             question, providers=providers, fail_open=False, offer_github=False,
             tables=_chartable_tables(org_id, workspace_id, viewer, question, uploads),
             fields=_chart_fields(org_id, workspace_id, viewer),
+            names=_chart_names(org_id, workspace_id, viewer),
         )
     except CannotChart as exc:
         return RoutingDecision(INSIGHTS_KEY, "chart-refuse", chart_refusal=str(exc))
