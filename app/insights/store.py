@@ -411,6 +411,44 @@ def list_subjects(
     )
 
 
+#: The state types a source reports for "the work is over". Linear's own
+#: workflow categories -- an API contract, not words anyone typed.
+FINISHED_STATE_TYPES = frozenset({"completed", "canceled"})
+
+
+def state_types(
+    key: str, *, org_id: str, workspace_id: str | None, days: int,
+    viewer: "Viewer | None" = None,
+) -> dict[str, str | None]:
+    """Each state this metric has rows for, with the type its SOURCE gave it
+    (``attrs.state_type``), or None where the source reports none. Same
+    scope, window and viewer filter as ``list_values``."""
+    metric = registry.get(key)
+    where = _scoped(
+        """
+         WHERE org_id = %(org_id)s
+           AND provider = %(provider)s
+           AND kind = %(kind)s
+           AND occurred_at >= now() - make_interval(days => %(days)s)
+           AND state IS NOT NULL
+        """,
+        workspace_id,
+    )
+    access, access_params = _viewer_filter(viewer)
+    where += access
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                "SELECT state, MAX(attrs->>'state_type') FROM activity_facts "
+                f"{where} GROUP BY state ORDER BY state",
+                {"org_id": org_id, "provider": metric.provider, "kind": metric.kind,
+                 "days": days, "workspace_id": workspace_id, **access_params},
+            ).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        raise ProviderError(f"insights: state types of {key} failed", cause=exc) from exc
+    return {r[0]: r[1] for r in rows if r[0]}
+
+
 def list_values(
     key: str, dim: str, *, org_id: str, workspace_id: str | None, days: int,
     viewer: "Viewer | None" = None,

@@ -138,7 +138,8 @@ def test_linear_feed_keeps_every_simple_field_in_one_call():
         "priority_label": "High", "estimate": 3, "project": "Q3", "labels": ["bug"],
         "cycle": "#12", "project_milestone": "Beta",
     }
-    assert linear_facts._issue_attrs(issue).obj == issue["fields"]
+    # Plus Linear's own type for the state: it decides "open" and "closed".
+    assert linear_facts._issue_attrs(issue).obj == {**issue["fields"], "state_type": "unstarted"}
 
 
 def test_hints_are_bare_identifiers():
@@ -316,4 +317,5 @@ def test_a_resync_fills_attrs_on_old_rows(org):
         got = conn.execute(
             "SELECT DISTINCT attrs FROM activity_facts WHERE org_id = %s", (org,)
         ).fetchall()
-    assert [r[0] for r in got] == [{"priority_label": "High", "labels": ["bug"]}]
+    assert [r[0] for r in got] == [{"priority_label": "High", "labels": ["bug"],
+                                    "state_type": "completed"}]
