@@ -933,14 +933,19 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 .composer-mode-chip-remove {
   width: 1.3rem;
   height: 1.3rem;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
   border: none;
   border-radius: 50%;
   background: transparent;
   color: inherit;
-  font-size: 1rem;
-  line-height: 1;
   cursor: pointer;
 }
+.composer-mode-chip > svg { flex: none; display: block; }
+.composer-mode-chip > span { line-height: 1; }
 .composer-mode-chip-remove:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 18%, transparent); }
 .chat-chart-hint {
   margin-top: 0.6rem;
