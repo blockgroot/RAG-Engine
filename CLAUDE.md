@@ -168,7 +168,8 @@ at Render. `render.yaml` does not configure production Hand-Book. Supabase uses 
 session pooler (5432).
 
 **Also hold.** GitHub embeds nothing. A live read runs after the gate, at most two
-items, and withholds the indexed copy only on not-found or permission. Personal
+items, and withholds the indexed copy only on not-found or permission. The "live" chip is shown only for a
+live read the answer cites (`api/chat.py::_shown_live`). Personal
 memory is written only from the asker's own question, is never evidence, and is
 web chat only. A confirmed email change keeps the old address as an alias.
 `GOOGLE_GROUPS_ENABLED` stays off unless the connecting account is a Workspace

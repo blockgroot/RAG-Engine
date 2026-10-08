@@ -105,9 +105,15 @@ class LiveRefresh:
 
     @property
     def sources(self) -> list[dict]:
-        """``done.live_sources``: which connectors answered live, and when."""
+        """``done.live_sources``: which connectors answered live, and when.
+
+        ``document_id`` says WHICH document was read, so the chat can claim
+        "live" only for a read the answer actually cites
+        (``api.chat._shown_live``); it is dropped before the browser sees it.
+        """
         return [
-            {"provider": r.provider, "fetched_at": r.fetched_at.isoformat()}
+            {"provider": r.provider, "fetched_at": r.fetched_at.isoformat(),
+             "document_id": r.document_id}
             for r in self.reads
             if r.outcome == OK and r.text and r.fetched_at is not None
         ]
