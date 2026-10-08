@@ -684,3 +684,37 @@ def test_the_question_check_carries_no_chart_catalogue():
 def test_chart_words_and_count_words(question, visual, count):
     assert resolve.asks_for_a_visual(question) is visual
     assert resolve.asks_for_a_count(question) is count
+
+
+# --------------------------------------------------------------------------
+# A trend asked for is a trend drawn
+# --------------------------------------------------------------------------
+
+
+def _drive_by_person():
+    return FakeLLM(json.dumps({"intent": "chart", "metric": "drive_docs_changed",
+                               "group_by": "actor", "period": "month", "chart": "bar"}))
+
+
+@pytest.mark.parametrize("question, period", [
+    ("Drive files edited per week", "week"),
+    ("weekly Drive files edited", "week"),
+    ("Drive files edited by month", "month"),
+])
+def test_a_time_scale_with_no_breakdown_is_a_trend(question, period):
+    """A small model added "by person" to "per week": one editor, one bar."""
+    intent = resolve.classify_question(question, providers=["google"], llm=_drive_by_person(),
+                                       fail_open=False)
+    assert intent.kind == "chart"
+    assert (intent.spec.group_by, intent.spec.period, intent.spec.chart) == (None, period, "line")
+
+
+@pytest.mark.parametrize("question", [
+    "Drive files edited by person per week",
+    "Drive files edited per person per month",
+    "Who edited the most Drive files each week?",
+])
+def test_a_breakdown_that_was_asked_for_stays(question):
+    intent = resolve.classify_question(question, providers=["google"], llm=_drive_by_person(),
+                                       fail_open=False)
+    assert intent.spec.group_by == "actor"
