@@ -618,3 +618,33 @@ def test_a_breakdown_that_was_asked_for_stays(question, quote):
     intent = resolve.classify_question(question, providers=["google"],
                                        llm=_by_person(quote), fail_open=False)
     assert intent.spec.group_by == "actor"
+
+
+@pytest.mark.parametrize("question", [
+    "Pull requests merged per week",
+    "Generate a pie chart for Pull requests merged per week",
+])
+def test_in_chart_mode_a_qa_reply_with_a_real_metric_is_a_chart(question):
+    """A small model said "prose" for these in Chart mode while naming
+    prs_merged; the asker chose a chart and the pick is real."""
+    llm = FakeLLM(json.dumps({"intent": "qa", "metric": "prs_merged", "group_by": None,
+                              "period": "week", "chart": "pie"}))
+    intent = resolve.classify_question(question, providers=["github"], llm=llm, fail_open=False)
+    assert intent.kind == "chart"
+    assert (intent.spec.metric, intent.spec.group_by, intent.spec.period) == ("prs_merged", None, "week")
+    assert "They switched on Chart mode" in llm.prompts[0]
+
+
+def test_in_chart_mode_a_qa_reply_without_a_pick_stays_a_text_question():
+    llm = FakeLLM(json.dumps({"intent": "qa", "metric": None}))
+    intent = resolve.classify_question("what is our leave policy?", providers=["github"],
+                                       llm=llm, fail_open=False)
+    assert intent.kind == "qa"
+
+
+def test_outside_chart_mode_the_prompt_still_weighs_chart_or_prose():
+    llm = FakeLLM(json.dumps({"intent": "qa", "metric": "prs_merged"}))
+    intent = resolve.classify_question("how do merges work?", providers=["github"],
+                                       llm=llm, fail_open=True)
+    assert intent.kind == "qa"
+    assert "Decide whether this question needs a COUNTED chart" in llm.prompts[0]
