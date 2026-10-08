@@ -66,6 +66,13 @@ class TableRef:
     #: The document it sits in: what a question is compared with to decide
     #: which tables to offer (`insights.tables.document_similarity`).
     document_id: str | None = None
+    #: Set instead of ``document_id`` for a table inside a file the asker
+    #: uploaded to this chat: private to them, never in ``list_tables``.
+    attachment_id: str | None = None
+
+    @property
+    def is_upload(self) -> bool:
+        return self.attachment_id is not None
 
     def column(self, key: str) -> dict | None:
         return next((c for c in self.columns if c.get("key") == key), None)
@@ -108,34 +115,129 @@ def replace_document_tables(
                 "DELETE FROM doc_tables WHERE document_id = %s AND origin = %s",
                 (document_id, origin),
             )
-            for position, table in enumerate(tables):
-                row = conn.execute(
-                    """
-                    INSERT INTO doc_tables
-                        (org_id, workspace_id, document_id, position, name,
-                         columns, row_count, truncated, notes, origin)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    RETURNING id
-                    """,
-                    (org_id, workspace_id, document_id, position, table.name,
-                     Jsonb([c.as_dict() for c in table.columns]), len(table.cells),
-                     table.truncated, list(table.notes), origin),
-                ).fetchone()
-                quotes = list(table.quotes) + [None] * (len(table.cells) - len(table.quotes))
-                conn.cursor().executemany(
-                    "INSERT INTO doc_table_rows (table_id, row_no, cells, raw, quote) "
-                    "VALUES (%s, %s, %s, %s, %s)",
-                    [(row[0], i, Jsonb(cells), Jsonb(list(raw)), quote)
-                     for i, (cells, raw, quote) in enumerate(
-                         zip(table.cells, table.raw, quotes))],
-                )
-                written += len(table.cells)
+            written = _insert_tables(
+                conn, tables, org_id=org_id, workspace_id=workspace_id,
+                document_id=document_id, attachment_id=None, origin=origin,
+            )
             conn.commit()
     except Exception as exc:  # noqa: BLE001 - re-raised as our own type
         raise ProviderError(
             f"doctables: could not store tables of document {document_id}", cause=exc
         ) from exc
     return written
+
+
+def _insert_tables(
+    conn, tables: list[Table], *, org_id: str, workspace_id: str | None,
+    document_id: str | None, attachment_id: str | None, origin: str,
+) -> int:
+    written = 0
+    for position, table in enumerate(tables):
+        row = conn.execute(
+            """
+            INSERT INTO doc_tables
+                (org_id, workspace_id, document_id, attachment_id, position, name,
+                 columns, row_count, truncated, notes, origin)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (org_id, workspace_id, document_id, attachment_id, position, table.name,
+             Jsonb([c.as_dict() for c in table.columns]), len(table.cells),
+             table.truncated, list(table.notes), origin),
+        ).fetchone()
+        quotes = list(table.quotes) + [None] * (len(table.cells) - len(table.quotes))
+        conn.cursor().executemany(
+            "INSERT INTO doc_table_rows (table_id, row_no, cells, raw, quote) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            [(row[0], i, Jsonb(cells), Jsonb(list(raw)), quote)
+             for i, (cells, raw, quote) in enumerate(zip(table.cells, table.raw, quotes))],
+        )
+        written += len(table.cells)
+    return written
+
+
+def replace_attachment_tables(
+    attachment_id: str, *, org_id: str, user_id: str, tables: list[Table],
+    origin: str = "table",
+) -> int:
+    """Swap one uploaded file's tables (this adapter's only) for ``tables``.
+
+    The attachment row is re-read with its owner in the WHERE, so a caller
+    can never hang tables off a file that is not that person's. Raises
+    ``ProviderError``; the upload caller decides a table failure never
+    fails the upload.
+    """
+    try:
+        with get_connection() as conn:
+            owner = conn.execute(
+                "SELECT a.id FROM conversation_attachments a "
+                "WHERE a.id = %s AND a.org_id = %s AND a.user_id = %s",
+                (attachment_id, org_id, user_id),
+            ).fetchone()
+            if owner is None:
+                return 0
+            conn.execute(
+                "DELETE FROM doc_tables WHERE attachment_id = %s AND origin = %s",
+                (attachment_id, origin),
+            )
+            written = _insert_tables(
+                conn, tables, org_id=org_id, workspace_id=None, document_id=None,
+                attachment_id=attachment_id, origin=origin,
+            )
+            conn.commit()
+    except Exception as exc:  # noqa: BLE001 - re-raised as our own type
+        raise ProviderError(
+            f"doctables: could not store tables of attachment {attachment_id}", cause=exc
+        ) from exc
+    return written
+
+
+@dataclass(frozen=True)
+class UploadScope:
+    """Whose uploads may be charted: this person's files in this chat.
+
+    The only key to an upload's tables. Built in ``api/chat.py`` from the
+    session (``user_id``) and the conversation the route already checked.
+    """
+
+    conversation_id: str
+    user_id: str
+
+
+_UPLOAD_COLUMNS = """
+    SELECT t.id, t.name, t.columns, t.row_count, t.truncated, t.notes,
+           a.filename, 'upload', NULL, t.origin, NULL, t.attachment_id
+      FROM doc_tables t
+      JOIN conversation_attachments a ON a.id = t.attachment_id
+     WHERE t.org_id = %(org_id)s AND a.org_id = %(org_id)s
+       AND a.conversation_id = %(conversation_id)s AND a.user_id = %(user_id)s
+"""
+
+
+def _ref(r) -> TableRef:
+    return TableRef(
+        id=str(r[0]), name=r[1], columns=tuple(r[2] or ()), row_count=r[3],
+        truncated=bool(r[4]), notes=tuple(r[5] or ()), document_title=r[6],
+        provider=r[7], source_uri=r[8], origin=r[9] or "table",
+        document_id=str(r[10]) if r[10] else None,
+        attachment_id=str(r[11]) if len(r) > 11 and r[11] else None,
+    )
+
+
+def list_upload_tables(*, org_id: str, uploads: UploadScope | None) -> list[TableRef]:
+    """Tables in the files this person uploaded to this chat, newest first."""
+    if uploads is None:
+        return []
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                _UPLOAD_COLUMNS + " ORDER BY a.created_at DESC, t.origin, t.position LIMIT %(limit)s",
+                {"org_id": org_id, "conversation_id": uploads.conversation_id,
+                 "user_id": uploads.user_id, "limit": MAX_LISTED},
+            ).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        raise ProviderError("doctables: could not list upload tables", cause=exc) from exc
+    return [_ref(r) for r in rows]
 
 
 def list_tables(
@@ -162,23 +264,20 @@ def list_tables(
             ).fetchall()
     except Exception as exc:  # noqa: BLE001
         raise ProviderError("doctables: could not list tables", cause=exc) from exc
-    return [
-        TableRef(
-            id=str(r[0]), name=r[1], columns=tuple(r[2] or ()), row_count=r[3],
-            truncated=bool(r[4]), notes=tuple(r[5] or ()), document_title=r[6],
-            provider=r[7], source_uri=r[8], origin=r[9] or "table",
-            document_id=str(r[10]) if r[10] else None,
-        )
-        for r in rows
-    ]
+    return [_ref(r) for r in rows]
 
 
-def get_table(table_id: str, *, org_id: str, workspace_id: str | None, viewer) -> TableRef | None:
+def get_table(
+    table_id: str, *, org_id: str, workspace_id: str | None, viewer,
+    uploads: UploadScope | None = None,
+) -> TableRef | None:
     """One table, re-checked against the viewer at RUN time.
 
     The resolver offered it a moment ago, but a spec can arrive from anywhere
     (a stored dict, a later turn), so the access check is repeated here rather
-    than trusted.
+    than trusted. A document's table needs the document predicate; an
+    upload's table needs its uploader and chat (``uploads``), and without
+    them is simply not found.
     """
     access, params = _visible(viewer)
     try:
@@ -194,16 +293,16 @@ def get_table(table_id: str, *, org_id: str, workspace_id: str | None, viewer) -
                 {"table_id": table_id, "org_id": org_id,
                  "workspace_id": workspace_id, **params},
             ).fetchone()
+            if r is None and uploads is not None:
+                r = conn.execute(
+                    _UPLOAD_COLUMNS + " AND t.id = %(table_id)s",
+                    {"table_id": table_id, "org_id": org_id,
+                     "conversation_id": uploads.conversation_id,
+                     "user_id": uploads.user_id},
+                ).fetchone()
     except Exception as exc:  # noqa: BLE001
         raise ProviderError("doctables: could not read table", cause=exc) from exc
-    if r is None:
-        return None
-    return TableRef(
-        id=str(r[0]), name=r[1], columns=tuple(r[2] or ()), row_count=r[3],
-        truncated=bool(r[4]), notes=tuple(r[5] or ()), document_title=r[6],
-        provider=r[7], source_uri=r[8], origin=r[9] or "table",
-        document_id=str(r[10]) if r[10] else None,
-    )
+    return _ref(r) if r is not None else None
 
 
 def _col(key: str) -> str:

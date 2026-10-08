@@ -168,6 +168,13 @@ mismatch is dropped, never repaired, and the chart says "taken from text".
 A sync skips unchanged documents, so `documents.tables_checked_at` marks what the
 adapters have read; `backfill_tables` re-fetches a bounded batch of unchecked
 ones per sync (tables only, no re-embedding) and a failed fetch stays unchecked.
+A table in an UPLOADED file hangs off `doc_tables.attachment_id` (never a
+document) and is its uploader's, in that chat: offered and re-checked only with
+`doctables.store.UploadScope` (conversation + user from the session), never by
+`list_tables`, and it cascades with the attachment. Tables are read at upload
+with no AI and never fail the upload; a table-less upload is read for figures
+once, in Chart mode (`figures_read_at`). Workbooks are read by ONE reader
+(`attachments.extract.xlsx_sheets`) for both the prompt text and the rows.
 A Sheet embeds a description of its columns, never its figures. An unparseable
 cell is absent from a sum, never zero. A trend draws every period from "measured since"
 (or the window, if later) to now, a quiet one at zero; never a period before the

@@ -206,6 +206,16 @@ async def _store_one(
         except AttachmentStorageError:
             logger.exception("Attachment: storage failure for %s", filename)
             return None, f"{filename} could not be stored. Try again in a moment."
+
+        # Tables the file already has, for Chart mode. Off the event loop (a
+        # PDF's table finder is slow) and never a reason to refuse the file.
+        from ..doctables.uploads import read_upload_tables
+
+        await run_in_threadpool(
+            read_upload_tables, attachment.id, org_id=session.org_id,
+            user_id=session.user_id, filename=filename, data=data, text=text,
+            max_pdf_pages=settings.max_pdf_pages,
+        )
     finally:
         del data  # not kept in this process past the upload
 

@@ -1022,6 +1022,27 @@ CREATE INDEX IF NOT EXISTS idx_conversation_attachments_owner
 -- with a warning and the chip says so.
 ALTER TABLE conversation_attachments ADD COLUMN IF NOT EXISTS injection_score REAL;
 
+-- Tables inside an UPLOADED file, so Chart mode can chart a spreadsheet or a
+-- PDF table the asker attached. Same rows and same query code as a document's
+-- tables, but owned by the attachment instead: `document_id` is NULL and
+-- `attachment_id` is set (exactly one of the two). Access is the attachment's
+-- own -- its uploader, in that conversation -- never the document predicate,
+-- and `list_tables` keeps its INNER JOIN on documents, so an upload can never
+-- surface in anyone else's chart. Cascades with the attachment, so the x, the
+-- TTL sweep and a deleted chat all take the tables with them.
+ALTER TABLE doc_tables ADD COLUMN IF NOT EXISTS attachment_id UUID
+    REFERENCES conversation_attachments (id) ON DELETE CASCADE;
+ALTER TABLE doc_tables ALTER COLUMN document_id DROP NOT NULL;
+ALTER TABLE doc_tables DROP CONSTRAINT IF EXISTS doc_tables_one_source;
+ALTER TABLE doc_tables ADD CONSTRAINT doc_tables_one_source
+    CHECK ((document_id IS NULL) <> (attachment_id IS NULL));
+CREATE UNIQUE INDEX IF NOT EXISTS uq_doc_tables_attachment_origin
+    ON doc_tables (attachment_id, origin, position) WHERE attachment_id IS NOT NULL;
+-- When an AI last read figures out of this upload's prose (Chart mode, on
+-- demand, only for a file with no real table). NULL = never; set even when
+-- nothing was found, so the same file is not read twice.
+ALTER TABLE conversation_attachments ADD COLUMN IF NOT EXISTS figures_read_at TIMESTAMPTZ;
+
 -- ---------------------------------------------------------------------------
 -- Feedback & documentation-gap tracking (Feature 2 of the Onyx parity
 -- analysis).

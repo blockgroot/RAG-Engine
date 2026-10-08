@@ -37,6 +37,7 @@ class AttachmentError(ProviderError):
 _KINDS = {
     "pdf": "pdf",
     "docx": "docx",
+    "xlsx": "xlsx",
     "csv": "csv",
     "tsv": "csv",
     "txt": "text",
@@ -119,6 +120,76 @@ def _extract_csv(data: bytes, max_rows: int) -> tuple[str, bool]:
     return "\n".join(" | ".join(c.strip() for c in r) for r in rows[:max_rows]), truncated
 
 
+def _cell_text(value) -> str:
+    """One spreadsheet cell as a person reads it: 12 not 12.0, a date not a
+    datetime at midnight, nothing for an empty cell."""
+    import datetime as _dt
+
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, _dt.datetime):
+        return value.date().isoformat() if value.time() == _dt.time() else value.isoformat(" ")
+    if isinstance(value, _dt.date):
+        return value.isoformat()
+    return str(value).strip()
+
+
+#: Sheets read from one workbook. A bound, said out loud when it bites.
+MAX_SHEETS = 10
+
+
+def xlsx_sheets(data: bytes, max_rows: int) -> tuple[list[tuple[str, list[list[str]], bool]], bool]:
+    """``([(sheet name, rows, truncated)], more sheets than read)`` for an
+    .xlsx. Values, not formulas (``data_only``): a cached result is what the
+    person sees in Excel. Empty rows are skipped and trailing empty columns
+    trimmed; each sheet stops after ``max_rows`` rows and says so.
+
+    The ONE reader of workbooks, so the text the model is shown and the rows
+    a chart adds up can never come from two different parsings of the file.
+    """
+    from openpyxl import load_workbook
+
+    try:
+        book = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception as exc:  # noqa: BLE001
+        raise AttachmentError("That Excel file could not be read", cause=exc) from exc
+    try:
+        sheets = []
+        names = list(book.sheetnames)
+        for name in names[:MAX_SHEETS]:
+            rows: list[list[str]] = []
+            truncated = False
+            for values in book[name].iter_rows(values_only=True):
+                cells = [_cell_text(v) for v in values]
+                while cells and not cells[-1]:
+                    cells.pop()
+                if not any(cells):
+                    continue
+                if len(rows) >= max_rows:
+                    truncated = True
+                    break
+                rows.append(cells)
+            if rows:
+                sheets.append((name, rows, truncated))
+        return sheets, len(names) > MAX_SHEETS
+    finally:
+        book.close()
+
+
+def _extract_xlsx(data: bytes, max_rows: int) -> tuple[str, bool]:
+    sheets, more = xlsx_sheets(data, max_rows)
+    blocks = []
+    truncated = more
+    for name, rows, cut in sheets:
+        truncated = truncated or cut
+        blocks.append(f"## {name}\n" + "\n".join(" | ".join(r) for r in rows))
+    return "\n\n".join(blocks), truncated
+
+
 def extract_text(
     filename: str,
     data: bytes,
@@ -146,6 +217,8 @@ def extract_text(
         text, truncated = _extract_docx(data)
     elif kind == "csv":
         text, truncated = _extract_csv(data, max_csv_rows)
+    elif kind == "xlsx":
+        text, truncated = _extract_xlsx(data, max_csv_rows)
     else:
         text, truncated = _decode(data), False
 

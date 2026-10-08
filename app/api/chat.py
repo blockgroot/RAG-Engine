@@ -400,12 +400,41 @@ def chart_starters(metrics, fields: dict | None) -> list[str]:
     return out
 
 
+#: Longest column name a starter repeats; a header can be a sentence.
+_STARTER_NAME_CHARS = 40
+
+
+def upload_starters(tables) -> list[str]:
+    """Starters from the files uploaded to this chat: each table's first
+    number column, by its first category (or per month over its first date).
+    Read from the file's own headers, so each one can be drawn."""
+    out: list[str] = []
+    for table in tables:
+        def first(kind):
+            return next((c["name"][:_STARTER_NAME_CHARS] for c in table.columns
+                         if c.get("type") == kind and c.get("name")), None)
+        number, category, when = first("number"), first("category"), first("date")
+        if number and category:
+            text = f"Total {number} by {category}"
+        elif number and when:
+            text = f"Total {number} per month"
+        elif category:
+            text = f"Rows by {category}"
+        else:
+            continue
+        if text not in out:
+            out.append(text)
+    return out
+
+
 @router.get("/chart-starters")
 def list_chart_starters(
     workspace_id: str | None = None,
+    conversation_id: str | None = None,
     session: SessionClaims = Depends(get_session),
 ):
-    """Chart mode's starter questions, from this scope's metrics and fields."""
+    """Chart mode's starter questions, from this scope's metrics and fields,
+    led by the files this person uploaded to ``conversation_id``."""
     if workspace_id is not None:
         try:
             assert_member(workspace_id, session.org_id, session.user_id)
@@ -429,7 +458,18 @@ def list_chart_starters(
         ))
     except Exception:  # noqa: BLE001
         fields = None
-    return {"questions": chart_starters(metrics, fields)}
+    from_files: list[str] = []
+    uploads = _upload_scope(conversation_id, session)
+    if uploads is not None:
+        from ..doctables.store import list_upload_tables
+
+        try:
+            from_files = upload_starters(
+                list_upload_tables(org_id=session.org_id, uploads=uploads))
+        except Exception:  # noqa: BLE001 - starters are a convenience
+            logger.warning("chart starters: could not list uploaded tables", exc_info=True)
+    questions = (from_files + chart_starters(metrics, fields))[:MAX_CHART_STARTERS]
+    return {"questions": questions}
 
 
 @router.get("/suggestions")
@@ -801,6 +841,16 @@ def _answering_model() -> str | None:
     member.
     """
     return answering_model() or selected_model()
+
+
+def _upload_scope(conversation_id: str | None, session: SessionClaims | None):
+    """Whose uploads Chart mode may chart: this person, this chat. The
+    conversation was already checked as theirs by the route."""
+    if conversation_id is None or session is None or not session.user_id:
+        return None
+    from ..doctables.store import UploadScope
+
+    return UploadScope(conversation_id=conversation_id, user_id=session.user_id)
 
 
 def _conversation_attachments(
@@ -1243,6 +1293,7 @@ def _stream_answer_body(
         graph_plan=plan_future,
         viewer=viewer_for(session),
         chart_mode=chart_mode,
+        uploads=_upload_scope(conversation_id, session),
     )
     plan = _graph_plan_result(plan_future)
     # The classifier's live-data verdict rides the request note to the gateway

@@ -93,9 +93,14 @@ def catalogue(tables: list[TableRef]) -> str:
                 cols.append(f"{c['name']} (date)")
         kind = (" (figures read from the document's sentences)"
                 if getattr(table, "origin", "table") == "text" else "")
+        where = (f"in the file \"{table.document_title}\" the asker uploaded to this chat"
+                 if getattr(table, "is_upload", False)
+                 else f"in \"{table.document_title}\"{kind} [{table.provider}]")
+        if getattr(table, "is_upload", False):
+            where += kind.replace("document's", "file's")
         lines.append(
-            f"- T{i}: \"{table.name}\" in \"{table.document_title}\"{kind} "
-            f"[{table.provider}], {table.row_count} rows. Columns: {'; '.join(cols)}"
+            f"- T{i}: \"{table.name}\" {where}, {table.row_count} rows. "
+            f"Columns: {'; '.join(cols)}"
         )
     return "\n".join(lines)
 
