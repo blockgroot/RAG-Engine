@@ -55,7 +55,9 @@ def test_a_question_resolves_to_a_registry_metric():
 def test_the_resolved_spec_carries_the_chart_shape_from_the_registry():
     """Default shape is a property of the grain: grouped is a leaderboard,
     ungrouped is a line. The model may pick pie/bar/line when they fit."""
-    llm = FakeLLM(_spec(metric="issues_completed", group_by="actor", period="month"))
+    llm = FakeLLM(json.dumps({**json.loads(_spec(metric="issues_completed", group_by="actor",
+                                                    period="month")),
+                              "breakdown_words": "who finished the most"}))
     spec = resolve.resolve_question("who finished the most?", providers=["linear"], llm=llm)
     assert spec.chart == "bar"
 
@@ -236,26 +238,6 @@ def test_a_document_question_classifies_as_qa():
     assert intent.spec is None
 
 
-def test_a_pie_of_document_topics_is_refused_not_sent_to_rag():
-    """Topics in a Drive file are not activity_facts. RAG would either invent
-    slices or (as happened live) claim the docs don't contain a pie tool."""
-    llm = FakeLLM(_spec(intent="qa", metric=None))
-    intent = resolve.classify_question(
-        "Prepare a pie chart on all the topics addressed in the doc "
-        "for artificial intelligence",
-        providers=["google"],
-        llm=llm,
-        fail_open=True,
-    )
-    assert intent.kind == "refuse"
-    assert intent.spec is None
-    message = (intent.message or "").lower()
-    assert "can't be shown as a chart" in message
-    assert "document" in message
-    assert "file" in message
-    assert "pie" in message
-
-
 def test_org_chart_is_still_a_document_question():
     llm = FakeLLM(_spec(intent="qa", metric=None))
     intent = resolve.classify_question(
@@ -320,62 +302,6 @@ def test_chat_classifier_fail_open_is_qa_not_a_refusal():
         fail_open=True,
     )
     assert intent.kind == "qa"
-
-
-def test_a_pie_of_files_by_person_recovers_when_the_model_says_qa():
-    """'Show a pie of …' is not 'pie chart', so the old regex missed it and
-    fail_open sent the question to RAG, which said I don't know."""
-    llm = FakeLLM(_spec(intent="qa", metric=None))
-    intent = resolve.classify_question(
-        "Show a pie of files created or edited, grouped by person.",
-        providers=["google"],
-        llm=llm,
-        fail_open=True,
-    )
-    assert intent.kind == "chart"
-    assert intent.spec is not None
-    assert intent.spec.metric == "drive_docs_changed"
-    assert intent.spec.group_by == "actor"
-    assert intent.spec.chart == "pie"
-
-
-def test_a_dead_llm_still_charts_an_obvious_plot_ask():
-    """fail_open is for leave-policy questions. A plot that names a registry
-    label must not become RAG just because OpenRouter 429'd."""
-    class Broken:
-        model = "x"
-        last_usage = None
-
-        def generate(self, prompt, *, max_tokens=None):
-            raise RuntimeError("429")
-
-    intent = resolve.classify_question(
-        "Show a pie of files created or edited, grouped by person",
-        providers=["google"],
-        llm=Broken(),
-        fail_open=True,
-    )
-    assert intent.kind == "chart"
-    assert intent.spec is not None
-    assert intent.spec.metric == "drive_docs_changed"
-    assert intent.spec.chart == "pie"
-
-
-def test_a_graph_of_commits_is_a_chart_without_saying_pie_or_bar():
-    """Shape words are optional. 'generate a graph of commits…' must not
-    fall through to RAG just because it never said pie."""
-    llm = FakeLLM(_spec(intent="qa", metric=None))
-    intent = resolve.classify_question(
-        "generate a graph based on all the commits done on the develop "
-        "branch by sana in the chain guard repository",
-        providers=["github"],
-        llm=llm,
-        fail_open=True,
-    )
-    assert intent.kind == "chart"
-    assert intent.spec is not None
-    assert intent.spec.metric == "commits_by_author"
-    assert intent.spec.chart in ("bar", "line", "pie")
 
 
 def test_org_chart_is_still_a_document_question_when_graph_is_a_plot_word():
@@ -588,36 +514,6 @@ def test_an_unavailable_claim_about_an_unknown_provider_is_ignored():
     assert intent.kind != "refuse" or "Jira" not in (intent.message or "")
 
 
-def test_knowledge_graph_is_not_a_plot_ask():
-    """"When is the knowledge graph beta launching?" was forced into a chart
-    refusal: the classifier said qa, the plot regex matched "graph"."""
-    from app.insights.resolve import _asked_for_a_plot
-
-    assert not _asked_for_a_plot("When is the knowledge graph beta launching?")
-    assert not _asked_for_a_plot("What is the dependency graph of the auth service?")
-    assert _asked_for_a_plot("graph our commits by author")
-    assert _asked_for_a_plot("show a graph of pull requests")
-
-
-def test_in_chat_a_chart_must_be_asked_for():
-    """Real Gemini answered "What is Sana working on in Linear?" with a valid
-    chart spec -- completed tasks by team -- which pre-empts routing, so the
-    Linear agent and the graph never saw it. In chat a chart needs a visual
-    or a count in the question; the dedicated chart box is not gated."""
-    reply = ('{"intent":"chart","metric":"issues_completed","group_by":"subject",'
-             '"period":"month","chart":"bar","focus":"Sana"}')
-    assert _classify("What is Sana working on in Linear?", reply, ["linear"]).kind == "qa"
-    for asked in ("How many tasks did Sana complete?", "chart tasks completed by team",
-                  "tasks completed per week"):
-        assert _classify(asked, reply, ["linear"]).kind == "chart", asked
-    box = resolve.classify_question("What is Sana working on in Linear?",
-                                    providers=["linear"], llm=FakeLLM(reply), fail_open=False)
-    assert box.kind == "chart"  # the chart box itself is not gated
-    assert _classify("show me the org chart", '{"intent":"chart","metric":"issues_completed"}',
-                     ["linear"]).kind == "qa"
-
-
-
 @pytest.mark.parametrize(
     "reply, expected",
     [
@@ -674,47 +570,51 @@ def test_the_question_check_carries_no_chart_catalogue():
     assert "metric" not in prompt and "TABLES" not in prompt
 
 
-@pytest.mark.parametrize("question, visual, count", [
-    ("chart PRs by label", True, False),
-    ("plot revenue by month", True, False),
-    ("how many PRs merged last week?", False, True),
-    ("what is our org chart?", False, False),
-    ("what is the leave policy?", False, False),
-])
-def test_chart_words_and_count_words(question, visual, count):
-    assert resolve.asks_for_a_visual(question) is visual
-    assert resolve.asks_for_a_count(question) is count
-
-
 # --------------------------------------------------------------------------
 # A trend asked for is a trend drawn
 # --------------------------------------------------------------------------
 
 
-def _drive_by_person():
-    return FakeLLM(json.dumps({"intent": "chart", "metric": "drive_docs_changed",
-                               "group_by": "actor", "period": "month", "chart": "bar"}))
-
-
-@pytest.mark.parametrize("question, period", [
-    ("Drive files edited per week", "week"),
-    ("weekly Drive files edited", "week"),
-    ("Drive files edited by month", "month"),
+@pytest.mark.parametrize("reply, chart", [
+    ('{"chart": "visual", "live": false}', "visual"),
+    ('{"chart": "count", "live": false}', "count"),
+    ('{"chart": null, "live": false}', None),
+    ('{"chart": "pie please", "live": false}', None),   # anything else is nothing
 ])
-def test_a_time_scale_with_no_breakdown_is_a_trend(question, period):
+def test_the_question_check_reads_a_chart_ask(reply, chart):
+    """No word list: the check reads "show me a graph", "org chart" or a
+    question in another language, and says what was asked for."""
+    intent = resolve.classify_route("q", github=False, llm=FakeLLM(reply))
+    assert intent.chart_ask == chart
+
+
+def _by_person(quote=None):
+    reply = {"intent": "chart", "metric": "drive_docs_changed", "group_by": "actor",
+             "period": "week", "chart": "bar"}
+    if quote is not None:
+        reply["breakdown_words"] = quote
+    return FakeLLM(json.dumps(reply))
+
+
+def test_a_breakdown_nobody_asked_for_is_dropped():
     """A small model added "by person" to "per week": one editor, one bar."""
-    intent = resolve.classify_question(question, providers=["google"], llm=_drive_by_person(),
-                                       fail_open=False)
-    assert intent.kind == "chart"
-    assert (intent.spec.group_by, intent.spec.period, intent.spec.chart) == (None, period, "line")
+    intent = resolve.classify_question("Drive files edited per week", providers=["google"],
+                                       llm=_by_person(), fail_open=False)
+    assert (intent.spec.group_by, intent.spec.period, intent.spec.chart) == (None, "week", "line")
 
 
-@pytest.mark.parametrize("question", [
-    "Drive files edited by person per week",
-    "Drive files edited per person per month",
-    "Who edited the most Drive files each week?",
+def test_a_quote_not_in_the_question_does_not_keep_it():
+    intent = resolve.classify_question("Drive files edited per week", providers=["google"],
+                                       llm=_by_person("by person"), fail_open=False)
+    assert intent.spec.group_by is None
+
+
+@pytest.mark.parametrize("question, quote", [
+    ("Who edited the most Drive files each week?", "Who edited the most"),
+    ("Drive-Dateien pro Woche, aufgeteilt nach Bearbeiter", "aufgeteilt nach Bearbeiter"),
+    ("Drive files edited per week by person", None),   # the dimension's own name
 ])
-def test_a_breakdown_that_was_asked_for_stays(question):
-    intent = resolve.classify_question(question, providers=["google"], llm=_drive_by_person(),
-                                       fail_open=False)
+def test_a_breakdown_that_was_asked_for_stays(question, quote):
+    intent = resolve.classify_question(question, providers=["google"],
+                                       llm=_by_person(quote), fail_open=False)
     assert intent.spec.group_by == "actor"

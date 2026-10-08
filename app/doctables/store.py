@@ -63,6 +63,9 @@ class TableRef:
     source_uri: str | None
     #: Which adapter wrote it: "table" (exact) or "text" (read from sentences).
     origin: str = "table"
+    #: The document it sits in: what a question is compared with to decide
+    #: which tables to offer (`insights.tables.document_similarity`).
+    document_id: str | None = None
 
     def column(self, key: str) -> dict | None:
         return next((c for c in self.columns if c.get("key") == key), None)
@@ -142,7 +145,7 @@ def list_tables(
     access, params = _visible(viewer)
     sql = f"""
         SELECT t.id, t.name, t.columns, t.row_count, t.truncated, t.notes,
-               d.title, d.source_provider, d.source_uri, t.origin
+               d.title, d.source_provider, d.source_uri, t.origin, t.document_id
           FROM doc_tables t
           JOIN documents d ON d.id = t.document_id
          WHERE t.org_id = %(org_id)s
@@ -164,6 +167,7 @@ def list_tables(
             id=str(r[0]), name=r[1], columns=tuple(r[2] or ()), row_count=r[3],
             truncated=bool(r[4]), notes=tuple(r[5] or ()), document_title=r[6],
             provider=r[7], source_uri=r[8], origin=r[9] or "table",
+            document_id=str(r[10]) if r[10] else None,
         )
         for r in rows
     ]
@@ -182,7 +186,7 @@ def get_table(table_id: str, *, org_id: str, workspace_id: str | None, viewer) -
             r = conn.execute(
                 f"""
                 SELECT t.id, t.name, t.columns, t.row_count, t.truncated, t.notes,
-                       d.title, d.source_provider, d.source_uri, t.origin
+                       d.title, d.source_provider, d.source_uri, t.origin, t.document_id
                   FROM doc_tables t JOIN documents d ON d.id = t.document_id
                  WHERE t.id = %(table_id)s AND t.org_id = %(org_id)s
                    {_scoped("t", workspace_id)} {access}
@@ -198,6 +202,7 @@ def get_table(table_id: str, *, org_id: str, workspace_id: str | None, viewer) -
         id=str(r[0]), name=r[1], columns=tuple(r[2] or ()), row_count=r[3],
         truncated=bool(r[4]), notes=tuple(r[5] or ()), document_title=r[6],
         provider=r[7], source_uri=r[8], origin=r[9] or "table",
+        document_id=str(r[10]) if r[10] else None,
     )
 
 

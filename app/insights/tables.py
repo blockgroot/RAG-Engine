@@ -8,10 +8,12 @@ HEADER TEXT; this module maps each name to the table's own column key and
 refuses, naming the options, anything that does not fit: a sum of a text
 column, a grouping by free text, a filter on a number.
 
-Which tables are offered is decided here, deterministically, by word overlap
-between the question and each table's name, document title, column names and
-category samples. A table sharing no word with the question is not offered:
-listing an unrelated sheet invites the model to chart it.
+Which tables are offered is decided by MEANING, not by shared words: the
+question is compared with the stored embeddings of each table's document (a
+Sheet's description of its columns, a page's text) -- the same index and
+model retrieval uses, so it works in any wording or language and needs no
+stop-word list. A table whose document does not clear the retrieval gate is
+not offered: listing an unrelated sheet invites the model to chart it.
 """
 
 from __future__ import annotations
@@ -27,42 +29,51 @@ MAX_OFFERED = 6
 
 MEASURES = ("count",) + tuple(AGGREGATES)
 
-_STOP = frozenset(
-    "the a an of in on for to by and or with what which who how many much show "
-    "chart graph plot pie bar line me our my us is are was were from this that "
-    "per each all total sum average data table sheet file document".split()
-)
+def document_similarity(
+    question: str, tables: list[TableRef], *, org_id: str, workspace_id: str | None,
+) -> dict[str, float] | None:
+    """Best cosine between the question and each table's document, by
+    document id. ``None`` when it cannot be measured (no embedder, no
+    database): the caller then offers the newest tables instead."""
+    ids = sorted({t.document_id for t in tables if t.document_id})
+    if not question or not ids:
+        return {}
+    try:
+        from ..agent.routing import _probe_embedder
+        from ..db.connection import get_connection
+
+        vector = _probe_embedder().embed([question])[0]
+        with get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT c.document_id::text, MAX(1 - (c.embedding <=> %s::vector))
+                  FROM chunks c
+                 WHERE c.org_id = %s
+                   AND c.workspace_id IS NOT DISTINCT FROM %s
+                   AND c.document_id = ANY(%s::uuid[])
+                 GROUP BY c.document_id
+                """,
+                (vector, org_id, workspace_id, ids),
+            ).fetchall()
+    except Exception:  # noqa: BLE001 - ranking is a convenience, never a failure
+        return None
+    return {r[0]: float(r[1]) for r in rows if r[1] is not None}
 
 
-def _words(text: str) -> set[str]:
-    out = set()
-    for w in re.findall(r"[a-z0-9]+", (text or "").lower()):
-        if len(w) >= 3 and w not in _STOP:
-            out.add(w[:-1] if w.endswith("s") and len(w) > 4 else w)
-    return out
+def rank(
+    tables: list[TableRef], scores: dict[str, float] | None, *,
+    floor: float, limit: int = MAX_OFFERED,
+) -> list[TableRef]:
+    """Tables whose document is about the question, closest first.
 
-
-def rank(question: str, tables: list[TableRef], limit: int = MAX_OFFERED) -> list[TableRef]:
-    """Tables sharing at least one meaningful word with the question, best first."""
-    wanted = _words(question)
-    if not wanted:
-        return []
-    scored = []
-    for position, table in enumerate(tables):
-        text = " ".join(
-            [table.name, table.document_title]
-            + [str(c.get("name", "")) for c in table.columns]
-            + [str(s) for c in table.columns if c.get("type") == "category"
-               for s in c.get("samples", [])]
-        )
-        # The table's own name and title count double: "the sales sheet"
-        # should beat a sheet that merely has a Sales column.
-        title_hits = len(wanted & _words(f"{table.name} {table.document_title}"))
-        hits = len(wanted & _words(text)) + title_hits
-        if hits:
-            scored.append((-hits, position, table))
-    scored.sort(key=lambda s: (s[0], s[1]))
-    return [t for _, _, t in scored[:limit]]
+    ``scores`` is ``document_similarity``; ``None`` (unmeasurable) keeps the
+    given order -- newest document first -- capped at ``limit``.
+    """
+    if scores is None:
+        return list(tables)[:limit]
+    scored = [(scores.get(t.document_id or "", 0.0), i, t) for i, t in enumerate(tables)]
+    kept = sorted((s for s in scored if s[0] >= floor), key=lambda s: (-s[0], s[1]))
+    return [t for _, _, t in kept[:limit]]
 
 
 def catalogue(tables: list[TableRef]) -> str:

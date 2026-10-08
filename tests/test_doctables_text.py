@@ -67,10 +67,11 @@ def test_a_sheet_is_never_sent_to_the_ai():
 
 @pytest.mark.parametrize("text, wanted", [
     ("Revenue was 12k in Q1, 15k in Q2 and 18k in Q3.", True),
-    ("Spend: 5m, then 3.2bn, then 2crore.", True),
+    ("Spend: 5m in Q1, 3.2bn in Q2, then 2crore.", True),
+    ("Umsatz: 12 Mio. im Q1, 15 Mio. im Q2, 18 Mio. im Q3", True),   # any language
     ("Took 5min, weighed 3kg, 40 people came in 2026.", False),
 ])
-def test_a_unit_written_against_the_number_counts(text, wanted):
+def test_enough_numbers_in_any_format_count(text, wanted):
     assert TextAdapter().wants(_doc(text)) is wanted
 
 

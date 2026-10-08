@@ -303,12 +303,10 @@ def _answer(
             )
         return _to_slack_mrkdwn(result.answer)
 
-    # Slack has no Chart toggle, so the words are the toggle: a question that
-    # names a chart, graph or plot goes to Chart mode; everything else is Ask.
-    from ..insights.resolve import asks_for_a_visual
-
+    # Slack has no Chart toggle: a question the question check reads as
+    # asking to SEE a chart is answered in Chart mode; everything else is Ask.
     decision = choose_agent(question, org_id, workspace_id=workspace_id,
-                            chart_mode=asks_for_a_visual(question))
+                            chart_from_words=True)
     from ..agent.orchestration import build_agent_graph
     from .chat import _agent_getters
 

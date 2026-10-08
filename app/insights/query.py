@@ -286,3 +286,18 @@ def validate(
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"empty filter on {dim!r}")
         seen.add(dim)
+
+
+def dim_label(metric: registry.Metric, dim: str, attrs=None) -> str:
+    """How a dimension is named to people: a discovered field's own label, or
+    the built-in column's display name ("person", "team", "repository")."""
+    found = find_attr(metric, dim, attrs)
+    if found is not None:
+        return found.label
+    return {
+        "actor": "person",
+        "subject": registry.subject_label(metric.provider),
+        "state": "state",
+        "provider": "app",
+    }.get(dim, dim)
+

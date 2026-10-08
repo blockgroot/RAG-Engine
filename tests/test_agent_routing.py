@@ -698,3 +698,41 @@ def test_one_named_tool_is_routed_there(monkeypatch):
 def test_no_named_tool_still_uses_the_probe(monkeypatch):
     _stub(monkeypatch, connected={"linear", "slack"}, scores={"slack": 0.9, "linear": 0.2})
     assert routing.choose_agent("what did we decide about the offsite?", ORG).agent_key == "slack"
+
+
+
+def test_a_chart_ask_in_ask_gets_the_chart_mode_hint(monkeypatch):
+    from app.insights.resolve import AskIntent
+
+    _stub(monkeypatch, connected={"linear", "notion"}, scores={"notion": 0.8})
+    monkeypatch.setattr(routing, "_try_question_route", _real_question_route)
+    monkeypatch.setattr("app.insights.resolve.classify_route",
+                        lambda q, **k: AskIntent("qa", chart_ask="visual"))
+    decision = routing.choose_agent("show Linear issues as a graph", ORG)
+    assert (decision.agent_key, decision.reason) == (INSIGHTS_KEY, "chart-mode-off")
+    assert decision.chart_refusal.startswith("**Charts are in Chart mode**")
+
+
+def test_in_slack_a_chart_ask_is_answered_in_chart_mode(monkeypatch):
+    from app.insights.resolve import AskIntent
+
+    _stub(monkeypatch, connected={"linear"})
+    monkeypatch.setattr(routing, "_try_question_route", _real_question_route)
+    monkeypatch.setattr("app.insights.resolve.classify_route",
+                        lambda q, **k: AskIntent("qa", chart_ask="visual"))
+    spec = ChartSpec(metric="issue_states", group_by=None, period="week", chart="line")
+    monkeypatch.setattr("app.insights.resolve.classify_question",
+                        lambda q, **k: AskIntent("chart", spec=spec))
+    decision = routing.choose_agent("graph Linear issues", ORG, chart_from_words=True)
+    assert (decision.reason, decision.chart_spec) == ("chart", spec)
+
+
+def test_a_count_ask_is_carried_for_the_chart_button(monkeypatch):
+    from app.insights.resolve import AskIntent
+
+    _stub(monkeypatch, connected={"linear", "notion"}, scores={"notion": 0.8})
+    monkeypatch.setattr(routing, "_try_question_route", _real_question_route)
+    monkeypatch.setattr("app.insights.resolve.classify_route",
+                        lambda q, **k: AskIntent("qa", chart_ask="count"))
+    decision = routing.choose_agent("how many issues did we close?", ORG)
+    assert (decision.agent_key, decision.chart_ask) == ("notion", "count")

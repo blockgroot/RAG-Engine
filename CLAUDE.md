@@ -136,17 +136,25 @@ emails; ≤40 keys) and the chartable set is DISCOVERED per scope and viewer
 list of what may be charted. Chat and Slack pass a
 spec through `resolve.spec_to_dict`, never a hand-built dict (that dropped `focus`).
 Charts are built only in Chart mode (chat sends `mode: "chart"`; Slack: a question
-naming a chart, graph or plot). Chart mode answers with a chart or a refusal, never
-a document answer. Ask never runs the chart classifier: its question check
-(`resolve.classify_route`) decides only a live GitHub read and `needs_live`, and a
-"chart …" asked outside Chart mode gets the hint with no model call.
+the question check reads as a chart ask). Chart mode answers with a chart or a
+refusal, never a document answer. Ask never runs the chart classifier: its question
+check (`resolve.classify_route`) decides a live GitHub read, `needs_live` and
+`chart_ask` ("visual" gets the Chart-mode hint, "count" the Turn on Chart button).
+**No word list decides intent anywhere in charts**: the model reads the question
+and code verifies what it can (a quote is in the question, a value has rows, a type
+came from the source). Format parsers (₹/lakh/k/%) and API enums are not intent.
 `ModelChoice.charts` marks the catalogued models that build charts.
-A question that names a time scale ("per week", "weekly") and no breakdown is a
-trend: a breakdown the model added is dropped in code (`resolve._honour_time_ask`).
+A breakdown is kept only when asked for: the model quotes the words that asked
+(`breakdown_words`) and the quote must be in the question, or the breakdown's own
+label from the data must be; otherwise it is dropped (`resolve._honour_breakdown`).
+Document tables are offered by the similarity of their DOCUMENT to the question
+(`tables.document_similarity`, floored at the retrieval gate), never by word overlap.
+Chart-mode starters come from the scope's metrics and discovered fields
+(`GET /chat/chart-starters`), never page copy.
 "Open"/"closed" on a state filter is a GROUP of real states (not finished / finished),
 `query.AnyOf`, compiled to `= ANY(...)` and still bound; an exact state wins first.
 "Finished" is the SOURCE's own state type (`attrs.state_type`, `store.state_types`),
-never a list of state names; names are only a fallback for a source with no type.
+never a list of state names; with no types, "open" is refused naming the real states.
 The prompt maps the asker's wording to the two tokens; code matches no word lists.
 A document table is exactly as visible as its document: offered only through the
 visibility predicate, re-checked at run time, and never offered without a viewer.

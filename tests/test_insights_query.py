@@ -148,8 +148,9 @@ def test_an_unknown_measure_is_a_refusal_naming_the_options():
 
 
 def test_a_split_in_the_wrong_slot_becomes_the_grouping():
-    intent = _classify({"intent": "chart", "metric": "prs_merged",
-                        "group_by": None, "split_by": "subject", "period": "month"})
+    intent = _classify({"intent": "chart", "metric": "prs_merged", "group_by": None,
+                        "split_by": "subject", "period": "month",
+                        "breakdown_words": "by person"})
     assert intent.kind == "chart"
     assert (intent.spec.group_by, intent.spec.split_by) == ("subject", None)
 
@@ -350,18 +351,21 @@ def test_open_and_closed_follow_the_sources_own_state_types(monkeypatch, word, e
     assert str(value) == word.capitalize()
 
 
-def test_a_source_without_types_falls_back_to_state_names(monkeypatch):
+def test_with_no_state_types_open_is_refused_not_guessed(monkeypatch):
+    """No name list decides "finished": without the source's types the
+    filter is refused, naming the real states."""
     from types import SimpleNamespace
 
     from app.agent import insights_agent
+    from app.insights import registry
 
     monkeypatch.setattr(insights_agent.store, "list_values", lambda *a, **k: ["Review", "Done"])
     monkeypatch.setattr(insights_agent.store, "state_types",
                         lambda *a, **k: {"Review": None, "Done": None})
-    value = insights_agent._resolve_value("state", "open", SimpleNamespace(metric="m"), None,
-                                          org_id="o", workspace_id=None, days=365)
-    assert tuple(value.values) == ("Review",)
-
+    with pytest.raises(insights_agent.CannotChart, match="No state called"):
+        insights_agent._resolve_value("state", "open", SimpleNamespace(metric="issue_states"),
+                                      registry.get("issue_states"), org_id="o",
+                                      workspace_id=None, days=365)
 
 def test_a_state_named_open_is_matched_exactly(monkeypatch):
     from types import SimpleNamespace

@@ -42,8 +42,11 @@ MAX_TABLES = 5
 MAX_ROWS = 200
 MAX_COLUMNS = 8
 MAX_TOKENS = 1500
-#: A document needs at least this many figure-like tokens to be worth a call.
-MIN_FIGURES = 3
+#: A document needs at least this many numbers in its prose to be worth a
+#: call. A COUNT, not a list of currencies or units: "₹12L", "12k", "40 %",
+#: "1.2 Mio." and a figure in any script all count the same, and a policy page
+#: with no figures never costs a call.
+MIN_NUMBERS = 5
 
 TEXT_NOTE = (
     "Figures read from sentences in this document by AI. Each value was checked "
@@ -51,13 +54,7 @@ TEXT_NOTE = (
     "is not counted."
 )
 
-_FIGURE = re.compile(
-    r"(?:[₹$€£]|\brs\.?|\binr\b|\busd\b|\beur\b)\s*\d"
-    # The unit may touch the number ("12k", "3.2bn"): no word boundary BEFORE
-    # it, only after, so "5min" or "3kg" is still not a figure.
-    r"|\d[\d,]*(?:\.\d+)?\s*(?:%|(?:k|mn?|bn|lakhs?|lac|cr|crores?)\b)",
-    re.I,
-)
+_A_NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
 #: Anything a figure can be written as, for comparing a cell to its quote.
 _NUMBER_TOKEN = re.compile(
     r"\(?-?(?:[₹$€£]|rs\.?|inr|usd|eur|gbp)?\s*\d[\d,\s]*(?:\.\d+)?\s*"
@@ -159,16 +156,17 @@ class TextAdapter(DatasetAdapter):
         self._max_chars = max_chars
 
     def wants(self, doc: DocumentText) -> bool:
-        """Cheap: at least ``MIN_FIGURES`` money/percent/scaled figures in the
-        prose. Most documents (policies, notes) have none and never cost a call."""
+        """Cheap: at least ``MIN_NUMBERS`` numbers in the prose, in any format
+        or script. Most documents (policies, notes) have few and never cost a
+        call; the AI's rows are checked against their sentences either way."""
         if doc.tables:
             # A Sheet or CSV: its rows ARE the data, read exactly already.
             return False
         prose = _prose(doc.content)
         found = 0
-        for _ in _FIGURE.finditer(prose):
+        for _ in _A_NUMBER.finditer(prose):
             found += 1
-            if found >= MIN_FIGURES:
+            if found >= MIN_NUMBERS:
                 return True
         return False
 
