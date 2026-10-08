@@ -310,3 +310,49 @@ def test_the_split_reaches_the_panel(prs):
     assert panel["split_by"] == "subject"
     assert panel["title"] == "Pull requests merged by person and repository"
     assert all(p["series"] for p in panel["points"])
+
+
+@requires_db
+def test_a_value_standing_for_several_matches_any_of_them(prs):
+    """"Open issues" is several states; the filter matches each, bound."""
+    from app.insights.query import AnyOf
+
+    both = AnyOf("Team", ("18-sana", "rahul-k"))
+    points = store.run_metric("prs_merged", org_id=prs, workspace_id=None,
+                              period="quarter", group_by="actor", filters=(("actor", both),))
+    assert {p.group: p.value for p in points} == {"18-sana": 3, "rahul-k": 1}
+    only = AnyOf("Rahul", ("rahul-k", "x' OR '1'='1"))
+    points = store.run_metric("prs_merged", org_id=prs, workspace_id=None,
+                              period="quarter", group_by="actor", filters=(("actor", only),))
+    assert {p.group: p.value for p in points} == {"rahul-k": 1}
+
+
+@pytest.mark.parametrize("word, expected", [
+    ("Open", ("Backlog", "In Progress", "Todo")),
+    ("active", ("Backlog", "In Progress", "Todo")),
+    ("closed", ("Canceled", "Done")),
+])
+def test_open_and_closed_mean_groups_of_states(monkeypatch, word, expected):
+    """No tool stores "Open"; it is every state that is not finished."""
+    from types import SimpleNamespace
+
+    from app.agent import insights_agent
+
+    monkeypatch.setattr(insights_agent.store, "list_values",
+                        lambda *a, **k: ["Backlog", "Canceled", "Done", "In Progress", "Todo"])
+    spec = SimpleNamespace(metric="issue_states")
+    value = insights_agent._resolve_value("state", word, spec, None, org_id="o",
+                                          workspace_id=None, days=365)
+    assert tuple(value.values) == expected
+    assert str(value) == word.capitalize()
+
+
+def test_a_state_named_open_is_matched_exactly(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.agent import insights_agent
+
+    monkeypatch.setattr(insights_agent.store, "list_values", lambda *a, **k: ["Open", "Done"])
+    value = insights_agent._resolve_value("state", "open", SimpleNamespace(metric="m"), None,
+                                          org_id="o", workspace_id=None, days=365)
+    assert value == "Open" and not hasattr(value, "values")

@@ -143,6 +143,8 @@ a document answer. Ask never runs the chart classifier: its question check
 `ModelChoice.charts` marks the catalogued models that build charts.
 A question that names a time scale ("per week", "weekly") and no breakdown is a
 trend: a breakdown the model added is dropped in code (`resolve._honour_time_ask`).
+"Open"/"closed" on a state filter is a GROUP of real states (not finished / finished),
+`query.AnyOf`, compiled to `= ANY(...)` and still bound; an exact state wins first.
 A document table is exactly as visible as its document: offered only through the
 visibility predicate, re-checked at run time, and never offered without a viewer.
 Document tables are filled by dataset adapters (`doctables/base.py`); each
