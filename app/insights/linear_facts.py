@@ -43,6 +43,8 @@ KIND_COMPLETED = "issue_completed"
 #: it, and counting off the state NAME would break the moment a team renames
 #: "Done" to "Shipped".
 _COMPLETED_TYPE = "completed"
+#: The attrs key the state's type is kept under (see `_issue_attrs`).
+STATE_TYPE_ATTR = "state_type"
 
 
 def record_linear_facts(org_id: str, *, workspace_id: str | None, adapter) -> int:
@@ -128,9 +130,16 @@ def _issue_rows(org_id, workspace_id, issue) -> list[tuple]:
 
 def _issue_attrs(issue: dict) -> Jsonb:
     """Every simple field of the issue (`insights.fields`), as the feed
-    already returned it -- see `sources.linear._chart_fields`."""
-    fields = issue.get("fields")
-    return Jsonb(dict(fields) if isinstance(fields, dict) else {})
+    already returned it -- see `sources.linear._chart_fields` -- plus
+    ``state_type``: Linear's OWN category for the state (backlog, unstarted,
+    started, completed, canceled). It is what decides "open" and "closed"
+    (`store.state_types`), so a team's custom "Shipped" counts as finished
+    because Linear says so, not because its name is on a list."""
+    fields = dict(issue.get("fields")) if isinstance(issue.get("fields"), dict) else {}
+    state_type = (issue.get("state_type") or "").strip().lower()
+    if state_type:
+        fields[STATE_TYPE_ATTR] = state_type
+    return Jsonb(fields)
 
 def _write(rows: list[tuple], workspace_id: str | None) -> int:
     """Upsert every row in one statement.

@@ -145,6 +145,9 @@ A question that names a time scale ("per week", "weekly") and no breakdown is a
 trend: a breakdown the model added is dropped in code (`resolve._honour_time_ask`).
 "Open"/"closed" on a state filter is a GROUP of real states (not finished / finished),
 `query.AnyOf`, compiled to `= ANY(...)` and still bound; an exact state wins first.
+"Finished" is the SOURCE's own state type (`attrs.state_type`, `store.state_types`),
+never a list of state names; names are only a fallback for a source with no type.
+The prompt maps the asker's wording to the two tokens; code matches no word lists.
 A document table is exactly as visible as its document: offered only through the
 visibility predicate, re-checked at run time, and never offered without a viewer.
 Document tables are filled by dataset adapters (`doctables/base.py`); each

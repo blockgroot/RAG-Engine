@@ -327,24 +327,40 @@ def test_a_value_standing_for_several_matches_any_of_them(prs):
     assert {p.group: p.value for p in points} == {"rahul-k": 1}
 
 
+LINEAR_KINDS = {"Backlog": "backlog", "Todo": "unstarted", "In Progress": "started",
+                "Shipped": "completed", "Won't do": "canceled"}
+
+
 @pytest.mark.parametrize("word, expected", [
-    ("Open", ("Backlog", "In Progress", "Todo")),
-    ("active", ("Backlog", "In Progress", "Todo")),
-    ("closed", ("Canceled", "Done")),
+    ("open", ("Backlog", "Todo", "In Progress")),
+    ("closed", ("Shipped", "Won't do")),
 ])
-def test_open_and_closed_mean_groups_of_states(monkeypatch, word, expected):
-    """No tool stores "Open"; it is every state that is not finished."""
+def test_open_and_closed_follow_the_sources_own_state_types(monkeypatch, word, expected):
+    """No word list decides "finished": Linear's type does, so a custom
+    "Shipped" is closed because Linear calls it completed."""
     from types import SimpleNamespace
 
     from app.agent import insights_agent
 
-    monkeypatch.setattr(insights_agent.store, "list_values",
-                        lambda *a, **k: ["Backlog", "Canceled", "Done", "In Progress", "Todo"])
-    spec = SimpleNamespace(metric="issue_states")
-    value = insights_agent._resolve_value("state", word, spec, None, org_id="o",
-                                          workspace_id=None, days=365)
+    monkeypatch.setattr(insights_agent.store, "list_values", lambda *a, **k: list(LINEAR_KINDS))
+    monkeypatch.setattr(insights_agent.store, "state_types", lambda *a, **k: dict(LINEAR_KINDS))
+    value = insights_agent._resolve_value("state", word, SimpleNamespace(metric="issue_states"),
+                                          None, org_id="o", workspace_id=None, days=365)
     assert tuple(value.values) == expected
     assert str(value) == word.capitalize()
+
+
+def test_a_source_without_types_falls_back_to_state_names(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.agent import insights_agent
+
+    monkeypatch.setattr(insights_agent.store, "list_values", lambda *a, **k: ["Review", "Done"])
+    monkeypatch.setattr(insights_agent.store, "state_types",
+                        lambda *a, **k: {"Review": None, "Done": None})
+    value = insights_agent._resolve_value("state", "open", SimpleNamespace(metric="m"), None,
+                                          org_id="o", workspace_id=None, days=365)
+    assert tuple(value.values) == ("Review",)
 
 
 def test_a_state_named_open_is_matched_exactly(monkeypatch):
@@ -356,3 +372,17 @@ def test_a_state_named_open_is_matched_exactly(monkeypatch):
     value = insights_agent._resolve_value("state", "open", SimpleNamespace(metric="m"), None,
                                           org_id="o", workspace_id=None, days=365)
     assert value == "Open" and not hasattr(value, "values")
+
+
+@requires_db
+def test_the_state_type_is_stored_and_read_back(org):
+    """Written at sync from Linear's own type; read per state for open/closed."""
+    from app.insights import linear_facts
+
+    issue = {"identifier": "SYV-9", "state": "Shipped", "state_type": "completed",
+             "team": "Core", "assignee": "Sana", "at": datetime.now(timezone.utc),
+             "created_at": datetime.now(timezone.utc), "completed_at": None,
+             "url": "https://linear.test/SYV-9", "fields": {"priority_label": "High"}}
+    linear_facts._write(linear_facts._issue_rows(org, None, issue), None)
+    assert store.state_types("issue_states", org_id=org, workspace_id=None, days=30) == {
+        "Shipped": "completed"}

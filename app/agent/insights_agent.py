@@ -469,29 +469,38 @@ def _resolve_filters(spec, metric, *, org_id, workspace_id, days, viewer=None, a
 #: How a dimension is named back to the member in a refusal.
 _DIM_NOUN = {"actor": "person", "state": "state"}
 
-#: States that mean the work is over, across tools ("Done", "Canceled",
-#: "Merged"...). Lowercased. Used only to read "open" and "closed", which no
-#: tool stores as a state name.
-_FINISHED_STATES = frozenset({
+#: The two tokens the classifier sends for "not finished" / "finished",
+#: whatever words the asker used (the prompt does the language).
+_OPEN, _CLOSED = "open", "closed"
+
+#: FALLBACK only, for a source that reports no state type: names that mean
+#: the work is over. Linear reports types, so its states never reach this.
+_FINISHED_NAMES = frozenset({
     "done", "completed", "complete", "canceled", "cancelled", "closed",
-    "duplicate", "merged", "resolved", "archived", "won't fix", "wontfix",
+    "duplicate", "merged", "resolved", "archived",
 })
-_OPEN_WORDS = frozenset({
-    "open", "active", "pending", "unfinished", "incomplete", "not done",
-    "ongoing", "outstanding", "remaining", "unresolved", "in flight",
-})
-_CLOSED_WORDS = frozenset({"closed", "finished", "complete", "completed", "resolved"})
 
 
-def _state_group(wanted: str, values: list[str], raw: str) -> query.AnyOf | None:
-    """"Open" -> every stored state that is not finished; "closed" -> those
-    that are. None when the word is neither, or nothing matches."""
-    if wanted in _OPEN_WORDS:
-        picked = [v for v in values if v.lower() not in _FINISHED_STATES]
-    elif wanted in _CLOSED_WORDS:
-        picked = [v for v in values if v.lower() in _FINISHED_STATES]
-    else:
+def _state_group(spec, wanted: str, raw: str, *, org_id, workspace_id, days,
+                 viewer=None) -> query.AnyOf | None:
+    """"open" -> every stored state the source calls unfinished; "closed" ->
+    those it calls finished. Decided by the source's own state type
+    (``store.state_types``); a state with no type falls back to its name."""
+    if wanted not in (_OPEN, _CLOSED):
         return None
+    try:
+        kinds = store.state_types(spec.metric, org_id=org_id, workspace_id=workspace_id,
+                                  days=days, viewer=viewer)
+    except ProviderError:
+        logger.warning("insights: could not read state types of %s", spec.metric)
+        return None
+
+    def finished(state: str, kind: str | None) -> bool:
+        if kind:
+            return kind.lower() in store.FINISHED_STATE_TYPES
+        return state.lower() in _FINISHED_NAMES
+
+    picked = [s for s, k in kinds.items() if finished(s, k) == (wanted == _CLOSED)]
     return query.AnyOf(raw.strip().capitalize(), tuple(picked)) if picked else None
 
 
@@ -524,7 +533,8 @@ def _resolve_value(
     if dim == "state":
         # "Open Linear issues": no tool stores "Open"; it means not finished.
         # Only after an exact match, so a team whose state IS "Open" gets it.
-        group = _state_group(wanted, values, raw)
+        group = _state_group(spec, wanted, raw, org_id=org_id, workspace_id=workspace_id,
+                             days=days, viewer=viewer)
         if group is not None:
             return group
 
