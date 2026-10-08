@@ -304,7 +304,12 @@ class NotionAdapter(SourceAdapter):
             cells = data.get("cells", [])
             for cell in cells:
                 _collect_rich_text(cell, sink)
-            lines.append(f"{indent}" + " | ".join(_rich_text_to_text(c) for c in cells))
+            # A real pipe row ("| a | b |", a literal | escaped) so the table
+            # reader (`doctables.find_markdown_tables`) can find it; the
+            # parent `table` block adds the header separator below.
+            lines.append(f"{indent}| " + " | ".join(
+                _rich_text_to_text(c).replace("|", "\\|").replace("\n", " ")
+                for c in cells) + " |")
         elif btype == "child_page":
             pass
         else:
@@ -315,7 +320,15 @@ class NotionAdapter(SourceAdapter):
 
         if block.get("has_children") and btype != "child_page" and budget[0] > 0:
             child_depth = depth + 1 if btype in _INDENTING else depth
-            lines.extend(self._render_children_lines(block["id"], child_depth, budget, sink))
+            children = self._render_children_lines(block["id"], child_depth, budget, sink)
+            if btype == "table" and children:
+                # A Notion table's rows arrive as children with no header
+                # marker, so it never read as a table and was never charted.
+                # The first row is the header (Notion's own column header when
+                # the table has one); blank lines keep it apart from prose.
+                width = data.get("table_width") or max(children[0].count("|") - 1, 1)
+                children = ["", children[0], "|" + " --- |" * width, *children[1:], ""]
+            lines.extend(children)
 
         return lines
 
