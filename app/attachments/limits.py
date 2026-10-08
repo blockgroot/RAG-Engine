@@ -25,7 +25,7 @@ from .extract import kind_for
 #: asked narrow questions ("what's the total for March?") that paging answers
 #: well. Rejecting one for length would refuse the format this gate is least
 #: likely to be protecting anyone from.
-TOKEN_EXEMPT_KINDS = frozenset({"csv"})
+TOKEN_EXEMPT_KINDS = frozenset({"csv", "xlsx"})
 
 
 def token_rejection_reason(

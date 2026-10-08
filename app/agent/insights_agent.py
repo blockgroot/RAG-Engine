@@ -50,7 +50,7 @@ class InsightsAgent(Agent):
         # is narrowed to documents this viewer may open (`store._viewer_filter`)
         # -- a chart is a summary of documents and must not summarise ones the
         # asker cannot read.
-        del conversation_id, question  # Spec is already resolved; question is untrusted.
+        del question  # Spec is already resolved; question is untrusted.
         if refusal:
             return AgentResponse(
                 answer=refusal, grounded=False, source=SOURCE_NONE, chart=None
@@ -70,7 +70,8 @@ class InsightsAgent(Agent):
             )
         if parsed.table_id:
             return _answer_table(parsed, org_id=org_id, workspace_id=workspace_id,
-                                 viewer=viewer)
+                                 viewer=viewer,
+                                 uploads=_upload_scope(conversation_id, user_id))
         try:
             panel, period = _run_spec(
                 parsed,
@@ -143,11 +144,23 @@ class InsightsAgent(Agent):
         return chunk_answer(response.answer), response
 
 
-def _answer_table(spec: ChartSpec, *, org_id, workspace_id, viewer) -> AgentResponse:
-    """A chart of a table inside a document, as an AgentResponse."""
+def _upload_scope(conversation_id: str | None, user_id: str | None):
+    """This person's files in this chat, the only key to an upload's tables.
+    Both or nothing: an upload is never charted outside its own chat."""
+    if not conversation_id or not user_id:
+        return None
+    from ..doctables.store import UploadScope
+
+    return UploadScope(conversation_id=conversation_id, user_id=user_id)
+
+
+def _answer_table(spec: ChartSpec, *, org_id, workspace_id, viewer,
+                  uploads=None) -> AgentResponse:
+    """A chart of a table inside a document or an uploaded file."""
     try:
         panel, period = run_table_spec(
             spec, org_id=org_id, workspace_id=workspace_id, viewer=viewer,
+            uploads=uploads,
         )
     except CannotChart as exc:
         return AgentResponse(answer=str(exc), grounded=False, source=SOURCE_NONE, chart=None)
@@ -161,7 +174,8 @@ def _answer_table(spec: ChartSpec, *, org_id, workspace_id, viewer) -> AgentResp
                          source=panel["provider"], chart=panel, chart_period=period)
 
 
-def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer) -> tuple[dict, str]:
+def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
+                   uploads=None) -> tuple[dict, str]:
     """Run a document-table chart. Raises ``CannotChart`` / ``ProviderError``.
 
     The table is looked up AGAIN with the viewer, here, at run time: the
@@ -176,6 +190,7 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer) -> tuple[di
         raise CannotChart("I can't chart that here.")
     table = table_store.get_table(
         spec.table_id, org_id=org_id, workspace_id=workspace_id, viewer=viewer,
+        uploads=uploads,
     )
     if table is None:
         # Deleted, re-indexed or not shared with this person: indistinguishable
@@ -231,7 +246,9 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer) -> tuple[di
 
     group_col = table.column(spec.group_by) if spec.group_by else None
     by_date = bool(group_col and group_col.get("type") == "date")
-    notes = [f"From the table in \"{table.document_title}\"."] + list(table.notes)
+    source = (f"From \"{table.document_title}\", the file you uploaded to this chat."
+              if table.is_upload else f"From the table in \"{table.document_title}\".")
+    notes = [source] + list(table.notes)
     if value_col and value_col.get("unparsed"):
         notes.append(f"{value_col['unparsed']} {name(spec.value)} cells were not "
                      "numbers and are left out.")
@@ -264,7 +281,7 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer) -> tuple[di
         "details": _table_details(table, filters, date_key=spec.group_by if by_date else None),
         "measured_since": None,
         "table": {"id": table.id, "name": table.name, "document": table.document_title,
-                  "origin": table.origin},
+                  "origin": table.origin, "upload": table.is_upload},
     }
     return panel, spec.period
 

@@ -23,3 +23,13 @@ def build_dataset_adapters(
 
         adapters.append(TextAdapter(llm=llm, max_chars=settings.text_max_chars))
     return adapters
+
+
+def build_upload_text_adapter(llm, settings: DocTablesSettings | None = None) -> DatasetAdapter:
+    """The text adapter for a file uploaded to a chat, run when the asker is
+    waiting in Chart mode -- so not gated on ``text_enabled``, which budgets
+    BACKGROUND quota for the indexed library. Interactive, once per file."""
+    from .text_adapter import TextAdapter
+
+    settings = settings or DocTablesSettings.from_env()
+    return TextAdapter(llm=llm, max_chars=settings.text_max_chars)

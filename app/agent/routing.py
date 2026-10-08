@@ -601,8 +601,14 @@ def _has_authorized_repos(org_id: str, workspace_id: str | None) -> bool:
     return bool(config.get("repos"))
 
 
-def _chartable_tables(org_id: str, workspace_id: str | None, viewer, question: str = "") -> list:
-    """Document tables THIS person may open, for the chart classifier.
+def _chartable_tables(org_id: str, workspace_id: str | None, viewer, question: str = "",
+                      uploads=None) -> list:
+    """Tables THIS person may chart, for the chart classifier.
+
+    Files they uploaded to this chat come FIRST and unranked: a file dropped
+    into the chat is what the next question is about, and there are only a
+    few. Then document tables, ranked by how close their document is to the
+    question.
 
     No viewer means none: a table is only ever offered through the document
     access predicate, and "no viewer" is the unrestricted reading (ingest,
@@ -611,6 +617,35 @@ def _chartable_tables(org_id: str, workspace_id: str | None, viewer, question: s
     """
     if viewer is None or getattr(viewer, "is_unrestricted", False):
         return []
+    return _upload_tables(org_id, uploads) + _document_tables(
+        org_id, workspace_id, viewer, question)
+
+
+def _upload_tables(org_id: str, uploads) -> list:
+    """Tables in this chat's uploads. A file with no table is read for
+    figures in its sentences first -- once, on demand, since the asker is
+    waiting and chose Chart mode. Never raises."""
+    if uploads is None:
+        return []
+    from ..doctables.store import list_upload_tables
+
+    try:
+        from ..doctables.factory import build_upload_text_adapter
+        from ..doctables.uploads import read_upload_figures
+        from ..llm.factory import build_llm_provider
+
+        read_upload_figures(org_id=org_id, uploads=uploads,
+                            adapter=build_upload_text_adapter(build_llm_provider()))
+    except Exception:  # noqa: BLE001 - costs the figures, never the real tables
+        logger.warning("Agent routing: could not read figures from uploads", exc_info=True)
+    try:
+        return list_upload_tables(org_id=org_id, uploads=uploads)
+    except Exception:  # noqa: BLE001
+        logger.warning("Agent routing: could not list uploaded tables", exc_info=True)
+        return []
+
+
+def _document_tables(org_id: str, workspace_id: str | None, viewer, question: str) -> list:
     try:
         from ..doctables.store import list_tables
         from ..insights import tables as doc_tables
@@ -725,6 +760,7 @@ def _chart_mode_route(
     org_id: str,
     workspace_id: str | None,
     viewer=None,
+    uploads=None,
 ) -> RoutingDecision:
     """Chart mode: the asker chose a chart, so the answer is a chart or a
     plain refusal -- never a document answer, never a guess. Never raises."""
@@ -744,7 +780,7 @@ def _chart_mode_route(
     try:
         intent = classify_question(
             question, providers=providers, fail_open=False, offer_github=False,
-            tables=_chartable_tables(org_id, workspace_id, viewer, question),
+            tables=_chartable_tables(org_id, workspace_id, viewer, question, uploads),
             fields=_chart_fields(org_id, workspace_id, viewer),
         )
     except CannotChart as exc:
@@ -823,6 +859,7 @@ def choose_agent(
     viewer=None,
     chart_mode: bool = False,
     chart_from_words: bool = False,
+    uploads=None,
 ) -> RoutingDecision:
     """Which agent answers, plus the question check's live-data verdict.
 
@@ -832,13 +869,16 @@ def choose_agent(
     ``chart_mode`` is chat's Chart toggle (or, in Slack, a question naming a
     chart): the answer is a chart or a refusal and nothing else. ``viewer``
     lets the chart classifier offer document tables the asker may open;
-    without one, none are offered."""
+    without one, none are offered. ``uploads`` (``doctables.store.
+    UploadScope``) offers the tables in files this person uploaded to this
+    chat, in Chart mode only."""
     live: list = []
     chart: list = []
     decision = _choose_agent(
         question, org_id, workspace_id=workspace_id, requested_agent=requested_agent,
         context=context, graph_plan=graph_plan, live_out=live, viewer=viewer,
         chart_mode=chart_mode, chart_out=chart, chart_from_words=chart_from_words,
+        uploads=uploads,
     )
     return replace(decision, needs_live=live[0] if live else None,
                    chart_ask=chart[0] if chart else None)
@@ -857,6 +897,7 @@ def _choose_agent(
     chart_mode: bool = False,
     chart_out: list | None = None,
     chart_from_words: bool = False,
+    uploads=None,
 ) -> RoutingDecision:
     """Decide which agent answers ``question``. Never raises.
 
@@ -920,7 +961,8 @@ def _choose_agent(
             return RoutingDecision(default_key, "no-sources")
 
     if chart_mode:
-        return _chart_mode_route(question, connected, org_id, workspace_id, viewer)
+        return _chart_mode_route(question, connected, org_id, workspace_id, viewer,
+                                 uploads=uploads)
 
     if not connected:
         return RoutingDecision(default_key, "no-sources")

@@ -956,9 +956,13 @@ export const api = {
 
   /** Chart mode's starters, built by the server from the metrics and fields
    *  this scope actually has -- never copy written into the page. */
-  chartStarters: (workspaceId?: string | null) => {
-    const q = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : "";
-    return request<{ questions: string[] }>(`/chat/chart-starters${q}`);
+  chartStarters: (workspaceId?: string | null, conversationId?: string | null) => {
+    const params = new URLSearchParams();
+    if (workspaceId) params.set("workspace_id", workspaceId);
+    // Starters from the files uploaded to this chat lead the list.
+    if (conversationId) params.set("conversation_id", conversationId);
+    const q = params.toString();
+    return request<{ questions: string[] }>(`/chat/chart-starters${q ? `?${q}` : ""}`);
   },
 
   chatModels: () =>

@@ -272,6 +272,9 @@ on top of the 12 metrics already shipping:
   charted.
 - **Tables inside documents** (`app/doctables/`): rows extracted at sync, for example a sales
   table in a Doc.
+- **Charts from uploaded files** (`app/doctables/uploads.py`): Excel, CSV, Word and PDF tables,
+  or figures in a file's sentences, charted in Chart mode; private to the uploader and chat.
+  Adds `.xlsx` uploads (`openpyxl`) and PDF table reading (`pdfplumber`).
 
 The rule on the branch is the same: **the AI never produces a number**. It is under review.
 Ask on `main` still charts only the 12 registry metrics.

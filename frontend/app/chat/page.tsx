@@ -196,11 +196,14 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const anySourceAvailable = connectedSourceCount > 0;
 
 
+  // Re-read when the chat's files change: an uploaded sheet's columns
+  // become the first starters.
+  const attachmentKey = attachments.map((a) => a.id).join(",");
   useEffect(() => {
     if (!chartMode) return;
     let cancelled = false;
     api
-      .chartStarters(workspaceId)
+      .chartStarters(workspaceId, attachmentKey ? conversationId.current : null)
       .then((r) => {
         if (!cancelled) setChartStarters(r.questions);
       })
@@ -208,7 +211,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     return () => {
       cancelled = true;
     };
-  }, [chartMode, workspaceId]);
+  }, [chartMode, workspaceId, attachmentKey]);
 
   useEffect(() => {
     if (!toolsOpen) return;
@@ -734,7 +737,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     ? "Create a chart"
     : workspaceId ? "Ask this space" : "Ask your company";
   const emptyCopy = chartMode
-    ? "Charts count activity in your connected apps and figures in tables inside your documents. Describe what you want to see."
+    ? "Charts count activity in your connected apps, figures in tables inside your documents, and files you upload here (Excel, CSV, PDF or Word). Describe what you want to see."
     : connectedNames.length > 0
       ? `Answers are drawn from ${listCopy(connectedNames)}. For a chart, choose + then Create a chart.`
       : workspaceId
@@ -940,7 +943,9 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             )}
             {attachments.length > 0 && pending.length === 0 && (
               <span className="attach-note">
-                Answers can use {attachments.length === 1 ? "this file" : "these files"} and your connected tools together.
+                {chartMode
+                  ? `Charts can use the tables and figures in ${attachments.length === 1 ? "this file" : "these files"}, and your connected tools.`
+                  : `Answers can use ${attachments.length === 1 ? "this file" : "these files"} and your connected tools together.`}
               </span>
             )}
             {uploadError && <span className="attach-error">{uploadError}</span>}
@@ -955,7 +960,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             ref={fileInput}
             type="file"
             className="sr-only"
-            accept=".pdf,.docx,.csv,.tsv,.txt,.md,.markdown,.log,.json"
+            accept=".pdf,.docx,.xlsx,.csv,.tsv,.txt,.md,.markdown,.log,.json"
             multiple
             onChange={(e) => attach(e.target.files)}
           />
