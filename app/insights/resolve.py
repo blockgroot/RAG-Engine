@@ -80,6 +80,10 @@ class ChartSpec:
     #: and group_by/split_by/filters hold that table's column keys.
     table_id: str | None = None
     value: str | None = None
+    #: The asker's own words for a breakdown beyond the two a chart can draw
+    #: ("and priority"), checked to be in the question, so the chart can say
+    #: what it left out instead of answering a narrower question silently.
+    left_out: str | None = None
 
 
 def spec_to_dict(spec: ChartSpec) -> dict:
@@ -102,6 +106,7 @@ def spec_to_dict(spec: ChartSpec) -> dict:
         "filters": [list(f) for f in spec.filters],
         "table_id": spec.table_id,
         "value": spec.value,
+        "left_out": spec.left_out,
     }
 
 
@@ -122,6 +127,7 @@ def spec_from_dict(data: dict) -> ChartSpec:
         filters=filters,
         table_id=data.get("table_id"),
         value=data.get("value"),
+        left_out=data.get("left_out"),
     )
 
 
@@ -215,6 +221,13 @@ def _catalogue(metrics: list[registry.Metric], fields: dict | None = None) -> st
             line += f". split_by: {', '.join(query.split_dims(metric, fields.get(metric.key)))}"
         if query.filter_dims(metric, fields.get(metric.key)):
             line += f". filters: {', '.join(query.filter_dims(metric, fields.get(metric.key)))}"
+        # What the built-in options ARE in this tool. Bare keys made "by
+        # team" in Linear land on the recorded `project` field, the nearest
+        # NAME, because nothing said `subject` is the team.
+        builtin = [d for d in ("actor", "subject") if d in metric.dims]
+        if builtin:
+            line += ". where " + ", ".join(
+                f"{d} = {query.dim_label(metric, d)}" for d in builtin)
         lines.append(line)
     # Named once, so "label" in three metrics' option lists is not a mystery
     # and the model learns a tag breakdown counts an item under each tag.
@@ -502,6 +515,7 @@ def _prompt(
         '"period": "<period>", '
         '"chart": "<shape or null>", "focus": "<one named thing or null>", '
         '"breakdown_words": "<their exact words asking for the breakdown, or null>", '
+        '"left_out_words": "<their exact words for any breakdown beyond the two charted, or null>", '
         '"live": true|false}\n\n'
         "Rules:\n"
         "- live=true when the question asks about the CURRENT state of a "
@@ -523,7 +537,9 @@ def _prompt(
         "- chart must be one of that metric's shapes, or null to use the default.\n"
         "- split_by = a SECOND breakdown, only when they asked for two "
         "(\"by person and repo\" is group_by=actor, split_by=subject). One of "
-        "that metric's split_by options, never the same as group_by, else null.\n"
+        "that metric's split_by options, never the same as group_by, else null. "
+        "A chart has at most these two: when they asked for a third breakdown, "
+        "copy their exact words for it into left_out_words.\n"
         "- measure = what each bar is, only from that metric's options: "
         "\"how many people\" is people, \"average time\" is average. Null for "
         "a plain count.\n"
@@ -650,9 +666,30 @@ def classify_question(
         missing=missing, providers=providers, handles=handles, fields=fields,
     )
     return replace(
-        _honour_breakdown(intent, question, reply, fields),
+        _note_left_out(_honour_breakdown(intent, question, reply, fields), question, reply),
         needs_live=parse_live(reply),
     )
+
+
+def _note_left_out(intent: AskIntent, question: str, reply: str) -> AskIntent:
+    """Carry the words of a breakdown the chart cannot add (a third one) onto
+    the spec, so the chart says it was left out. Kept only when the quote is
+    really in the question -- the model cannot put words in the asker's mouth."""
+    spec = intent.spec
+    if intent.kind != "chart" or spec is None or spec.split_by is None:
+        return intent
+    match = _JSON_RE.search(reply or "")
+    try:
+        data = json.loads(match.group(0)) if match else {}
+    except (ValueError, TypeError):
+        data = {}
+    words = data.get("left_out_words") if isinstance(data, dict) else None
+    if not isinstance(words, str) or not words.strip():
+        return intent
+    quote = _squashed(words)
+    if not quote or quote not in _squashed(question):
+        return intent
+    return replace(intent, spec=replace(spec, left_out=words.strip()[:80]))
 
 
 def _breakdown_words(reply: str) -> str | None:
@@ -699,7 +736,10 @@ def _honour_breakdown(intent: AskIntent, question: str, reply: str, fields) -> A
         return intent
     metric_fields = (fields or {}).get(spec.metric) if fields else None
     for dim in (spec.group_by, spec.split_by):
-        if dim and _squashed(query.dim_label(metric, dim, metric_fields)) in asked:
+        names = {query.dim_label(metric, dim, metric_fields)} if dim else set()
+        if dim == "actor":
+            names.add("person")  # the generic name, whatever the tool calls it
+        if any(_squashed(n) in asked for n in names):
             return intent
     logger.info("insights: %r asked for no breakdown; dropped %r", question[:60], spec.group_by)
     chart = spec.chart if spec.chart in ("line", "bar", "stacked_bar") else _chart_for(metric, None)

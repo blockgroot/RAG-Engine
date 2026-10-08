@@ -355,3 +355,42 @@ def test_forms_sentiment_keeps_its_floor(seeded):
                        period="quarter", chart="diverging_bar"),
     )
     assert member.chart is None
+
+
+def test_an_unassigned_linear_issue_is_unassigned_not_unknown(seeded):
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO activity_facts (org_id, provider, kind, actor, subject, state, "
+            "occurred_at, external_id, attrs) VALUES (%s, 'linear', 'issue_state', NULL, "
+            "'CORE', 'Todo', %s, %s, %s)",
+            (seeded["org"], seeded["now"], uuid.uuid4().hex,
+             Jsonb({"state_type": "unstarted"})),
+        )
+        conn.commit()
+    response = InsightsAgent().answer(
+        "e2e", seeded["org"], viewer=Viewer.unrestricted(), user_id="u", role="member",
+        spec=ChartSpec(metric="issue_states", group_by="actor", period="month", chart="bar"),
+    )
+    assert response.chart["blank_labels"] == {"actor": "Unassigned"}
+    assert "by assignee" in response.chart["title"]
+
+
+def test_a_left_out_breakdown_is_said_on_the_chart(seeded):
+    response = InsightsAgent().answer(
+        "e2e", seeded["org"], viewer=SANA, user_id="u", role="member",
+        spec=ChartSpec(metric="issues_completed", group_by="subject", split_by="actor",
+                       period="month", chart="bar", left_out="and priority"),
+    )
+    assert response.chart["caveat"].startswith(
+        'A chart shows at most two breakdowns, so "and priority" was left out.')
+
+
+def test_all_unassigned_says_so_in_linears_terms():
+    from app.agent.insights_agent import _caption
+
+    caption = _caption(
+        ChartSpec(metric="issue_states", group_by="actor", period="month", chart="bar"),
+        {"title": "Where the work sits by assignee"}, [{"group": None, "value": 7}],
+        metric=registry.get("issue_states"),
+    )
+    assert "Unassigned" in caption and "indexed" not in caption

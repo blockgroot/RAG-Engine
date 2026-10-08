@@ -124,6 +124,19 @@ def subject_label(provider: str) -> str:
     return SUBJECT_LABELS.get(provider, "subject")
 
 
+#: What ``actor`` IS for each tool, where "person" would mislead: a Linear
+#: issue's person is whoever it is assigned to, so an unassigned issue has
+#: none -- which is a fact about the issue, not a gap in what we stored.
+ACTOR_LABELS = {"linear": "assignee"}
+
+#: What an empty ``actor`` means for each tool, shown instead of "Unknown".
+BLANK_ACTOR = {"linear": "Unassigned"}
+
+
+def actor_label(provider: str) -> str:
+    return ACTOR_LABELS.get(provider, "person")
+
+
 # ---------------------------------------------------------------------------
 # Notion & Drive -- countable from data ingest already stores.
 #

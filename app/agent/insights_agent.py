@@ -739,6 +739,13 @@ def _caption(
             days=days, metric=metric, viewer=viewer,
         )
     if spec.group_by == "actor" and all(not p.get("group") for p in points):
+        blank = registry.BLANK_ACTOR.get(getattr(metric, "provider", ""))
+        if blank:
+            # The tool HAS a person field and it is empty on every item: say
+            # so in its own terms, not as a gap in what we stored.
+            return (f"{title}. None of these has an "
+                    f"{registry.actor_label(metric.provider)} in "
+                    f"{metric.provider.title()}, so all of them are {blank}.")
         return (
             f"{title}. Editor names were not stored when these were first "
             "indexed, so this is a total rather than a breakdown by person. "
@@ -949,5 +956,19 @@ def _run_spec(
             viewer=viewer, filters=filters, attrs=attrs,
         ),
         "measured_since": begun.isoformat() if begun else None,
+        # What an EMPTY value means in this tool, by field, instead of a
+        # generic "Unknown": a Linear issue with no assignee is Unassigned.
+        "blank_labels": _blank_labels(metric),
     }
+    if spec.left_out:
+        words = enforce_link_provenance(spec.left_out, [], ())
+        panel["caveat"] = (
+            f"A chart shows at most two breakdowns, so \"{words}\" was left out. "
+            + panel["caveat"]
+        ).strip()
     return panel, period
+
+
+def _blank_labels(metric) -> dict:
+    blank = registry.BLANK_ACTOR.get(metric.provider)
+    return {"actor": blank} if blank else {}
