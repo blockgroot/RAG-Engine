@@ -106,6 +106,16 @@ class PullRequest:
     merged_at: datetime | None
     closed_at: datetime | None
     url: str
+    #: Label names and the branch it targets. Both ride the listing we already
+    #: fetch, so charts can group by them at no extra cost (activity_facts.attrs).
+    labels: tuple[str, ...] = ()
+    base: str | None = None
+    #: Every SIMPLE field of the payload it was parsed from
+    #: (`insights.fields.simple_fields`), as sorted pairs so the dataclass
+    #: stays hashable. Kept for charts: a field nobody anticipated (milestone,
+    #: draft, requested reviewers; additions/changed files on a merged PR's
+    #: detail payload) is chartable without a code change.
+    fields: tuple[tuple[str, object], ...] = ()
 
     @property
     def lead_time_seconds(self) -> float | None:

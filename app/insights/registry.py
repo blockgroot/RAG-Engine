@@ -124,6 +124,19 @@ def subject_label(provider: str) -> str:
     return SUBJECT_LABELS.get(provider, "subject")
 
 
+#: What ``actor`` IS for each tool, where "person" would mislead: a Linear
+#: issue's person is whoever it is assigned to, so an unassigned issue has
+#: none -- which is a fact about the issue, not a gap in what we stored.
+ACTOR_LABELS = {"linear": "assignee"}
+
+#: What an empty ``actor`` means for each tool, shown instead of "Unknown".
+BLANK_ACTOR = {"linear": "Unassigned"}
+
+
+def actor_label(provider: str) -> str:
+    return ACTOR_LABELS.get(provider, "person")
+
+
 # ---------------------------------------------------------------------------
 # Notion & Drive -- countable from data ingest already stores.
 #
@@ -379,6 +392,67 @@ _add(Metric(
 # waiting to merge) needs review timestamps per pull request AND the first
 # commit date -- two more calls each. It is the highest-value engineering chart
 # there is, and it is deliberately not paid for yet.
+
+
+# ---------------------------------------------------------------------------
+# Attributes -- every simple field a source returned, kept in `attrs` JSONB.
+#
+# WHICH fields exist is no longer listed here: the facts writers keep every
+# simple field (`fields.simple_fields`) and `attr_catalog.discover_scope`
+# reads which ones actually occur, so a field becomes chartable the day a tool
+# starts sending it. It shipped first as six hand-picked keys, which left the
+# original problem in place -- any field nobody listed was dropped at sync.
+#
+# What remains is HINTS: a friendlier name or a unit for fields we know. A
+# hint never makes a field appear (only the data does), and when the data
+# disagrees with a hint's type, the data wins. Keys are the normalized field
+# names (`fields.normalize_key`): `priorityLabel` is stored as
+# `priority_label`.
+# ---------------------------------------------------------------------------
+
+ATTR_TYPES = ("category", "tags", "number")
+
+
+@dataclass(frozen=True)
+class Attr:
+    key: str
+    provider: str
+    kinds: tuple[str, ...]
+    type: str
+    #: The noun in a title: "Tasks completed by priority".
+    label: str
+    #: For a number: what a sum of it is called in the chart's unit.
+    unit: str = ""
+
+
+_PR_KINDS = ("pr_opened", "pr_merged")
+_ISSUE_KINDS = ("issue_state", "issue_completed")
+
+ATTRS: tuple[Attr, ...] = (
+    Attr("labels", "github", _PR_KINDS, "tags", "label"),
+    Attr("base", "github", _PR_KINDS, "category", "target branch"),
+    Attr("additions", "github", _PR_KINDS, "number", "lines added", unit="lines added"),
+    Attr("deletions", "github", _PR_KINDS, "number", "lines removed", unit="lines removed"),
+    Attr("changed_files", "github", _PR_KINDS, "number", "files changed", unit="files changed"),
+    Attr("priority_label", "linear", _ISSUE_KINDS, "category", "priority"),
+    Attr("labels", "linear", _ISSUE_KINDS, "tags", "label"),
+    Attr("project", "linear", _ISSUE_KINDS, "category", "project"),
+    Attr("project_milestone", "linear", _ISSUE_KINDS, "category", "milestone"),
+    Attr("estimate", "linear", _ISSUE_KINDS, "number", "estimate", unit="estimate points"),
+)
+
+
+def attrs_for(metric: "Metric") -> tuple[Attr, ...]:
+    """The HINTED attributes for this metric -- the fallback when no
+    discovered set is passed (tests, and code with no database at hand)."""
+    return tuple(
+        a for a in ATTRS if a.provider == metric.provider and metric.kind in a.kinds
+    )
+
+
+def attr(metric: "Metric", key: str, attrs=None) -> Attr | None:
+    pool = attrs_for(metric) if attrs is None else attrs
+    return next((a for a in pool if a.key == key), None)
 
 
 def get(key: str) -> Metric:

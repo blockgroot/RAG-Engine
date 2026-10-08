@@ -35,7 +35,8 @@ import {
   pick,
 } from "./chartColors";
 
-const PAD = { top: 16, right: 16, bottom: 30, left: 44 };
+// `right` leaves room for the last date label, centred on the last point.
+const PAD = { top: 22, right: 40, bottom: 30, left: 44 };
 const HEIGHT = 240;
 
 /** Widest a chart grows to. Past this a 4-point line is a lot of white space
@@ -127,8 +128,12 @@ function pivot(points: Point[]) {
 /** A y-axis that ends on a round number, so the top gridline is readable. */
 function niceMax(value: number): number {
   if (value <= 0) return 1;
-  const magnitude = 10 ** Math.floor(Math.log10(value));
-  return Math.ceil(value / magnitude) * magnitude;
+  // Headroom above the tallest value: a peak that lands exactly on the top
+  // gridline puts its dot and its value label on the plot's edge, where the
+  // label is cut off (a max of 3 drew "3" half outside the chart).
+  const target = value * 1.15;
+  const magnitude = 10 ** Math.floor(Math.log10(target));
+  return Math.ceil(target / magnitude) * magnitude;
 }
 
 /**
@@ -162,6 +167,8 @@ export type DetailRow = {
   state?: string | null;
   at?: string | null;
   url?: string | null;
+  /** Recorded fields (label, priority, ...) for matching a hover to a bar. */
+  attrs?: Record<string, unknown>;
 };
 
 /**
@@ -177,24 +184,52 @@ export type DetailRow = {
  * rather than all rows: showing a repository's commits under a different
  * repository's slice would be worse than showing none.
  */
+/** Joins a two-way split ("Sana · Chain-Guard") into one category. The
+ *  server sends the second grouping as `series`; every chart shape here draws
+ *  ONE category axis, so the pair becomes one name and `detailsFor` splits it
+ *  back to match hover rows on BOTH fields. */
+const SPLIT_SEP = " · ";
+
+/** A row's value for a dimension. A recorded field (label, priority, ...)
+ *  lives in `attrs`; a tag list matches when it CONTAINS the wanted value,
+ *  mirroring the server, where an item counts under each of its tags. */
+function fieldOf(row: DetailRow, dim: string, wanted?: string) {
+  if (dim === "actor") return row.actor;
+  if (dim === "state") return row.state;
+  if (dim === "subject") return row.subject;
+  const value = row.attrs?.[dim];
+  if (Array.isArray(value)) {
+    const hit = value.find((v) => String(v).trim().toLowerCase() === wanted);
+    return hit == null ? (value.length ? String(value[0]) : null) : String(hit);
+  }
+  return value == null ? null : String(value);
+}
+
 function detailsFor(
   rows: DetailRow[],
-  { groupBy, group, bucket, period }: {
+  { groupBy, group, bucket, period, blanks = [] }: {
     groupBy?: string | null;
     group?: string | null;
     bucket?: string | null;
     period: string;
+    /** The names an EMPTY value was drawn as ("Unknown", "Unassigned"). */
+    blanks?: string[];
   },
 ): DetailRow[] {
   if (!rows.length) return [];
   if (group != null && groupBy) {
-    const key = group.trim().toLowerCase();
-    const field = (row: DetailRow) =>
-      groupBy === "actor" ? row.actor
-      : groupBy === "state" ? row.state
-      : groupBy === "subject" ? row.subject
-      : null;
-    return rows.filter((row) => (field(row) || "").trim().toLowerCase() === key);
+    // "actor+subject" for a split chart: every part must match, or the hover
+    // would list another repository's rows under this bar.
+    const dims = groupBy.split("+");
+    const parts = dims.length > 1 ? group.split(SPLIT_SEP) : [group];
+    if (parts.length !== dims.length) return [];
+    const norm = (v: string | null | undefined) => (v || "").trim().toLowerCase();
+    const wanted = parts.map((p) =>
+      p.trim() === "Unknown" || blanks.includes(p.trim()) ? "" : norm(p),
+    );
+    return rows.filter((row) =>
+      dims.every((dim, i) => norm(fieldOf(row, dim, wanted[i])) === wanted[i]),
+    );
   }
   if (bucket) {
     const want = bucketKey(bucket, period);
@@ -223,20 +258,44 @@ function bucketKey(iso: string, period: string): string {
 
 export function Chart({
   chart,
-  points,
+  points: rawPoints,
   period,
   unit,
-  groupBy,
+  groupBy: baseGroupBy,
+  splitBy,
   details = [],
+  blankLabels = {},
 }: {
   chart: string;
   points: Point[];
   period: string;
   unit?: string;
+  /** What an empty value means per field, from the source: a Linear issue
+   *  with no assignee is "Unassigned", not "Unknown". */
+  blankLabels?: Record<string, string>;
   groupBy?: string | null;
+  /** A second grouping: each category is "group · split". */
+  splitBy?: string | null;
   /** The rows this chart counted, shown on hover for the hovered section. */
   details?: DetailRow[];
 }) {
+  const split = Boolean(baseGroupBy && splitBy);
+  const groupBy = split ? `${baseGroupBy}+${splitBy}` : baseGroupBy;
+  const blankFor = (dim?: string | null) => (dim && blankLabels[dim]) || "Unknown";
+  const blankNames = Object.values(blankLabels);
+  const points = useMemo(
+    () =>
+      split
+        ? rawPoints.map((p) => ({
+            ...p,
+            group: [p.group, p.series]
+              .map((v, i) => (v || "").trim() || blankFor(i === 0 ? baseGroupBy : splitBy))
+              .join(SPLIT_SEP),
+            series: null,
+          }))
+        : rawPoints,
+    [rawPoints, split, baseGroupBy, splitBy, blankLabels],
+  );
   const { buckets, series, at } = useMemo(() => pivot(points), [points]);
 
   // A grouped bar chart is a leaderboard, not a time series: collapse the
@@ -269,12 +328,12 @@ export function Chart({
     return cappedCategories(
       series
         .map((name) => ({
-          name: name.trim() || "Unknown",
+          name: name.trim() || blankFor(baseGroupBy),
           value: buckets.reduce((sum, b) => sum + at(b, name), 0),
         }))
         .sort((a, b) => b.value - a.value),
     );
-  }, [grouped, series, buckets, at]);
+  }, [grouped, series, buckets, at, baseGroupBy, blankLabels]);
 
   // Built from every name this chart will draw, so collisions are resolved
   // once and the same category keeps its colour in the plot, the legend and
@@ -301,6 +360,7 @@ export function Chart({
   if (chart === "pie" && ranked.length === 1 && buckets.length > 1) {
     return (
       <Pie
+        blanks={blankNames}
         rows={buckets.map((b) => ({
           name: formatBucket(b, period),
           value: at(b, series[0] ?? ""),
@@ -314,20 +374,22 @@ export function Chart({
     );
   }
 
-  // Only when even the finest bucket leaves ONE value: a lone bar has nothing
-  // to compare against and a one-slice pie is a circle labelled 100%.
-  if ((leaderboard || chart === "pie") && ranked.length === 1 && buckets.length <= 1) {
-    const only = ranked[0];
-    const name = series.find((s) => (s.trim() || "Unknown") === only.name) ?? "";
+  // One group in one period is still drawn as a chart -- a single column on
+  // a real axis, with its readout -- never a bare number, which read as a
+  // chart that failed to draw. A one-slice pie (a circle labelled 100%) is
+  // the one shape that says nothing, so it becomes that column too.
+  if (chart === "pie" && ranked.length === 1 && buckets.length <= 1) {
     return (
-      <Stat
-        label={only.name}
-        value={only.value}
+      <CategoryBars
+        rows={ranked}
+        blanks={blankNames}
         unit={unit}
-        buckets={buckets}
+        palette={palette}
+        measured={measured}
+        containerRef={ref}
+        details={details}
+        groupBy={groupBy}
         period={period}
-        seriesName={name}
-        at={at}
       />
     );
   }
@@ -341,6 +403,7 @@ export function Chart({
         }));
     return (
       <Pie
+        blanks={blankNames}
         rows={rows}
         unit={unit}
         details={details}
@@ -357,6 +420,7 @@ export function Chart({
     return (
       <CategoryBars
         rows={ranked}
+        blanks={blankNames}
         unit={unit}
         palette={palette}
         measured={measured}
@@ -429,6 +493,7 @@ export function Chart({
             value={withUnit(ranked[near].value, unit)}
             share={(ranked[near].value / Math.max(1, total)) * 100}
             rows={detailsFor(details, {
+            blanks: blankNames,
               group: ranked[near].name,
               groupBy,
               period,
@@ -443,6 +508,9 @@ export function Chart({
   }
 
   const stacked = chart === "stacked_bar";
+  // One or two points do not make a line: a lone dot at the top of an empty
+  // plot reads as a broken chart. Columns until there is a trend to trace.
+  const shape = chart === "line" && buckets.length < 3 ? "bar" : chart;
   const totals = buckets.map((b) =>
     stacked
       ? series.reduce((sum, s) => sum + at(b, s), 0)
@@ -492,7 +560,7 @@ export function Chart({
           const vx = ((event.clientX - box.left) / box.width) * width;
           const slot = plotW / Math.max(1, buckets.length);
           const index =
-            chart === "line"
+            shape === "line"
               ? Math.round(((vx - PAD.left) / plotW) * (buckets.length - 1))
               : Math.floor((vx - PAD.left) / slot);
           setNear(Math.max(0, Math.min(buckets.length - 1, index)));
@@ -516,8 +584,8 @@ export function Chart({
 
         {near != null && (
           <line
-            x1={chart === "line" ? x(near) : PAD.left + (plotW / buckets.length) * (near + 0.5)}
-            x2={chart === "line" ? x(near) : PAD.left + (plotW / buckets.length) * (near + 0.5)}
+            x1={shape === "line" ? x(near) : PAD.left + (plotW / buckets.length) * (near + 0.5)}
+            x2={shape === "line" ? x(near) : PAD.left + (plotW / buckets.length) * (near + 0.5)}
             y1={PAD.top}
             y2={PAD.top + plotH}
             className="chart-guide"
@@ -539,7 +607,7 @@ export function Chart({
           </g>
         ))}
 
-        {chart === "line"
+        {shape === "line"
           ? series.map((name, si) => {
               const path = buckets
                 .map(
@@ -607,7 +675,9 @@ export function Chart({
             })
           : buckets.map((b, i) => {
               const slot = plotW / buckets.length;
-              const barW = Math.max(6, slot * 0.6);
+              // Capped like CategoryBars: one week is a column, not a slab
+              // across the whole plot.
+              const barW = Math.max(6, Math.min(64, slot * 0.6));
               const cx = PAD.left + slot * i + slot / 2 - barW / 2;
               let cursor = PAD.top + plotH;
               return (
@@ -663,7 +733,7 @@ export function Chart({
           const step = Math.ceil(buckets.length / 8);
           if (i % step !== 0) return null;
           const slot = plotW / buckets.length;
-          const cx = chart === "line" ? x(i) : PAD.left + slot * i + slot / 2;
+          const cx = shape === "line" ? x(i) : PAD.left + slot * i + slot / 2;
           return (
             <text
               key={b}
@@ -687,6 +757,7 @@ export function Chart({
             )
             .join(" · ")}
           rows={detailsFor(details, {
+            blanks: blankNames,
             bucket: buckets[near],
             period,
             groupBy: null,
@@ -696,7 +767,7 @@ export function Chart({
         />
       )}
 
-      {chart === "line" && series.length > 1 && (
+      {shape === "line" && series.length > 1 && (
         <ul className="chart-legend">
           {series.map((name, si) => (
             <li key={name || "all"}>
@@ -820,6 +891,7 @@ function DivergingBar({ points }: { points: Point[] }) {
 
 function CategoryBars({
   rows,
+  blanks = [],
   unit,
   palette,
   measured,
@@ -829,6 +901,7 @@ function CategoryBars({
   period,
 }: {
   rows: { name: string; value: number }[];
+  blanks?: string[];
   unit?: string;
   palette: Map<string, string>;
   measured: number;
@@ -977,6 +1050,7 @@ function CategoryBars({
               Math.max(1, rows.reduce((sum, r) => sum + r.value, 0))) * 100
           }
           rows={detailsFor(details, {
+            blanks,
             group: rows[near].name,
             groupBy,
             period,
@@ -991,84 +1065,16 @@ function CategoryBars({
 }
 
 
-function Stat({
-  label,
-  value,
-  unit,
-  buckets,
-  period,
-  seriesName,
-  at,
-}: {
-  label: string;
-  value: number;
-  unit?: string;
-  buckets: string[];
-  period: string;
-  seriesName: string;
-  at: (bucket: string, series: string) => number;
-}) {
-  /**
-   * One group, rendered as the number it is.
-   *
-   * Reached when a ranking or a share resolves to a single group -- a real
-   * situation on a small team, a new connector or a filtered chart, and the
-   * one case where the ordinary shapes actively mislead: a lone bar has
-   * nothing to compare against and a one-slice pie is a circle labelled
-   * 100%. The trend is drawn beside it because "4 commits" and "4 commits,
-   * all in one week" are different facts.
-   */
-  const values = buckets.map((b) => at(b, seriesName));
-  const peak = Math.max(...values, 1);
-  const W = 220;
-  const H = 44;
-  const step = buckets.length > 1 ? W / (buckets.length - 1) : 0;
-  const path = values
-    .map((v, i) => `${i === 0 ? "M" : "L"} ${i * step} ${H - (v / peak) * (H - 6) - 3}`)
-    .join(" ");
-
-  return (
-    <div className="chart-stat">
-      <div>
-        <p className="chart-stat-value">{withUnit(value, unit)}</p>
-        <p className="chart-stat-label">{label}</p>
-      </div>
-      {buckets.length > 1 && (
-        <svg
-          className="chart-stat-spark"
-          viewBox={`0 0 ${W} ${H}`}
-          width={W}
-          height={H}
-          role="img"
-          aria-label={`trend over ${buckets.length} ${period}s`}
-        >
-          <path
-            d={`${path} L ${W} ${H} L 0 ${H} Z`}
-            fill="var(--chart-1)"
-            opacity={0.12}
-            stroke="none"
-          />
-          <path d={path} fill="none" stroke="var(--chart-1)" strokeWidth={2} />
-        </svg>
-      )}
-      {buckets.length > 1 && (
-        <p className="chart-stat-range">
-          {formatBucket(buckets[0], period)} – {formatBucket(buckets[buckets.length - 1], period)}
-        </p>
-      )}
-    </div>
-  );
-}
-
-
 function Pie({
   rows,
+  blanks = [],
   unit,
   details = [],
   groupBy,
   period = "month",
 }: {
   rows: { name: string; value: number; bucket?: string }[];
+  blanks?: string[];
   unit?: string;
   details?: DetailRow[];
   groupBy?: string | null;
@@ -1226,6 +1232,7 @@ function Pie({
           value={withUnit(active.value, unit)}
           share={active.pct}
           rows={detailsFor(details, {
+            blanks,
             group: groupBy ? active.name : null,
             groupBy,
             bucket: active.bucket ?? null,

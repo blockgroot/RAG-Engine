@@ -160,7 +160,7 @@ def test_a_reopened_turn_returns_its_sources_and_drops_a_bad_link(monkeypatch):
         },
         {"n": "1", "document_id": "d-x"},
     ]
-    conn = _Conn(rows=[(0, "q", "Leave [1].", datetime.now(timezone.utc), raw)])
+    conn = _Conn(rows=[(0, "q", "Leave [1].", datetime.now(timezone.utc), raw, None, None)])
     monkeypatch.setattr(store, "get_connection", lambda: conn)
     turns = store.get_conversation_turns(
         conversation_id="c", org_id="o", user_id="u", workspace_id=None
@@ -218,4 +218,83 @@ def test_append_turn_writes_the_citation_list(monkeypatch):
         [{"n": 1, "document_id": "d-leave", "title": "Leave", "provider": "notion", "url": "https://notion.so/leave"}],
     )
     assert "cited" in conn.sql[-1]
-    assert '"document_id": "d-leave"' in conn.params[-1][-1]
+    assert '"document_id": "d-leave"' in conn.params[-1][-2]
+    assert conn.params[-1][-1] is None  # no chart drawn, none stored
+
+
+def test_append_turn_writes_the_chart(monkeypatch):
+    """Without the column a reopened chat shows the words and loses the chart."""
+    import json
+
+    from app.memory.conversations import chart_for_storage
+    from app.memory.pg_store import PgConversationStore
+
+    class _Write:
+        def __init__(self):
+            self.params: list[tuple] = []
+            self._n = 0
+
+        def execute(self, sql, params):
+            self.params.append(params)
+            self._n += 1
+            return self
+
+        def fetchone(self):
+            return ("org",) if self._n == 1 else (0,)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    conn = _Write()
+    monkeypatch.setattr("app.memory.pg_store.get_connection", lambda settings=None: conn)
+    panel = {"chart": "bar", "points": [{"group": "High", "value": 4}]}
+    PgConversationStore().append_turn("cid", "chart it", "Here.", None,
+                                      chart_for_storage(panel, "month"))
+    assert json.loads(conn.params[-1][-1]) == {"panel": panel, "period": "month"}
+
+
+def test_a_reopened_turn_returns_its_chart(monkeypatch):
+    from datetime import datetime, timezone
+
+    stored = {"panel": {"chart": "bar", "points": [{"group": "High", "value": 4}]},
+              "period": "week"}
+    conn = _Conn(rows=[(0, "q", "a", datetime.now(timezone.utc), None, stored, None)])
+    monkeypatch.setattr(store, "get_connection", lambda: conn)
+    [turn] = store.get_conversation_turns(
+        conversation_id="c", org_id="o", user_id="u", workspace_id=None
+    )
+    assert "t.chart" in conn.sql[0]
+    assert turn.chart == stored
+
+
+def test_a_reopened_turn_keeps_who_answered(monkeypatch):
+    """The pill under an answer must survive a reload, not only the text."""
+    from datetime import datetime, timezone
+
+    meta = {"source": "notion", "agent": "notion", "connected_providers": ["notion", "slack"],
+            "model": "Qwen 3.8 27B", "citation_count": 3}
+    conn = _Conn(rows=[(0, "q", "a", datetime.now(timezone.utc), None, None, meta)])
+    monkeypatch.setattr(store, "get_connection", lambda: conn)
+    [turn] = store.get_conversation_turns(
+        conversation_id="c", org_id="o", user_id="u", workspace_id=None
+    )
+    assert "t.meta" in conn.sql[0]
+    assert turn.meta == meta
+
+
+def test_the_stored_pill_keeps_counts_not_passages():
+    payload = {"source": "notion", "agent": "notion", "answer": "x",
+               "citations": [{"content": "secret passage", "reference": "r", "score": 1}] * 2,
+               "attachments": [], "model": None, "live_sources": []}
+    meta = store.meta_for_storage(payload)
+    assert meta == {"source": "notion", "agent": "notion", "citation_count": 2}
+    assert "secret passage" not in str(meta)
+
+
+def test_a_bad_stored_pill_is_not_drawn():
+    assert store.meta_for_history("not json") is None
+    assert store.meta_for_history({"agent": "notion"}) is None  # no source
+    assert store.meta_for_history(None) is None

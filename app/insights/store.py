@@ -9,7 +9,7 @@ and ``group_by`` are grammatically identifiers and so cannot be passed as %s.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from typing import TYPE_CHECKING
@@ -18,7 +18,7 @@ from ..core.exceptions import ProviderError
 from ..db.connection import get_connection
 from ..security.visibility import visibility_predicate
 from ..sources.factory import ACL_CAPABLE
-from . import registry
+from . import query, registry
 
 if TYPE_CHECKING:
     from ..vectorstore.base import Viewer
@@ -121,6 +121,42 @@ def _floored(inner: str, metric, *, has_series: bool) -> str:
     """
 
 
+def _needs_attrs(group_by, split_by, measure, filters, dim=None) -> bool:
+    """Does this request name anything beyond the built-in columns?"""
+    named = [group_by, split_by, dim] + [d for d, _ in filters]
+    return any(n and n not in registry.DIMENSIONS for n in named) or bool(
+        measure and (measure.startswith("total_") or measure.startswith("average_"))
+    )
+
+
+def _attrs_for(metric, attrs, *, org_id, workspace_id, viewer, **request):
+    """The discovered fields, read only when the request names one.
+
+    A field is usable only if it occurs in THIS scope's rows (and the viewer's),
+    so the store discovers them itself rather than trusting a caller's list --
+    no call site can compile SQL over a field that is not there.
+    """
+    if attrs is not None or not _needs_attrs(**request):
+        return attrs
+    from .attr_catalog import for_metric
+
+    return for_metric(metric, org_id=org_id, workspace_id=workspace_id, viewer=viewer)
+
+
+def _filter_clause(metric, filters: tuple[tuple[str, str], ...], attrs=None) -> tuple[str, dict]:
+    """One `` AND ...`` per filter, from `query.filter_sql`. The column or JSON
+    key and the parameter NAME both come from declarations, so the only
+    caller text is the bound value."""
+    sql, params = "", {}
+    for dim, value in filters:
+        if dim not in query.filter_dims(metric, attrs):
+            raise ValueError(f"unknown filter {dim!r}")
+        many = isinstance(value, query.AnyOf)
+        sql += query.filter_sql(metric, dim, f"f_{dim}", attrs, many=many)
+        params[f"f_{dim}"] = list(value.values) if many else value
+    return sql, params
+
+
 def run_metric(
     key: str,
     *,
@@ -131,11 +167,21 @@ def run_metric(
     group_by: str | None = None,
     focus: str | None = None,
     viewer: "Viewer | None" = None,
+    split_by: str | None = None,
+    measure: str | None = None,
+    filters: tuple[tuple[str, str], ...] = (),
+    attrs=None,
 ) -> list[Point]:
     """Count one registry metric in one scope over one window.
 
     ``viewer`` narrows the count to documents that person may open
     (`_viewer_filter`); every product call site passes one.
+
+    ``split_by`` / ``measure`` / ``filters`` are the query grammar
+    (`query.py`), re-validated here so no call site can compile what the
+    grammar does not admit. Filter VALUES must already be resolved against
+    real rows (`list_values`); they are bound, never spliced. With all three
+    left at their defaults the SQL is exactly what it was before them.
 
     Raises ``KeyError`` for an unknown metric and ``ValueError`` for an unknown
     period or dimension -- never a sanitized fallback. A chart drawn from a
@@ -147,11 +193,25 @@ def run_metric(
         raise ValueError(
             f"unknown period {period!r}; expected one of {registry.PERIODS}"
         )
-    if group_by is not None and group_by not in registry.DIMENSIONS:
-        raise ValueError(f"unknown dimension {group_by!r}")
+    attrs = _attrs_for(
+        metric, attrs, org_id=org_id, workspace_id=workspace_id, viewer=viewer,
+        group_by=group_by, split_by=split_by, measure=measure, filters=filters,
+    )
+    query.validate(
+        metric, group_by=group_by, split_by=split_by, measure=measure,
+        filters=filters, attrs=attrs,
+    )
+    chosen = query.measures_for(metric, attrs)[measure or query.default_measure(metric)]
+    select = chosen.select or metric.select
 
-    # Both are looked-up constants by this point, never caller text.
-    column = registry.DIMENSIONS[group_by] if group_by else None
+    # Every expression below comes from `query.dim_sql`: a whitelisted column,
+    # or a JSON key DECLARED in `registry.ATTRS` -- never caller text. A tag
+    # attribute also brings a lateral join (one row per tag).
+    joins = ""
+    column = None
+    if group_by:
+        column, join = query.dim_sql(metric, group_by, attrs)
+        joins += join
     # Aliased because the suppression floor wraps this query and has to name
     # the columns. "group" is quoted -- it is a reserved word.
     selected = (
@@ -160,13 +220,19 @@ def run_metric(
     )
     grouped = f", {column}" if column else ""
 
-    # The metric's own second dimension. Fixed in the registry, not requested,
-    # and looked up in the same whitelist.
-    series_column = (
-        registry.DIMENSIONS[metric.series_by] if metric.series_by else None
-    )
-    if metric.series_by and series_column is None:
-        raise ValueError(f"{key} declares unknown series {metric.series_by!r}")
+    # The second dimension: the metric's own (fixed in the registry) or a
+    # requested split. Never both -- a metric with `series_by` is protected
+    # and admits no split (`query.is_protected`).
+    second = metric.series_by or split_by
+    series_column = None
+    if second:
+        if metric.series_by:
+            series_column = registry.DIMENSIONS.get(second)
+            if series_column is None:
+                raise ValueError(f"{key} has unknown second dimension {second!r}")
+        else:
+            series_column, join = query.dim_sql(metric, second, attrs)
+            joins += join
     selected += (
         f", {series_column}::text AS series" if series_column
         else ", NULL::text AS series"
@@ -190,13 +256,15 @@ def run_metric(
     # `group_by` it is bound as a parameter and never spliced.
     if focus is not None:
         where += " AND subject = %(focus)s"
+    filter_sql, filter_params = _filter_clause(metric, filters, attrs)
+    where += filter_sql
     access, access_params = _viewer_filter(viewer)
     where += access
 
     inner = f"""
         SELECT date_trunc('{period}', occurred_at) AS bucket{selected},
-               {metric.select} AS value
-          FROM activity_facts
+               {select} AS value
+          FROM activity_facts{joins}
           {where}
          GROUP BY bucket{grouped}
     """
@@ -210,6 +278,7 @@ def run_metric(
         "days": days,
         "workspace_id": workspace_id,
         "focus": focus,
+        **filter_params,
         **access_params,
     }
 
@@ -239,6 +308,9 @@ class Fact:
     state: str | None
     occurred_at: str
     url: str | None
+    #: Declared attributes (labels, priority, ...), so a hover over "bug" can
+    #: list the rows that carry that label.
+    attrs: dict = field(default_factory=dict)
 
 
 #: How many rows travel with a chart. Enough to see what the bars are made of,
@@ -256,6 +328,8 @@ def list_facts(
     focus: str | None = None,
     limit: int = MAX_DETAILS,
     viewer: "Viewer | None" = None,
+    filters: tuple[tuple[str, str], ...] = (),
+    attrs=None,
 ) -> list[Fact]:
     """The newest rows this chart counted.
 
@@ -277,6 +351,14 @@ def list_facts(
     )
     if focus is not None:
         where += " AND subject = %(focus)s"
+    # The hover lists what the bars counted, so it narrows exactly as they do:
+    # Sana's PRs must not be shown behind a chart filtered to someone else.
+    attrs = _attrs_for(
+        metric, attrs, org_id=org_id, workspace_id=workspace_id, viewer=viewer,
+        group_by=None, split_by=None, measure=None, filters=filters,
+    )
+    filter_sql, filter_params = _filter_clause(metric, filters, attrs)
+    where += filter_sql
     access, access_params = _viewer_filter(viewer)
     where += access
 
@@ -284,23 +366,28 @@ def list_facts(
         with get_connection() as conn:
             rows = conn.execute(
                 f"""
-                SELECT subject, actor, state, occurred_at, url
+                SELECT subject, actor, state, occurred_at, url, attrs
                   FROM activity_facts {where}
                  ORDER BY occurred_at DESC
                  LIMIT %(limit)s
                 """,
                 {"org_id": org_id, "provider": metric.provider, "kind": metric.kind,
                  "days": days, "workspace_id": workspace_id, "focus": focus,
-                 "limit": max(1, min(int(limit), MAX_DETAILS)), **access_params},
+                 "limit": max(1, min(int(limit), MAX_DETAILS)),
+                 **filter_params, **access_params},
             ).fetchall()
     except Exception as exc:  # noqa: BLE001
         raise ProviderError(f"insights: details of {key} failed", cause=exc) from exc
 
+    # Only DECLARED attributes travel with the hover: `attrs` may hold keys a
+    # chart never reads, and the payload is not the place to find out.
+    declared = {a.key for a in query.readable_attrs(metric, attrs)}
     return [
         Fact(
             subject=r[0], actor=r[1], state=r[2],
             occurred_at=r[3].isoformat() if r[3] else "",
             url=r[4],
+            attrs={k: v for k, v in (r[5] or {}).items() if k in declared},
         )
         for r in rows
     ]
@@ -318,6 +405,24 @@ def list_subjects(
     silently returns an empty chart, which reads as "no activity" when it
     means "no such thing".
     """
+    return list_values(
+        key, "subject", org_id=org_id, workspace_id=workspace_id, days=days,
+        viewer=viewer,
+    )
+
+
+#: The state types a source reports for "the work is over". Linear's own
+#: workflow categories -- an API contract, not words anyone typed.
+FINISHED_STATE_TYPES = frozenset({"completed", "canceled"})
+
+
+def state_types(
+    key: str, *, org_id: str, workspace_id: str | None, days: int,
+    viewer: "Viewer | None" = None,
+) -> dict[str, str | None]:
+    """Each state this metric has rows for, with the type its SOURCE gave it
+    (``attrs.state_type``), or None where the source reports none. Same
+    scope, window and viewer filter as ``list_values``."""
     metric = registry.get(key)
     where = _scoped(
         """
@@ -325,7 +430,52 @@ def list_subjects(
            AND provider = %(provider)s
            AND kind = %(kind)s
            AND occurred_at >= now() - make_interval(days => %(days)s)
-           AND subject IS NOT NULL
+           AND state IS NOT NULL
+        """,
+        workspace_id,
+    )
+    access, access_params = _viewer_filter(viewer)
+    where += access
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                "SELECT state, MAX(attrs->>'state_type') FROM activity_facts "
+                f"{where} GROUP BY state ORDER BY state",
+                {"org_id": org_id, "provider": metric.provider, "kind": metric.kind,
+                 "days": days, "workspace_id": workspace_id, **access_params},
+            ).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        raise ProviderError(f"insights: state types of {key} failed", cause=exc) from exc
+    return {r[0]: r[1] for r in rows if r[0]}
+
+
+def list_values(
+    key: str, dim: str, *, org_id: str, workspace_id: str | None, days: int,
+    viewer: "Viewer | None" = None,
+    attrs=None,
+) -> list[str]:
+    """Every value of ``dim`` this metric has rows for, in this scope.
+
+    The same role as ``list_subjects`` for the grammar's filters: "only
+    Sana's" is resolved against the actors that actually appear, so an
+    unmatched name is refused by name rather than filtering to nothing.
+    Viewer-filtered because the refusal repeats the list back.
+    """
+    metric = registry.get(key)
+    attrs = _attrs_for(
+        metric, attrs, org_id=org_id, workspace_id=workspace_id, viewer=viewer,
+        group_by=None, split_by=None, measure=None, filters=(), dim=dim,
+    )
+    if dim not in registry.DIMENSIONS and dim not in query.filter_dims(metric, attrs):
+        raise ValueError(f"unknown dimension {dim!r}")
+    column, joins = query.dim_sql(metric, dim, attrs)
+    where = _scoped(
+        f"""
+         WHERE org_id = %(org_id)s
+           AND provider = %(provider)s
+           AND kind = %(kind)s
+           AND occurred_at >= now() - make_interval(days => %(days)s)
+           AND {column} IS NOT NULL
         """,
         workspace_id,
     )
@@ -336,12 +486,12 @@ def list_subjects(
     try:
         with get_connection() as conn:
             rows = conn.execute(
-                f"SELECT DISTINCT subject FROM activity_facts {where} ORDER BY 1",
+                f"SELECT DISTINCT {column} FROM activity_facts{joins} {where} ORDER BY 1",
                 {"org_id": org_id, "provider": metric.provider, "kind": metric.kind,
                  "days": days, "workspace_id": workspace_id, **access_params},
             ).fetchall()
     except Exception as exc:  # noqa: BLE001
-        raise ProviderError(f"insights: subjects of {key} failed", cause=exc) from exc
+        raise ProviderError(f"insights: {dim} values of {key} failed", cause=exc) from exc
     return [r[0] for r in rows if r[0]]
 
 

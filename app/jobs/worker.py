@@ -465,6 +465,13 @@ def run_external_tick() -> dict[str, int]:
     except Exception:  # noqa: BLE001 - an unscored chunk, never a failed tick
         logger.exception("External tick: injection-score backfill failed")
 
+    # Figures in sentences (app/doctables text adapter), read in the
+    # background so ingestion never waits on a model. A no-op unless
+    # DOCTABLES_TEXT_ENABLED; never raises.
+    from ..doctables.queue import run_pending as read_document_figures
+
+    figures_read = read_document_figures()
+
     scheduler_settings = SchedulerSettings.from_env()
     schedulers_ran = (
         run_scheduler_tick(scheduler_settings) if scheduler_settings.enabled else 0
@@ -479,6 +486,7 @@ def run_external_tick() -> dict[str, int]:
         "attachments_purged": attachments_purged,
         "conversations_purged": conversations_purged,
         "injection_scored": injection_scored,
+        "figures_read": figures_read,
         "schedulers_ran": schedulers_ran,
     }
 

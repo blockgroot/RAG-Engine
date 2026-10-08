@@ -399,7 +399,8 @@ def test_the_live_block_replaces_the_synced_copy(monkeypatch, live_request):
     assert "doc-linear" in {h.document_id for h in result.sources}
     assert result.answered
     assert result.live_sources == [{"provider": "linear",
-                                    "fetched_at": "2026-09-29T12:04:00+00:00"}]
+                                    "fetched_at": "2026-09-29T12:04:00+00:00",
+                                    "document_id": "doc-linear"}]
     assert _is_cacheable(result) is False
 
 
@@ -477,7 +478,7 @@ def test_the_chat_edge_identifies_the_asker_for_every_question(monkeypatch):
 
     seen = []
 
-    def body(*args):
+    def body(*args, **kwargs):
         seen.append(current_live_request())
         yield "event: done\ndata: {}\n\n"
 

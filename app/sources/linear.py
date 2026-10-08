@@ -149,11 +149,29 @@ query RecentIssues($after: String, $filter: IssueFilter) {
       state { name type }
       assignee { name }
       team { name }
+      priorityLabel
+      estimate
+      project { name }
+      labels(first: 10) { nodes { name } }
+      cycle { number name }
+      projectMilestone { name }
+      creator { name }
+      slaType
+      customerTicketCount
     }
     pageInfo { hasNextPage endCursor }
   }
 }
 """ % _PAGE_SIZE
+
+
+def _chart_fields(node: dict) -> dict:
+    from ..insights.fields import simple_fields
+
+    return simple_fields(
+        node, skip=("state", "assignee", "team", "identifier", "title", "url",
+                    "sharedAccess"),
+    )
 
 
 def _issue_title(node: dict) -> str:
@@ -494,6 +512,13 @@ class LinearAdapter(SourceAdapter):
                         # without them, and they ride along in a query we
                         # already make.
                         "team": (node.get("team") or {}).get("name") or "",
+                        # Every simple field of the node, for charts
+                        # (insights/fields.py): priority, estimate, labels,
+                        # project, cycle, milestone... -- whatever the query
+                        # returns, with no list kept here. The columns the
+                        # facts already have (state, assignee, team) are not
+                        # stored twice.
+                        "fields": _chart_fields(node),
                         "created_at": _parse_dt(node.get("createdAt")),
                         "completed_at": _parse_dt(node.get("completedAt")),
                         "at": _parse_dt(node.get("updatedAt")),

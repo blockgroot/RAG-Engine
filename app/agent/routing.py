@@ -159,6 +159,9 @@ class RoutingDecision:
     #: did not say. Carried here because the classifier already runs inside
     #: routing; the chat edge hands it to the live-tools gateway.
     needs_live: bool | None = None
+    #: The question check's ``chart_ask`` ("visual" / "count" / None), so the
+    #: chat can offer Chart mode beside a written answer to a count.
+    chart_ask: str | None = None
 
 
 #: What a member is likely to CALL each service when they type its name.
@@ -598,66 +601,206 @@ def _has_authorized_repos(org_id: str, workspace_id: str | None) -> bool:
     return bool(config.get("repos"))
 
 
-def _try_insights_route(
+def _chartable_tables(org_id: str, workspace_id: str | None, viewer, question: str = "",
+                      uploads=None) -> list:
+    """Tables THIS person may chart, for the chart classifier.
+
+    Files they uploaded to this chat come FIRST and unranked: a file dropped
+    into the chat is what the next question is about, and there are only a
+    few. Then document tables, ranked by how close their document is to the
+    question.
+
+    No viewer means none: a table is only ever offered through the document
+    access predicate, and "no viewer" is the unrestricted reading (ingest,
+    eval), which must never reach a person's question. Never raises -- a
+    table listing that fails costs table charts, not the question.
+    """
+    if viewer is None or getattr(viewer, "is_unrestricted", False):
+        return []
+    return _upload_tables(org_id, uploads) + _document_tables(
+        org_id, workspace_id, viewer, question)
+
+
+def _upload_tables(org_id: str, uploads) -> list:
+    """Tables in this chat's uploads. A file with no table is read for
+    figures in its sentences first -- once, on demand, since the asker is
+    waiting and chose Chart mode. Never raises."""
+    if uploads is None:
+        return []
+    from ..doctables.store import list_upload_tables
+
+    try:
+        from ..doctables.factory import build_upload_text_adapter
+        from ..doctables.uploads import read_upload_figures
+        from ..llm.factory import build_llm_provider
+
+        read_upload_figures(org_id=org_id, uploads=uploads,
+                            adapter=build_upload_text_adapter(build_llm_provider()))
+    except Exception:  # noqa: BLE001 - costs the figures, never the real tables
+        logger.warning("Agent routing: could not read figures from uploads", exc_info=True)
+    try:
+        return list_upload_tables(org_id=org_id, uploads=uploads)
+    except Exception:  # noqa: BLE001
+        logger.warning("Agent routing: could not list uploaded tables", exc_info=True)
+        return []
+
+
+def _document_tables(org_id: str, workspace_id: str | None, viewer, question: str) -> list:
+    try:
+        from ..doctables.store import list_tables
+        from ..insights import tables as doc_tables
+
+        listed = list_tables(org_id=org_id, workspace_id=workspace_id, viewer=viewer)
+        scores = doc_tables.document_similarity(question, listed, org_id=org_id,
+                                                workspace_id=workspace_id)
+        return doc_tables.rank(listed, scores,
+                               floor=RagSettings.from_env().similarity_threshold)
+    except Exception:  # noqa: BLE001
+        logger.warning("Agent routing: could not list document tables", exc_info=True)
+        return []
+
+
+def _chart_fields(org_id: str, workspace_id: str | None, viewer) -> dict | None:
+    """The recorded fields that actually exist in this scope, per metric
+    (`insights.attr_catalog`), so the classifier is offered what the data
+    holds rather than a hand-kept list. ``None`` (no viewer, or the read
+    failed) falls back to the display hints. Never raises."""
+    if viewer is None:
+        return None
+    try:
+        from ..insights import attr_catalog
+
+        return attr_catalog.by_metric(attr_catalog.discover_scope(
+            org_id=org_id, workspace_id=workspace_id, viewer=viewer,
+        ))
+    except Exception:  # noqa: BLE001
+        logger.warning("Agent routing: could not read recorded fields", exc_info=True)
+        return None
+
+
+def _chart_unsupported_model() -> str | None:
+    """The message for Chart mode on a model that cannot build charts, else None.
+
+    Checked before the classifier runs: on such a model it answers in prose or
+    picks nothing, and the member is told their QUESTION can't be charted when
+    the same question works on another model. The picker already hides these
+    models in Chart mode; this covers a stale selection or a direct API call.
+    """
+    from ..config.settings import LLMSettings
+    from ..insights.resolve import unsupported_model_message
+    from ..llm import catalog
+    from ..llm.routed import selected_model
+
+    model = selected_model()
+    if catalog.supports_charts(model):
+        return None
+    choice = catalog.get(model)
+    label = choice.label if choice else model
+    alternatives = [LLMSettings.from_env().model or "the default model"] + [
+        m.label for m in catalog.chart_models()
+    ]
+    return unsupported_model_message(label, alternatives)
+
+
+def _try_question_route(
     question: str,
     connected: set[str],
     org_id: str,
     workspace_id: str | None,
     live_out: list | None = None,
+    chart_out: list | None = None,
+    chart_from_words: bool = False,
+    viewer=None,
 ) -> RoutingDecision | None:
-    """Chart vs document vs live GitHub, decided by the classifier.
+    """Ask's small check: a live code question, and the live-data verdict.
 
-    Returns None when this is ordinary Q&A so the cosine router still runs.
-    Never raises: a dead classifier is a document question, not a failed Ask.
-    ``live_out`` receives the same call's ``needs_live`` answer (the return
-    shape stays a decision-or-None, which every caller and test relies on).
+    Charts are no longer guessed here -- they have their own mode (Chart
+    mode, ``_chart_mode_route``) -- so this call carries no metric list,
+    fields or tables. Returns None for ordinary Q&A so the cosine router
+    still runs. Never raises: a dead check is a document question.
+    ``live_out`` receives the ``needs_live`` answer.
     """
-    from ..insights import panels as panel_defs
-    from ..insights.resolve import classify_question
+    from ..insights.resolve import CHART_MODE_HINT, classify_route
 
-    providers = [p for p in sorted(connected) if panel_defs.for_provider(p)]
-    if not providers:
-        return None
     try:
-        intent = classify_question(question, providers=providers, fail_open=True)
+        intent = classify_route(question, github="github" in connected)
     except Exception:  # noqa: BLE001
-        logger.warning("Agent routing: chart classifier failed", exc_info=True)
+        logger.warning("Agent routing: question check failed", exc_info=True)
         return None
     if live_out is not None:
         live_out.append(getattr(intent, "needs_live", None))
-    if intent.kind == "qa":
+    if chart_out is not None:
+        chart_out.append(getattr(intent, "chart_ask", None))
+    if getattr(intent, "chart_ask", None) == "visual":
+        # They asked to SEE a chart. Slack has no toggle, so there the ask
+        # IS Chart mode; the web chat says where charts live instead of
+        # answering a chart request in words.
+        if chart_from_words:
+            return _chart_mode_route(question, connected, org_id, workspace_id, viewer)
+        return RoutingDecision(INSIGHTS_KEY, "chart-mode-off", chart_refusal=CHART_MODE_HINT)
+    if intent.kind != "github_live":
         return None
-    if intent.kind == "github_live":
-        # The one place a model picks a non-chart destination. GitHub embeds
-        # nothing, so it can never win the cosine probe, and `_CODE_INTENT`
-        # cannot be widened to cover the rest: no regex separates "auth code"
-        # from "code of conduct". `_CODE_INTENT` STAYS as the floor below --
-        # this classifier fails open, so it must be additive, never the only
-        # door in.
-        if not _has_authorized_repos(org_id, workspace_id):
-            logger.info(
-                "Agent routing: classified code question but no authorized "
-                "repos for org %s", org_id,
-            )
-            return None
+    # GitHub embeds nothing, so it can never win the cosine probe, and
+    # `_CODE_INTENT` cannot be widened to cover the rest: no regex separates
+    # "auth code" from "code of conduct". `_CODE_INTENT` STAYS as the floor
+    # below -- this check fails open, so it must be additive.
+    if not _has_authorized_repos(org_id, workspace_id):
         logger.info(
-            "Agent routing: %r classified as a live GitHub question",
-            question[:60],
+            "Agent routing: classified code question but no authorized "
+            "repos for org %s", org_id,
         )
-        return RoutingDecision("github", "classified-code-question")
+        return None
+    logger.info("Agent routing: %r classified as a live GitHub question", question[:60])
+    return RoutingDecision("github", "classified-code-question")
+
+
+def _chart_mode_route(
+    question: str,
+    connected: set[str],
+    org_id: str,
+    workspace_id: str | None,
+    viewer=None,
+    uploads=None,
+) -> RoutingDecision:
+    """Chart mode: the asker chose a chart, so the answer is a chart or a
+    plain refusal -- never a document answer, never a guess. Never raises."""
+    from ..insights import panels as panel_defs
+    from ..insights.resolve import (
+        CHART_MODE_TEXT_QUESTION,
+        CannotChart,
+        chart_mode_refusal,
+        classify_question,
+    )
+
+    unsupported = _chart_unsupported_model()
+    if unsupported:
+        return RoutingDecision(INSIGHTS_KEY, "chart-model-unsupported",
+                               chart_refusal=unsupported)
+    providers = [p for p in sorted(connected) if panel_defs.for_provider(p)]
+    try:
+        intent = classify_question(
+            question, providers=providers, fail_open=False, offer_github=False,
+            tables=_chartable_tables(org_id, workspace_id, viewer, question, uploads),
+            fields=_chart_fields(org_id, workspace_id, viewer),
+        )
+    except CannotChart as exc:
+        return RoutingDecision(INSIGHTS_KEY, "chart-refuse", chart_refusal=str(exc))
+    except Exception:  # noqa: BLE001
+        logger.warning("Agent routing: chart classifier failed", exc_info=True)
+        return RoutingDecision(
+            INSIGHTS_KEY, "chart-refuse",
+            chart_refusal="**Couldn't build this chart just now**\nTry again in a moment.",
+        )
     if intent.kind == "chart" and intent.spec is not None:
-        return RoutingDecision(
-            INSIGHTS_KEY,
-            "chart",
-            chart_spec=intent.spec,
-        )
-    if intent.kind == "refuse":
-        return RoutingDecision(
-            INSIGHTS_KEY,
-            "chart-refuse",
-            chart_refusal=intent.message,
-        )
-    return None
+        return RoutingDecision(INSIGHTS_KEY, "chart", chart_spec=intent.spec)
+    if intent.kind == "refuse" and intent.message:
+        return RoutingDecision(INSIGHTS_KEY, "chart-refuse", chart_refusal=intent.message)
+    if intent.kind in ("qa", "github_live"):
+        # They asked for words in Chart mode: say so, and how to get them.
+        return RoutingDecision(INSIGHTS_KEY, "chart-mode-text-question",
+                               chart_refusal=CHART_MODE_TEXT_QUESTION)
+    return RoutingDecision(INSIGHTS_KEY, "chart-refuse",
+                           chart_refusal=chart_mode_refusal(providers))
 
 
 # ponytail: calibrated on four live pairs (follow-ups 0.01-0.03 apart, new
@@ -713,14 +856,32 @@ def choose_agent(
     requested_agent: str | None = None,
     context: str | None = None,
     graph_plan=None,
+    viewer=None,
+    chart_mode: bool = False,
+    chart_from_words: bool = False,
+    uploads=None,
 ) -> RoutingDecision:
-    """Which agent answers, plus the classifier's live-data verdict."""
+    """Which agent answers, plus the question check's live-data verdict.
+
+    ``chart_from_words`` is Slack, which has no Chart toggle: a question the
+    check reads as asking to SEE a chart is answered in Chart mode.
+
+    ``chart_mode`` is chat's Chart toggle (or, in Slack, a question naming a
+    chart): the answer is a chart or a refusal and nothing else. ``viewer``
+    lets the chart classifier offer document tables the asker may open;
+    without one, none are offered. ``uploads`` (``doctables.store.
+    UploadScope``) offers the tables in files this person uploaded to this
+    chat, in Chart mode only."""
     live: list = []
+    chart: list = []
     decision = _choose_agent(
         question, org_id, workspace_id=workspace_id, requested_agent=requested_agent,
-        context=context, graph_plan=graph_plan, live_out=live,
+        context=context, graph_plan=graph_plan, live_out=live, viewer=viewer,
+        chart_mode=chart_mode, chart_out=chart, chart_from_words=chart_from_words,
+        uploads=uploads,
     )
-    return replace(decision, needs_live=live[0] if live else None)
+    return replace(decision, needs_live=live[0] if live else None,
+                   chart_ask=chart[0] if chart else None)
 
 
 def _choose_agent(
@@ -732,6 +893,11 @@ def _choose_agent(
     context: str | None = None,
     graph_plan=None,
     live_out: list | None = None,
+    viewer=None,
+    chart_mode: bool = False,
+    chart_out: list | None = None,
+    chart_from_words: bool = False,
+    uploads=None,
 ) -> RoutingDecision:
     """Decide which agent answers ``question``. Never raises.
 
@@ -749,15 +915,12 @@ def _choose_agent(
 
     1. **An explicit request wins.** The API still accepts ``agent``, so an
        existing caller (and every test that pins a source) keeps working.
-    2. **A countable visual**, when the classifier (not a keyword list) says
-       this is a chart and names a registry metric. The metric's provider IS
-       the connector — InsightsAgent never blends corpora. A visual we cannot
-       count is still routed here so RAG cannot invent a number.
-    3. **A classified live-code question**, when the classifier says the answer
-       is in the code itself rather than in a document. The one place a model
-       picks a non-chart destination, and only ever GitHub — which has no
-       corpus, so the cosine probe cannot reach it. Offered only when GitHub is
-       connected, and a resolvable metric (step 2) still wins.
+    2. **Chart mode** (``chart_mode``): the asker chose a chart, so the
+       answer is a chart or a refusal. Charts are not guessed outside it.
+    3. **A classified live-code question**, when the question check says the
+       answer is in the code itself rather than in a document. The one place
+       a model picks a destination, and only ever GitHub — which has no
+       corpus, so the cosine probe cannot reach it.
     4. **A named repository wins.** Nothing else in the org is called that, so
        it is the least ambiguous signal available — and it must beat the vector
        probe, because a Notion page *about* a repo would otherwise outscore the
@@ -792,7 +955,14 @@ def _choose_agent(
         connected = _connected_providers(org_id, workspace_id)
     except Exception:  # noqa: BLE001 - routing must never fail a question
         logger.warning("Agent routing: could not list connections", exc_info=True)
-        return RoutingDecision(default_key, "no-sources")
+        if chart_mode:
+            connected = set()
+        else:
+            return RoutingDecision(default_key, "no-sources")
+
+    if chart_mode:
+        return _chart_mode_route(question, connected, org_id, workspace_id, viewer,
+                                 uploads=uploads)
 
     if not connected:
         return RoutingDecision(default_key, "no-sources")
@@ -809,9 +979,12 @@ def _choose_agent(
             _probe_scores, question, org_id, workspace_id, connected,
         )
 
-    visual = _try_insights_route(question, connected, org_id, workspace_id, live_out=live_out)
-    if visual is not None:
-        return visual
+    classified = _try_question_route(
+        question, connected, org_id, workspace_id, live_out=live_out,
+        chart_out=chart_out, chart_from_words=chart_from_words, viewer=viewer,
+    )
+    if classified is not None:
+        return classified
 
     if "github" in connected:
         named = _named_repo(question, org_id, workspace_id)
@@ -821,6 +994,24 @@ def _choose_agent(
 
     if len(embedded) == 1 and "github" not in connected:
         return RoutingDecision(next(iter(embedded)), "only-source")
+
+    # The asker NAMED where to look ("the latest in Linear and Drive"): the
+    # answer comes from those tools, never from one they did not mention.
+    # Two names used to read as ambiguous and fall through to the similarity
+    # probe, which routed "updates in Linear and Drive" to a Slack channel
+    # called #rag-updates and cited only Slack. One named tool is routed
+    # there; several are probed AMONG THEMSELVES, and the connected answer
+    # (graph/plan.py) reads the rest of them.
+    named_tools = named_providers(question, embedded)
+    if named_tools:
+        if len(named_tools) == 1:
+            return RoutingDecision(next(iter(named_tools)), "tool-named")
+        scores = (
+            probe.result() if probe is not None
+            else _probe_scores(question, org_id, workspace_id, connected)
+        )
+        best_named = max(sorted(named_tools), key=lambda p: scores.get(p, 0.0))
+        return RoutingDecision(best_named, "tools-named", scores)
 
     graph_tool = _graph_named_provider(graph_plan, embedded)
     if graph_tool is not None:

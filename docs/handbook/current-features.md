@@ -192,6 +192,10 @@ Survey sentiment is visible to owners only.
 by person".
 - **More fields to chart.** Chart extra fields the tools already return, such as labels.
 - **Tables inside documents.** Chart a table inside a document, such as a sales table in a Doc.
+- **Files you upload.** In Chart mode, chart a file attached to the chat: each Excel sheet, a
+  CSV, Word tables, tables a PDF page draws, or figures written in a file's sentences (read once
+  by AI and checked against the quote). Only the uploader, in that chat, can chart it; removing
+  the file removes its tables. Starter questions come from the file's own columns.
 
 The rule stays the same: the AI never produces a number.
 
@@ -228,7 +232,7 @@ rather than changes.
 
 **Status: Live**
 
-Attach PDF, Word, CSV, TSV, text, Markdown or JSON files to a chat. Files are stored privately in
+Attach PDF, Word, Excel (.xlsx), CSV, TSV, text, Markdown or JSON files to a chat. Files are stored privately in
 Cloudinary and answered together with company documents, so "is this bill claimable?" reads the
 bill and the expense policy. Each file gets its own result: one bad file doesn't block the
 others.

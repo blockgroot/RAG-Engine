@@ -21,7 +21,13 @@ _FOLDER_MIME = "application/vnd.google-apps.folder"
 _DOC_MIME = "application/vnd.google-apps.document"
 _PDF_MIME = "application/pdf"
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-_SUPPORTED_MIMES = {_DOC_MIME, _PDF_MIME, _DOCX_MIME}
+_SHEET_MIME = "application/vnd.google-apps.spreadsheet"
+_CSV_MIME = "text/csv"
+# Sheets and CSVs are indexed as TABLES (app/doctables): their rows are kept
+# for charts and only a description of the columns is embedded -- never the
+# cells, because a figure read back out of chunk text cannot be checked.
+_TABLE_MIMES = {_SHEET_MIME, _CSV_MIME}
+_SUPPORTED_MIMES = {_DOC_MIME, _PDF_MIME, _DOCX_MIME} | _TABLE_MIMES
 # `lastModifyingUser` costs nothing here: it rides along in the files.list
 # request we already make, which is why "top editors" needs no extra call.
 # `permissions` is the document-level ACL, and like `lastModifyingUser` it
@@ -156,8 +162,34 @@ def _extract_pdf_text(data: bytes) -> str:
 def _extract_docx_text(data: bytes) -> str:
     import docx  # lazy: keep this out of the module import cost
 
+    from ..doctables.extract import render_docx_tables
+
     document = docx.Document(BytesIO(data))
-    return "\n\n".join(p.text for p in document.paragraphs)
+    text = "\n\n".join(p.text for p in document.paragraphs)
+    # `paragraphs` skips tables entirely, so every Word table was missing from
+    # the index. Rendered as pipe tables: readable for Q&A, and the form
+    # `doctables.find_markdown_tables` keeps as rows for charts.
+    tables = render_docx_tables(document)
+    return f"{text}\n\n{tables}" if tables else text
+
+
+def _table_document(text: str, *, name: str, sheet: bool):
+    """``(content, tables)`` for a Sheet or CSV: a column description to embed,
+    and the parsed rows for charts. A sheet whose export yields no usable
+    table is still indexed, as its raw text, exactly as before it was a table."""
+    from ..doctables.extract import describe, parse_csv, profile
+
+    raw = parse_csv(text, name=name)
+    table = profile(raw) if raw is not None else None
+    if table is None:
+        return text, None
+    if sheet:
+        # `files.export` to CSV returns the FIRST tab only; saying so on the
+        # chart is the difference between a partial answer and a wrong one.
+        raw = type(raw)(name=raw.name, header=raw.header, rows=raw.rows,
+                        truncated=raw.truncated,
+                        notes=("Only the first tab of this Google Sheet is read.",))
+    return describe(table), [raw]
 
 
 def _file_uri(file_id: str, mime: str) -> str:
@@ -243,8 +275,19 @@ class GoogleDriveAdapter(SourceAdapter):
                 ),
             )
             mime = meta.get("mimeType")
+            tables = None
             if mime == _DOC_MIME:
                 content = self._export_markdown(external_id)
+            elif mime == _SHEET_MIME:
+                content, tables = _table_document(
+                    self._export(external_id, "text/csv"),
+                    name=meta.get("name", "Untitled"), sheet=True,
+                )
+            elif mime == _CSV_MIME:
+                content, tables = _table_document(
+                    self._download_media(external_id).decode("utf-8", errors="replace"),
+                    name=meta.get("name", "Untitled"), sheet=False,
+                )
             elif mime == _PDF_MIME:
                 content = _extract_pdf_text(self._download_media(external_id))
             elif mime == _DOCX_MIME:
@@ -267,6 +310,7 @@ class GoogleDriveAdapter(SourceAdapter):
             last_editor=_editor_name(meta),
             access=_file_access(meta, self._account_email),
             meta=_file_meta(meta),
+            tables=tables,
         )
 
     def get_last_modified(self, external_id: str) -> datetime | None:
@@ -390,10 +434,13 @@ class GoogleDriveAdapter(SourceAdapter):
         return docs[: self._max_documents]
 
     def _export_markdown(self, file_id: str) -> str:
+        return self._export(file_id, "text/markdown")
+
+    def _export(self, file_id: str, mime: str) -> str:
         try:
             response = httpx.get(
                 f"{_API_BASE}/files/{file_id}/export",
-                params={"mimeType": "text/markdown"},
+                params={"mimeType": mime},
                 headers=self._headers(),
                 timeout=self._timeout,
             )
