@@ -143,6 +143,9 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // Said once when turning Chart on moved the picker off a model that cannot
   // build charts, so the switch is never silent.
   const [modelNote, setModelNote] = useState<string | null>(null);
+  // Chart mode's starters come from the server: built from the metrics and
+  // fields this scope actually has, so each one can be drawn.
+  const [chartStarters, setChartStarters] = useState<string[]>([]);
   // The "+" menu beside the message box (files, Chart) -- one entry point
   // for tools, the way ChatGPT, Claude and Gemini do it.
   const [toolsOpen, setToolsOpen] = useState(false);
@@ -192,6 +195,20 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   ].filter(Boolean).length;
   const anySourceAvailable = connectedSourceCount > 0;
 
+
+  useEffect(() => {
+    if (!chartMode) return;
+    let cancelled = false;
+    api
+      .chartStarters(workspaceId)
+      .then((r) => {
+        if (!cancelled) setChartStarters(r.questions);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [chartMode, workspaceId]);
 
   useEffect(() => {
     if (!toolsOpen) return;
@@ -723,19 +740,6 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       : workspaceId
         ? "Answers are drawn from the documents connected to this space. For a chart, choose + then Create a chart."
         : "Leave, benefits, remote work and more — answered from your connected documents.";
-  // Chart mode's starters name only tools that are connected, so every one
-  // of them can actually be drawn. Trends "per week", not "this month": one
-  // month is one bucket, and a new or small team then gets a single number
-  // instead of a chart.
-  const chartStarters = [
-    linearAvailable && "Linear issues completed per week",
-    linearAvailable && "Open Linear issues by priority",
-    codeAvailable && "Pull requests merged per week",
-    codeAvailable && "Pull requests by label",
-    notionAvailable && "Notion pages edited per week",
-    driveAvailable && "Drive files edited per week",
-    slackAvailable && "Slack conversations by channel",
-  ].filter((q): q is string => Boolean(q)).slice(0, 4);
   const starters = chartMode ? chartStarters : suggestedQuestions;
   const composerPlaceholder = chartMode
     ? "Describe a chart, e.g. issues by priority"

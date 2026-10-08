@@ -473,19 +473,12 @@ _DIM_NOUN = {"actor": "person", "state": "state"}
 #: whatever words the asker used (the prompt does the language).
 _OPEN, _CLOSED = "open", "closed"
 
-#: FALLBACK only, for a source that reports no state type: names that mean
-#: the work is over. Linear reports types, so its states never reach this.
-_FINISHED_NAMES = frozenset({
-    "done", "completed", "complete", "canceled", "cancelled", "closed",
-    "duplicate", "merged", "resolved", "archived",
-})
-
-
 def _state_group(spec, wanted: str, raw: str, *, org_id, workspace_id, days,
                  viewer=None) -> query.AnyOf | None:
     """"open" -> every stored state the source calls unfinished; "closed" ->
-    those it calls finished. Decided by the source's own state type
-    (``store.state_types``); a state with no type falls back to its name."""
+    those it calls finished. Decided ONLY by the source's own state type
+    (``store.state_types``): a state the source gave no type is in neither,
+    and with no types at all the filter is refused naming the real states."""
     if wanted not in (_OPEN, _CLOSED):
         return None
     try:
@@ -495,12 +488,9 @@ def _state_group(spec, wanted: str, raw: str, *, org_id, workspace_id, days,
         logger.warning("insights: could not read state types of %s", spec.metric)
         return None
 
-    def finished(state: str, kind: str | None) -> bool:
-        if kind:
-            return kind.lower() in store.FINISHED_STATE_TYPES
-        return state.lower() in _FINISHED_NAMES
-
-    picked = [s for s, k in kinds.items() if finished(s, k) == (wanted == _CLOSED)]
+    want_finished = wanted == _CLOSED
+    picked = [s for s, k in kinds.items()
+              if k and (k.lower() in store.FINISHED_STATE_TYPES) == want_finished]
     return query.AnyOf(raw.strip().capitalize(), tuple(picked)) if picked else None
 
 
@@ -688,15 +678,7 @@ def _grammar_caveat(metric, group_by, split_by, attrs=None) -> str:
 
 
 def _dim_label(metric, dim: str, attrs=None) -> str:
-    found = query.find_attr(metric, dim, attrs)
-    if found is not None:
-        return found.label
-    return {
-        "actor": "person",
-        "subject": registry.subject_label(metric.provider),
-        "state": "state",
-        "provider": "app",
-    }.get(dim, dim)
+    return query.dim_label(metric, dim, attrs)
 
 
 def _ask_title(

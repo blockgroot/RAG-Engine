@@ -954,6 +954,13 @@ export const api = {
     }>(`/chat/suggestions${query ? `?${query}` : ""}`);
   },
 
+  /** Chart mode's starters, built by the server from the metrics and fields
+   *  this scope actually has -- never copy written into the page. */
+  chartStarters: (workspaceId?: string | null) => {
+    const q = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : "";
+    return request<{ questions: string[] }>(`/chat/chart-starters${q}`);
+  },
+
   chatModels: () =>
     request<{ default: string; default_label: string; models: ModelChoice[] }>(
       "/chat/models",

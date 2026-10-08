@@ -159,6 +159,9 @@ class RoutingDecision:
     #: did not say. Carried here because the classifier already runs inside
     #: routing; the chat edge hands it to the live-tools gateway.
     needs_live: bool | None = None
+    #: The question check's ``chart_ask`` ("visual" / "count" / None), so the
+    #: chat can offer Chart mode beside a written answer to a count.
+    chart_ask: str | None = None
 
 
 #: What a member is likely to CALL each service when they type its name.
@@ -598,7 +601,7 @@ def _has_authorized_repos(org_id: str, workspace_id: str | None) -> bool:
     return bool(config.get("repos"))
 
 
-def _chartable_tables(org_id: str, workspace_id: str | None, viewer) -> list:
+def _chartable_tables(org_id: str, workspace_id: str | None, viewer, question: str = "") -> list:
     """Document tables THIS person may open, for the chart classifier.
 
     No viewer means none: a table is only ever offered through the document
@@ -610,8 +613,13 @@ def _chartable_tables(org_id: str, workspace_id: str | None, viewer) -> list:
         return []
     try:
         from ..doctables.store import list_tables
+        from ..insights import tables as doc_tables
 
-        return list_tables(org_id=org_id, workspace_id=workspace_id, viewer=viewer)
+        listed = list_tables(org_id=org_id, workspace_id=workspace_id, viewer=viewer)
+        scores = doc_tables.document_similarity(question, listed, org_id=org_id,
+                                                workspace_id=workspace_id)
+        return doc_tables.rank(listed, scores,
+                               floor=RagSettings.from_env().similarity_threshold)
     except Exception:  # noqa: BLE001
         logger.warning("Agent routing: could not list document tables", exc_info=True)
         return []
@@ -665,6 +673,9 @@ def _try_question_route(
     org_id: str,
     workspace_id: str | None,
     live_out: list | None = None,
+    chart_out: list | None = None,
+    chart_from_words: bool = False,
+    viewer=None,
 ) -> RoutingDecision | None:
     """Ask's small check: a live code question, and the live-data verdict.
 
@@ -674,7 +685,7 @@ def _try_question_route(
     still runs. Never raises: a dead check is a document question.
     ``live_out`` receives the ``needs_live`` answer.
     """
-    from ..insights.resolve import classify_route
+    from ..insights.resolve import CHART_MODE_HINT, classify_route
 
     try:
         intent = classify_route(question, github="github" in connected)
@@ -683,6 +694,15 @@ def _try_question_route(
         return None
     if live_out is not None:
         live_out.append(getattr(intent, "needs_live", None))
+    if chart_out is not None:
+        chart_out.append(getattr(intent, "chart_ask", None))
+    if getattr(intent, "chart_ask", None) == "visual":
+        # They asked to SEE a chart. Slack has no toggle, so there the ask
+        # IS Chart mode; the web chat says where charts live instead of
+        # answering a chart request in words.
+        if chart_from_words:
+            return _chart_mode_route(question, connected, org_id, workspace_id, viewer)
+        return RoutingDecision(INSIGHTS_KEY, "chart-mode-off", chart_refusal=CHART_MODE_HINT)
     if intent.kind != "github_live":
         return None
     # GitHub embeds nothing, so it can never win the cosine probe, and
@@ -724,7 +744,7 @@ def _chart_mode_route(
     try:
         intent = classify_question(
             question, providers=providers, fail_open=False, offer_github=False,
-            tables=_chartable_tables(org_id, workspace_id, viewer),
+            tables=_chartable_tables(org_id, workspace_id, viewer, question),
             fields=_chart_fields(org_id, workspace_id, viewer),
         )
     except CannotChart as exc:
@@ -802,20 +822,26 @@ def choose_agent(
     graph_plan=None,
     viewer=None,
     chart_mode: bool = False,
+    chart_from_words: bool = False,
 ) -> RoutingDecision:
     """Which agent answers, plus the question check's live-data verdict.
+
+    ``chart_from_words`` is Slack, which has no Chart toggle: a question the
+    check reads as asking to SEE a chart is answered in Chart mode.
 
     ``chart_mode`` is chat's Chart toggle (or, in Slack, a question naming a
     chart): the answer is a chart or a refusal and nothing else. ``viewer``
     lets the chart classifier offer document tables the asker may open;
     without one, none are offered."""
     live: list = []
+    chart: list = []
     decision = _choose_agent(
         question, org_id, workspace_id=workspace_id, requested_agent=requested_agent,
         context=context, graph_plan=graph_plan, live_out=live, viewer=viewer,
-        chart_mode=chart_mode,
+        chart_mode=chart_mode, chart_out=chart, chart_from_words=chart_from_words,
     )
-    return replace(decision, needs_live=live[0] if live else None)
+    return replace(decision, needs_live=live[0] if live else None,
+                   chart_ask=chart[0] if chart else None)
 
 
 def _choose_agent(
@@ -829,6 +855,8 @@ def _choose_agent(
     live_out: list | None = None,
     viewer=None,
     chart_mode: bool = False,
+    chart_out: list | None = None,
+    chart_from_words: bool = False,
 ) -> RoutingDecision:
     """Decide which agent answers ``question``. Never raises.
 
@@ -911,6 +939,7 @@ def _choose_agent(
 
     classified = _try_question_route(
         question, connected, org_id, workspace_id, live_out=live_out,
+        chart_out=chart_out, chart_from_words=chart_from_words, viewer=viewer,
     )
     if classified is not None:
         return classified

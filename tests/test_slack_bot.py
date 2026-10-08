@@ -463,7 +463,7 @@ def test_the_reply_names_the_source_and_the_scope(monkeypatch):
     """"Where did this come from?" must be answerable from the message itself."""
     monkeypatch.setattr(
         slack_events, "choose_agent",
-        lambda q, org, workspace_id=None, chart_mode=False: type(
+        lambda q, org, workspace_id=None, **k: type(
             "D", (), {"agent_key": "google", "chart_spec": None, "chart_refusal": None}
         )(),
     )

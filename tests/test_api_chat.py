@@ -647,14 +647,17 @@ def test_a_chart_intent_that_cannot_chart_does_not_fall_through_to_rag(
 
 
 def test_a_chart_asked_in_normal_ask_points_to_chart_mode(client_and_session, monkeypatch):
-    """No routing and no model call: the words already say what they want."""
+    """The question check (not a word list) read a chart ask; the hint is
+    the answer and the Turn on Chart button rides on it."""
+    from app.agent.routing import RoutingDecision
+    from app.insights.resolve import CHART_MODE_HINT
+
     client, cookies, _, _ = client_and_session
-
-    def boom(*a, **k):
-        raise AssertionError("routing must not run for the Chart mode hint")
-
-    monkeypatch.setattr("app.api.chat.choose_agent", boom)
-    response = client.post("/chat/stream", json={"question": "chart PRs by label"},
+    monkeypatch.setattr(
+        "app.api.chat.choose_agent",
+        lambda *a, **k: RoutingDecision("insights", "chart-mode-off", chart_refusal=CHART_MODE_HINT),
+    )
+    response = client.post("/chat/stream", json={"question": "show me PRs as a graph"},
                            cookies=cookies)
     done = json.loads([d for e, d in _parse_sse(response.text) if e == "done"][0])
     assert done["chart_hint"] is True
@@ -714,3 +717,18 @@ def test_live_is_claimed_only_for_a_read_the_answer_cites():
                              cited=[{"document_id": "l1"}, {"document_id": "l2"}, {"document_id": "s1"}])
     assert _shown_live(result) == [{"provider": "linear", "fetched_at": "t2"}]
     assert _shown_live(SimpleNamespace(live_sources=reads, cited=[])) == []
+
+
+
+def test_chart_starters_come_from_what_the_scope_can_chart():
+    """Never page copy: a metric's own label, by a field the data holds, or
+    over time; one per metric, interleaved across tools."""
+    from app.api.chat import chart_starters
+    from app.insights import registry
+
+    priority = next(a for a in registry.ATTRS if a.key == "priority_label")
+    metrics = [registry.get("issue_states"), registry.get("prs_merged"),
+               registry.get("drive_docs_changed")]
+    got = chart_starters(metrics, {"issue_states": (priority,)})
+    assert got == ["Where the work sits by priority", "Pull requests merged per week",
+                   "Files created or edited per week"]

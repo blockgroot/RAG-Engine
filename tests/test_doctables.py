@@ -153,11 +153,20 @@ class FakeLLM:
         return json.dumps(self.reply)
 
 
-def test_only_tables_sharing_a_word_with_the_question_are_offered():
-    sales, hiring = _ref(), _ref(name="Hiring plan", document_title="Hiring plan",
-                                 columns=({"key": "c0", "name": "Role", "type": "category"},))
-    assert doc_tables.rank("chart revenue by region", [hiring, sales]) == [sales]
-    assert doc_tables.rank("chart our commits", [hiring, sales]) == []
+def test_tables_are_offered_by_meaning_closest_first():
+    """No stop-word list: each table's DOCUMENT is compared with the question
+    in the retrieval index, and one below the gate is not offered."""
+    sales = _ref(document_id="d-sales")
+    hiring = _ref(name="Hiring plan", document_title="Hiring plan", document_id="d-hiring",
+                  columns=({"key": "c0", "name": "Role", "type": "category"},))
+    scores = {"d-sales": 0.71, "d-hiring": 0.22}
+    assert doc_tables.rank([hiring, sales], scores, floor=0.35) == [sales]
+    assert doc_tables.rank([hiring, sales], {"d-sales": 0.1}, floor=0.35) == []
+
+
+def test_unmeasurable_similarity_offers_the_newest_tables():
+    tables = [_ref(name=f"T{i}", document_id=f"d{i}") for i in range(9)]
+    assert doc_tables.rank(tables, None, floor=0.35) == tables[:doc_tables.MAX_OFFERED]
 
 
 def test_a_table_pick_becomes_a_spec_with_column_keys():

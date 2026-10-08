@@ -67,12 +67,8 @@ from ..db.connection import get_connection
 from ..feedback import record_gap
 from ..guard.live import ATTACHMENT_WARNING, is_flagged, watch_question
 from ..agent.orchestration import INSIGHTS_KEY
-from ..insights.resolve import (
-    CHART_MODE_HINT,
-    asks_for_a_count,
-    asks_for_a_visual,
-    spec_to_dict,
-)
+from ..insights import query
+from ..insights.resolve import spec_to_dict
 from ..security.rate_limit import check_rate_limit
 from ..security.visibility import visibility_predicate
 from ..workspaces import assert_member
@@ -368,6 +364,72 @@ def _combined_suggestions(
     # No single agent produced these, and saying "policy" would be a lie the
     # client might act on.
     return {"agent": None, "sources": sorted(per_provider), "questions": questions}
+
+
+#: Chart-mode starters shown at once; more would push the box off a phone.
+MAX_CHART_STARTERS = 4
+
+
+def chart_starters(metrics, fields: dict | None) -> list[str]:
+    """Starter questions built from what THIS scope can chart.
+
+    No product copy: each one is a metric this scope has, phrased from its
+    own label, either over time (a trend metric) or by a field the data
+    actually holds (discovered by ``attr_catalog``) -- so every starter can be
+    drawn, and a new field becomes a starter without anyone writing one.
+    One per metric, interleaved across tools.
+    """
+    by_provider: dict[str, list[str]] = {}
+    for metric in metrics:
+        attrs = [a for a in ((fields or {}).get(metric.key) or ())
+                 if a.type in ("category", "tags")]
+        if attrs:
+            text = f"{metric.label} by {attrs[0].label}"
+        elif metric.chart == "line":
+            text = f"{metric.label} per week"
+        else:
+            dim = metric.dims[0] if metric.dims else None
+            text = (f"{metric.label} by {query.dim_label(metric, dim)}" if dim
+                    else metric.label)
+        by_provider.setdefault(metric.provider, []).append(text)
+    out: list[str] = []
+    while len(out) < MAX_CHART_STARTERS and any(by_provider.values()):
+        for items in by_provider.values():
+            if items and len(out) < MAX_CHART_STARTERS:
+                out.append(items.pop(0))
+    return out
+
+
+@router.get("/chart-starters")
+def list_chart_starters(
+    workspace_id: str | None = None,
+    session: SessionClaims = Depends(get_session),
+):
+    """Chart mode's starter questions, from this scope's metrics and fields."""
+    if workspace_id is not None:
+        try:
+            assert_member(workspace_id, session.org_id, session.user_id)
+        except AuthError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+    from ..insights import attr_catalog, registry, scopes
+
+    try:
+        connected = _connected_providers(session.org_id, workspace_id)
+    except Exception:  # noqa: BLE001 - starters are a convenience
+        logger.warning("chart starters: could not list connections", exc_info=True)
+        return {"questions": []}
+    metrics = [
+        m for p in sorted(connected) for m in registry.for_provider(p)
+        if scopes.may_see_metric(m, role=session.role, workspace_id=workspace_id,
+                                 org_id=session.org_id, user_id=session.user_id)
+    ]
+    try:
+        fields = attr_catalog.by_metric(attr_catalog.discover_scope(
+            org_id=session.org_id, workspace_id=workspace_id, viewer=viewer_for(session),
+        ))
+    except Exception:  # noqa: BLE001
+        fields = None
+    return {"questions": chart_starters(metrics, fields)}
 
 
 @router.get("/suggestions")
@@ -1145,20 +1207,6 @@ def _stream_answer_body(
     # Logged, never refused (see guard/live.py for the measured reason).
     watch_question(question)
 
-    # "Chart …" with Chart mode off: charts are only built in Chart mode, so
-    # say where they are at once rather than spend a model call on a written
-    # answer that reads as a failure. Not saved as a turn: it answers nothing.
-    if not chart_mode and requested_agent is None and asks_for_a_visual(question):
-        for chunk in _word_chunks(CHART_MODE_HINT):
-            yield _sse_event("token", chunk)
-        yield _sse_event("done", {
-            "answer": CHART_MODE_HINT, "grounded": False, "source": "none",
-            "citations": [], "resolved_question": None, "latency_ms": 0,
-            "agent": INSIGHTS_KEY, "routing_reason": "chart-mode-off",
-            "model": None, "chart": None, "chart_period": None,
-            "live_sources": [], "cited": [], "chart_hint": True,
-        })
-        return
 
     # Loaded BEFORE routing but no longer instead of it. An attached file used
     # to short-circuit `choose_agent` entirely, on the reasoning that someone
@@ -1352,10 +1400,15 @@ def _stream_answer_body(
             "cited": list(getattr(result, "cited", None) or []),
             # A text question asked in Chart mode: offer to turn it off.
             "ask_hint": decision.reason == "chart-mode-text-question",
-            # "How many …" answered in words: offer Chart mode beside it.
+            # Asked to SEE a chart with Chart mode off (the hint is the
+            # answer), or a count answered in words: offer Chart mode. Both
+            # read by the question check, not by matching words.
             "chart_hint": (
-                not chart_mode and decision.agent_key != INSIGHTS_KEY
-                and asks_for_a_count(question)
+                not chart_mode and (
+                    decision.reason == "chart-mode-off"
+                    or (decision.agent_key != INSIGHTS_KEY
+                        and getattr(decision, "chart_ask", None) == "count")
+                )
             ),
             # Personal memory saved from this question, announced so saving is
             # never silent; the pill offers Undo.
