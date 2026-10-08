@@ -191,6 +191,8 @@ document) and is its uploader's, in that chat: offered and re-checked only with
 with no AI and never fail the upload; a table-less upload is read for figures
 once, in Chart mode (`figures_read_at`). Workbooks are read by ONE reader
 (`attachments.extract.xlsx_sheets`) for both the prompt text and the rows.
+A Notion `table` renders as a pipe table with a header separator (first row =
+header); bare "a | b" rows were never found by the table reader.
 A Sheet embeds a description of its columns, never its figures. An unparseable
 cell is absent from a sum, never zero. A trend draws every period from "measured since"
 (or the window, if later) to now, a quiet one at zero; never a period before the
