@@ -164,7 +164,9 @@ A breakdown is kept only when asked for: the model quotes the words that asked
 (`breakdown_words`) and the quote must be in the question, or the breakdown's own
 label from the data must be; otherwise it is dropped (`resolve._honour_breakdown`).
 Document tables are offered by the similarity of their DOCUMENT to the question
-(`tables.document_similarity`, floored at the retrieval gate), never by word overlap.
+(`tables.document_similarity`), never by word overlap; the gate orders them and
+never removes one (a table-heavy page embeds as numbers). A one-time data fix goes
+in `schema.sql` behind a `schema_marks` row, never as a bare UPDATE.
 Chart-mode starters come from the scope's metrics and discovered fields
 (`GET /chat/chart-starters`), never page copy.
 "Open"/"closed" on a state filter is a GROUP of real states (not finished / finished),

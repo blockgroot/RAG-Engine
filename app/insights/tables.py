@@ -64,7 +64,12 @@ def rank(
     tables: list[TableRef], scores: dict[str, float] | None, *,
     floor: float, limit: int = MAX_OFFERED,
 ) -> list[TableRef]:
-    """Tables whose document is about the question, closest first.
+    """Tables closest to the question first; those clearing ``floor`` lead.
+
+    Below the floor is ORDER, never removal: a page that is mostly a table
+    embeds as numbers and scored under the gate, so "chart the quarterly
+    budget page" was offered no table at all. The model sees each table's
+    document title and picks, or refuses naming what exists.
 
     ``scores`` is ``document_similarity``; ``None`` (unmeasurable) keeps the
     given order -- newest document first -- capped at ``limit``.
@@ -72,8 +77,8 @@ def rank(
     if scores is None:
         return list(tables)[:limit]
     scored = [(scores.get(t.document_id or "", 0.0), i, t) for i, t in enumerate(tables)]
-    kept = sorted((s for s in scored if s[0] >= floor), key=lambda s: (-s[0], s[1]))
-    return [t for _, _, t in kept[:limit]]
+    ordered = sorted(scored, key=lambda s: (s[0] < floor, -s[0], s[1]))
+    return [t for _, _, t in ordered[:limit]]
 
 
 def catalogue(tables: list[TableRef]) -> str:

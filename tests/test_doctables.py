@@ -155,13 +155,15 @@ class FakeLLM:
 
 def test_tables_are_offered_by_meaning_closest_first():
     """No stop-word list: each table's DOCUMENT is compared with the question
-    in the retrieval index, and one below the gate is not offered."""
+    in the retrieval index. Below the gate is ORDER, never removal: a Notion
+    page that is mostly a table scored under it and "chart the quarterly
+    budget page" was offered no table at all."""
     sales = _ref(document_id="d-sales")
     hiring = _ref(name="Hiring plan", document_title="Hiring plan", document_id="d-hiring",
                   columns=({"key": "c0", "name": "Role", "type": "category"},))
     scores = {"d-sales": 0.71, "d-hiring": 0.22}
-    assert doc_tables.rank([hiring, sales], scores, floor=0.35) == [sales]
-    assert doc_tables.rank([hiring, sales], {"d-sales": 0.1}, floor=0.35) == []
+    assert doc_tables.rank([hiring, sales], scores, floor=0.35) == [sales, hiring]
+    assert doc_tables.rank([hiring, sales], {"d-sales": 0.1}, floor=0.35) == [sales, hiring]
 
 
 def test_unmeasurable_similarity_offers_the_newest_tables():
