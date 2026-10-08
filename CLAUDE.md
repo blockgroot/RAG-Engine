@@ -169,7 +169,9 @@ A sync skips unchanged documents, so `documents.tables_checked_at` marks what th
 adapters have read; `backfill_tables` re-fetches a bounded batch of unchecked
 ones per sync (tables only, no re-embedding) and a failed fetch stays unchecked.
 A Sheet embeds a description of its columns, never its figures. An unparseable
-cell is absent from a sum, never zero. `points: null` means the panel failed; `[]`
+cell is absent from a sum, never zero. A trend draws every period from "measured since"
+(or the window, if later) to now, a quiet one at zero; never a period before the
+data begins, which is unknown, not zero (`insights_agent._fill_gaps`). `points: null` means the panel failed; `[]`
 means it ran and was empty. There is no `space` dimension. Sentiment is
 owners-only with a floor of 5, admits no split/filter/measure, and Forms
 responses are never indexed.
