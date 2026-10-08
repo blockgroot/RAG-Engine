@@ -394,3 +394,29 @@ def test_all_unassigned_says_so_in_linears_terms():
         metric=registry.get("issue_states"),
     )
     assert "Unassigned" in caption and "indexed" not in caption
+
+
+def test_names_shown_to_the_classifier_never_include_private_ones(seeded):
+    from app.insights import store as fact_store
+
+    names = fact_store.scope_names(org_id=seeded["org"], workspace_id=None, days=365,
+                                   viewer=SANA)
+    assert set(names[("linear", "issue_state")]["subject"]) == {"CORE", "GROW"}
+    assert set(names[("github", "commit")]["actor"]) == set(ACTORS)
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO documents (org_id, title, source_uri, source_provider, "
+            "source_external_id, doc_is_public, doc_viewers) VALUES "
+            "(%s, 'Secret', 'https://slack.test/s', 'slack', 'sec', false, %s)",
+            (seeded["org"], ["finance@acme.test"]),
+        )
+        conn.execute(
+            "INSERT INTO activity_facts (org_id, provider, kind, actor, subject, "
+            "occurred_at, url, external_id) VALUES (%s, 'slack', 'doc_changed', 'zed', "
+            "'#secret', now(), 'https://slack.test/s', 'sec')", (seeded["org"],),
+        )
+        conn.commit()
+    names = fact_store.scope_names(org_id=seeded["org"], workspace_id=None, days=365,
+                                   viewer=SANA)
+    assert "#secret" not in names[("slack", "doc_changed")]["subject"]
+    assert "zed" not in names[("slack", "doc_changed")]["actor"]
