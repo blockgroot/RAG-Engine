@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 
 from app.api import slack_events
 from app.db.connection import get_connection
-from app.jobs.autosync import request_sync_external
+from app.jobs.autosync import request_sync_connection, request_sync_external
 
 from .conftest import requires_db
 
@@ -431,6 +431,47 @@ def test_a_scoped_drive_connection_gets_a_channel_and_a_notification_proves_it(o
     fake_google.clear()
     drive_watch.ensure_watches(settings)
     assert not [c for c in fake_google if c[1].endswith("/changes/watch")]
+
+
+def _space(org_id) -> str:
+    with get_connection() as conn:
+        user = conn.execute(
+            "INSERT INTO users (email, org_id, role) VALUES (%s, %s, 'member') RETURNING id",
+            (f"{uuid.uuid4().hex[:8]}@example.com", org_id),
+        ).fetchone()[0]
+        return str(conn.execute(
+            "INSERT INTO workspaces (org_id, name, created_by) VALUES (%s, 'S', %s) RETURNING id",
+            (org_id, user),
+        ).fetchone()[0])
+
+
+@requires_db
+def test_one_drive_notification_flags_every_folder_on_that_account(org, store, org_cleanup):
+    """Production: three folders on one Google account, Google delivered to two
+    channels, and the folder that changed never synced. A notification is about
+    the ACCOUNT, so every scoped folder on it is flagged -- in this org only."""
+    account = f"{uuid.uuid4().hex[:8]}@example.com"
+    hit = _connection(org, "google", account, config={"folder_id": "A"})
+    with get_connection() as conn:
+        rows = []
+        for folder in ("B", None):
+            rows.append(conn.execute(
+                """INSERT INTO oauth_connections (org_id, workspace_id, provider, external_workspace_id,
+                       access_token_encrypted, source_config)
+                   VALUES (%s, %s, 'google', %s, 'x', %s::jsonb) RETURNING id::text""",
+                (org, _space(org), account, json.dumps({"folder_id": folder} if folder else {})),
+            ).fetchone()[0])
+    sibling, unscoped = rows
+    other_org = store.create_organization("Webhook Sync Other Org")
+    org_cleanup.append(other_org)
+    stranger = _connection(other_org, "google", account, config={"folder_id": "C"})
+    for c in (hit, sibling, unscoped, stranger):
+        _synced_minutes_ago(c, 0)  # inside the cooldown: flag only, no job
+
+    assert request_sync_connection(hit) == 2
+    assert _flagged(hit) and _flagged(sibling)
+    assert not _flagged(unscoped)  # no folder = nothing a sync could read
+    assert not _flagged(stranger)  # another tenant's channel speaks for itself
 
 
 @requires_db
