@@ -169,3 +169,54 @@ def test_weak_passage_cutoff_keeps_the_best_and_is_off_by_default():
     assert _drop_weak([_hit("a", 0, "A"), _hit("b", 0, "B")], 0.5) == [_hit("a", 0, "A"), _hit("b", 0, "B")]
     neg = [replace(_hit("a", 0, "A"), rerank_score=-1.0), replace(_hit("b", 0, "B"), rerank_score=-3.0)]
     assert _drop_weak(neg, 0.5) == neg
+
+
+def _scored(doc: str, idx: int, s: float) -> RetrievedChunk:
+    return replace(_hit(doc, idx, f"{doc}{idx}"), rerank_score=s)
+
+
+def test_spread_keeps_a_narrow_question_exactly_as_before():
+    from app.rag.retrieval import _spread
+
+    # One document far ahead of the rest: the answer lives in one place.
+    hits = [_scored("a", i, s) for i, s in enumerate((0.9, 0.8, 0.7, 0.6, 0.5, 0.4))] + [_scored("b", 0, 0.1)]
+    assert _spread(hits, 5, 10, 0.5, 2) == hits[:5]
+    assert _spread(hits, 5, 0, 0.5, 2) == hits[:5]  # off
+    assert _spread(hits, 5, 10, 0.0, 2) == hits[:5]  # off
+
+
+def test_spread_widens_across_documents_when_evidence_is_spread():
+    from app.rag.retrieval import _spread
+
+    hits = [_scored("a", 0, 0.9), _scored("a", 1, 0.85), _scored("a", 2, 0.8), _scored("b", 0, 0.7),
+            _scored("c", 0, 0.65), _scored("b", 1, 0.6), _scored("d", 0, 0.55), _scored("e", 0, 0.1)]
+    out = _spread(hits, 3, 6, 0.5, 2)
+    # The usual top 3 stay; then one passage from each new strong document
+    # (b, c, d) before any second passage; e is weak and left out.
+    assert [(h.document_id, h.chunk_index) for h in out] == [("a", 0), ("a", 1), ("a", 2), ("b", 0), ("c", 0), ("d", 0)]
+    # With room left, a second passage per strong document follows (b1).
+    assert ("b", 1) in [(h.document_id, h.chunk_index) for h in _spread(hits, 3, 7, 0.5, 2)]
+    # A wide read is always a superset of the narrow one.
+    for args in ((3, 6, 0.5, 1), (3, 8, 0.3, 2), (5, 10, 0.6, 2)):
+        assert _spread(hits, *args)[: args[0]] == hits[: args[0]]
+
+
+def test_wide_read_budget_and_whole_read_limit():
+    s = RagSettings(top_k=5, max_context_chars=6000, wide_max_hits=10, wide_doc_ratio=0.5)
+    assert s.ranked_max_hits == 10
+    assert s.context_chars_for(5) == 6000 and s.context_chars_for(8) == 12000
+    assert RagSettings(top_k=5, wide_max_hits=10).ranked_max_hits == 5  # ratio 0 = off
+    assert RagSettings(top_k=5, max_context_chars=6000, wide_max_hits=10, wide_doc_ratio=0.5,
+                       wide_max_context_chars=9000).context_chars_for(8) == 9000
+
+
+def test_partial_and_conflict_rules_are_off_by_default_and_numbered_after_focus():
+    base = build_grounded_prompt("q?", ["ctx"], FALLBACK)
+    full = build_grounded_prompt("q?", ["ctx"], FALLBACK, focus_rule=True, partial_rule=True, conflict_rule=True)
+    assert "answers only part" not in base and "disagree about the same thing" not in base
+    assert "6. CONTEXT blocks" in full and "7. If CONTEXT answers only part" in full
+    assert "8. If CONTEXT blocks disagree" in full
+    assert full.index("8. If CONTEXT blocks disagree") < full.index("\nCONTEXT:\n<<<")
+    only_partial = build_grounded_prompt("q?", ["ctx"], FALLBACK, partial_rule=True)
+    assert "6. If CONTEXT answers only part" in only_partial
+

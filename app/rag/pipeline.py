@@ -1096,7 +1096,7 @@ class RagPipeline:
         Any failure returns ``hits`` unchanged.
         """
         n = self._settings.neighbor_chunks
-        if n <= 0 or not hits or len(hits) > self._settings.top_k:
+        if n <= 0 or not hits or len(hits) > self._settings.ranked_max_hits:
             return hits
         top = hits[:_NEIGHBOR_TOP_HITS]
         taken = {(h.document_id, h.chunk_index) for h in top}
@@ -1706,8 +1706,9 @@ class RagPipeline:
         # reused verbatim, which is the point: an attachment must not get its
         # own weaker generation path.
         if contexts is None:
-            # Only `_whole_scope` can return MORE hits than `top_k`; every
-            # other retrieval path caps at it. So this is how generation knows
+            # Only `_whole_scope` can return MORE hits than a ranked read
+            # (`top_k`, or `wide_max_hits` for a wide one); every other
+            # retrieval path caps at that. So this is how generation knows
             # the caller chose to read a narrow corpus whole, without threading
             # a budget through sub-question fusion (where two legs would
             # disagree about which budget won).
@@ -1724,7 +1725,10 @@ class RagPipeline:
             # different denominator, since `describe_hit` adds a provenance
             # line per chunk) could only ever disagree with it. One budget,
             # enforced in one place.
-            whole_read = len(hits) > self._settings.top_k
+            # ponytail: a whole read of top_k..wide_max_hits chunks looks ranked and
+            # gets the wide budget, which already fits that many; thread an explicit
+            # flag from `_whole_scope` if the two limits ever diverge.
+            whole_read = len(hits) > self._settings.ranked_max_hits
             screened = _screen_hits(hits, org_id, self._guard_settings)
             if hits and not screened and not extra_contexts:
                 # Everything retrieved was flagged: refuse without a model call
@@ -1751,7 +1755,7 @@ class RagPipeline:
                 # we had. The date is also what lets a whole read answer
                 # "what happened recently?" at all.
                 [describe_hit(h) for h in prompt_hits],
-                0 if whole_read else self._settings.max_context_chars,
+                0 if whole_read else self._settings.context_chars_for(len(hits)),
             )
             # The budget keeps a PREFIX, so block i is prompt_hits[i].
             blocks: list = list(prompt_hits[: len(contexts)])
@@ -1795,6 +1799,8 @@ class RagPipeline:
             # exactly the failure PromptProfile.escalation_hint documents.
             profile=profile or self._prompt_profile,
             focus_rule=self._settings.focus_rule,
+            partial_rule=self._settings.partial_rule,
+            conflict_rule=self._settings.conflict_rule,
         )
         answer_cap = self._settings.max_answer_tokens
         raw = self._generate_text(

@@ -100,7 +100,10 @@ class Handbook:
                           "candidate_pool": os.environ.get("RETRIEVAL_CANDIDATE_POOL"),
                           "rerank_min_ratio": os.environ.get("RETRIEVAL_RERANK_MIN_RATIO"),
                           "neighbor_chunks": settings.neighbor_chunks, "focus_rule": settings.focus_rule,
-                          "proactive_rephrase": os.environ.get("RECOVERY_PROACTIVE")}
+                          "proactive_rephrase": os.environ.get("RECOVERY_PROACTIVE"),
+                          "wide_max_hits": settings.wide_max_hits, "wide_doc_ratio": settings.wide_doc_ratio,
+                          "wide_per_doc": settings.wide_per_doc, "partial_rule": settings.partial_rule,
+                          "conflict_rule": settings.conflict_rule}
         self.pipeline = build_rag_pipeline(
             settings=settings, prompt_profile=WORKSPACE_PROMPT_PROFILE, memory=None, web_search=None
         )

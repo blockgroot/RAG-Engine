@@ -169,12 +169,15 @@ class HybridRetriever:
         pool_candidates = candidates[:pool]
         # A connected answer ranks the WHOLE pool so another tool's best chunk
         # can be reserved a slot; a normal answer is byte-identical to before.
-        keep = len(pool_candidates) if graph_cross else top_k
+        rag = self._rag_settings
+        keep = len(pool_candidates) if graph_cross else rag.ranked_max_hits
         if self._reranker is not None and self._settings.rerank_enabled:
             final = _drop_weak(
                 self._reranker.rerank(rerank_q, pool_candidates, keep),
                 self._settings.rerank_min_ratio,
             )
+            if not graph_cross:
+                final = _spread(final, top_k, rag.wide_max_hits, rag.wide_doc_ratio, rag.wide_per_doc)
         else:
             final = pool_candidates[:keep]
         if graph_cross:
@@ -422,6 +425,51 @@ def _drop_weak(hits: list[RetrievedChunk], ratio: float) -> list[RetrievedChunk]
     return [hits[0]] + [
         h for h in hits[1:] if h.rerank_score is not None and h.rerank_score >= ratio * best
     ]
+
+
+def _spread(
+    hits: list[RetrievedChunk], top_k: int, max_hits: int, ratio: float, per_doc: int
+) -> list[RetrievedChunk]:
+    """``top_k`` hits, plus more documents when the evidence is spread out.
+
+    A document is "strong" when its best reranker score is at least ``ratio`` x
+    the top document's. With one strong document the answer lives in one
+    place and the usual ``top_k`` is returned unchanged. With several, the
+    usual ``top_k`` is KEPT and passages from strong documents it does not
+    already cover are added, up to ``max_hits`` and ``per_doc`` per document:
+    new documents first, then a second passage each. So a wide read is always
+    a superset of the narrow one and can only reach more documents, never
+    fewer (Benchmark 1: more passages of the same documents did not help).
+    Reranker scores only; the gate is untouched.
+    """
+    base = hits[:top_k]
+    if max_hits <= top_k or ratio <= 0 or not hits:
+        return base
+    best = hits[0].rerank_score
+    if best is None or best <= 0:
+        return base
+    doc_best: dict[str, float] = {}
+    for h in hits:
+        if h.rerank_score is not None:
+            doc_best.setdefault(h.document_id, h.rerank_score)
+    strong = {d for d, s in doc_best.items() if s >= ratio * best}
+    if len(strong) <= 1:
+        return base
+    taken: dict[str, int] = {}
+    for h in base:
+        taken[h.document_id] = taken.get(h.document_id, 0) + 1
+    added: list[int] = []
+    rest = list(enumerate(hits))[top_k:]
+    for new_docs_only in (True, False):
+        for i, h in rest:
+            if len(base) + len(added) >= max_hits:
+                break
+            n = taken.get(h.document_id, 0)
+            if i in added or h.document_id not in strong or n >= per_doc or (new_docs_only and n):
+                continue
+            taken[h.document_id] = n + 1
+            added.append(i)
+    return base + [hits[i] for i in sorted(added)]
 
 
 def gate_document(chunks) -> str | None:

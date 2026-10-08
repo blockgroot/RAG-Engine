@@ -400,6 +400,33 @@ class RagSettings:
     # Tell the model not to attach one document's facts to another's subject
     # (Benchmark 1: wrong-document facts were the second-largest loss).
     focus_rule: bool = False
+    # Wide reads (Benchmark 2: 17 of the 33 questions Onyx won needed 6-8
+    # documents and Handbook read 2-5). When several documents score close to
+    # the best one, read up to ``wide_max_hits`` passages, at most
+    # ``wide_per_doc`` from each, so the extra room goes to OTHER documents.
+    # Driven by the reranker's scores, never by the question's wording. Off
+    # unless ``wide_max_hits`` > ``top_k`` and ``wide_doc_ratio`` > 0.
+    wide_max_hits: int = 0
+    wide_doc_ratio: float = 0.0
+    wide_per_doc: int = 1
+    # 0 = scale ``max_context_chars`` by wide_max_hits / top_k.
+    wide_max_context_chars: int = 0
+    # Answer the part CONTEXT covers and say what is missing, instead of the
+    # fallback (Benchmark 2: 6 refusals had the right document in the prompt).
+    partial_rule: bool = False
+    # When blocks disagree, prefer the newer or superseding one and say so.
+    conflict_rule: bool = False
+
+    @property
+    def ranked_max_hits(self) -> int:
+        """The most hits a RANKED retrieval can return; more means a whole read."""
+        return max(self.top_k, self.wide_max_hits if self.wide_doc_ratio > 0 else 0)
+
+    def context_chars_for(self, n_hits: int) -> int:
+        """Prompt budget for ``n_hits`` ranked hits: the usual one, or a wide read's."""
+        if n_hits <= self.top_k:
+            return self.max_context_chars
+        return self.wide_max_context_chars or self.max_context_chars * self.wide_max_hits // self.top_k
 
     @classmethod
     def from_env(cls) -> "RagSettings":
@@ -428,6 +455,12 @@ class RagSettings:
             max_answer_tokens=max_answer_tokens,
             neighbor_chunks=int(os.getenv("RAG_NEIGHBOR_CHUNKS") or DEFAULT_RAG_NEIGHBOR_CHUNKS),
             focus_rule=env_bool("RAG_FOCUS_RULE", False),
+            wide_max_hits=int(os.getenv("RAG_WIDE_MAX_HITS") or 0),
+            wide_doc_ratio=float(os.getenv("RAG_WIDE_DOC_RATIO") or 0.0),
+            wide_per_doc=int(os.getenv("RAG_WIDE_PER_DOC") or 1),
+            wide_max_context_chars=int(os.getenv("RAG_WIDE_MAX_CONTEXT_CHARS") or 0),
+            partial_rule=env_bool("RAG_PARTIAL_RULE", False),
+            conflict_rule=env_bool("RAG_CONFLICT_RULE", False),
         )
 
 

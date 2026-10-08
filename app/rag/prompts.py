@@ -173,6 +173,25 @@ def build_attachment_paging_prompt(*, question: str, preview_block: str) -> str:
     )
 
 
+_FOCUS_RULE = (
+    "CONTEXT blocks often come from different documents about different "
+    "customers, incidents, teams, versions or dates. Answer from the "
+    "block(s) about the specific thing the QUESTION names. Never attach a "
+    "fact from one document to a different subject, and do not combine "
+    "facts from different documents unless the QUESTION asks for that."
+)
+_PARTIAL_RULE = (
+    "If CONTEXT answers only part of the QUESTION, answer that part (mode A "
+    "or B) and say plainly which part CONTEXT does not cover. Use mode C only "
+    "when CONTEXT supports no part of the QUESTION."
+)
+_CONFLICT_RULE = (
+    "If CONTEXT blocks disagree about the same thing, use the one that is "
+    "newer by its date, or that says it replaces or updates the other, and "
+    "say briefly that the earlier value was superseded."
+)
+
+
 def build_grounded_prompt(
     question: str,
     contexts: list[str],
@@ -181,12 +200,17 @@ def build_grounded_prompt(
     profile: PromptProfile = POLICY_PROMPT_PROFILE,
     asker_facts: tuple[str, ...] = (),
     focus_rule: bool = False,
+    partial_rule: bool = False,
+    conflict_rule: bool = False,
 ) -> str:
     """Build the grounded-answer prompt (facts from CONTEXT only).
 
     ``focus_rule`` adds rule 6: the blocks usually come from several documents,
     and Benchmark 1's second-largest loss was a real fact attached to the wrong
-    customer, incident or version. Off, the prompt is unchanged.
+    customer, incident or version. ``partial_rule`` lets a partly covered
+    question get the covered part instead of the fallback; ``conflict_rule``
+    prefers the newer of two disagreeing blocks (Benchmark 2). Each is off by
+    default, and with all off the prompt is unchanged.
 
     ``asker_facts`` (personal memory) sit OUTSIDE the context, after it, and
     are framed as interpretation only: they may decide WHICH office or team a
@@ -262,13 +286,13 @@ def build_grounded_prompt(
         "details. With more than two or three facts, use a short lead-in plus "
         "markdown bullets ('- ' one fact each). Prefer about 3–5 focused points "
         "— not an exhaustive dump of every clause.\n"
-        + (
-            "6. CONTEXT blocks often come from different documents about different "
-            "customers, incidents, teams, versions or dates. Answer from the "
-            "block(s) about the specific thing the QUESTION names. Never attach a "
-            "fact from one document to a different subject, and do not combine "
-            "facts from different documents unless the QUESTION asks for that.\n"
-            if focus_rule else ""
+        + "".join(
+            f"{n}. {rule}\n"
+            for n, rule in enumerate(
+                [r for on, r in ((focus_rule, _FOCUS_RULE), (partial_rule, _PARTIAL_RULE),
+                                 (conflict_rule, _CONFLICT_RULE)) if on],
+                start=6,
+            )
         )
         + "\n"
         f"CONTEXT:\n{fenced}\n\n"
