@@ -154,6 +154,10 @@ on indexing. The prompt also lists the REAL subject and person names with activi
 "Charts", never "No answer found"; an upload's table reports `attachment`.
 A trend with fewer than `MIN_TREND_BUCKETS` periods on its drawn axis steps to a
 finer period and says so; activity in one period only is said plainly.
+"Done vs remaining" is the derived `progress` dimension (Open/Closed from the
+source's state type; `registry.DERIVED_DIMENSIONS`, fixed SQL, kept apart from
+the bare-column `DIMENSIONS`). In a TABLE, a time scale IS a breakdown by its
+date column; a line with no breakdown uses the table's only date column.
 A breakdown beyond the two a chart draws is named as left out
 (`left_out_words`, kept only when the quote is in the question), never dropped silently.
 A breakdown is kept only when asked for: the model quotes the words that asked

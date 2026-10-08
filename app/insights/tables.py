@@ -193,8 +193,16 @@ def parse_pick(data: dict, handles: dict[str, TableRef]) -> TablePick | None:
             if key:
                 filters.append((key, wanted.strip()[:120]))
 
-    group_type = table.column(group_by).get("type") if group_by else None
     requested = data.get("chart") if isinstance(data.get("chart"), str) else None
+    if group_by is None and requested == "line":
+        # A line IS a time axis, and in a table the time axis is its date
+        # column: "revenue per month as a line" drew one bar, the total,
+        # because the period rode on nothing. Only when there is exactly one
+        # date column -- with two, which one is the asker's call.
+        dates = [c["key"] for c in table.columns if c.get("type") == "date"]
+        if len(dates) == 1:
+            group_by = dates[0]
+    group_type = table.column(group_by).get("type") if group_by else None
     if group_type == "date":
         chart = requested if requested in ("line", "bar") else "line"
     elif group_by:

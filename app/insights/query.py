@@ -188,6 +188,8 @@ def dim_sql(metric: registry.Metric, dim: str, attrs=None) -> tuple[str, str]:
     """
     if dim in registry.DIMENSIONS:
         return registry.DIMENSIONS[dim], ""
+    if dim in registry.DERIVED_DIMENSIONS and dim in metric.dims:
+        return registry.DERIVED_DIMENSIONS[dim], ""
     found = find_attr(metric, dim, attrs)
     if found is None or found.type == "number" or is_protected(metric):
         raise ValueError(f"unknown dimension {dim!r}")
@@ -298,6 +300,7 @@ def dim_label(metric: registry.Metric, dim: str, attrs=None) -> str:
         "actor": registry.actor_label(metric.provider),
         "subject": registry.subject_label(metric.provider),
         "state": "state",
+        "progress": "open or closed",
         "provider": "app",
     }.get(dim, dim)
 

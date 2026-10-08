@@ -346,3 +346,22 @@ def test_chart_mode_offers_the_chats_files_first(chat, blob, monkeypatch):
     assert offered[0].document_title == "sales.csv" and offered[1:] == ["doc-table"]
     # No viewer still means no tables at all, uploads included.
     assert routing._chartable_tables(chat["org"], None, None, "revenue", mine) == []
+
+
+def test_a_line_on_a_table_runs_over_its_date_column():
+    """"Revenue per month for North as a line" drew one bar: the model left
+    group_by empty, so the period had no axis to ride on."""
+    from app.doctables import extract
+
+    raw = extract.parse_csv("Date,Region,Revenue\n2026-01-05,North,10\n2026-02-07,North,20\n"
+                            "2026-02-09,South,5\n", name="s")
+    profiled = extract.profile(raw)
+    ref = table_store.TableRef(
+        id="t", name="s", columns=tuple(c.as_dict() for c in profiled.columns),
+        row_count=3, truncated=False, notes=(), document_title="s.csv",
+        provider="attachment", source_uri=None, attachment_id="a",
+    )
+    pick = doc_tables.parse_pick(
+        {"table": "T1", "measure": "sum", "value": "Revenue", "chart": "line",
+         "filters": {"Region": "North"}}, {"T1": ref})
+    assert pick.group_by == "c0" and pick.chart == "line"

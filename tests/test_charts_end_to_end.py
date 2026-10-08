@@ -154,6 +154,9 @@ def _values(f: F, dim: str | None) -> list:
         return [None]
     if dim in ("actor", "subject", "state"):
         return [getattr(f, dim)]
+    if dim == "progress":
+        kind = f.attrs.get("state_type")
+        return [None if not kind else ("Closed" if kind in FINISHED else "Open")]
     v = f.attrs.get(dim)
     if isinstance(v, (list, tuple)):
         return list(v)
@@ -420,3 +423,19 @@ def test_names_shown_to_the_classifier_never_include_private_ones(seeded):
                                    viewer=SANA)
     assert "#secret" not in names[("slack", "doc_changed")]["subject"]
     assert "zed" not in names[("slack", "doc_changed")]["actor"]
+
+
+def test_completed_and_remaining_is_two_bars_from_the_sources_state_types(seeded):
+    """"Issues completed and remaining" drew monthly totals: there was no
+    finished/unfinished breakdown. `progress` is decided by Linear's own state
+    type, so a renamed "Shipped" state still counts as Closed."""
+    metric = registry.get("issue_states")
+    got = actual(seeded, ChartSpec(metric="issue_states", group_by="progress",
+                                   period="quarter", chart="bar"))
+    totals: dict = {}
+    for (_, group, _), value in got.items():
+        totals[group] = totals.get(group, 0) + value
+    visible = [f for f in seeded["facts"] if f.kind == "issue_state" and f.visible]
+    closed = sum(1 for f in visible if f.attrs["state_type"] in FINISHED)
+    assert totals == {"Closed": closed, "Open": len(visible) - closed}
+    del metric
