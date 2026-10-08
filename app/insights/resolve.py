@@ -202,8 +202,10 @@ def _allowed_shapes(metric: registry.Metric) -> tuple[str, ...]:
     return ("line", "bar", "pie")
 
 
-def _catalogue(metrics: list[registry.Metric], fields: dict | None = None) -> str:
+def _catalogue(metrics: list[registry.Metric], fields: dict | None = None,
+               names: dict | None = None) -> str:
     fields = fields or {}
+    names = names or {}
     lines = []
     for metric in metrics:
         dims = ", ".join(query.group_dims(metric, fields.get(metric.key))) or "none"
@@ -228,6 +230,13 @@ def _catalogue(metrics: list[registry.Metric], fields: dict | None = None) -> st
         if builtin:
             line += ". where " + ", ".join(
                 f"{d} = {query.dim_label(metric, d)}" for d in builtin)
+        # The REAL names with activity, so a focus or a person filter is
+        # picked from what exists rather than guessed from the wording.
+        known = names.get((metric.provider, metric.kind)) or {}
+        for d in builtin:
+            if known.get(d):
+                line += (f". {query.dim_label(metric, d)} names: "
+                         + ", ".join(f'"{n}"' for n in known[d]))
         lines.append(line)
     # Named once, so "label" in three metrics' option lists is not a mystery
     # and the model learns a tag breakdown counts an item under each tag.
@@ -427,7 +436,7 @@ def _missing(providers: list[str]) -> list[str]:
 def _prompt(
     question: str, metrics: list[registry.Metric], *, github: bool = False,
     missing: list[str] | None = None, tables: list | None = None,
-    fields: dict | None = None, chart_mode: bool = False,
+    fields: dict | None = None, chart_mode: bool = False, names: dict | None = None,
 ) -> str:
     # The question is user text reaching a prompt, so it is scrubbed and fenced
     # like any other untrusted input. That is a mitigation, not the guarantee:
@@ -478,7 +487,7 @@ def _prompt(
         "Available countable things (pick ONLY from this list; the "
         "connector is the tag in brackets). This list is the contract, "
         "not a set of example questions:\n"
-        f"{_catalogue(metrics, fields)}\n\n"
+        f"{_catalogue(metrics, fields, names)}\n\n"
         + (
             "NOT CONNECTED in this scope: " + ", ".join(missing) + ".\n"
             "If the question is about one of THOSE, reply "
@@ -533,7 +542,12 @@ def _prompt(
         "(\"by person\", \"who edited the most\"); null when they did not.\n"
         "- focus = ONE thing they narrowed to: a repository, channel, team, "
         "page or file NAME. \"commits in the DAO repo\" is focus=\"DAO\", "
-        "not a grouping. Null when they asked about everything.\n"
+        "not a grouping. Null when they asked about everything. When that "
+        "metric lists names above, focus is one of them (match their spelling "
+        "to it). Words that point at the asker's own group or at everyone "
+        "(\"our team\", \"my team\", \"we\", \"the company\") name nothing: "
+        "focus null. A name they typed that is NOT listed still goes in focus, "
+        "so it can be refused by name.\n"
         "- chart must be one of that metric's shapes, or null to use the default.\n"
         "- split_by = a SECOND breakdown, only when they asked for two "
         "(\"by person and repo\" is group_by=actor, split_by=subject). One of "
@@ -545,7 +559,8 @@ def _prompt(
         "a plain count.\n"
         "- filters = narrow to ONE person (actor), ONE state or ONE recorded "
         "field value, only from that metric's filter options, with the value "
-        "as they typed it: \"Sana's PRs\" is {\"actor\": \"Sana\"}, \"urgent "
+        "as they typed it (a person from that metric's names when listed): "
+        "\"Sana's PRs\" is {\"actor\": \"Sana\"}, \"urgent "
         "tasks\" is {\"priority\": \"urgent\"}. For the STATE filter, work that "
         "is not finished yet -- however they say it (open, pending, active, "
         "remaining, still in progress, in any language) -- is {\"state\": "
@@ -606,6 +621,7 @@ def classify_question(
     tables: list | None = None,
     fields: dict | None = None,
     offer_github: bool = True,
+    names: dict | None = None,
 ) -> AskIntent:
     """Classify Ask as qa, a validated chart, or a visual we cannot count.
 
@@ -650,7 +666,8 @@ def classify_question(
     try:
         reply = llm.generate(
             _prompt(question, metrics, github=github, missing=missing,
-                    tables=offered, fields=fields, chart_mode=not fail_open),
+                    tables=offered, fields=fields, chart_mode=not fail_open,
+                    names=names),
             max_tokens=MAX_TOKENS,
         )
     except Exception as exc:  # noqa: BLE001

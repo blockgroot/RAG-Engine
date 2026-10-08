@@ -154,7 +154,7 @@ def test_the_chat_edge_hands_facts_in_and_announces_what_it_saved(monkeypatch):
     monkeypatch.setattr(personal, "remember_from_question", lambda q, **kw: (seen.setdefault("kw", kw), saved)[1])
     monkeypatch.setattr(personal, "mark_announced", lambda org, user, ids: seen.setdefault("announced", ids))
 
-    def body(question, org_id, conversation_id, workspace_id, requested_agent, model, session, memory_turn):
+    def body(question, org_id, conversation_id, workspace_id, requested_agent, model, session, memory_turn, **_):
         seen["facts"] = personal.current_asker_facts()
         yield "event: done\ndata: " + json.dumps({"remembered": chat._remembered(memory_turn)}) + "\n\n"
 

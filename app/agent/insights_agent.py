@@ -503,6 +503,23 @@ def _fill_gaps(points, period: str, since, until):
     return sorted(filled, key=lambda p: p.bucket)
 
 
+#: Fewest periods a trend is drawn with before stepping to a finer period.
+MIN_TREND_BUCKETS = 3
+
+
+def _sparse_note(points, period: str, unit: str, group_by) -> str | None:
+    """Say plainly when a trend has activity in only one period, so a lone
+    rise reads as "little has happened yet", not as a chart that failed."""
+    if group_by is not None:
+        return None
+    active = [p for p in points if p.value]
+    if len(active) != 1 or len(_buckets(points)) < 2:
+        return None
+    total = active[0].value
+    shown = int(total) if float(total).is_integer() else round(total, 2)
+    return f"All activity so far ({shown} {unit}) is in one {period}."
+
+
 def _span_days(points) -> int:
     """How far apart the rows we already found are.
 
@@ -907,6 +924,7 @@ def _run_spec(
     begun = store.first_fact_at(
         metric.provider, org_id=org_id, workspace_id=workspace_id, viewer=viewer
     )
+    stepped = None
     if group_by is None:
         # A trend shows its whole range, quiet periods at zero -- from when
         # this tool's data begins (or the window, if later), never before.
@@ -916,6 +934,32 @@ def _run_spec(
         window_start = now - timedelta(days=days)
         since = max(begun, window_start) if begun else None
         points = _fill_gaps(points, period, since, now)
+        asked_period = period
+        # A trend needs a few periods to BE a trend. "Per month" over data
+        # that began last week is one bar, which reads as a broken chart;
+        # the same rows per day are a line. Step finer (judged on the axis
+        # the chart will actually draw, quiet periods included) and say so.
+        while len(_buckets(points)) < MIN_TREND_BUCKETS and registry.FINER_PERIOD.get(period):
+            finer = registry.FINER_PERIOD[period]
+            span = (now - begun).days + 1 if begun else 0
+            window = max(scopes.WINDOW_DAYS.get(finer, days), min(span, days))
+            try:
+                candidate = store.run_metric(
+                    spec.metric, org_id=org_id, workspace_id=workspace_id,
+                    period=finer, days=window, group_by=None, focus=focus,
+                    viewer=viewer, measure=measure, filters=filters, attrs=attrs,
+                )
+            except (ProviderError, ValueError):
+                break
+            start = max(begun, now - timedelta(days=window)) if begun else None
+            candidate = _fill_gaps(candidate, finer, start, now)
+            if len(_buckets(candidate)) > MAX_FILLED_BUCKETS:
+                break
+            points, period, days = candidate, finer, window
+        if period != asked_period:
+            stepped = (f"Shown per {period}: this tool's data begins "
+                       f"{begun:%-d %b %Y}, too recent for a {asked_period}ly trend."
+                       if begun else f"Shown per {period}.")
     title = _ask_title(
         metric, group_by, split_by=split_by, measure=measure, filters=filters,
         attrs=attrs,
@@ -942,7 +986,9 @@ def _run_spec(
         "split_by": split_by,
         "filters": [list(f) for f in filters],
         "unit": chosen.unit,
-        "caveat": _grammar_caveat(metric, group_by, split_by, attrs),
+        "caveat": " ".join(n for n in (
+            stepped, _sparse_note(points, period, chosen.unit, group_by),
+            _grammar_caveat(metric, group_by, split_by, attrs)) if n),
         "points": [
             {"bucket": p.bucket, "group": p.group, "series": p.series, "value": p.value}
             for p in points

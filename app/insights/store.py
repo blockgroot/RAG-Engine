@@ -495,6 +495,62 @@ def list_values(
     return [r[0] for r in rows if r[0]]
 
 
+#: Names per field shown to the chart classifier. A bound, not a feature:
+#: the most active ones, so a tool with hundreds of channels still fits.
+MAX_NAMES_SHOWN = 15
+
+
+def scope_names(
+    *, org_id: str, workspace_id: str | None, days: int, viewer: "Viewer | None" = None,
+    limit: int = MAX_NAMES_SHOWN,
+) -> dict[tuple[str, str], dict[str, list[str]]]:
+    """The real ``subject`` and ``actor`` values per (provider, kind), most
+    active first: what the chart classifier may pick a focus or a person
+    from, so "our team" is not mistaken for a team called "our team".
+
+    One query for every metric, viewer-filtered like ``list_values`` because
+    these names reach a prompt and, through a refusal, the asker.
+    """
+    access, access_params = _viewer_filter(viewer)
+    where = _scoped(
+        """
+         WHERE org_id = %(org_id)s
+           AND occurred_at >= now() - make_interval(days => %(days)s)
+        """,
+        workspace_id,
+    ) + access
+    sql = f"""
+        WITH v AS (
+            SELECT provider, kind, 'subject' AS dim, subject AS name, count(*) AS n
+              FROM activity_facts {where} AND subject IS NOT NULL
+             GROUP BY provider, kind, subject
+            UNION ALL
+            SELECT provider, kind, 'actor', actor, count(*)
+              FROM activity_facts {where} AND actor IS NOT NULL
+             GROUP BY provider, kind, actor
+        )
+        SELECT provider, kind, dim, name FROM (
+            SELECT v.*, row_number() OVER (PARTITION BY provider, kind, dim
+                                           ORDER BY n DESC, name) AS rk
+              FROM v
+        ) ranked
+         WHERE rk <= %(limit)s
+         ORDER BY provider, kind, dim, rk
+    """
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                sql, {"org_id": org_id, "workspace_id": workspace_id, "days": days,
+                      "limit": limit, **access_params},
+            ).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        raise ProviderError("insights: could not list names in scope", cause=exc) from exc
+    out: dict[tuple[str, str], dict[str, list[str]]] = {}
+    for provider, kind, dim, name in rows:
+        out.setdefault((provider, kind), {}).setdefault(dim, []).append(name)
+    return out
+
+
 def first_fact_at(
     provider: str, *, org_id: str, workspace_id: str | None,
     viewer: "Viewer | None" = None,

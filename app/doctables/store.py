@@ -206,7 +206,7 @@ class UploadScope:
 
 _UPLOAD_COLUMNS = """
     SELECT t.id, t.name, t.columns, t.row_count, t.truncated, t.notes,
-           a.filename, 'upload', NULL, t.origin, NULL, t.attachment_id
+           a.filename, 'attachment', NULL, t.origin, NULL, t.attachment_id
       FROM doc_tables t
       JOIN conversation_attachments a ON a.id = t.attachment_id
      WHERE t.org_id = %(org_id)s AND a.org_id = %(org_id)s

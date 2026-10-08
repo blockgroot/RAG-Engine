@@ -696,3 +696,16 @@ def test_by_person_keeps_a_linear_assignee_breakdown():
     intent = resolve.classify_question("tasks completed by person", providers=["linear"],
                                        llm=llm, fail_open=False)
     assert intent.spec.group_by == "actor"
+
+
+def test_the_prompt_lists_the_real_names_so_our_team_is_not_a_team():
+    """"our team" came back as focus and was refused as "No team called our
+    team". The model now sees the real teams and is told a reference to the
+    asker's own group names nothing."""
+    llm = FakeLLM(_spec(intent="qa"))
+    names = {("linear", "issue_completed"): {"subject": ["Syvora"], "actor": ["Sana"]}}
+    resolve.classify_question("tasks our team completed per week", providers=["linear"],
+                              llm=llm, names=names)
+    prompt = llm.prompts[0]
+    assert 'team names: "Syvora"' in prompt and 'assignee names: "Sana"' in prompt
+    assert "name nothing: focus null" in prompt

@@ -630,12 +630,19 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   async function detach(id: string) {
     const convId = conversationId.current;
     if (!convId) return;
+    const removed = attachments.find((a) => a.id === id);
+    if (!removed) return; // already going: a second click is not a second delete
     setUploadError(null);
+    // Gone from the chat at once, as in every chat app; the server delete is
+    // idempotent, so only a real failure brings the chip back.
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
     try {
       await api.deleteAttachment(convId, id, workspaceId);
-      setAttachments((prev) => prev.filter((a) => a.id !== id));
     } catch {
-      setUploadError("Couldn't remove that file.");
+      setAttachments((prev) =>
+        prev.some((a) => a.id === id) ? prev : [...prev, removed],
+      );
+      setUploadError(`Couldn't remove ${removed.filename}. Try again.`);
     }
   }
 

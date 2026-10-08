@@ -25,9 +25,11 @@ from .store import (
     Attachment,
     count_attachments,
     delete_attachment,
+    drop_stored,
     list_attachments,
     load_attachment_texts,
     purge_expired_attachments,
+    remove_attachment_row,
     save_attachment,
 )
 
@@ -41,6 +43,8 @@ __all__ = [
     "DEFAULT_ATTACHMENT_TTL_HOURS",
     "count_attachments",
     "delete_attachment",
+    "drop_stored",
+    "remove_attachment_row",
     "delete_object",
     "list_keys",
     "list_orphan_objects",
