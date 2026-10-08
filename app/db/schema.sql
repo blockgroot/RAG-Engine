@@ -942,18 +942,20 @@ CREATE TABLE IF NOT EXISTS schema_marks (
     applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Notion tables were rendered without a header separator until 2026-10, so
--- every Notion page was stamped "checked, no tables". Unstamp the ones that
--- have none so `backfill_tables` re-reads them (a bounded batch per sync,
--- tables only) with the fixed renderer -- no one has to edit their pages.
+-- Notion tables were rendered without a header separator, and inline
+-- databases ("/table" -> table view) not at all, until 2026-10, so Notion
+-- pages were stamped "checked, no tables". Unstamp the ones that have none so
+-- `backfill_tables` re-reads them (a bounded batch per sync, tables only) with
+-- the fixed renderer -- no one has to edit their pages. The mark is named for
+-- the LAST fix it covers, so a later fix re-runs it under a new name.
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'notion_tables_recheck') THEN
+    IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'notion_tables_recheck_databases') THEN
         UPDATE documents d SET tables_checked_at = NULL
          WHERE d.source_provider = 'notion'
            AND d.tables_checked_at IS NOT NULL
            AND NOT EXISTS (SELECT 1 FROM doc_tables t WHERE t.document_id = d.id);
-        INSERT INTO schema_marks (name) VALUES ('notion_tables_recheck');
+        INSERT INTO schema_marks (name) VALUES ('notion_tables_recheck_databases');
     END IF;
 END $$;
 

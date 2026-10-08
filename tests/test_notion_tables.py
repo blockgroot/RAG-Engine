@@ -46,3 +46,69 @@ def test_a_notion_table_is_read_as_a_table_with_typed_columns():
                                                            ("Revenue", "number")]
     assert len(table.cells) == 3
     assert "Next quarter looks good." in text  # prose around it is untouched
+
+
+def _prop(kind, value):
+    if kind == "title":
+        return {"type": "title", "title": _rt(value)}
+    if kind == "select":
+        return {"type": "select", "select": {"name": value}}
+    return {"type": kind, kind: value}
+
+
+BUDGET = [
+    {"properties": {"Department": _prop("select", "Engineering"),
+                    "Quarter": _prop("title", "Q1"), "Budget": _prop("number", 6300000.0)}},
+    {"properties": {"Department": _prop("select", "Sales"),
+                    "Quarter": _prop("title", "Q1"), "Budget": _prop("number", 5100000)}},
+    {"properties": {"Department": _prop("select", "Engineering"),
+                    "Quarter": _prop("title", "Q2"), "Budget": _prop("number", 8300000)}},
+]
+
+
+class _Client:
+    """The two Notion APIs: `data_sources` (notion-client 3.x) or the older
+    `databases.query`."""
+
+    def __init__(self, new_api: bool):
+        from types import SimpleNamespace
+
+        query = lambda **kw: {"results": BUDGET, "has_more": False}  # noqa: E731
+        if new_api:
+            self.databases = SimpleNamespace(
+                retrieve=lambda database_id: {"data_sources": [{"id": "ds-1"}]})
+            self.data_sources = SimpleNamespace(query=lambda data_source_id, **kw: query())
+        else:
+            self.databases = SimpleNamespace(query=lambda database_id, **kw: query())
+
+
+def test_an_inline_database_is_read_as_a_table_on_either_notion_api():
+    """"/table" in Notion makes an inline DATABASE, whose figures live in row
+    properties: the page read as empty and could not be charted or answered."""
+    import pytest
+
+    for new_api in (True, False):
+        adapter = NotionAdapter.__new__(NotionAdapter)
+        adapter._client = _Client(new_api)
+        lines = NotionAdapter._render_block(
+            adapter, {"id": "db-1", "type": "child_database",
+                      "child_database": {"title": "Quarterly budget"}}, 0, [100_000])
+        [raw] = find_markdown_tables("\n".join(lines), title="Page")
+        table = profile(raw)
+        assert table.name == "Quarterly budget"
+        assert [(c.name, c.type) for c in table.columns] == [
+            ("Quarter", "category"), ("Department", "category"), ("Budget", "number")]
+        assert [row["c2"] for row in table.cells] == pytest.approx([6300000, 5100000, 8300000])
+
+
+def test_an_unreadable_database_costs_only_that_table():
+    adapter = NotionAdapter.__new__(NotionAdapter)
+
+    class Broken:
+        def __getattr__(self, name):
+            raise RuntimeError("no access")
+
+    adapter._client = Broken()
+    assert NotionAdapter._render_block(
+        adapter, {"id": "db-1", "type": "child_database",
+                  "child_database": {"title": "x"}}, 0, [100_000]) == []
