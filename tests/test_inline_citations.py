@@ -134,3 +134,13 @@ def test_a_saved_turn_keeps_the_citation_list():
     assert turn.answer.endswith("[1].")
     assert turn.cited[0]["document_id"] == "doc-1"
     assert turn.cited[0]["n"] == 1
+
+
+def test_two_passages_of_one_document_cite_it_once():
+    """"[3][4]" from one Slack thread read as a superscript "3 3"."""
+    thread = _hit("d1", "#rag-updates")
+    other = _hit("d2", "Leave Policy")
+    text, cited = link_citations("Live reads replace synced copies [1][2]. Leave [3].",
+                                 [thread, thread, other])
+    assert text == "Live reads replace synced copies [1]. Leave [2]."
+    assert [c["document_id"] for c in cited] == ["d1", "d2"]

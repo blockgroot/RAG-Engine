@@ -67,4 +67,19 @@ def link_citations(answer: str, blocks: list[Any]) -> tuple[str, list[dict]]:
                 out.append(f"[{n}]")
         return " " + "".join(out) if out else ""
 
-    return _MARKER.sub(renumber, answer or ""), cited
+    linked = _MARKER.sub(renumber, answer or "")
+    # "[3][4]" can be two passages of ONE document: both renumber to [3], and
+    # the reader saw "3 3". Within a run of adjacent markers, each number once.
+    return _RUN.sub(_dedupe_run, linked), cited
+
+
+_RUN = re.compile(r"(?:[ \t]*\[\d{1,3}\])+")
+
+
+def _dedupe_run(match: re.Match) -> str:
+    seen: list[str] = []
+    for n in re.findall(r"\[(\d{1,3})\]", match.group(0)):
+        if n not in seen:
+            seen.append(n)
+    lead = " " if match.group(0)[:1] in (" ", "\t") else ""
+    return lead + "".join(f"[{n}]" for n in seen)

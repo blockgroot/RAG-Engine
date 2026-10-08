@@ -924,6 +924,24 @@ def _choose_agent(
     if len(embedded) == 1 and "github" not in connected:
         return RoutingDecision(next(iter(embedded)), "only-source")
 
+    # The asker NAMED where to look ("the latest in Linear and Drive"): the
+    # answer comes from those tools, never from one they did not mention.
+    # Two names used to read as ambiguous and fall through to the similarity
+    # probe, which routed "updates in Linear and Drive" to a Slack channel
+    # called #rag-updates and cited only Slack. One named tool is routed
+    # there; several are probed AMONG THEMSELVES, and the connected answer
+    # (graph/plan.py) reads the rest of them.
+    named_tools = named_providers(question, embedded)
+    if named_tools:
+        if len(named_tools) == 1:
+            return RoutingDecision(next(iter(named_tools)), "tool-named")
+        scores = (
+            probe.result() if probe is not None
+            else _probe_scores(question, org_id, workspace_id, connected)
+        )
+        best_named = max(sorted(named_tools), key=lambda p: scores.get(p, 0.0))
+        return RoutingDecision(best_named, "tools-named", scores)
+
     graph_tool = _graph_named_provider(graph_plan, embedded)
     if graph_tool is not None:
         logger.info("Agent routing: %r names a %s item (graph)", question[:60], graph_tool)
