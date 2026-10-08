@@ -935,6 +935,28 @@ ALTER TABLE documents ADD COLUMN IF NOT EXISTS tables_checked_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS idx_documents_tables_unchecked
     ON documents (org_id, source_provider) WHERE tables_checked_at IS NULL;
 
+-- One-time data fixes that must run ONCE, not on every deploy (this file is
+-- re-applied at each one). Each is guarded by its own row here.
+CREATE TABLE IF NOT EXISTS schema_marks (
+    name       TEXT PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Notion tables were rendered without a header separator until 2026-10, so
+-- every Notion page was stamped "checked, no tables". Unstamp the ones that
+-- have none so `backfill_tables` re-reads them (a bounded batch per sync,
+-- tables only) with the fixed renderer -- no one has to edit their pages.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'notion_tables_recheck') THEN
+        UPDATE documents d SET tables_checked_at = NULL
+         WHERE d.source_provider = 'notion'
+           AND d.tables_checked_at IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM doc_tables t WHERE t.document_id = d.id);
+        INSERT INTO schema_marks (name) VALUES ('notion_tables_recheck');
+    END IF;
+END $$;
+
 -- A chart a member asked for and kept. Personal, scoped `(org_id, user_id)`
 -- like `schedulers` and unlike every other tenant table -- a pin is one
 -- person's shortcut, never published to anyone, which is why this feature has

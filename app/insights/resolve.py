@@ -290,15 +290,25 @@ def _unavailable_message(provider: str) -> str:
     )
 
 
-def _refusal(metrics: list[registry.Metric]) -> str:
+def _refusal(metrics: list[registry.Metric], tables: list | None = None) -> str:
+    """Says what CAN be charted, including which document tables were offered
+    -- or that none have been read yet, the one fact that explains "chart my
+    budget page" failing (the page has not synced since tables were read)."""
     labels = ", ".join(sorted(m.label.lower() for m in metrics)) or "nothing yet"
+    names = sorted({f"{t.document_title}" for t in (tables or [])})
+    shown = ", ".join(f'"{n}"' for n in names[:6])
+    table_line = (
+        f"Document tables I can use: {shown}.\n" if names else
+        "No table from your documents matched. A table is read when its "
+        "document syncs; Sources > Sync now picks up a new or edited one.\n"
+    )
     return (
         "**This can't be shown as a chart**\n"
         "Charts are built from activity in your connected apps and from figures "
         "in document tables, not from topics or themes in text.\n\n"
-        f"Available here: {labels}.\n"
-        "To ask what a document says, ask without \"chart\", \"graph\", "
-        "\"pie\" or \"plot\"."
+        f"Activity I can chart: {labels}.\n"
+        + table_line +
+        "For a written answer, turn off Chart mode."
     )
 
 
@@ -811,7 +821,7 @@ def _parse_intent(
 ) -> AskIntent:
     """Parse and check the model's reply. Nothing gets the benefit of the doubt."""
     allowed = {m.key: m for m in metrics}
-    refusal = _refusal(metrics)
+    refusal = _refusal(metrics, list((handles or {}).values()))
     missing = missing or []
 
     match = _JSON_RE.search(reply or "")

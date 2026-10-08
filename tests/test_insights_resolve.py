@@ -709,3 +709,17 @@ def test_the_prompt_lists_the_real_names_so_our_team_is_not_a_team():
     prompt = llm.prompts[0]
     assert 'team names: "Syvora"' in prompt and 'assignee names: "Sana"' in prompt
     assert "name nothing: focus null" in prompt
+
+
+def test_a_refusal_says_which_document_tables_exist_or_that_none_were_read():
+    """"Chart the quarterly budget page" was refused with only the activity
+    list: nothing said no table from documents had been read yet."""
+    from types import SimpleNamespace
+    from app.insights import registry
+
+    metrics = [registry.get("issues_completed")]
+    none_read = resolve._refusal(metrics, [])
+    assert "No table from your documents matched" in none_read
+    assert "turn off Chart mode" in none_read and 'without "chart"' not in none_read
+    some = resolve._refusal(metrics, [SimpleNamespace(document_title="Quarterly budget")])
+    assert 'Document tables I can use: "Quarterly budget"' in some
