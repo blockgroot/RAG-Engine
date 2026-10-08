@@ -151,8 +151,9 @@ def _filter_clause(metric, filters: tuple[tuple[str, str], ...], attrs=None) -> 
     for dim, value in filters:
         if dim not in query.filter_dims(metric, attrs):
             raise ValueError(f"unknown filter {dim!r}")
-        sql += query.filter_sql(metric, dim, f"f_{dim}", attrs)
-        params[f"f_{dim}"] = value
+        many = isinstance(value, query.AnyOf)
+        sql += query.filter_sql(metric, dim, f"f_{dim}", attrs, many=many)
+        params[f"f_{dim}"] = list(value.values) if many else value
     return sql, params
 
 

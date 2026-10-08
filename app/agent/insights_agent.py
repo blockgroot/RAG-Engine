@@ -469,6 +469,31 @@ def _resolve_filters(spec, metric, *, org_id, workspace_id, days, viewer=None, a
 #: How a dimension is named back to the member in a refusal.
 _DIM_NOUN = {"actor": "person", "state": "state"}
 
+#: States that mean the work is over, across tools ("Done", "Canceled",
+#: "Merged"...). Lowercased. Used only to read "open" and "closed", which no
+#: tool stores as a state name.
+_FINISHED_STATES = frozenset({
+    "done", "completed", "complete", "canceled", "cancelled", "closed",
+    "duplicate", "merged", "resolved", "archived", "won't fix", "wontfix",
+})
+_OPEN_WORDS = frozenset({
+    "open", "active", "pending", "unfinished", "incomplete", "not done",
+    "ongoing", "outstanding", "remaining", "unresolved", "in flight",
+})
+_CLOSED_WORDS = frozenset({"closed", "finished", "complete", "completed", "resolved"})
+
+
+def _state_group(wanted: str, values: list[str], raw: str) -> query.AnyOf | None:
+    """"Open" -> every stored state that is not finished; "closed" -> those
+    that are. None when the word is neither, or nothing matches."""
+    if wanted in _OPEN_WORDS:
+        picked = [v for v in values if v.lower() not in _FINISHED_STATES]
+    elif wanted in _CLOSED_WORDS:
+        picked = [v for v in values if v.lower() in _FINISHED_STATES]
+    else:
+        return None
+    return query.AnyOf(raw.strip().capitalize(), tuple(picked)) if picked else None
+
 
 def _resolve_value(
     dim, raw, spec, metric, *, org_id, workspace_id, days, viewer=None, attrs=None,
@@ -496,6 +521,12 @@ def _resolve_value(
     exact = [v for v in values if v.lower() == wanted]
     if exact:
         return exact[0]
+    if dim == "state":
+        # "Open Linear issues": no tool stores "Open"; it means not finished.
+        # Only after an exact match, so a team whose state IS "Open" gets it.
+        group = _state_group(wanted, values, raw)
+        if group is not None:
+            return group
 
     # Compared with punctuation and spacing removed: a member types "chain
     # guard" or "chain-guard" for a repo stored as "18-sana/Chain-Guard", and
@@ -519,11 +550,10 @@ def _resolve_value(
             f"\"{named}\" matches more than one: "
             f"{_listed(partial)}. Which one?"
         )
-    noun = _DIM_NOUN.get(dim)
-    what = f" {noun}" if noun else ""
+    noun = _DIM_NOUN.get(dim) or _dim_label(metric, dim, attrs)
     raise CannotChart(
-        f"I have no {metric.label.lower()} for{what} \"{named}\" in the last "
-        f"{days} days. What I do have: {_listed(values)}."
+        f"**No {noun} called \"{named}\"**\n"
+        f"{metric.label} in the last {days} days: {_listed(values)}."
     )
 
 

@@ -203,17 +203,39 @@ def dim_sql(metric: registry.Metric, dim: str, attrs=None) -> tuple[str, str]:
     return f"{alias}.v", join
 
 
-def filter_sql(metric: registry.Metric, dim: str, param: str, attrs=None) -> str:
+class AnyOf(str):
+    """A filter value that stands for several stored values.
+
+    "Open issues" is not a state Linear stores: it is every state that is not
+    finished. The resolver turns such a word into ``AnyOf("Open", (...))``
+    built from the states that really have rows; it reads as its label in a
+    title and compiles to ``= ANY(...)``. Still only bound values.
+    """
+
+    values: tuple[str, ...]
+
+    def __new__(cls, label: str, values: tuple[str, ...]):
+        obj = super().__new__(cls, label)
+        obj.values = tuple(values)
+        return obj
+
+
+def filter_sql(metric: registry.Metric, dim: str, param: str, attrs=None, *,
+               many: bool = False) -> str:
     """`` AND <dim matches %(param)s>``. A tag filter keeps a row that
-    carries the tag at all; a category or core filter needs equality."""
+    carries the tag at all; a category or core filter needs equality.
+    ``many``: the parameter is a LIST (``AnyOf``), matched with ``ANY``."""
     if dim in FILTER_DIMS:
-        return f" AND {registry.DIMENSIONS[dim]} = %({param})s"
+        op = f"= ANY(%({param})s)" if many else f"= %({param})s"
+        return f" AND {registry.DIMENSIONS[dim]} {op}"
     found = find_attr(metric, dim, attrs)
     if found is None or found.type == "number":
         raise ValueError(f"unknown filter {dim!r}")
     if found.type == "tags":
-        return f" AND activity_facts.attrs->'{found.key}' ? %({param})s"
-    return f" AND activity_facts.attrs->>'{found.key}' = %({param})s"
+        op = "?|" if many else "?"
+        return f" AND activity_facts.attrs->'{found.key}' {op} %({param})s"
+    op = f"= ANY(%({param})s)" if many else f"= %({param})s"
+    return f" AND activity_facts.attrs->>'{found.key}' {op}"
 
 
 def validate(
