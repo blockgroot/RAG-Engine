@@ -207,11 +207,13 @@ function fieldOf(row: DetailRow, dim: string, wanted?: string) {
 
 function detailsFor(
   rows: DetailRow[],
-  { groupBy, group, bucket, period }: {
+  { groupBy, group, bucket, period, blanks = [] }: {
     groupBy?: string | null;
     group?: string | null;
     bucket?: string | null;
     period: string;
+    /** The names an EMPTY value was drawn as ("Unknown", "Unassigned"). */
+    blanks?: string[];
   },
 ): DetailRow[] {
   if (!rows.length) return [];
@@ -222,7 +224,9 @@ function detailsFor(
     const parts = dims.length > 1 ? group.split(SPLIT_SEP) : [group];
     if (parts.length !== dims.length) return [];
     const norm = (v: string | null | undefined) => (v || "").trim().toLowerCase();
-    const wanted = parts.map((p) => (p.trim() === "Unknown" ? "" : norm(p)));
+    const wanted = parts.map((p) =>
+      p.trim() === "Unknown" || blanks.includes(p.trim()) ? "" : norm(p),
+    );
     return rows.filter((row) =>
       dims.every((dim, i) => norm(fieldOf(row, dim, wanted[i])) === wanted[i]),
     );
@@ -260,11 +264,15 @@ export function Chart({
   groupBy: baseGroupBy,
   splitBy,
   details = [],
+  blankLabels = {},
 }: {
   chart: string;
   points: Point[];
   period: string;
   unit?: string;
+  /** What an empty value means per field, from the source: a Linear issue
+   *  with no assignee is "Unassigned", not "Unknown". */
+  blankLabels?: Record<string, string>;
   groupBy?: string | null;
   /** A second grouping: each category is "group · split". */
   splitBy?: string | null;
@@ -273,18 +281,20 @@ export function Chart({
 }) {
   const split = Boolean(baseGroupBy && splitBy);
   const groupBy = split ? `${baseGroupBy}+${splitBy}` : baseGroupBy;
+  const blankFor = (dim?: string | null) => (dim && blankLabels[dim]) || "Unknown";
+  const blankNames = Object.values(blankLabels);
   const points = useMemo(
     () =>
       split
         ? rawPoints.map((p) => ({
             ...p,
             group: [p.group, p.series]
-              .map((v) => (v || "").trim() || "Unknown")
+              .map((v, i) => (v || "").trim() || blankFor(i === 0 ? baseGroupBy : splitBy))
               .join(SPLIT_SEP),
             series: null,
           }))
         : rawPoints,
-    [rawPoints, split],
+    [rawPoints, split, baseGroupBy, splitBy, blankLabels],
   );
   const { buckets, series, at } = useMemo(() => pivot(points), [points]);
 
@@ -318,12 +328,12 @@ export function Chart({
     return cappedCategories(
       series
         .map((name) => ({
-          name: name.trim() || "Unknown",
+          name: name.trim() || blankFor(baseGroupBy),
           value: buckets.reduce((sum, b) => sum + at(b, name), 0),
         }))
         .sort((a, b) => b.value - a.value),
     );
-  }, [grouped, series, buckets, at]);
+  }, [grouped, series, buckets, at, baseGroupBy, blankLabels]);
 
   // Built from every name this chart will draw, so collisions are resolved
   // once and the same category keeps its colour in the plot, the legend and
@@ -350,6 +360,7 @@ export function Chart({
   if (chart === "pie" && ranked.length === 1 && buckets.length > 1) {
     return (
       <Pie
+        blanks={blankNames}
         rows={buckets.map((b) => ({
           name: formatBucket(b, period),
           value: at(b, series[0] ?? ""),
@@ -371,6 +382,7 @@ export function Chart({
     return (
       <CategoryBars
         rows={ranked}
+        blanks={blankNames}
         unit={unit}
         palette={palette}
         measured={measured}
@@ -391,6 +403,7 @@ export function Chart({
         }));
     return (
       <Pie
+        blanks={blankNames}
         rows={rows}
         unit={unit}
         details={details}
@@ -407,6 +420,7 @@ export function Chart({
     return (
       <CategoryBars
         rows={ranked}
+        blanks={blankNames}
         unit={unit}
         palette={palette}
         measured={measured}
@@ -479,6 +493,7 @@ export function Chart({
             value={withUnit(ranked[near].value, unit)}
             share={(ranked[near].value / Math.max(1, total)) * 100}
             rows={detailsFor(details, {
+            blanks: blankNames,
               group: ranked[near].name,
               groupBy,
               period,
@@ -742,6 +757,7 @@ export function Chart({
             )
             .join(" · ")}
           rows={detailsFor(details, {
+            blanks: blankNames,
             bucket: buckets[near],
             period,
             groupBy: null,
@@ -875,6 +891,7 @@ function DivergingBar({ points }: { points: Point[] }) {
 
 function CategoryBars({
   rows,
+  blanks = [],
   unit,
   palette,
   measured,
@@ -884,6 +901,7 @@ function CategoryBars({
   period,
 }: {
   rows: { name: string; value: number }[];
+  blanks?: string[];
   unit?: string;
   palette: Map<string, string>;
   measured: number;
@@ -1032,6 +1050,7 @@ function CategoryBars({
               Math.max(1, rows.reduce((sum, r) => sum + r.value, 0))) * 100
           }
           rows={detailsFor(details, {
+            blanks,
             group: rows[near].name,
             groupBy,
             period,
@@ -1048,12 +1067,14 @@ function CategoryBars({
 
 function Pie({
   rows,
+  blanks = [],
   unit,
   details = [],
   groupBy,
   period = "month",
 }: {
   rows: { name: string; value: number; bucket?: string }[];
+  blanks?: string[];
   unit?: string;
   details?: DetailRow[];
   groupBy?: string | null;
@@ -1211,6 +1232,7 @@ function Pie({
           value={withUnit(active.value, unit)}
           share={active.pct}
           rows={detailsFor(details, {
+            blanks,
             group: groupBy ? active.name : null,
             groupBy,
             bucket: active.bucket ?? null,

@@ -103,6 +103,7 @@ export function ChatMessageView({
                 unit={chart.unit}
                 groupBy={chart.group_by}
                 splitBy={chart.split_by}
+                blankLabels={chart.blank_labels ?? undefined}
                 // The rows the bars are made of. They belong in the HOVER --
                 // repeating a chart's contents underneath it makes the card a
                 // table with a picture on top.

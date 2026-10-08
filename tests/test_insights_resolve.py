@@ -648,3 +648,51 @@ def test_outside_chart_mode_the_prompt_still_weighs_chart_or_prose():
                                        llm=llm, fail_open=True)
     assert intent.kind == "qa"
     assert "Decide whether this question needs a COUNTED chart" in llm.prompts[0]
+
+
+# --------------------------------------------------------------------------
+# What the built-in fields ARE, and a third breakdown the chart cannot draw
+# --------------------------------------------------------------------------
+
+
+def test_the_prompt_says_what_person_and_subject_mean_in_each_tool():
+    """"by team" in Linear landed on the recorded `project` field because
+    nothing told the model `subject` IS the team."""
+    llm = FakeLLM(_spec(intent="qa"))
+    resolve.classify_question("tasks by team", providers=["linear", "github"], llm=llm)
+    prompt = llm.prompts[0]
+    assert "where actor = assignee, subject = team" in prompt
+    assert "where actor = person, subject = repository" in prompt
+
+
+def _team_and_person(left_out):
+    return FakeLLM(json.dumps({
+        "intent": "chart", "metric": "issues_completed", "group_by": "subject",
+        "split_by": "actor", "period": "month", "chart": "bar",
+        "breakdown_words": "by team, split by person", "left_out_words": left_out,
+    }))
+
+
+def test_a_third_breakdown_is_named_as_left_out():
+    q = "Tasks completed by team, split by person and priority"
+    intent = resolve.classify_question(q, providers=["linear"], fail_open=False,
+                                       llm=_team_and_person("and priority"))
+    assert (intent.spec.group_by, intent.spec.split_by) == ("subject", "actor")
+    assert intent.spec.left_out == "and priority"
+    assert resolve.spec_from_dict(resolve.spec_to_dict(intent.spec)).left_out == "and priority"
+
+
+def test_left_out_words_not_in_the_question_are_ignored():
+    q = "Tasks completed by team, split by person"
+    intent = resolve.classify_question(q, providers=["linear"], fail_open=False,
+                                       llm=_team_and_person("and by label"))
+    assert intent.spec.left_out is None
+
+
+def test_by_person_keeps_a_linear_assignee_breakdown():
+    """Linear calls its person the assignee; "by person" still asked for it."""
+    llm = FakeLLM(json.dumps({"intent": "chart", "metric": "issues_completed",
+                              "group_by": "actor", "period": "month", "chart": "bar"}))
+    intent = resolve.classify_question("tasks completed by person", providers=["linear"],
+                                       llm=llm, fail_open=False)
+    assert intent.spec.group_by == "actor"

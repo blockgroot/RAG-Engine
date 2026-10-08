@@ -144,6 +144,12 @@ check (`resolve.classify_route`) decides a live GitHub read, `needs_live` and
 and code verifies what it can (a quote is in the question, a value has rows, a type
 came from the source). Format parsers (₹/lakh/k/%) and API enums are not intent.
 `ModelChoice.charts` marks the catalogued models that build charts.
+The prompt says what `actor` and `subject` ARE in each tool (Linear: assignee,
+team; `registry.ACTOR_LABELS`/`SUBJECT_LABELS`); bare keys sent "by team" to
+Linear's `project` field. An empty value is named in the tool's terms
+(`BLANK_ACTOR`: a Linear issue with no assignee is "Unassigned"), never blamed
+on indexing. A breakdown beyond the two a chart draws is named as left out
+(`left_out_words`, kept only when the quote is in the question), never dropped silently.
 A breakdown is kept only when asked for: the model quotes the words that asked
 (`breakdown_words`) and the quote must be in the question, or the breakdown's own
 label from the data must be; otherwise it is dropped (`resolve._honour_breakdown`).

@@ -295,7 +295,7 @@ def dim_label(metric: registry.Metric, dim: str, attrs=None) -> str:
     if found is not None:
         return found.label
     return {
-        "actor": "person",
+        "actor": registry.actor_label(metric.provider),
         "subject": registry.subject_label(metric.provider),
         "state": "state",
         "provider": "app",

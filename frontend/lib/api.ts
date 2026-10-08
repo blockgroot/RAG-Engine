@@ -570,6 +570,8 @@ export type InsightPanel = {
   /** Facts only exist from the first sync after this shipped, so a chart
    *  whose axis starts on deploy day would read as if nobody worked before. */
   measured_since: string | null;
+  /** What an empty value means per field in this tool ("Unassigned"). */
+  blank_labels?: Record<string, string>;
   /** The rows the bars are made of: what, who, when, and where to open it.
    *  A number nobody can trace is a number nobody trusts. */
   details?: {

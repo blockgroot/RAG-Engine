@@ -171,6 +171,10 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const [historyKey, setHistoryKey] = useState(0);
   const [activeConversation, setActiveConversation] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  // True while files are dragged over the page: the whole chat is the drop
+  // target, as in ChatGPT and Claude, so nobody has to aim at the + button.
+  const [dragging, setDragging] = useState(false);
+  const attachRef = useRef<(files: FileList | null) => void>(() => undefined);
   // The names of files currently in flight. A boolean is enough to disable
   // a button but not to tell someone WHICH of the four files they picked is
   // still going, which is the only question they have while waiting.
@@ -542,6 +546,50 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     return conversationId.current;
   }
 
+  attachRef.current = (files) => void attach(files);
+
+  useEffect(() => {
+    // Only a drag that carries FILES: dragging selected text or a link
+    // around the page must not flash the overlay.
+    const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes("Files");
+    // dragenter/dragleave fire for every child crossed, so count them; the
+    // overlay goes when the count returns to zero.
+    let depth = 0;
+    function onEnter(e: DragEvent) {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      depth += 1;
+      setDragging(true);
+    }
+    function onOver(e: DragEvent) {
+      if (!hasFiles(e)) return;
+      e.preventDefault(); // without this the browser opens the file instead
+      if (e.dataTransfer) e.dataTransfer.dropEffect = busy ? "none" : "copy";
+    }
+    function onLeave(e: DragEvent) {
+      if (!hasFiles(e)) return;
+      depth = Math.max(0, depth - 1);
+      if (depth === 0) setDragging(false);
+    }
+    function onDrop(e: DragEvent) {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      depth = 0;
+      setDragging(false);
+      if (!busy) attachRef.current(e.dataTransfer?.files ?? null);
+    }
+    document.addEventListener("dragenter", onEnter);
+    document.addEventListener("dragover", onOver);
+    document.addEventListener("dragleave", onLeave);
+    document.addEventListener("drop", onDrop);
+    return () => {
+      document.removeEventListener("dragenter", onEnter);
+      document.removeEventListener("dragover", onOver);
+      document.removeEventListener("dragleave", onLeave);
+      document.removeEventListener("drop", onDrop);
+    };
+  }, [busy]);
+
   async function attach(files: FileList | null) {
     if (!files?.length || uploading) return;
     setUploadError(null);
@@ -764,6 +812,18 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   return (
     <AppShell me={me} variant="app">
       <div className="chat-page">
+        {dragging && (
+          <div className="chat-drop-overlay" aria-hidden="true">
+            <div className="chat-drop-card">
+              <strong>Drop to attach</strong>
+              <span>
+                {chartMode
+                  ? "Excel, CSV, PDF or Word tables become charts in this chat."
+                  : "PDF, Word, Excel, CSV, text or Markdown, private to you in this chat."}
+              </span>
+            </div>
+          </div>
+        )}
         {justSynced && (
           <div className="banner banner-ok" style={{ margin: "0 0 1rem" }}>
             {workspaceId
@@ -1041,6 +1101,14 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             placeholder={composerPlaceholder}
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            // A file copied in Finder/Explorer and pasted here attaches it;
+            // pasted TEXT is left to the input as usual.
+            onPaste={(e) => {
+              if (e.clipboardData.files.length > 0) {
+                e.preventDefault();
+                void attach(e.clipboardData.files);
+              }
+            }}
             disabled={busy}
             autoFocus
           />
