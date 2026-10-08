@@ -724,14 +724,16 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
         ? "Answers are drawn from the documents connected to this space. For a chart, choose + then Create a chart."
         : "Leave, benefits, remote work and more — answered from your connected documents.";
   // Chart mode's starters name only tools that are connected, so every one
-  // of them can actually be drawn.
+  // of them can actually be drawn. Trends "per week", not "this month": one
+  // month is one bucket, and a new or small team then gets a single number
+  // instead of a chart.
   const chartStarters = [
-    linearAvailable && "Linear issues completed by team this month",
+    linearAvailable && "Linear issues completed per week",
     linearAvailable && "Open Linear issues by priority",
     codeAvailable && "Pull requests merged per week",
     codeAvailable && "Pull requests by label",
     notionAvailable && "Notion pages edited per week",
-    driveAvailable && "Drive files edited this month",
+    driveAvailable && "Drive files edited per week",
     slackAvailable && "Slack conversations by channel",
   ].filter((q): q is string => Boolean(q)).slice(0, 4);
   const starters = chartMode ? chartStarters : suggestedQuestions;

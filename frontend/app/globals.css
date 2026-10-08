@@ -6590,6 +6590,11 @@ a.people-card:hover { color: inherit; }
   max-width: 100%;
   height: auto;
 }
+.chart-stat-why {
+  margin: 0.25rem 0 0;
+  font-size: 0.82rem;
+  color: var(--ink-muted);
+}
 .chart-stat-range {
   margin: 0;
   font-size: 0.75rem;

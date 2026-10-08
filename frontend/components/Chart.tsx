@@ -1100,6 +1100,12 @@ function Stat({
           {formatBucket(buckets[0], period)} – {formatBucket(buckets[buckets.length - 1], period)}
         </p>
       )}
+      {/* Without this a single number reads as a chart that failed to draw. */}
+      <p className="chart-stat-why">
+        {buckets.length > 1
+          ? "Only one result so far, so there is nothing to compare it with."
+          : `Only one result in one ${period}, so there is nothing to compare yet. Try asking per week, or over a longer range.`}
+      </p>
     </div>
   );
 }
