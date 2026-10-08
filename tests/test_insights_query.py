@@ -390,3 +390,47 @@ def test_the_state_type_is_stored_and_read_back(org):
     linear_facts._write(linear_facts._issue_rows(org, None, issue), None)
     assert store.state_types("issue_states", org_id=org, workspace_id=None, days=30) == {
         "Shipped": "completed"}
+
+
+def _pt(bucket, value, group=None):
+    return store.Point(bucket=bucket, group=group, series=None, value=value)
+
+
+def test_a_trend_shows_its_whole_range_with_quiet_weeks_at_zero():
+    """One active week drew as a lone column with nothing around it."""
+    from app.agent.insights_agent import _fill_gaps
+
+    since = datetime(2026, 9, 10, tzinfo=timezone.utc)
+    until = datetime(2026, 10, 8, tzinfo=timezone.utc)
+    got = _fill_gaps([_pt("2026-09-21T00:00:00+00:00", 3), _pt("2026-10-05T00:00:00+00:00", 1)],
+                     "week", since, until)
+    assert [(p.bucket[:10], p.value) for p in got] == [
+        ("2026-09-07", 0), ("2026-09-14", 0), ("2026-09-21", 3),
+        ("2026-09-28", 0), ("2026-10-05", 1)]
+
+
+def test_nothing_is_drawn_before_the_data_begins():
+    from app.agent.insights_agent import _fill_gaps
+
+    got = _fill_gaps([_pt("2026-09-28T00:00:00+00:00", 1)], "week",
+                     datetime(2026, 10, 1, tzinfo=timezone.utc),
+                     datetime(2026, 10, 8, tzinfo=timezone.utc))
+    assert [p.bucket[:10] for p in got] == ["2026-09-28", "2026-10-05"]
+
+
+def test_filled_buckets_line_up_with_the_databases_zone():
+    from app.agent.insights_agent import _fill_gaps
+
+    got = _fill_gaps([_pt("2026-09-28T00:00:00+05:30", 1)], "week",
+                     datetime(2026, 9, 29, tzinfo=timezone.utc),
+                     datetime(2026, 10, 8, tzinfo=timezone.utc))
+    assert [p.bucket for p in got] == ["2026-09-28T00:00:00+05:30", "2026-10-05T00:00:00+05:30"]
+
+
+def test_a_huge_daily_range_is_left_alone():
+    from app.agent.insights_agent import MAX_FILLED_BUCKETS, _fill_gaps
+
+    pts = [_pt("2026-10-01T00:00:00+00:00", 1)]
+    assert _fill_gaps(pts, "day", datetime(2026, 1, 1, tzinfo=timezone.utc),
+                      datetime(2026, 10, 8, tzinfo=timezone.utc)) == pts
+    assert MAX_FILLED_BUCKETS == 60

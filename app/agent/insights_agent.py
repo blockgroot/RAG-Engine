@@ -413,6 +413,79 @@ def _buckets(points) -> list[str]:
     return seen
 
 
+#: A filled time axis longer than this is left as it was: a daily chart over
+#: half a year is 180 mostly-empty slots, which is noise, not context.
+MAX_FILLED_BUCKETS = 60
+
+
+def _bucket_start(when, period: str):
+    """``date_trunc(period, when)`` as Postgres does it (weeks start Monday)."""
+    from datetime import timedelta
+
+    day = when.replace(hour=0, minute=0, second=0, microsecond=0)
+    if period == "day":
+        return day
+    if period == "week":
+        return day - timedelta(days=day.weekday())
+    if period == "month":
+        return day.replace(day=1)
+    if period == "quarter":
+        return day.replace(day=1, month=3 * ((day.month - 1) // 3) + 1)
+    return None
+
+
+def _next_bucket(start, period: str):
+    from datetime import timedelta
+
+    if period == "day":
+        return start + timedelta(days=1)
+    if period == "week":
+        return start + timedelta(days=7)
+    step = 1 if period == "month" else 3
+    month = start.month - 1 + step
+    return start.replace(year=start.year + month // 12, month=month % 12 + 1)
+
+
+def _fill_gaps(points, period: str, since, until):
+    """Every period from ``since`` to ``until``, a quiet one at zero.
+
+    Only the buckets with rows came back from SQL, so one active week drew
+    as a lone column with nothing around it. Charting tools draw the whole
+    range; so does this -- but only from ``since`` (when this tool's data
+    begins, "measured since"), because a week before anything was recorded
+    is unknown, not zero. Per series, for a time chart only.
+    """
+    from datetime import datetime
+
+    if not points or since is None:
+        return points
+    # Truncate in the zone the database bucketed in, or a filled week would
+    # sit a few hours off a real one and read as two.
+    zone = datetime.fromisoformat(points[0].bucket).tzinfo
+    if zone is not None:
+        since, until = since.astimezone(zone), until.astimezone(zone)
+    start = _bucket_start(since, period)
+    end = _bucket_start(until, period)
+    if start is None or end is None or start > end:
+        return points
+    slots = []
+    cursor = start
+    while cursor <= end:
+        slots.append(cursor)
+        if len(slots) > MAX_FILLED_BUCKETS:
+            return points
+        cursor = _next_bucket(cursor, period)
+    have = {(datetime.fromisoformat(p.bucket), p.group, p.series) for p in points}
+    series = {(p.group, p.series) for p in points}
+    filled = list(points)
+    for slot in slots:
+        for group, name in series:
+            if (slot, group, name) not in have:
+                filled.append(store.Point(bucket=slot.isoformat(), group=group,
+                                          series=name, value=0))
+    return sorted(filled, key=lambda p: p.bucket)
+
+
 def _span_days(points) -> int:
     """How far apart the rows we already found are.
 
@@ -810,6 +883,15 @@ def _run_spec(
     begun = store.first_fact_at(
         metric.provider, org_id=org_id, workspace_id=workspace_id, viewer=viewer
     )
+    if group_by is None:
+        # A trend shows its whole range, quiet periods at zero -- from when
+        # this tool's data begins (or the window, if later), never before.
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        window_start = now - timedelta(days=days)
+        since = max(begun, window_start) if begun else None
+        points = _fill_gaps(points, period, since, now)
     title = _ask_title(
         metric, group_by, split_by=split_by, measure=measure, filters=filters,
         attrs=attrs,
