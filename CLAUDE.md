@@ -209,7 +209,9 @@ web chat only. A confirmed email change keeps the old address as an alias.
 `GOOGLE_GROUPS_ENABLED` stays off unless the connecting account is a Workspace
 admin; a missing optional scope must not fail the Drive connect. Indexed reports
 describe current content, never a diff. `sync_requested_at` is a flag, not a queue.
-The injection guard logs questions and never refuses them. A scrubbed-to-empty
+Removing an attachment is idempotent (`deleted: false` for one already gone,
+never a 404) and answers on the row delete; the object-store purge runs after
+the response. The injection guard logs questions and never refuses them. A scrubbed-to-empty
 input stays empty.
 
 ## 6. Where things live

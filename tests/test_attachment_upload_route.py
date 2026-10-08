@@ -150,3 +150,24 @@ def test_another_members_conversation_is_still_a_404(client):
         c, cookies, str(uuid.uuid4()), [("notes.txt", b"hello", "text/plain")]
     )
     assert response.status_code == 404
+
+
+def test_removing_a_file_twice_is_success_and_cleans_up_the_store(client):
+    """Staging showed "Couldn't remove that file." for a file that WAS gone:
+    the route answered only after the object-store purge, and a second click
+    got a 404. The row delete is the answer now; the store is cleaned after
+    the response; a repeat is success."""
+    c, cookies, conv = client
+    store = attach_store.blobstore
+    body = _post(c, cookies, conv, [("notes.txt", b"hello there", "text/plain")]).json()
+    aid = body["attachments"][0]["id"]
+    assert aid in store.objects
+
+    first = c.delete(f"/chat/conversations/{conv}/attachments/{aid}", cookies=cookies)
+    again = c.delete(f"/chat/conversations/{conv}/attachments/{aid}", cookies=cookies)
+
+    assert (first.status_code, first.json()) == (200, {"deleted": True})
+    assert (again.status_code, again.json()) == (200, {"deleted": False})
+    assert aid not in store.objects and f"{aid}__plaintext" not in store.objects
+    listed = c.get(f"/chat/conversations/{conv}/attachments", cookies=cookies).json()
+    assert listed["attachments"] == []
