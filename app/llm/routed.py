@@ -113,6 +113,11 @@ _PRESET_EXTRA_BODY: dict[str, dict] = {
     # verified against a live key. If a NIM reasoning model still times out,
     # this dict is the first thing to check.
     "nvidia": {"chat_template_kwargs": {"thinking": False}},
+    # Anthropic: Claude Haiku 5.5 thinks on harder prompts by default, and
+    # over the OpenAI-compatible endpoint that hidden reasoning fills the cap
+    # (production, 9 Oct: the chart classifier's 200 tokens all spent thinking,
+    # empty reply). Verified live: disabled, the same prompt answers in 61 tokens.
+    "anthropic": {"thinking": {"type": "disabled"}},
 }
 
 #: Presets whose ``extra_body`` may be DROPPED when the endpoint rejects it.

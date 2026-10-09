@@ -740,3 +740,16 @@ def test_every_preset_base_url_is_one_we_fixed_and_https():
         assert preset.base_url.startswith("https://"), preset.id
         assert "{" not in preset.base_url, f"{preset.id} needs a per-customer host"
         assert preset.label and preset.models_url.startswith("https://"), preset.id
+
+
+def test_claude_as_the_default_model_is_sent_with_thinking_off():
+    """Production, 9 Oct: Haiku spent the chart classifier's 200 tokens thinking
+    and returned nothing. The deployment's own model gets its vendor's extras."""
+    from app.llm import adapters
+
+    claude = adapters.build_provider(
+        adapters.resolve("anthropic", base_url=None, model="claude-haiku-5-5", api_key="k"), timeout=5)
+    assert claude._extra_body == {"thinking": {"type": "disabled"}}
+    gemini = adapters.build_provider(
+        adapters.resolve("google", base_url=None, model="gemini-3.1-flash-lite", api_key="k"), timeout=5)
+    assert gemini._extra_body is None

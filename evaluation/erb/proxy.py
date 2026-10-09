@@ -44,6 +44,9 @@ LOG = Path(os.getenv("BENCH_PROXY_LOG", "evaluation/reports/bench1/proxy.jsonl")
 # Request fields the upstream rejects (comma-separated), dropped from every call
 # the same way for every system. Mistral, for one, refuses some OpenAI-only fields.
 DROP = [p.strip() for p in os.getenv("BENCH_DROP_PARAMS", "").split(",") if p.strip()]
+# Extra request fields as JSON, e.g. '{"thinking": {"type": "disabled"}}' for
+# Claude, so a run matches what production sends (app/llm/routed.py).
+EXTRA = json.loads(os.getenv("BENCH_EXTRA_BODY") or "{}")
 # OpenAI's way to get usage on a stream. Providers that always send it, or reject
 # the field, set BENCH_STREAM_OPTIONS=0.
 STREAM_OPTIONS = os.getenv("BENCH_STREAM_OPTIONS", "1") != "0"
@@ -184,6 +187,7 @@ async def chat(request: Request):
         body["reasoning_effort"] = REASONING
     for param in DROP:
         body.pop(param, None)
+    body.update(EXTRA)
     stream = bool(body.get("stream"))
     body.pop("stream_options", None)
     if stream and STREAM_OPTIONS:

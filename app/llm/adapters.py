@@ -114,11 +114,18 @@ def build_provider(endpoint: Endpoint, *, timeout: float):
     from .openai_provider import OpenAICompatProvider
 
     if endpoint.kind == KIND_OPENAI_COMPAT:
+        # The vendor's own request extras (e.g. Claude's thinking off), the same
+        # table an org's own model uses, so the two never disagree.
+        from .routed import preset_extra_body
+
+        extra_body, optional = preset_extra_body(endpoint.adapter) if endpoint.adapter else (None, False)
         return OpenAICompatProvider(
             model=endpoint.model,
             api_key=endpoint.api_key,
             base_url=endpoint.base_url,
             timeout=timeout,
+            extra_body=extra_body,
+            extra_body_optional=optional,
         )
     raise ConfigurationError(f"No provider implemented for adapter kind {endpoint.kind!r}")
 
