@@ -739,9 +739,26 @@ def _empty_caption(spec, title, *, org_id, workspace_id, days, metric, viewer=No
     )
 
 
-#: Repositories probed when a pull-request chart is empty. A bound: the
-#: answer is the same for three repos as for thirty.
-_PROBE_REPOS = 3
+#: Repositories probed when a pull-request chart is empty. A bound, said in
+#: the reply when there are more.
+_PROBE_REPOS = 10
+
+
+def _checked_repos(repos, total: int) -> str:
+    """" Checked: acme/api, acme/web and 2 private repositories." Public repos
+    are named so the asker can see which repos this space reads (staging: a
+    merged PR in a repo the space was never connected to read as "none
+    merged"); private ones are only counted, never named."""
+    public = [r.full_name for r in repos if getattr(r, "private", None) is False]
+    private = len(repos) - len(public)
+    parts = public + ([f"{private} private repositor{'y' if private == 1 else 'ies'}"]
+                      if private else [])
+    if not parts:
+        return ""
+    listed = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+    more = f" (the first {len(repos)} of {total})" if total > len(repos) else ""
+    return (f" Checked{more}: {listed}. A repository not listed is not connected to "
+            "this space; an admin adds it on the GitHub card in Sources.")
 
 
 def _github_pull_diagnosis(metric, *, org_id: str, workspace_id: str | None) -> str | None:
@@ -767,11 +784,13 @@ def _github_pull_diagnosis(metric, *, org_id: str, workspace_id: str | None) -> 
         from ..githublive import build_github_reader
 
         reader = build_github_reader(org_id, workspace_id)
-        repos = list(reader.list_repos())[:_PROBE_REPOS]
+        every = list(reader.list_repos())
     except Exception:  # noqa: BLE001 - see docstring
         return None
+    repos = every[:_PROBE_REPOS]
     if not repos:
         return None
+    checked = _checked_repos(repos, len(every))
     unreadable, any_pull, newest = 0, False, None
     for repo in repos:
         try:
@@ -793,15 +812,16 @@ def _github_pull_diagnosis(metric, *, org_id: str, workspace_id: str | None) -> 
                 "repositories, though commits are counted. Pull requests are a "
                 "separate GitHub permission: an admin can give the Handbook GitHub "
                 "App \"Pull requests: Read\" access, and they are counted on the "
-                "next sync.")
+                "next sync." + checked)
     if newest is None:
         if any_pull and merged:
             return ("This space's repositories have pull requests on GitHub, but "
-                    "none has been merged yet. Ask for pull requests raised instead.")
+                    "none has been merged yet. Ask for pull requests raised instead."
+                    + checked)
         if not any_pull:
             return ("This space's repositories have no pull requests on GitHub, so "
                     "there is nothing to count. Work may be pushed straight to the "
-                    "main branch: try commits per week instead.")
+                    "main branch: try commits per week instead." + checked)
         return None
     if newest.tzinfo is None:
         newest = newest.replace(tzinfo=timezone.utc)
@@ -810,7 +830,7 @@ def _github_pull_diagnosis(metric, *, org_id: str, workspace_id: str | None) -> 
     if newest < datetime.now(timezone.utc) - timedelta(days=read_back):
         return (f"The most recent {what} on GitHub is from {day}, older than the "
                 f"{read_back} days of GitHub activity Handbook reads, so there is "
-                "nothing in range to count.")
+                "nothing in range to count." + checked)
     return (f"GitHub shows a {what} on {day}, but it has not been counted yet. It "
             "will be after the next sync: press Sync now on the GitHub card in Sources.")
 

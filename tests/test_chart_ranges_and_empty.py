@@ -128,3 +128,22 @@ def test_an_empty_pull_request_chart_says_which_cause_it_is(monkeypatch, reader,
 def test_the_probe_is_only_for_pull_request_charts():
     assert insights_agent._github_pull_diagnosis(
         registry.get("commits_by_author"), org_id="o", workspace_id=None) is None
+
+
+def test_the_reply_names_the_public_repos_it_checked_never_private_ones(monkeypatch):
+    """Staging: a PR merged in 18-sana/rag-engine, which the space was never
+    connected to, read as "none has been merged yet" with no hint why."""
+    import app.githublive as githublive
+
+    class Mixed(_Reader):
+        def list_repos(self):
+            return [SimpleNamespace(full_name="acme/dao", private=False),
+                    SimpleNamespace(full_name="acme/secret", private=True)]
+
+    monkeypatch.setattr(githublive, "build_github_reader",
+                        lambda *a, **k: Mixed(newest=None, exists=True))
+    said = insights_agent._github_pull_diagnosis(
+        registry.get("prs_merged"), org_id="o", workspace_id="w")
+    assert "Checked: acme/dao and 1 private repository." in said
+    assert "acme/secret" not in said
+    assert "not connected to this space" in said
