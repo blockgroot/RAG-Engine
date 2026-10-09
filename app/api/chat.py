@@ -8,6 +8,8 @@ import json
 import logging
 import os
 import dataclasses
+import queue
+import threading
 import time
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
@@ -54,7 +56,9 @@ from ..agent.routing import (
     named_providers,
 )
 from ..agent.rag_pipeline_agent import RagPipelineAgent
-from ..config.settings import GraphSettings
+from ..config.settings import AttachmentSettings, GraphSettings, RagSettings
+from ..rag import progress
+from ..rag.pipeline import reset_deep_read, use_deep_read
 from ..core.exceptions import AuthError, LLMProviderError, ProviderError
 from ..graph import plan as graph_plan
 from ..livetools import LiveRequest, current_live_request, reset_live_request, use_live_request
@@ -787,6 +791,52 @@ def create_conversation(
     return {"conversation_id": conversation_id}
 
 
+def _deep_would_help(result, attached: list[tuple[str, str, bool]] | None = None) -> bool:
+    """A normal-Ask refusal that Deep analysis could turn into an answer.
+
+    Only when there is more to read: the search found relevant documents (it
+    passed the gate), or an upload is longer than normal Ask reads whole.
+    A gate miss or a withheld document gets no hint; reading deeper cannot help.
+    """
+    if result.grounded or result.access_restricted:
+        return False
+    if result.top_score is not None and result.top_score >= RagSettings.from_env().similarity_threshold:
+        return True
+    size = sum(len(text) for _, text, _ in attached or [])
+    return size > AttachmentSettings.from_env().inline_char_budget
+
+
+_PROGRESS_END = object()
+
+
+def _with_progress(body) -> Iterator[str]:
+    """Run ``body`` in a worker and stream its progress lines while it works.
+
+    The answer is built in one blocking call, so without this the stream is
+    silent until it is done. The worker runs in a COPY of this context, so the
+    model, deep-read, live-read and memory selections set above reach it.
+    """
+    out: queue.Queue = queue.Queue()
+
+    def run() -> None:
+        progress.use_progress(lambda text: out.put(_sse_event("status", text)))
+        try:
+            for event in body():
+                out.put(event)
+        except BaseException as exc:  # noqa: BLE001 -- re-raised on the stream side
+            out.put(exc)
+        finally:
+            out.put(_PROGRESS_END)
+
+    # ponytail: a client that disconnects leaves the worker to finish its one
+    # answer; add a cancel flag if abandoned answers ever cost real quota.
+    threading.Thread(target=contextvars.copy_context().run, args=(run,), daemon=True).start()
+    while (item := out.get()) is not _PROGRESS_END:
+        if isinstance(item, BaseException):
+            raise item
+        yield item
+
+
 def _sse_event(event: str, data: dict | str) -> str:
     payload = json.dumps(data)
     return f"event: {event}\ndata: {payload}\n\n"
@@ -891,6 +941,7 @@ def _stream_attachment_answer(
     workspace_id: str | None,
     decision,
     session: SessionClaims | None = None,
+    deep_mode: bool = False,
 ) -> Iterator[str]:
     """Answer with the attached files AND the routed source's corpus.
 
@@ -989,6 +1040,7 @@ def _stream_attachment_answer(
             # The documents behind the answer's [n] markers; the UI draws a
             # chip only for a number listed here and strips the rest.
             "cited": list(getattr(response, "cited", None) or []),
+            "deep_hint": not deep_mode and _deep_would_help(response, attached),
         },
     )
 
@@ -1148,6 +1200,7 @@ def _stream_answer(
     model: str | None = None,
     session: SessionClaims | None = None,
     chart_mode: bool = False,
+    deep_mode: bool = False,
 ) -> Iterator[str]:
     # Who is asking, for the Second Brain's live reads (app/livetools). Whether
     # anything is read live is decided by LIVE_TOOLS_ENABLED and the gateway,
@@ -1165,16 +1218,18 @@ def _stream_answer(
     # read for new ones, alongside the answer rather than in front of it.
     facts, memory_turn = _start_personal_memory(question, org_id, conversation_id, session)
     facts_token = personal_memory.use_asker_facts(tuple((f.kind, f.text) for f in facts))
+    deep_token = use_deep_read(deep_mode)
     try:
-        yield from _stream_answer_body(
+        yield from _with_progress(lambda: _stream_answer_body(
             question, org_id, conversation_id, workspace_id, requested_agent,
-            model, session, memory_turn, chart_mode=chart_mode,
-        )
+            model, session, memory_turn, chart_mode=chart_mode, deep_mode=deep_mode,
+        ))
     finally:
         # Starlette may close the generator from another copied context, where
         # the token is not valid; there the copy dies with the call anyway.
         for reset, token in ((reset_live_request, live_token),
-                             (personal_memory.reset_asker_facts, facts_token)):
+                             (personal_memory.reset_asker_facts, facts_token),
+                             (reset_deep_read, deep_token)):
             try:
                 reset(token)
             except ValueError:
@@ -1246,6 +1301,7 @@ def _stream_answer_body(
     session: SessionClaims | None,
     memory_turn=None,
     chart_mode: bool = False,
+    deep_mode: bool = False,
 ) -> Iterator[str]:
     # Set inside the generator, NOT in the route that returns the
     # StreamingResponse: Starlette runs a sync generator via
@@ -1283,6 +1339,7 @@ def _stream_answer_body(
     # reuses its documents instead of walking again, and the answer states its
     # facts. None when GRAPH_RETRIEVAL_ENABLED is off -- then nothing below
     # changes at all.
+    progress.report("Choosing where to look")
     plan_future = _start_graph_plan(org_id, workspace_id, question, session)
     decision = choose_agent(
         question,
@@ -1309,6 +1366,7 @@ def _stream_answer_body(
         )
         if connected:
             plan = plan.connected(connected, search=connected - {decision.agent_key})
+    progress.searching(decision.agent_key, connected)
     logger.info(
         "Chat routing: agent=%s reason=%s scores=%s",
         decision.agent_key,
@@ -1320,7 +1378,8 @@ def _stream_answer_body(
     # question, and the attached files join whatever it retrieves.
     if attached and not chart_mode:
         yield from _stream_attachment_answer(
-            question, attached, org_id, conversation_id, workspace_id, decision, session
+            question, attached, org_id, conversation_id, workspace_id, decision, session,
+            deep_mode=deep_mode,
         )
         return
 
@@ -1358,6 +1417,7 @@ def _stream_answer_body(
         if retry_tools:
             _drop_refusal_turn(org_id, conversation_id, question, result.answer)
             connected = retry_tools
+            progress.searching(decision.agent_key, retry_tools)
             result = _invoke_with_plan(graph_input, plan.connected(retry_tools))
     except LLMProviderError as exc:
         logger.warning("Chat LLM failure: %s", exc, exc_info=True)
@@ -1461,6 +1521,7 @@ def _stream_answer_body(
                         and getattr(decision, "chart_ask", None) == "count")
                 )
             ),
+            "deep_hint": not deep_mode and not chart_mode and _deep_would_help(result),
             # Personal memory saved from this question, announced so saving is
             # never silent; the pill offers Undo.
             "remembered": _remembered(memory_turn),
@@ -1522,8 +1583,9 @@ def chat_stream(
             requested_agent=requested_agent,
             model=model,
             session=session,
-            # Chat's Chart toggle. Anything else is normal Ask.
+            # Chat's Chart and Deep analysis toggles. Anything else is normal Ask.
             chart_mode=body.get("mode") == "chart",
+            deep_mode=body.get("mode") == "deep",
         ),
         media_type="text/event-stream",
     )

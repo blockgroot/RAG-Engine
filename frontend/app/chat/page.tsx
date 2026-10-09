@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname, useParams, useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { AskHeroArt } from "@/components/AskHeroArt";
-import { ChartIcon, ChatMessageView, Message } from "@/components/ChatMessage";
+import { ChartIcon, ChatMessageView, DeepIcon, Message } from "@/components/ChatMessage";
 import { SpacePanel } from "@/components/SpacePanel";
 import { useMe } from "@/lib/useMe";
 import { streamChat } from "@/lib/sse";
@@ -140,6 +140,10 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // On, the answer is a chart or a plain refusal; off, charts are never
   // guessed, so a normal question skips the chart check entirely.
   const [chartMode, setChartMode] = useState(false);
+  // Deep analysis: the top documents are read nearly whole, for broad
+  // questions (a whole project, a summary, "list everything"). More tokens per
+  // answer, no extra AI call. Never on together with Chart.
+  const [deepMode, setDeepMode] = useState(false);
   // Said once when turning Chart on moved the picker off a model that cannot
   // build charts, so the switch is never silent.
   const [modelNote, setModelNote] = useState<string | null>(null);
@@ -646,7 +650,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     }
   }
 
-  async function ask(question: string) {
+  /** `mode` overrides the composer's, for "Try Deep analysis" under an answer. */
+  async function ask(question: string, mode?: "deep") {
     if (!question || busy) return;
     setInput("");
     setBusy(true);
@@ -663,6 +668,15 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       question,
       convId,
       {
+        onStatus: (line) => {
+          setMessages((prev) => {
+            if (prev.length === 0) return prev;
+            const next = [...prev];
+            const last = next[next.length - 1];
+            next[next.length - 1] = { ...last, steps: [...(last.steps ?? []), line] };
+            return next;
+          });
+        },
         onToken: (chunk) => {
           setMessages((prev) => {
             // Spreading `prev[-1]` throws, and a TypeError inside a React
@@ -703,7 +717,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       // No agent pinned: the backend measures which source fits the question.
       undefined,
       model,
-      chartMode ? "chart" : undefined,
+      mode ?? (chartMode ? "chart" : deepMode ? "deep" : undefined),
     );
 
   }
@@ -790,10 +804,14 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
 
   const emptyTitle = chartMode
     ? "Create a chart"
-    : workspaceId ? "Ask this space" : "Ask your company";
+    : deepMode
+      ? "Deep analysis"
+      : workspaceId ? "Ask this space" : "Ask your company";
   const emptyCopy = chartMode
     ? "Charts count activity in your connected apps, figures in tables inside your documents, and files you upload here (Excel, CSV, PDF or Word). Describe what you want to see."
-    : connectedNames.length > 0
+    : deepMode
+      ? "Reads the most relevant documents in full. Best for broad questions: a whole project, a summary, or a list of everything. Uses more of your AI quota per answer."
+      : connectedNames.length > 0
       ? `Answers are drawn from ${listCopy(connectedNames)}. For a chart, choose + then Create a chart.`
       : workspaceId
         ? "Answers are drawn from the documents connected to this space. For a chart, choose + then Create a chart."
@@ -801,19 +819,27 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const starters = chartMode ? chartStarters : suggestedQuestions;
   const composerPlaceholder = chartMode
     ? "Describe a chart, e.g. issues by priority"
-    : "Ask a question…";
+    : deepMode
+      ? "Ask a broad question, e.g. summarise the project"
+      : "Ask a question…";
   // In Chart mode only models that build charts are offered; the company's own
   // model stays, marked, because we cannot know in advance.
   const pickerModels = chartMode ? models.filter((m) => m.charts !== false) : models;
 
   function toggleChartMode(on: boolean) {
     setChartMode(on);
+    if (on) setDeepMode(false);
     setModelNote(null);
     const current = models.find((m) => m.id === model);
     if (on && current && current.charts === false) {
       setModel("auto");
       setModelNote(`Charts use ${defaultLabel} — ${current.label} can't build them.`);
     }
+  }
+
+  function toggleDeepMode(on: boolean) {
+    setDeepMode(on);
+    if (on) toggleChartMode(false);
   }
 
   return (
@@ -948,6 +974,11 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                   workspaceId={workspaceId}
                   onEnableChart={() => toggleChartMode(true)}
                   onDisableChart={() => toggleChartMode(false)}
+                  onAskDeep={() => {
+                    const q = messages[i - 1]?.role === "user" ? messages[i - 1].text : "";
+                    toggleDeepMode(true);
+                    void ask(q, "deep");
+                  }}
                 />
               ))}
               <div ref={bottomRef} aria-hidden className="chat-scroll-anchor" />
@@ -1039,8 +1070,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
               disabled={busy}
               aria-haspopup="menu"
               aria-expanded={toolsOpen}
-              aria-label="Add files or create a chart"
-              title="Add files or create a chart"
+              aria-label="Add files or choose a mode"
+              title="Add files or choose a mode"
             >
               {uploading ? <span className="composer-spinner" aria-hidden /> : <PlusIcon />}
             </button>
@@ -1079,6 +1110,23 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                   </span>
                   {chartMode && <CheckIcon />}
                 </button>
+                <button
+                  type="button"
+                  role="menuitemcheckbox"
+                  aria-checked={deepMode}
+                  className="composer-menu-item"
+                  onClick={() => {
+                    setToolsOpen(false);
+                    toggleDeepMode(!deepMode);
+                  }}
+                >
+                  <DeepIcon />
+                  <span className="composer-menu-text">
+                    <strong>Deep analysis</strong>
+                    <small>Reads whole documents for broad questions</small>
+                  </span>
+                  {deepMode && <CheckIcon />}
+                </button>
               </div>
             )}
           </div>
@@ -1096,6 +1144,24 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
               >
                 {/* An icon, not the "×" character: a glyph sits on the text
                     baseline and drops below the chart icon beside it. */}
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+                </svg>
+              </button>
+            </span>
+          )}
+          {deepMode && (
+            <span className="composer-mode-chip">
+              <DeepIcon />
+              <span>Deep</span>
+              <button
+                type="button"
+                className="composer-mode-chip-remove"
+                onClick={() => toggleDeepMode(false)}
+                disabled={busy}
+                aria-label="Turn off Deep analysis"
+                title="Turn off Deep analysis"
+              >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
                   <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
                 </svg>

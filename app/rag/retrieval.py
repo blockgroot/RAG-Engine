@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..config.settings import GraphSettings, RagSettings, RetrievalSettings
 from ..reranker.base import Reranker
@@ -173,7 +173,7 @@ class HybridRetriever:
         keep = len(pool_candidates) if graph_cross else rag.ranked_max_hits
         if self._reranker is not None and self._settings.rerank_enabled:
             final = _drop_weak(
-                self._reranker.rerank(rerank_q, pool_candidates, keep),
+                self._rerank(rerank_q, pool_candidates, keep),
                 self._settings.rerank_min_ratio,
             )
             if not graph_cross:
@@ -187,6 +187,25 @@ class HybridRetriever:
             hits=final, gate_score=gate_score, graph_hits=graph_hits,
             gate_document_id=gate_document_id,
         )
+
+    def _rerank(self, query: str, candidates: list[RetrievedChunk], keep: int) -> list[RetrievedChunk]:
+        """The reranker's order; with ``rerank_with_title`` it reads "title\ntext".
+
+        Only what the reranker sees changes: the returned hits are the original
+        chunks (content untouched for the prompt and citations) carrying the
+        new ``rerank_score``.
+        """
+        if not self._settings.rerank_with_title:
+            return self._reranker.rerank(query, candidates, keep)
+        shown = [
+            replace(c, content=f"{c.document_title}\n{c.content}") if c.document_title else c
+            for c in candidates
+        ]
+        by_key = {(c.document_id, c.chunk_index): c for c in candidates}
+        return [
+            replace(by_key[(r.document_id, r.chunk_index)], rerank_score=r.rerank_score)
+            for r in self._reranker.rerank(query, shown, keep)
+        ]
 
     def _graph_documents(
         self, org_id: str, workspace_id: str | None, query_text: str, viewer: Viewer | None

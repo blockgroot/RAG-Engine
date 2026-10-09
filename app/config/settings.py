@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 DEFAULT_TIMEOUT = 60.0
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-m3"
@@ -397,6 +397,11 @@ class RagSettings:
     scope_whole_max_chunks: int = DEFAULT_RAG_SCOPE_WHOLE_MAX_CHUNKS
     scope_whole_max_chars: int = DEFAULT_RAG_SCOPE_WHOLE_MAX_CHARS
     neighbor_chunks: int = DEFAULT_RAG_NEIGHBOR_CHUNKS
+    # 0 = neighbours for the top 2 hits (as before). N > 0 = for the best hit
+    # of each of the top N DIFFERENT documents, so a large neighbor_chunks
+    # reads those documents (nearly) whole, the way Onyx reads few documents
+    # deeply (Benchmark 2 follow-up). Raise RAG_MAX_CONTEXT_CHARS with it.
+    neighbor_top_docs: int = 0
     # Tell the model not to attach one document's facts to another's subject
     # (Benchmark 1: wrong-document facts were the second-largest loss).
     focus_rule: bool = False
@@ -416,6 +421,22 @@ class RagSettings:
     partial_rule: bool = False
     # When blocks disagree, prefer the newer or superseding one and say so.
     conflict_rule: bool = False
+    # Chat's "Deep analysis" mode: the deep read the Benchmark 2 follow-up
+    # measured (6/15 failing broad questions right instead of 1/15, ~2.3x the
+    # tokens, no extra AI call). Per request, so normal Ask keeps its cost.
+    deep_top_docs: int = 3
+    deep_neighbor_chunks: int = 8
+    deep_max_context_chars: int = 30000
+
+    def deep(self) -> "RagSettings":
+        """These settings with the deep read on, one budget for ranked and wide reads."""
+        return replace(
+            self,
+            neighbor_top_docs=self.deep_top_docs,
+            neighbor_chunks=self.deep_neighbor_chunks,
+            max_context_chars=self.deep_max_context_chars,
+            wide_max_context_chars=self.deep_max_context_chars,
+        )
 
     @property
     def ranked_max_hits(self) -> int:
@@ -453,14 +474,21 @@ class RagSettings:
                 os.getenv("RAG_MAX_CONTEXT_CHARS") or DEFAULT_RAG_MAX_CONTEXT_CHARS
             ),
             max_answer_tokens=max_answer_tokens,
-            neighbor_chunks=int(os.getenv("RAG_NEIGHBOR_CHUNKS") or DEFAULT_RAG_NEIGHBOR_CHUNKS),
-            focus_rule=env_bool("RAG_FOCUS_RULE", False),
-            wide_max_hits=int(os.getenv("RAG_WIDE_MAX_HITS") or 0),
-            wide_doc_ratio=float(os.getenv("RAG_WIDE_DOC_RATIO") or 0.0),
+            # The env defaults below are Benchmark 2 follow-up's version C
+            # (docs/benchmarks/benchmark-2-followup.md); the dataclass defaults
+            # stay off so a bare RagSettings() in a test is the plain pipeline.
+            neighbor_chunks=int(os.getenv("RAG_NEIGHBOR_CHUNKS") or 1),
+            neighbor_top_docs=int(os.getenv("RAG_NEIGHBOR_TOP_DOCS") or 0),
+            focus_rule=env_bool("RAG_FOCUS_RULE", True),
+            wide_max_hits=int(os.getenv("RAG_WIDE_MAX_HITS") or 10),
+            wide_doc_ratio=float(os.getenv("RAG_WIDE_DOC_RATIO") or 0.3),
             wide_per_doc=int(os.getenv("RAG_WIDE_PER_DOC") or 1),
             wide_max_context_chars=int(os.getenv("RAG_WIDE_MAX_CONTEXT_CHARS") or 0),
-            partial_rule=env_bool("RAG_PARTIAL_RULE", False),
-            conflict_rule=env_bool("RAG_CONFLICT_RULE", False),
+            partial_rule=env_bool("RAG_PARTIAL_RULE", True),
+            conflict_rule=env_bool("RAG_CONFLICT_RULE", True),
+            deep_top_docs=int(os.getenv("RAG_DEEP_TOP_DOCS") or 3),
+            deep_neighbor_chunks=int(os.getenv("RAG_DEEP_NEIGHBOR_CHUNKS") or 8),
+            deep_max_context_chars=int(os.getenv("RAG_DEEP_MAX_CONTEXT_CHARS") or 30000),
         )
 
 
@@ -1562,6 +1590,10 @@ class RetrievalSettings:
     # from weak, off-topic passages. Uncalibrated, so off until the logged
     # ``rerank_scores`` show where gold and distractor passages separate.
     rerank_min_ratio: float = 0.0
+    # Show the reranker each passage's document title above its text, so a
+    # project or customer named only in the title still counts (Benchmark 2
+    # follow-up). The reranker's input only; the prompt and the gate are unchanged.
+    rerank_with_title: bool = False
 
     @classmethod
     def from_env(cls) -> "RetrievalSettings":
@@ -1569,10 +1601,11 @@ class RetrievalSettings:
             hybrid_enabled=env_bool("RETRIEVAL_HYBRID_ENABLED", DEFAULT_RETRIEVAL_HYBRID_ENABLED),
             rerank_enabled=env_bool("RETRIEVAL_RERANK_ENABLED", DEFAULT_RETRIEVAL_RERANK_ENABLED),
             candidate_pool=int(
-                os.getenv("RETRIEVAL_CANDIDATE_POOL") or DEFAULT_RETRIEVAL_CANDIDATE_POOL
+                os.getenv("RETRIEVAL_CANDIDATE_POOL") or 40
             ),
             rrf_k=int(os.getenv("RETRIEVAL_RRF_K") or DEFAULT_RETRIEVAL_RRF_K),
-            rerank_min_ratio=float(os.getenv("RETRIEVAL_RERANK_MIN_RATIO") or 0.0),
+            rerank_min_ratio=float(os.getenv("RETRIEVAL_RERANK_MIN_RATIO") or 0.2),
+            rerank_with_title=env_bool("RETRIEVAL_RERANK_WITH_TITLE", False),
         )
 
 

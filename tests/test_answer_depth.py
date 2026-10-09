@@ -220,3 +220,81 @@ def test_partial_and_conflict_rules_are_off_by_default_and_numbered_after_focus(
     only_partial = build_grounded_prompt("q?", ["ctx"], FALLBACK, partial_rule=True)
     assert "6. If CONTEXT answers only part" in only_partial
 
+
+
+def test_rerank_with_title_shows_titles_to_the_reranker_only():
+    from app.config.settings import RetrievalSettings
+    from app.rag.retrieval import HybridRetriever
+
+    seen: list[list[str]] = []
+
+    class Recorder:
+        def rerank(self, query, candidates, top_k):
+            seen.append([c.content for c in candidates])
+            return [replace(c, rerank_score=1.0 - i / 10) for i, c in enumerate(candidates[:top_k])]
+
+    hits = [replace(_hit("a", 0, "body a"), document_title="Atlas launch plan"), _hit("b", 0, "body b")]
+    on = HybridRetriever(TopicAwareVectorStore(ORG), reranker=Recorder(),
+                         settings=RetrievalSettings(rerank_with_title=True), rag_settings=RagSettings(top_k=2))
+    out = on._rerank("q", hits, 2)
+    assert seen[-1] == ["Atlas launch plan\nbody a", "body b"]
+    assert [h.content for h in out] == ["body a", "body b"]  # the prompt never sees the title line
+    assert [h.rerank_score for h in out] == [1.0, 0.9]
+    off = HybridRetriever(TopicAwareVectorStore(ORG), reranker=Recorder(),
+                          settings=RetrievalSettings(), rag_settings=RagSettings(top_k=2))
+    off._rerank("q", hits, 2)
+    assert seen[-1] == ["body a", "body b"]
+
+
+def test_deep_read_reads_the_top_documents_from_their_start_and_once_each():
+    positions = {("a", i): f"A{i}" for i in range(6)} | {("b", i): f"B{i}" for i in range(6)}
+    store = NeighbourStore(positions)
+    pipe = _pipeline(store, neighbors=3)
+    pipe._settings = replace(pipe._settings, neighbor_top_docs=2)
+    hits = [_hit("a", 1, "A1"), _hit("a", 4, "A4"), _hit("b", 2, "B2"), _hit("c", 0, "C0")]
+
+    out = pipe._with_neighbors(hits, ORG, workspace_id=None, viewer=Viewer(email="x@example.com"))
+
+    # One block per top document, read from its start (7 pieces asked, 6 exist);
+    # A4 was absorbed into a's block, c is not a top document and stays as is.
+    assert [h.content for h in out] == ["A0\nA1\nA2\nA3\nA4\nA5", "B0\nB1\nB2\nB3\nB4\nB5", "C0"]
+    assert out[0].score == 0.8  # scores untouched, so the gate is too
+
+
+def test_default_neighbours_are_unchanged_by_the_deep_read_setting():
+    store = NeighbourStore({("a", 0): "A0", ("a", 1): "A1", ("a", 2): "A2"})
+    out = _pipeline(store, neighbors=1)._with_neighbors([_hit("a", 0, "A0")], ORG, workspace_id=None, viewer=None)
+    assert out[0].content == "A0\nA1"  # ±1 as before, not shifted to 3 pieces
+
+
+def test_deep_analysis_mode_deepens_only_its_own_request():
+    from app.rag.pipeline import reset_deep_read, use_deep_read
+
+    store = NeighbourStore({("a", i): f"A{i}" for i in range(4)})
+    pipe = _pipeline(store, neighbors=0)  # normal Ask: no neighbours at all
+    hits = [_hit("a", 1, "A1")]
+    assert pipe._with_neighbors(hits, ORG, workspace_id=None, viewer=None) == hits
+
+    token = use_deep_read(True)
+    try:
+        out = pipe._with_neighbors(hits, ORG, workspace_id=None, viewer=None)
+        assert out[0].content == "A0\nA1\nA2\nA3"  # the document read from its start
+        assert pipe._read_settings().context_chars_for(10) == 30000  # one deep budget
+    finally:
+        reset_deep_read(token)
+    assert pipe._with_neighbors(hits, ORG, workspace_id=None, viewer=None) == hits
+
+
+def test_deep_analysis_reads_a_mid_sized_upload_whole():
+    from app.config.settings import AttachmentSettings
+    from app.rag.pipeline import reset_deep_read, use_deep_read
+
+    pipe = _pipeline(NeighbourStore({}), neighbors=0)
+    upload = [("notes.txt", "x" * 20_000, False)]
+    settings = replace(AttachmentSettings.from_env(), inline_char_budget=12_000)
+    token = use_deep_read(True)
+    try:
+        blocks = pipe.attachment_contexts("summarise", upload, settings=settings)
+    finally:
+        reset_deep_read(token)
+    assert len(blocks) == 1 and blocks[0].endswith("x" * 20_000)  # inlined, no paging call

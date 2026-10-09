@@ -12,6 +12,8 @@ export interface Message {
   role: "user" | "assistant";
   text: string;
   streaming?: boolean;
+  /** What the answer has done so far while it streams, latest last. */
+  steps?: string[];
   done?: ChatDonePayload;
   /** Sources for an answer loaded from history. A live answer carries them on `done`. */
   cited?: ChatDonePayload["cited"];
@@ -37,6 +39,7 @@ export function ChatMessageView({
   workspaceId,
   onEnableChart,
   onDisableChart,
+  onAskDeep,
 }: {
   message: Message;
   /** The chat this answer belongs to. Feedback is stored against it, and the
@@ -51,6 +54,8 @@ export function ChatMessageView({
   onEnableChart?: () => void;
   /** Turns Chart mode off, for a text question asked in Chart mode. */
   onDisableChart?: () => void;
+  /** Asks this answer's question again in Deep analysis. Absent = no button. */
+  onAskDeep?: () => void;
 }) {
   if (message.role === "user") {
     return <div className="chat-bubble chat-bubble-user">{message.text}</div>;
@@ -83,13 +88,21 @@ export function ChatMessageView({
         />
       ) : null}
       {thinking ? (
-        <div className="chat-thinking" role="status" aria-live="polite">
-          <span className="chat-thinking-dots" aria-hidden>
-            <span />
-            <span />
-            <span />
-          </span>
-          <span className="chat-thinking-label">Finding a grounded answer…</span>
+        <div className="chat-thinking-wrap">
+          {/* Earlier steps stay as a short trail; the live one has the dots. */}
+          {(message.steps ?? []).slice(0, -1).slice(-4).map((step, i) => (
+            <div key={i} className="chat-thinking-step">{step}</div>
+          ))}
+          <div className="chat-thinking" role="status" aria-live="polite">
+            <span className="chat-thinking-dots" aria-hidden>
+              <span />
+              <span />
+              <span />
+            </span>
+            <span className="chat-thinking-label">
+              {message.steps?.at(-1) ?? "Finding a grounded answer…"}
+            </span>
+          </div>
         </div>
       ) : (
         <>
@@ -145,6 +158,11 @@ export function ChatMessageView({
               Turn off Chart
             </button>
           )}
+          {message.done?.deep_hint && onAskDeep && (
+            <button type="button" className="chat-chart-hint" onClick={onAskDeep}>
+              <DeepIcon /> Try Deep analysis
+            </button>
+          )}
           {message.done?.remembered && message.done.remembered.length > 0 && (
             <RememberedNote facts={message.done.remembered} />
           )}
@@ -159,6 +177,16 @@ export function ChatMessageView({
         </>
       )}
     </div>
+  );
+}
+
+export function DeepIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <circle cx="11" cy="11" r="6.5" stroke="currentColor" strokeWidth="2" />
+      <path d="M16 16l5 5M8.5 11h5M11 8.5v5" stroke="currentColor" strokeWidth="2"
+        strokeLinecap="round" />
+    </svg>
   );
 }
 

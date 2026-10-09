@@ -68,10 +68,14 @@ export interface ChatDonePayload {
   chart_hint?: boolean;
   /** A text question asked in Chart mode: offer to turn Chart off. */
   ask_hint?: boolean;
+  /** Refused in normal Ask though relevant documents were found: offer Deep analysis. */
+  deep_hint?: boolean;
 }
 
 export interface ChatStreamHandlers {
   onToken: (chunk: string) => void;
+  /** A step the answer is taking right now ("Searching Notion"), from the server. */
+  onStatus?: (line: string) => void;
   onDone: (payload: ChatDonePayload) => void;
   onError: (message: string) => void;
 }
@@ -83,8 +87,9 @@ export async function streamChat(
   workspaceId?: string | null,
   agent?: "policy" | "github" | "slack" | "linear" | "notion" | "google",
   model?: string | null,
-  /** "chart" = Chart mode: the answer is a chart or a plain refusal. */
-  mode?: "chart",
+  /** "chart" = Chart mode: the answer is a chart or a plain refusal.
+   *  "deep" = Deep analysis: the top documents are read more fully. */
+  mode?: "chart" | "deep",
 ): Promise<void> {
   let response: Response;
   try {
@@ -139,6 +144,8 @@ export async function streamChat(
 
       if (event === "token") {
         handlers.onToken(JSON.parse(data) as string);
+      } else if (event === "status") {
+        handlers.onStatus?.(JSON.parse(data) as string);
       } else if (event === "done") {
         handlers.onDone(JSON.parse(data) as ChatDonePayload);
         return;
