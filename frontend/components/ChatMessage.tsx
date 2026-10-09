@@ -109,6 +109,11 @@ export function ChatMessageView({
                 // table with a picture on top.
                 details={chart.details}
               />
+              {chart.explain && (
+                // What each bar/point IS, in words, so a number is never
+                // left for the reader to decode from its unit.
+                <p className="viz-panel-explain">{chart.explain}</p>
+              )}
               {chart.caveat && (
                 <p className="muted viz-panel-caveat">{chart.caveat}</p>
               )}

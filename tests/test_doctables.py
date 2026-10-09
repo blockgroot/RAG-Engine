@@ -333,8 +333,11 @@ def test_revenue_by_region_is_summed_from_the_cells(org):
                      measure="sum", value="c2", table_id=table.id)
     panel, _ = insights_agent.run_table_spec(spec, org_id=org, workspace_id=None, viewer=SANA)
     assert {p["group"]: p["value"] for p in panel["points"]} == {"North": 260000, "South": 90000}
-    assert panel["title"] == "Sum of Revenue by Region — Sales 2025"
+    assert panel["title"] == "Total Revenue by Region — Sales 2025"
     assert panel["unit"] == "₹"
+    # The N/A row is not a number, so it is not one of the rows added up.
+    assert panel["explain"] == (
+        "Each bar adds up Revenue for the rows of each Region. 3 rows, ₹350,000 in total.")
     assert "1 Revenue cells were not numbers" in panel["caveat"]
     assert {d["attrs"]["c1"] for d in panel["details"]} == {"North", "South"}
 

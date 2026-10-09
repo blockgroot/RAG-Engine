@@ -72,12 +72,22 @@ function useMeasuredWidth(fallback = 560) {
   return [ref, Math.min(width, MAX_PLOT_WIDTH)] as const;
 }
 
-/** "1 issue", not "1 issues" -- a legend row saying "1 issues" looks like the
- *  number is being generated rather than read. */
-function withUnit(value: number, unit?: string): string {
-    const shown = value.toLocaleString();
-  if (!unit) return shown;
-  const singular = value === 1 && unit.endsWith("s") ? unit.slice(0, -1) : unit;
+/** A number with its unit, the way a person writes it: "₹130 lakh", "12%",
+ *  "1 issue" (not "1 issues"). A unit that starts with a symbol is written
+ *  against the number -- decided by the character, not a list of currencies.
+ *  Mirrors `format_value` in app/insights/describe.py. */
+const UNIT_SYMBOL = /^[^\p{L}\p{N}\s(]+/u;
+export function withUnit(value: number, unit?: string): string {
+  const shown = value.toLocaleString();
+  const u = (unit || "").trim();
+  if (!u) return shown;
+  if (u === "%") return `${shown}%`;
+  const symbol = u.match(UNIT_SYMBOL);
+  if (symbol) {
+    const rest = u.slice(symbol[0].length).trim();
+    return `${symbol[0]}${shown}${rest ? ` ${rest}` : ""}`;
+  }
+  const singular = value === 1 && u.endsWith("s") ? u.slice(0, -1) : u;
   return `${shown} ${singular}`;
 }
 /** Bars get their own width so a 30-bucket chart scrolls instead of squashing. */

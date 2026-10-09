@@ -393,6 +393,28 @@ def run_table_query(
     ]
 
 
+def count_rows(
+    table: TableRef, *, filters: tuple[tuple[str, str], ...] = (), value_key: str | None = None,
+) -> int:
+    """How many rows a chart of this table was built from: the filters
+    applied, and (for a sum or average) only rows whose value parsed."""
+    where, params = "", {"table_id": table.id}
+    for dim, value in filters:
+        where += f" AND {_col(dim)} = %(f_{dim})s"
+        params[f"f_{dim}"] = value
+    if value_key:
+        where += f" AND {_col(value_key)} IS NOT NULL"
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                f"SELECT count(*) FROM doc_table_rows r WHERE r.table_id = %(table_id)s {where}",
+                params,
+            ).fetchone()
+    except Exception as exc:  # noqa: BLE001
+        raise ProviderError("doctables: could not count rows", cause=exc) from exc
+    return int(row[0])
+
+
 def list_values(table: TableRef, key: str) -> list[str]:
     """Distinct values of one column, for resolving a typed filter."""
     try:

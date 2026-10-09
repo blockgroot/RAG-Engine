@@ -142,11 +142,25 @@ def start_cooled_down_pushes() -> int:
 
 
 def request_sync_connection(connection_id: str) -> int:
-    """Flag ONE connection, for a push that already names it (a Drive channel)."""
+    """Flag every Drive folder on the Google account a channel belongs to.
+
+    A Drive notification only says the ACCOUNT's change log moved, never which
+    folder, and each connection opens its own channel on that same log. In
+    production Google delivered to two of three channels on one account, so the
+    folder that actually changed (Meeting-Notes) never synced. Any proven
+    notification therefore flags all scoped Google connections in the same org
+    on the same account; a folder with nothing new is a cheap listing diff.
+    """
     return _flag_and_start(
-        "UPDATE oauth_connections SET sync_requested_at = now() "
-        "WHERE id = %s::uuid AND needs_reauth = false",
-        [connection_id],
+        """
+        UPDATE oauth_connections SET sync_requested_at = now()
+         WHERE (org_id, provider, external_workspace_id) = (
+                   SELECT org_id, provider, external_workspace_id
+                     FROM oauth_connections WHERE id = %s::uuid)
+           AND needs_reauth = false
+           AND (id = %s::uuid OR source_config ->> 'folder_id' IS NOT NULL)
+        """,
+        [connection_id, connection_id],
     )
 
 

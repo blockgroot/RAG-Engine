@@ -19,6 +19,7 @@ from collections.abc import Iterator
 from ..core.answer_sources import SOURCE_NONE
 from ..core.exceptions import ProviderError
 from ..core.streaming import chunk_answer
+from ..insights import describe
 from ..insights import registry, scopes, store
 from ..insights.facts import DOCUMENT_PROVIDERS, record_document_facts
 from ..insights import attr_catalog, query
@@ -230,12 +231,10 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
 
     value_col = table.column(spec.value) if spec.value else None
     measure = spec.measure or "count"
-    what = "Rows" if measure == "count" else f"{measure.title()} of {name(spec.value)}"
-    title = what
-    if spec.group_by:
-        title += f" by {name(spec.group_by)}"
-        if spec.split_by:
-            title += f" and {name(spec.split_by)}"
+    title = describe.table_title(
+        measure, value_col, name(spec.group_by) if spec.group_by else None,
+        name(spec.split_by) if spec.split_by else None,
+    )
     for key, value in filters:
         title += f" — {name(key)}: {value}"
     title += f" — {table.name}"
@@ -255,8 +254,21 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
     if table.truncated:
         notes.append("The table was longer than we keep; later rows are not counted.")
 
-    unit = "rows" if measure == "count" else (
-        (value_col or {}).get("unit") or name(spec.value)
+    unit = describe.table_unit(measure, value_col)
+    try:
+        rows_used = table_store.count_rows(
+            table, filters=filters,
+            value_key=spec.value if measure != "count" else None,
+        )
+    except ProviderError:
+        rows_used = None
+    explain = describe.table_explain(
+        measure, value_col,
+        group=name(spec.group_by) if spec.group_by else None,
+        split=name(spec.split_by) if spec.split_by else None,
+        period=spec.period, by_date=by_date, chart=spec.chart,
+        rows=rows_used if rows_used is not None else table.row_count,
+        total=sum(p.value for p in points), unit=unit,
     )
     panel = {
         "id": f"table:{table.id}:{spec.group_by or '-'}:{spec.split_by or '-'}:"
@@ -272,6 +284,7 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
         "split_by": (None if by_date else spec.split_by),
         "filters": [list(f) for f in filters],
         "unit": unit,
+        "explain": explain,
         "caveat": " ".join(notes),
         "points": [
             {"bucket": p.bucket or "", "group": p.group, "series": p.series,
@@ -805,8 +818,11 @@ def _ask_title(
     focus the title omits."""
     chosen = query.measures_for(metric, attrs).get(measure) if measure else None
     title = metric.label
-    if chosen is not None and chosen.label:
-        title = f"{chosen.label} — {metric.label.lower()}"
+    # A measure other than the metric's own says what it is: "Files created
+    # or edited: number of different people", never a bare "People".
+    what = describe.activity_measure(metric, chosen)
+    if what:
+        title = f"{metric.label}: {what}"
     if group_by:
         title += f" by {_dim_label(metric, group_by, attrs)}"
         if split_by:
@@ -986,6 +1002,12 @@ def _run_spec(
         "split_by": split_by,
         "filters": [list(f) for f in filters],
         "unit": chosen.unit,
+        "explain": describe.activity_explain(
+            metric, chosen,
+            group=_dim_label(metric, group_by, attrs) if group_by else None,
+            split=_dim_label(metric, split_by, attrs) if split_by else None,
+            period=period, chart=chart,
+        ),
         "caveat": " ".join(n for n in (
             stepped, _sparse_note(points, period, chosen.unit, group_by),
             _grammar_caveat(metric, group_by, split_by, attrs)) if n),
