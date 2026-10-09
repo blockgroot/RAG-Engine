@@ -240,6 +240,82 @@ def list_upload_tables(*, org_id: str, uploads: UploadScope | None) -> list[Tabl
     return [_ref(r) for r in rows]
 
 
+@dataclass(frozen=True)
+class DocumentPlace:
+    """A document title this person may know about, and where it lives.
+
+    ``workspace_name`` is None when the document is in the scope being asked.
+    """
+
+    title: str
+    workspace_name: str | None
+    has_table: bool
+
+
+#: Newest titles only. A chart gap is about a page the question names, not
+#: a scan of every document the org has ever synced.
+_TITLE_CAP = 400
+
+
+def document_places(
+    *, org_id: str, workspace_id: str | None, viewer, user_id: str | None,
+) -> list[DocumentPlace]:
+    """Titles this viewer may see, in this scope and in workspaces they belong to.
+
+    Used when a chart names a page that was not offered. A page in a workspace
+    they are not a member of is not returned, so Company-wide never learns
+    that a private workspace holds it. No viewer means none.
+    """
+    if viewer is None or getattr(viewer, "is_unrestricted", False):
+        return []
+    access, params = _visible(viewer)
+    has_table = (
+        "EXISTS (SELECT 1 FROM doc_tables t "
+        "WHERE t.document_id = d.id AND t.org_id = d.org_id)"
+    )
+    scope = (
+        "d.workspace_id IS NULL" if workspace_id is None
+        else "d.workspace_id = %(workspace_id)s"
+    )
+    sql = f"""
+        SELECT d.title, NULL::text, {has_table}
+          FROM documents d
+         WHERE d.org_id = %(org_id)s AND {scope}
+           AND d.title IS NOT NULL
+           {access}
+         ORDER BY d.source_last_modified DESC NULLS LAST
+         LIMIT %(limit)s
+    """
+    other = f"""
+        SELECT d.title, w.name, {has_table}
+          FROM documents d
+          JOIN workspaces w ON w.id = d.workspace_id AND w.org_id = d.org_id
+          JOIN workspace_members wm
+            ON wm.workspace_id = w.id AND wm.user_id = %(user_id)s::uuid
+         WHERE d.org_id = %(org_id)s
+           AND d.workspace_id IS DISTINCT FROM %(workspace_id)s::uuid
+           AND d.title IS NOT NULL
+           {access}
+         ORDER BY d.source_last_modified DESC NULLS LAST
+         LIMIT %(limit)s
+    """ if user_id else ""
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                sql, {"org_id": org_id, "workspace_id": workspace_id,
+                      "limit": _TITLE_CAP, **params},
+            ).fetchall()
+            if other:
+                rows += conn.execute(
+                    other,
+                    {"org_id": org_id, "workspace_id": workspace_id,
+                     "user_id": user_id, "limit": _TITLE_CAP, **params},
+                ).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        raise ProviderError("doctables: could not look up document titles", cause=exc) from exc
+    return [DocumentPlace(title=r[0], workspace_name=r[1], has_table=bool(r[2])) for r in rows]
+
+
 def list_tables(
     *, org_id: str, workspace_id: str | None, viewer, limit: int = MAX_LISTED,
 ) -> list[TableRef]:

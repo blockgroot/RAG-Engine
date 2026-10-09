@@ -181,6 +181,9 @@ class AskIntent:
     #: else None. Read by the model from the question in any wording or
     #: language -- no word list decides it.
     chart_ask: str | None = None
+    #: A page, file or sheet the question named, copied from the question.
+    #: Set only when those words are really in the question.
+    named_document: str | None = None
 
 
 _JSON_RE = re.compile(r"\{.*\}", re.S)
@@ -543,6 +546,7 @@ def _prompt(
            if tables else "") +
         '"period": "<period>", '
         '"chart": "<shape or null>", "focus": "<one named thing or null>", '
+        '"document": "<the page, file or sheet they named, copied exactly, or null>", '
         '"breakdown_words": "<their exact words asking for the breakdown, or null>", '
         '"left_out_words": "<their exact words for any breakdown beyond the two charted, or null>", '
         '"range_words": "<their exact words giving a time range, or null>", '
@@ -563,6 +567,11 @@ def _prompt(
         "Set group_by only when they asked for a breakdown, and copy the exact "
         "words of their question that asked for it into breakdown_words "
         "(\"by person\", \"who edited the most\"); null when they did not.\n"
+        "- document = the page, file or sheet they named, copied exactly from "
+        "their question (\"hiring plan 2026\", \"quarterly budget page\"). "
+        "Null when they named none. If that name is not in the tables above, "
+        "intent is still chart, metric null, and document is set. Never "
+        "intent=qa only because the page is missing from the list.\n"
         "- focus = ONE thing they narrowed to: a repository, channel, team, "
         "page or file NAME. \"commits in the DAO repo\" is focus=\"DAO\", "
         "not a grouping. Null when they asked about everything. When that "
@@ -713,6 +722,7 @@ def classify_question(
         _note_range(_note_left_out(_honour_breakdown(intent, question, reply, fields),
                                    question, reply), question, reply),
         needs_live=parse_live(reply),
+        named_document=_quoted_document(question, reply),
     )
 
 
@@ -788,6 +798,84 @@ def _breakdown_words(reply: str) -> str | None:
 
 def _squashed(text: str) -> str:
     return re.sub(r"\W+", " ", (text or "").lower()).strip()
+
+
+def _quoted_document(question: str, reply: str) -> str | None:
+    """The page or file the model says they named, kept only when those
+    words are really in the question."""
+    match = _JSON_RE.search(reply or "")
+    try:
+        data = json.loads(match.group(0)) if match else {}
+    except (ValueError, TypeError):
+        data = {}
+    words = data.get("document") if isinstance(data, dict) else None
+    if not isinstance(words, str) or not words.strip():
+        return None
+    if _squashed(words) not in _squashed(question):
+        return None
+    return words.strip()[:120]
+
+
+def chart_document_gap(question: str, named: str | None, tables, places) -> str | None:
+    """When a chart names a page this space cannot chart, say where it is.
+
+    A page in another workspace, asked from Company-wide, used to come back
+    as "turn off Chart" or "this can't be shown as a chart". The page title
+    has to sit in the question, the same way a focus has to match a stored
+    name. None when nothing named is missing, so a real prose question stays
+    a prose question.
+    """
+    asked = _squashed(question)
+    offered = {_squashed(getattr(t, "document_title", "") or "") for t in (tables or [])}
+    offered.discard("")
+
+    def missing(title: str, *, workspace: str | None, has_table: bool) -> str:
+        shown = ", ".join(
+            f'"{getattr(t, "document_title", "")}"' for t in list(tables or [])[:6]
+            if getattr(t, "document_title", None)
+        )
+        tables_line = f"\nTables in this space: {shown}." if shown else ""
+        if workspace:
+            return (
+                f"**\"{title}\" is not in this space**\n"
+                f"It is in the {workspace} workspace, so this space cannot "
+                f"chart it. Open that workspace and ask again."
+                + tables_line
+            )
+        if not has_table:
+            return (
+                f"**I can see \"{title}\", but no table has been read from it**\n"
+                "A table is read when its page syncs. Sync it from Sources, "
+                "then ask again."
+            )
+        return (
+            f"**I don't see \"{title}\" in this space**\n"
+            "There is no table from that page here, so I can't chart it. "
+            "If it lives in a workspace, open that workspace and ask again."
+            + tables_line
+        )
+
+    quote = _squashed(named or "")
+    if quote and quote not in asked:
+        quote = ""
+    best = None
+    for place in places or []:
+        key = _squashed(getattr(place, "title", "") or "")
+        if len(key) < 8 or key in offered:
+            continue
+        # The stored title is in the question, or the name they gave is in the title.
+        if key not in asked and not (len(quote) >= 8 and quote in key):
+            continue
+        if best is None or len(key) > len(_squashed(best.title)):
+            best = place
+    if best is not None:
+        return missing(best.title, workspace=best.workspace_name, has_table=best.has_table)
+
+    if not quote or quote in offered:
+        return None
+    if any(quote in name or name in quote for name in offered if name):
+        return None
+    return missing(named.strip(), workspace=None, has_table=True)
 
 
 def _honour_breakdown(intent: AskIntent, question: str, reply: str, fields) -> AskIntent:

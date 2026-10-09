@@ -772,6 +772,27 @@ def _try_question_route(
     return RoutingDecision("github", "classified-code-question")
 
 
+def _document_gap(question, intent, tables, org_id, workspace_id, viewer, user_id):
+    """A named page this space cannot chart, or None to keep the usual refusal.
+
+    Never raises: a failed title lookup costs the clearer sentence, not the answer.
+    """
+    from ..insights.resolve import chart_document_gap
+
+    try:
+        from ..doctables.store import document_places
+
+        places = document_places(
+            org_id=org_id, workspace_id=workspace_id, viewer=viewer, user_id=user_id,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("Agent routing: could not look up named documents", exc_info=True)
+        places = []
+    return chart_document_gap(
+        question, getattr(intent, "named_document", None), tables, places,
+    )
+
+
 def _chart_mode_route(
     question: str,
     connected: set[str],
@@ -779,6 +800,7 @@ def _chart_mode_route(
     workspace_id: str | None,
     viewer=None,
     uploads=None,
+    user_id: str | None = None,
 ) -> RoutingDecision:
     """Chart mode: the asker chose a chart, so the answer is a chart or a
     plain refusal -- never a document answer, never a guess. Never raises."""
@@ -795,10 +817,11 @@ def _chart_mode_route(
         return RoutingDecision(INSIGHTS_KEY, "chart-model-unsupported",
                                chart_refusal=unsupported)
     providers = [p for p in sorted(connected) if panel_defs.for_provider(p)]
+    tables = _chartable_tables(org_id, workspace_id, viewer, question, uploads)
     try:
         intent = classify_question(
             question, providers=providers, fail_open=False, offer_github=False,
-            tables=_chartable_tables(org_id, workspace_id, viewer, question, uploads),
+            tables=tables,
             fields=_chart_fields(org_id, workspace_id, viewer),
             names=_chart_names(org_id, workspace_id, viewer),
         )
@@ -812,6 +835,9 @@ def _chart_mode_route(
         )
     if intent.kind == "chart" and intent.spec is not None:
         return RoutingDecision(INSIGHTS_KEY, "chart", chart_spec=intent.spec)
+    gap = _document_gap(question, intent, tables, org_id, workspace_id, viewer, user_id)
+    if gap:
+        return RoutingDecision(INSIGHTS_KEY, "chart-refuse", chart_refusal=gap)
     if intent.kind == "refuse" and intent.message:
         return RoutingDecision(INSIGHTS_KEY, "chart-refuse", chart_refusal=intent.message)
     if intent.kind in ("qa", "github_live"):
@@ -879,6 +905,7 @@ def choose_agent(
     chart_mode: bool = False,
     chart_from_words: bool = False,
     uploads=None,
+    user_id: str | None = None,
 ) -> RoutingDecision:
     """Which agent answers, plus the question check's live-data verdict.
 
@@ -897,7 +924,7 @@ def choose_agent(
         question, org_id, workspace_id=workspace_id, requested_agent=requested_agent,
         context=context, graph_plan=graph_plan, live_out=live, viewer=viewer,
         chart_mode=chart_mode, chart_out=chart, chart_from_words=chart_from_words,
-        uploads=uploads,
+        uploads=uploads, user_id=user_id,
     )
     return replace(decision, needs_live=live[0] if live else None,
                    chart_ask=chart[0] if chart else None)
@@ -917,6 +944,7 @@ def _choose_agent(
     chart_out: list | None = None,
     chart_from_words: bool = False,
     uploads=None,
+    user_id: str | None = None,
 ) -> RoutingDecision:
     """Decide which agent answers ``question``. Never raises.
 
@@ -981,7 +1009,7 @@ def _choose_agent(
 
     if chart_mode:
         return _chart_mode_route(question, connected, org_id, workspace_id, viewer,
-                                 uploads=uploads)
+                                 uploads=uploads, user_id=user_id)
 
     if not connected:
         return RoutingDecision(default_key, "no-sources")

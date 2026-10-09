@@ -464,6 +464,52 @@ def test_chart_mode_goes_straight_to_a_chart(monkeypatch):
     assert decision.chart_spec == spec
 
 
+def test_a_page_in_another_workspace_is_named_instead_of_turn_off_chart(monkeypatch):
+    """Company-wide asked for the hiring plan, which lives in a workspace.
+    That used to read as "turn off Chart", as if they had wanted a written answer."""
+    from types import SimpleNamespace
+
+    from app.insights.resolve import AskIntent
+
+    _stub(monkeypatch, connected={"notion"})
+    monkeypatch.setattr("app.insights.resolve.classify_question",
+                        lambda q, **k: AskIntent("qa"))
+    monkeypatch.setattr(
+        "app.doctables.store.document_places",
+        lambda **k: [SimpleNamespace(title="Hiring plan 2026", workspace_name="Coding",
+                                     has_table=True)],
+    )
+    decision = routing.choose_agent(
+        "From the hiring plan 2026 document, show the total salary budget for each team.",
+        ORG, chart_mode=True, viewer=object(),
+    )
+    assert decision.reason == "chart-refuse"
+    assert "Hiring plan 2026" in decision.chart_refusal
+    assert "Coding" in decision.chart_refusal
+    assert "Turn off Chart" not in decision.chart_refusal
+
+
+def test_a_named_page_with_no_table_here_is_said_plainly(monkeypatch):
+    """The quarterly budget page was not among the tables offered, and the
+    reply blamed themes in text instead of saying the page is not here."""
+    from app.insights.resolve import AskIntent
+
+    _stub(monkeypatch, connected={"notion"})
+    monkeypatch.setattr(
+        "app.insights.resolve.classify_question",
+        lambda q, **k: AskIntent("refuse", message="no",
+                                 named_document="quarterly budget page"),
+    )
+    monkeypatch.setattr("app.doctables.store.document_places", lambda **k: [])
+    decision = routing.choose_agent(
+        "From the quarterly budget page in Notion, show the total budget for each department.",
+        ORG, chart_mode=True, viewer=object(),
+    )
+    assert "quarterly budget page" in decision.chart_refusal
+    assert "don't see" in decision.chart_refusal
+    assert "can't be shown as a chart" not in decision.chart_refusal
+
+
 def test_chart_mode_never_falls_back_to_a_document_answer(monkeypatch):
     """RAG must not invent a number when a chart was asked for."""
     from app.insights.resolve import AskIntent
