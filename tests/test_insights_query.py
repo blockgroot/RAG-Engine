@@ -286,7 +286,8 @@ def test_the_agent_resolves_a_typed_name_and_titles_every_slice(prs):
                      chart="bar", measure="people", filters=(("actor", "Sana"),))
     panel, _ = insights_agent._run_spec(spec, org_id=prs, workspace_id=None,
                                         user_id="", role="member")
-    assert panel["title"] == "People — pull requests merged by repository — person: 18-sana"
+    assert panel["title"] == ("Pull requests merged: number of different people by repository"
+                              " — person: 18-sana")
     assert panel["unit"] == "people"
     assert {p["group"]: p["value"] for p in panel["points"]} == {"acme/api": 1, "acme/web": 1}
     assert {d["actor"] for d in panel["details"]} == {"18-sana"}

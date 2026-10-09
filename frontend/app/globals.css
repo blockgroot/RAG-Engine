@@ -8568,3 +8568,11 @@ a.people-card:hover { color: inherit; }
 }
 .chat-drop-card strong { font-size: 1.05rem; color: var(--accent-strong); }
 .chat-drop-card span { font-size: 0.88rem; color: var(--ink-muted); }
+
+/* What each bar or point is, in one sentence -- above the caveats, in body
+   text, because it is how the chart is read, not a footnote. */
+.viz-panel-explain {
+  margin: 10px 0 2px;
+  font-size: 0.88rem;
+  color: var(--ink);
+}

@@ -158,6 +158,12 @@ finer period and says so; activity in one period only is said plainly.
 source's state type; `registry.DERIVED_DIMENSIONS`, fixed SQL, kept apart from
 the bare-column `DIMENSIONS`). In a TABLE, a time scale IS a breakdown by its
 date column; a line with no breakdown uses the table's only date column.
+Every chart says what its numbers ARE (`insights/describe.py`): a title naming
+the measure ("Total Salary by Team", "Files created or edited: number of
+different people"), the unit from the column header's bracket or the cells'
+symbol written against the number ("₹130 lakh"; `withUnit` mirrors
+`format_value`), and an `explain` line on what each bar/point is and over which
+rows. Built from the measure, header, unit, breakdown and period, never copy.
 A breakdown beyond the two a chart draws is named as left out
 (`left_out_words`, kept only when the quote is in the question), never dropped silently.
 A breakdown is kept only when asked for: the model quotes the words that asked
