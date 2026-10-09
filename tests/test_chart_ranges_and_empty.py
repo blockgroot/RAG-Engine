@@ -1,0 +1,117 @@
+"""The asker's time range, and an empty chart that says WHY it is empty.
+
+Staging: "pull requests merged each week over the last one year" replied "no
+PRs in the last 45 days" -- the range was ignored and an empty chart was
+stepped to a finer period, shrinking the window. And "this simply has not
+happened" was said of a space whose GitHub app could not read pull requests.
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
+import pytest
+
+from app.agent import insights_agent
+from app.agent.insights_agent import InsightsAgent
+from app.db import get_connection
+from app.insights import registry, resolve
+from app.insights.resolve import ChartSpec
+from app.vectorstore.base import Viewer
+from .conftest import requires_db
+from .test_insights_resolve import FakeLLM
+
+
+def _reply(**extra):
+    return FakeLLM(json.dumps({"intent": "chart", "metric": "prs_merged", "group_by": None,
+                               "period": "week", "chart": "line", **extra}))
+
+
+def test_a_range_they_named_is_kept_and_bounded():
+    q = "How many pull requests were merged each week over the last one year?"
+    intent = resolve.classify_question(q, providers=["github"], fail_open=False,
+                                       llm=_reply(range_words="over the last one year", days=365))
+    assert intent.spec.days == 365
+    assert resolve.spec_from_dict(resolve.spec_to_dict(intent.spec)).days == 365
+    huge = resolve.classify_question(q, providers=["github"], fail_open=False,
+                                     llm=_reply(range_words="over the last one year", days=99999))
+    assert huge.spec.days == resolve.MAX_RANGE_DAYS
+
+
+def test_a_range_nobody_named_is_never_used():
+    q = "How many pull requests were merged each week?"
+    intent = resolve.classify_question(q, providers=["github"], fail_open=False,
+                                       llm=_reply(range_words="over the last year", days=365))
+    assert intent.spec.days is None
+
+
+@pytest.fixture
+def org(org_cleanup):
+    with get_connection() as conn:
+        org = str(conn.execute("INSERT INTO organizations (name) VALUES (%s) RETURNING id",
+                               (f"range-{uuid.uuid4().hex[:8]}",)).fetchone()[0])
+        conn.commit()
+    org_cleanup.append(org)
+    return org
+
+
+def _merge(org, days_ago):
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO activity_facts (org_id, provider, kind, actor, subject, occurred_at, "
+            "value, external_id) VALUES (%s, 'github', 'pr_merged', 'ada', 'acme/api', %s, "
+            "3600, %s)",
+            (org, datetime.now(timezone.utc) - timedelta(days=days_ago), uuid.uuid4().hex))
+        conn.commit()
+
+
+@requires_db
+def test_a_year_long_range_finds_merges_the_default_window_misses(org):
+    _merge(org, 200)
+    _merge(org, 150)
+    agent = InsightsAgent()
+    everyone = Viewer.unrestricted()
+    default = agent.answer("q", org, viewer=everyone, user_id="u", role="member",
+                           spec=ChartSpec(metric="prs_merged", group_by=None, period="week",
+                                          chart="line"))
+    assert not default.chart or not any(p["value"] for p in default.chart["points"])
+    year = agent.answer("q", org, viewer=everyone, user_id="u", role="member",
+                        spec=ChartSpec(metric="prs_merged", group_by=None, period="week",
+                                       chart="line", days=365))
+    assert sum(p["value"] for p in year.chart["points"]) == 2
+    assert "last 365 days" in year.chart["title"]
+
+
+class _Reader:
+    def __init__(self, behaviour):
+        self.behaviour = behaviour
+
+    def list_repos(self):
+        return [SimpleNamespace(full_name=f"acme/r{i}") for i in range(2)]
+
+    def list_pull_requests(self, repo, **kw):
+        if self.behaviour == "forbidden":
+            raise PermissionError("403")
+        return SimpleNamespace(items=[] if self.behaviour == "none" else [object()])
+
+
+@pytest.mark.parametrize("behaviour,needle", [
+    ("forbidden", "Pull requests: Read"),
+    ("none", "have no pull requests on GitHub"),
+    ("some", "how far back GitHub activity is read"),
+])
+def test_an_empty_pull_request_chart_says_which_cause_it_is(monkeypatch, behaviour, needle):
+    import app.githublive as githublive
+
+    monkeypatch.setattr(githublive, "build_github_reader", lambda *a, **k: _Reader(behaviour))
+    said = insights_agent._github_pull_diagnosis(
+        registry.get("prs_merged"), org_id="o", workspace_id="w")
+    assert needle in said and "acme/" not in said  # never names a repository
+
+
+def test_the_probe_is_only_for_pull_request_charts():
+    assert insights_agent._github_pull_diagnosis(
+        registry.get("commits_by_author"), org_id="o", workspace_id=None) is None

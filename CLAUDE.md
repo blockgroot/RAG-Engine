@@ -166,6 +166,11 @@ symbol written against the number ("₹130 lakh"; `withUnit` mirrors
 rows. Built from the measure, header, unit, breakdown and period, never copy.
 A filter on `subject` (one channel/repo/team) is a focus in the wrong slot:
 moved to `focus`, never refused. Refusals name fields by `dim_label`, never keys.
+The asker's time range ("over the last year") is `spec.days`, kept only when the
+model's `range_words` quote is in the question, capped at `MAX_RANGE_DAYS`, and
+said in the title. An empty chart is never stepped to a finer period (that
+shrank the window). An empty GitHub pull-request chart asks GitHub why
+(`_github_pull_diagnosis`: no "Pull requests: Read" vs none exist), naming no repo.
 A breakdown beyond the two a chart draws is named as left out
 (`left_out_words`, kept only when the quote is in the question), never dropped silently.
 A breakdown is kept only when asked for: the model quotes the words that asked
