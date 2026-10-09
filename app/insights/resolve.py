@@ -948,6 +948,15 @@ def _parse_intent(
     if measure == query.default_measure(metric):
         measure = None
     filters = _parse_filters(data.get("filters"))
+    # One named channel, repository or team sent as a FILTER on the subject
+    # is a focus in the wrong slot ("threads in #rag-updates" was refused as
+    # "cannot be narrowed by subject"). Moved, not dropped: the focus is
+    # still matched against real names and refused by name if none fits.
+    subject = [value for dim, value in filters if dim == "subject"]
+    if subject and "subject" in metric.dims:
+        filters = tuple((dim, value) for dim, value in filters if dim != "subject")
+        if focus is None:
+            focus = subject[0].strip()[:120]
     if split_by is not None and group_by is None:
         # A split with no first grouping: the model put the one breakdown in
         # the wrong slot. Moved, not dropped -- validation still checks it.

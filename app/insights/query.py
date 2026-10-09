@@ -256,15 +256,21 @@ def validate(
     call site (a pin, a test, a future route) can compile something the
     grammar does not admit.
     """
+    # Refusals name fields the way people do ("channel", "person"), never
+    # our column keys -- "cannot be narrowed by 'subject'" means nothing to
+    # the asker.
+    def named(dims) -> str:
+        return ", ".join(dim_label(metric, d, attrs) for d in dims) or "none"
+
     if group_by is not None and group_by not in group_dims(metric, attrs):
         raise ValueError(
-            f"{metric.label} cannot be grouped by {group_by!r}. "
-            f"Options: {', '.join(group_dims(metric, attrs)) or 'none'}."
+            f"{metric.label} cannot be broken down by {_shown(metric, group_by, attrs)}. "
+            f"Options: {named(group_dims(metric, attrs))}."
         )
     if measure is not None and measure not in measures_for(metric, attrs):
         raise ValueError(
-            f"{metric.label} cannot be measured as {measure!r}. "
-            f"Options: {', '.join(measures_for(metric, attrs))}."
+            f"{metric.label} cannot be measured as {measure.replace('_', ' ')}. "
+            f"Options: {', '.join(m.replace('_', ' ') for m in measures_for(metric, attrs))}."
         )
     if split_by is not None:
         if group_by is None:
@@ -273,21 +279,29 @@ def validate(
             raise ValueError("a chart cannot be split by the dimension it is grouped by")
         if split_by not in split_dims(metric, attrs):
             raise ValueError(
-                f"{metric.label} cannot be split by {split_by!r}. "
-                f"Options: {', '.join(split_dims(metric, attrs)) or 'none'}."
+                f"{metric.label} cannot be split by {_shown(metric, split_by, attrs)}. "
+                f"Options: {named(split_dims(metric, attrs))}."
             )
     seen = set()
     for dim, value in filters:
         if dim not in filter_dims(metric, attrs):
             raise ValueError(
-                f"{metric.label} cannot be narrowed by {dim!r}. "
-                f"Options: {', '.join(filter_dims(metric, attrs)) or 'none'}."
+                f"{metric.label} cannot be narrowed by {_shown(metric, dim, attrs)}. "
+                f"Options: {named(filter_dims(metric, attrs))}."
             )
         if dim in seen:
             raise ValueError(f"two filters on {dim!r}")
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"empty filter on {dim!r}")
         seen.add(dim)
+
+
+def _shown(metric: registry.Metric, dim, attrs=None) -> str:
+    """A requested field in a refusal: its people name when it is one of
+    ours, else what was asked (quoted), so an unknown field is still named."""
+    if isinstance(dim, str) and (dim in registry.DIMENSIONS or find_attr(metric, dim, attrs)):
+        return dim_label(metric, dim, attrs)
+    return repr(dim)
 
 
 def dim_label(metric: registry.Metric, dim: str, attrs=None) -> str:
