@@ -114,7 +114,7 @@ NOW = datetime.now(timezone.utc)
     (_Reader(newest=None, exists=False), "have no pull requests on GitHub"),
     (_Reader(newest=None, exists=True), "none has been merged yet"),
     (_Reader(newest=NOW - timedelta(days=300)), "older than the 180 days"),
-    (_Reader(newest=NOW - timedelta(days=3)), "has not been counted yet"),
+    (_Reader(newest=NOW - timedelta(days=3)), "not in what Handbook has read"),
 ])
 def test_an_empty_pull_request_chart_says_which_cause_it_is(monkeypatch, reader, needle):
     import app.githublive as githublive

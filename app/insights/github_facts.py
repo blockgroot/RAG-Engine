@@ -85,7 +85,14 @@ def record_github_facts(
                 refresh_installation_scope(org_id, workspace_id)
             except Exception:  # noqa: BLE001 - the stored scope still works
                 logger.warning("insights: could not refresh GitHub scope for %s", org_id)
-            reader = build_github_reader(org_id, workspace_id, settings=settings)
+            # Charts read a full page of commits; the live Ask prompt keeps
+            # its own small `max_commits`.
+            from dataclasses import replace as _replace
+
+            reader = build_github_reader(
+                org_id, workspace_id,
+                settings=_replace(settings, max_commits=settings.chart_max_commits),
+            )
         repos = reader.list_repos()
     except Exception:  # noqa: BLE001 - see docstring
         logger.warning(
@@ -156,7 +163,7 @@ def record_github_facts(
             commits = reader.list_commits(
                 repo.full_name,
                 since=since.isoformat(),
-                limit=settings.max_commits,
+                limit=settings.chart_max_commits,
             )
             read_something = True
         except Exception:  # noqa: BLE001
@@ -356,3 +363,83 @@ def _fill_mergers(reader, pulls) -> dict[int, object]:
         if full is not None:
             out[pull.number] = full
     return out
+
+
+# ---------------------------------------------------------------------------
+# On demand: a GitHub chart reads GitHub when it is asked
+# ---------------------------------------------------------------------------
+
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as _Waited
+
+_READS = ThreadPoolExecutor(max_workers=2, thread_name_prefix="github-chart-read")
+_RUNNING: dict[tuple[str, str | None], object] = {}
+_RUNNING_LOCK = threading.Lock()
+
+
+def _connection(org_id: str, workspace_id: str | None):
+    """``(id, last_read_at)`` of this scope's GitHub connection, or None."""
+    with get_connection() as conn:
+        return conn.execute(
+            "SELECT id::text, last_sync_at FROM oauth_connections "
+            "WHERE org_id = %s::uuid AND provider = 'github' AND needs_reauth = false "
+            "AND workspace_id IS NOT DISTINCT FROM %s::uuid LIMIT 1",
+            (org_id, workspace_id),
+        ).fetchone()
+
+
+def _read_now(org_id: str, workspace_id: str | None, connection_id: str) -> None:
+    record_github_facts(org_id, workspace_id=workspace_id)
+    with get_connection() as conn:
+        conn.execute("UPDATE oauth_connections SET last_sync_at = now() WHERE id = %s::uuid",
+                     (connection_id,))
+        conn.commit()
+
+
+def refresh_for_chart(org_id: str, workspace_id: str | None,
+                      settings: GitHubLiveSettings | None = None) -> str:
+    """Read GitHub now, for a chart being asked. Returns what happened:
+
+    - ``"fresh"``    read within ``chart_refresh_minutes``; nothing to do;
+    - ``"refreshed"`` read just now, within the wait;
+    - ``"reading"``  still reading after ``chart_refresh_wait_seconds``: the
+      chart answers from what was last read and the read finishes behind it;
+    - ``"failed"``   GitHub could not be read; the chart uses what it has;
+    - ``"none"``     no GitHub connection in this scope.
+
+    GitHub has no "count merged PRs per week" call, so the counting stays SQL
+    over stored rows (one checked, access-filtered path for every chart); what
+    changes is WHEN they are read: when someone asks, not on a timer. One read
+    per scope at a time. Never raises.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    settings = settings or GitHubLiveSettings.from_env()
+    try:
+        row = _connection(org_id, workspace_id)
+    except Exception:  # noqa: BLE001 - see docstring
+        logger.warning("insights: could not look up the GitHub connection", exc_info=True)
+        return "failed"
+    if row is None:
+        return "none"
+    connection_id, last = row
+    if last is not None and settings.chart_refresh_minutes > 0:
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        if last > datetime.now(timezone.utc) - timedelta(minutes=settings.chart_refresh_minutes):
+            return "fresh"
+    key = (org_id, workspace_id)
+    with _RUNNING_LOCK:
+        running = _RUNNING.get(key)
+        if running is None or running.done():
+            running = _READS.submit(_read_now, org_id, workspace_id, connection_id)
+            _RUNNING[key] = running
+    try:
+        running.result(timeout=settings.chart_refresh_wait_seconds)
+    except _Waited:
+        return "reading"
+    except Exception:  # noqa: BLE001 - see docstring
+        logger.warning("insights: on-demand GitHub read failed", exc_info=True)
+        return "failed"
+    return "refreshed"
