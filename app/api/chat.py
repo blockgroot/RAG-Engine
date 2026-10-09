@@ -792,13 +792,19 @@ def create_conversation(
 
 
 def _deep_would_help(result, attached: list[tuple[str, str, bool]] | None = None) -> bool:
-    """A normal-Ask refusal that Deep analysis could turn into an answer.
+    """A normal-Ask refusal or partial answer that Deep analysis could complete.
 
     Only when there is more to read: the search found relevant documents (it
     passed the gate), or an upload is longer than normal Ask reads whole.
     A gate miss or a withheld document gets no hint; reading deeper cannot help.
     """
-    if result.grounded or result.access_restricted:
+    if result.access_restricted:
+        return False
+    # A partial answer ends with a "Not covered:" line (the partial rule in
+    # app/rag/prompts.py): answered, but the rest may be deeper in the documents.
+    partial = any(line.strip().startswith("Not covered:")
+                  for line in (getattr(result, "answer", "") or "").splitlines())
+    if result.grounded and not partial:
         return False
     if result.top_score is not None and result.top_score >= RagSettings.from_env().similarity_threshold:
         return True

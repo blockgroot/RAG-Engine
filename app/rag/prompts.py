@@ -182,8 +182,9 @@ _FOCUS_RULE = (
 )
 _PARTIAL_RULE = (
     "If CONTEXT answers only part of the QUESTION, answer that part (mode A "
-    "or B) and say plainly which part CONTEXT does not cover. Use mode C only "
-    "when CONTEXT supports no part of the QUESTION."
+    "or B), then end with one line that starts with \"Not covered:\" and names "
+    "the part CONTEXT does not cover. Use mode C only when CONTEXT supports no "
+    "part of the QUESTION."
 )
 _CONFLICT_RULE = (
     "If CONTEXT blocks disagree about the same thing, use the one that is "

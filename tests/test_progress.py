@@ -66,3 +66,14 @@ def test_deep_hint_only_when_reading_deeper_could_help():
     # An upload longer than normal Ask reads whole; a short one is already read whole.
     assert _deep_would_help(R(top_score=None, **refused), [("big.pdf", "x" * 20_000, False)])
     assert not _deep_would_help(R(top_score=None, **refused), [("small.txt", "x" * 500, False)])
+
+
+def test_deep_hint_on_a_partial_answer():
+    from types import SimpleNamespace as R
+
+    from app.api.chat import _deep_would_help
+
+    base = dict(grounded=True, access_restricted=False, top_score=0.6)
+    partial = "The budget is $2.4M. [1]\nNot covered: which customers are in wave 2."
+    assert _deep_would_help(R(answer=partial, **base))
+    assert not _deep_would_help(R(answer="The budget is $2.4M. [1]", **base))

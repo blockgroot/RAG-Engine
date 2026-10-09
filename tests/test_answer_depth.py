@@ -298,3 +298,20 @@ def test_deep_analysis_reads_a_mid_sized_upload_whole():
     finally:
         reset_deep_read(token)
     assert len(blocks) == 1 and blocks[0].endswith("x" * 20_000)  # inlined, no paging call
+
+
+def test_deep_read_of_one_long_page_covers_every_hit_not_just_the_best():
+    # One 40-piece page; the best hit is near the start, a second hit (the
+    # meeting notes) near the end. A fixed window around the best hit missed it.
+    page = {("p", i): f"P{i} " + "x" * 98 for i in range(40)}
+    store = NeighbourStore(page)
+    pipe = _pipeline(store, neighbors=1)
+    pipe._settings = replace(pipe._settings, neighbor_top_docs=3, max_context_chars=1500)
+    hits = [_hit("p", 2, page[("p", 2)]), _hit("p", 36, page[("p", 36)])]
+
+    out = pipe._with_neighbors(hits, ORG, workspace_id=None, viewer=None)
+
+    assert len(out) == 1  # one block for the page; the second hit was absorbed
+    text = out[0].content
+    assert "P2 " in text and "P36 " in text and "P35 " in text and "P37 " in text
+    assert "P20 " not in text  # budget-sized: ~15 pieces, not the whole page

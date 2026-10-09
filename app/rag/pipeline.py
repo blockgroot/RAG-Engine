@@ -256,6 +256,47 @@ def reset_deep_read(token: contextvars.Token) -> None:
     _DEEP_READ.reset(token)
 
 
+#: Most pieces a deep read takes from one document.
+_DEEP_MAX_PIECES = 100
+
+
+def _deep_spans(
+    hits: list[RetrievedChunk],
+    top: list[RetrievedChunk],
+    n: int,
+    top_docs: int,
+    budget_chars: int,
+) -> dict[str, list[int]]:
+    """Which pieces of each top document a deep read takes, in reading order.
+
+    Sized by the budget, not a fixed window: the room ``top_docs`` documents
+    would share goes to the ones found, so one long page gets all of it. Grown
+    around EVERY hit in that document, not just the best one, so a fact far
+    from the best match (meeting notes at the end of a long page) is still
+    read. Never fewer than the 2n+1 pieces a fixed window took.
+    """
+    avg = max(1, sum(len(h.content) for h in hits) // len(hits))
+    share = max(2 * n + 1, budget_chars // max(1, len(top)) // avg)
+    if len(top) < top_docs:
+        share = max(share, (2 * n + 1) * top_docs // len(top))
+    # ponytail: a fixed cap on pieces per document so tiny pieces (Slack
+    # messages) cannot ask for hundreds; the char budget still trims after.
+    share = min(share, _DEEP_MAX_PIECES)
+    spans: dict[str, list[int]] = {}
+    for first in top:
+        seeds = [h.chunk_index for h in hits if h.document_id == first.document_id]
+        picked: set[int] = set()
+        radius = 0
+        while len(picked) < share and radius <= share:
+            for i in seeds:
+                for j in (i - radius, i + radius):
+                    if j >= 0 and len(picked) < share:
+                        picked.add(j)
+            radius += 1
+        spans[first.document_id] = sorted(picked)
+    return spans
+
+
 def _cross_plan_active() -> bool:
     """A connected answer is running: its answer must not come FROM the cache
     either, since the cache key names one tool and this answer reads several."""
@@ -1135,16 +1176,14 @@ class RagPipeline:
                     break
                 firsts.setdefault(h.document_id, h)
             top = list(firsts.values())
+            spans = _deep_spans(hits, top, n, top_docs, rag.context_chars_for(len(hits)))
         else:
             top = hits[:_NEIGHBOR_TOP_HITS]
 
-        def window(h: RetrievedChunk) -> range:
+        def window(h: RetrievedChunk):
             if top_docs <= 0:
                 return range(max(0, h.chunk_index - n), h.chunk_index + n + 1)
-            # A deep read takes 2n+1 pieces, shifted to start at 0 near a
-            # document's start, so a short document is read from its beginning.
-            start = max(0, h.chunk_index - n)
-            return range(start, start + 2 * n + 1)
+            return spans[h.document_id]
 
         taken = {(h.document_id, h.chunk_index) for h in top}
         wanted = [
