@@ -106,6 +106,9 @@ class AgentResponse:
     #: written -- the company is not missing it), and the answer cache must not
     #: serve one person's access situation to the next asker.
     access_restricted: bool = False
+    #: The answer was spread over several documents (a wide read): normal Ask
+    #: offers Deep analysis, which reads more of them.
+    wide_read: bool = False
     #: Second Brain live tools: connectors read LIVE for this answer, and whether a
     #: live read withheld the item behind a refusal (kept out of the gap log
     #: and the cache for the reason `access_restricted` is).

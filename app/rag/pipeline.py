@@ -88,6 +88,7 @@ from .context_assemble import assemble_context_texts, describe_hit
 from .decompose import looks_compound, parse_sub_questions
 from .scope_intent import OVERVIEW, classify_scope_intent
 from . import progress
+from .deep import deep_read_on, reset_deep_read, use_deep_read  # noqa: F401 -- re-exported
 from .query_cache import QueryAnswerCache
 from .request_budget import RequestBudget
 from .summary_fold import schedule_summary_fold, wait_for_conversation_fold
@@ -240,20 +241,6 @@ def _graph_facts_block(org_id: str | None, routed: str | None) -> tuple[str | No
     except Exception:  # noqa: BLE001 - facts may only ever add
         logger.warning("graph facts skipped", exc_info=True)
         return None, False
-
-
-#: Chat's "Deep analysis" mode for this request. A ContextVar for the reason
-#: `use_model` is one (app/llm/routed.py): set at the API edge, read here.
-_DEEP_READ: contextvars.ContextVar[bool] = contextvars.ContextVar("rag_deep_read", default=False)
-
-
-def use_deep_read(on: bool) -> contextvars.Token:
-    """Read the top documents deeply for the rest of this request."""
-    return _DEEP_READ.set(on)
-
-
-def reset_deep_read(token: contextvars.Token) -> None:
-    _DEEP_READ.reset(token)
 
 
 #: Most pieces a deep read takes from one document.
@@ -461,6 +448,9 @@ class RagResult:
     # Inline citations (`rag/cite.py`): ``[{n, document_id, title, provider,
     # url}]`` for every valid ``[n]`` marker left in ``answer``.
     cited: list[dict] = field(default_factory=list)
+    #: Retrieval found the answer spread over several documents (a wide read)
+    #: -- the broad questions Deep analysis reads more of.
+    wide_read: bool = False
 
 
 def _without_withheld(
@@ -724,7 +714,7 @@ class RagPipeline:
             and current_live_request() is None
             and not current_asker_facts()
             # The cache is keyed on the scope and the model, not the depth.
-            and not _DEEP_READ.get()
+            and not deep_read_on()
         ):
             cached = self._query_cache.get(
                 org_id,
@@ -756,7 +746,7 @@ class RagPipeline:
             viewer=viewer,
         )
 
-        if (conversation_id is None and not result.cache_hit and not _DEEP_READ.get()
+        if (conversation_id is None and not result.cache_hit and not deep_read_on()
                 and _is_cacheable(result)):
             self._query_cache.put(
                 org_id,
@@ -1017,6 +1007,7 @@ class RagPipeline:
                     )
                 )
 
+        wide_read = self._settings.top_k < len(hits) <= self._read_settings().ranked_max_hits
         result = self._generate(
             question,
             # Reused hits are last turn's sources, which already carry their
@@ -1037,6 +1028,7 @@ class RagPipeline:
             extra_blocks=live.cite_blocks + [None] * len(attachment_contexts),
             superseded=live.refreshed,
         )
+        result = replace(result, wide_read=wide_read)
         audit_used, audit_downgraded, audit_reason = (
             result.audit_used,
             result.audit_downgraded,
@@ -1138,7 +1130,7 @@ class RagPipeline:
 
     def _read_settings(self) -> RagSettings:
         """How much to read: the deep read in Deep analysis mode, else as configured."""
-        return self._settings.deep() if _DEEP_READ.get() else self._settings
+        return self._settings.deep() if deep_read_on() else self._settings
 
     def _with_neighbors(
         self,
@@ -1588,11 +1580,15 @@ class RagPipeline:
             return []
 
         settings = settings or AttachmentSettings.from_env()
-        if _DEEP_READ.get():
+        if deep_read_on():
             # Deep analysis reads uploads whole up to the deep budget too, rather
-            # than letting the model pick sections of a mid-sized file.
-            settings = replace(settings, inline_char_budget=max(
-                settings.inline_char_budget, self._settings.deep_max_context_chars))
+            # than letting the model pick sections of a mid-sized file, and lets
+            # it pick more sections of a long one.
+            settings = replace(
+                settings,
+                inline_char_budget=max(settings.inline_char_budget, self._settings.deep_max_context_chars),
+                max_reads=max(settings.max_reads, settings.deep_max_reads),
+            )
         progress.report(f"Reading {', '.join(f.filename for f in files)}")
         if sum(len(f.text) for f in files) <= settings.inline_char_budget:
             return [
@@ -1822,7 +1818,7 @@ class RagPipeline:
             # ponytail: a whole read of top_k..wide_max_hits chunks looks ranked and
             # gets the wide budget, which already fits that many; thread an explicit
             # flag from `_whole_scope` if the two limits ever diverge.
-            whole_read = len(hits) > self._settings.ranked_max_hits
+            whole_read = len(hits) > self._read_settings().ranked_max_hits
             screened = _screen_hits(hits, org_id, self._guard_settings)
             if hits and not screened and not extra_contexts:
                 # Everything retrieved was flagged: refuse without a model call
@@ -1853,7 +1849,7 @@ class RagPipeline:
             )
             # The budget keeps a PREFIX, so block i is prompt_hits[i].
             blocks: list = list(prompt_hits[: len(contexts)])
-            progress.found(blocks, deep_docs=self._settings.deep_top_docs if _DEEP_READ.get() else 0)
+            progress.found(blocks, deep_docs=self._settings.deep_top_docs if deep_read_on() else 0)
         else:
             blocks = [None] * len(contexts)
         # Files the asker attached go in FIRST, ahead of retrieved chunks.

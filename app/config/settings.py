@@ -429,7 +429,12 @@ class RagSettings:
     deep_max_context_chars: int = 30000
 
     def deep(self) -> "RagSettings":
-        """These settings with the deep read on, one budget for ranked and wide reads."""
+        """These settings with the deep read on, one budget for ranked and wide reads.
+
+        A bigger pool (80) and a passage from every non-weak document were
+        tried for breadth and found no more of the right documents on the
+        Benchmark 2 retest, so Deep keeps the normal search.
+        """
         return replace(
             self,
             neighbor_top_docs=self.deep_top_docs,
@@ -1301,6 +1306,8 @@ class AttachmentSettings:
     #: Calls honoured in the single tool round. Bounds the worst case at
     #: max_reads * max_read_chars of added context.
     max_reads: int = 4
+    # Deep analysis lets the model pick more sections of a long upload.
+    deep_max_reads: int = 8
 
     #: Reject an upload whose extracted text exceeds this many TOKENS. Onyx's
     #: `file_token_count_threshold_k`, and the gate they apply that we did not:
@@ -1325,6 +1332,7 @@ class AttachmentSettings:
             preview_chars=int(os.getenv("ATTACHMENT_PREVIEW_CHARS") or 500),
             max_read_chars=int(os.getenv("ATTACHMENT_MAX_READ_CHARS") or 16_000),
             max_reads=int(os.getenv("ATTACHMENT_MAX_READS") or 4),
+            deep_max_reads=int(os.getenv("ATTACHMENT_DEEP_MAX_READS") or 8),
             max_tokens=int(os.getenv("ATTACHMENT_MAX_TOKENS") or 120_000),
         )
 

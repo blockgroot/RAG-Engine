@@ -77,3 +77,20 @@ def test_deep_hint_on_a_partial_answer():
     partial = "The budget is $2.4M. [1]\nNot covered: which customers are in wave 2."
     assert _deep_would_help(R(answer=partial, **base))
     assert not _deep_would_help(R(answer="The budget is $2.4M. [1]", **base))
+
+
+def test_deep_hint_on_a_broad_answer_and_no_bare_refusal_when_material_exists():
+    from types import SimpleNamespace as R
+
+    from app.api.chat import DEEP_SUGGESTION, _deep_would_help, _shown_answer
+
+    ok = dict(grounded=True, access_restricted=False, top_score=0.6, answer="Done. [1]")
+    assert _deep_would_help(R(wide_read=True, **ok))  # spread over several documents
+    assert not _deep_would_help(R(wide_read=False, **ok))
+    # A long upload: normal Ask read only parts of it, whatever the answer.
+    assert _deep_would_help(R(**ok), [("big.pdf", "x" * 20_000, False)])
+
+    refused = R(grounded=False, access_restricted=False, top_score=0.6, answer="I don't know.")
+    assert _shown_answer(refused, True) == DEEP_SUGGESTION
+    assert _shown_answer(refused, False) == "I don't know."  # gate miss: plain refusal
+    assert _shown_answer(R(**ok), True) == "Done. [1]"  # an answer is never replaced

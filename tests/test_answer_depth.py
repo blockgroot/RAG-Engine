@@ -315,3 +315,4 @@ def test_deep_read_of_one_long_page_covers_every_hit_not_just_the_best():
     text = out[0].content
     assert "P2 " in text and "P36 " in text and "P35 " in text and "P37 " in text
     assert "P20 " not in text  # budget-sized: ~15 pieces, not the whole page
+

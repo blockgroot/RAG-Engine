@@ -58,7 +58,7 @@ from ..agent.routing import (
 from ..agent.rag_pipeline_agent import RagPipelineAgent
 from ..config.settings import AttachmentSettings, GraphSettings, RagSettings
 from ..rag import progress
-from ..rag.pipeline import reset_deep_read, use_deep_read
+from ..rag.deep import reset_deep_read, use_deep_read
 from ..core.exceptions import AuthError, LLMProviderError, ProviderError
 from ..graph import plan as graph_plan
 from ..livetools import LiveRequest, current_live_request, reset_live_request, use_live_request
@@ -792,24 +792,40 @@ def create_conversation(
 
 
 def _deep_would_help(result, attached: list[tuple[str, str, bool]] | None = None) -> bool:
-    """A normal-Ask refusal or partial answer that Deep analysis could complete.
+    """A normal-Ask answer that Deep analysis could make more complete.
 
-    Only when there is more to read: the search found relevant documents (it
-    passed the gate), or an upload is longer than normal Ask reads whole.
-    A gate miss or a withheld document gets no hint; reading deeper cannot help.
+    Only when there is more to read: an upload longer than normal Ask reads
+    whole, or relevant documents (the search passed the gate) behind a refusal,
+    a partial answer, or a wide read (the scores showed the answer is spread
+    over several documents -- a broad question). A gate miss or a withheld
+    document gets no hint; reading deeper cannot help.
     """
     if result.access_restricted:
         return False
+    size = sum(len(text) for _, text, _ in attached or [])
+    if size > AttachmentSettings.from_env().inline_char_budget:
+        return True
+    if result.top_score is None or result.top_score < RagSettings.from_env().similarity_threshold:
+        return False
+    if not result.grounded or getattr(result, "wide_read", False):
+        return True
     # A partial answer ends with a "Not covered:" line (the partial rule in
     # app/rag/prompts.py): answered, but the rest may be deeper in the documents.
-    partial = any(line.strip().startswith("Not covered:")
-                  for line in (getattr(result, "answer", "") or "").splitlines())
-    if result.grounded and not partial:
-        return False
-    if result.top_score is not None and result.top_score >= RagSettings.from_env().similarity_threshold:
-        return True
-    size = sum(len(text) for _, text, _ in attached or [])
-    return size > AttachmentSettings.from_env().inline_char_budget
+    return any(line.strip().startswith("Not covered:")
+               for line in (getattr(result, "answer", "") or "").splitlines())
+
+
+#: Shown instead of the plain "I don't know" when the material to answer is
+#: there but normal Ask read too little of it. Still a refusal: nothing is
+#: claimed, and the gap is recorded as usual.
+DEEP_SUGGESTION = (
+    "I found related material, but the parts I read don't answer this. "
+    "Deep analysis reads it more fully: choose Try Deep analysis below."
+)
+
+
+def _shown_answer(result, deep_hint: bool) -> str:
+    return DEEP_SUGGESTION if deep_hint and not result.grounded else result.answer
 
 
 _PROGRESS_END = object()
@@ -998,8 +1014,10 @@ def _stream_attachment_answer(
         return
 
     response = RagPipelineAgent._to_response(result)
+    deep_hint = not deep_mode and _deep_would_help(response, attached)
+    shown = _shown_answer(response, deep_hint)
     delay = _stream_word_delay_seconds()
-    for chunk in _word_chunks(response.answer):
+    for chunk in _word_chunks(shown):
         yield _sse_event("token", chunk)
         if delay:
             time.sleep(delay)
@@ -1021,7 +1039,7 @@ def _stream_attachment_answer(
         conversation_id,
         question,
         {
-            "answer": response.answer,
+            "answer": shown,
             "grounded": response.grounded,
             "source": response.source,
             "citations": [
@@ -1046,7 +1064,7 @@ def _stream_attachment_answer(
             # The documents behind the answer's [n] markers; the UI draws a
             # chip only for a number listed here and strips the rest.
             "cited": list(getattr(response, "cited", None) or []),
-            "deep_hint": not deep_mode and _deep_would_help(response, attached),
+            "deep_hint": deep_hint,
         },
     )
 
@@ -1475,8 +1493,10 @@ def _stream_answer_body(
             gate_score=result.top_score,
         )
 
+    deep_hint = not deep_mode and not chart_mode and _deep_would_help(result)
+    shown = _shown_answer(result, deep_hint)
     delay = _stream_word_delay_seconds()
-    for chunk in _word_chunks(result.answer):
+    for chunk in _word_chunks(shown):
         yield _sse_event("token", chunk)
         if delay:
             time.sleep(delay)
@@ -1484,7 +1504,7 @@ def _stream_answer_body(
         conversation_id,
         question,
         {
-            "answer": result.answer,
+            "answer": shown,
             "grounded": result.grounded,
             "source": result.source,
             "citations": [
@@ -1527,7 +1547,7 @@ def _stream_answer_body(
                         and getattr(decision, "chart_ask", None) == "count")
                 )
             ),
-            "deep_hint": not deep_mode and not chart_mode and _deep_would_help(result),
+            "deep_hint": deep_hint,
             # Personal memory saved from this question, announced so saving is
             # never silent; the pill offers Undo.
             "remembered": _remembered(memory_turn),

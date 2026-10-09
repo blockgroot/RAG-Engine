@@ -226,7 +226,13 @@ def main() -> None:
                     help="file of question ids, one per line: ask just these (a targeted re-test)")
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                     help="setting for this variant only, e.g. RAG_TOP_K=3 (wins over .env.bench)")
+    ap.add_argument("--deep", action="store_true",
+                    help="Handbook: ask in chat's Deep analysis mode")
     args = ap.parse_args()
+    if args.deep:
+        from app.rag.deep import use_deep_read
+
+        use_deep_read(True)
     for kv in args.set:
         key, _, value = kv.partition("=")
         os.environ[key] = value
