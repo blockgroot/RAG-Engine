@@ -51,13 +51,14 @@ def test_retrieval_regression_detected_when_ranking_breaks(
     def _broken(org_id, question, query_vec, **kwargs):
         out = real_retrieve(org_id, question, query_vec, **kwargs)
         if "part-time" in question.lower():
-            # Push the correct chunk to the bottom — simulates a retrieval regression.
-            hits = list(out.hits)
-            hits.sort(
-                key=lambda h: (
-                    1 if ("12" in h.content and "part-time" in h.content.lower()) else 0
-                )
-            )
+            # Lose the correct chunk -- simulates a retrieval regression. Moving it
+            # to the bottom is not enough: the weak-result cutoff
+            # (RETRIEVAL_RERANK_MIN_RATIO) can leave max_rank or fewer hits, so
+            # the bottom would still count as found.
+            hits = [
+                h for h in out.hits
+                if not ("12" in h.content and "part-time" in h.content.lower())
+            ]
             from app.rag.retrieval import RetrievalResult
 
             return RetrievalResult(hits=hits, gate_score=out.gate_score)

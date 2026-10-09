@@ -498,6 +498,39 @@ export function ConnectionCard({
       )}
 
 
+      {provider === "google" && connection && folderConfigured && changingFolder && (
+        <div className="stack" style={{ marginTop: "0.9rem" }}>
+          <DriveFolderPicker
+            connectionId={connection.id}
+            workspaceId={workspaceId}
+            inputId={`folder-change-${provider}`}
+            mode="change"
+            currentFolderId={connection.source_config?.folder_id}
+            currentFolderName={connection.source_config?.folder_name}
+            onSaved={(config, meta) => {
+              setConfigError(null);
+              setChangingFolder(false);
+              setSharing(meta?.sharing ?? null);
+              const purged = meta?.documents_purged ?? 0;
+              setFolderHint(
+                meta?.folder_changed
+                  ? purged > 0
+                    ? `Folder changed · ${purged} old file${purged === 1 ? "" : "s"} removed. Indexing the new folder has been queued.`
+                    : "Folder changed. Indexing the new folder has been queued."
+                  : "Folder saved."
+              );
+              onConfigSaved?.({ ...connection, source_config: config });
+            }}
+            onError={(message) => setConfigError(message || null)}
+            onCancel={() => {
+              setChangingFolder(false);
+              setConfigError(null);
+            }}
+          />
+          {configError && <div className="banner banner-warn">{configError}</div>}
+        </div>
+      )}
+
       {/* A freshly connected Slack has no channels yet, and every OTHER Slack
           picker branch below is gated on `channelsConfigured` -- so without
           this one there is nothing to click and the card reads as "Linked"

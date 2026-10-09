@@ -103,6 +103,12 @@ async def notion_webhook(
 
     # `workspace_id` is "the workspace ID where the event originated from" --
     # the same id the OAuth exchange stored as `external_workspace_id`.
+    # Logged so "did Notion call us?" has an answer; ids and type only, no content.
+    entity = payload.get("entity") if isinstance(payload.get("entity"), dict) else {}
+    logger.info(
+        "notion webhook: %s for %s %s in workspace %s",
+        payload.get("type"), entity.get("type"), entity.get("id"), payload.get("workspace_id"),
+    )
     background.add_task(_flag, "notion", str(payload.get("workspace_id") or ""))
     return {"ok": True}
 
