@@ -36,11 +36,19 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.config.settings import (  # noqa: E402
+    GeminiSettings,
     GroqSettings,
+    OllamaSettings,
     OpenRouterSettings,
     RagSettings,
 )
-from app.llm.catalog import ALL_MODELS, BACKEND_GROQ  # noqa: E402
+from app.llm.catalog import (  # noqa: E402
+    ALL_MODELS,
+    BACKEND_GEMINI,
+    BACKEND_GROQ,
+    BACKEND_OLLAMA,
+    BACKEND_OPENROUTER,
+)
 from app.llm.openai_provider import OpenAICompatProvider  # noqa: E402
 from app.llm.routed import _ROUTING_PREFS  # noqa: E402
 from app.rag.prompts import build_grounded_prompt  # noqa: E402
@@ -168,27 +176,26 @@ def probe(model_id: str, settings, *, extra_body: dict | None = None) -> dict:
 
 
 def main() -> int:
-    openrouter = OpenRouterSettings.from_env()
-    groq = GroqSettings.from_env()
-    if not (openrouter.enabled or groq.enabled):
-        print("Neither OPENROUTER_API_KEY nor GROQ_API_KEY is set.")
+    backends = {
+        BACKEND_OPENROUTER: OpenRouterSettings.from_env(),
+        BACKEND_GROQ: GroqSettings.from_env(),
+        BACKEND_OLLAMA: OllamaSettings.from_env(),
+        BACKEND_GEMINI: GeminiSettings.from_env(),
+    }
+    if not any(b.enabled for b in backends.values()):
+        print("No model backend key is set (OPENROUTER/GROQ/OLLAMA/GEMINI_API_KEY).")
         return 2
 
     print(f"answer cap = {_ANSWER_CAP} tokens\n")
     rows = []
     for choice in ALL_MODELS:
-        if choice.backend == BACKEND_GROQ:
-            if not groq.enabled:
-                print(f"SKIP  {choice.id} (GROQ_API_KEY unset)")
-                continue
-            rows.append((choice, probe(choice.id, groq)))
-        else:
-            if not openrouter.enabled:
-                print(f"SKIP  {choice.id} (OPENROUTER_API_KEY unset)")
-                continue
-            rows.append(
-                (choice, probe(choice.id, openrouter, extra_body=_ROUTING_PREFS))
-            )
+        creds = backends[choice.backend]
+        if not creds.enabled:
+            print(f"SKIP  {choice.id} ({choice.backend} key unset)")
+            continue
+        # The same extras chat sends (app/llm/routed.py).
+        extra = _ROUTING_PREFS if choice.backend == BACKEND_OPENROUTER else choice.extra_body
+        rows.append((choice, probe(choice.id, creds, extra_body=extra)))
 
     failures = 0
     for choice, row in rows:

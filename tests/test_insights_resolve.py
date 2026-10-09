@@ -271,8 +271,8 @@ def test_a_chart_intent_resolves_to_the_metric_and_requested_shape():
     assert intent.spec.chart == "pie"
 
 
-def test_pie_without_a_breakdown_falls_back_to_the_default_shape():
-    """A pie of one unnamed slice is not a share of a whole."""
+def test_a_pie_of_the_time_buckets_stays_a_pie():
+    """"Each month as a pie" is a slice per month. The chart draws that."""
     llm = FakeLLM(
         _spec(
             intent="chart",
@@ -283,7 +283,7 @@ def test_pie_without_a_breakdown_falls_back_to_the_default_shape():
         )
     )
     spec = resolve.resolve_question("tasks over time as a pie", providers=["linear"], llm=llm)
-    assert spec.chart == "line"
+    assert spec.chart == "pie"
 
 
 def test_chat_classifier_fail_open_is_qa_not_a_refusal():
@@ -632,6 +632,7 @@ def test_in_chart_mode_a_qa_reply_with_a_real_metric_is_a_chart(question):
     intent = resolve.classify_question(question, providers=["github"], llm=llm, fail_open=False)
     assert intent.kind == "chart"
     assert (intent.spec.metric, intent.spec.group_by, intent.spec.period) == ("prs_merged", None, "week")
+    assert intent.spec.chart == "pie"
     assert "They switched on Chart mode" in llm.prompts[0]
 
 
@@ -640,6 +641,80 @@ def test_in_chart_mode_a_qa_reply_without_a_pick_stays_a_text_question():
     intent = resolve.classify_question("what is our leave policy?", providers=["github"],
                                        llm=llm, fail_open=False)
     assert intent.kind == "qa"
+
+
+def _budget_table():
+    from app.doctables.store import TableRef
+
+    return TableRef(
+        id="t1",
+        name="Budgets",
+        columns=(
+            {"key": "c0", "name": "Department", "type": "category"},
+            {"key": "c1", "name": "Budget", "type": "number"},
+        ),
+        row_count=4,
+        truncated=False,
+        notes=(),
+        document_title="Quarterly update",
+        provider="notion",
+        source_uri=None,
+    )
+
+
+def test_chart_mode_charts_the_offered_page_the_question_names():
+    """The model said "written answer" for a page we already offered."""
+    q = (
+        "From the quarterly update page in Notion, show the total budget "
+        "for each department."
+    )
+    intent = resolve.classify_question(
+        q, providers=["notion"], llm=FakeLLM(json.dumps({"intent": "qa", "metric": None})),
+        fail_open=False, tables=[_budget_table()],
+    )
+    assert intent.kind == "chart"
+    spec = intent.spec
+    assert (spec.table_id, spec.group_by, spec.value, spec.measure, spec.chart) == (
+        "t1", "c0", "c1", "sum", "bar",
+    )
+
+
+def test_a_named_page_keeps_a_pie_the_model_asked_for():
+    q = (
+        "From the quarterly update page in Notion, show the total budget "
+        "for each department using pie charts."
+    )
+    intent = resolve.classify_question(
+        q, providers=["notion"],
+        llm=FakeLLM(json.dumps({"intent": "qa", "metric": None, "chart": "pie"})),
+        fail_open=False, tables=[_budget_table()],
+    )
+    assert intent.kind == "chart"
+    assert intent.spec.chart == "pie"
+    assert intent.spec.group_by == "c0"
+
+
+def test_two_unnamed_amounts_are_named_instead_of_turning_chart_off():
+    from app.doctables.store import TableRef
+
+    table = TableRef(
+        id="t1", name="Budgets",
+        columns=(
+            {"key": "c0", "name": "Department", "type": "category"},
+            {"key": "c1", "name": "Salary", "type": "number"},
+            {"key": "c2", "name": "Bonus", "type": "number"},
+        ),
+        row_count=4, truncated=False, notes=(),
+        document_title="Quarterly update", provider="notion", source_uri=None,
+    )
+    q = "From the quarterly update page, show the total for each department."
+    intent = resolve.classify_question(
+        q, providers=["notion"], llm=FakeLLM(json.dumps({"intent": "qa"})),
+        fail_open=False, tables=[table],
+    )
+    assert intent.kind == "refuse"
+    assert "Salary" in intent.message and "Bonus" in intent.message
+    assert "Turn off Chart" not in intent.message
 
 
 def test_outside_chart_mode_the_prompt_still_weighs_chart_or_prose():

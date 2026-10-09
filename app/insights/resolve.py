@@ -638,8 +638,9 @@ def _pick_chart(
     allowed = _allowed_shapes(metric)
     if metric.chart == "diverging_bar":
         return "diverging_bar"
-    if requested == "pie" and not group_by:
-        requested = None
+    # A pie with no second breakdown is a pie of the time buckets. The chart
+    # draws those slices; dropping pie here turned "each month as a pie"
+    # into the metric's default line.
     if requested == "line" and group_by:
         # A line through one point per person is unreadable.
         requested = "bar"
@@ -718,6 +719,12 @@ def classify_question(
         reply, metrics, fail_open=fail_open, github=github,
         missing=missing, providers=providers, handles=handles, fields=fields,
     )
+    if not fail_open and not (intent.kind == "chart" and intent.spec is not None):
+        # Chart mode, and the model said "written answer" or named no metric.
+        # A page in the question that we already offered is still a chart.
+        rescued = _chart_the_named_table(question, reply, handles)
+        if rescued is not None:
+            intent = rescued
     return replace(
         _note_range(_note_left_out(_honour_breakdown(intent, question, reply, fields),
                                    question, reply), question, reply),
@@ -798,6 +805,49 @@ def _breakdown_words(reply: str) -> str | None:
 
 def _squashed(text: str) -> str:
     return re.sub(r"\W+", " ", (text or "").lower()).strip()
+
+
+def _chart_the_named_table(question: str, reply: str, handles: dict) -> AskIntent | None:
+    """Chart mode named a page we already offered, and the model picked nothing.
+
+    One offered title (or table name) has to be a phrase in the question.
+    Two matches stay unresolved, so a later message can say which page.
+    The shape is whatever the model put in ``chart``; a missing shape is the
+    ordinary bar or line for that column.
+    """
+    if not handles:
+        return None
+    asked = f" {_squashed(question)} "
+    hits = []
+    for table in handles.values():
+        for label in (table.document_title, table.name):
+            phrase = _squashed(label or "")
+            if len(phrase.replace(" ", "")) >= 8 and f" {phrase} " in asked:
+                hits.append(table)
+                break
+    chosen = {table.id: table for table in hits}
+    if len(chosen) != 1:
+        return None
+    table = next(iter(chosen.values()))
+    requested = None
+    match = _JSON_RE.search(reply or "")
+    if match:
+        try:
+            data = json.loads(match.group(0))
+        except (ValueError, TypeError):
+            data = {}
+        chart = data.get("chart") if isinstance(data, dict) else None
+        if isinstance(chart, str) and chart.strip() not in ("", "null", "none"):
+            requested = chart.strip()
+    try:
+        pick = doc_tables.pick_named(table, question, requested)
+    except doc_tables.TableRefusal as exc:
+        return AskIntent("refuse", message=str(exc))
+    return AskIntent("chart", spec=ChartSpec(
+        metric=TABLE_METRIC, group_by=pick.group_by, period=DEFAULT_PERIOD,
+        chart=pick.chart, measure=pick.measure, filters=pick.filters,
+        table_id=pick.table_id, value=pick.value,
+    ))
 
 
 def _quoted_document(question: str, reply: str) -> str | None:

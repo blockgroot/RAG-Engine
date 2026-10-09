@@ -41,11 +41,11 @@ import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from ..config.settings import GroqSettings, OpenRouterSettings
+from ..config.settings import GeminiSettings, GroqSettings, OllamaSettings, OpenRouterSettings
 from ..core.exceptions import ConfigurationError
 from .base import ChatResult, LLMProvider
 from . import catalog
-from .catalog import BACKEND_GROQ, BACKEND_OPENROUTER, normalize
+from .catalog import BACKEND_GEMINI, BACKEND_GROQ, BACKEND_OLLAMA, BACKEND_OPENROUTER, normalize
 from .openai_provider import OpenAICompatProvider
 
 logger = logging.getLogger(__name__)
@@ -211,10 +211,19 @@ class RoutedLLMProvider(LLMProvider):
         default: LLMProvider,
         settings: OpenRouterSettings | None = None,
         groq: GroqSettings | None = None,
+        ollama: OllamaSettings | None = None,
+        gemini: GeminiSettings | None = None,
     ) -> None:
         self._default = default
         self._settings = settings or OpenRouterSettings.from_env()
         self._groq = groq or GroqSettings.from_env()
+        #: Credentials per backend: every catalogued model is served by one.
+        self._backends = {
+            BACKEND_OPENROUTER: self._settings,
+            BACKEND_GROQ: self._groq,
+            BACKEND_OLLAMA: ollama or OllamaSettings.from_env(),
+            BACKEND_GEMINI: gemini or GeminiSettings.from_env(),
+        }
         # Keyed by (org_id, model_id, config_version), NOT by model id alone.
         #
         # This dict is process-global: one `RoutedLLMProvider` per agent
@@ -241,12 +250,7 @@ class RoutedLLMProvider(LLMProvider):
 
     def configured_backends(self) -> set[str]:
         """Backends with credentials. Drives which models the picker offers."""
-        backends: set[str] = set()
-        if self._settings.enabled:
-            backends.add(BACKEND_OPENROUTER)
-        if self._groq.enabled:
-            backends.add(BACKEND_GROQ)
-        return backends
+        return {name for name, creds in self._backends.items() if creds.enabled}
 
     # -- dispatch ---------------------------------------------------------
     def _client_for(self, model_id: str) -> LLMProvider:
@@ -271,38 +275,27 @@ class RoutedLLMProvider(LLMProvider):
 
         backend = choice.backend
 
+        creds = self._backends[backend]
+        if not creds.enabled:
+            logger.warning(
+                "Model %s requested but the %s backend has no API key; "
+                "answering with the default model instead.",
+                model_id, backend,
+            )
+            return self._default
+        api_key, base_url, timeout = creds.api_key, creds.base_url, creds.timeout
         headers: dict[str, str] = {}
-        if backend == BACKEND_GROQ:
-            if not self._groq.enabled:
-                logger.warning(
-                    "Model %s requested but GROQ_API_KEY is unset; answering "
-                    "with the default model instead.",
-                    model_id,
-                )
-                return self._default
-            api_key, base_url = self._groq.api_key, self._groq.base_url
-            timeout = self._groq.timeout
-            # No routing preferences: ``provider`` and ``reasoning`` are
-            # OpenRouter's own request extensions, and Groq is a single
-            # provider serving its own hardware — there is nothing to route
-            # between and no data policy to negotiate (Groq states it does not
-            # train on inputs). Sending them would be, at best, ignored.
-            extra_body = None
-        else:
-            if not self._settings.enabled:
-                logger.warning(
-                    "Model %s requested but OPENROUTER_API_KEY is unset; "
-                    "answering with the default model instead.",
-                    model_id,
-                )
-                return self._default
-            api_key, base_url = self._settings.api_key, self._settings.base_url
-            timeout = self._settings.timeout
+        if backend == BACKEND_OPENROUTER:
+            # OpenRouter's own request extensions (data policy, tool support,
+            # reasoning excluded). A single-provider backend has nothing to
+            # route between; it gets only the model's own extras (reasoning).
             extra_body = _ROUTING_PREFS
             if self._settings.referer:
                 headers["HTTP-Referer"] = self._settings.referer
             if self._settings.title:
                 headers["X-Title"] = self._settings.title
+        else:
+            extra_body = choice.extra_body
 
         client = OpenAICompatProvider(
             model=model_id,

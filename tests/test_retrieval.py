@@ -113,3 +113,14 @@ def test_contextual_retrieval_prepends_context():
     # Original chunk is preserved, with extra situating context prepended.
     assert chunk in contextualized
     assert len(contextualized) > len(chunk), "expected context to be prepended"
+
+
+@requires_db
+def test_keyword_search_finds_a_long_natural_question(store, embedder, org_cleanup):
+    # RCA (docs/benchmarks/rca-broad-questions.md): the keyword leg required EVERY
+    # word of the question in one chunk, so a natural question matched nothing
+    # and hybrid search was silently vector-only for 93% of questions.
+    org_id = _seed(store, embedder, org_cleanup, [RARE_TERM, *DISTRACTORS])
+    question = "Which benefits does the ZephyrCare Platinum plan include for our employees this year?"
+    hits = store.keyword_search(org_id, question, embedder.embed([question])[0], top_k=10)
+    assert any("ZephyrCare" in h.content for h in hits), "keyword search must match on any of the words"

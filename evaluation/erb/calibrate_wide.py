@@ -67,33 +67,40 @@ def collect(split: str, pool: int) -> None:
         time.sleep(6)  # Jina's free tier limits reranked tokens per minute
 
 
-def _select(hits: list, top_k: int, max_hits: int, ratio: float, per_doc: int) -> list:
-    """``retrieval._spread`` on recorded (doc, score) pairs, best-first."""
+def _select(hits: list, top_k: int, max_hits: int, ratio: float, per_doc: int,
+            keep: int = 0, min_ratio: float = 0.0) -> list:
+    """What live retrieval selects from recorded (doc, score) pairs, best-first:
+    the reranker's top ``keep`` pieces (0 = all), the weak-result cutoff, then
+    ``retrieval._spread``. The first calibration skipped the cut and the
+    cutoff, so its coverage was not reachable live (RCA, 9 Oct)."""
     from types import SimpleNamespace
 
-    from app.rag.retrieval import _spread
+    from app.rag.retrieval import _drop_weak, _spread
 
     chunks = [SimpleNamespace(document_id=d, rerank_score=s, i=i) for i, (d, s) in enumerate(hits)]
+    chunks = _drop_weak(chunks[:keep] if keep else chunks, min_ratio)
     return [(c.document_id, c.rerank_score) for c in _spread(chunks, top_k, max_hits, ratio, per_doc)]
 
 
-def analyse(top_k: int, max_hits: int, per_doc: int, split: str | None) -> None:
+def analyse(top_k: int, max_hits: int, per_doc: int, split: str | None,
+            keep: int = 0, min_ratio: float = 0.0) -> None:
     rows = [json.loads(line) for line in OUT.open()]
     rows = [r for r in rows if r["gold"] and r["hits"] and (split is None or r["split"] == split)]
     single = [r for r in rows if len(r["gold"]) == 1]
     multi = [r for r in rows if len(r["gold"]) >= 3]
     print(f"{len(rows)} questions with known documents: {len(single)} one-document, {len(multi)} three-or-more")
     base = {r["question_id"]: {d for d, _ in r["hits"][:top_k]} for r in rows}
-    print(f"\ntop_k={top_k}, max_hits={max_hits}, per_doc={per_doc}")
+    print(f"\ntop_k={top_k}, max_hits={max_hits}, per_doc={per_doc}, keep={keep or 'all'}, min_ratio={min_ratio}")
     print("ratio | one-doc stays narrow | many-doc: right docs reached (today -> wide) | passages/q (all)")
-    for ratio in (0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9):
-        narrow = sum(len(_select(r["hits"], top_k, max_hits, ratio, per_doc)) <= top_k for r in single)
+    sel = lambda h, ratio: _select(h, top_k, max_hits, ratio, per_doc, keep, min_ratio)  # noqa: E731
+    for ratio in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7):
+        narrow = sum(len(sel(r["hits"], ratio)) <= top_k for r in single)
         cov_now = cov_wide = 0.0
         for r in multi:
             gold = set(r["gold"])
             cov_now += len(base[r["question_id"]] & gold) / len(gold)
-            cov_wide += len({d for d, _ in _select(r["hits"], top_k, max_hits, ratio, per_doc)} & gold) / len(gold)
-        passages = sum(len(_select(r["hits"], top_k, max_hits, ratio, per_doc)) for r in rows) / len(rows)
+            cov_wide += len({d for d, _ in sel(r["hits"], ratio)} & gold) / len(gold)
+        passages = sum(len(sel(r["hits"], ratio)) for r in rows) / len(rows)
         print(f"{ratio:.1f} | {narrow}/{len(single)} | {100 * cov_now / len(multi):.0f}% -> "
               f"{100 * cov_wide / len(multi):.0f}% | {passages:.1f}")
     # Where the right documents sit in the reranked pool: is the pool big enough?
@@ -117,11 +124,13 @@ def main() -> None:
     ap.add_argument("--top-k", type=int, default=5)
     ap.add_argument("--max-hits", type=int, default=10)
     ap.add_argument("--per-doc", type=int, default=2)
+    ap.add_argument("--keep", type=int, default=0, help="reranker pieces kept before selection (live: 10); 0 = all")
+    ap.add_argument("--min-ratio", type=float, default=0.0, help="weak-result cutoff (live: 0.2)")
     args = ap.parse_args()
     if args.collect:
         collect(args.split or "dev", args.pool)
     else:
-        analyse(args.top_k, args.max_hits, args.per_doc, args.split)
+        analyse(args.top_k, args.max_hits, args.per_doc, args.split, args.keep, args.min_ratio)
 
 
 if __name__ == "__main__":

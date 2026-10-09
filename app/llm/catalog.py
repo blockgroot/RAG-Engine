@@ -29,6 +29,8 @@ AUTO = "auto"
 #: does not empty the picker.
 BACKEND_OPENROUTER = "openrouter"
 BACKEND_GROQ = "groq"
+BACKEND_OLLAMA = "ollama"
+BACKEND_GEMINI = "gemini"
 
 
 @dataclass(frozen=True)
@@ -50,6 +52,10 @@ class ModelChoice:
     #: Qwen did that reliably -- the others answered in prose or picked
     #: nothing, and the member saw a refusal that blamed their question.
     charts: bool = False
+    #: Extra request fields for this model, e.g. low reasoning: production
+    #: caps answers at RAG_MAX_ANSWER_TOKENS, and a reasoning model that spends
+    #: the cap thinking returns EMPTY content (an LLMProviderError in chat).
+    extra_body: dict | None = None
 
 
 # Free-tier OpenRouter ids, each VERIFIED against a live key by
@@ -87,18 +93,10 @@ class ModelChoice:
 #
 # Four entries, not five: a verified list is the point, and padding it with a
 # model that fails a probe would defeat the reason this file is hardcoded.
-MODELS: tuple[ModelChoice, ...] = (
-    ModelChoice(
-        id="inclusionai/ling-3.0-flash-fin:free",
-        label="Ling 3.0 Flash",
-        note="Fast, 262K context.",
-    ),
-    ModelChoice(
-        id="cohere/north-mini-code:free",
-        label="Cohere North Mini",
-        note="Low latency, reliable tool calling.",
-    ),
-)
+#: None offered since 9 Oct 2026: Ling 3.0 Flash and Cohere North Mini were
+#: removed from the picker (the OpenRouter free tier is 50 requests/day
+#: account-wide). The backend stays for an org's own OpenRouter model.
+MODELS: tuple[ModelChoice, ...] = ()
 
 #: Groq-hosted models, each VERIFIED by scripts/verify_models.py against a
 #: live key: grounds (Mode A), refuses VERBATIM on unanswerable context,
@@ -117,18 +115,6 @@ MODELS: tuple[ModelChoice, ...] = (
 #:   - whisper-*/orpheus-*/prompt-guard-*: not chat models.
 GROQ_MODELS: tuple[ModelChoice, ...] = (
     ModelChoice(
-        id="openai/gpt-oss-120b",
-        label="GPT-OSS 120B",
-        note="Largest on Groq; strongest on multi-part questions.",
-        backend=BACKEND_GROQ,
-    ),
-    ModelChoice(
-        id="openai/gpt-oss-20b",
-        label="GPT-OSS 20B",
-        note="Much faster, same family — a good default for quick questions.",
-        backend=BACKEND_GROQ,
-    ),
-    ModelChoice(
         id="qwen/qwen3.8-27b",
         label="Qwen 3.8 27B",
         note="Strong general reasoning at low latency.",
@@ -137,7 +123,56 @@ GROQ_MODELS: tuple[ModelChoice, ...] = (
     ),
 )
 
-ALL_MODELS: tuple[ModelChoice, ...] = MODELS + GROQ_MODELS
+#: Gemini, selectable when the deployment's default is another vendor's
+#: (Claude Haiku since 9 Oct 2026). It was the default before, and built charts.
+GEMINI_MODELS: tuple[ModelChoice, ...] = (
+    ModelChoice(
+        id="gemini-3.1-flash-lite",
+        label="Gemini 3.1 Flash Lite",
+        note="Fast and low cost.",
+        backend=BACKEND_GEMINI,
+        charts=True,
+    ),
+)
+
+#: Ollama Cloud-hosted models, each VERIFIED by scripts/verify_models.py on
+#: 9 Oct 2026 under the 700-token answer cap: grounds with a MODE tag, refuses
+#: verbatim, resists an injection, makes a tool call. Reasoning is low (GPT-OSS)
+#: or off (Nemotron) so the cap is not spent thinking -- the GPT-OSS models
+#: moved here from Groq after "empty message content, finish_reason=length".
+#: Rejected: nemotron-3-nano:30b paraphrased the fixed refusal, which the
+#: pipeline would count as an answer.
+OLLAMA_MODELS: tuple[ModelChoice, ...] = (
+    ModelChoice(
+        id="gpt-oss:120b",
+        label="GPT-OSS 120B",
+        note="Strongest on multi-part questions.",
+        backend=BACKEND_OLLAMA,
+        extra_body={"reasoning_effort": "low"},
+    ),
+    ModelChoice(
+        id="gpt-oss:20b",
+        label="GPT-OSS 20B",
+        note="Faster, same family.",
+        backend=BACKEND_OLLAMA,
+        extra_body={"reasoning_effort": "low"},
+    ),
+    ModelChoice(
+        id="gemma4:31b",
+        label="Gemma 4 31B",
+        note="Fast, no hidden reasoning.",
+        backend=BACKEND_OLLAMA,
+    ),
+    ModelChoice(
+        id="nemotron-3-super",
+        label="Nemotron 3 Super",
+        note="Reasoning off for quick answers.",
+        backend=BACKEND_OLLAMA,
+        extra_body={"reasoning_effort": "none"},
+    ),
+)
+
+ALL_MODELS: tuple[ModelChoice, ...] = GEMINI_MODELS + OLLAMA_MODELS + MODELS + GROQ_MODELS
 
 _BY_ID = {m.id: m for m in ALL_MODELS}
 

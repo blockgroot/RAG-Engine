@@ -439,3 +439,69 @@ def test_completed_and_remaining_is_two_bars_from_the_sources_state_types(seeded
     closed = sum(1 for f in visible if f.attrs["state_type"] in FINISHED)
     assert totals == {"Closed": closed, "Open": len(visible) - closed}
     del metric
+
+
+def test_a_pie_of_months_stays_a_pie_and_matches_the_count(seeded):
+    """The shape the asker named is what gets drawn; the numbers stay the SQL."""
+    metric = registry.get("prs_merged")
+    spec = ChartSpec(metric="prs_merged", group_by=None, period="month", chart="pie")
+    response = InsightsAgent().answer(
+        "e2e", seeded["org"], viewer=SANA, spec=spec, user_id="u", role="owner",
+    )
+    assert response.chart["chart"] == "pie"
+    assert actual(seeded, spec) == expected(seeded, metric, period="month")
+
+
+class _SaysProse:
+    """The small model that answered the Notion screenshots: no metric, a pie."""
+
+    model = "test"
+    last_usage = None
+
+    def generate(self, prompt, *, max_tokens=None):
+        return '{"intent": "qa", "metric": null, "chart": "pie"}'
+
+
+def test_a_named_notion_page_is_charted_when_the_model_says_prose(seeded):
+    """Quarterly update is already a table. Chart mode still charts it."""
+    from app.doctables.store import list_tables
+    from app.ingestion.pipeline import _store_tables
+    from app.insights.resolve import classify_question
+    from app.sources.base import SourceDocument
+
+    org = seeded["org"]
+    with get_connection() as conn:
+        doc = conn.execute(
+            "INSERT INTO documents (org_id, title, source_uri, source_provider, "
+            "source_external_id, doc_is_public, doc_viewers) "
+            "VALUES (%s, 'Quarterly update', 'https://notion.test/q', 'notion', %s, true, %s) "
+            "RETURNING id",
+            (org, uuid.uuid4().hex, []),
+        ).fetchone()[0]
+        conn.commit()
+    _store_tables(
+        str(doc),
+        SourceDocument(
+            external_id="q", title="Quarterly update",
+            content="| Department | Budget |\n|---|---|\n| Engineering | 40 |\n| Design | 10 |\n",
+        ),
+        org_id=org, workspace_id=None,
+    )
+    tables = list_tables(org_id=org, workspace_id=None, viewer=SANA)
+    question = (
+        "From the quarterly update page in Notion, show the total budget "
+        "for each department using pie charts."
+    )
+    intent = classify_question(
+        question, providers=["notion"], llm=_SaysProse(), fail_open=False, tables=tables,
+    )
+    assert intent.kind == "chart" and intent.spec is not None
+    assert intent.spec.chart == "pie"
+    response = InsightsAgent().answer(
+        "e2e", org, viewer=SANA, spec=intent.spec, user_id="u", role="owner",
+    )
+    assert response.chart is not None, response.answer
+    assert response.chart["chart"] == "pie"
+    assert {p["group"]: p["value"] for p in response.chart["points"]} == {
+        "Engineering": 40.0, "Design": 10.0,
+    }

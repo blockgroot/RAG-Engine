@@ -30,7 +30,7 @@ from ..auth.email import send_scheduler_report_email_safe
 from ..auth.users import get_user
 from ..config.settings import ApiSettings
 from ..core.exceptions import ConfigurationError
-from ..llm import build_llm_provider
+from ..llm import build_aux_llm_provider
 from ..llm.routed import default_model_only
 from ..llm.base import LLMProvider
 from ..sources.google_groups import viewer_for_person
@@ -172,13 +172,12 @@ def run_scheduler_once(
         # learned "channels checked: …" still has nothing to report on.
         report = NO_ACTIVITY_NOTE
     else:
-        # The MAIN provider, not the aux one. A report is the product's most
-        # visible generated artifact; the aux model exists for cheap
-        # classification stages (the setup chat's tool call), and pointing a
-        # report at it produced one-line summaries of substantial content.
-        # This also gives the deploy a real knob: LLM_AUX_MODEL can stay on a
-        # lite model while LLM_MODEL carries the reports.
-        llm = llm or build_llm_provider()
+        # The background (aux) provider since 9 Oct 2026: the main model is
+        # Claude Haiku for interactive chat, and reports stay on Gemini, the
+        # model that wrote them before (LLM_AUX_MODEL=gemini-3.1-flash-lite).
+        # Keep LLM_AUX_MODEL on a full model, not a lite classifier: an
+        # earlier aux model produced one-line summaries of substantial content.
+        llm = llm or build_aux_llm_provider()
         prompt = build_scheduler_report_prompt(
             scheduler.prompt, digest, scheduler.provider
         )

@@ -43,6 +43,14 @@ def _to_db_vector(embedding: list[float] | np.ndarray) -> Vector:
 _normalize_viewers = normalize_viewers
 _viewer_clause = viewer_clause
 
+#: The keyword leg matches chunks with ANY of the question's words, ranked by
+#: how many and how well they match (then BM25 below). It used to be
+#: ``websearch_to_tsquery``, which requires EVERY word in one chunk: a natural
+#: question almost never has that, so the leg was empty for 186 of 200
+#: Benchmark 2 questions and hybrid search was vector-only
+#: (docs/benchmarks/rca-broad-questions.md).
+_ANY_WORD = "to_tsquery('english', replace(plainto_tsquery('english', %s)::text, '&', '|'))"
+
 
 class PgVectorStore(VectorStore):
     """Tenant-scoped chunk store backed by Postgres/pgvector."""
@@ -258,15 +266,13 @@ class PgVectorStore(VectorStore):
                     LEFT JOIN documents fd ON fd.id = c.document_id
                     WHERE c.org_id = %s::uuid
                       AND c.workspace_id IS NOT DISTINCT FROM %s::uuid
-                      AND c.content_tsv @@ websearch_to_tsquery('english', %s)
+                      AND c.content_tsv @@ {_ANY_WORD}
                       AND (%s::text IS NULL OR fd.source_provider = %s::text)
                       AND (%s::timestamptz IS NULL OR fd.source_last_modified >= %s::timestamptz)
                       AND (%s::timestamptz IS NULL OR fd.source_last_modified <= %s::timestamptz)
                       AND (%s::text[] IS NULL OR fd.tags && %s::text[])
                       {viewer_sql.lstrip()}
-                    ORDER BY ts_rank(
-                        c.content_tsv, websearch_to_tsquery('english', %s)
-                    ) DESC
+                    ORDER BY ts_rank(c.content_tsv, {_ANY_WORD}) DESC
                     LIMIT %s
                 )
                 SELECT m.content,

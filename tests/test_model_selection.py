@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.config.settings import OpenRouterSettings
+from app.config.settings import OllamaSettings, OpenRouterSettings
 from app.llm import catalog
 from app.llm.base import ChatResult, LLMProvider
 from app.llm.routed import (
@@ -55,6 +55,7 @@ def routed():
     provider = RoutedLLMProvider(
         default,
         settings=OpenRouterSettings(api_key="test-key", base_url="http://openrouter.test"),
+        ollama=OllamaSettings(api_key="test-key", base_url="http://ollama.test"),
     )
     return provider, default
 
@@ -79,7 +80,7 @@ def test_auto_is_identical_to_no_selection(routed):
 def test_selection_routes_away_from_the_default(routed):
     """A picked model must not quietly answer from the default anyway."""
     provider, default = routed
-    picked = catalog.MODELS[0].id
+    picked = catalog.OLLAMA_MODELS[0].id
     use_model(picked)
     assert provider.active().model == picked
     assert default.calls == []
@@ -88,17 +89,17 @@ def test_selection_routes_away_from_the_default(routed):
 def test_client_is_built_once_per_model(routed):
     """Cached per model — a new client per request would leak connections."""
     provider, _ = routed
-    use_model(catalog.MODELS[0].id)
+    use_model(catalog.OLLAMA_MODELS[0].id)
     first = provider.active()
     second = provider.active()
     assert first is second
 
 
-def test_falls_back_to_default_when_openrouter_unconfigured():
+def test_falls_back_to_default_when_its_backend_is_unconfigured():
     """A stray model on a deployment without a key must not break chat."""
     default = _Recording("default-model")
-    provider = RoutedLLMProvider(default, settings=OpenRouterSettings(api_key=None))
-    use_model(catalog.MODELS[0].id)
+    provider = RoutedLLMProvider(default, ollama=OllamaSettings(api_key=None))
+    use_model(catalog.OLLAMA_MODELS[0].id)
     assert provider.generate("hi") == "answered by default-model"
 
 
@@ -125,7 +126,7 @@ def test_answering_model_resets_between_requests(routed):
 # --------------------------------------------------------------------------
 def test_cache_key_differs_per_model():
     base = _question_hash("what is the leave policy")
-    use_model(catalog.MODELS[0].id)
+    use_model(catalog.OLLAMA_MODELS[0].id)
     picked = _question_hash("what is the leave policy")
     assert base != picked
 
@@ -139,7 +140,7 @@ def test_cache_key_unchanged_for_default_path():
 
 def test_two_models_do_not_share_a_cache_slot():
     keys = set()
-    for choice in catalog.MODELS[:2]:
+    for choice in catalog.OLLAMA_MODELS[:2]:
         use_model(choice.id)
         keys.add(_question_hash("what is the leave policy"))
     assert len(keys) == 2
@@ -148,7 +149,7 @@ def test_two_models_do_not_share_a_cache_slot():
 # --------------------------------------------------------------------------
 # Validation at the trust boundary
 # --------------------------------------------------------------------------
-@pytest.mark.parametrize("value", [None, "", "auto", catalog.MODELS[0].id])
+@pytest.mark.parametrize("value", [None, "", "auto", catalog.OLLAMA_MODELS[0].id])
 def test_selectable_accepts_auto_blank_and_catalogued_ids(value):
     assert catalog.is_selectable(value)
 
@@ -221,7 +222,7 @@ def test_scheduler_reports_always_use_the_configured_model(monkeypatch):
     )
 
     # Deliberately hostile: a selection is live when the run starts.
-    use_model(catalog.MODELS[0].id)
+    use_model(catalog.OLLAMA_MODELS[0].id)
     runner.run_scheduler_once(scheduler, llm=_Probe())
 
     assert seen == [None], "a report must generate on the configured model"
@@ -304,7 +305,7 @@ def test_no_catalogued_model_is_a_known_reasoning_model():
         "dots-studio/dots-3-note-preview:free",
         "openrouter/free",  # routes to reasoning models at random
     }
-    offered = {m.id for m in catalog.MODELS}
+    offered = {m.id for m in catalog.ALL_MODELS}
     assert not (offered & starved), (
         f"catalogued model(s) known to starve on the answer cap: {offered & starved}"
     )
@@ -340,7 +341,7 @@ def test_only_user_facing_stages_follow_the_selected_model():
     pipeline._llm = probe
     pipeline._llm_aux = probe
 
-    picked = catalog.MODELS[0].id
+    picked = catalog.OLLAMA_MODELS[0].id
     use_model(picked)
 
     every_stage = sorted(AUX_LLM_STAGES | USER_FACING_LLM_STAGES | {"web-decision"})
@@ -414,57 +415,51 @@ def test_ingestion_and_setup_chat_use_the_unrouted_aux_provider():
 
 
 # --------------------------------------------------------------------------
-# Multiple backends (OpenRouter + Groq)
+# Multiple backends (Ollama, Gemini, Groq, OpenRouter)
 # --------------------------------------------------------------------------
-def _routed(openrouter_key=None, groq_key=None):
-    from app.config.settings import GroqSettings, OpenRouterSettings
+def _routed(openrouter_key=None, groq_key=None, ollama_key=None, gemini_key=None):
+    from app.config.settings import GeminiSettings, GroqSettings, OpenRouterSettings
 
     return RoutedLLMProvider(
         _Recording("default-model"),
         settings=OpenRouterSettings(api_key=openrouter_key),
         groq=GroqSettings(api_key=groq_key),
+        ollama=OllamaSettings(api_key=ollama_key),
+        gemini=GeminiSettings(api_key=gemini_key),
     )
 
 
 def test_a_model_is_sent_to_its_own_backend():
-    """The id alone cannot say where to send it — both hosts serve Llamas."""
-    from app.llm.catalog import BACKEND_GROQ, GROQ_MODELS, MODELS
+    """The id alone cannot say where to send it."""
+    from app.llm.catalog import GEMINI_MODELS, GROQ_MODELS, OLLAMA_MODELS
 
-    provider = _routed(openrouter_key="or-key", groq_key="groq-key")
+    provider = _routed(groq_key="g", ollama_key="o", gemini_key="m")
 
-    use_model(MODELS[0].id)
-    assert "openrouter.ai" in provider.active().base_url
-
+    use_model(OLLAMA_MODELS[0].id)
+    assert "ollama.com" in provider.active().base_url
+    use_model(GEMINI_MODELS[0].id)
+    assert "googleapis.com" in provider.active().base_url
     use_model(GROQ_MODELS[0].id)
     assert "groq.com" in provider.active().base_url
-    assert GROQ_MODELS[0].backend == BACKEND_GROQ
 
 
-def test_openrouter_routing_prefs_are_never_sent_to_groq():
-    """``provider``/``reasoning`` are OpenRouter request extensions.
+def test_reasoning_models_send_their_own_low_reasoning_and_no_openrouter_prefs():
+    """A reasoning model under the 700-token answer cap must not spend it
+    thinking (production: "empty message content, finish_reason=length"), and
+    OpenRouter's routing extensions are never sent to another backend."""
+    from app.llm.catalog import GROQ_MODELS
 
-    Groq is a single provider on its own hardware: there is nothing to route
-    between and no data policy to negotiate. Sending them is at best ignored
-    and at worst a 400 on a stricter endpoint.
-    """
-    from app.llm.catalog import GROQ_MODELS, MODELS
-
-    provider = _routed(openrouter_key="or-key", groq_key="groq-key")
-
-    use_model(MODELS[0].id)
-    assert provider.active()._extra_body is not None
-    assert provider.active()._extra_body["provider"]["data_collection"] == "deny"
-
+    provider = _routed(groq_key="g", ollama_key="o")
+    use_model("gpt-oss:120b")
+    assert provider.active()._extra_body == {"reasoning_effort": "low"}
     use_model(GROQ_MODELS[0].id)
     assert provider.active()._extra_body is None
 
 
 def test_a_backend_without_a_key_falls_back_rather_than_erroring():
     """Offering a model whose backend is unconfigured must not break chat."""
-    from app.llm.catalog import GROQ_MODELS
-
-    provider = _routed(openrouter_key="or-key", groq_key=None)
-    use_model(GROQ_MODELS[0].id)
+    provider = _routed(groq_key="g", ollama_key=None)
+    use_model(catalog.OLLAMA_MODELS[0].id)
     assert provider.generate("hi") == "answered by default-model"
 
 
@@ -476,16 +471,18 @@ def test_picker_only_offers_models_whose_backend_is_configured():
     """
     from app.llm import catalog as cat
 
-    both = _routed("or-key", "groq-key").configured_backends()
-    assert len(cat.as_dicts(both)) == len(cat.ALL_MODELS)
+    every = _routed("r", "g", "o", "m").configured_backends()
+    assert len(cat.as_dicts(every)) == len(cat.ALL_MODELS)
 
-    or_only = _routed("or-key", None).configured_backends()
-    assert all(d["backend"] == "openrouter" for d in cat.as_dicts(or_only))
+    ollama_only = _routed(ollama_key="o").configured_backends()
+    assert {d["backend"] for d in cat.as_dicts(ollama_only)} == {"ollama"}
 
-    groq_only = _routed(None, "groq-key").configured_backends()
-    assert all(d["backend"] == "groq" for d in cat.as_dicts(groq_only))
+    assert cat.as_dicts(_routed().configured_backends()) == []
 
-    assert cat.as_dicts(_routed(None, None).configured_backends()) == []
+
+def test_picker_has_no_duplicate_labels():
+    labels = [m.label for m in catalog.ALL_MODELS]
+    assert len(labels) == len(set(labels))
 
 
 def test_default_option_is_labelled_with_the_configured_model(monkeypatch):

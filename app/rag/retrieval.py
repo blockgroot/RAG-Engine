@@ -167,10 +167,14 @@ class HybridRetriever:
         gate_document_id = gate_document(candidates)
 
         pool_candidates = candidates[:pool]
-        # A connected answer ranks the WHOLE pool so another tool's best chunk
-        # can be reserved a slot; a normal answer is byte-identical to before.
+        # The selection below sees the WHOLE reranked pool. Cutting it to the
+        # top 10 pieces first hid documents ranked lower than one long
+        # document's many pieces from the wide read (RCA, 9 Oct: 62% -> 66% of
+        # the right documents for many-document questions, simple questions
+        # unchanged). The reranker scores every candidate either way; the
+        # selection still returns at most ``ranked_max_hits``.
         rag = self._rag_settings
-        keep = len(pool_candidates) if graph_cross else rag.ranked_max_hits
+        keep = len(pool_candidates)
         if self._reranker is not None and self._settings.rerank_enabled:
             final = _drop_weak(
                 self._rerank(rerank_q, pool_candidates, keep),
@@ -179,7 +183,7 @@ class HybridRetriever:
             if not graph_cross:
                 final = _spread(final, top_k, rag.wide_max_hits, rag.wide_doc_ratio, rag.wide_per_doc)
         else:
-            final = pool_candidates[:keep]
+            final = pool_candidates[: keep if graph_cross else rag.ranked_max_hits]
         if graph_cross:
             final = _reserve_other_tools(final, top_k, self._source_provider)
 

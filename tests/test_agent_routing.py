@@ -703,14 +703,14 @@ def test_chart_mode_on_a_model_without_charts_names_the_ones_that_can(monkeypatc
     _stub(monkeypatch, connected={"linear"})
     monkeypatch.setattr("app.insights.resolve.classify_question", boom)
     monkeypatch.setenv("LLM_MODEL", "gemini-2.5-flash")
-    use_model("cohere/north-mini-code:free")
+    use_model("gemma4:31b")
     try:
         decision = routing.choose_agent("Linear issues by priority", ORG, chart_mode=True)
     finally:
         use_model(None)
     assert decision.reason == "chart-model-unsupported"
-    assert decision.chart_refusal.startswith("**Cohere North Mini doesn't support charts**")
-    assert "gemini-2.5-flash or Qwen 3.8 27B" in decision.chart_refusal
+    assert decision.chart_refusal.startswith("**Gemma 4 31B doesn't support charts**")
+    assert "gemini-2.5-flash, Gemini 3.1 Flash Lite or Qwen 3.8 27B" in decision.chart_refusal
 
 
 @pytest.mark.parametrize("model", [None, "qwen/qwen3.8-27b", "acme-own-model"])

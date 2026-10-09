@@ -1042,10 +1042,6 @@ def _run_spec(
         # The resolver validated this already; a spec arriving another way
         # (a stored dict, a future caller) is refused the same way.
         raise CannotChart(f"I can't chart it that way. {exc}") from exc
-    if chart == "pie" and group_by is None:
-        # A pie needs groups to be shares OF something. Without one it is a
-        # single full circle, which states nothing.
-        chart = "line"
     period = spec.period
     points = store.run_metric(
         spec.metric,

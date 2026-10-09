@@ -151,6 +151,63 @@ def _options(table: TableRef, types: tuple[str, ...], role: str) -> str:
             if names else f"This table has no column that works for the {role}.")
 
 
+def _phrase(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+
+def pick_named(table: TableRef, question: str, requested: str | None) -> TablePick:
+    """A chart of the one table the question named, when the model did not pick it.
+
+    A column header is used when that header is a whole phrase in the
+    question. A single column of that type is used when the question names
+    none. Two unnamed candidates are refused, with their names.
+    """
+    asked = f" {_phrase(question)} "
+
+    def choose(types: tuple[str, ...], role: str) -> str | None:
+        cols = [c for c in table.columns if c.get("type") in types]
+        named = [
+            c for c in cols
+            if len(_phrase(str(c.get("name", ""))).replace(" ", "")) >= 3
+            and f" {_phrase(str(c.get('name', '')))} " in asked
+        ]
+        if len(named) == 1:
+            return named[0]["key"]
+        if len(named) > 1:
+            raise TableRefusal(
+                f"\"{table.document_title}\" has more than one {role}: "
+                + ", ".join(c["name"] for c in named) + "."
+            )
+        if len(cols) == 1:
+            return cols[0]["key"]
+        if len(cols) > 1:
+            raise TableRefusal(
+                f"I can see \"{table.document_title}\", but not which {role} to use. "
+                + _options(table, types, role)
+            )
+        return None
+
+    group_by = choose(("category",), "breakdown") or choose(("date",), "breakdown")
+    value = choose(("number",), "value to add up")
+    if group_by is None and value is None:
+        raise TableRefusal(
+            f"I can see \"{table.document_title}\", but it has no column to chart. "
+            + _options(table, ("category", "date", "number"), "chart")
+        )
+    measure = "sum" if value else "count"
+    group_type = table.column(group_by).get("type") if group_by else None
+    if group_type == "date":
+        chart = requested if requested in ("line", "bar", "pie") else "line"
+    elif group_by:
+        chart = requested if requested in ("bar", "pie") else "bar"
+    else:
+        chart = "bar"
+    return TablePick(
+        table_id=table.id, measure=measure, value=value, group_by=group_by,
+        split_by=None, filters=(), chart=chart,
+    )
+
+
 def parse_pick(data: dict, handles: dict[str, TableRef]) -> TablePick | None:
     """Validate the model's table pick. None = it did not pick a table.
 

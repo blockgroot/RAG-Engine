@@ -316,3 +316,19 @@ def test_deep_read_of_one_long_page_covers_every_hit_not_just_the_best():
     assert "P2 " in text and "P36 " in text and "P35 " in text and "P37 " in text
     assert "P20 " not in text  # budget-sized: ~15 pieces, not the whole page
 
+
+
+def test_neighbours_never_push_another_document_out_of_the_budget():
+    # Two top hits with long neighbours, and a third document: in a 1,000-char
+    # read the neighbours used to fill the budget and cut the third document.
+    store = NeighbourStore({("a", 0): "a" * 400, ("a", 2): "a" * 400, ("b", 0): "b" * 400, ("b", 2): "b" * 400})
+    pipe = _pipeline(store, neighbors=1)
+    pipe._settings = replace(pipe._settings, max_context_chars=1000)
+    hits = [_hit("a", 1, "A1"), _hit("b", 1, "B1"), _hit("c", 0, "C0 the third document")]
+
+    out = pipe._with_neighbors(hits, ORG, workspace_id=None, viewer=None)
+
+    total = sum(len(h.content) + 120 for h in out)
+    assert [h.document_id for h in out] == ["a", "b", "c"]
+    assert total <= 1000  # everything selected fits; neighbours took only the room left
+    assert "a" * 400 in out[0].content  # and they still read deeper where room allowed

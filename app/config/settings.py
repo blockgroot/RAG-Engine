@@ -71,7 +71,9 @@ DEFAULT_GITHUB_FALLBACK_RESPONSE = (
 
 DEFAULT_DB_POOL_MIN_SIZE = 1
 DEFAULT_DB_POOL_MAX_SIZE = 10
-DEFAULT_KEYWORD_CANDIDATE_LIMIT = 2000
+# Keyword matches BM25 scores per query. With any-word matching, 200 kept the
+# most right documents in the candidates (94% vs 92% at 500, Benchmark 2) and is faster.
+DEFAULT_KEYWORD_CANDIDATE_LIMIT = 200
 
 DEFAULT_SOURCE_TYPE = "notion"
 
@@ -149,6 +151,8 @@ DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 # replacement: its free tier allows far more requests per day than
 # OpenRouter's and it does not train on inputs, so the two are complementary.
 DEFAULT_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+DEFAULT_OLLAMA_BASE_URL = "https://ollama.com/v1"
+DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
 
 def _env_positive_int(name: str, default: int) -> int:
@@ -296,6 +300,52 @@ class GroqSettings:
             api_key=os.getenv("GROQ_API_KEY") or None,
             base_url=os.getenv("GROQ_BASE_URL") or DEFAULT_GROQ_BASE_URL,
             timeout=float(os.getenv("GROQ_TIMEOUT") or DEFAULT_TIMEOUT),
+        )
+
+
+@dataclass(frozen=True)
+class OllamaSettings:
+    """Credentials for Ollama Cloud-hosted selectable models (GPT-OSS, Gemma,
+    Nemotron). Its own account and quota, like Groq; reasoning is kept low or
+    off per model in ``app/llm/catalog.py`` so the answer cap is not spent on
+    hidden reasoning."""
+
+    api_key: str | None
+    base_url: str = DEFAULT_OLLAMA_BASE_URL
+    timeout: float = DEFAULT_TIMEOUT
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.api_key)
+
+    @classmethod
+    def from_env(cls) -> "OllamaSettings":
+        return cls(
+            api_key=os.getenv("OLLAMA_API_KEY") or None,
+            base_url=os.getenv("OLLAMA_BASE_URL") or DEFAULT_OLLAMA_BASE_URL,
+            timeout=float(os.getenv("OLLAMA_TIMEOUT") or DEFAULT_TIMEOUT),
+        )
+
+
+@dataclass(frozen=True)
+class GeminiSettings:
+    """Credentials for Gemini as a selectable model, so it stays in the picker
+    when the deployment's default model is another vendor's."""
+
+    api_key: str | None
+    base_url: str = DEFAULT_GEMINI_BASE_URL
+    timeout: float = DEFAULT_TIMEOUT
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.api_key)
+
+    @classmethod
+    def from_env(cls) -> "GeminiSettings":
+        return cls(
+            api_key=os.getenv("GEMINI_API_KEY") or None,
+            base_url=os.getenv("GEMINI_BASE_URL") or DEFAULT_GEMINI_BASE_URL,
+            timeout=float(os.getenv("GEMINI_TIMEOUT") or DEFAULT_TIMEOUT),
         )
 
 
