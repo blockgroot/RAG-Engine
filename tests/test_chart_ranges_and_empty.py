@@ -163,3 +163,40 @@ def test_the_reply_names_the_public_repos_it_checked_never_private_ones(monkeypa
         registry.get("prs_merged"), org_id="o", workspace_id="w")
     assert "Repositories checked: acme/dao and 1 private repository." in said
     assert "acme/secret" not in said
+
+
+def test_an_empty_merge_chart_asks_about_the_repository_they_named(monkeypatch):
+    """The probe used to read the first few repos and say "none merged" while
+    the repository in the question, further down the list, had a merge."""
+    import app.githublive as githublive
+
+    class Named(_Reader):
+        def list_repos(self):
+            others = [SimpleNamespace(full_name=f"other/r{i}", private=False)
+                      for i in range(12)]
+            return others + [SimpleNamespace(full_name="18-sana/rag-engine", private=False)]
+
+        def list_pull_requests(self, repo, *, limit=1, state="all", **kw):
+            if repo == "18-sana/rag-engine" and state == "merged":
+                when = NOW - timedelta(days=3)
+                return SimpleNamespace(items=[SimpleNamespace(merged_at=when, created_at=when)])
+            return SimpleNamespace(items=[])
+
+    monkeypatch.setattr(githublive, "build_github_reader", lambda *a, **k: Named())
+    said = insights_agent._github_pull_diagnosis(
+        registry.get("prs_merged"), org_id="o", workspace_id="w", focus="rag-engine")
+    assert "18-sana/rag-engine" in said
+    assert "other/r0" not in said
+    assert "not in what Handbook has read" in said
+
+
+def test_a_repository_this_space_does_not_read_is_named_as_absent(monkeypatch):
+    import app.githublive as githublive
+
+    monkeypatch.setattr(githublive, "build_github_reader",
+                        lambda *a, **k: _Reader(newest=None, exists=False))
+    said = insights_agent._github_pull_diagnosis(
+        registry.get("prs_merged"), org_id="o", workspace_id="w", focus="rag-engine")
+    assert "rag-engine" in said
+    assert "not among the repositories this space reads" in said
+    assert "not connected" not in said

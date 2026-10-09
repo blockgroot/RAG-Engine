@@ -132,13 +132,12 @@ def record_github_facts(
             read_something = True
             truncated = truncated or page.truncated
 
-            # `merged_by` is absent from the LIST payload, so a merger can only
-            # be read one pull request at a time. Bounded to the same slice
-            # reviews already pay for -- without it the "who merges them" chart
-            # is empty on every tenant, which reads as "nobody merges" rather
-            # than as a gap.
+            # The list omits `merged_by`, and it can omit `merged_at` too.
+            # Either gap is filled from the single pull request, on a bounded
+            # slice -- without that, a merge the list did not label is never
+            # stored, and "who merges them" is empty on every tenant.
             mergers = _fill_mergers(
-                reader, page.items[: settings.max_reviewed_pull_requests]
+                reader, page.items, limit=settings.max_reviewed_pull_requests,
             )
             for pull in page.items:
                 rows.extend(
@@ -336,27 +335,45 @@ def _write(rows: list[tuple], workspace_id: str | None) -> int:
     return written
 
 
-def _fill_mergers(reader, pulls) -> dict[int, object]:
-    """``{number: detailed pull}`` for the merged ones we can enrich.
+def _needs_pull_detail(pull) -> bool:
+    """A list row that cannot yet say whether it merged, or who merged it.
 
-    One call each, so the caller passes an already-bounded slice. A failure is
-    skipped rather than raised: the pull request still counts as merged, it
-    just leaves the per-person breakdown -- the same choice ``_pull_rows``
-    makes for a merge with no `merged_by` at all.
+    The list leaves out ``merged_by``. It can also leave out ``merged_at``,
+    and a closed pull request then looks abandoned. The single pull request
+    is the only payload that settles both. An open one has neither gap.
+    """
+    if pull.merged_at and pull.merged_by:
+        return False
+    if pull.merged_at:
+        return True
+    return (getattr(pull, "state", None) or "").lower() == "closed"
+
+
+def _fill_mergers(reader, pulls, *, limit: int) -> dict[int, object]:
+    """``{number: detailed pull}`` for the rows the list did not finish.
+
+    At most ``limit`` calls: the same bound reviews already pay. A failure is
+    skipped rather than raised. A merge whose detail call fails still counts
+    when the list already had ``merged_at``; it only leaves the per-person
+    breakdown.
     """
     detail = getattr(reader, "get_pull_request", None)
     if detail is None:
         return {}
 
     out: dict[int, object] = {}
+    asked = 0
     for pull in pulls:
-        if not pull.merged_at or pull.merged_by:
+        if not _needs_pull_detail(pull):
             continue
+        if asked >= limit:
+            break
+        asked += 1
         try:
             full = detail(pull.repo, pull.number)
         except Exception:  # noqa: BLE001 - a gap in one chart, never a failed sync
             logger.debug(
-                "insights: could not read %s#%s for its merger",
+                "insights: could not read %s#%s",
                 pull.repo, pull.number, exc_info=True,
             )
             continue

@@ -730,7 +730,10 @@ def _empty_caption(spec, title, *, org_id, workspace_id, days, metric, viewer=No
             f"activity — the earliest is {began.date().isoformat()}. Ask for "
             "it quarterly to widen the window."
         )
-    found = _github_pull_diagnosis(metric, org_id=org_id, workspace_id=workspace_id)
+    found = _github_pull_diagnosis(
+        metric, org_id=org_id, workspace_id=workspace_id,
+        focus=getattr(spec, "focus", None),
+    )
     if found:
         return f"{title}. {found}"
     return (
@@ -762,7 +765,30 @@ def _checked_repos(repos, total: int) -> str:
     return f" Repositories checked{more}: {listed}."
 
 
-def _github_pull_diagnosis(metric, *, org_id: str, workspace_id: str | None) -> str | None:
+def _diagnosis_repos(repos, focus: str | None) -> tuple[list, int, bool]:
+    """Which repos an empty pull-request chart should ask GitHub about.
+
+    The one named in the question, when this space reads it. Otherwise the
+    first ``_PROBE_REPOS``. The bool is whether a named repo was found here.
+    """
+    if not focus:
+        return repos[:_PROBE_REPOS], len(repos), True
+    key = _squash(focus)
+    matched = [
+        repo for repo in repos
+        if key and (
+            key in _squash(getattr(repo, "full_name", "") or "")
+            or _squash(getattr(repo, "full_name", "") or "") in key
+        )
+    ]
+    if not matched:
+        return repos[:_PROBE_REPOS], len(repos), False
+    return matched[:_PROBE_REPOS], len(matched), True
+
+
+def _github_pull_diagnosis(
+    metric, *, org_id: str, workspace_id: str | None, focus: str | None = None,
+) -> str | None:
     """Why a GitHub PULL REQUEST chart is empty, asked of GitHub itself.
 
     Commits and pull requests are separate GitHub permissions, so a space can
@@ -770,7 +796,8 @@ def _github_pull_diagnosis(metric, *, org_id: str, workspace_id: str | None) -> 
     happened" was then a guess. GitHub is asked for the newest pull request
     of the kind charted (merged, or raised) and the answer names the cause
     with its DATE: none yet, older than the window we read, or newer and not
-    counted yet. Names no repository: the asker may not open every one.
+    counted yet. When the question named a repository, that one is asked;
+    private repositories are counted, never named.
     None when it cannot tell, or when this is not a pull-request chart.
     Never raises.
     """
@@ -788,10 +815,16 @@ def _github_pull_diagnosis(metric, *, org_id: str, workspace_id: str | None) -> 
         every = list(reader.list_repos())
     except Exception:  # noqa: BLE001 - see docstring
         return None
-    repos = every[:_PROBE_REPOS]
+    repos, total, named_here = _diagnosis_repos(every, focus)
     if not repos:
         return None
-    checked = _checked_repos(repos, len(every))
+    checked = _checked_repos(repos, total)
+    if focus and not named_here:
+        named = enforce_link_provenance(str(focus).strip(), [], ())
+        checked = (
+            f" \"{named}\" is not among the repositories this space reads."
+            + checked
+        )
     unreadable, any_pull, newest = 0, False, None
     for repo in repos:
         try:
