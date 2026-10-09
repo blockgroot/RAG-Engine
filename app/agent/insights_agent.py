@@ -110,6 +110,8 @@ class InsightsAgent(Agent):
             metric=registry.METRICS.get(parsed.metric),
             viewer=viewer,
         )
+        if not points and panel.get("read_note"):
+            caption = f"{caption} {panel['read_note']}"
         return AgentResponse(
             answer=caption,
             grounded=True,
@@ -728,7 +730,10 @@ def _empty_caption(spec, title, *, org_id, workspace_id, days, metric, viewer=No
             f"activity — the earliest is {began.date().isoformat()}. Ask for "
             "it quarterly to widen the window."
         )
-    found = _github_pull_diagnosis(metric, org_id=org_id, workspace_id=workspace_id)
+    found = _github_pull_diagnosis(
+        metric, org_id=org_id, workspace_id=workspace_id,
+        focus=getattr(spec, "focus", None),
+    )
     if found:
         return f"{title}. {found}"
     return (
@@ -739,16 +744,16 @@ def _empty_caption(spec, title, *, org_id, workspace_id, days, metric, viewer=No
     )
 
 
-#: Repositories probed when a pull-request chart is empty. A bound, said in
-#: the reply when there are more.
+#: Repositories probed when a pull-request chart is empty. A bound: the
+#: answer is the same for three repos as for thirty.
 _PROBE_REPOS = 10
 
 
 def _checked_repos(repos, total: int) -> str:
-    """" Checked: acme/api, acme/web and 2 private repositories." Public repos
-    are named so the asker can see which repos this space reads (staging: a
-    merged PR in a repo the space was never connected to read as "none
-    merged"); private ones are only counted, never named."""
+    """" Repositories checked: acme/api and 2 private repositories." Public
+    repos are named so the asker can see WHICH repos the answer is about --
+    "none merged" said of a few repos read as a claim about all of them.
+    Private ones are only counted, never named."""
     public = [r.full_name for r in repos if getattr(r, "private", None) is False]
     private = len(repos) - len(public)
     parts = public + ([f"{private} private repositor{'y' if private == 1 else 'ies'}"]
@@ -757,11 +762,33 @@ def _checked_repos(repos, total: int) -> str:
         return ""
     listed = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
     more = f" (the first {len(repos)} of {total})" if total > len(repos) else ""
-    return (f" Checked{more}: {listed}. A repository not listed is not connected to "
-            "this space; an admin adds it on the GitHub card in Sources.")
+    return f" Repositories checked{more}: {listed}."
 
 
-def _github_pull_diagnosis(metric, *, org_id: str, workspace_id: str | None) -> str | None:
+def _diagnosis_repos(repos, focus: str | None) -> tuple[list, int, bool]:
+    """Which repos an empty pull-request chart should ask GitHub about.
+
+    The one named in the question, when this space reads it. Otherwise the
+    first ``_PROBE_REPOS``. The bool is whether a named repo was found here.
+    """
+    if not focus:
+        return repos[:_PROBE_REPOS], len(repos), True
+    key = _squash(focus)
+    matched = [
+        repo for repo in repos
+        if key and (
+            key in _squash(getattr(repo, "full_name", "") or "")
+            or _squash(getattr(repo, "full_name", "") or "") in key
+        )
+    ]
+    if not matched:
+        return repos[:_PROBE_REPOS], len(repos), False
+    return matched[:_PROBE_REPOS], len(matched), True
+
+
+def _github_pull_diagnosis(
+    metric, *, org_id: str, workspace_id: str | None, focus: str | None = None,
+) -> str | None:
     """Why a GitHub PULL REQUEST chart is empty, asked of GitHub itself.
 
     Commits and pull requests are separate GitHub permissions, so a space can
@@ -769,7 +796,8 @@ def _github_pull_diagnosis(metric, *, org_id: str, workspace_id: str | None) -> 
     happened" was then a guess. GitHub is asked for the newest pull request
     of the kind charted (merged, or raised) and the answer names the cause
     with its DATE: none yet, older than the window we read, or newer and not
-    counted yet. Names no repository: the asker may not open every one.
+    counted yet. When the question named a repository, that one is asked;
+    private repositories are counted, never named.
     None when it cannot tell, or when this is not a pull-request chart.
     Never raises.
     """
@@ -787,10 +815,16 @@ def _github_pull_diagnosis(metric, *, org_id: str, workspace_id: str | None) -> 
         every = list(reader.list_repos())
     except Exception:  # noqa: BLE001 - see docstring
         return None
-    repos = every[:_PROBE_REPOS]
+    repos, total, named_here = _diagnosis_repos(every, focus)
     if not repos:
         return None
-    checked = _checked_repos(repos, len(every))
+    checked = _checked_repos(repos, total)
+    if focus and not named_here:
+        named = enforce_link_provenance(str(focus).strip(), [], ())
+        checked = (
+            f" \"{named}\" is not among the repositories this space reads."
+            + checked
+        )
     unreadable, any_pull, newest = 0, False, None
     for repo in repos:
         try:
@@ -811,13 +845,12 @@ def _github_pull_diagnosis(metric, *, org_id: str, workspace_id: str | None) -> 
         return ("GitHub would not let Handbook read pull requests in this space's "
                 "repositories, though commits are counted. Pull requests are a "
                 "separate GitHub permission: an admin can give the Handbook GitHub "
-                "App \"Pull requests: Read\" access, and they are counted on the "
-                "next sync." + checked)
+                "App \"Pull requests: Read\" access; they are read the next time a "
+                "GitHub chart is asked." + checked)
     if newest is None:
         if any_pull and merged:
             return ("This space's repositories have pull requests on GitHub, but "
-                    "none has been merged yet. Ask for pull requests raised instead."
-                    + checked)
+                    "none has been merged yet. Ask for pull requests raised instead." + checked)
         if not any_pull:
             return ("This space's repositories have no pull requests on GitHub, so "
                     "there is nothing to count. Work may be pushed straight to the "
@@ -831,8 +864,29 @@ def _github_pull_diagnosis(metric, *, org_id: str, workspace_id: str | None) -> 
         return (f"The most recent {what} on GitHub is from {day}, older than the "
                 f"{read_back} days of GitHub activity Handbook reads, so there is "
                 "nothing in range to count." + checked)
-    return (f"GitHub shows a {what} on {day}, but it has not been counted yet. It "
-            "will be after the next sync: press Sync now on the GitHub card in Sources.")
+    return (f"GitHub shows a {what} on {day}, but it is not in what Handbook has read "
+            "yet. Ask again in a moment; if it is still missing, reading GitHub is "
+            "failing and the server log says why." + checked)
+
+
+def _read_github_now(metric, *, org_id: str, workspace_id: str | None) -> str | None:
+    """Read GitHub for a GitHub chart before counting; a note when the read
+    did not finish or failed, None when the chart is current. Never raises."""
+    if metric is None or metric.provider != "github" or not org_id:
+        return None
+    try:
+        from ..insights.github_facts import refresh_for_chart
+
+        status = refresh_for_chart(org_id, workspace_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("insights: on-demand GitHub read failed", exc_info=True)
+        status = "failed"
+    if status == "reading":
+        return ("GitHub is still being read, so this may miss the last few minutes "
+                "of activity. Ask again in a moment for the full picture.")
+    if status == "failed":
+        return "GitHub could not be read just now, so this uses what was read last."
+    return None
 
 
 def _has_older_rows(
@@ -950,6 +1004,9 @@ def _run_spec(
     ):
         raise CannotChart("I can't chart that here.")
 
+    # GitHub is read when the chart is ASKED (not only on the hourly timer),
+    # so a merge from this morning is in this answer.
+    read_note = _read_github_now(metric, org_id=org_id, workspace_id=workspace_id)
     # The asker's own range ("over the last year") when they gave one, else
     # the period's default window.
     days = spec.days or scopes.WINDOW_DAYS.get(spec.period, scopes.WINDOW_DAYS["month"])
@@ -1117,8 +1174,9 @@ def _run_spec(
             split=_dim_label(metric, split_by, attrs) if split_by else None,
             period=period, chart=chart,
         ),
+        "read_note": read_note,
         "caveat": " ".join(n for n in (
-            stepped, _sparse_note(points, period, chosen.unit, group_by),
+            read_note, stepped, _sparse_note(points, period, chosen.unit, group_by),
             _grammar_caveat(metric, group_by, split_by, attrs)) if n),
         "points": [
             {"bucket": p.bucket, "group": p.group, "series": p.series, "value": p.value}

@@ -490,6 +490,36 @@ def test_an_open_pull_request_costs_no_detail_call(org):
     assert reader.detail_calls == []
 
 
+def test_a_merge_the_list_did_not_label_is_read_from_the_pull_request(org):
+    """The list can omit ``merged_at``. A closed pull request then looks
+    abandoned, and no ``pr_merged`` row is stored, while the single pull
+    request says it merged. That is how commits can be counted and a merge
+    that is visible on GitHub is not."""
+    from dataclasses import replace
+
+    listed = replace(_pr(18), state="closed",
+                     closed_at=datetime.now(timezone.utc) - timedelta(days=2))
+    reader = FakeReader(
+        [listed],
+        details={18: _pr(18, merged_by="grace", merged_days=2)},
+    )
+    github_facts.record_github_facts(org, workspace_id=None, reader=reader)
+
+    assert reader.detail_calls == [18]
+    assert _total("prs_merged", org) == 1.0
+
+
+def test_a_closed_pull_request_that_did_not_merge_stays_unmerged(org):
+    from dataclasses import replace
+
+    listed = replace(_pr(7), state="closed")
+    reader = FakeReader([listed], details={7: replace(_pr(7), state="closed")})
+    github_facts.record_github_facts(org, workspace_id=None, reader=reader)
+
+    assert reader.detail_calls == [7]
+    assert _total("prs_merged", org) == 0
+
+
 def test_a_failed_detail_read_still_counts_the_merge(org):
     """The merge happened. It just leaves the per-person breakdown, exactly as
     a merge with no `merged_by` at all already did."""

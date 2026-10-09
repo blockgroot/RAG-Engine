@@ -171,6 +171,11 @@ model's `range_words` quote is in the question, capped at `MAX_RANGE_DAYS`, and
 said in the title. An empty chart is never stepped to a finer period (that
 shrank the window). An empty GitHub pull-request chart asks GitHub why
 (`_github_pull_diagnosis`: no "Pull requests: Read" vs none exist), naming no repo.
+A GitHub chart reads GitHub when it is ASKED (`github_facts.refresh_for_chart`:
+reused within `chart_refresh_minutes`, waits `chart_refresh_wait_seconds`, then
+answers from what is stored and says so); counting stays SQL over stored rows.
+GitHub facts are saved row by row (one refused row never drops a sync). Charts
+read `chart_max_commits` per repo; `max_commits` sizes the live Ask prompt only.
 A breakdown beyond the two a chart draws is named as left out
 (`left_out_words`, kept only when the quote is in the question), never dropped silently.
 A breakdown is kept only when asked for: the model quotes the words that asked

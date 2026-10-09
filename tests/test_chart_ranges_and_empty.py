@@ -114,7 +114,7 @@ NOW = datetime.now(timezone.utc)
     (_Reader(newest=None, exists=False), "have no pull requests on GitHub"),
     (_Reader(newest=None, exists=True), "none has been merged yet"),
     (_Reader(newest=NOW - timedelta(days=300)), "older than the 180 days"),
-    (_Reader(newest=NOW - timedelta(days=3)), "has not been counted yet"),
+    (_Reader(newest=NOW - timedelta(days=3)), "not in what Handbook has read"),
 ])
 def test_an_empty_pull_request_chart_says_which_cause_it_is(monkeypatch, reader, needle):
     import app.githublive as githublive
@@ -130,9 +130,26 @@ def test_the_probe_is_only_for_pull_request_charts():
         registry.get("commits_by_author"), org_id="o", workspace_id=None) is None
 
 
+@requires_db
+def test_one_unstorable_row_never_drops_the_rest_of_a_github_sync(org):
+    """A commit the database refused rolled back every pull request too."""
+    from app.insights import github_facts
+
+    good = (org, None, "github", "pr_merged", "ada", "acme/api", "merged",
+            datetime.now(timezone.utc), 3600, "https://github.com/acme/api/pull/1",
+            "acme/api#1", github_facts.Jsonb({}), "ada")
+    bad = (org, None, "github", "commit", "ada", "acme/api", None,
+           None, None, None, "acme/api@x", github_facts.Jsonb({}), "ada")  # no date
+    assert github_facts._write([bad, good], None) == 1
+    with get_connection() as conn:
+        kinds = [r[0] for r in conn.execute(
+            "SELECT kind FROM activity_facts WHERE org_id = %s", (org,)).fetchall()]
+    assert kinds == ["pr_merged"]
+
+
 def test_the_reply_names_the_public_repos_it_checked_never_private_ones(monkeypatch):
-    """Staging: a PR merged in 18-sana/rag-engine, which the space was never
-    connected to, read as "none has been merged yet" with no hint why."""
+    """Staging: "none has been merged yet" while 18-sana/rag-engine had a
+    merge -- and the reply did not say which repositories it had looked at."""
     import app.githublive as githublive
 
     class Mixed(_Reader):
@@ -144,6 +161,42 @@ def test_the_reply_names_the_public_repos_it_checked_never_private_ones(monkeypa
                         lambda *a, **k: Mixed(newest=None, exists=True))
     said = insights_agent._github_pull_diagnosis(
         registry.get("prs_merged"), org_id="o", workspace_id="w")
-    assert "Checked: acme/dao and 1 private repository." in said
+    assert "Repositories checked: acme/dao and 1 private repository." in said
     assert "acme/secret" not in said
-    assert "not connected to this space" in said
+
+
+def test_an_empty_merge_chart_asks_about_the_repository_they_named(monkeypatch):
+    """The probe used to read the first few repos and say "none merged" while
+    the repository in the question, further down the list, had a merge."""
+    import app.githublive as githublive
+
+    class Named(_Reader):
+        def list_repos(self):
+            others = [SimpleNamespace(full_name=f"other/r{i}", private=False)
+                      for i in range(12)]
+            return others + [SimpleNamespace(full_name="18-sana/rag-engine", private=False)]
+
+        def list_pull_requests(self, repo, *, limit=1, state="all", **kw):
+            if repo == "18-sana/rag-engine" and state == "merged":
+                when = NOW - timedelta(days=3)
+                return SimpleNamespace(items=[SimpleNamespace(merged_at=when, created_at=when)])
+            return SimpleNamespace(items=[])
+
+    monkeypatch.setattr(githublive, "build_github_reader", lambda *a, **k: Named())
+    said = insights_agent._github_pull_diagnosis(
+        registry.get("prs_merged"), org_id="o", workspace_id="w", focus="rag-engine")
+    assert "18-sana/rag-engine" in said
+    assert "other/r0" not in said
+    assert "not in what Handbook has read" in said
+
+
+def test_a_repository_this_space_does_not_read_is_named_as_absent(monkeypatch):
+    import app.githublive as githublive
+
+    monkeypatch.setattr(githublive, "build_github_reader",
+                        lambda *a, **k: _Reader(newest=None, exists=False))
+    said = insights_agent._github_pull_diagnosis(
+        registry.get("prs_merged"), org_id="o", workspace_id="w", focus="rag-engine")
+    assert "rag-engine" in said
+    assert "not among the repositories this space reads" in said
+    assert "not connected" not in said
