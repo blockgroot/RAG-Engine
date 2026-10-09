@@ -748,15 +748,21 @@ def _github_pull_diagnosis(metric, *, org_id: str, workspace_id: str | None) -> 
     """Why a GitHub PULL REQUEST chart is empty, asked of GitHub itself.
 
     Commits and pull requests are separate GitHub permissions, so a space can
-    have commits counted and no pull request at all. "This simply has not
-    happened" was then wrong. The two real causes need different fixes:
-    the app cannot READ pull requests (an admin grants it), or these
-    repositories really have none (count commits instead). Names no
-    repository: the asker may not be able to open every one. None when it
-    cannot tell, or when this is not a pull-request chart. Never raises.
+    have commits counted and no pull request at all, and "this simply has not
+    happened" was then a guess. GitHub is asked for the newest pull request
+    of the kind charted (merged, or raised) and the answer names the cause
+    with its DATE: none yet, older than the window we read, or newer and not
+    counted yet. Names no repository: the asker may not open every one.
+    None when it cannot tell, or when this is not a pull-request chart.
+    Never raises.
     """
     if metric is None or metric.provider != "github" or not metric.kind.startswith("pr_"):
         return None
+    from datetime import datetime, timedelta, timezone
+
+    from ..insights.github_facts import KIND_MERGED, WINDOW_DAYS as read_back
+
+    merged = metric.kind == KIND_MERGED
     try:
         from ..githublive import build_github_reader
 
@@ -766,33 +772,47 @@ def _github_pull_diagnosis(metric, *, org_id: str, workspace_id: str | None) -> 
         return None
     if not repos:
         return None
-    unreadable = empty = 0
+    unreadable, any_pull, newest = 0, False, None
     for repo in repos:
         try:
-            page = reader.list_pull_requests(repo.full_name, limit=1)
+            page = reader.list_pull_requests(
+                repo.full_name, limit=1, state="merged" if merged else "all")
+            if merged and not page.items:
+                any_pull = any_pull or bool(
+                    reader.list_pull_requests(repo.full_name, limit=1).items)
         except Exception:  # noqa: BLE001
             unreadable += 1
             continue
-        if not page.items:
-            empty += 1
+        for pull in page.items:
+            any_pull = True
+            when = pull.merged_at if merged else pull.created_at
+            if when and (newest is None or when > newest):
+                newest = when
     if unreadable == len(repos):
         return ("GitHub would not let Handbook read pull requests in this space's "
                 "repositories, though commits are counted. Pull requests are a "
                 "separate GitHub permission: an admin can give the Handbook GitHub "
                 "App \"Pull requests: Read\" access, and they are counted on the "
                 "next sync.")
-    if empty == len(repos):
-        return ("This space's repositories have no pull requests on GitHub, so "
-                "there is nothing to count. Work may be pushed straight to the "
-                "main branch: try commits per week instead.")
-    if unreadable + empty == len(repos) and unreadable:
-        return ("Some of this space's repositories have no pull requests and "
-                "GitHub would not let Handbook read the others. An admin can give "
-                "the Handbook GitHub App \"Pull requests: Read\" access.")
-    from ..insights.github_facts import WINDOW_DAYS as read_back
-
-    return ("Pull requests exist on GitHub, but none matching this was made in the "
-            f"last {read_back} days, which is how far back GitHub activity is read.")
+    if newest is None:
+        if any_pull and merged:
+            return ("This space's repositories have pull requests on GitHub, but "
+                    "none has been merged yet. Ask for pull requests raised instead.")
+        if not any_pull:
+            return ("This space's repositories have no pull requests on GitHub, so "
+                    "there is nothing to count. Work may be pushed straight to the "
+                    "main branch: try commits per week instead.")
+        return None
+    if newest.tzinfo is None:
+        newest = newest.replace(tzinfo=timezone.utc)
+    what = "merged pull request" if merged else "pull request"
+    day = newest.date().isoformat()
+    if newest < datetime.now(timezone.utc) - timedelta(days=read_back):
+        return (f"The most recent {what} on GitHub is from {day}, older than the "
+                f"{read_back} days of GitHub activity Handbook reads, so there is "
+                "nothing in range to count.")
+    return (f"GitHub shows a {what} on {day}, but it has not been counted yet. It "
+            "will be after the next sync: press Sync now on the GitHub card in Sources.")
 
 
 def _has_older_rows(

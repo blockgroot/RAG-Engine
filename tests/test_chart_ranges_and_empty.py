@@ -86,27 +86,40 @@ def test_a_year_long_range_finds_merges_the_default_window_misses(org):
 
 
 class _Reader:
-    def __init__(self, behaviour):
-        self.behaviour = behaviour
+    """`newest`: when the newest pull request was merged (None = never),
+    `exists`: whether any pull request exists at all."""
+
+    def __init__(self, *, forbidden=False, newest=None, exists=True):
+        self.forbidden, self.newest, self.exists = forbidden, newest, exists
 
     def list_repos(self):
         return [SimpleNamespace(full_name=f"acme/r{i}") for i in range(2)]
 
-    def list_pull_requests(self, repo, **kw):
-        if self.behaviour == "forbidden":
+    def list_pull_requests(self, repo, *, limit=1, state="all", **kw):
+        if self.forbidden:
             raise PermissionError("403")
-        return SimpleNamespace(items=[] if self.behaviour == "none" else [object()])
+        if state == "merged":
+            items = [SimpleNamespace(merged_at=self.newest, created_at=self.newest)] \
+                if self.newest else []
+        else:
+            items = [SimpleNamespace(merged_at=None, created_at=self.newest)] if self.exists else []
+        return SimpleNamespace(items=items)
 
 
-@pytest.mark.parametrize("behaviour,needle", [
-    ("forbidden", "Pull requests: Read"),
-    ("none", "have no pull requests on GitHub"),
-    ("some", "how far back GitHub activity is read"),
+NOW = datetime.now(timezone.utc)
+
+
+@pytest.mark.parametrize("reader,needle", [
+    (_Reader(forbidden=True), "Pull requests: Read"),
+    (_Reader(newest=None, exists=False), "have no pull requests on GitHub"),
+    (_Reader(newest=None, exists=True), "none has been merged yet"),
+    (_Reader(newest=NOW - timedelta(days=300)), "older than the 180 days"),
+    (_Reader(newest=NOW - timedelta(days=3)), "has not been counted yet"),
 ])
-def test_an_empty_pull_request_chart_says_which_cause_it_is(monkeypatch, behaviour, needle):
+def test_an_empty_pull_request_chart_says_which_cause_it_is(monkeypatch, reader, needle):
     import app.githublive as githublive
 
-    monkeypatch.setattr(githublive, "build_github_reader", lambda *a, **k: _Reader(behaviour))
+    monkeypatch.setattr(githublive, "build_github_reader", lambda *a, **k: reader)
     said = insights_agent._github_pull_diagnosis(
         registry.get("prs_merged"), org_id="o", workspace_id="w")
     assert needle in said and "acme/" not in said  # never names a repository
