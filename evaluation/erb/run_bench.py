@@ -222,6 +222,8 @@ def main() -> None:
     ap.add_argument("--data", type=Path, default=Path("~/Desktop/bench1-data"))
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--tag", default="", help="variant label, e.g. topk3 (kept in the file name)")
+    ap.add_argument("--only", type=Path, default=None,
+                    help="file of question ids, one per line: ask just these (a targeted re-test)")
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                     help="setting for this variant only, e.g. RAG_TOP_K=3 (wins over .env.bench)")
     args = ap.parse_args()
@@ -230,6 +232,9 @@ def main() -> None:
         os.environ[key] = value
 
     questions = _questions(args.data.expanduser(), args.split)[: args.limit]
+    if args.only:
+        wanted = set(args.only.read_text().split())
+        questions = [q for q in questions if q["question_id"] in wanted]
     system = SYSTEMS[args.system]()
     name = args.system + (f"-{args.tag}" if args.tag else "")
     records = OUT / f"{name}.records.jsonl"

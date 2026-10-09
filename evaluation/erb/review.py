@@ -206,6 +206,8 @@ def main() -> None:
     ap.add_argument("--version", choices=("v1", "v2"), default="v1")
     ap.add_argument("--sample", choices=("handcheck",), default=None,
                     help="only the run-1 answers listed in handcheck.csv (to validate a prompt cheaply)")
+    ap.add_argument("--only", type=Path, default=None,
+                    help="file of question ids, one per line: grade just these")
     ap.add_argument("--key-env", default="GEMINI_API_KEY",
                     help="env var holding the Gemini key; lets two systems be reviewed in parallel on separate quotas")
     args = ap.parse_args()
@@ -231,6 +233,9 @@ def main() -> None:
         todo = [r for r in recs if (r["question_id"], r["run"]) not in done]
         if sample is not None:
             todo = [r for r in todo if r["run"] == 1 and (system, r["question_id"]) in sample]
+        if args.only:
+            wanted = set(args.only.read_text().split())
+            todo = [r for r in todo if r["question_id"] in wanted]
         bodies = _bodies({r["answer_call_id"] for r in todo if r.get("answer_call_id")})
         for i, rec in enumerate(todo, 1):
             q = questions[rec["question_id"]]
