@@ -184,7 +184,7 @@ Supabase (or Neon) session-pooler Postgres remains appropriate. Upgrade the **da
 | Pinecone | Managed vectors | Second isolation path; Postgres already holds vectors. |
 | Redis | Faster cache | Query-path work was eliminated; `query_answer_cache` is Postgres. |
 | Always-on LLM query rewrite | Better than SymSpell | Permanent latency; buy model quota first, then re-measure. |
-| Dual-LLM NLI (Phase 20) | Citation verification | Cost and latency after token logs justify it—not an early purchase. |
+| Dual-LLM NLI (Phase 20) | Proof that a cited sentence is supported | Inline citations are already built. NLI is extra cost and latency, after token logs justify it. |
 
 ---
 

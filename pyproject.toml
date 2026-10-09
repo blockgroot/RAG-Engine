@@ -28,6 +28,9 @@ dependencies = [
     # here too because CI installs via `pip install -e ".[dev]"`.
     "pypdf>=4.0.0",
     "python-docx>=1.1.0",
+    # Charts from uploaded files: Excel sheets and the tables PDF pages draw.
+    "openpyxl>=3.1.0",
+    "pdfplumber>=0.11.0",
 ]
 
 [project.optional-dependencies]

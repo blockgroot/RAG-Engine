@@ -18,6 +18,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
+from psycopg.types.json import Jsonb
+
 from ..db.connection import get_connection
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,8 @@ KIND_COMPLETED = "issue_completed"
 #: it, and counting off the state NAME would break the moment a team renames
 #: "Done" to "Shipped".
 _COMPLETED_TYPE = "completed"
+#: The attrs key the state's type is kept under (see `_issue_attrs`).
+STATE_TYPE_ATTR = "state_type"
 
 
 def record_linear_facts(org_id: str, *, workspace_id: str | None, adapter) -> int:
@@ -95,11 +99,12 @@ def _issue_rows(org_id, workspace_id, issue) -> list[tuple]:
     created_at = issue.get("created_at")
     completed_at = issue.get("completed_at")
 
+    attrs = _issue_attrs(issue)
     rows = [(
         org_id, workspace_id, PROVIDER, KIND_STATE,
         assignee, team, state,
         moved_at or completed_at or created_at, None,
-        issue.get("url") or None, identifier,
+        issue.get("url") or None, identifier, attrs,
     )]
 
     if state_type == _COMPLETED_TYPE:
@@ -117,11 +122,24 @@ def _issue_rows(org_id, workspace_id, issue) -> list[tuple]:
             org_id, workspace_id, PROVIDER, KIND_COMPLETED,
             assignee, team, state,
             when, cycle,
-            issue.get("url") or None, identifier,
+            issue.get("url") or None, identifier, attrs,
         ))
 
     return rows
 
+
+def _issue_attrs(issue: dict) -> Jsonb:
+    """Every simple field of the issue (`insights.fields`), as the feed
+    already returned it -- see `sources.linear._chart_fields` -- plus
+    ``state_type``: Linear's OWN category for the state (backlog, unstarted,
+    started, completed, canceled). It is what decides "open" and "closed"
+    (`store.state_types`), so a team's custom "Shipped" counts as finished
+    because Linear says so, not because its name is on a list."""
+    fields = dict(issue.get("fields")) if isinstance(issue.get("fields"), dict) else {}
+    state_type = (issue.get("state_type") or "").strip().lower()
+    if state_type:
+        fields[STATE_TYPE_ATTR] = state_type
+    return Jsonb(fields)
 
 def _write(rows: list[tuple], workspace_id: str | None) -> int:
     """Upsert every row in one statement.
@@ -147,10 +165,11 @@ def _write(rows: list[tuple], workspace_id: str | None) -> int:
     sql = f"""
         INSERT INTO activity_facts
             (org_id, workspace_id, provider, kind, actor, subject, state,
-             occurred_at, value, url, external_id)
-        VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+             occurred_at, value, url, external_id, attrs)
+        VALUES (%s::uuid, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         {conflict}
         DO UPDATE SET actor       = EXCLUDED.actor,
+                      attrs       = EXCLUDED.attrs,
                       subject     = EXCLUDED.subject,
                       state       = EXCLUDED.state,
                       occurred_at = EXCLUDED.occurred_at,

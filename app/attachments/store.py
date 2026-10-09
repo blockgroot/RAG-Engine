@@ -221,8 +221,27 @@ def count_attachments(*, org_id: str, conversation_id: str, user_id: str) -> int
 def delete_attachment(
     *, attachment_id: str, org_id: str, conversation_id: str, user_id: str
 ) -> bool:
-    """True when a row was actually removed. False is a 404 for the caller --
-    never a 403, which would confirm the id exists to someone guessing."""
+    """True when a row was actually removed, with its stored objects."""
+    removed, key = remove_attachment_row(
+        attachment_id=attachment_id, org_id=org_id,
+        conversation_id=conversation_id, user_id=user_id,
+    )
+    if removed:
+        drop_stored(key)
+    return removed
+
+
+def remove_attachment_row(
+    *, attachment_id: str, org_id: str, conversation_id: str, user_id: str
+) -> tuple[bool, str | None]:
+    """Delete the row only: ``(removed, storage_key)``.
+
+    The row IS the removal -- the chat stops seeing the file, and its chart
+    tables cascade with it -- so the route answers on this and leaves the
+    object-store cleanup (``drop_stored``) to run after the response. Waiting
+    on the store made a slow purge read as "couldn't remove" for a file that
+    was already gone.
+    """
     with get_connection() as conn:
         row = conn.execute(
             "DELETE FROM conversation_attachments "
@@ -230,10 +249,12 @@ def delete_attachment(
             "AND user_id = %s RETURNING storage_key",
             (attachment_id, conversation_id, org_id, user_id),
         ).fetchone()
-    if row is None:
-        return False
-    _drop_objects([row[0]])
-    return True
+    return (row is not None, row[0] if row else None)
+
+
+def drop_stored(key: str | None) -> None:
+    """Remove one attachment's stored pair. Never raises."""
+    _drop_objects([key])
 
 
 def _drop_objects(keys: list[str | None]) -> None:

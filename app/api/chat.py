@@ -66,6 +66,9 @@ from ..llm.routed import answering_model, selected_model, use_model
 from ..db.connection import get_connection
 from ..feedback import record_gap
 from ..guard.live import ATTACHMENT_WARNING, is_flagged, watch_question
+from ..agent.orchestration import INSIGHTS_KEY
+from ..insights import query
+from ..insights.resolve import spec_to_dict
 from ..security.rate_limit import check_rate_limit
 from ..security.visibility import visibility_predicate
 from ..workspaces import assert_member
@@ -151,12 +154,16 @@ def list_models(session: SessionClaims = Depends(get_session)):
                 "label": f"Your company's model — {own['model']}",
                 "note": f"Configured by your admin ({own.get('preset_label') or 'custom'}).",
                 "backend": "custom",
+                # Not ours to judge: offered in Chart mode with a note.
+                "charts": None,
             }
         )
 
     return {
         "default": catalog.AUTO,
         "default_label": LLMSettings.from_env().model or "Auto",
+        # The default model builds charts; Chart mode always offers it.
+        "default_charts": True,
         "models": models,
     }
 
@@ -357,6 +364,112 @@ def _combined_suggestions(
     # No single agent produced these, and saying "policy" would be a lie the
     # client might act on.
     return {"agent": None, "sources": sorted(per_provider), "questions": questions}
+
+
+#: Chart-mode starters shown at once; more would push the box off a phone.
+MAX_CHART_STARTERS = 4
+
+
+def chart_starters(metrics, fields: dict | None) -> list[str]:
+    """Starter questions built from what THIS scope can chart.
+
+    No product copy: each one is a metric this scope has, phrased from its
+    own label, either over time (a trend metric) or by a field the data
+    actually holds (discovered by ``attr_catalog``) -- so every starter can be
+    drawn, and a new field becomes a starter without anyone writing one.
+    One per metric, interleaved across tools.
+    """
+    by_provider: dict[str, list[str]] = {}
+    for metric in metrics:
+        attrs = [a for a in ((fields or {}).get(metric.key) or ())
+                 if a.type in ("category", "tags")]
+        if attrs:
+            text = f"{metric.label} by {attrs[0].label}"
+        elif metric.chart == "line":
+            text = f"{metric.label} per week"
+        else:
+            dim = metric.dims[0] if metric.dims else None
+            text = (f"{metric.label} by {query.dim_label(metric, dim)}" if dim
+                    else metric.label)
+        by_provider.setdefault(metric.provider, []).append(text)
+    out: list[str] = []
+    while len(out) < MAX_CHART_STARTERS and any(by_provider.values()):
+        for items in by_provider.values():
+            if items and len(out) < MAX_CHART_STARTERS:
+                out.append(items.pop(0))
+    return out
+
+
+#: Longest column name a starter repeats; a header can be a sentence.
+_STARTER_NAME_CHARS = 40
+
+
+def upload_starters(tables) -> list[str]:
+    """Starters from the files uploaded to this chat: each table's first
+    number column, by its first category (or per month over its first date).
+    Read from the file's own headers, so each one can be drawn."""
+    out: list[str] = []
+    for table in tables:
+        def first(kind):
+            return next((c["name"][:_STARTER_NAME_CHARS] for c in table.columns
+                         if c.get("type") == kind and c.get("name")), None)
+        number, category, when = first("number"), first("category"), first("date")
+        if number and category:
+            text = f"Total {number} by {category}"
+        elif number and when:
+            text = f"Total {number} per month"
+        elif category:
+            text = f"Rows by {category}"
+        else:
+            continue
+        if text not in out:
+            out.append(text)
+    return out
+
+
+@router.get("/chart-starters")
+def list_chart_starters(
+    workspace_id: str | None = None,
+    conversation_id: str | None = None,
+    session: SessionClaims = Depends(get_session),
+):
+    """Chart mode's starter questions, from this scope's metrics and fields,
+    led by the files this person uploaded to ``conversation_id``."""
+    if workspace_id is not None:
+        try:
+            assert_member(workspace_id, session.org_id, session.user_id)
+        except AuthError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+    from ..insights import attr_catalog, registry, scopes
+
+    try:
+        connected = _connected_providers(session.org_id, workspace_id)
+    except Exception:  # noqa: BLE001 - starters are a convenience
+        logger.warning("chart starters: could not list connections", exc_info=True)
+        return {"questions": []}
+    metrics = [
+        m for p in sorted(connected) for m in registry.for_provider(p)
+        if scopes.may_see_metric(m, role=session.role, workspace_id=workspace_id,
+                                 org_id=session.org_id, user_id=session.user_id)
+    ]
+    try:
+        fields = attr_catalog.by_metric(attr_catalog.discover_scope(
+            org_id=session.org_id, workspace_id=workspace_id, viewer=viewer_for(session),
+        ))
+    except Exception:  # noqa: BLE001
+        fields = None
+    from_files: list[str] = []
+    uploads = _upload_scope(conversation_id, session)
+    if uploads is not None:
+        from ..doctables.store import list_upload_tables
+
+        try:
+            from_files = upload_starters(
+                list_upload_tables(org_id=session.org_id, uploads=uploads))
+        except Exception:  # noqa: BLE001 - starters are a convenience
+            logger.warning("chart starters: could not list uploaded tables", exc_info=True)
+    questions = (from_files + chart_starters(metrics, fields))[:MAX_CHART_STARTERS]
+    return {"questions": questions}
 
 
 @router.get("/suggestions")
@@ -615,6 +728,9 @@ def get_conversation_route(
                 "question": t.question,
                 "answer": t.answer,
                 "created_at": t.created_at.isoformat(),
+                "cited": t.cited,
+                "chart": t.chart,
+                "meta": t.meta,
             }
             for t in turns
         ],
@@ -676,6 +792,45 @@ def _sse_event(event: str, data: dict | str) -> str:
     return f"event: {event}\ndata: {payload}\n\n"
 
 
+def _shown_live(result) -> list[dict]:
+    """The live reads the ANSWER uses: those whose document it cites.
+
+    A live read that the answer did not draw on still happened, but a
+    "Notion · live" chip beside an answer whose sources are all Slack claims a
+    contribution nothing on the page backs up. Shown per provider, once.
+    """
+    cited = {c.get("document_id") for c in (getattr(result, "cited", None) or [])}
+    shown: list[dict] = []
+    seen: set[str] = set()
+    for read in getattr(result, "live_sources", None) or []:
+        doc = read.get("document_id")
+        provider = read.get("provider")
+        if (doc is not None and doc not in cited) or provider in seen:
+            continue
+        seen.add(provider)
+        shown.append({"provider": provider, "fetched_at": read.get("fetched_at")})
+    return shown
+
+
+def _done_event(conversation_id: str | None, question: str, payload: dict) -> str:
+    """The ``done`` event, with who answered kept on the turn it closes.
+
+    The pill under an answer (which agent, which tools, which files, what was
+    read live, which model) used to exist only in this event, so a reopened
+    chat showed answers with no provenance at all. The turn is already saved
+    by now (the pipeline or ``_keep_standalone_turn``); this labels it. Never
+    raises: losing the label must not lose the answer.
+    """
+    if conversation_id:
+        try:
+            conversation_store.set_last_turn_meta(
+                conversation_id, question, conversation_store.meta_for_storage(payload)
+            )
+        except Exception:  # noqa: BLE001 - see docstring
+            logger.warning("could not label the turn", exc_info=True)
+    return _sse_event("done", payload)
+
+
 def _answering_model() -> str | None:
     """The model that produced this request's answer, as best we can know it.
 
@@ -686,6 +841,16 @@ def _answering_model() -> str | None:
     member.
     """
     return answering_model() or selected_model()
+
+
+def _upload_scope(conversation_id: str | None, session: SessionClaims | None):
+    """Whose uploads Chart mode may chart: this person, this chat. The
+    conversation was already checked as theirs by the route."""
+    if conversation_id is None or session is None or not session.user_id:
+        return None
+    from ..doctables.store import UploadScope
+
+    return UploadScope(conversation_id=conversation_id, user_id=session.user_id)
 
 
 def _conversation_attachments(
@@ -795,8 +960,9 @@ def _stream_attachment_answer(
             gate_score=response.top_score,
         )
 
-    yield _sse_event(
-        "done",
+    yield _done_event(
+        conversation_id,
+        question,
         {
             "answer": response.answer,
             "grounded": response.grounded,
@@ -819,7 +985,7 @@ def _stream_attachment_answer(
             "model": _answering_model(),
             "chart": None,
             "chart_period": None,
-            "live_sources": list(getattr(response, "live_sources", None) or []),
+            "live_sources": _shown_live(response),
             # The documents behind the answer's [n] markers; the UI draws a
             # chip only for a number listed here and strips the rest.
             "cited": list(getattr(response, "cited", None) or []),
@@ -928,6 +1094,40 @@ def _invoke_with_plan(graph_input: dict, plan):
         graph_plan.reset_plan(token)
 
 
+def _keep_standalone_turn(
+    agent_key: str,
+    conversation_id: str | None,
+    question: str,
+    answer: str,
+    cited: list | None = None,
+    chart: dict | None = None,
+) -> None:
+    """Write a turn for an agent that never enters ``RagPipeline``.
+
+    The pipeline is the only other place a turn is saved. GitHub and charts
+    do not use it, and a conversation with no turn is left out of the history
+    list, so the chat vanishes on reload. A failure here must not drop the
+    answer the person is already reading.
+    """
+    if agent_key not in ("github", "insights") or not conversation_id or not (answer or "").strip():
+        return
+    try:
+        from ..memory import build_conversation_store
+
+        store = build_conversation_store()
+        params = store.append_turn.__code__.co_varnames
+        if "chart" in params:
+            # The chart is saved with the turn, so a reopened chat shows it
+            # again instead of the text alone.
+            store.append_turn(conversation_id, question, answer, cited or None, chart)
+        elif "cited" in params:
+            store.append_turn(conversation_id, question, answer, cited or None)
+        else:
+            store.append_turn(conversation_id, question, answer)
+    except Exception:  # noqa: BLE001 - the answer already exists; losing the save is the old bug
+        logger.warning("could not save %s turn", agent_key, exc_info=True)
+
+
 def _drop_refusal_turn(org_id, conversation_id, question, answer) -> None:
     if not conversation_id:
         return
@@ -947,6 +1147,7 @@ def _stream_answer(
     requested_agent: str | None = None,
     model: str | None = None,
     session: SessionClaims | None = None,
+    chart_mode: bool = False,
 ) -> Iterator[str]:
     # Who is asking, for the Second Brain's live reads (app/livetools). Whether
     # anything is read live is decided by LIVE_TOOLS_ENABLED and the gateway,
@@ -967,7 +1168,7 @@ def _stream_answer(
     try:
         yield from _stream_answer_body(
             question, org_id, conversation_id, workspace_id, requested_agent,
-            model, session, memory_turn,
+            model, session, memory_turn, chart_mode=chart_mode,
         )
     finally:
         # Starlette may close the generator from another copied context, where
@@ -1044,6 +1245,7 @@ def _stream_answer_body(
     model: str | None,
     session: SessionClaims | None,
     memory_turn=None,
+    chart_mode: bool = False,
 ) -> Iterator[str]:
     # Set inside the generator, NOT in the route that returns the
     # StreamingResponse: Starlette runs a sync generator via
@@ -1054,6 +1256,7 @@ def _stream_answer_body(
     use_model(model, org_id=org_id)
     # Logged, never refused (see guard/live.py for the measured reason).
     watch_question(question)
+
 
     # Loaded BEFORE routing but no longer instead of it. An attached file used
     # to short-circuit `choose_agent` entirely, on the reasoning that someone
@@ -1088,6 +1291,9 @@ def _stream_answer_body(
         requested_agent=requested_agent,
         context=_previous_question(org_id, conversation_id, workspace_id, session),
         graph_plan=plan_future,
+        viewer=viewer_for(session),
+        chart_mode=chart_mode,
+        uploads=_upload_scope(conversation_id, session),
     )
     plan = _graph_plan_result(plan_future)
     # The classifier's live-data verdict rides the request note to the gateway
@@ -1112,21 +1318,14 @@ def _stream_answer_body(
 
     # Routed FIRST, then blended: the router picks which corpus supports the
     # question, and the attached files join whatever it retrieves.
-    if attached:
+    if attached and not chart_mode:
         yield from _stream_attachment_answer(
             question, attached, org_id, conversation_id, workspace_id, decision, session
         )
         return
 
     spec = getattr(decision, "chart_spec", None)
-    chart_spec = None
-    if spec is not None:
-        chart_spec = {
-            "metric": spec.metric,
-            "group_by": spec.group_by,
-            "period": spec.period,
-            "chart": spec.chart,
-        }
+    chart_spec = spec_to_dict(spec) if spec is not None else None
 
     graph_input = {
         "question": question,
@@ -1169,6 +1368,16 @@ def _stream_answer_body(
         yield _sse_event("error", {"message": _user_facing_llm_error(exc)})
         return
 
+    # A connected retry was answered by the pipeline, which already saved its
+    # own turn. Saving again would put the question in the history twice.
+    if not retry_tools:
+        _keep_standalone_turn(
+            decision.agent_key, conversation_id, question, result.answer,
+            getattr(result, "cited", None),
+            conversation_store.chart_for_storage(
+                getattr(result, "chart", None), getattr(result, "chart_period", None)),
+        )
+
     # A question that came back ungrounded is a documentation gap, and it is
     # recorded here without anyone having to report it -- the gaps people
     # quietly give up on are exactly the ones that never get reported.
@@ -1205,8 +1414,9 @@ def _stream_answer_body(
         yield _sse_event("token", chunk)
         if delay:
             time.sleep(delay)
-    yield _sse_event(
-        "done",
+    yield _done_event(
+        conversation_id,
+        question,
         {
             "answer": result.answer,
             "grounded": result.grounded,
@@ -1237,8 +1447,20 @@ def _stream_answer_body(
             "chart_period": getattr(result, "chart_period", None),
             # Which connectors answered LIVE, and when. Empty when nothing was
             # refreshed -- the indexed copy answered.
-            "live_sources": list(getattr(result, "live_sources", None) or []),
+            "live_sources": _shown_live(result),
             "cited": list(getattr(result, "cited", None) or []),
+            # A text question asked in Chart mode: offer to turn it off.
+            "ask_hint": decision.reason == "chart-mode-text-question",
+            # Asked to SEE a chart with Chart mode off (the hint is the
+            # answer), or a count answered in words: offer Chart mode. Both
+            # read by the question check, not by matching words.
+            "chart_hint": (
+                not chart_mode and (
+                    decision.reason == "chart-mode-off"
+                    or (decision.agent_key != INSIGHTS_KEY
+                        and getattr(decision, "chart_ask", None) == "count")
+                )
+            ),
             # Personal memory saved from this question, announced so saving is
             # never silent; the pill offers Undo.
             "remembered": _remembered(memory_turn),
@@ -1300,6 +1522,8 @@ def chat_stream(
             requested_agent=requested_agent,
             model=model,
             session=session,
+            # Chat's Chart toggle. Anything else is normal Ask.
+            chart_mode=body.get("mode") == "chart",
         ),
         media_type="text/event-stream",
     )

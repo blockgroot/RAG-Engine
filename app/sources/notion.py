@@ -71,6 +71,48 @@ def _parent_container(page: dict) -> dict | None:
     return None
 
 
+#: Rows read from one inline database per page sync. A bound, said out loud
+#: in the page text when it bites.
+_MAX_DATABASE_ROWS = 1000
+
+
+def _property_text(prop: dict | None) -> str:
+    """One database property as the cell a person sees in Notion."""
+    if not isinstance(prop, dict):
+        return ""
+    kind = prop.get("type")
+    value = prop.get(kind)
+    if kind in ("title", "rich_text"):
+        return "".join((t or {}).get("plain_text", "") for t in value or [])
+    if kind == "number":
+        if value is None:
+            return ""
+        return str(int(value)) if float(value).is_integer() else str(value)
+    if kind in ("select", "status"):
+        return (value or {}).get("name", "")
+    if kind == "multi_select":
+        return ", ".join(v.get("name", "") for v in value or [])
+    if kind == "date":
+        return (value or {}).get("start", "") or ""
+    if kind == "checkbox":
+        return "Yes" if value else "No"
+    if kind in ("url", "email", "phone_number", "created_time", "last_edited_time"):
+        return value or ""
+    if kind == "people":
+        return ", ".join((p or {}).get("name", "") for p in value or [])
+    if kind == "formula":
+        inner = (value or {}).get("type")
+        result = (value or {}).get(inner)
+        if inner == "date":
+            return (result or {}).get("start", "") or ""
+        return "" if result is None else str(result)
+    if kind == "unique_id":
+        prefix = (value or {}).get("prefix")
+        number = (value or {}).get("number")
+        return f"{prefix}-{number}" if prefix else str(number or "")
+    return ""
+
+
 def _parse_dt(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -304,20 +346,105 @@ class NotionAdapter(SourceAdapter):
             cells = data.get("cells", [])
             for cell in cells:
                 _collect_rich_text(cell, sink)
-            lines.append(f"{indent}" + " | ".join(_rich_text_to_text(c) for c in cells))
+            # A real pipe row ("| a | b |", a literal | escaped) so the table
+            # reader (`doctables.find_markdown_tables`) can find it; the
+            # parent `table` block adds the header separator below.
+            lines.append(f"{indent}| " + " | ".join(
+                _rich_text_to_text(c).replace("|", "\\|").replace("\n", " ")
+                for c in cells) + " |")
         elif btype == "child_page":
             pass
+        elif btype == "child_database":
+            # An inline database ("/table" -> table view) is where most Notion
+            # tables of figures live. Its rows are separate pages whose numbers
+            # sit in PROPERTIES, so the page read as empty: neither answerable
+            # nor chartable. Render it as a real table under its title.
+            lines.extend(self._database_lines(block.get("id"), data.get("title") or ""))
         else:
             if text:
                 lines.append(indent + text)
 
         budget[0] -= sum(len(line) for line in lines)
 
-        if block.get("has_children") and btype != "child_page" and budget[0] > 0:
+        if (block.get("has_children") and btype not in ("child_page", "child_database")
+                and budget[0] > 0):
             child_depth = depth + 1 if btype in _INDENTING else depth
-            lines.extend(self._render_children_lines(block["id"], child_depth, budget, sink))
+            children = self._render_children_lines(block["id"], child_depth, budget, sink)
+            if btype == "table" and children:
+                # A Notion table's rows arrive as children with no header
+                # marker, so it never read as a table and was never charted.
+                # The first row is the header (Notion's own column header when
+                # the table has one); blank lines keep it apart from prose.
+                width = data.get("table_width") or max(children[0].count("|") - 1, 1)
+                children = ["", children[0], "|" + " --- |" * width, *children[1:], ""]
+            lines.extend(children)
 
         return lines
+
+    def _database_lines(self, database_id: str | None, title: str) -> list[str]:
+        """An inline database as a pipe table (header + separator + rows).
+
+        Bounded at ``_MAX_DATABASE_ROWS`` and says so when it stops early.
+        Works with both Notion APIs: data sources (notion-client 3.x) and the
+        older ``databases.query``. Never raises: a database we cannot read
+        costs that table, never the page.
+        """
+        if not database_id:
+            return []
+        rows: list[dict] = []
+        truncated = False
+        try:
+            query = self._database_query(database_id)
+            if query is None:
+                return []
+            cursor = None
+            while True:
+                kwargs = {"page_size": 100}
+                if cursor:
+                    kwargs["start_cursor"] = cursor
+                reply = query(**kwargs)
+                rows.extend((r.get("properties") or {}) for r in reply.get("results") or [])
+                if len(rows) >= _MAX_DATABASE_ROWS:
+                    truncated = bool(reply.get("has_more")) or len(rows) > _MAX_DATABASE_ROWS
+                    rows = rows[:_MAX_DATABASE_ROWS]
+                    break
+                if not reply.get("has_more"):
+                    break
+                cursor = reply.get("next_cursor")
+        except Exception:  # noqa: BLE001 - see docstring
+            logger.info("Notion: could not read inline database %s", database_id, exc_info=True)
+            return []
+        if not rows:
+            return []
+        # Column order: the title property first (it names the row), then the
+        # rest as Notion returned them.
+        names = list(rows[0].keys())
+        names.sort(key=lambda n: (rows[0][n] or {}).get("type") != "title")
+
+        def cell(prop) -> str:
+            return _property_text(prop).replace("|", "\\|").replace("\n", " ").strip()
+
+        out = ["", f"### {title}" if title else "", "| " + " | ".join(
+            n.replace("|", "\\|") for n in names) + " |",
+            "|" + " --- |" * len(names)]
+        out += ["| " + " | ".join(cell(r.get(n)) for n in names) + " |" for r in rows]
+        if truncated:
+            out.append(f"(First {_MAX_DATABASE_ROWS} rows of this database.)")
+        out.append("")
+        return [line for line in out if line is not None]
+
+    def _database_query(self, database_id: str):
+        """A ``query(**kwargs)`` for this database's rows, on either API."""
+        if hasattr(self._client, "data_sources"):
+            database = self._client.databases.retrieve(database_id=database_id)
+            sources = database.get("data_sources") or []
+            if sources:
+                source_id = sources[0].get("id")
+                return lambda **kw: self._client.data_sources.query(
+                    data_source_id=source_id, **kw)
+        if hasattr(self._client.databases, "query"):
+            return lambda **kw: self._client.databases.query(database_id=database_id, **kw)
+        return None
 
     def _render_children_lines(
         self, block_id: str, depth: int, budget: list[int], sink: dict | None = None

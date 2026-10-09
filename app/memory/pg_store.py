@@ -34,7 +34,10 @@ class PgConversationStore(ConversationStore):
             ).fetchone()
         return str(row[0])
 
-    def append_turn(self, conversation_id: str, question: str, answer: str) -> int:
+    def append_turn(
+        self, conversation_id: str, question: str, answer: str, cited: list | None = None,
+        chart: dict | None = None,
+    ) -> int:
         with get_connection(self._settings) as conn:
             org_row = conn.execute(
                 "SELECT org_id FROM conversations WHERE id = %s::uuid",
@@ -55,10 +58,18 @@ class PgConversationStore(ConversationStore):
             conn.execute(
                 """
                 INSERT INTO conversation_turns
-                    (conversation_id, org_id, turn_index, question, answer)
-                VALUES (%s::uuid, %s, %s, %s, %s)
+                    (conversation_id, org_id, turn_index, question, answer, cited, chart)
+                VALUES (%s::uuid, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
                 """,
-                (conversation_id, org_id, next_index, question, answer),
+                (
+                    conversation_id,
+                    org_id,
+                    next_index,
+                    question,
+                    answer,
+                    json.dumps(cited) if cited else None,
+                    json.dumps(chart) if chart else None,
+                ),
             )
         return int(next_index)
 

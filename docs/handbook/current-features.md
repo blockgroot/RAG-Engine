@@ -65,15 +65,15 @@ and names the tool, never the document.
 - **Citations.** One document is named once under the answer, with a link that opens it in its
 own tool. Two or more documents keep a small number on each sentence and the same list
 underneath. The link is the address saved when the page was indexed. A number the model invents
-is dropped. Slack shows the answer without the numbers. Opening an old chat does not bring the
-list back, because it is sent with the finished answer and is not stored on the chat.
+is dropped. Slack shows the answer without the numbers. Opening an old chat shows the same
+list, because it is stored on the turn.
 
 **Limitations:**
 
 - Very broad questions asked company-wide use the top passages, not every document.
 - Summaries are capped at 120 passages or 60,000 characters, oldest dropped first.
 
-**Code:** `app/rag/pipeline.py`, `app/rag/retrieval.py`, `app/rag/access_notice.py`, `app/api/chat.py`
+**Code:** `app/rag/pipeline.py`, `app/rag/cite.py`, `frontend/components/AnswerText.tsx`, `app/rag/retrieval.py`, `app/rag/access_notice.py`, `app/api/chat.py`
 
 ## 2. Smart routing between tools
 
@@ -192,6 +192,10 @@ Survey sentiment is visible to owners only.
 by person".
 - **More fields to chart.** Chart extra fields the tools already return, such as labels.
 - **Tables inside documents.** Chart a table inside a document, such as a sales table in a Doc.
+- **Files you upload.** In Chart mode, chart a file attached to the chat: each Excel sheet, a
+  CSV, Word tables, tables a PDF page draws, or figures written in a file's sentences (read once
+  by AI and checked against the quote). Only the uploader, in that chat, can chart it; removing
+  the file removes its tables. Starter questions come from the file's own columns.
 
 The rule stays the same: the AI never produces a number.
 
@@ -228,7 +232,7 @@ rather than changes.
 
 **Status: Live**
 
-Attach PDF, Word, CSV, TSV, text, Markdown or JSON files to a chat. Files are stored privately in
+Attach PDF, Word, Excel (.xlsx), CSV, TSV, text, Markdown or JSON files to a chat. Files are stored privately in
 Cloudinary and answered together with company documents, so "is this bill claimable?" reads the
 bill and the expense policy. Each file gets its own result: one bad file doesn't block the
 others.

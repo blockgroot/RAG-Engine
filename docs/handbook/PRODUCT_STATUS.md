@@ -216,7 +216,7 @@ scored by the safety model; the answer fact-checker is off (§11).
 - **Ask** is one box with a source pill that names the tool and space each answer came from.
 - **Citations:** one source is named once under the answer. Two or more keep a gray superscript
   after the sentence, matched to a Sources list. The link is the address stored at sync. The
-  list is sent with the finished answer and is not stored on the chat. Slack strips the numbers.
+  list is stored on the turn, so a reopened chat shows the same sources. Slack strips the numbers.
 - **Chat history** in the left rail, with linkable, deletable, private chats.
 - **Uploads** attach to a chat with a per-file result.
 - **Charts** appear in the chat; hover shows the rows behind each bar.
@@ -231,7 +231,7 @@ scored by the safety model; the answer fact-checker is off (§11).
 ## 10. Production Status
 
 **Enabled and working in production (team-verified, 30 Sep – 1 Oct 2026):** Ask with grounding,
-routing and web search; chat history; file uploads to Cloudinary; charts; spaces; Ask in Slack;
+citations, routing and web search; chat history; file uploads to Cloudinary; charts; spaces; Ask in Slack;
 scheduled reports with real email; feedback and gap tracking; needs-attention bell; Second
 Brain (knowledge graph, live reads, personal memory); prompt-injection defense; Drive per-file
 access; automatic hourly sync; instant updates from Slack, Linear, Notion and Drive (configured 1 Oct).
@@ -272,6 +272,9 @@ on top of the 12 metrics already shipping:
   charted.
 - **Tables inside documents** (`app/doctables/`): rows extracted at sync, for example a sales
   table in a Doc.
+- **Charts from uploaded files** (`app/doctables/uploads.py`): Excel, CSV, Word and PDF tables,
+  or figures in a file's sentences, charted in Chart mode; private to the uploader and chat.
+  Adds `.xlsx` uploads (`openpyxl`) and PDF table reading (`pdfplumber`).
 
 The rule on the branch is the same: **the AI never produces a number**. It is under review.
 Ask on `main` still charts only the 12 registry metrics.

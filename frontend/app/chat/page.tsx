@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname, useParams, useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { AskHeroArt } from "@/components/AskHeroArt";
-import { ChatMessageView, Message } from "@/components/ChatMessage";
+import { ChartIcon, ChatMessageView, Message } from "@/components/ChatMessage";
 import { SpacePanel } from "@/components/SpacePanel";
 import { useMe } from "@/lib/useMe";
 import { streamChat } from "@/lib/sse";
@@ -54,7 +54,30 @@ function PaperclipIcon() {
   );
 }
 
-function ChipIcon({ kind }: { kind: "policy" | "code" }) {
+function PlusIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden className="composer-menu-check">
+      <path d="m5 12 5 5 9-10" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ChipIcon({ kind }: { kind: "policy" | "code" | "chart" }) {
+  if (kind === "chart") {
+    return (
+      <svg className="suggested-chip-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
+        <path d="M4 20V10M10 20V4M16 20v-7M22 20H2" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    );
+  }
   if (kind === "code") {
     return (
       <svg className="suggested-chip-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -113,6 +136,20 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // that has since left the catalog is discarded on load rather than sent and
   // rejected with a 400.
   const [model, setModel] = useState<string>("auto");
+  // Chart mode: like attaching a file, a choice made beside the message box.
+  // On, the answer is a chart or a plain refusal; off, charts are never
+  // guessed, so a normal question skips the chart check entirely.
+  const [chartMode, setChartMode] = useState(false);
+  // Said once when turning Chart on moved the picker off a model that cannot
+  // build charts, so the switch is never silent.
+  const [modelNote, setModelNote] = useState<string | null>(null);
+  // Chart mode's starters come from the server: built from the metrics and
+  // fields this scope actually has, so each one can be drawn.
+  const [chartStarters, setChartStarters] = useState<string[]>([]);
+  // The "+" menu beside the message box (files, Chart) -- one entry point
+  // for tools, the way ChatGPT, Claude and Gemini do it.
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const toolsRef = useRef<HTMLDivElement>(null);
   const [workspaceGithub, setWorkspaceGithub] = useState(false);
   const [workspaceSlack, setWorkspaceSlack] = useState(false);
   const [workspaceLinear, setWorkspaceLinear] = useState(false);
@@ -134,6 +171,10 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const [historyKey, setHistoryKey] = useState(0);
   const [activeConversation, setActiveConversation] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  // True while files are dragged over the page: the whole chat is the drop
+  // target, as in ChatGPT and Claude, so nobody has to aim at the + button.
+  const [dragging, setDragging] = useState(false);
+  const attachRef = useRef<(files: FileList | null) => void>(() => undefined);
   // The names of files currently in flight. A boolean is enough to disable
   // a button but not to tell someone WHICH of the four files they picked is
   // still going, which is the only question they have while waiting.
@@ -158,6 +199,39 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   ].filter(Boolean).length;
   const anySourceAvailable = connectedSourceCount > 0;
 
+
+  // Re-read when the chat's files change: an uploaded sheet's columns
+  // become the first starters.
+  const attachmentKey = attachments.map((a) => a.id).join(",");
+  useEffect(() => {
+    if (!chartMode) return;
+    let cancelled = false;
+    api
+      .chartStarters(workspaceId, attachmentKey ? conversationId.current : null)
+      .then((r) => {
+        if (!cancelled) setChartStarters(r.questions);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [chartMode, workspaceId, attachmentKey]);
+
+  useEffect(() => {
+    if (!toolsOpen) return;
+    function onDown(e: MouseEvent) {
+      if (toolsRef.current && !toolsRef.current.contains(e.target as Node)) setToolsOpen(false);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") setToolsOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [toolsOpen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -343,7 +417,14 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       setMessages(
         turns.flatMap((t) => [
           { role: "user" as const, text: t.question },
-          { role: "assistant" as const, text: t.answer },
+          {
+            role: "assistant" as const,
+            text: t.answer,
+            cited: t.cited && t.cited.length ? t.cited : undefined,
+            chart: t.chart?.panel ?? undefined,
+            chartPeriod: t.chart?.period ?? undefined,
+            meta: t.meta ?? undefined,
+          },
         ]),
       );
       setAttachments(files);
@@ -465,6 +546,50 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     return conversationId.current;
   }
 
+  attachRef.current = (files) => void attach(files);
+
+  useEffect(() => {
+    // Only a drag that carries FILES: dragging selected text or a link
+    // around the page must not flash the overlay.
+    const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes("Files");
+    // dragenter/dragleave fire for every child crossed, so count them; the
+    // overlay goes when the count returns to zero.
+    let depth = 0;
+    function onEnter(e: DragEvent) {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      depth += 1;
+      setDragging(true);
+    }
+    function onOver(e: DragEvent) {
+      if (!hasFiles(e)) return;
+      e.preventDefault(); // without this the browser opens the file instead
+      if (e.dataTransfer) e.dataTransfer.dropEffect = busy ? "none" : "copy";
+    }
+    function onLeave(e: DragEvent) {
+      if (!hasFiles(e)) return;
+      depth = Math.max(0, depth - 1);
+      if (depth === 0) setDragging(false);
+    }
+    function onDrop(e: DragEvent) {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      depth = 0;
+      setDragging(false);
+      if (!busy) attachRef.current(e.dataTransfer?.files ?? null);
+    }
+    document.addEventListener("dragenter", onEnter);
+    document.addEventListener("dragover", onOver);
+    document.addEventListener("dragleave", onLeave);
+    document.addEventListener("drop", onDrop);
+    return () => {
+      document.removeEventListener("dragenter", onEnter);
+      document.removeEventListener("dragover", onOver);
+      document.removeEventListener("dragleave", onLeave);
+      document.removeEventListener("drop", onDrop);
+    };
+  }, [busy]);
+
   async function attach(files: FileList | null) {
     if (!files?.length || uploading) return;
     setUploadError(null);
@@ -505,12 +630,19 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   async function detach(id: string) {
     const convId = conversationId.current;
     if (!convId) return;
+    const removed = attachments.find((a) => a.id === id);
+    if (!removed) return; // already going: a second click is not a second delete
     setUploadError(null);
+    // Gone from the chat at once, as in every chat app; the server delete is
+    // idempotent, so only a real failure brings the chip back.
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
     try {
       await api.deleteAttachment(convId, id, workspaceId);
-      setAttachments((prev) => prev.filter((a) => a.id !== id));
     } catch {
-      setUploadError("Couldn't remove that file.");
+      setAttachments((prev) =>
+        prev.some((a) => a.id === id) ? prev : [...prev, removed],
+      );
+      setUploadError(`Couldn't remove ${removed.filename}. Try again.`);
     }
   }
 
@@ -523,9 +655,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     setMessages((prev) => [...prev, { role: "assistant", text: "", streaming: true }]);
 
     // Always create a conversation now. Which agent answers is decided by the
-    // BACKEND, per question, so the client cannot know in advance whether this
-    // one goes to GitHub (which keeps no memory and simply ignores the id).
-    // Guessing wrong the other way would silently drop follow-up context.
+    // backend, per question, including GitHub. The id is what the history
+    // list reopens.
     const convId = await ensureConversation();
 
     await streamChat(
@@ -571,7 +702,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       workspaceId,
       // No agent pinned: the backend measures which source fits the question.
       undefined,
-      model
+      model,
+      chartMode ? "chart" : undefined,
     );
 
   }
@@ -656,18 +788,49 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     codeAvailable && "GitHub",
   ].filter(Boolean) as string[];
 
-  const emptyTitle = workspaceId ? "Ask this space" : "Ask your company";
-  const emptyCopy =
-    connectedNames.length > 0
-      ? `Answers are drawn from ${listCopy(connectedNames)}. Ask for a chart when you want a count — for example, task completion by team.`
+  const emptyTitle = chartMode
+    ? "Create a chart"
+    : workspaceId ? "Ask this space" : "Ask your company";
+  const emptyCopy = chartMode
+    ? "Charts count activity in your connected apps, figures in tables inside your documents, and files you upload here (Excel, CSV, PDF or Word). Describe what you want to see."
+    : connectedNames.length > 0
+      ? `Answers are drawn from ${listCopy(connectedNames)}. For a chart, choose + then Create a chart.`
       : workspaceId
-        ? "Answers are drawn from the documents connected to this space. You can also ask for a chart of what this space has recorded."
-        : "Leave, benefits, remote work and more — answered from your connected documents. Ask for a chart when you want a count.";
-  const composerPlaceholder = "Ask a question, or ask for a chart…";
+        ? "Answers are drawn from the documents connected to this space. For a chart, choose + then Create a chart."
+        : "Leave, benefits, remote work and more — answered from your connected documents.";
+  const starters = chartMode ? chartStarters : suggestedQuestions;
+  const composerPlaceholder = chartMode
+    ? "Describe a chart, e.g. issues by priority"
+    : "Ask a question…";
+  // In Chart mode only models that build charts are offered; the company's own
+  // model stays, marked, because we cannot know in advance.
+  const pickerModels = chartMode ? models.filter((m) => m.charts !== false) : models;
+
+  function toggleChartMode(on: boolean) {
+    setChartMode(on);
+    setModelNote(null);
+    const current = models.find((m) => m.id === model);
+    if (on && current && current.charts === false) {
+      setModel("auto");
+      setModelNote(`Charts use ${defaultLabel} — ${current.label} can't build them.`);
+    }
+  }
 
   return (
     <AppShell me={me} variant="app">
       <div className="chat-page">
+        {dragging && (
+          <div className="chat-drop-overlay" aria-hidden="true">
+            <div className="chat-drop-card">
+              <strong>Drop to attach</strong>
+              <span>
+                {chartMode
+                  ? "Excel, CSV, PDF or Word tables become charts in this chat."
+                  : "PDF, Word, Excel, CSV, text or Markdown, private to you in this chat."}
+              </span>
+            </div>
+          </div>
+        )}
         {justSynced && (
           <div className="banner banner-ok" style={{ margin: "0 0 1rem" }}>
             {workspaceId
@@ -753,18 +916,18 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                 <h1>{emptyTitle}</h1>
                 <p className="muted">{emptyCopy}</p>
               </div>
-              {suggestionsLoading ? (
+              {suggestionsLoading && !chartMode ? (
                 <p className="muted suggested-loading">Loading suggestions…</p>
-              ) : suggestedQuestions.length > 0 ? (
+              ) : starters.length > 0 ? (
                 <div className="suggested-chips suggested-chips-bento">
-                  {suggestedQuestions.map((q) => (
+                  {starters.map((q) => (
                     <button
                       key={q}
                       type="button"
                       className="suggested-chip suggested-chip-card"
                       onClick={() => ask(q)}
                     >
-                      <ChipIcon kind="policy" />
+                      <ChipIcon kind={chartMode ? "chart" : "policy"} />
                       <span>{q}</span>
                     </button>
                   ))}
@@ -783,6 +946,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                   // message.
                   question={messages[i - 1]?.role === "user" ? messages[i - 1].text : ""}
                   workspaceId={workspaceId}
+                  onEnableChart={() => toggleChartMode(true)}
+                  onDisableChart={() => toggleChartMode(false)}
                 />
               ))}
               <div ref={bottomRef} aria-hidden className="chat-scroll-anchor" />
@@ -845,7 +1010,9 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             )}
             {attachments.length > 0 && pending.length === 0 && (
               <span className="attach-note">
-                Answers can use {attachments.length === 1 ? "this file" : "these files"} and your connected tools together.
+                {chartMode
+                  ? `Charts can use the tables and figures in ${attachments.length === 1 ? "this file" : "these files"}, and your connected tools.`
+                  : `Answers can use ${attachments.length === 1 ? "this file" : "these files"} and your connected tools together.`}
               </span>
             )}
             {uploadError && <span className="attach-error">{uploadError}</span>}
@@ -860,26 +1027,95 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             ref={fileInput}
             type="file"
             className="sr-only"
-            accept=".pdf,.docx,.csv,.tsv,.txt,.md,.markdown,.log,.json"
+            accept=".pdf,.docx,.xlsx,.csv,.tsv,.txt,.md,.markdown,.log,.json"
             multiple
             onChange={(e) => attach(e.target.files)}
           />
-          <button
-            type="button"
-            className="chat-composer-attach"
-            onClick={() => fileInput.current?.click()}
-            disabled={busy || uploading}
-            title="Attach a file to ask about (PDF, Word, CSV, text)"
-            aria-label="Attach a file"
-          >
-            {uploading ? <span className="composer-spinner" aria-hidden /> : <PaperclipIcon />}
-          </button>
+          <div className="composer-tools" ref={toolsRef}>
+            <button
+              type="button"
+              className="chat-composer-attach"
+              onClick={() => setToolsOpen((open) => !open)}
+              disabled={busy}
+              aria-haspopup="menu"
+              aria-expanded={toolsOpen}
+              aria-label="Add files or create a chart"
+              title="Add files or create a chart"
+            >
+              {uploading ? <span className="composer-spinner" aria-hidden /> : <PlusIcon />}
+            </button>
+            {toolsOpen && (
+              <div className="composer-menu" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="composer-menu-item"
+                  disabled={uploading}
+                  onClick={() => {
+                    setToolsOpen(false);
+                    fileInput.current?.click();
+                  }}
+                >
+                  <PaperclipIcon />
+                  <span className="composer-menu-text">
+                    <strong>Add files</strong>
+                    <small>PDF, Word, CSV or text</small>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  role="menuitemcheckbox"
+                  aria-checked={chartMode}
+                  className="composer-menu-item"
+                  onClick={() => {
+                    setToolsOpen(false);
+                    toggleChartMode(!chartMode);
+                  }}
+                >
+                  <ChartIcon />
+                  <span className="composer-menu-text">
+                    <strong>Create a chart</strong>
+                    <small>From your connected apps and document tables</small>
+                  </span>
+                  {chartMode && <CheckIcon />}
+                </button>
+              </div>
+            )}
+          </div>
+          {chartMode && (
+            <span className="composer-mode-chip">
+              <ChartIcon />
+              <span>Chart</span>
+              <button
+                type="button"
+                className="composer-mode-chip-remove"
+                onClick={() => toggleChartMode(false)}
+                disabled={busy}
+                aria-label="Turn off Chart"
+                title="Turn off Chart"
+              >
+                {/* An icon, not the "×" character: a glyph sits on the text
+                    baseline and drops below the chart icon beside it. */}
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+                </svg>
+              </button>
+            </span>
+          )}
           <input
             id="ask-input"
             className="chat-composer-input"
             placeholder={composerPlaceholder}
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            // A file copied in Finder/Explorer and pasted here attaches it;
+            // pasted TEXT is left to the input as usual.
+            onPaste={(e) => {
+              if (e.clipboardData.files.length > 0) {
+                e.preventDefault();
+                void attach(e.clipboardData.files);
+              }
+            }}
             disabled={busy}
             autoFocus
           />
@@ -895,6 +1131,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                 value={model}
                 onChange={(e) => {
                   setModel(e.target.value);
+                  setModelNote(null);
                   localStorage.setItem("chat.model", e.target.value);
                 }}
                 disabled={busy}
@@ -904,9 +1141,9 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                 }
               >
                 <option value="auto">{defaultLabel}</option>
-                {models.map((m) => (
+                {pickerModels.map((m) => (
                   <option key={m.id} value={m.id}>
-                    {m.label}
+                    {chartMode && m.charts == null ? `${m.label} (may not support charts)` : m.label}
                   </option>
                 ))}
               </select>
@@ -939,6 +1176,12 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             )}
           </button>
         </form>
+        {(chartMode || modelNote) && (
+          <p className="muted chat-model-note" role="status">
+            {modelNote ??
+              "Chart mode only builds charts. Turn it off for a written answer."}
+          </p>
+        )}
       </div>
     </AppShell>
   );

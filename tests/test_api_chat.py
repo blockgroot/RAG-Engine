@@ -99,7 +99,7 @@ def client_and_session(store, org_cleanup, monkeypatch):
     # tests never construct the real embedding/reranker singletons.
     monkeypatch.setattr("app.api.chat.get_policy_agent", lambda: policy)
     monkeypatch.setattr("app.api.chat.get_workspace_agent", lambda: workspace)
-    monkeypatch.setattr("app.agent.routing._try_insights_route", lambda *a, **k: None)
+    monkeypatch.setattr("app.agent.routing._try_question_route", lambda *a, **k: None)
 
     client = TestClient(app)
     return client, {"session": token}, org_id, memory
@@ -595,7 +595,8 @@ def test_a_visual_question_streams_a_chart_not_rag(client_and_session, monkeypat
             "question": (
                 "create a visual representation of task completion "
                 "in team aggregated by team"
-            )
+            ),
+            "mode": "chart",
         },
         cookies=cookies,
     )
@@ -634,7 +635,7 @@ def test_a_chart_intent_that_cannot_chart_does_not_fall_through_to_rag(
 
     response = client.post(
         "/chat/stream",
-        json={"question": "show me a chart of team happiness"},
+        json={"question": "show me a chart of team happiness", "mode": "chart"},
         cookies=cookies,
     )
     assert response.status_code == 200
@@ -643,3 +644,91 @@ def test_a_chart_intent_that_cannot_chart_does_not_fall_through_to_rag(
     assert done["grounded"] is False
     assert done["chart"] is None
     assert "tasks completed" in done["answer"].lower()
+
+
+def test_a_chart_asked_in_normal_ask_points_to_chart_mode(client_and_session, monkeypatch):
+    """The question check (not a word list) read a chart ask; the hint is
+    the answer and the Turn on Chart button rides on it."""
+    from app.agent.routing import RoutingDecision
+    from app.insights.resolve import CHART_MODE_HINT
+
+    client, cookies, _, _ = client_and_session
+    monkeypatch.setattr(
+        "app.api.chat.choose_agent",
+        lambda *a, **k: RoutingDecision("insights", "chart-mode-off", chart_refusal=CHART_MODE_HINT),
+    )
+    response = client.post("/chat/stream", json={"question": "show me PRs as a graph"},
+                           cookies=cookies)
+    done = json.loads([d for e, d in _parse_sse(response.text) if e == "done"][0])
+    assert done["chart_hint"] is True
+    assert done["answer"].startswith("**Charts are in Chart mode**")
+
+
+def test_chart_mode_reaches_routing(client_and_session, monkeypatch):
+    from app.agent.routing import RoutingDecision
+
+    client, cookies, _, _ = client_and_session
+    seen = {}
+
+    def choose(*a, **k):
+        seen.update(k)
+        return RoutingDecision("insights", "chart-refuse", chart_refusal="no")
+
+    monkeypatch.setattr("app.api.chat.choose_agent", choose)
+    client.post("/chat/stream", json={"question": "PRs by label", "mode": "chart"},
+                cookies=cookies)
+    assert seen["chart_mode"] is True
+
+
+def test_the_done_event_labels_the_saved_turn(monkeypatch):
+    """A reopened chat draws the pill from what the turn kept."""
+    from app.api import chat
+
+    seen = {}
+    monkeypatch.setattr(chat.conversation_store, "set_last_turn_meta",
+                        lambda cid, q, meta: seen.update(cid=cid, q=q, meta=meta))
+    event = chat._done_event("conv-1", "what is the leave policy?",
+                             {"source": "notion", "agent": "notion", "citations": [{}]})
+    assert event.startswith("event: done")
+    assert seen == {"cid": "conv-1", "q": "what is the leave policy?",
+                    "meta": {"source": "notion", "agent": "notion", "citation_count": 1}}
+
+
+def test_a_failed_label_never_costs_the_answer(monkeypatch):
+    from app.api import chat
+
+    def boom(*a, **k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(chat.conversation_store, "set_last_turn_meta", boom)
+    assert chat._done_event("conv-1", "q", {"source": "none"}).startswith("event: done")
+
+
+def test_live_is_claimed_only_for_a_read_the_answer_cites():
+    """"Notion · live" showed beside an answer whose sources were all Slack."""
+    from types import SimpleNamespace
+
+    from app.api.chat import _shown_live
+
+    reads = [{"provider": "notion", "fetched_at": "t1", "document_id": "n1"},
+             {"provider": "linear", "fetched_at": "t2", "document_id": "l1"},
+             {"provider": "linear", "fetched_at": "t3", "document_id": "l2"}]
+    result = SimpleNamespace(live_sources=reads,
+                             cited=[{"document_id": "l1"}, {"document_id": "l2"}, {"document_id": "s1"}])
+    assert _shown_live(result) == [{"provider": "linear", "fetched_at": "t2"}]
+    assert _shown_live(SimpleNamespace(live_sources=reads, cited=[])) == []
+
+
+
+def test_chart_starters_come_from_what_the_scope_can_chart():
+    """Never page copy: a metric's own label, by a field the data holds, or
+    over time; one per metric, interleaved across tools."""
+    from app.api.chat import chart_starters
+    from app.insights import registry
+
+    priority = next(a for a in registry.ATTRS if a.key == "priority_label")
+    metrics = [registry.get("issue_states"), registry.get("prs_merged"),
+               registry.get("drive_docs_changed")]
+    got = chart_starters(metrics, {"issue_states": (priority,)})
+    assert got == ["Where the work sits by priority", "Pull requests merged per week",
+                   "Files created or edited per week"]

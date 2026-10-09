@@ -95,9 +95,52 @@ def test_a_number_pointing_at_an_attached_file_is_not_a_citation():
     assert len(result.cited) == 1 and result.cited[0]["n"] == 1
 
 
+def test_a_live_read_cites_the_stored_document_not_a_url_in_the_text():
+    live = RetrievedChunk(
+        content="x", score=0.9, document_id="d-linear", chunk_index=0, org_id="org",
+        document_title="SYV-5", source_provider="linear",
+        source_uri="https://linear.app/syvora/issue/SYV-5",
+    )
+    text, cited = link_citations(
+        "SYV-5 is in progress [1]. See https://evil.example.",
+        [live],
+    )
+    assert text == "SYV-5 is in progress [1]. See https://evil.example."
+    assert cited == [{
+        "n": 1, "document_id": "d-linear", "title": "SYV-5",
+        "provider": "linear", "url": "https://linear.app/syvora/issue/SYV-5",
+    }]
+
+
 def test_the_prompt_asks_for_markers():
     llm, pipeline = _pipeline("MODE: A\n\nMeals are covered [1].")
     pipeline.answer("are meals reimbursable per day?", "org-1")
     prompt = next(p for p in llm.prompts if "<<<UNTRUSTED_DOCUMENT_CONTENT>>>" in p)
     assert "add the number of the CONTEXT block" in prompt
     assert "Do not print [n]" not in prompt
+
+
+def test_a_saved_turn_keeps_the_citation_list():
+    """Reopening a chat reads this list back. Losing it is why the sources vanished."""
+    from tests.fakes import InMemoryConversationStore
+
+    memory = InMemoryConversationStore()
+    cid = memory.create_conversation("org-1")
+    _, pipeline = _pipeline(
+        "MODE: A\n\nMeals are covered up to 40 dollars a day [1].", memory=memory
+    )
+    pipeline.answer("are meals reimbursable per day?", "org-1", conversation_id=cid)
+    turn = memory.get_turns(cid)[-1]
+    assert turn.answer.endswith("[1].")
+    assert turn.cited[0]["document_id"] == "doc-1"
+    assert turn.cited[0]["n"] == 1
+
+
+def test_two_passages_of_one_document_cite_it_once():
+    """"[3][4]" from one Slack thread read as a superscript "3 3"."""
+    thread = _hit("d1", "#rag-updates")
+    other = _hit("d2", "Leave Policy")
+    text, cited = link_citations("Live reads replace synced copies [1][2]. Leave [3].",
+                                 [thread, thread, other])
+    assert text == "Live reads replace synced copies [1]. Leave [2]."
+    assert [c["document_id"] for c in cited] == ["d1", "d2"]

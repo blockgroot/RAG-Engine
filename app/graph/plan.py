@@ -230,15 +230,20 @@ def connected_tools(plan: GraphPlan | None, routed: str | None, named) -> set[st
     """
     if isinstance(named, str):
         named = {named}
-    named = {t for t in (named or ()) if t in _INDEXED and t != routed}
+    asked = {t for t in (named or ()) if t in _INDEXED}
+    named = asked - {routed}
     if plan is None or routed not in _INDEXED or not named:
         return None
-    # Plus the tools holding what the question REFERS to: "has the author of
-    # the Leave Policy discussed it in Slack?" routed to Linear could read
-    # Sana's Slack thread but not that she wrote the Leave Policy -- that fact
-    # lives in Notion -- and refused (measured with real Gemini). Those tools
-    # join through the graph's documents and facts only; their own search
-    # legs do not run (``search`` stays the named tools).
+    # Several tools named ("the latest in Linear and Drive") is a list of
+    # where to look: exactly those, nothing the asker did not mention.
+    if len(asked) > 1:
+        return asked | {routed}
+    # One tool named, plus the tools holding what the question REFERS to:
+    # "has the author of the Leave Policy discussed it in Slack?" routed to
+    # Linear could read Sana's Slack thread but not that she wrote the Leave
+    # Policy -- that fact lives in Notion -- and refused (measured with real
+    # Gemini). Those tools join through the graph's documents and facts only;
+    # their own search legs do not run (``search`` stays the named tools).
     return {routed} | named | (plan.seed_tools & _INDEXED)
 
 

@@ -474,6 +474,108 @@ def _store_scores(store: VectorStore, document_id: str, scores, guard: Injection
         logger.warning("Could not store injection scores for %s", document_id, exc_info=True)
 
 
+def _store_tables(document_id, doc, *, org_id: str, workspace_id: str | None) -> None:
+    """Hand the document to the dataset adapters (app/doctables), for charts.
+
+    A FOREGROUND adapter (tables the document already has; no AI) runs here.
+    A BACKGROUND adapter (figures in sentences; needs AI) is only asked the
+    cheap ``wants`` question here and, if yes, the document is queued for the
+    tick -- ingestion never waits on a model call for charts.
+
+    A re-ingest deletes and re-inserts the `documents` row and its tables
+    cascade with it, so an adapter with nothing to say costs no query. Never
+    raises: a chart that failed to store must not cost the indexed document.
+    """
+    try:
+        from ..doctables import base, factory
+        from ..doctables.store import replace_document_tables
+
+        text = base.DocumentText(
+            external_id=doc.external_id, title=doc.title, content=doc.content or "",
+            tables=tuple(doc.tables) if doc.tables is not None else None,
+        )
+        for adapter in factory.build_dataset_adapters():
+            if not adapter.wants(text):
+                continue
+            if adapter.background:
+                from ..doctables.queue import enqueue
+
+                enqueue(document_id, org_id=org_id, workspace_id=workspace_id,
+                        origin=adapter.origin, text=text)
+                continue
+            tables = adapter.extract(text)
+            if tables:
+                replace_document_tables(
+                    document_id, org_id=org_id, workspace_id=workspace_id,
+                    tables=tables, origin=adapter.origin,
+                )
+    except Exception:  # noqa: BLE001 - see docstring
+        logger.warning("Could not store tables of %s", doc.external_id, exc_info=True)
+    try:
+        # Stamped even when an adapter failed: the failure is logged, and a
+        # document that always fails must not take a backfill slot forever.
+        from ..doctables.store import mark_checked
+
+        mark_checked(document_id)
+    except Exception:  # noqa: BLE001 - see docstring
+        logger.warning("Could not stamp tables check of %s", doc.external_id, exc_info=True)
+
+
+def backfill_tables(
+    adapter: SourceAdapter,
+    *,
+    org_id: str,
+    provider: str,
+    workspace_id: str | None = None,
+    skip_ids: set[str] | None = None,
+    live_ids: set[str] | None = None,
+    batch: int | None = None,
+) -> int:
+    """Read tables from already-indexed documents, a bounded batch per sync.
+
+    A sync never re-fetches an UNCHANGED document, so a sheet indexed before
+    charts read tables would otherwise never be charted. This re-fetches up to
+    ``DOCTABLES_BACKFILL_BATCH`` documents the adapters have never looked at
+    and hands each to ``_store_tables`` -- tables only: no re-chunking, no
+    re-embedding, access untouched. Same shape as ``refresh_missing_meta``.
+
+    Never raises. A document the source refuses stays unstamped and is tried
+    on a later sync; ``live_ids`` keeps one the source no longer lists from
+    taking a slot every time.
+    """
+    from ..config.settings import DocTablesSettings
+    from ..doctables import store as table_store
+
+    limit = DocTablesSettings.from_env().backfill_batch if batch is None else batch
+    if limit <= 0:
+        return 0
+    skip_ids = skip_ids or set()
+    try:
+        candidates = table_store.list_unchecked(
+            org_id=org_id, provider=provider, workspace_id=workspace_id,
+            limit=limit + len(skip_ids) + 50,
+        )
+    except Exception:  # noqa: BLE001 - see docstring
+        logger.warning("backfill_tables: listing failed for %s", provider, exc_info=True)
+        return 0
+    eligible = [
+        (doc_id, ext) for doc_id, ext in candidates
+        if ext not in skip_ids and (live_ids is None or ext in live_ids)
+    ]
+    done = 0
+    for document_id, external_id in eligible[:limit]:
+        try:
+            doc = adapter.fetch_document(external_id)
+        except Exception:  # noqa: BLE001 - see docstring
+            logger.info("backfill_tables: could not fetch %s/%s", provider, external_id)
+            continue
+        _store_tables(document_id, doc, org_id=org_id, workspace_id=workspace_id)
+        done += 1
+    if done:
+        logger.info("backfill_tables: read %d %s document(s)", done, provider)
+    return done
+
+
 def ingest_source(
     adapter: SourceAdapter,
     org_id: str,
@@ -698,6 +800,7 @@ def ingest_source(
             editor_key=meta_editor,
         )
         _store_scores(store, document_id, scores, guard)
+        _store_tables(document_id, doc, org_id=org_id, workspace_id=workspace_id)
         doc_ids.append(document_id)
         ingested_external_ids.append(doc.external_id)
         chunks_total += len(chunks)
@@ -724,6 +827,14 @@ def ingest_source(
         adapter,
         store,
         refreshed=meta_refreshed,
+        org_id=org_id,
+        provider=provider,
+        workspace_id=workspace_id,
+        skip_ids={r.external_id for r, _ in work},
+        live_ids={r.external_id for r in refs},
+    )
+    backfill_tables(
+        adapter,
         org_id=org_id,
         provider=provider,
         workspace_id=workspace_id,

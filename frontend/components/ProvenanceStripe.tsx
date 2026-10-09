@@ -118,6 +118,22 @@ export function ProvenanceStripe({
   // `source` is the connector the SQL ran against. Naming the agent as the
   // identity made the pill say "No answer found" on a real Drive pie.
   const grounded = source !== "none";
+  // A Chart-mode reply that is not a chart (a question back, or "that field
+  // does not exist, here is what does") is the chart feature talking, not a
+  // failed search: "No answer found" over a helpful clarification reads as
+  // the product breaking.
+  if (!grounded && agent === "insights") {
+    const color = COLORS.insights;
+    return (
+      <span
+        className="provenance-pill"
+        style={{ color, background: `color-mix(in srgb, ${color} 14%, transparent)` }}
+      >
+        <span className="provenance-dot" style={{ background: color }} />
+        Charts
+      </span>
+    );
+  }
   const identity =
     source === "web" || !grounded
       ? source

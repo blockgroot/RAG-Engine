@@ -69,14 +69,20 @@ GitHub; employees get answers from *their* data.
   and the strict prompt refuses when the passages do not answer. Do not raise the
   gate. Do not feed RRF scores or reranker logits into it. Reuse stays at 0.72.
 - **Citations** (`app/rag/cite.py`). The model may write `[n]` after a sentence.
-  A number is kept only when a retrieved chunk sat at that block. Attachments, live
-  blocks and graph facts are not citable. Numbers are renumbered per document.
+  A number is kept only when a document sat at that block. A live read of an
+  indexed document is that document, and a GitHub live read uses the address
+  the API returned. Attachments and graph facts are not citable. Numbers are
+  renumbered per document.
   The link is `documents.source_uri` from sync (Notion page, Drive file, Slack
   thread, Linear issue), http(s) only, never a URL the model wrote.
 - The web chat shows **one source as a single line under the answer**. Two or more
   sources keep a gray superscript plus that list (`frontend/components/AnswerText.tsx`).
-  The `cited` list is sent on the finished-answer event and is **not stored** on the
-  turn, so a reopened chat has no source list. Slack strips the markers.
+  The `cited` list is stored on the turn and sent again when that chat is opened.
+  So is the chart (`conversation_turns.chart`), as drawn: a snapshot, not a spec,
+  so a reopened chart never disagrees with the answer beside it.
+  So is who answered (`conversation_turns.meta`: source, agent, tools, files, live
+  reads, model, a passage COUNT), written by the `done` event; never the passages.
+  Slack strips the markers.
 - Audit and moderation judge the answer with the markers removed.
 - A link in an answer survives only if it appeared verbatim in the text the model
   was shown (`security/links.py`).
@@ -88,7 +94,10 @@ Each of these shipped a real bug. The fix is the rule.
 **Retrieval.** A store fake must accept `viewer=`. `Viewer.acl()` lowercases every
 entry. `doc_viewers && '{}'` is false, which is what makes public-only work.
 `Viewer(email=None)` is unrestricted; do not conflate it with public-only.
-A successful ingest clears that org's `query_answer_cache`. The bot's own Slack
+A tool the question NAMES decides routing: one named tool is routed there;
+several are probed among themselves and the connected answer reads exactly those,
+never a tool the asker did not mention. Adjacent markers citing one document
+collapse to one. A successful ingest clears that org's `query_answer_cache`. The bot's own Slack
 traffic is not indexed. Query-norm max edit distance is 1, and the normalized
 string is never the web-search query.
 
@@ -113,11 +122,101 @@ table's `CREATE TABLE` in `schema.sql`. Partial unique indexes where `NULL` mean
 org-wide. `python -m app.db.migrate` does nothing; call `apply_schema()`.
 `register_vector` runs once per physical connection. Every process calls `close_pool()`.
 
-**Charts.** Numbers come from SQL over `activity_facts`. The model never emits a
-number, an axis or a date. Metric fragments must not contain `{`, `%` or `;`.
-`points: null` means the panel failed; `[]` means it ran and was empty.
-There is no `space` dimension. Sentiment is owners-only with a floor of 5, and
-Forms responses are never indexed.
+**Charts.** Numbers come from SQL over stored rows (`activity_facts`, or a
+document table in `doc_tables`/`doc_table_rows`). The model never emits a number,
+an axis or a date: it fills in a spec, and code validates it twice (resolver and
+store) and refuses rather than corrects. Metric fragments must not contain `{`,
+`%` or `;`. Only our own identifiers are spliced into SQL (`registry.DIMENSIONS`,
+attribute keys matching `fields.KEY_RE` — normalized at write, checked again at
+read — and table column keys `c0`…); every value, including a filter the asker
+typed, is resolved against real rows and bound. Facts keep every SIMPLE field a
+source returned (`insights/fields.py`: no bodies, ids, links, timestamps or
+emails; ≤40 keys) and the chartable set is DISCOVERED per scope and viewer
+(`insights/attr_catalog.py`); `registry.ATTRS` is display hints only, never a
+list of what may be charted. Chat and Slack pass a
+spec through `resolve.spec_to_dict`, never a hand-built dict (that dropped `focus`).
+Charts are built only in Chart mode (chat sends `mode: "chart"`; Slack: a question
+the question check reads as a chart ask). Chart mode answers with a chart or a
+refusal, never a document answer. Ask never runs the chart classifier: its question
+check (`resolve.classify_route`) decides a live GitHub read, `needs_live` and
+`chart_ask` ("visual" gets the Chart-mode hint, "count" the Turn on Chart button).
+**No word list decides intent anywhere in charts**: the model reads the question
+and code verifies what it can (a quote is in the question, a value has rows, a type
+came from the source). Format parsers (₹/lakh/k/%) and API enums are not intent.
+`ModelChoice.charts` marks the catalogued models that build charts.
+The prompt says what `actor` and `subject` ARE in each tool (Linear: assignee,
+team; `registry.ACTOR_LABELS`/`SUBJECT_LABELS`); bare keys sent "by team" to
+Linear's `project` field. An empty value is named in the tool's terms
+(`BLANK_ACTOR`: a Linear issue with no assignee is "Unassigned"), never blamed
+on indexing. The prompt also lists the REAL subject and person names with activity
+(`store.scope_names`, viewer-filtered, top 15): a focus is one of them, and
+"our team" names nothing. A Chart-mode reply that is not a chart is badged
+"Charts", never "No answer found"; an upload's table reports `attachment`.
+A trend with fewer than `MIN_TREND_BUCKETS` periods on its drawn axis steps to a
+finer period and says so; activity in one period only is said plainly.
+"Done vs remaining" is the derived `progress` dimension (Open/Closed from the
+source's state type; `registry.DERIVED_DIMENSIONS`, fixed SQL, kept apart from
+the bare-column `DIMENSIONS`). In a TABLE, a time scale IS a breakdown by its
+date column; a line with no breakdown uses the table's only date column.
+Every chart says what its numbers ARE (`insights/describe.py`): a title naming
+the measure ("Total Salary by Team", "Files created or edited: number of
+different people"), the unit from the column header's bracket or the cells'
+symbol written against the number ("₹130 lakh"; `withUnit` mirrors
+`format_value`), and an `explain` line on what each bar/point is and over which
+rows. Built from the measure, header, unit, breakdown and period, never copy.
+A filter on `subject` (one channel/repo/team) is a focus in the wrong slot:
+moved to `focus`, never refused. Refusals name fields by `dim_label`, never keys.
+The asker's time range ("over the last year") is `spec.days`, kept only when the
+model's `range_words` quote is in the question, capped at `MAX_RANGE_DAYS`, and
+said in the title. An empty chart is never stepped to a finer period (that
+shrank the window). An empty GitHub pull-request chart asks GitHub why
+(`_github_pull_diagnosis`: no "Pull requests: Read" vs none exist), naming no repo.
+A breakdown beyond the two a chart draws is named as left out
+(`left_out_words`, kept only when the quote is in the question), never dropped silently.
+A breakdown is kept only when asked for: the model quotes the words that asked
+(`breakdown_words`) and the quote must be in the question, or the breakdown's own
+label from the data must be; otherwise it is dropped (`resolve._honour_breakdown`).
+Document tables are offered by the similarity of their DOCUMENT to the question
+(`tables.document_similarity`), never by word overlap; the gate orders them and
+never removes one (a table-heavy page embeds as numbers). A one-time data fix goes
+in `schema.sql` behind a `schema_marks` row, never as a bare UPDATE.
+Chart-mode starters come from the scope's metrics and discovered fields
+(`GET /chat/chart-starters`), never page copy.
+"Open"/"closed" on a state filter is a GROUP of real states (not finished / finished),
+`query.AnyOf`, compiled to `= ANY(...)` and still bound; an exact state wins first.
+"Finished" is the SOURCE's own state type (`attrs.state_type`, `store.state_types`),
+never a list of state names; with no types, "open" is refused naming the real states.
+The prompt maps the asker's wording to the two tokens; code matches no word lists.
+A document table is exactly as visible as its document: offered only through the
+visibility predicate, re-checked at run time, and never offered without a viewer.
+Document tables are filled by dataset adapters (`doctables/base.py`); each
+adapter replaces only its own `origin`. Ingestion never calls a model for
+charts: an AI adapter (`background = True`) only enqueues, and the tick reads
+`doc_text_queue` within the background budget. A figure read from prose is kept
+only when its quote is in the document and every cell is in its quote; a
+mismatch is dropped, never repaired, and the chart says "taken from text".
+`DOCTABLES_TEXT_ENABLED` stays off unless background quota is budgeted for it.
+A sync skips unchanged documents, so `documents.tables_checked_at` marks what the
+adapters have read; `backfill_tables` re-fetches a bounded batch of unchecked
+ones per sync (tables only, no re-embedding) and a failed fetch stays unchecked.
+A table in an UPLOADED file hangs off `doc_tables.attachment_id` (never a
+document) and is its uploader's, in that chat: offered and re-checked only with
+`doctables.store.UploadScope` (conversation + user from the session), never by
+`list_tables`, and it cascades with the attachment. Tables are read at upload
+with no AI and never fail the upload; a table-less upload is read for figures
+once, in Chart mode (`figures_read_at`). Workbooks are read by ONE reader
+(`attachments.extract.xlsx_sheets`) for both the prompt text and the rows.
+A Notion `table` renders as a pipe table with a header separator (first row =
+header); bare "a | b" rows were never found by the table reader. An inline
+database (`child_database`) renders as a table of its rows' properties under its
+title (`_database_lines`, ≤1000 rows, either Notion API), never skipped.
+A Sheet embeds a description of its columns, never its figures. An unparseable
+cell is absent from a sum, never zero. A trend draws every period from "measured since"
+(or the window, if later) to now, a quiet one at zero; never a period before the
+data begins, which is unknown, not zero (`insights_agent._fill_gaps`). `points: null` means the panel failed; `[]`
+means it ran and was empty. There is no `space` dimension. Sentiment is
+owners-only with a floor of 5, admits no split/filter/measure, and Forms
+responses are never indexed.
 
 **Runtime.** Import heavy libraries inside functions. Chunking uses the heuristic
 counter, not the BGE tokenizer. `CHUNK_MAX_CHARS=4000`. The browser calls this
@@ -126,13 +225,16 @@ at Render. `render.yaml` does not configure production Hand-Book. Supabase uses 
 session pooler (5432).
 
 **Also hold.** GitHub embeds nothing. A live read runs after the gate, at most two
-items, and withholds the indexed copy only on not-found or permission. Personal
+items, and withholds the indexed copy only on not-found or permission. The "live" chip is shown only for a
+live read the answer cites (`api/chat.py::_shown_live`). Personal
 memory is written only from the asker's own question, is never evidence, and is
 web chat only. A confirmed email change keeps the old address as an alias.
 `GOOGLE_GROUPS_ENABLED` stays off unless the connecting account is a Workspace
 admin; a missing optional scope must not fail the Drive connect. Indexed reports
 describe current content, never a diff. `sync_requested_at` is a flag, not a queue.
-The injection guard logs questions and never refuses them. A scrubbed-to-empty
+Removing an attachment is idempotent (`deleted: false` for one already gone,
+never a 404) and answers on the row delete; the object-store purge runs after
+the response. The injection guard logs questions and never refuses them. A scrubbed-to-empty
 input stays empty.
 
 ## 6. Where things live
@@ -145,7 +247,8 @@ app/security/        visibility predicate, untrusted text, link provenance
 app/sources/         Notion, Drive, Slack, Linear
 app/githublive/      GitHub, live, no vectors
 app/agent/           per-source agents and routing
-app/insights/        charts from activity_facts
+app/insights/        charts: registry, query grammar, document-table picks
+app/doctables/       tables inside documents, kept as typed rows for charts
 app/graph/           knowledge graph
 app/livetools/       live re-reads
 app/memory/          chats and personal facts

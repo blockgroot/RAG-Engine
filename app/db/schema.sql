@@ -396,6 +396,24 @@ CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations (org_id, user
 
 ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE;
 
+
+-- The source list drawn under the answer. NULL on a turn saved before this
+-- column: a reopened chat shows sources only when they were kept. The link
+-- was already checked to be http(s) when the answer was written.
+ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS cited JSONB;
+
+-- The chart drawn with the answer, as it was drawn: `{"panel": …, "period": …}`.
+-- A SNAPSHOT, unlike `pinned_charts` (which stores the spec so it stays
+-- current): a turn is a record of what was answered, and its text talks about
+-- these numbers -- re-running would let the chart disagree with the words
+-- beside it. NULL for a turn without a chart or saved before this column.
+ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS chart JSONB;
+
+-- Who answered: the provenance pill's inputs (source, agent, tools, files,
+-- live reads, model, how many passages). Written when the answer finishes;
+-- NULL on a turn saved before this column, which reopens without a pill.
+ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS meta JSONB;
+
 -- Per-org, per-provider OAuth credentials (Phase 10) — replaces hand-set
 -- NOTION_TOKEN_<NAME> env vars with an admin-driven OAuth connect flow.
 -- Tokens are encrypted at rest (see app/security/crypto.py); this table never
@@ -829,6 +847,118 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_activity_facts_space
 -- threads without ever matching on a name. NULL where the source gave none.
 ALTER TABLE activity_facts ADD COLUMN IF NOT EXISTS actor_key TEXT;
 
+-- Every other field the source ALREADY handed us for this fact (GitHub PR
+-- labels and target branch; Linear priority, estimate, labels, project), so a
+-- chart can group, filter or sum by it without a new column per field. The
+-- keys a chart may read are declared in `insights/registry.py::ATTRS`; any
+-- other key is stored and ignored. `{}` = nothing extra was captured (every
+-- row written before this column existed, until its next sync re-reads it).
+ALTER TABLE activity_facts ADD COLUMN IF NOT EXISTS attrs JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+-- Tables found INSIDE documents (a Google Sheet, a CSV, a pipe table in a
+-- Notion page or Google Doc, a table in a Word file), kept as typed rows so a
+-- chart can sum a column with SQL instead of reading numbers back out of
+-- chunk text (app/doctables, plan docs/plans/2026-09-30-open-ended-charts.md
+-- Phase 3). Hangs off `documents` and cascades with it, so access is the
+-- document's own (`visibility_predicate` on the JOIN) and a re-ingest, which
+-- replaces the document row, replaces its tables too. `columns` is the
+-- profile: `[{key: "c0", name, type: number|date|category|text, unit, ...}]`;
+-- `key` is ours and is the only thing ever spliced into SQL.
+CREATE TABLE IF NOT EXISTS doc_tables (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE,
+    document_id  UUID NOT NULL REFERENCES documents (id) ON DELETE CASCADE,
+    position     INT NOT NULL,
+    name         TEXT NOT NULL,
+    columns      JSONB NOT NULL,
+    row_count    INT NOT NULL,
+    truncated    BOOLEAN NOT NULL DEFAULT FALSE,
+    notes        TEXT[] NOT NULL DEFAULT '{}',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_doc_tables_scope ON doc_tables (org_id, workspace_id);
+
+-- Which dataset adapter wrote the table (`app/doctables/base.py`): `table` = a
+-- table the document already had (exact), `text` = figures an AI read out of
+-- sentences, each row kept only when its cells appear in the quoted sentence.
+-- Each adapter replaces only its OWN tables, so the background text pass can
+-- never wipe the tables ingestion stored, and vice versa.
+ALTER TABLE doc_tables ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'table';
+ALTER TABLE doc_tables DROP CONSTRAINT IF EXISTS doc_tables_document_id_position_key;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_doc_tables_origin
+    ON doc_tables (document_id, origin, position);
+
+-- One row per table row. `cells` holds normalized values by column key (a
+-- number as a JSON number, a date as ISO text, an unparseable cell absent);
+-- `raw` keeps what the document actually said, for the hover.
+CREATE TABLE IF NOT EXISTS doc_table_rows (
+    table_id UUID NOT NULL REFERENCES doc_tables (id) ON DELETE CASCADE,
+    row_no   INT NOT NULL,
+    cells    JSONB NOT NULL,
+    raw      JSONB NOT NULL,
+    PRIMARY KEY (table_id, row_no)
+);
+-- The exact sentence a `text` row was read from, shown on hover so a reader
+-- can check the figure against the document. NULL for a real table's rows.
+ALTER TABLE doc_table_rows ADD COLUMN IF NOT EXISTS quote TEXT;
+
+-- Documents waiting for a BACKGROUND dataset adapter (the text adapter: an AI
+-- reads figures out of sentences). Ingestion only flags a document here after
+-- a cheap no-AI check, so it never waits on a model; the tick works through a
+-- few per run (`doctables/queue.py`). `text` is a bounded copy of what
+-- ingestion already had, so the tick never re-fetches from the source, and it
+-- is cleared once the document is done or given up on. Cascades with the
+-- document: a re-ingest (new `documents.id`) re-flags it from scratch.
+CREATE TABLE IF NOT EXISTS doc_text_queue (
+    document_id  UUID PRIMARY KEY REFERENCES documents (id) ON DELETE CASCADE,
+    org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE,
+    origin       TEXT NOT NULL,
+    external_id  TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    text         TEXT,
+    status       TEXT NOT NULL DEFAULT 'pending',   -- pending | done | failed
+    attempts     INT NOT NULL DEFAULT 0,
+    claimed_at   TIMESTAMPTZ,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_doc_text_queue_pending
+    ON doc_text_queue (updated_at) WHERE status = 'pending';
+
+-- When the dataset adapters last looked at a document. NULL = never: every
+-- document indexed before charts read tables, because an UNCHANGED document
+-- is never re-fetched by a sync. `ingestion.pipeline.backfill_tables` re-reads
+-- a bounded batch of those per sync, newest first; a re-ingest makes a new
+-- row, stamped by ingestion itself.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS tables_checked_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_documents_tables_unchecked
+    ON documents (org_id, source_provider) WHERE tables_checked_at IS NULL;
+
+-- One-time data fixes that must run ONCE, not on every deploy (this file is
+-- re-applied at each one). Each is guarded by its own row here.
+CREATE TABLE IF NOT EXISTS schema_marks (
+    name       TEXT PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Notion tables were rendered without a header separator, and inline
+-- databases ("/table" -> table view) not at all, until 2026-10, so Notion
+-- pages were stamped "checked, no tables". Unstamp the ones that have none so
+-- `backfill_tables` re-reads them (a bounded batch per sync, tables only) with
+-- the fixed renderer -- no one has to edit their pages. The mark is named for
+-- the LAST fix it covers, so a later fix re-runs it under a new name.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'notion_tables_recheck_databases') THEN
+        UPDATE documents d SET tables_checked_at = NULL
+         WHERE d.source_provider = 'notion'
+           AND d.tables_checked_at IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM doc_tables t WHERE t.document_id = d.id);
+        INSERT INTO schema_marks (name) VALUES ('notion_tables_recheck_databases');
+    END IF;
+END $$;
+
 -- A chart a member asked for and kept. Personal, scoped `(org_id, user_id)`
 -- like `schedulers` and unlike every other tenant table -- a pin is one
 -- person's shortcut, never published to anyone, which is why this feature has
@@ -915,6 +1045,27 @@ CREATE INDEX IF NOT EXISTS idx_conversation_attachments_owner
 -- still ACCEPTED -- vendor PDFs are legitimate -- but its prompt text leads
 -- with a warning and the chip says so.
 ALTER TABLE conversation_attachments ADD COLUMN IF NOT EXISTS injection_score REAL;
+
+-- Tables inside an UPLOADED file, so Chart mode can chart a spreadsheet or a
+-- PDF table the asker attached. Same rows and same query code as a document's
+-- tables, but owned by the attachment instead: `document_id` is NULL and
+-- `attachment_id` is set (exactly one of the two). Access is the attachment's
+-- own -- its uploader, in that conversation -- never the document predicate,
+-- and `list_tables` keeps its INNER JOIN on documents, so an upload can never
+-- surface in anyone else's chart. Cascades with the attachment, so the x, the
+-- TTL sweep and a deleted chat all take the tables with them.
+ALTER TABLE doc_tables ADD COLUMN IF NOT EXISTS attachment_id UUID
+    REFERENCES conversation_attachments (id) ON DELETE CASCADE;
+ALTER TABLE doc_tables ALTER COLUMN document_id DROP NOT NULL;
+ALTER TABLE doc_tables DROP CONSTRAINT IF EXISTS doc_tables_one_source;
+ALTER TABLE doc_tables ADD CONSTRAINT doc_tables_one_source
+    CHECK ((document_id IS NULL) <> (attachment_id IS NULL));
+CREATE UNIQUE INDEX IF NOT EXISTS uq_doc_tables_attachment_origin
+    ON doc_tables (attachment_id, origin, position) WHERE attachment_id IS NOT NULL;
+-- When an AI last read figures out of this upload's prose (Chart mode, on
+-- demand, only for a file with no real table). NULL = never; set even when
+-- nothing was found, so the same file is not read twice.
+ALTER TABLE conversation_attachments ADD COLUMN IF NOT EXISTS figures_read_at TIMESTAMPTZ;
 
 -- ---------------------------------------------------------------------------
 -- Feedback & documentation-gap tracking (Feature 2 of the Onyx parity

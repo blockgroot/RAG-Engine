@@ -141,6 +141,7 @@ These did not take the site down. They produced wrong or missing answers and wer
 | Follow-up reuse could not separate “same fact” (~0.63) from “adjacent topic” (~0.67) | Reuse threshold 0.72 (conservative). Reused chunks still pass the 0.35 gate |
 | Similarity 0.35 cannot tell “answers” from “on-topic but unanswered” | Gate stays a noise filter; the prompt refuses related-but-unanswered cases. Golden set: no false negatives; unanswerables caught by the prompt |
 | Indirect prompt injection via retrieved text | Fence untrusted content; sandwich reminder; narrow heuristic scrub. Partial mitigation; not dual-LLM quarantine |
+| A model-written link could send the reader to an attacker's URL | A citation link is only `documents.source_uri` from sync. An invented `[n]` is dropped. One document is named under the answer; two or more keep a superscript |
 
 ---
 

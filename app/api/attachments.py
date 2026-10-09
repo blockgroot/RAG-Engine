@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from starlette.concurrency import run_in_threadpool
 
 from ..attachments import (
@@ -21,7 +21,8 @@ from ..attachments import (
     AttachmentError,
     AttachmentStorageError,
     count_attachments,
-    delete_attachment,
+    drop_stored,
+    remove_attachment_row,
     extract_text,
     kind_for,
     list_attachments,
@@ -206,6 +207,16 @@ async def _store_one(
         except AttachmentStorageError:
             logger.exception("Attachment: storage failure for %s", filename)
             return None, f"{filename} could not be stored. Try again in a moment."
+
+        # Tables the file already has, for Chart mode. Off the event loop (a
+        # PDF's table finder is slow) and never a reason to refuse the file.
+        from ..doctables.uploads import read_upload_tables
+
+        await run_in_threadpool(
+            read_upload_tables, attachment.id, org_id=session.org_id,
+            user_id=session.user_id, filename=filename, data=data, text=text,
+            max_pdf_pages=settings.max_pdf_pages,
+        )
     finally:
         del data  # not kept in this process past the upload
 
@@ -247,15 +258,24 @@ def get_attachments(
 def remove_attachment(
     conversation_id: str,
     attachment_id: str,
+    background: BackgroundTasks,
     workspace_id: str | None = None,
     session: SessionClaims = Depends(get_session),
 ):
+    """Idempotent: removing a file that is already gone (a second click, a
+    retry after a dropped response) is success, ``deleted: false`` -- the
+    state the asker wanted is the state they have. That reveals nothing to
+    someone guessing ids: the answer is the same whether the id never
+    existed or belongs to someone else, because the delete is owner-scoped.
+    """
     _guard(conversation_id, session, workspace_id)
-    if not delete_attachment(
+    removed, key = remove_attachment_row(
         attachment_id=attachment_id,
         org_id=session.org_id,
         conversation_id=conversation_id,
         user_id=session.user_id,
-    ):
-        raise HTTPException(status_code=404, detail="No such attachment")
-    return {"deleted": True}
+    )
+    if removed:
+        # After the response: the row is the removal, the store is cleanup.
+        background.add_task(drop_stored, key)
+    return {"deleted": removed}

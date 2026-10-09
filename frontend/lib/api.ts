@@ -103,6 +103,22 @@ export interface ConversationTurn {
   question: string;
   answer: string;
   created_at: string;
+  /** Sources drawn under this answer. Empty on a turn saved before they were kept. */
+  cited?: { n: number; document_id: string; title: string | null; provider: string | null; url: string | null }[];
+  /** The chart drawn with this answer, as it was drawn. Absent when there was none. */
+  chart?: { panel: InsightPanel; period: string | null } | null;
+  /** Who answered, for the provenance pill. Absent on a turn saved before it was kept. */
+  meta?: TurnMeta | null;
+}
+
+export interface TurnMeta {
+  source: string;
+  agent?: string;
+  connected_providers?: string[];
+  attachments?: string[];
+  live_sources?: { provider: string; fetched_at: string }[];
+  model?: string | null;
+  citation_count: number;
 }
 
 export interface RejectedFile {
@@ -509,6 +525,9 @@ export interface ModelChoice {
   id: string;
   label: string;
   note: string;
+  /** Builds charts. `null` for the company's own model: not ours to judge,
+   *  so Chart mode offers it with a note. */
+  charts?: boolean | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -532,6 +551,8 @@ export type InsightPanel = {
   title: string;
   chart: string;
   group_by: string | null;
+  /** A second grouping from the query grammar; drawn as "group · split". */
+  split_by?: string | null;
   unit: string;
   caveat: string;
   /** null means the panel failed; [] means it ran and there is nothing to
@@ -549,6 +570,11 @@ export type InsightPanel = {
   /** Facts only exist from the first sync after this shipped, so a chart
    *  whose axis starts on deploy day would read as if nobody worked before. */
   measured_since: string | null;
+  /** One sentence on what each bar/point is ("Each bar adds up Salary for
+   *  the rows of each Team. 10 rows, ₹266 lakh in total."). */
+  explain?: string;
+  /** What an empty value means per field in this tool ("Unassigned"). */
+  blank_labels?: Record<string, string>;
   /** The rows the bars are made of: what, who, when, and where to open it.
    *  A number nobody can trace is a number nobody trusts. */
   details?: {
@@ -557,6 +583,7 @@ export type InsightPanel = {
     state?: string | null;
     at?: string | null;
     url?: string | null;
+    attrs?: Record<string, unknown>;
   }[];
 };
 
@@ -930,6 +957,17 @@ export const api = {
       sources: string[];
       questions: string[];
     }>(`/chat/suggestions${query ? `?${query}` : ""}`);
+  },
+
+  /** Chart mode's starters, built by the server from the metrics and fields
+   *  this scope actually has -- never copy written into the page. */
+  chartStarters: (workspaceId?: string | null, conversationId?: string | null) => {
+    const params = new URLSearchParams();
+    if (workspaceId) params.set("workspace_id", workspaceId);
+    // Starters from the files uploaded to this chat lead the list.
+    if (conversationId) params.set("conversation_id", conversationId);
+    const q = params.toString();
+    return request<{ questions: string[] }>(`/chat/chart-starters${q ? `?${q}` : ""}`);
   },
 
   chatModels: () =>

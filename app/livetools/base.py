@@ -57,6 +57,19 @@ class LiveRead:
     text: str = ""
     fetched_at: datetime | None = None
     truncated: bool = False
+    #: From the indexed ``documents`` row, so a citation opens the same address
+    #: a synced answer would. Never taken from the live text.
+    title: str = ""
+    source_uri: str | None = None
+
+    @property
+    def document_title(self) -> str | None:
+        text = (self.title or "").strip()
+        return text or None
+
+    @property
+    def source_provider(self) -> str:
+        return self.provider
 
 
 @dataclass(frozen=True)
@@ -65,10 +78,18 @@ class LiveRefresh:
 
     reads: list[LiveRead] = field(default_factory=list)
 
+    def _shown(self) -> list[LiveRead]:
+        return [r for r in self.reads if r.outcome == OK and r.text]
+
     @property
     def blocks(self) -> list[str]:
         """Prompt-ready live blocks, in hit order."""
-        return [r.text for r in self.reads if r.outcome == OK and r.text]
+        return [r.text for r in self._shown()]
+
+    @property
+    def cite_blocks(self) -> list[LiveRead]:
+        """The same reads, as citation targets. Aligned with ``blocks``."""
+        return self._shown()
 
     @property
     def refreshed(self) -> frozenset[str]:
@@ -84,9 +105,15 @@ class LiveRefresh:
 
     @property
     def sources(self) -> list[dict]:
-        """``done.live_sources``: which connectors answered live, and when."""
+        """``done.live_sources``: which connectors answered live, and when.
+
+        ``document_id`` says WHICH document was read, so the chat can claim
+        "live" only for a read the answer actually cites
+        (``api.chat._shown_live``); it is dropped before the browser sees it.
+        """
         return [
-            {"provider": r.provider, "fetched_at": r.fetched_at.isoformat()}
+            {"provider": r.provider, "fetched_at": r.fetched_at.isoformat(),
+             "document_id": r.document_id}
             for r in self.reads
             if r.outcome == OK and r.text and r.fetched_at is not None
         ]
