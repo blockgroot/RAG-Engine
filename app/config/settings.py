@@ -464,6 +464,10 @@ class RagSettings:
     wide_max_hits: int = 0
     wide_doc_ratio: float = 0.0
     wide_per_doc: int = 1
+    # Once a read is wide (``wide_doc_ratio`` found several strong documents),
+    # add documents down to this share of the best score. 0 = same as
+    # ``wide_doc_ratio``. 0.15 from calibrate_wide on the fixed search (RCA, 9 Oct).
+    wide_include_ratio: float = 0.0
     # 0 = scale ``max_context_chars`` by wide_max_hits / top_k.
     wide_max_context_chars: int = 0
     # Answer the part CONTEXT covers and say what is missing, instead of the
@@ -538,6 +542,7 @@ class RagSettings:
             wide_max_hits=int(os.getenv("RAG_WIDE_MAX_HITS") or 10),
             wide_doc_ratio=float(os.getenv("RAG_WIDE_DOC_RATIO") or 0.3),
             wide_per_doc=int(os.getenv("RAG_WIDE_PER_DOC") or 1),
+            wide_include_ratio=float(os.getenv("RAG_WIDE_INCLUDE_RATIO") or 0.15),
             wide_max_context_chars=int(os.getenv("RAG_WIDE_MAX_CONTEXT_CHARS") or 0),
             partial_rule=env_bool("RAG_PARTIAL_RULE", True),
             conflict_rule=env_bool("RAG_CONFLICT_RULE", True),

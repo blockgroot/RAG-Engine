@@ -332,3 +332,19 @@ def test_neighbours_never_push_another_document_out_of_the_budget():
     assert [h.document_id for h in out] == ["a", "b", "c"]
     assert total <= 1000  # everything selected fits; neighbours took only the room left
     assert "a" * 400 in out[0].content  # and they still read deeper where room allowed
+
+
+def test_a_broad_read_includes_partly_relevant_documents_a_narrow_one_never_does():
+    from app.rag.retrieval import _drop_weak, _spread
+
+    # Broad: a and b both strong (>= 0.3 x best). c scores 0.15-0.3 of the best:
+    # a partly relevant document the 0.2 cutoff removed from the main list.
+    pool = [_scored("a", 0, 1.0), _scored("b", 0, 0.6), _scored("c", 0, 0.18), _scored("d", 0, 0.05)]
+    kept = _drop_weak(pool, 0.2)
+    assert "c" not in [h.document_id for h in kept]
+    out = [h.document_id for h in _spread(kept, 1, 10, 0.3, 1, 0.15, pool=pool)]
+    assert out == ["a", "b", "c"]  # c added back; d (0.05) still left out
+
+    # Narrow: one strong document. The same low scorer is never added.
+    narrow = [_scored("a", 0, 1.0), _scored("a", 1, 0.9), _scored("c", 0, 0.18)]
+    assert _spread(_drop_weak(narrow, 0.2), 2, 10, 0.3, 1, 0.15, pool=narrow) == narrow[:2]

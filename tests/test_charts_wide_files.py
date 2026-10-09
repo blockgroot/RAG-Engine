@@ -145,14 +145,16 @@ def _xlsx() -> bytes:
 
 
 def _pdf_rows():
-    """One page of the same ledger, messy cells included. Parentheses are
+    """One page of the same ledger. The rupee sign is not in the built-in PDF
+    font, so the page writes Rs., which is the same amount. Parentheses are
     escaped because they delimit a PDF string."""
     def cell(text):
         return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
 
     out = [["Department", "Region", "Amount"]]
     for row in ROWS[:24]:
-        out.append([cell(row["dept"]), cell(row["region"]), cell(_amount_text(row) or "N/A")])
+        shown = (_amount_text(row) or "N/A").replace("₹", "Rs.")
+        out.append([cell(row["dept"]), cell(row["region"]), cell(shown)])
     return out
 
 
