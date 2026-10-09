@@ -84,6 +84,9 @@ class ChartSpec:
     #: ("and priority"), checked to be in the question, so the chart can say
     #: what it left out instead of answering a narrower question silently.
     left_out: str | None = None
+    #: The window the asker named ("over the last year" = 365), kept only
+    #: when their words for it are in the question; None = the period's own.
+    days: int | None = None
 
 
 def spec_to_dict(spec: ChartSpec) -> dict:
@@ -107,6 +110,7 @@ def spec_to_dict(spec: ChartSpec) -> dict:
         "table_id": spec.table_id,
         "value": spec.value,
         "left_out": spec.left_out,
+        "days": spec.days,
     }
 
 
@@ -128,6 +132,7 @@ def spec_from_dict(data: dict) -> ChartSpec:
         table_id=data.get("table_id"),
         value=data.get("value"),
         left_out=data.get("left_out"),
+        days=data.get("days") if isinstance(data.get("days"), int) else None,
     )
 
 
@@ -540,6 +545,8 @@ def _prompt(
         '"chart": "<shape or null>", "focus": "<one named thing or null>", '
         '"breakdown_words": "<their exact words asking for the breakdown, or null>", '
         '"left_out_words": "<their exact words for any breakdown beyond the two charted, or null>", '
+        '"range_words": "<their exact words giving a time range, or null>", '
+        '"days": <how many days back that range reaches, or null>, '
         '"live": true|false}\n\n'
         "Rules:\n"
         "- live=true when the question asks about the CURRENT state of a "
@@ -583,7 +590,11 @@ def _prompt(
         "\"open\"}, and finished work is {\"state\": \"closed\"}, unless they "
         "named one exact state. Empty {} when they did not narrow. A "
         "repository, channel, team, page or file goes in focus, not here.\n"
-        "- Do not compute or state any numbers.\n"
+        f"- days = how far back the range they NAMED reaches, counted from today "
+        f"({_today()}): \"over the last two months\" is 60, \"this year\" is "
+        "the days since 1 January, \"since July\" the days since 1 July. Copy "
+        "their exact words into range_words. Null when they named no range.\n"
+        "- Do not compute or state any numbers in the answer.\n"
         "- intent=chart with metric null means they wanted a visual we cannot count.\n"
         + (
             "- intent=github_live carries NO metric: it is a live read, not a "
@@ -699,9 +710,46 @@ def classify_question(
         missing=missing, providers=providers, handles=handles, fields=fields,
     )
     return replace(
-        _note_left_out(_honour_breakdown(intent, question, reply, fields), question, reply),
+        _note_range(_note_left_out(_honour_breakdown(intent, question, reply, fields),
+                                   question, reply), question, reply),
         needs_live=parse_live(reply),
     )
+
+
+#: The widest window a chart reads: what activity is kept for.
+MAX_RANGE_DAYS = 730
+
+
+def _today() -> str:
+    from datetime import date
+
+    return date.today().isoformat()
+
+
+def _note_range(intent: AskIntent, question: str, reply: str) -> AskIntent:
+    """The asker's own time range ("over the last year"), kept only when the
+    model quoted words that are really in the question, and bounded. A range
+    nobody asked for is the period's default, never a guess."""
+    spec = intent.spec
+    if intent.kind != "chart" or spec is None or spec.table_id:
+        return intent
+    match = _JSON_RE.search(reply or "")
+    try:
+        data = json.loads(match.group(0)) if match else {}
+    except (ValueError, TypeError):
+        data = {}
+    if not isinstance(data, dict):
+        return intent
+    words, days = data.get("range_words"), data.get("days")
+    if not isinstance(words, str) or not words.strip():
+        return intent
+    if _squashed(words) not in _squashed(question):
+        return intent
+    if isinstance(days, float) and days.is_integer():
+        days = int(days)
+    if not isinstance(days, int) or isinstance(days, bool) or days <= 0:
+        return intent
+    return replace(intent, spec=replace(spec, days=min(days, MAX_RANGE_DAYS)))
 
 
 def _note_left_out(intent: AskIntent, question: str, reply: str) -> AskIntent:

@@ -728,12 +728,71 @@ def _empty_caption(spec, title, *, org_id, workspace_id, days, metric, viewer=No
             f"activity — the earliest is {began.date().isoformat()}. Ask for "
             "it quarterly to widen the window."
         )
+    found = _github_pull_diagnosis(metric, org_id=org_id, workspace_id=workspace_id)
+    if found:
+        return f"{title}. {found}"
     return (
         f"{title}. No {metric.unit or 'activity'} recorded in the last "
         f"{days} days. Other {metric.provider.title()} activity has been "
         f"counted since {began.date().isoformat()}, so the connection is "
         "working — this particular thing simply has not happened."
     )
+
+
+#: Repositories probed when a pull-request chart is empty. A bound: the
+#: answer is the same for three repos as for thirty.
+_PROBE_REPOS = 3
+
+
+def _github_pull_diagnosis(metric, *, org_id: str, workspace_id: str | None) -> str | None:
+    """Why a GitHub PULL REQUEST chart is empty, asked of GitHub itself.
+
+    Commits and pull requests are separate GitHub permissions, so a space can
+    have commits counted and no pull request at all. "This simply has not
+    happened" was then wrong. The two real causes need different fixes:
+    the app cannot READ pull requests (an admin grants it), or these
+    repositories really have none (count commits instead). Names no
+    repository: the asker may not be able to open every one. None when it
+    cannot tell, or when this is not a pull-request chart. Never raises.
+    """
+    if metric is None or metric.provider != "github" or not metric.kind.startswith("pr_"):
+        return None
+    try:
+        from ..githublive import build_github_reader
+
+        reader = build_github_reader(org_id, workspace_id)
+        repos = list(reader.list_repos())[:_PROBE_REPOS]
+    except Exception:  # noqa: BLE001 - see docstring
+        return None
+    if not repos:
+        return None
+    unreadable = empty = 0
+    for repo in repos:
+        try:
+            page = reader.list_pull_requests(repo.full_name, limit=1)
+        except Exception:  # noqa: BLE001
+            unreadable += 1
+            continue
+        if not page.items:
+            empty += 1
+    if unreadable == len(repos):
+        return ("GitHub would not let Handbook read pull requests in this space's "
+                "repositories, though commits are counted. Pull requests are a "
+                "separate GitHub permission: an admin can give the Handbook GitHub "
+                "App \"Pull requests: Read\" access, and they are counted on the "
+                "next sync.")
+    if empty == len(repos):
+        return ("This space's repositories have no pull requests on GitHub, so "
+                "there is nothing to count. Work may be pushed straight to the "
+                "main branch: try commits per week instead.")
+    if unreadable + empty == len(repos) and unreadable:
+        return ("Some of this space's repositories have no pull requests and "
+                "GitHub would not let Handbook read the others. An admin can give "
+                "the Handbook GitHub App \"Pull requests: Read\" access.")
+    from ..insights.github_facts import WINDOW_DAYS as read_back
+
+    return ("Pull requests exist on GitHub, but none matching this was made in the "
+            f"last {read_back} days, which is how far back GitHub activity is read.")
 
 
 def _has_older_rows(
@@ -851,7 +910,9 @@ def _run_spec(
     ):
         raise CannotChart("I can't chart that here.")
 
-    days = scopes.WINDOW_DAYS.get(spec.period, scopes.WINDOW_DAYS["month"])
+    # The asker's own range ("over the last year") when they gave one, else
+    # the period's default window.
+    days = spec.days or scopes.WINDOW_DAYS.get(spec.period, scopes.WINDOW_DAYS["month"])
     group_by = spec.group_by
     chart = spec.chart
 
@@ -955,7 +1016,11 @@ def _run_spec(
         # that began last week is one bar, which reads as a broken chart;
         # the same rows per day are a line. Step finer (judged on the axis
         # the chart will actually draw, quiet periods included) and say so.
-        while len(_buckets(points)) < MIN_TREND_BUCKETS and registry.FINER_PERIOD.get(period):
+        # Only when there IS activity: stepping an empty chart finer shrank
+        # its window to the finer period's and the reply said "no PRs in the
+        # last 45 days" to a question about the last year.
+        while (any(p.value for p in points) and len(_buckets(points)) < MIN_TREND_BUCKETS
+               and registry.FINER_PERIOD.get(period)):
             finer = registry.FINER_PERIOD[period]
             span = (now - begun).days + 1 if begun else 0
             window = max(scopes.WINDOW_DAYS.get(finer, days), min(span, days))
@@ -984,6 +1049,10 @@ def _run_spec(
         # In the title, because a filtered chart that looks unfiltered is the
         # same failure as charting the wrong thing.
         title = f"{title} — {focus}"
+    if spec.days:
+        # The range they asked for, said, so a chart of a year never reads as
+        # the default few months.
+        title = f"{title} — last {spec.days} days"
 
     chosen = query.measures_for(metric, attrs)[measure or query.default_measure(metric)]
     panel = {
