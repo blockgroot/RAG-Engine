@@ -739,16 +739,16 @@ def _empty_caption(spec, title, *, org_id, workspace_id, days, metric, viewer=No
     )
 
 
-#: Repositories probed when a pull-request chart is empty. A bound, said in
-#: the reply when there are more.
+#: Repositories probed when a pull-request chart is empty. A bound: the
+#: answer is the same for three repos as for thirty.
 _PROBE_REPOS = 10
 
 
 def _checked_repos(repos, total: int) -> str:
-    """" Checked: acme/api, acme/web and 2 private repositories." Public repos
-    are named so the asker can see which repos this space reads (staging: a
-    merged PR in a repo the space was never connected to read as "none
-    merged"); private ones are only counted, never named."""
+    """" Repositories checked: acme/api and 2 private repositories." Public
+    repos are named so the asker can see WHICH repos the answer is about --
+    "none merged" said of a few repos read as a claim about all of them.
+    Private ones are only counted, never named."""
     public = [r.full_name for r in repos if getattr(r, "private", None) is False]
     private = len(repos) - len(public)
     parts = public + ([f"{private} private repositor{'y' if private == 1 else 'ies'}"]
@@ -757,8 +757,7 @@ def _checked_repos(repos, total: int) -> str:
         return ""
     listed = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
     more = f" (the first {len(repos)} of {total})" if total > len(repos) else ""
-    return (f" Checked{more}: {listed}. A repository not listed is not connected to "
-            "this space; an admin adds it on the GitHub card in Sources.")
+    return f" Repositories checked{more}: {listed}."
 
 
 def _github_pull_diagnosis(metric, *, org_id: str, workspace_id: str | None) -> str | None:
@@ -816,8 +815,7 @@ def _github_pull_diagnosis(metric, *, org_id: str, workspace_id: str | None) -> 
     if newest is None:
         if any_pull and merged:
             return ("This space's repositories have pull requests on GitHub, but "
-                    "none has been merged yet. Ask for pull requests raised instead."
-                    + checked)
+                    "none has been merged yet. Ask for pull requests raised instead." + checked)
         if not any_pull:
             return ("This space's repositories have no pull requests on GitHub, so "
                     "there is nothing to count. Work may be pushed straight to the "
@@ -832,7 +830,7 @@ def _github_pull_diagnosis(metric, *, org_id: str, workspace_id: str | None) -> 
                 f"{read_back} days of GitHub activity Handbook reads, so there is "
                 "nothing in range to count." + checked)
     return (f"GitHub shows a {what} on {day}, but it has not been counted yet. It "
-            "will be after the next sync: press Sync now on the GitHub card in Sources.")
+            "will be after the next sync: press Sync now on the GitHub card in Sources." + checked)
 
 
 def _has_older_rows(

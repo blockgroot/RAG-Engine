@@ -130,9 +130,26 @@ def test_the_probe_is_only_for_pull_request_charts():
         registry.get("commits_by_author"), org_id="o", workspace_id=None) is None
 
 
+@requires_db
+def test_one_unstorable_row_never_drops_the_rest_of_a_github_sync(org):
+    """A commit the database refused rolled back every pull request too."""
+    from app.insights import github_facts
+
+    good = (org, None, "github", "pr_merged", "ada", "acme/api", "merged",
+            datetime.now(timezone.utc), 3600, "https://github.com/acme/api/pull/1",
+            "acme/api#1", github_facts.Jsonb({}), "ada")
+    bad = (org, None, "github", "commit", "ada", "acme/api", None,
+           None, None, None, "acme/api@x", github_facts.Jsonb({}), "ada")  # no date
+    assert github_facts._write([bad, good], None) == 1
+    with get_connection() as conn:
+        kinds = [r[0] for r in conn.execute(
+            "SELECT kind FROM activity_facts WHERE org_id = %s", (org,)).fetchall()]
+    assert kinds == ["pr_merged"]
+
+
 def test_the_reply_names_the_public_repos_it_checked_never_private_ones(monkeypatch):
-    """Staging: a PR merged in 18-sana/rag-engine, which the space was never
-    connected to, read as "none has been merged yet" with no hint why."""
+    """Staging: "none has been merged yet" while 18-sana/rag-engine had a
+    merge -- and the reply did not say which repositories it had looked at."""
     import app.githublive as githublive
 
     class Mixed(_Reader):
@@ -144,6 +161,5 @@ def test_the_reply_names_the_public_repos_it_checked_never_private_ones(monkeypa
                         lambda *a, **k: Mixed(newest=None, exists=True))
     said = insights_agent._github_pull_diagnosis(
         registry.get("prs_merged"), org_id="o", workspace_id="w")
-    assert "Checked: acme/dao and 1 private repository." in said
+    assert "Repositories checked: acme/dao and 1 private repository." in said
     assert "acme/secret" not in said
-    assert "not connected to this space" in said

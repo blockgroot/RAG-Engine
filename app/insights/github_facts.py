@@ -302,14 +302,31 @@ def _write(rows: list[tuple], workspace_id: str | None) -> int:
                       url         = EXCLUDED.url
     """
 
+    # Row by row, each in its own savepoint: one row the database refuses (a
+    # commit with no date, a value it cannot store) used to roll back the
+    # WHOLE batch, so a single odd commit silently cost every pull request of
+    # every repo in that sync.
+    written = failed = 0
     try:
         with get_connection() as conn:
-            conn.cursor().executemany(sql, rows)
+            for row in rows:
+                try:
+                    with conn.transaction():
+                        conn.execute(sql, row)
+                    written += 1
+                except Exception:  # noqa: BLE001 - skip the row, keep the rest
+                    failed += 1
+                    if failed == 1:
+                        logger.warning("insights: could not write GitHub fact %s %s",
+                                       row[3], row[10], exc_info=True)
             conn.commit()
     except Exception:  # noqa: BLE001 - a stale chart, never a failed tick
         logger.warning("insights: could not write GitHub facts", exc_info=True)
-        return 0
-    return len(rows)
+        return written
+    if failed:
+        logger.warning("insights: skipped %s of %s GitHub facts that could not be stored",
+                       failed, len(rows))
+    return written
 
 
 def _fill_mergers(reader, pulls) -> dict[int, object]:
