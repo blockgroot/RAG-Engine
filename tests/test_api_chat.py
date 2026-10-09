@@ -234,7 +234,8 @@ def test_chat_stream_emits_error_event_when_llm_is_rate_limited(client_and_sessi
         cookies=cookies,
     )
     assert response.status_code == 200
-    events = _parse_sse(response.text)
+    # Progress lines ("Choosing where to look") may come first.
+    events = [e for e in _parse_sse(response.text) if e[0] != "status"]
     assert events, "expected an SSE error event"
     assert events[0][0] == "error"
     payload = json.loads(events[0][1])

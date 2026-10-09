@@ -218,6 +218,11 @@ class RetrievedChunk:
     # The document's address in its own tool (Notion page, Drive file, Slack
     # thread, Linear issue): what an inline citation opens (`rag/cite.py`).
     source_uri: str | None = None
+    # The reranker's own relevance score, when a reranker ordered this hit.
+    # Kept apart from ``score`` on purpose: the 0.35 gate is calibrated for
+    # cosine and must never read a reranker score (CLAUDE.md §4). Used only for
+    # the optional weak-passage cutoff and logged so that cutoff can be chosen.
+    rerank_score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -397,6 +402,25 @@ class VectorStore(ABC):
         keyword-only hit can flow through the same confidence gate as a vector hit.
         """
         raise NotImplementedError("this vector store does not support keyword search")
+
+    def chunks_at(
+        self,
+        org_id: str,
+        positions: list[tuple[str, int]],
+        *,
+        workspace_id: str | None = None,
+        viewer: Viewer | None = None,
+    ) -> list[RetrievedChunk]:
+        """The chunks at ``(document_id, chunk_index)`` positions, for neighbour reads.
+
+        Scoped and access-filtered exactly like ``query``: a neighbour is new
+        content reaching the prompt, so it passes the same ``org_id``,
+        ``workspace_id`` and ``viewer`` predicate in the same ``WHERE``.
+        ``score`` is 0.0; these rows were never ranked and must not reach the gate.
+
+        Optional capability: the default raises ``NotImplementedError``.
+        """
+        raise NotImplementedError("this vector store does not support positional reads")
 
     def recent_chunks(
         self,

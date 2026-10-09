@@ -1,0 +1,771 @@
+system,question_id,question,gold_answer,answer,reviewer_bucket,reviewer_reason,unsupported_claims,second_reviewer_bucket (Claude),second_reviewer_agrees,second_reviewer_note,person_agrees (y/n),person_note
+handbook,qst_0386,"In the Feb 2026 SEV-2 incident where the Dedicated autoscaler in us-west stopped scaling above minimum because its metrics query returned no data, what was the underlying cause and what hotfix restored scale-out?","It was caused by a PromQL refactor that switched label matching from cluster_id to cluster, so clusters that only emitted cluster_id returned empty metrics and the autoscaler made no scale-out decisions. A hotfix restored compatibility by querying with the legacy label (and adding a fallback query when no series are returned), which resumed scale-out.","The Dedicated autoscaler stopped scaling above minimum because a PromQL query refactor switched label matching from cluster_id to cluster, leaving clusters that only emit cluster_id with no data and thus no scale‑out decisions.  
+The hotfix that restored scale‑out adjusted the query to be compatible with both label formats (restoring label compatibility) and added a fallback query for cases where no series are returned.",correct,"The assistant correctly identifies the PromQL refactor as the cause and the query adjustment/fallback as the hotfix, while avoiding the prohibited topics.",,correct,y,"Cause (PromQL refactor cluster_id to cluster, empty series) and hotfix (label compatibility plus fallback query) both match the postmortem chunks, and the answer avoids every excluded incident.",,
+handbook,qst_0491,"For the Adaptive Prefetch Hint Layer, what exact canonicalization rules and cryptographic signing algorithm are used to generate/verify the `signature` field in the `X-RW-Prefetch-Hint` header (including key rotation cadence and the endpoint/mechanism clients use to fetch verification keys)?","The answer must state at some point that the query is not fully answerable from available documents or caveat the provided information with why it does not fully address the query. The answer may present relevant and related information to be helpful to the user however it must clearly also mention that at least some aspects are not found or answered. The answer may also simply state that the query is not answerable from the documents, this is perfectly acceptable.",I don't have anything about that in this workspace's connected content.,honest_idk,The assistant correctly identified that the information is not available in the provided context.,,honest_idk,y,"The context has nothing on the X-RW-Prefetch-Hint signature scheme, and the gold accepts a refusal.",,
+handbook,qst_0395,"What was the root cause and planned server-side fix for the March 2026 incident where function-call webhook callbacks were retried after a timeout and the JSON payload stayed the same, but the HMAC signature header changed between the first delivery and the retry due to gzip/encoding differences?","Root cause: the gateway generated the HMAC signature over the post-transport encoded body (after gzip/compression), and the retry path re-encoded the same JSON with different gzip/encoding details (e.g., gzip envelope metadata/CRLF normalization), so the raw bytes changed and the signature header differed even though the JSON payload was unchanged. Planned server-side fix: move signing to the canonical logical payload before compression/encoding so all retries verify regardless of gzip/transport differences (and expose a canonicalization/version indicator header).","The root cause was that the webhook HMAC signature was computed on the raw bytes **after** gzip compression. During a retry, edge proxies or the worker could re‑serialize or decompress/re‑compress the payload, producing slight differences in the gzip envelope (timestamp, header order, chunked vs. non‑chunked encoding) even though the logical JSON remained identical, causing the signature to differ and the callback to be treated as a new call.
+
+The planned server‑side fix is to move the signature calculation **before** compression, signing a canonical logical JSON payload (compact serialization, sorted keys, normalized UTF‑8). This ensures that retries that only differ in transport encoding still produce the same signature.  
+
+- SRE identified the signing step as post‑compression and opened internal PR #2197 to change it to pre‑compression signing.  
+- The rollout plan is: canary in staging → canary in two production clusters → full rollout.  
+- A temporary customer‑side workaround (canonical JSON HMAC verification) reduced duplicates to near zero while the fix is being prepared.",made_up,"The assistant correctly identified the root cause as post-compression signing and the fix as pre-compression canonical signing, while also including specific details from the context.",SRE identified the signing step as post‑compression and opened internal PR #2197 to change it to pre‑compression signing.; The rollout plan is: canary in staging → canary in two production clusters → full rollout.; A temporary customer‑side workaround (canonical JSON HMAC verification) reduced duplicates to near zero while the fix is being prepared.,made_up,y,"The three claims the first reviewer listed (PR 2197, the staging to two prod clusters to full rollout plan, and the customer workaround) are all in chunk [2], so they are supported; but the answer gives the server fix's canonical form as 'compact serialization, sorted keys, normalized UTF-8', which in chunk [1] is BrightCart's customer-side workaround, not the planned server change.",,
+handbook,qst_0440,"What is the complete SOP Redwood Inference must follow to enable ""customer-managed audit log export"" (to the customer's cloud storage) across Hosted, Dedicated, and Private deployments-including required prerequisites, security approvals, configuration steps, validation, customer communication, and ongoing operations/ownership?","1) **Intake & scoping (CS/Support)**: Open an **internal-support Jira** (Support Request; prioritize P2 standard, P1 if audit deadline <14 days), and record **customer + org_id (Hosted) / dedicated_cluster_id (Dedicated) / Private cluster**, deployment mode, regions, sink (**S3/GCS/Azure Blob**), **bucket/container + prefix + destination region**, identity method (**assume-role/IRSA/workload identity/Azure federated identity**), desired audit-log categories (**platform audit logs only-no prompt/completion logging**), retention intent, and **ops/escalation contacts + target date**; CS confirms entitlement and that export is **regional by default** (cross-region only by exception).  
+
+2) **Prerequisites & mandatory security controls (must be satisfied before enablement)**: Treat logs as **Customer-Sensitive Metadata** and ensure **no request bodies/model outputs/token strings**; require **TLS 1.2+ in transit** and **encryption at rest** on the customer destination (S3 SSE-S3/SSE-KMS, GCS managed keys/CMEK, Azure managed keys/CMK) and encrypt any Redwood staging with Redwood KMS; enforce **least privilege** using **assume-role/workload identity only** (no long-lived customer keys stored by Redwood) scoped to **write to a specific bucket/container prefix** (and list only if required for health checks); confirm **destination ownership/allowed account** and appropriate **egress controls/allowlisting** (private endpoints preferred; for Private, customer constrains egress); align/confirm **retention** (recommend 90 days; <30 days allowed but noted; >1 year requires CS contract confirmation); ensure ""**logging about logging**"" is enabled (events for enable/disable, destination/auth changes, failures/retries visible in internal dashboards). Attach required evidence in the Jira: **policy/trust/binding snippet, encryption confirmation, proof of ownership IDs, and (Private) network diagram/egress statement**.  
+
+3) **Approvals (gates)**:  
+- **Gate A (CS/Support)**: request completeness + scope validation (platform audit logs only, region alignment).  
+- **Gate B (Security-required for all modes)**: Security reviews encryption/least privilege/region rules and leaves a Jira comment: **""Approved for enablement""** (name/date) before production changes.  
+- **Gate C (Legal/Privacy-conditional)**: required for **cross-region export**, **additional PII fields beyond standard schema**, or **bespoke contract clauses**; cross-region additionally requires **Security approval + explicit customer acknowledgement**. If controls can't be met, file a **Security exception** and link it.  
+
+4) **Configuration & enablement (route by deployment mode)**:  
+- **Hosted (Eng Platform oncall via `rdw-admin`)**: `audit-export destination upsert` (sink/region/bucket-or-container/prefix/auth-mode/role or binding) → `audit-export enable` → ensure tenant flag **`audit_export_customer_sink_enabled=true`**.  
+- **Dedicated (Eng Infra)**: Decide connector placement (**Redwood-managed default** vs **dedicated-placed** exception requiring **SRE review**). Default path: update per-tenant **Terraform `dedicated-config`** `audit_export` (enabled, sink, region, destination, prefix, auth_reference) and **plan/apply**. Exception path: deploy `audit-export-connector` into the dedicated cluster (Helm), use **short-lived identity**, and configure private endpoints/egress as required.  
+- **Private (Customer operator with Private Deployments guidance; bundle v2.8.0+)**: Configure `redwood-private` Helm values `auditExport.enabled=true` with sink/region/destination/prefix/format and **workload identity** (AWS IRSA, GCP Workload Identity, Azure Workload Identity) plus any private-endpoint DNS/egress settings; redeploy and restart the connector.  
+
+5) **Validation (Redwood + customer)**: Redwood verifies connector health (**delivery_success_rate**, **delivery_lag_seconds**, **write_errors_total**) and that the tenant/cluster consumer is active; customer (coordinated by CS) confirms objects land in the agreed prefix (e.g., Hosted `org=<ORG_ID>/region=<REGION>/dt=.../hr=.../*.jsonl.gz`, Dedicated `dedicated_cluster=<ID>/region=.../...`) within ~10 minutes, and both sides spot-check one file for required fields (e.g., `event_id`, `source_service`) and **absence of inference payload fields**; remind customer delivery is **at-least-once** and they must **deduplicate by `event_id`**.  
+
+6) **Closeout documentation & customer communication (CS owns comms)**: Update the Jira with destination identifiers, auth reference, connector placement (Dedicated), approvals, enablement timestamp, and validation evidence; CS sends/updates the customer with confirmation, expected delivery semantics/latency, and reiterates the customer owns **storage cost, retention/lifecycle, SIEM ingestion, and destination access control**.  
+
+7) **Ongoing operations/ownership & rollback**: Redwood owns connector operation/monitoring in **Hosted/Dedicated** (and provides troubleshooting support for **Private** if customer shares logs/metrics); paging/alerting follows policy (enterprise Dedicated/Private: page on sustained failure >30 min; Hosted: alert unless multi-tenant impact). Customers should alert on **no new objects >30 min** and sustained **4xx/5xx** from storage and must notify Redwood before rotating identity/policies. If issues occur (403/trust drift, throttling, DNS/TLS/private endpoint failures), coordinate Eng + Security/CS; to stop export, **disable** (Hosted `rdw-admin audit-export disable`; Dedicated set `audit_export.enabled=false` in Terraform; Private `auditExport.enabled=false` and redeploy). If a **data-boundary/security concern** is suspected, **disable immediately** and escalate per incident process.","The SOP for enabling customer‑managed audit log export to a customer‑controlled cloud storage destination consists of the following elements:
+
+**Prerequisites – intake checklist (collected by CS/Support in an internal‑support Jira ticket)**
+- Customer company  
+- Deployment mode: Hosted | Dedicated | Private  
+- Regions in use  
+- Desired sink: S3 | GCS | Azure Blob  
+- Destination details – bucket/container name, prefix, destination region  
+- Identity method – AWS assume‑role/IRSA, GCP workload identity, or Azure workload identity  
+- Retention intent (customer‑owned)  
+- Operational contact + escalation contact  
+- Target date (if tied to an audit)  
+
+**Legal/Privacy triggers (require additional review)**
+- Cross‑region export is requested  
+- Customer requests additional PII fields beyond the standard audit schema  
+- Contract includes bespoke data residency clauses  
+
+**Security controls and approval gates**
+- **Gate A – Customer request validation (CS + Support)** – must be completed before Security review and includes verification of: customer company + deployment mode, target cloud + region, desired log categories (standard only unless an exception applies), retention intent, and contact for incident notifications.  
+- If retention > 1 year is requested, Customer Success must confirm that contract language supports it and that the customer understands storage cost/ownership.  
+- The platform must emit auditability events for: export enabled/disabled, destination changes (bucket/container/prefix), auth/role changes used by the connector, and delivery failures/retries; these events must be visible in Redwood internal dashboards and retrievable for incident response.  
+
+**Configuration steps**
+- Customer creates the destination bucket/container and enables encryption at rest.  
+- Customer provides the workload identity/role configuration using the supplied template.  
+- Redwood configures the export pipeline to deliver platform audit logs (auth events, RBAC changes, API key lifecycle, console/admin actions, private control‑plane actions) to the customer‑owned destination using the provided identity method and destination details.  
+
+**Validation and customer communication**
+- After receiving and approving the workload identity/role configuration, Redwood enables the export.  
+- Customer is asked to confirm that objects are landing under the agreed prefix.  
+- Typical initial enablement time: 3–5 business days (may vary by deployment mode and approvals).  
+- Communication template (email) sent to the customer:  
+  *Subject:* Audit log export enablement – next steps  
+  *Body:* Thanks for the request. We can enable automated export of Redwood platform audit logs to your [S3/GCS/Azure] destination. Please confirm you have created the destination bucket/container and enabled encryption at rest. Please provide the workload identity / role configuration using the attached template. Once received and approved, we will enable export and ask you to confirm objects are landing under the agreed prefix. Typical initial enablement time: 3–5 business days (may vary by deployment mode and approvals).  
+
+**Execution routing (post‑approval)**
+- Hosted: route to Eng Platform oncall / platform ops  
+- Dedicated: route to Eng Infra  
+- Private: route to Private Deployments engineering (and the customer’s operator)  
+
+**Ongoing operations / ownership**
+- Redwood is responsible for near‑real‑time delivery of platform audit logs, ensuring security (least privilege + encryption) and observability (failure detection + retry), and maintaining a consistent schema across modes and regions.  
+- The customer owns the destination storage, manages encryption at rest, defines retention, and bears storage cost/ownership.  
+- Redwood continues to emit the auditability events listed above for ongoing monitoring and incident response.  
+
+These components together constitute the complete SOP Redwood Inference follows to enable customer‑managed audit log export across Hosted, Dedicated, and Private deployments.",made_up,"The answer is incomplete as it omits critical configuration, validation, and operational steps required by the SOP.",Typical initial enablement time: 3–5 business days (may vary by deployment mode and approvals).,partial,n,"'Typical initial enablement time: 3-5 business days' is quoted word for word from the email template in chunk [5]; everything else is also from context, so the answer is incomplete (it misses the config commands, validation metrics, Gate B/C details, rollback and so on) rather than made up.",,
+handbook,qst_0314,"For the Jupiter Therapeutics rollout, if the target go-live is 2028-07-22 and the canary is planned as 7 days with a 10/90 traffic split, what date should the canary period start?","The canary period should start on 2028-07-15, which is 7 days before the 2028-07-22 go-live date.","Canary period should start on 2028-07-15.
+
+- Elena Torres (Dir. of Clinical Operations, Jupiter Therapeutics) asked on 2028-06-22 whether Redwood can support a 7‑day canary with a 10/90 traffic split.
+- The target go‑live date given in the question is 2028-07-22.
+- Subtracting the 7‑day canary window from the go‑live date gives a start date of 2028-07-15.",correct,The assistant correctly identifies the start date by subtracting the 7-day canary duration from the provided go-live date.,,correct,y,"2028-07-22 minus 7 days is 2028-07-15, and Elena Torres' 22 Jun 2028 email asking about a 7-day 10/90 canary is in chunk [1].",,
+handbook,qst_0193,"For the European customer kickoff scheduled the morning of Dec 21, who is assigned as the standby person to handle operational issues during the hands-on portion?",Monica Patel is assigned as the ops backstop/standby during the hands-on lab to handle operational issues and escalations.,I don't have anything about that in this workspace's connected content.,wrong_idk,The assistant correctly identified that the provided context does not contain the requested information.,,wrong_idk,y,"The answer refuses, but the gold has a real answer (Monica Patel); the retrieved context simply lacked it.",,
+handbook,qst_0493,"What are the exact Azure Marketplace metering dimension names and units we use for Hosted API (input tokens, output tokens, embeddings, rerank), and what rounding/aggregation policy do we apply when reporting usage to Azure?","The answer must state at some point that the query is not fully answerable from available documents or caveat the provided information with why it does not fully address the query. The answer may present relevant and related information to be helpful to the user however it must clearly also mention that at least some aspects are not found or answered. The answer may also simply state that the query is not answerable from the documents, this is perfectly acceptable.",I don't have anything about that in this workspace's connected content.,honest_idk,The assistant correctly identified that the provided context does not contain the requested information.,,honest_idk,y,"The context covers internal meters and AWS/GCP marketplace notes but nothing on Azure dimension names or rounding, so refusing is the accepted outcome.",,
+handbook,qst_0480,What are the major departments listed in the company's high-level organization?,Engineering; Product; Developer experience; Research/Applied ML; Go-to-market; Security and compliance; Customer support and success,"The major departments listed in the company’s high-level organization are product, design, SRE (Site Reliability Engineering), and infra (infrastructure). These are referenced as key partners with whom managers are expected to establish relationships and regular cadences during the first 30 days.",made_up,The assistant incorrectly identified key partners from an onboarding document as the company's major departments.,"The major departments listed in the company’s high-level organization are product, design, SRE (Site Reliability Engineering), and infra (infrastructure).",wrong,n,"Product, design, SRE and infra appear in chunk [3] as the 'key partners' of the manager kit, and the answer says so openly; every fact is supported, but the main point (these are the major departments) is wrong, which makes it wrong rather than made up.",,
+handbook,qst_0040,"What are the retention time windows for these lightweight kernel state snapshots (in-memory cache, indexed store, and any cold archive) used for post-incident diagnostics?","Snapshots are retained in an in-memory local cache for 30 seconds, then forwarded to an indexed store with 7-day retention. Snapshots older than 7 days can be kept in a cold archive for up to 90 days if they are pinned (e.g., by a runbook or regression alert).","- In-memory (local ephemeral cache): retained for 30 seconds.
+- Indexed store (short‑term storage): retained for 7 days.
+- Cold archive (long‑term archive): retained for up to 90 days when pinned by a runbook or regression alert.",correct,The assistant accurately identified all three retention windows as specified in the provided context.,,correct,y,"30s in memory, a 7-day indexed store, and up to 90 days of cold archive when pinned by a runbook or regression alert all match chunk [1] and the gold answer.",,
+handbook,qst_0192,"In our GPU inference runtime, what change was introduced to cut the worst-case temporary device-memory spike when short and long requests are interleaved, especially for attention-heavy ops that used to grab per-op temp buffers?","They added dynamic scratch reuse: a runtime scratch manager/allocator that lifetime-tags short-lived temporary buffers and reuses them across operators within the same execution frame, so attention/rotary/layernorm no longer allocate fresh per-op scratch and the transient device-memory spikes are reduced.","Dynamic scratch reuse: a runtime scratch allocator that tracks short‑lived temporary regions by lifetime buckets and reuses buffers across operators within the same execution frame, avoiding repeated allocations and reducing fragmentation. This change was introduced to cut the worst‑case temporary device‑memory spike when short and long requests are interleaved, especially for attention‑heavy ops that previously grabbed per‑op temp buffers.",correct,"The assistant correctly identifies dynamic scratch reuse as the mechanism for managing temporary buffers and reducing memory spikes, aligning with the provided context.",,correct,y,Dynamic scratch reuse with lifetime-bucketed temp regions reused across operators in the same execution frame is copied from chunk [1] and matches the gold answer.,,
+handbook,qst_0211,"In our hosted chat streaming, a corporate gateway forces the stream into a polling style connection and after a reconnect the assistant reply consistently loses the last couple sentences and the final completion status never arrives; what is the recommended short term mitigation for customers until a server side fix is deployed?","Until the server-side fix is rolled out, customers should either enable direct SSE passthrough for the hosted API endpoints (so the gateway doesn't downgrade to long-polling) or increase the proxy/gateway keepalive timeout to at least 60 seconds to avoid the reconnect that triggers truncation and missing finish metadata.",Increase the client‑side resume timeout and add a server‑side health‑check that retries finalization on the API (the client polls for conversation finalization). This temporary workaround reduces user‑facing truncation until a server‑side fix is deployed.,made_up,"The assistant provided a workaround found in the context for a different issue, rather than the recommended mitigations for the specific gateway-induced polling issue described in the gold answer.",Increase the client‑side resume timeout; add a server‑side health‑check that retries finalization on the API (the client polls for conversation finalization),wrong,n,"The resume timeout and finalization health-check workaround appears verbatim in chunk [3], so it is not invented; it belongs to the keepalive half-close issue rather than the long-poll fallback issue, so the main point is wrong but supported.",,
+handbook,qst_0393,"After the March 9, 2026 embedding-catalog promotion that made a 1024-d embedding model the default, a dedicated Hosted API tenant (us-west with eu-west failover) saw /v1/rerank start timing out with 512-vs-1024 vector length mismatches when using the alias open-embed-default. What was the confirmed root cause, and what short-term mitigation and permanent fix did we deploy?","Root cause: the March 9, 2026 catalog promotion/migration failed to persist tenant-specific alias overrides, so for that dedicated tenant the alias open-embed-default unexpectedly resolved to open-embed-1024-v2 (1024-d) instead of the legacy 512-d model, and the reranker's strict dimension check then hit an expensive error/retry path that drove timeouts. Short-term mitigation: apply a per-tenant routing override / explicit pin to open-embed-512-v1 (and restart long-running workers / rerun affected batches). Permanent fix: deploy the catalog alias-persistence hotfix and roll it out to restore correct per-tenant alias resolution (open-embed-default -> open-embed-512-v1) and prevent future alias drift.","The confirmed root cause was that the catalog migration/promotion flow failed to persist tenant‑specific alias overrides, so for LexicoHealth the alias *open‑embed‑default* resolved to the new 1024‑dimensional model (*open‑embed‑1024‑v2*) instead of the expected 512‑dimensional model.
+
+Short‑term mitigation:
+- Applied a hotfix to the catalog alias persistence logic.
+- Set a routing override (pin) for LexicoHealth to use *open‑embed‑512‑v1*.
+- Assisted the customer with re‑pinning and restarting their batch workers.
+
+Permanent fix:
+- Created work item INT‑1123 to implement a backward‑compatible embedding adapter in the reranker.
+- Added catalog validation checks to prevent alias drift in future promotions.",made_up,"The assistant incorrectly identified the permanent fix as creating a work item for an embedding adapter, whereas the context specifies the permanent fix was the deployment of a catalog alias-persistence hotfix.",Created work item INT-1123 to implement a backward-compatible embedding adapter in the reranker.,partial,n,"INT-1123 for a backward-compatible reranker adapter plus catalog validation checks is stated in chunk [3], so it is not made up; the root cause is right and the alias-persistence hotfix and 512-v1 pin are both present, but the hotfix is filed under short-term and INT-1123 is called the permanent fix, which diverges from the gold.",,
+handbook,qst_0487,"When a streaming resume attempt fails with HTTP 409 (checkpoint mismatch), what is the full JSON schema of the server's error payload (including any `resume_details` fields), and how is the `kv_crc` value inside v2 resume tokens computed?","The answer must state at some point that the query is not fully answerable from available documents or caveat the provided information with why it does not fully address the query. The answer may present relevant and related information to be helpful to the user however it must clearly also mention that at least some aspects are not found or answered. The answer may also simply state that the query is not answerable from the documents, this is perfectly acceptable.","The server’s error response for a failed resume attempt is described as a `resume_denied` payload that includes a `reason` field (e.g., `checkpoint-not-found`, `variant-mismatch`, `expired`) and may optionally contain a `best-effort fallback` with a `restart token` and a `cost estimate`. This is the general structure of the error payload, though the exact JSON schema for an HTTP 409 checkpoint‑mismatch case is not spelled out in the provided material.
+
+Regarding resume tokens, the context shows that v1 tokens are encoded as `v1:{stream_id}:{flush_offset}:{crc8}` (base64‑encoded). The computation of a `kv_crc` field inside v2 resume tokens is not detailed in the available information.
+
+Someone else in this space can help with this.",honest_idk,The assistant correctly identifies that the requested information is not available in the provided documents.,"The server’s error response for a failed resume attempt is described as a resume_denied payload that includes a reason field (e.g., checkpoint-not-found, variant-mismatch, expired) and may optionally contain a best-effort fallback with a restart token and a cost estimate.",honest_idk,y,"The resume_denied reason values and the optional restart-token/cost-estimate fallback the first reviewer flagged are in chunk [1], so they are supported, and the answer clearly says the 409 schema and kv_crc computation are not available.",,
+handbook,qst_0392,"During the us-east canary that normalized/rotated the session cookie domain for cross-subdomain routing, long-poll streaming clients started losing their pinned model version and getting routed to a fallback model. What was the root cause in the edge/session-manager flow, and what immediate mitigations were applied (platform-side and customer-side)?","Root cause: the edge canary rewrote/normalized the Set-Cookie domain (e.g., to .redwood.ai) and long-poll streaming clients kept sending the old host-scoped cookie; session-manager treated the cookie domain as mismatched/invalid, considered the session unauthenticated for pin reconciliation, dropped the pinned routing key, and the router then selected the fallback model. Immediate mitigations: platform rolled back/disabled the cookie-domain rewrite for the us-east canary cohort; customer was instructed to force a session refresh (POST /v1/sessions/refresh) to restore the pin for affected long-poll sessions.","Root cause: The canary’s edge‑proxy cookie‑domain rewrite changed the session cookie’s scope to "".redwood.ai"". Long‑poll clients that reused the original host‑scoped cookie caused the session‑manager to detect a domain mismatch, treat the session as unauthenticated for pin reconciliation, and drop the pinned model version, sending the request to the fallback model.
+
+Immediate mitigations:
+- Platform‑side: rolled back the cookie‑domain rewrite for the canary cohort, added a defensive guard in session‑manager to accept equivalent cookie scopes for pinned sessions when domain normalization occurs, and increased logging around cookie‑origin and pin checks.
+- Customer‑side: BrightChat was advised to refresh their sessions (client‑side session refresh) and could force a refresh via POST /v1/sessions/refresh, which restored pinned routing after a few minutes.",made_up,"The assistant correctly identifies the root cause and the primary mitigations, though it includes additional technical details about the session-manager guard and logging that are not explicitly requested as the 'immediate' mitigations in the gold answer.",added a defensive guard in session-manager to accept equivalent cookie scopes for pinned sessions when domain normalization occurs; increased logging around cookie-origin and pin checks,correct,n,"The 'defensive guard in session-manager to accept equivalent cookie scopes' and the extra logging for cookie-origin and pin checks are stated in chunk [1] and chunk [3] (PR 4879); the root cause, the rollback and the POST /v1/sessions/refresh advice all match the gold.",,
+handbook,qst_0453,"Who is responsible for the stock canyon hero placeholder image that is suggested for demo slides, and what is its current status?","Priya Desai is responsible for the hero-placeholder-canyon.jpg stock canyon hero image, and its current status is ""needs crop.""","Priya Nair is responsible for the stock canyon hero placeholder image (hero-placeholder-canyon.jpg). The image is currently a to‑do item: Priya is to crop and retone it, with a due date of 2025‑03‑10.",made_up,The assistant incorrectly identifies the owner as Priya Nair instead of Priya Desai and fails to state the status as 'needs crop'.,"Priya Nair is responsible for the stock canyon hero placeholder image; The image is currently a to-do item: Priya is to crop and retone it, with a due date of 2025-03-10",made_up,y,"The canyon-image to-do names only 'Priya' (chunk [1]); 'Priya Nair' is the owner of a different document (chunk [2]), so the surname is an unsupported conflation, although the crop/retone to-do due 2025-03-10 is supported.",,
+onyx,qst_0457,"Do I need approval to add a large planter or wall mounted art in a Redwood office, and what details should I include in the request?","Yes-larger items like floor-standing planters or wall-hung installations over 30 inches in any dimension require approval. Email people-ops@redwood.com with the location, dimensions, weight, and installation/mounting method (and include an owner/contact and maintenance plan as applicable).","Yes, you do need formal approval for a **large planter or wall‑mounted art** in a Redwood office if it exceeds the size threshold for “small” items.
+
+According to Redwood’s Office Art & Plant Guidelines:
+
+- **Small desk plants and framed prints** – no formal approval required.  
+- **Larger items** (floor‑standing planters, freestanding sculptures, **wall‑hung installations > 30 inches in any dimension**) – you must submit a short request to **people‑ops@redwood.com** for approval.
+
+### What to include in your request
+The guideline provides a quick checklist for submitters:
+
+- **Location & footprint** – where the item will be placed and how much floor/wall space it occupies.  
+- **Estimated weight** – to assess mounting and structural considerations.  
+- **Mounting method** – e.g., adhesive strips, building‑approved anchors, etc. (note: for heavier fixtures, building‑approved anchors and sign‑off are required).  
+- **Owner & contact** – who is responsible for the item.  
+- **Maintenance plan** – how the plant/art will be cared for (watering, cleaning, etc.).  
+- **Needed approvals (building/facilities)** – indicate if you’ve already coordinated with Facilities or if you need their sign‑off for electrical work, structural mounting, etc.
+
+### Additional notes from the guideline
+- **Safety first**: do not obstruct egress, fire alarms, or emergency equipment; avoid tripping hazards.  
+- **Shared spaces**: avoid strong scents, noisy installations, or monopolizing common areas.  
+- **Accessibility**: ensure art/signage is hung at a height that does not impede mobility or visibility.  
+- **Temporary & reversible**: most installations should be removable without tools or wall damage.  
+- **Plants**: prefer low‑allergen, low‑light tolerant species for shared spaces (e.g., snake plant, pothos); avoid high‑fragrance plants in kitchens and meeting rooms.  
+- **ID tags**: label any communal plant with owner name and watering cadence if not centrally maintained.  
+- **Maintenance & removal**: owners are responsible for upkeep; Facilities may remove items that create hazards after one week’s notice.  
+
+If your plan involves any electrical work (e.g., lighting for the art), you must schedule it with Facilities and IT and avoid running extension cords across walkways.
+
+**In short:** For a large planter or wall‑mounted art piece (>30 in in any dimension), email people‑ops@redwood.com with the details above to obtain approval before installation.",correct,The assistant correctly identifies the approval requirement for items over 30 inches and lists all necessary details for the request as specified in the source document.,,correct,y,"The 30-inch threshold, people-ops@redwood.com, the location/dimensions/weight/mounting details and the owner/maintenance checklist all come straight from the Office Art & Plant Guidelines document.",,
+onyx,qst_0444,"What is Redwood Inference's end-to-end internal process for launching a new third-party LLM into the Hosted API model catalog-from intake to post-launch monitoring-including every required gate, owner, and artifact?","1) **Intake / request (Requester → Applied ML Onboarding owns intake):** Requester (Product/Solutions Eng) files a Linear *ENG* ticket labeled `model-onboarding` containing model identity (name/version, type, source URL, tokenizer/special tokens), proposed catalog surface (Redwood model ID, endpoint compatibility, aliases), license/redistribution terms, safety/policy concerns, and target workloads/regions/SLOs; the **Linear ticket is the intake summary (SSoT artifact)**.  
+
+2) **Intake gates (must pass before engineering starts):**  
+- **License pre-check** - *Owner:* Finance-Legal liaison + **Security**; *Outcome:* approved / approved-with-restrictions / blocked; *Artifact:* **link to Security risk review entry**.  
+- **Baseline evaluation plan** - *Owner:* **Applied ML**; *Artifact:* eval plan recorded on the Linear ticket + **eval harness run link(s)** (plan must include ≥1 internal prompt set + ≥1 public benchmark).  
+- **Feasibility / runtime fit** - *Owner:* **Serving Runtime**; *Artifact:* feasibility note + any required runtime flags (tokenizer/KV cache/kernel coverage).  
+A model is **""ready for implementation""** only when license is approved (restrictions documented), eval plan meets the minimum, Runtime reports no blockers, and a **rollout owner is named (Release Eng + Platform)**.
+
+3) **Security & compliance risk review (required before rollout; Owner: Security & Compliance):** Perform provenance/integrity (record upstream tag/commit + **file hashes**), supply-chain scanning (containers/build env + malware scan), license/acceptable-use confirmation (and restriction text for docs/terms), privacy/data-handling validation, and abuse/policy alignment; *Artifacts:* **risk review entry with decision** (`approved`/`approved-with-restrictions`/`blocked`) and any **exception record** (if needed, requires VP Eng approval) linked in both the Linear ticket and the registry PR.
+
+4) **Quantization profiles (required for catalog eligibility):** Build and validate profiles **fp16**, **int8-weight-only**, and **int4-weight-only** (or document N/A with Runtime signoff).  
+- **Correctness smoke** - *Owner:* Serving Runtime; *Artifacts:* tokenizer round-trip + determinism checks.  
+- **Quality delta check** - *Owner:* Applied ML; *Artifact:* **Suite A eval harness runs** on fp16 and default profile; must have no `p0` regressions and win-rate delta vs fp16 ≥ -5%.  
+- **Performance check** - *Owner:* Serving Runtime; *Artifact:* **perf suite run IDs** showing the default profile meets the performance bar.  
+Additional required artifacts: **quant build logs** (Drive) + the profile list/default indicated in the **model registry PR** (exceptions labeled `quant-exception` on the Linear ticket).
+
+5) **Evaluation gates on the candidate build (Owner: Applied ML; required signoff: Applied ML + Product):** Run and log in the eval harness:  
+- **Suite A (internal regression)** with `prompt-sets/hosted-api/core-regression` (no `p0` regressions; ≥50% win-rate vs baseline).  
+- **Suite B (public benchmark sanity)** (no task drops >5% absolute vs expected/adjacent baselines; provide score table + notes).  
+- **Suite C (safety/policy screening)** (no increase in disallowed content; refusal templates compatible; include policy config notes).  
+- **Suite D (tool/function calling)** only if marketed for it (JSON schema conformance ≥99%; include validation report).  
+*Launch packet artifacts (required):* **all eval run URLs**, **one-paragraph risk assessment**, **recommended default inference config**, and **known limitations** (exceptions labeled `eval-exception`; any `p0` failure blocks ship).
+
+6) **Performance bar / reliability gate (Standard owner: Serving Runtime; enforcement: Release Eng + SRE):** Run `perf-canary` on **H100-80GB** + one secondary class, contexts 2k/8k/16k, concurrency 1/8/32, streaming on; must meet TTFT/throughput/stability/error-rate thresholds and KV-leak check.  
+*Artifacts:* **benchmark run IDs**, **raw logs**, and **summary table** (stored on the Performance Standards page and linked from the Linear ticket).  
+*Required signoffs (recorded on the Linear intake ticket):* **Serving Runtime** (perf/stability), **SRE** (capacity/readiness), **Release Engineering** (rollout plan present).
+
+7) **Rollout to Hosted API catalog (Runbook; Rollout owner: Release Eng; Routing owner: Platform; On-call: runtime+platform):** Preconditions: Linear ticket in `ready-for-rollout`, eval gates passed + risk paragraph present, performance bar signed off for default profile, and Security risk review approved/exception linked.  
+*Required rollout artifacts:* **GitHub PR in `redwood-model-registry`** (model ID/version/tokenizer, context limits, features, quant profiles/default, and **artifact hashes/provenance notes**), **perf run IDs**, **eval links**, and **Security approval + restriction text**.  
+Procedure: (1) merge registry PR only after approvals; (2) **dark launch** behind `router-policy` feature flag (`disabled`, `internal`) and run staging smoke tests (streaming chat completions, JSON schema output, max-context overflow behavior); (3) **prod canary** 0.5% in us-east-1 for 30-60 min monitoring `hosted_inference_latency`, `hosted_inference_errors`, `gpu_oom_events`, `quality_regression_alerts` (abort/rollback if error rate >0.5% or TTFT p95 SLO breach for 10 min); (4) expand to 5% then add regions; configure required **fallback policy** (previous stable in-family, then cross-family safe default) and keep the old model as fallback ≥7 days if replacing a default/alias; (5) at 100% intended routing, mark Linear ticket `shipped` and **DevEx/Docs** publishes docs (model ID, defaults, limitations, and any restriction text).
+
+8) **Post-launch monitoring (first 7 days; required):** Keep canary/quality shadowing enabled where possible (including the **1% quality canary/shadow-to-baseline**), watch `quality_regression_alerts` and error-budget burn plus latency/error/OOM dashboards, and file a follow-up ticket if thresholds trip; rollback triggers include sustained TTFT p95 regression >20% (30 min), 5xx >0.5% (10 min), or confirmed `p0` quality regression, with rollback executed by disabling routing, promoting fallback, and logging/incident comms per the runbook.","**Redwood Inference – End‑to‑End Process for Launching a Third‑Party LLM into the Hosted API Catalog**  
+*(Intake → Post‑launch monitoring, with every gate, owner, and required artifact)*  
+
+---  
+
+### 1. Intake & Request  
+| Step | Owner | Gate / Decision | Artifact(s) | Source |
+|------|-------|----------------|-------------|--------|
+| Create intake ticket (Linear, label `model-onboarding`) | Requester (Product / Solutions Engineering) | – | Ticket with: model identity, intended catalog surface, license & redistribution, data/policy, target customers & workload | |
+| License pre‑check | Finance‑Legal liaison + Security | Approved / Approved w/ restrictions / Blocked | Link to Security risk‑review page entry | |
+| Baseline evaluation plan | Applied ML (Onboarding) | Eval suites selected + success criteria | Eval‑plan comment in Linear + link to eval‑harness run(s) | |
+| Feasibility / runtime fit | Serving Runtime | No known blocker; required runtime flags noted | Short feasibility note + any required runtime flags | |
+| **Ready for implementation** | – | License approved (or w/ restrictions) **AND** eval plan includes ≥1 internal prompt set & ≥1 public benchmark **AND** runtime owner has no blockers **AND** a rollout owner is named | – | |
+
+---  
+
+### 2. Security & Compliance Review  
+| Step | Owner | Gate / Decision | Artifact(s) | Source |
+|------|-------|----------------|-------------|--------|
+| Third‑party model risk review | Security & Compliance (Risk & Exceptions) | Decision: **Approved**, **Approved‑with‑restrictions**, or **Blocked** | Risk‑review entry (risks, mitigations, restrictions, exact restriction text for docs) | |
+| Required checks (all must pass) | – | Artifact provenance & integrity, supply‑chain scanning, license & acceptable use, privacy & data handling, abuse & policy alignment | – | |
+
+---  
+
+### 3. Quality Evaluation Gates  
+| Step | Owner | Gate / Decision | Artifact(s) | Source |
+|------|-------|----------------|-------------|--------|
+| Evaluation gate owner (quality) | Applied ML (Onboarding + Evals) | Required sign‑off: Applied ML **+** Product (optional Customer Success if named account) | – | |
+| Suite A – Internal prompt set regression | Applied ML | Win‑rate ≥50% vs baseline; no `p0` regression | Eval‑harness run link + summary paragraph | |
+| Suite B – Public benchmark sanity | Applied ML | No single task drops >5% absolute vs upstream (adjusted) | Table of scores + notes | |
+| Suite C – Safety & policy screening (lightweight) | Applied ML | No increase in disallowed content; refusal templates compatible with Redwood policy layer | Pass/fail summary + policy config notes | |
+| Suite D – Tool/function calling (if applicable) | Applied ML | JSON‑schema conformance ≥99% on tool‑calling prompt set | Schema‑validation report link | |
+| **Launch packet** (must accompany rollout) | – | – | 1) Eval‑harness run URLs for all suites 2) One‑paragraph risk assessment 3) Recommended default inference config (temperature/top_p/max_tokens) 4) Known limitations | |
+| Post‑launch monitoring requirement (first 7 days) | – | Enable quality canary (1% traffic shadow); watch `quality_regression_alerts` dashboard; file follow‑up ticket if thresholds crossed | – | |
+
+---  
+
+### 4. Performance Bar & Quantization Validation  
+| Step | Owner | Gate / Decision | Artifact(s) | Source |
+|------|-------|----------------|-------------|--------|
+| Performance‑bar standard owner | Serving Runtime | Must meet latency, throughput, stability thresholds (see below) | Benchmark run IDs (perf suite), raw logs, summary table (p50/p95 TTFT, tokens/sec) | |
+| Minimum bar for launch (candidate default config) | – | • TTFT p50 ≤1.2s (2k ctx)  • TTFT p95 ≤2.5s (2k ctx)  • TTFT p95 ≤4.0s (8k ctx)  • Sustained output tokens/sec/GPU ≥ family baseline − 10%  • No crash loops under 32‑concurrency soak (30 min)  • Error rate ≤0.2% for 2k/8k tests  • No KV‑cache‑leak memory growth | – | |
+| Required sign‑offs | Serving Runtime (performance/stability), SRE (capacity+readiness), Release Engineering (rollout plan present) | – | – | |
+| Quantization profiles (required per model) | – | • `fp16` (reference)  • `int8‑weight‑only` (cost‑optimized)  • `int4‑weight‑only` (when supported; otherwise N/A with Runtime sign‑off) | – | |
+| Validation per profile | Correctness smoke – Serving Runtime  <br> Quality delta check – Applied ML (win‑rate delta vs `fp16` ≥ ‑5%, no `p0` regressions)  <br> Performance check – Serving Runtime (must meet performance‑bar thresholds) | – | • Quant build logs (Drive)  <br> Eval‑harness run links for `fp16` and default profile  <br> Perf suite run IDs for default profile | |
+| Default profile selection | – | Fastest profile that passes quality delta check and meets TTFT p95 targets | – | |
+
+---  
+
+### 5. Model Version Readiness (Serving Standard)  
+| Step | Owner | Gate / Decision | Artifact(s) | Source |
+|------|-------|----------------|-------------|--------|
+| Functional compatibility | – | List supported request types (chat/completions/embeddings/rerank), streaming support, tool/function calling schemas, structured‑output formats, token limits, safety‑behavior notes | – | |
+| Performance profile | – | Hardware compatibility, throughput (tokens/sec/GPU), latency (p50/p95 E2E/TTFT), batching behavior, cache hit‑rate expectations | – | |
+| Reliability & failure modes | – | Known error modes (OOM, latency spikes, kernel issues), back‑pressure behavior, safe‑degradation suitability | – | |
+| Quality baseline | – | Internal eval suite results (links), regression delta vs current default, known quality trade‑offs | – | |
+| Operational ownership | – | Owning team for serving‑runtime compatibility, on‑call escalation path, dashboard links (minimum set) | – | |
+| **Additional for default versions** | – | Successful canary to ≥25% traffic for ≥2 h, documented fallback chain that includes prior default, completed customer‑communications review for Dedicated/Private customers | – | |
+
+---  
+
+### 6. Rollout & Release (Cross‑Functional Playbook + Runbook)  
+| Step | Owner | Gate / Decision | Artifact(s) | Source |
+|------|-------|----------------|-------------|--------|
+| Preconditions (must be true before rollout) | – | Intake ticket in `ready-for-rollout` status; Applied ML eval gates passed; Serving Runtime performance‑bar signoff; Security approved risk review (or exception linked) | – | |
+| Rollout owner | Release Engineering | – | – | |
+| Routing‑change owner | Platform | – | – | |
+| On‑call | Eng Oncall (runtime + platform) | – | – | |
+| Required artifacts | – | GitHub PR in `redwood-model-registry` (model ID, version, tokenizer, context lengths, features, quant profiles, default profile, artifact hashes); perf‑suite run IDs; eval‑harness run links (Suites A + any tool‑calling); security‑risk‑review link | – | |
+| Step‑by‑step rollout | – | 1) **Create catalog entry** (registry PR)  <br>2) **Deploy behind feature flag** (dark launch) in staging; run smoke tests (`/v1/chat/completions` streaming, JSON schema, max‑context overflow)  <br>3) **Canary to production**: 0.5% traffic in one region (us‑east‑1) for 30‑60 min; monitor `hosted_inference_latency` (TTFT p95), `hosted_inference_errors` (5xx, timeouts), `gpu_oom_events`, `quality_regression_alerts`; abort if error > 0.5% or TTFT p95 breaches SLO for 10 min  <br>4) **Expand rollout**: 5% in us‑east‑1 → add eu‑west‑1 → ap‑southeast‑1 (if applicable); if replacing a default/alias keep old model as first fallback for ≥7 days  <br>5) **GA & documentation**: when traffic reaches 100% for intended routes, mark Linear ticket `shipped`; DevEx publishes docs (model ID, default settings, limitations, restriction text) | – | |
+| Fallback policy (required) | – | Primary: new model ID  <br>Fallback #1: previous stable model in same family  <br>Fallback #2: cross‑family safe default (product‑approved) | – | |
+| Rollback triggers (examples) | – | • Sustained TTFT p95 regression >20% vs baseline for 30 min  <br>• Elevated 5xx >0.5% for 10 min  <br>• Confirmed quality regression on `p0` prompts post‑launch | – | |
+| Rollback steps | – | 1) Disable routing rule for new model (weight = 0)  <br>2) Promote fallback #1 to 100%  <br>3) Notify #incidents if customer‑impacting; otherwise update #eng‑releases  <br>4) File post‑incident ticket referencing dashboards & logs | – | |
+| Post‑launch (first 7 days) | – | Keep canary/quality shadowing enabled where possible; watch for tokenizer edge cases (stop sequences, special tokens), intermittent OOMs due to KV‑cache fragmentation, higher‑than‑expected safety blocks (policy tuning may be needed) | – | |
+| Cross‑functional playbook timeline & checklist | – | **Week ‑3**: Performance profiling & end‑to‑end compatibility tests (ENG); documentation skeleton (Docs)  <br>**Week ‑2**: Internal sign‑off on benchmarks, console metadata drafted, release notes initial draft  <br>**Week ‑1**: Final security/legal sign‑off, marketing assets ready, support training completed  <br>**Launch day**: Publish catalog entry, push release notes, route traffic via canary targets  <br>**+72 h**: Post‑launch assessment; decide on full rollout or rollback | – | |
+| Checklist (suggested owners) | – | • Performance & runtime (ENG‑Perf lead – Devon Chen)  <br>• API & SDK compatibility (SDK lead – Priya Singh)  <br>• Benchmarks & quality (Applied ML – Tomas Nguyen)  <br>• Docs & examples (Docs – Lina Kor)  <br>• Console & catalog entry (Console PM – Maya Patel)  <br>• Release notes & comms (Marketing – Omar Reyes)  <br>• Support & SRE readiness (Support Lead – Keisha Brown / SRE – Aaron Li)  <br>• Legal & Security (Security – Helena Park)  <br>• Rollout plan (PM) | – | |
+| Artifacts (playbook) | – | Performance dashboard, perf runbook & artifacts, draft release notes PR, docs‑staging site, support playbook | – | |
+| Canary metrics to monitor | – | User‑facing latency p95, error rate, token‑cost variance per 1k tokens, eval‑score drift on monitoring prompt set, support‑ticket volume for the new model | – | |
+| Rollback criteria (playbook) | – | Sustained >15% latency regression, >3× baseline error rate, or major quality regression on key evals | – | |
+| Follow‑ups after launch | – | 72 h post‑launch retrospective (Eng/Docs/SRE/Support); update Optimize rules with new batching suggestions; add permanent dashboard tile for unit economics in Console | – | |
+
+---  
+
+### 7. Ongoing Post‑Launch Operations  
+| Activity | Owner | Notes |
+|----------|-------|-------|
+| Quality canary & shadowing (1% traffic) | SRE / Platform | Continues beyond first 7 days if risk remains; alerts fire on `quality_regression_alerts` dashboard |
+| Metric dashboards & alerting | SRE | `hosted_inference_latency`, `hosted_inference_errors`, `gpu_oom_events`, custom quality‑regression alerts |
+| Incident response & rollback | Eng Oncall (runtime + platform) | Follow runbook steps; file post‑incident ticket |
+| Support playbook & FAQ | Support Lead | Updated after launch; used for customer‑facing issues |
+| Documentation updates | DevEx / Docs | Model card, default settings, limitations, any restriction text from security review |
+| Optimization tuning | Applied ML / ENG‑Perf | Update Redwood Optimize rules with observed batching suggestions; add unit‑economics tile in Console |
+
+---  
+
+## Summary Flow (textual)
+
+1. **Intake** → Linear ticket with required fields → License pre‑check, baseline eval plan, runtime feasibility → ticket moves to *ready‑for‑implementation*.  
+2. **Security Review** → provenance, supply‑chain, license, privacy, abuse checks → risk‑review entry (approved/approved‑w‑restrictions/blocked).  
+3. **Quality Gates** → Suites A‑D (internal regression, public benchmark, safety, tool‑calling) → eval‑harness URLs, risk assessment, default config, known limitations → post‑launch canary requirement.  
+4. **Performance Bar & Quant** → Run perf suite (latency, throughput, stability) → validate fp16/int8/int4 profiles (correctness, quality delta vs fp16, performance) → select default profile → collect benchmark logs, eval links, perf IDs.  
+5. **Readiness** → Assemble functional compatibility, performance profile, reliability, quality baseline, operational ownership; for defaults, complete ≥25% canary ≥2 h, fallback chain, customer‑comm review.  
+6. **Rollout** → PR in `redwood-model-registry` → dark‑launch staging smoke test → canary (0.5% → 5% → regional expansion) with SLO/error‑budget watch → GA → docs publish; define fallback/rollback policy; monitor first 7 days.  
+7. **Post‑Launch** → Keep quality canary, watch dashboards, run support playbook, hold 72 h retrospective, update Optimize rules, add unit‑economics tile.  
+
+Every gate has a clearly identified owner, a pass/fail criterion, and a concrete artifact (ticket, review entry, eval‑harness link, benchmark ID, registry PR, etc.) that must be recorded before proceeding to the next stage. This end‑to‑end flow ensures that a new third‑party LLM is vetted for legal, security, quality, performance, and operational readiness before it becomes generally available in the Redwood Hosted API catalog.",made_up,"The assistant provides a comprehensive and accurate end-to-end process that aligns with the provided documentation, including all required gates, owners, and artifacts.","TTFT p50 <= 1.2s (2k context); TTFT p95 <= 2.5s (2k context); TTFT p95 <= 4.0s (8k context); Sustained output tokens/sec/GPU >= family baseline - 10%; No crash loops under 32-concurrency soak (30 min); Error rate <= 0.2% for 2k/8k tests; No KV-cache-leak memory growth; Successful canary to >=25% traffic for >= 2 h; Week -3: Performance profiling and end-to-end compatibility tests (ENG); documentation skeleton (Docs); Week -2: Internal sign-off on benchmarks, console metadata drafted, release notes initial draft; Week -1: Final security/legal sign-off, marketing assets ready, support training completed; Launch day: Publish catalog entry, push release notes, route traffic via canary targets; +72 h: Post-launch assessment; decide on full rollout or rollback; Performance & runtime (ENG-Perf lead - Devon Chen); API & SDK compatibility (SDK lead - Priya Singh); Benchmarks & quality (Applied ML - Tomas Nguyen); Docs & examples (Docs - Lina Kor); Console & catalog entry (Console PM - Maya Patel); Release notes & comms (Marketing - Omar Reyes); Support & SRE readiness (Support Lead - Keisha Brown / SRE - Aaron Li); Legal & Security (Security - Helena Park); Rollout plan (PM); Performance dashboard, perf runbook & artifacts, draft release notes PR, docs-staging site, support playbook; User-facing latency p95, error rate, token-cost variance per 1k tokens, eval-score drift on monitoring prompt set, support-ticket volume for the new model; Sustained >15% latency regression, >3x baseline error rate, or major quality regression on key evals; 72 h post-launch retrospective (Eng/Docs/SRE/Support); update Optimize rules with new batching suggestions; add permanent dashboard tile for unit economics in Console",made_up,y,"Every claim the first reviewer listed is in fact in the context (doc 3 has the performance thresholds, doc 8 the 25%-for-2h canary, doc 5 the timeline, owner names, metrics and rollback criteria), but section 7 makes up owners (quality canary 'SRE / Platform', dashboards 'SRE', optimization 'Applied ML / ENG-Perf') and says shadowing 'continues beyond first 7 days if risk remains', and no document says any of that, so made_up stands for a different reason.",,
+onyx,qst_0362,"What is our v1 standard for streaming timeout enforcement and retry behavior, and do any of the Python, TypeScript, or Go SDKs still violate it based on the parity matrix and recent support tickets?","V1 standard: streaming must be bounded by an overall_timeout_ms hard cap for the full lifecycle (including retries/backoff), plus a stream_idle_timeout_ms that limits time with no bytes/events (default 30000ms, resets on each valid chunk/event). Safety-first streaming retry: never auto-retry once any stream output has been delivered; retry is only allowed if the failure happens before the first byte/event (treating a pre-body 429/5xx/transport failure like a normal request, including honoring Retry-After), and explicit client cancellation is never retried. If a disconnect happens after partial output, the SDK must raise a typed streaming interruption error (retryable=false) with request_id when known and best-effort bytes/events received.
+
+Based on the parity matrix + recent tickets: Python had a known violation where the streaming iterator ignored configured timeouts (SUP-29410) but this was fixed in redwood-sdk-python 0.18.0 and Python now passes the stalled-stream/streaming-timeout conformance coverage (older 0.17.x still violates). TypeScript still partially violates the v1 timeout model for streaming because idle timeout is not implemented, and it has had streaming edge-case drift (disconnect classification / post-content retry suppression) even though the specific pre-first-byte 429 case (retry + respect Retry-After) was recently fixed and now passes conformance; the earlier non-streaming 400 retry bug was also fixed in TS 2.8.2. Go is improved on v1 retry behavior (Retry-After on 429 is fixed in v0.10.0 and the streaming 429 Retry-After path was brought into conformance), and it is generally aligned on “no retry after events”, but it still partially violates streaming timeout enforcement because stream idle timeout is not consistent/fully implemented per the parity matrix.","**v1 Standard for Streaming Timeout Enforcement & Retry Behavior**  
+*(from the SDK Retry & Timeout Standard (v1) – doc)*
+
+| Aspect | Requirement (default) |
+|--------|------------------------|
+| **Overall timeout** (`overall_timeout_ms`) | 90 000 ms – hard cap that includes retries, backoff, and any idle time. |
+| **Connect/first‑byte timeout** | Uses the overall timeout for the initial connection and first byte; if the underlying client cannot express a true overall timeout, the SDK must implement an outer timer/abort mechanism. |
+| **Streaming idle timeout** (`stream_idle_timeout_ms`) | 30 000 ms – maximum time with no bytes/events received before the stream is considered stalled. The timer resets on each valid chunk/event. |
+| **Retry policy (streaming)** | • **No automatic retry after any bytes/events have been delivered** (to avoid duplicate output).<br>• **Allowed automatic retry only before the first byte/event** (e.g., connect/TLS failure, 5xx/429 before body).<br>• When retrying before first byte, the SDK must follow the standard retry policy: <br> - `max_attempts` = 4 (1 initial + up to 3 retries)<br>�- Exponential backoff with full jitter (base = 250 ms, cap = 8 000 ms)<br>�- Respect `Retry-After` (seconds or HTTP‑date) on 429 and 503, clamped to [0 ms, 60 000 ms] and **without** added jitter.<br>�- Stop when either `max_attempts`, `max_total_retry_time_ms` (20 000 ms), or `overall_timeout_ms` is exceeded.<br>• On streaming disconnect after partial output, raise a typed `StreamingInterruptedError` that includes `request_id` (if known), bytes/events received, and partial output (when available). Manual retries are left to the application, with guidance to use idempotency keys and log `request_id`. |
+
+---
+
+**Do any SDKs still violate this standard?**  
+*Based on the parity matrix (doc) and recent support tickets (docs,,,):*
+
+| SDK | Streaming timeout enforcement | Streaming retry behavior | Notable gaps / evidence |
+|-----|------------------------------|--------------------------|--------------------------|
+| **Python** | ❌ **Violates** – the matrix shows “streaming ignored `timeout` in iterator path (support driver SUP‑29410)”. This means the SDK does not honor the overall/idle timeouts while reading a stream. | ❌ **Violates** – “may retry pre‑first‑event; inconsistent”. The SDK can attempt a retry even after some bytes have been sent, contrary to the “no retry after partial output” rule. | Ticket highlights missing `request_id` and partial‑output surfacing; the conformance suite (doc) shows Python passed the streaming 429‑Retry‑After test, but the timeout and pre‑first‑event retry gaps remain. |
+| **TypeScript** | ❌ **Violates** – “abort cancels fetch, but idle timeout not implemented”; the SDK lacks the 30 s idle timeout for streams. | ❌ **Violates** – “retried after some events in one path”; the SDK can retry after having delivered partial output. | The Slack escalation (doc) reports TS failing the `streaming_429_retry_after_respected` conformance test (throwing `RateLimitError` immediately, i.e., no retry at all before first byte). Ticket (non‑streaming 400 retries) shows a broader retry‑classification issue that was fixed in v2.8.2, but the streaming‑specific gaps persist. |
+| **Go** | ⚠️ **Partial violation** – “context cancel works, but idle timeout not consistent”; the SDK does not uniformly apply the 30 s idle timeout across all streaming code paths. | ⚠️ **Mostly compliant after fix** – “generally no retry after events” indicates it does not retry after partial output. However, the matrix also notes Go “ignores Retry‑After” (under retry‑policy row), which was the root cause of the conformance failures. | The conformance failures reported in doc (Go retried but did not honor `Retry‑After`) were fixed in PR #641. After that fix, Go now respects `Retry‑After` before the first byte. The remaining issue is the inconsistent idle‑timeout handling, which means the streaming timeout enforcement is not fully uniform. Ticket (429 handling escalation) also cited Go’s missing `Retry‑After` respect, which is now resolved. |
+
+**Summary**
+
+- The **v1 standard** requires streaming to respect an overall 90 s timeout, a 30 s idle timeout, and to retry only before the first byte (with full jitter, `Retry‑After` honoring, and a hard stop on any of the attempt, retry‑time, or overall‑time budgets).  
+- **Python** still violates both timeout enforcement (ignores timeouts in the stream iterator) and retry behavior (may retry pre‑first‑event inconsistently).  
+- **TypeScript** still violates timeout enforcement (missing idle timeout) and retry behavior (retries after some events in one path).  
+- **Go** had a clear violation in `Retry‑After` handling for streaming, which has been addressed by recent PRs; however, its idle‑timeout application remains inconsistent, so it does not fully meet the timeout‑enforcement part of the standard.  
+
+Thus, **all three SDKs exhibit at least one gap** relative to the v1 streaming timeout and retry standard, with Python and TypeScript showing the most significant violations in both areas, and Go primarily lagging on consistent idle‑timeout enforcement.  
+
+*Citations: (standard), (parity matrix), (streaming disconnect ticket), (conformance‑suite Slack), (TS 400 retry), (429 handling escalation).*",made_up,"The assistant accurately identifies the v1 standard and correctly summarizes the current status of the Python, TypeScript, and Go SDKs regarding their compliance with streaming timeout and retry requirements.","The overall_timeout_ms default is 90,000ms (the context says 90,000ms, but the assistant's table lists 90,000ms as a hard cap that includes idle time, whereas the standard defines overall_timeout_ms as the full operation and stream_idle_timeout_ms as a separate streaming-specific limit).; The retry policy for streaming includes a max_total_retry_time_ms of 20,000ms specifically for streaming (the standard defines this as a general retry budget, not specific to streaming).; The assistant claims TypeScript v2.8.2 fixed a non-streaming 400 retry bug (the context confirms this, but the assistant's table lists the TS version as 2.8.2 while the parity matrix and other docs refer to different versioning schemes for the SDKs).; The assistant claims Go v0.10.0 fixed the Retry-After issue (the context mentions PR #641 and Go 0.8.3/0.9.1, but does not explicitly confirm a v0.10.0 release).",made_up,y,"The listed claims are supported (overall_timeout_ms=90000, max_total_retry_time_ms=20000 and TS v2.8.2 are all in the standard and tickets, and the answer never says Go v0.10.0), but the answer reads the matrix's Python entry 'may retry pre-first-event; inconsistent' as 'can retry even after some bytes have been sent', which the context does not say.",,
+onyx,qst_0025,"In the enterprise tenant cutover go-live runbook, what latency threshold triggers escalation based on the 95th percentile being too high, and how long does it need to be sustained?",Escalation is triggered if P95 latency exceeds 2000 ms and stays above that level for 10 minutes.,"In the enterprise tenant cutover go-live runbook, escalation is triggered when the **95th percentile latency increases by more than 30%** compared to baseline. This increase must be observed **within the observation window**, which is defined as **2× the median reconciliation window** (typically **2–5 minutes**)【2†L140-L149】. If this condition occurs during that window, rollback procedures are initiated.",made_up,The assistant provided incorrect thresholds and conditions for escalation that do not match the enterprise tenant cutover go-live runbook requirements.,"escalation is triggered when the 95th percentile latency increases by more than 30% compared to baseline; This increase must be observed within the observation window, which is defined as 2× the median reconciliation window (typically 2–5 minutes); If this condition occurs during that window, rollback procedures are initiated",wrong,n,"The 'latency 95p increases > 30% within the observation window' trigger and the '2x median reconciliation window (typically 2-5 minutes)' both appear word for word in the Operator Safeguard and Crypto-Aware Cutover Playbook (doc 2), so nothing is invented; the answer just takes them from the wrong runbook and misses the gold's 2000 ms for 10 minutes.",,
+onyx,qst_0315,"What UI indicator did the team plan to show for tenants in escalation mode, and what default grace-window duration was chosen for the circuit-breaker?","They planned to show an ""Escalation"" badge on the tenant dashboard, and they chose a 10-second default grace-window for the circuit-breaker.","The team planned to surface a **concise status line in the route header** to make it obvious when an auto‑fallback (escalation mode) has been triggered—for example:  
+
+```
+AUTO-ESCAPE: active — mode=graceful-throttle, trigger=p95>600ms
+```  
+
+This line would be accompanied by a collapsible timeline for more detail and actions like “Copy decision JSON” and “Open replay in simulator”.  
+
+For the circuit‑breaker, the default **grace‑window (open) duration** was set to **30 seconds** before transitioning to half‑open.  
+
+---  
+**Sources** eng‑platform Slack discussion – UI indicator for auto‑escape hatch. ADR‑007: Standard KMS Client Wrapper and Failure Policy – circuit breaker open duration.",made_up,The assistant provided incorrect information regarding the UI indicator and the circuit-breaker grace-window duration compared to the gold answer.,The team planned to surface a concise status line in the route header; The default grace-window (open) duration was set to 30 seconds,wrong,n,"Both claims come from the context: dave_ux proposes the 'AUTO-ESCAPE: active' status line in the route header in the eng-platform Slack, and ADR-007 gives a 30s KMS circuit-breaker open duration; they are the wrong sources, not inventions, so the answer is wrong rather than made up.",,
+onyx,qst_0440,"What is the complete SOP Redwood Inference must follow to enable ""customer-managed audit log export"" (to the customer's cloud storage) across Hosted, Dedicated, and Private deployments-including required prerequisites, security approvals, configuration steps, validation, customer communication, and ongoing operations/ownership?","1) **Intake & scoping (CS/Support)**: Open an **internal-support Jira** (Support Request; prioritize P2 standard, P1 if audit deadline <14 days), and record **customer + org_id (Hosted) / dedicated_cluster_id (Dedicated) / Private cluster**, deployment mode, regions, sink (**S3/GCS/Azure Blob**), **bucket/container + prefix + destination region**, identity method (**assume-role/IRSA/workload identity/Azure federated identity**), desired audit-log categories (**platform audit logs only-no prompt/completion logging**), retention intent, and **ops/escalation contacts + target date**; CS confirms entitlement and that export is **regional by default** (cross-region only by exception).  
+
+2) **Prerequisites & mandatory security controls (must be satisfied before enablement)**: Treat logs as **Customer-Sensitive Metadata** and ensure **no request bodies/model outputs/token strings**; require **TLS 1.2+ in transit** and **encryption at rest** on the customer destination (S3 SSE-S3/SSE-KMS, GCS managed keys/CMEK, Azure managed keys/CMK) and encrypt any Redwood staging with Redwood KMS; enforce **least privilege** using **assume-role/workload identity only** (no long-lived customer keys stored by Redwood) scoped to **write to a specific bucket/container prefix** (and list only if required for health checks); confirm **destination ownership/allowed account** and appropriate **egress controls/allowlisting** (private endpoints preferred; for Private, customer constrains egress); align/confirm **retention** (recommend 90 days; <30 days allowed but noted; >1 year requires CS contract confirmation); ensure ""**logging about logging**"" is enabled (events for enable/disable, destination/auth changes, failures/retries visible in internal dashboards). Attach required evidence in the Jira: **policy/trust/binding snippet, encryption confirmation, proof of ownership IDs, and (Private) network diagram/egress statement**.  
+
+3) **Approvals (gates)**:  
+- **Gate A (CS/Support)**: request completeness + scope validation (platform audit logs only, region alignment).  
+- **Gate B (Security-required for all modes)**: Security reviews encryption/least privilege/region rules and leaves a Jira comment: **""Approved for enablement""** (name/date) before production changes.  
+- **Gate C (Legal/Privacy-conditional)**: required for **cross-region export**, **additional PII fields beyond standard schema**, or **bespoke contract clauses**; cross-region additionally requires **Security approval + explicit customer acknowledgement**. If controls can't be met, file a **Security exception** and link it.  
+
+4) **Configuration & enablement (route by deployment mode)**:  
+- **Hosted (Eng Platform oncall via `rdw-admin`)**: `audit-export destination upsert` (sink/region/bucket-or-container/prefix/auth-mode/role or binding) → `audit-export enable` → ensure tenant flag **`audit_export_customer_sink_enabled=true`**.  
+- **Dedicated (Eng Infra)**: Decide connector placement (**Redwood-managed default** vs **dedicated-placed** exception requiring **SRE review**). Default path: update per-tenant **Terraform `dedicated-config`** `audit_export` (enabled, sink, region, destination, prefix, auth_reference) and **plan/apply**. Exception path: deploy `audit-export-connector` into the dedicated cluster (Helm), use **short-lived identity**, and configure private endpoints/egress as required.  
+- **Private (Customer operator with Private Deployments guidance; bundle v2.8.0+)**: Configure `redwood-private` Helm values `auditExport.enabled=true` with sink/region/destination/prefix/format and **workload identity** (AWS IRSA, GCP Workload Identity, Azure Workload Identity) plus any private-endpoint DNS/egress settings; redeploy and restart the connector.  
+
+5) **Validation (Redwood + customer)**: Redwood verifies connector health (**delivery_success_rate**, **delivery_lag_seconds**, **write_errors_total**) and that the tenant/cluster consumer is active; customer (coordinated by CS) confirms objects land in the agreed prefix (e.g., Hosted `org=<ORG_ID>/region=<REGION>/dt=.../hr=.../*.jsonl.gz`, Dedicated `dedicated_cluster=<ID>/region=.../...`) within ~10 minutes, and both sides spot-check one file for required fields (e.g., `event_id`, `source_service`) and **absence of inference payload fields**; remind customer delivery is **at-least-once** and they must **deduplicate by `event_id`**.  
+
+6) **Closeout documentation & customer communication (CS owns comms)**: Update the Jira with destination identifiers, auth reference, connector placement (Dedicated), approvals, enablement timestamp, and validation evidence; CS sends/updates the customer with confirmation, expected delivery semantics/latency, and reiterates the customer owns **storage cost, retention/lifecycle, SIEM ingestion, and destination access control**.  
+
+7) **Ongoing operations/ownership & rollback**: Redwood owns connector operation/monitoring in **Hosted/Dedicated** (and provides troubleshooting support for **Private** if customer shares logs/metrics); paging/alerting follows policy (enterprise Dedicated/Private: page on sustained failure >30 min; Hosted: alert unless multi-tenant impact). Customers should alert on **no new objects >30 min** and sustained **4xx/5xx** from storage and must notify Redwood before rotating identity/policies. If issues occur (403/trust drift, throttling, DNS/TLS/private endpoint failures), coordinate Eng + Security/CS; to stop export, **disable** (Hosted `rdw-admin audit-export disable`; Dedicated set `audit_export.enabled=false` in Terraform; Private `auditExport.enabled=false` and redeploy). If a **data-boundary/security concern** is suspected, **disable immediately** and escalate per incident process.","**Complete SOP for Enabling Customer‑Managed Audit Log Export (Hosted, Dedicated, Private)**  
+
+This SOP consolidates the intake, approvals, configuration, validation, communication, and ongoing‑operations steps required to enable customer‑managed audit‑log export from Redwood Inference to a customer‑owned cloud‑storage sink (S3/GCS/Azure Blob). It draws from the official Redwood SOPs, security controls, architecture guide, and mode‑specific runbooks.
+
+---
+
+## 1. Prerequisites & Request Intake  
+*(Based on Document 1 – intake SOP)*  
+
+1. **Collect request details** in an internal‑support Jira ticket (project `internal-support`, type `Support Request`):  
+   - Customer company & deployment mode (**Hosted | Dedicated | Private**)  
+   - Regions in use  
+   - Desired sink: **S3 | GCS | Azure Blob**  
+   - Destination details: bucket/container name, prefix, destination region  
+   - Identity method: **AWS assume‑role/IRSA, GCP workload identity, Azure workload identity**  
+   - Retention intent (customer‑owned)  
+   - Operational & escalation contacts  
+   - Target date (if tied to an audit)  
+
+2. **Pre‑conditions** (must be satisfied before proceeding):  
+   - Customer has created the destination bucket/container and enabled encryption at rest.  
+   - For **Private** deployments: the cluster runs Redwood Private bundle v2.8.0+ (includes `audit-export-connector`).  
+   - No inference‑payload logging is requested (audit‑log export is for platform audit events only).  
+
+---
+
+## 2. Security Approvals & Control Gates  
+*(Based on Document 2 – security controls & approval gates)*  
+
+All export enablement must pass the following gates **before** any production changes:
+
+| Gate | Owner | Requirement | Evidence to attach/link in Jira |
+|------|-------|-------------|---------------------------------|
+| **Gate A – Customer request validation** | Customer Success + Support | Verify company, deployment mode, target cloud/region, log categories (standard only unless exception), retention intent, incident‑notification contact. | Completed intake checklist (Doc 1). |
+| **Gate B – Security review** | Security | Destination config meets encryption & least‑privilege requirements; no inference payload logging included; cross‑region delivery evaluated if applicable. | Security comment: **“Approved for enablement”** (reviewer name + date). |
+| **Gate C – Privacy/Legal check** *(conditional)* | Legal/Privacy | Required if: cross‑region export changes residency guarantees; customer requests additional PII fields beyond standard audit schema; contract includes bespoke audit‑log clauses. | Legal/Privacy sign‑off (if triggered). |
+
+### Mandatory Security Controls (must be satisfied)  
+- **Data classification**: Audit logs are *Customer‑Sensitive Metadata* (user IDs, IPs, org IDs, resource IDs, timestamps, admin actions). No request bodies or model outputs.  
+- **Encryption**:  
+  - In‑transit: TLS 1.2+ for HTTPS endpoints.  
+  - At‑rest: customer destination must use server‑side encryption (SSE‑S3/SSE‑KMS for S3; Google‑managed keys or CMEK for GCS; Microsoft‑managed keys or CMK for Azure). Redwood‑side staging (if any) encrypted with Redwood‑managed KMS.  
+- **Least‑privilege access**:  
+  - Hosted & Dedicated: use assume‑role / workload‑identity patterns; **no long‑lived customer keys stored in Redwood**.  
+  - Policy must permit only `write/put` to a specific bucket/container prefix (optional `list` for health checks).  
+- **Network & destination allowlisting**:  
+  - Destination must be customer‑owned and reside in an allowed provider account/subscription/project per contract.  
+  - For Private deployments, outbound egress must be constrained by the customer (preferred) or by Redwood (if Redwood‑managed networking is in scope).  
+  - Public endpoints allowed only if authenticated & protected with least‑privilege credentials; **PrivateLink/private endpoints preferred** when available.  
+- **Retention & deletion**: Default recommended destination retention **90 days** (unless customer requires more). Retention < 30 days allowed but noted; > 1 year requires CS to confirm contract language supports it and that customer understands storage cost/ownership.  
+- **Logging about logging**: Platform must emit events for export enable/disable, destination changes, auth/role changes, delivery failures/retries; visible in Redwood internal dashboards and retrievable for incident response.  
+
+**Cross‑region constraint**: Export must stay within the customer’s chosen region matching the deployment region. Cross‑region export allowed only after Legal confirms no residency violation, Security confirms acceptable threat model, and customer acknowledges increased failure modes/latency.  
+
+**Security exception process**: If customer cannot satisfy controls (e.g., insists on long‑lived keys), file a Security exception under `security-and-compliance/risk-and-exceptions` and link it in the enablement ticket.  
+
+**Required evidence** (attach/link in Jira):  
+- Destination policy snippet (IAM policy/role trust policy/workload‑identity binding).  
+- Confirmation of encryption at rest on destination.  
+- Proof of ownership (account/subscription/project identifiers).  
+- For Private: network diagram or egress policy statement.  
+
+---
+
+## 3. Configuration Steps (by Deployment Mode)  
+
+### 3.1 Hosted (multi‑tenant control plane)  
+*(Based on Document 4 – Hosted runbook)*  
+
+1. **Confirm export eligibility** (via `rdw-admin`):  
+   - Verify customer tier & contract entitlement (CS confirmation in ticket).  
+   - Ensure request is for platform audit logs only.  
+   - Confirm region alignment (no cross‑region unless explicitly approved by Security + Legal).  
+
+2. **Configure tenant export settings** (internal admin CLI `rdw-admin`):  
+   ```bash
+   # Fetch org details
+   rdw-admin org get --org-id <ORG_ID>
+
+   # Create/update export destination
+   rdw-admin audit-export destination upsert \
+     --org-id <ORG_ID> \
+     --sink <s3|gcs|azure> \
+     --region <REGION> \
+     --bucket-or-container <NAME> \
+     --prefix <PREFIX> \
+     --auth-mode <assume-role|workload-identity> \
+     --external-role-arn-or-binding <VALUE>
+
+   # Enable export
+   rdw-admin audit-export enable --org-id <ORG_ID>
+   ```
+
+3. **Feature‑flag verification** (per‑tenant flag):  
+   - Flag name: `audit_export_customer_sink_enabled`  
+   - Verify/set:  
+     ```bash
+     rdw-admin flags get --org-id <ORG_ID> --name audit_export_customer_sink_enabled
+     # if not set:
+     rdw-admin flags set --org-id <ORG_ID> --name audit_export_customer_sink_enabled --value true
+     ```
+
+4. **Validation** (see Section 4 below).  
+
+5. **Document enablement** in Jira: exact destination identifiers, auth mode/role/binding used, validation results (dashboard screenshot or metric note), time export was enabled.  
+
+6. **Rollback / Disable** (if needed):  
+   ```bash
+   rdw-admin audit-export disable --org-id <ORG_ID>
+   # optionally remove destination:
+   rdw-admin audit-export destination delete --org-id <ORG_ID>
+   ```
+
+### 3.2 Dedicated (single‑tenant control plane)  
+*Dedicated follows the same control‑plane steps as Hosted but is routed to Eng Infra after approvals (Doc 1). The CLI commands and feature‑flag logic are identical; ownership shifts to the Dedicated infrastructure team.*  
+
+### 3.3 Private (customer‑operated cluster)  
+*(Based on Document 5 – Private guide)*  
+
+1. **Preconditions**:  
+   - Redwood Private bundle v2.8.0+ deployed (includes `audit-export-connector`).  
+   - Customer has created destination bucket/container with encryption & retention configured.  
+   - Security controls reviewed & accepted per contract/security questionnaire.  
+
+2. **Configuration via Helm values** (`redwood-private` chart):  
+   ```yaml
+   auditExport:
+     enabled: true
+     sink: s3               # or gcs/azure
+     region: us-east-1      # destination region
+     destination: customer-audit-logs-prod
+     prefix: redwood/org=acme/cluster=private-us-east
+     format: jsonl_gzip     # or parquet (if feature flag enabled)
+     batchSeconds: 60
+     maxBatchBytes: 10485760
+
+     auth:
+       mode: workload_identity   # or assume-role for AWS IRSA
+       reference: <customer-specific-binding-or-role>
+
+     network:
+       requirePrivateEndpoint: true   # set true if private endpoints required
+       dnsZone: <customer-private-dns-zone>
+   ```
+
+3. **Identity patterns** (apply per cloud provider):  
+   - **AWS (EKS)**: Use IRSA; annotate the connector’s Kubernetes service account with the role ARN; role policy allows `s3:PutObject` to the specific bucket/prefix (optional `s3:ListBucket` for health checks).  
+   - **GCP (GKE)**: Use Workload Identity; bind KSA to GCP service account; grant `storage.objectCreator` (scoped where possible) to the destination bucket.  
+   - **Azure (AKS)**: Prefer Azure Workload Identity (federated); grant `Storage Blob Data Contributor` scoped to the container.  
+
+4. **Network requirements**:  
+   - If destination reachable only via private endpoints, customer must provide DNS resolution path inside the cluster and egress rules allowing connector to reach storage endpoints.  
+   - For on‑prem to cloud storage, document outbound proxy rules and TLS‑inspection constraints.  
+
+5. **Validation** (see Section 4).  
+
+6. **Ongoing operations & rollback**:  
+   - Customer owns destination lifecycle, cost, and retention.  
+   - Redwood Support can help troubleshoot connector errors if customer provides logs/metrics.  
+   - Recommended customer‑side alerts: no new objects for > 30 min; sustained 4xx/5xx from storage.  
+   - **Rollback**: set `auditExport.enabled=false` and redeploy the Helm chart; if a data‑boundary issue is suspected, disable immediately and notify Redwood Security per incident process.  
+
+---
+
+## 4. Validation & Verification  
+*(Across all modes – see Documents 1, 3, 4, 5)*  
+
+1. **Internal health checks** (Redwood responsibility):  
+   - Hosted/Dedicated: verify connector consumer exists for the org/tenant in the Observability dashboard (`Audit Export Connector / Tenant View`); look for non‑zero `delivery_success_rate` and decreasing `delivery_lag_seconds`.  
+   - Private: check connector pod logs for successful writes (no repeated 401/403).  
+
+2. **Customer destination verification** (customer responsibility, facilitated by CS/Support):  
+   - Ask customer to confirm objects are landing under the agreed prefix. Expected naming pattern (example):  
+     ```
+     org=<ORG_ID>/region=<REGION>/dt=YYYY-MM-DD/hr=HH/*.jsonl.gz
+     ```  
+   - Perform a spot‑check download of one object and verify:  
+     - `event_id` present  
+     - `source_service` present  
+     - No prompt/completion fields (ensuring no inference‑payload leakage).  
+
+3. **Event‑schema spot‑check** (optional but recommended):  
+   - Validate a sample record contains the standard audit‑log fields (`event_time`, `actor_type`, `actor_id`, `action`, `resource_type`, `resource_id`, `source_service`, `region`, `ip`, `user_agent` when available).  
+
+4. **Document validation results** in the Jira ticket (e.g., dashboard screenshot link, metric note, or customer confirmation).  
+
+---
+
+## 5. Customer Communication  
+*(Template from Document 1)*  
+
+**Subject:** Audit log export enablement – next steps  
+
+**Body:**  
+- Thanks for the request. We can enable automated export of Redwood platform audit logs to your **[S3/GCS/Azure]** destination.  
+- Please confirm you have created the destination bucket/container and enabled encryption at rest.  
+- Please provide the workload identity / role configuration using the attached template.  
+- Once received and approved, we will enable export and ask you to confirm objects are landing under the agreed prefix.  
+- Typical initial enablement time: **3–5 business days** (may vary by deployment mode and approvals).  
+
+*After enablement:*  
+- CS confirms the customer understands delivery semantics (at‑least‑once, possible duplicates).  
+- CS reminds the customer that the destination is customer‑owned (they bear storage cost and manage lifecycle policies).  
+
+---
+
+## 6. Ongoing Operations & Ownership  
+*(Responsibility matrix from Document 3; operational notes from Documents 1, 4, 5)*  
+
+| Activity | Hosted | Dedicated | Private | Customer |
+|----------|--------|-----------|---------|----------|
+| Create destination bucket/container | C | C | C | **R** |
+| Configure encryption/retention | C | C | C | **R** |
+| Provide role/workload identity | C | C | C | **R** |
+| Enable connector + routing | **R** | **R** | C | I |
+| Validate delivery | **R** | **R** | **R** | C |
+| Ongoing monitoring of sink cost | I | I | I | **R** |
+| Troubleshooting connector errors | **R** (Eng Platform/SRE) | **R** (Eng Infra) | **R** (Private Deployments Eng + Support) | C (provide logs/metrics) |
+| Update destination (bucket/region/prefix) | C | C | C | **R** (then notify Redwood for re‑config) |
+| Rotate customer credentials/role | C | C | C | **R** (must notify Redwood to avoid delivery failures) |
+
+**Key operational notes:**  
+- **Delivery semantics**: At‑least‑once; customers must deduplicate by `event_id`. Typical lag 1–5 minutes.  
+- **Failure detection**: Metrics `audit-export-connector.delivery_success_rate`, `delivery_lag_seconds`, `write_errors_total`. Pager policy: Dedicated/Private enterprise customers page on sustained delivery failure > 30 min; Hosted self‑serve gets non‑paging alert unless multiple tenants impacted.  
+- **Customer‑owned responsibilities**: Storage cost, lifecycle policies, retention settings, and ensuring the destination remains accessible (no inadvertent permission revocation).  
+- **Redwood‑owned responsibilities**: Connector health, audit‑event production, secure transmission, and providing validation of successful export.  
+
+---
+
+### Summary Flow  
+1. **Intake** → collect details (Doc 1).  
+2. **Security approvals** → Gates A‑C, attach evidence (Doc 2).  
+3. **Configuration** → mode‑specific steps (Hosted/Dedicated: `rdw-admin` CLI; Private: Helm values) (Docs 4 & 5).  
+4. **Validation** → internal health + customer destination check + schema spot‑check (Docs 1, 3, 4, 5).  
+5. **Communication** → send email template, set expectations (Doc 1).  
+6. **Operations** → hand off ownership per RACI, monitor, troubleshoot, and enable rollback if needed (Docs 1, 3, 4, 5).  
+
+Following this end‑to‑end SOP ensures that customer‑managed audit‑log export is enabled securely, consistently, and with clear accountability across Hosted, Dedicated, and Private Redwood Inference deployments.  
+
+---  
+*Sources: SOP intake & coordination, Security controls & approval gates, Architecture & operational model, Hosted enablement runbook, Private deployment guide.*",correct,"The assistant's answer accurately synthesizes the SOP, security controls, and deployment-specific procedures from the provided documentation.",,made_up,n,"No Dedicated runbook was retrieved, yet the answer says Dedicated's 'CLI commands and feature-flag logic are identical' to Hosted's (the gold says Terraform dedicated-config), and it adds RACI rows the matrix lacks (troubleshooting connector errors with team owners, updating the destination, rotating credentials), so it is not correct.",,
+onyx,qst_0453,"Who is responsible for the stock canyon hero placeholder image that is suggested for demo slides, and what is its current status?","Priya Desai is responsible for the hero-placeholder-canyon.jpg stock canyon hero image, and its current status is ""needs crop.""","The stock canyon hero placeholder image (`hero-placeholder-canyon.jpg`) is **owned by Priya Desai** and its current status is **“needs crop”** (with a to‑do item to crop and retone the image, due 2025‑03‑10).",correct,The assistant correctly identified the owner and status of the image as specified in the source document.,,correct,y,"The asset inventory lists hero-placeholder-canyon.jpg with owner Priya Desai and status 'needs crop', and the to-do line gives the crop-and-retone task due 2025-03-10.",,
+onyx,qst_0441,"For an enterprise Redwood Private deployment upgrade, what is the complete go/no-go gate (required validations, required approvals, and required customer communications) mandated by Redwood's internal standards?","Redwood's internal go/no-go gate for an enterprise Redwood Private production deployment upgrade requires that, at least 24h before the maintenance window, there is a change record created from the Private Upgrade Change Request template with a single named Change Owner and confirmed customer-side Change Approver and Operator contacts who will be present. The change record must document current and target versions (installer, operator/controller, runtime images, charts), the exact supported upgrade path (default N-1 to N; no unsupported major skips), and any model/runtime compatibility notes for pinned models. Rollback readiness must be demonstrated with recent backups (control-plane config state such as values/helm releases/operator CRs, any Redwood-managed PVs if present, and documentation of customer external dependencies like DB/SSO/KMS), locally available rollback artifacts (previous installer bundle, prior image tags, prior values files), a written rollback plan with commands and a time-to-rollback/time-to-restore estimate, and an explicit rollback decision point in the window plan. Preflight validations must be run and attached as evidence (standard preflight output) covering cluster capacity and node readiness, storage class/PV health, DNS and egress reachability for image pulls (or offline bundle availability where applicable), TLS/certificate status, and required Kubernetes API versions present (no deprecated APIs that will break charts). Observability readiness must be confirmed: Redwood has dashboard/alert visibility during the window (temporary access if needed) and the watch signals are available at minimum for control plane API error rate, inference 5xx, P95 latency on primary routes, and GPU utilization plus OOM/restart rates.
+
+At window start, the Change Owner may record GO in the change record only after all required sign-offs are linked and complete: Change Management approvals per risk level (Private production upgrades are at least High), SRE SLO/error budget impact review is completed with evidence (30-day error budget remaining and explicit risk acceptance if below 25%, capacity/headroom check, monitoring watch list and alert routing to active on-call, rollback feasibility and the decision point, and confirmation of no overlapping high-risk changes), Security and Compliance sign-off is completed if triggered (auth/SSO/JWT/mTLS, RBAC/privileged accounts, TLS/cert management/trust stores, audit logging pipeline/retention/integrity, new third-party images/dependencies with digests and scan summary, or network boundary changes), and Customer Success acknowledges customer readiness and the comms plan. Final technical readiness at T=0 must be reconfirmed: preflight has no red blockers (and any yellow warnings have an owner and mitigation), there are no open Redwood-side P0/P1 incidents that would reduce ability to respond or rollback, and any change-freeze exception is approved and linked.
+
+Customer communications must also be ready at GO time per the Planned Maintenance Comms SOP: a Customer Success-approved maintenance notice has been sent via the agreed channel with the required lead time (minimum 48h for enterprise; longer lead times may apply per risk tier), including the window in the customers timezone, expected impact, rollback posture/thresholds, required customer participation, and escalation contacts; internal heads-up has been posted at least 48h prior in #eng-oncall and #customer-success with customer name, window, change owner, link to the change record, and whether security sign-off is required (and per Private release gating, internal comms also go to #eng-releases); the window-start message is prepared to confirm backout plan and next update time; progress updates are planned at a 30-minute cadence with immediate updates for rollback or risk escalation; and an all-clear message is drafted for after the post-upgrade verification window. For Private upgrades, customer-specific maintenance is communicated directly to the customer and not posted to the public status page unless contractually required.","**Complete Go/No‑Go Gate for an Enterprise Redwood Private Deployment Upgrade**  
+*(as defined by Redwood’s internal standards – see the checklist, policy, communications SOP, and production change‑management documents)*  
+
+---
+
+### ✅ Required Validations (must be complete **24 h before** the maintenance window)  
+| Category | What must be verified / attached | Source |
+|----------|----------------------------------|--------|
+| **Change record + ownership** | • Create a change request ticket using the *Private Upgrade Change Request* template (Jira internal‑support).<br>• Name a single **Change Owner** (usually Private Deployments on‑call or the assigned Solutions/Delivery engineer).<br>• Confirm customer‑side **Change Approver** and **Operator** contacts (who will be present in the window). | |
+| **Version + compatibility** | • Record current versions (installer, operator/controller, runtime images, chart versions).<br>• Confirm target versions and the exact upgrade path (no skipping major versions unless explicitly supported).<br>• Confirm model/runtime compatibility notes for the customer’s pinned models. | |
+| **Backups + rollback readiness** | • Confirm recent backups exist for:<br>  – Control‑plane config state (values files, helm releases, operator CRs)<br>  – Any Redwood‑managed persistent volumes (if present)<br>  – Customer‑provided external dependencies (DB, SSO, KMS) are documented.<br>• Validate rollback artifacts are available locally (previous installer bundle, prior image tags, prior values files).<br>• Ensure a rollback decision point is explicitly called out in the window plan. | |
+| **Preflight validations** (attach evidence to the change ticket) | • Cluster capacity and node readiness checks.<br>• Storage class/PV health.<br>• DNS and egress reachability (if images are pulled during the window).<br>• TLS/certificate expiration checks.<br>• Required Kubernetes API versions present (no deprecated APIs that will break charts). | |
+| **Observability readiness** | • Confirm dashboards/alerts are visible to Redwood during the window (grant temporary access if needed).<br>• Confirm the following signals are available:<br>  – Control‑plane API error rate<br>  – Inference request error rate (5xx)<br>  – P95 latency for primary routes<br>  – GPU utilization and OOM/restart rates | |
+| **Final technical readiness** (checked **at window start**) | • Preflight output has **no red blockers**; any yellow warnings have an owner and mitigation plan.<br>• No open P0/P1 incidents on the Redwood side that would reduce ability to respond/rollback.<br>• If a change freeze is active, an approved exception is linked. | |
+
+---
+
+### 👥 Required Approvals (must be recorded in the change ticket before “GO”)  
+| Approver | When required | What they confirm | Source |
+|----------|---------------|-------------------|--------|
+| **Change Management** | All risk levels (per the Change Management Policy) | Approvals completed according to the risk‑level approver matrix. |, |
+| **SRE** | All risk levels | • SLO/error‑budget review completed (or documented risk acceptance).<br>• Confirms monitoring/alerting in place for the window.<br>• Confirms rollback path is viable and documented. |, |
+| **Security/Compliance** | Conditional – triggered by risk score or specific changes (auth/RBAC/audit/TLS/dependency changes, regulated environments, backup/restore changes, audit‑event schema changes, secrets/KMS) | Security sign‑off completed (or “not required” rationale documented). |, |
+| **Customer Success** | All risk levels | Acknowledges the communications plan and confirms customer readiness. | |
+| **Release Engineering** | All risk levels (per Private Release Gating & Change Management Policy) | • Validates release‑artifact integrity, CI evidence, and packaging.<br>• Confirms artifacts match the release manifest and CI baseline is met.<br>• Confirms offline/air‑gapped bundle verification (if applicable). | |
+| **SRE (operational)** | All risk levels (per Private Release Gating & Change Management Policy) | • Confirms prechecks are clean (or acceptable warnings acknowledged).<br>• Confirms monitoring/alerts in place for the window.<br>• Confirms rollback path is viable and documented. | |
+
+*Note: The exact approvers are named in the policy (e.g., Release Engineering – Connor O’Brien/Devon Price; SRE – Sean Gallagher/Rafael Mendes; Security – Naomi Feldman/Marcus Lin; Infrastructure – Irene Choi/Victor Alvarez) but the requirement is that the appropriate role signs off.*  
+
+---
+
+### 📣 Required Customer Communications (must be completed **before** the window starts)  
+| Communication | Timing / Channel | Content requirements | Source |
+|---------------|------------------|----------------------|--------|
+| **Maintenance notice (pre‑notice)** | Sent per risk tier:<br>• **Low**: ≥ 48 h prior (or per contract).<br>• **Medium**: ≥ 5 business days prior.<br>• **High**: ≥ 10 business days prior.<br>Channel: agreed customer channel (usually email + Slack Connect if available). | • Date/time window in customer’s timezone.<br>• Expected impact (downtime vs. degraded performance; which routes/models).<br>• Rollback posture (we will rollback if KPIs exceed thresholds).<br>• Required customer participation (who needs to be present).<br>• Redwood escalation contact(s). |, |
+| **Internal heads‑up** | T‑48 h (posted to `#eng-oncall` and `#customer-success`). | • Customer name, window time, change owner, link to change record, whether a security sign‑off is required. | |
+| **Window‑start message** | Sent at T=0 to customer and internal channels. | Confirm the backout plan exists and the next update time. | |
+| **Progress updates** | Default cadence: every 30 minutes during the window.<br>Immediate updates for any rollback or risk escalation. | Brief status, any issues, next update time. | |
+| **All‑clear (post‑window)** | Sent when the verification window is complete. | • Completed work summary.<br>• Any follow‑up actions.<br>• Post‑change monitoring plan (e.g., 24‑hour heightened watch). | |
+| **Internal release announcement** | Posted to `#eng-releases` (cc `#eng-oncall`) at:<br>• T‑24 h for Medium/High tiers.<br>• T‑2 h for Low tier. | • Customer/site, window, versions, on‑call lead, rollback trigger criteria, link to change record. | |
+
+---
+
+### 📋 Evidence to Attach to the Change Record  
+- Preflight output  
+- Version matrix (from/to)  
+- Rollback plan (commands + expected time)  
+- Links to SLO/error‑budget check and any risk acceptance  
+- Security sign‑off (or “not required” rationale)  
+- Copy of customer communications and confirmation of receipt  
+- Upgrade plan, precheck report, backup report, upgrade execution report, rollback report (if used)  
+- Installer logs (sanitized) and referenced artifact manifests  
+- Audit‑log events for upgrade started, prechecks pass/fail, backup completed, upgrade completed/failed, rollback invoked/completed  
+
+---
+
+### 🔁 In‑Window Gates (Stop Points) – for completeness  
+- **Gate A** (post‑control‑plane upgrade): operator/controller pods Ready, control‑plane API healthy, no unexpected restart loops (within 10 min).  
+- **Gate B** (post‑data‑plane rollout): runtime pods Ready and stable, synthetic inference request succeeds on each region/segment, customer confirms application‑level smoke test passes (within 15 min).  
+- **Gate C** (verification window): hold for 30 minutes of steady state with alerting enabled and monitored.  
+
+### 🚨 Rollback Criteria (immediate NO‑GO / trigger rollback)  
+- Sustained inference 5xx > customer baseline + 5% for >5 min.  
+- P95 latency regression >30% for >10 min on primary routes.  
+- Authentication failures (SSO/JWT validation) or RBAC denial spikes.  
+- Audit‑log pipeline breaks (if contractual).  
+- Control plane cannot reconcile/upgrade further.  
+
+---
+
+**In summary:**  
+To pass the go/no‑go gate for an enterprise Redwood Private deployment upgrade, you must complete all pre‑window validations, obtain the required approvals (Change Management, SRE, Security/Compliance as triggered, Customer Success, Release Engineering), and ensure the prescribed customer communications (maintenance notice, internal heads‑up, window‑start, progress updates, all‑clear) have been sent and acknowledged. Only after the Change Owner records an explicit “GO” in the change ticket may the maintenance window begin.  
+
+*All points are drawn from Redwood’s internal standards: the Enterprise Upgrade Go/No‑Go Checklist, the Private Release Gating & Change Management Policy, the Planned Maintenance Communications SOP, and the Production Change Management Policy.*",made_up,"The answer accurately captures the required validations, approvals, and communication standards mandated by Redwood's internal policies as described in the provided context.","The specific names of approvers (Connor O’Brien, Devon Price, Sean Gallagher, Rafael Mendes, Naomi Feldman, Marcus Lin, Irene Choi, Victor Alvarez) are not in the provided context documents.",partial,n,"The approver names (Connor O'Brien, Devon Price, Sean Gallagher, Rafael Mendes, Naomi Feldman, Marcus Lin, Irene Choi, Victor Alvarez) are all in the Private Release Gating policy, so nothing is made up; but required facts are missing, such as the at-least-High risk level, the 48h enterprise minimum and not using the public status page for Private.",,
+onyx,qst_0416,Copperfield Nimbus Dedicated sizing: latest baseline/growth/peak QPS and peak concurrent chat sessions?,"Latest projection (2026-03-12 follow-up): baseline 60 QPS, 6-month growth 140 QPS, peak 260 QPS, with ~150 concurrent chat sessions at peak. Earlier assumptions were lower: 50/120/220 QPS and 120 concurrent sessions.","Based on the latest sizing inputs for Copperfield Nimbus Dedicated (as of March 2026), the key metrics are:
+
+- **Baseline QPS:** 60 QPS  
+- **Expected growth (6 months):** 140 QPS  
+- **Peak QPS:** 260 QPS (daytime sync + product launches)  
+- **Peak concurrent chat sessions:** ~150 concurrent sessions (with KV cache active)  
+
+These figures come from the updated sizing inputs documented in the GTM working doc for Copperfield Nimbus Solutions.",made_up,The answer is incorrect because it failed to include the required earlier assumptions (50/120/220 QPS and 120 concurrent sessions) as specified in the instructions.,as of March 2026,correct,n,"'As of March 2026' is supported (the doc says latest projection from the 2026-03-12 sizing follow-up), and the 60/140/260 QPS and ~150 sessions match; the earlier figures were required only if mentioned, so leaving them out is not a fault.",,
+onyx,qst_0443,"List every internal communication thread (email, Slack, and meeting notes) about the Redwood Private upgrade 'rollback loop' bug (including references to RRB-17 or 'stuck rollback').","Internal threads about the Redwood Private upgrade ""rollback loop""/""stuck rollback"" bug (RRB-17) are: (1) Slack **#eng** thread where Ethan Park reports ""private upgrade rollbacks looping"" and Priya references ""RRB-17"" and the `installer-rollback-lock` ConfigMap workaround; (2) Slack **#incidents** thread **INC-2147** (""Private installer rollbacks looping (possible RRB-17)"") covering customer impact, workaround, and patch tracking; (3) Email thread **""Re: Urgent: Redwood Private upgrade keeps rolling back""** (Nina Shah ↔ Ava Chen, cc Jordan Blake/Ethan Park) discussing ""rollback stuck"" and sharing the lock-delete + controller-restart workaround; (4) Internal email thread **""RRB-17: rollback loop in private installer (root cause + patch plan)""** (Priya ↔ Ethan/Dev/Jordan) detailing root cause, patch plan, and workaround; and (5) Meeting notes **""Acme - Private upgrade escalation (rollback keeps re-triggering)""** (2026-02-14) documenting the ""rollback keeps re-triggering""/""stuck rollback"" discussion and the same workaround.","**Internal communication threads about the Redwood Private upgrade “rollback loop” bug (RRB‑17 / “stuck rollback”)**
+
+| # | Type | Thread title / channel | Participants (key) | Date / time | Summary & relevance to RRB‑17 / stuck rollback | Citation |
+|---|------|------------------------|--------------------|-------------|-----------------------------------------------|----------|
+| 1 | Email (Gmail) | **Fwd: RRB-17: rollback loop in private installer (root cause + patch plan)** | Priya Natarajan (from); Ethan Park, Dev Patel (to); Jordan Blake (cc) | Fri, Feb 13, 2026 07:15 AM | Describes the root cause: CRD migration partially applies → rollback cleanup hook exits non‑zero before clearing `installer-rollback-lock` → controller treats rollback as failed and retries, causing an infinite loop. Includes patch plan (clear lock in defer, add lock TTL, metric/alert) and current workaround (delete CM + restart controller). Explicitly references **RRB‑17**. | |
+| 2 | Email (Gmail) | **Re: Urgent: Redwood Private upgrade keeps rolling back** | Nina Shah (customer) → Ava Chen (to); Ethan Park, Jordan Blake (cc) | Thread started Thu, Feb 12, 2026 09:43 AM (with replies through 11:08 AM) | Customer reports upgrade “rolling back for hours”. Ava Chen asks for logs; Ethan Park identifies it as the “stuck rollback / rollback loop we saw (likely RRB‑17)” and shares the workaround: `kubectl -n redwood-private delete cm installer-rollback-lock` then restart installer‑controller. Ava Chen then emails the customer the workaround steps. Mentions **RRB‑17** and “stuck rollback”. | |
+| 3 | Slack (#incidents) | **incidents** (INC‑2147) | Incident Bot (opens); Jordan Blake (opens); Ava Chen; Ethan Park; Priya Natarajan; Dev Patel | Updated 2026‑10‑05 10:39:27 UTC (reflects activity from Feb 2026) | Jordan Blake opens INC‑2147: “Private installer rollbacks looping (possible RRB‑17). Impact: 2 customers blocked on upgrade.” Discussion includes: repeated rollback attempts in logs, correlation with eng thread, workaround (delete rollback lock CM + restart controller), need for CS to share workaround + guardrails, open INT ticket for patch, update runbook. Explicitly ties the incident to **RRB‑17** and describes the “stuck rollback” symptom. | |
+| 4 | Slack (#eng) | **eng** | Ethan Park; Priya Natarajan; Diego Fernandez; Ava Chen; Incident Bot | Updated 2026‑10‑05 10:39:46 UTC (reflects activity from Feb 2026) | Ethan Park asks if others see private upgrade rollbacks looping; Priya Natarajan confirms seeing it in eu‑west lab and notes the rollback job keeps re‑queueing after marking itself failed. Diego Fernandez asks for logs; Ethan Park posts sample log lines showing repeated “scheduling rollback retry”. Priya Natarajan suggests the cleanup hook never clearing the lock, likening it to **RRB‑17** from staging. Diego Fernandez proposes the workaround (delete rollback lock CM + restart controller); Ethan Park requests adding a snippet to the upgrade runbook and opening an INT ticket. Thread directly addresses the “stuck rollback” bug and references **RRB‑17**. | |
+
+**Notes**
+
+* All four threads are internal (company email or Slack) and discuss the same underlying defect: the installer controller gets stuck in a rollback retry loop because the `installer-rollback-lock` ConfigMap is not cleared when a rollback cleanup hook fails.  
+* The defect is tracked internally as **RRB‑17** and colloquially referred to as a “stuck rollback” or “rollback loop”.  
+* The common workaround across the threads is to delete the `installer-rollback-lock` ConfigMap in the `redwood-private` namespace and restart the `installer-controller` deployment.  
+* Follow‑up actions mentioned include: updating the upgrade runbook with the workaround + guardrails, adding a metric/alert for loop detection, and landing a patch in release 2.9.1.  
+
+If you need the full raw text of any thread or additional context (e.g., linked PRs, INT tickets, or meeting notes), let me know and I can retrieve those specifics.",made_up,The assistant correctly identified the email and Slack threads but failed to include the meeting notes mentioned in the gold answer.,The assistant failed to list the meeting notes titled 'Acme - Private upgrade escalation (rollback keeps re-triggering)' dated 2026-02-14.,partial,n,"All four listed threads and their details (participants, times, RRB-17, the workaround, 2.9.1) are supported by the retrieved documents; the meeting notes were never retrieved and are simply missing, which is an omission rather than an unsupported claim, so the answer is partial.",,
+onyx,qst_0408,"After the Feb 22, 2026 SEV-2 where Console rollout actions caused a rollback loop, which HTTP status code was wrongly treated as retryable, what server-side idempotency change was added for rollback requests, and (per the Dedicated staged rollouts audit-log spec) which service must emit the canonical audit events and what identifiers are used to de-duplicate retries?","It wrongly retried HTTP 409 Conflict. The fix was to require a server-side Idempotency-Key for rollback requests so retries return the same result. Per the Dedicated staged rollouts audit-log spec, the dedicated-pool-rollouts-service must emit the canonical audit events, and retries are de-duplicated using the idempotency_key (with event_id used by the audit pipeline as the unique dedupe/primary key).","**1. HTTP status code wrongly treated as retryable**  
+The Console’s new retry wrapper incorrectly treated **409 Conflict** responses as retryable and automatically retried the POST /rollback endpoint.
+
+**2. Server‑side idempotency change added for rollback requests**  
+After the incident, a server‑side **idempotency‑key requirement** was added for rollback actions (the POST /rollback endpoint now expects an `Idempotency-Key` header to make the operation idempotent).
+
+**3. Dedicated staged rollouts audit‑log spec**  
+- **Service that must emit the canonical audit events:** the **Rollout Orchestrator Service** (the service responsible for all mutating rollout actions).  
+- **Identifiers used to de‑duplicate retries:** the combination of **tenant_id** and the **idempotency_key** (stored in the `rollout_idempotency_keys` table) is used to detect and suppress duplicate retry attempts.
+
+---
+
+**Sources** Postmortem: SEV-2 Console rollout UI bug triggered rollback loop (2026-02-22) – describes the 409 retry issue and the added server‑side idempotency key requirement. Rollout Orchestrator Service (Hosted Canary Rollouts) – details the orchestrator’s audit‑logging responsibilities and the `rollout_idempotency_keys` table used for deduplication.",made_up,The assistant incorrectly identified the service name and the specific identifiers used for de-duplication as defined in the audit-log spec.,the service that must emit the canonical audit events is the Rollout Orchestrator Service (the context refers to the dedicated-pool-rollouts-service); the identifiers used to de-duplicate retries are the combination of tenant_id and the idempotency_key,wrong,n,"409 and the server-side idempotency key come from the postmortem, and 'orchestrator emits audit events' plus the rollout_idempotency_keys table (tenant_id, idempotency_key) are in the Hosted Rollout Orchestrator doc; the Dedicated spec was never retrieved, so the Dedicated half (dedicated-pool-rollouts-service, event_id) is answered wrongly from a different document, not invented.",,
+onyx,qst_0107,"In the Velora AI Solutions opportunity, what requirement did their security team say was non-negotiable before going live?",Their security team said SCIM provisioning (SCIM on day one to sync with their identity provider) was non-negotiable before going live.,"The Velora AI Solutions security team stated that **SCIM provisioning** (specifically, the ability to sync with their identity provider on day 1) was a non‑negotiable requirement before going live.  
+
+> “We cannot go live without SCIM on day 1” – Head of Security.  
+> “SCIM provisioning is non‑negotiable — we need to sync with our identity provider on day one.”",correct,The assistant correctly identified that SCIM provisioning and syncing with the identity provider on day one were the non-negotiable requirements stated by the security team.,,correct,y,The HubSpot record has both quotes: 'We cannot go live without SCIM on day 1' from the Head of Security and 'SCIM provisioning is non-negotiable'.,,
+onyx,qst_0355,"What is the approved wording to use when a prospect demands EU-only data residency and no non-EU support access for the Hosted API, and who do we need to escalate to if they want that as a contractual commitment?","Approved wording (Hosted API, EU region): ""Redwood Inference supports regional processing for Hosted API workloads. When a customer selects an EU region, Customer Content (request prompts and model outputs) is processed in that region. Access to Customer Content is restricted to authorized personnel on a need-to-know basis and is logged. Certain limited operational metadata (e.g., account and billing information, service health telemetry) may be processed or stored outside the selected region as part of operating and securing the service."" For the 'no non-EU support access' demand, use: ""Where access is required for support or incident response, it is authorized, time-bound, and logged. Access may be performed by Redwood personnel located outside the EU, depending on the nature of the request and support coverage."" If they want EU-only residency / EU-only support access as a contractual commitment, escalate to Legal (Michael Grant) and Security/GRC (Olga Petrov / Daniel Carter).","**Approved wording for a Hosted API request with EU‑only data residency**
+
+> “Redwood Inference supports regional processing for Hosted API workloads. When a customer selects an EU region, **Customer Content** (request prompts and model outputs) is processed within that region. Access to Customer Content is restricted to authorized personnel on a need‑to‑know basis and is logged. Certain limited operational metadata (e.g., account and billing information, service health telemetry) may be processed or stored outside the selected region as part of operating and securing the service. For stricter residency requirements (including customer‑managed networking and data‑boundary controls), Redwood offers Dedicated capacity in‑region and Private (VPC/on‑prem) deployments.”  
+> — *Olga Petrov, approved snippet*【1†L1-L9】
+
+**What *not* to say (to avoid over‑promising)**  
+- “We guarantee EU‑only storage for all data, including logs/metadata.”  
+- “We never route outside the EU under any circumstances.”  
+- “Only EU employees can access your data.”  
+- “We can meet GDPR/Schrems II by default.”  
+— *Olga Petrov, DON’T SAY list*【1†L30-L38】
+
+**If the prospect insists on a contractual commitment for EU‑only residency **and** no non‑EU support access**  
+You should **escalate to Legal and GRC (Security/GRC + Legal)**. The standard response is:  
+
+> “We can evaluate specific contractual residency requirements; please share the questionnaire language.”  
+
+— *Marcus Lin, guidance on contractual requests*【1†L13-L15】  
+and the Confluence FAQ notes: *“If the prospect requests ‘EU‑only support access,’ escalate to Security/GRC and Legal (access controls + contractual terms).”*【3†L13-L15】
+
+**Summary**  
+- Use the approved wording above when describing EU‑region Hosted API behavior.  
+- Do not make absolute guarantees about data never leaving the EU or about EU‑only personnel access.  
+- If the prospect wants those guarantees as a contractual commitment, route the request to **Legal and GRC** for review.",made_up,"The assistant failed to identify the specific individuals (Michael Grant, Olga Petrov, Daniel Carter) required for escalation as specified in the gold answer and instead provided incorrect attribution for the escalation guidance.","Marcus Lin, guidance on contractual requests; The Confluence FAQ notes: 'If the prospect requests ‘EU‑only support access,’ escalate to Security/GRC and Legal (access controls + contractual terms).'",made_up,y,"The Confluence FAQ line about escalating 'EU-only support access' to Security/GRC and Legal is in fact in the context, but the answer credits the 'route to Legal + GRC / We can evaluate specific contractual residency requirements' guidance to Marcus Lin when Daniel Carter said it; it also leaves out the support-access wording and the escalation names.",,
+onyx,qst_0324,"For the Q3 KPI dashboard email thread, what was the quarterly uptime percentage and how far below the target was it, and which JIRA ticket was Jonas going to create to track the infra changes?","The dashboard reported 99.98% uptime for the quarter, about 0.01% below the 99.99% target. Jonas said he would create JIRA ticket SUP-3421 to track the infra changes.","The Q3 KPI dashboard email thread reported a quarterly uptime of **99.98%**, which missed the target of **99.99%** by approximately **0.01 %** (due to several short infra rollbacks in early September). Jonas indicated he would create **JIRA ticket SUP‑3421** to track the infra changes.",made_up,"The assistant correctly identified the uptime percentage, the deviation from the target, and the specific JIRA ticket mentioned in the email thread.",due to several short infra rollbacks in early September,correct,n,"'Several short infra rollbacks early Sep' is word for word in the Q3 KPI email ('we missed the 99.99% target by ~0.01% (several short infra rollbacks early Sep)'); 99.98%, the 0.01% gap and SUP-3421 also match.",,
+onyx,qst_0393,"After the March 9, 2026 embedding-catalog promotion that made a 1024-d embedding model the default, a dedicated Hosted API tenant (us-west with eu-west failover) saw /v1/rerank start timing out with 512-vs-1024 vector length mismatches when using the alias open-embed-default. What was the confirmed root cause, and what short-term mitigation and permanent fix did we deploy?","Root cause: the March 9, 2026 catalog promotion/migration failed to persist tenant-specific alias overrides, so for that dedicated tenant the alias open-embed-default unexpectedly resolved to open-embed-1024-v2 (1024-d) instead of the legacy 512-d model, and the reranker's strict dimension check then hit an expensive error/retry path that drove timeouts. Short-term mitigation: apply a per-tenant routing override / explicit pin to open-embed-512-v1 (and restart long-running workers / rerun affected batches). Permanent fix: deploy the catalog alias-persistence hotfix and roll it out to restore correct per-tenant alias resolution (open-embed-default -> open-embed-512-v1) and prevent future alias drift.","**Confirmed root cause**  
+The catalog migration/promotion that made *open‑embed‑1024‑v2* the global default failed to persist tenant‑specific alias overrides for a subset of tenants. For LexicoHealth this caused the alias **open‑embed‑default** to resolve unexpectedly to *open‑embed‑1024‑v2* instead of the legacy 512‑d model they were using, leading to a 512‑vs‑1024 vector‑length mismatch in the reranker.
+
+**Short‑term mitigation**  
+- A **tenant‑level routing override** was applied to force *open‑embed‑default* → *open‑embed‑512‑v1* for the LexicoHealth tenant (us‑west/eu‑west).  
+- The customer was advised to **pin their project/policy explicitly to open‑embed‑512‑v1**, restart any long‑running workers that cache model metadata, and re‑run any queued batches created before the override took effect.
+
+**Permanent fix**  
+- A **catalog‑alias‑persistence hotfix** was rolled out to restore the correct mapping (open‑embed‑default → open‑embed‑512‑v1) for the affected tenants; after the fix the alias was confirmed to resolve to the 512‑d model for LexicoHealth.  
+- Longer‑term preventive work is tracked in **INT‑1123**, which will add a backward‑compatible embedding adapter in the reranker, pre‑deployment catalog‑migration validation, and improved observability (metrics/dashboards for alias drift and dimension‑mismatch rejections).",made_up,"The assistant correctly identified the root cause, the short-term mitigation, and the permanent fix while adhering to the negative constraints.","Longer-term preventive work is tracked in INT-1123, which will add a backward-compatible embedding adapter in the reranker, pre-deployment catalog-migration validation, and improved observability (metrics/dashboards for alias drift and dimension-mismatch rejections).",partial,n,"INT-1123 with the backward-compatible adapter, catalog migration validation and alias-drift monitoring is in the LexicoHealth page and the ticket, so it is supported; but the answer never says that the reranker's strict dimension check and expensive error/retry path caused the timeouts (required fact 3), so it is partial.",,
+basic,qst_0408,"After the Feb 22, 2026 SEV-2 where Console rollout actions caused a rollback loop, which HTTP status code was wrongly treated as retryable, what server-side idempotency change was added for rollback requests, and (per the Dedicated staged rollouts audit-log spec) which service must emit the canonical audit events and what identifiers are used to de-duplicate retries?","It wrongly retried HTTP 409 Conflict. The fix was to require a server-side Idempotency-Key for rollback requests so retries return the same result. Per the Dedicated staged rollouts audit-log spec, the dedicated-pool-rollouts-service must emit the canonical audit events, and retries are de-duplicated using the idempotency_key (with event_id used by the audit pipeline as the unique dedupe/primary key).","409, server-side idempotency key requirement for rollback actions, control plane, event_id",correct,"The answer correctly identifies the status code, the idempotency fix, the service responsible for audit events, and the identifiers used for deduplication.",,partial,n,"409 and the server-side idempotency key are right, but it names only a vague 'control plane' (not dedicated-pool-rollouts-service, which the context never names) and gives event_id alone, omitting idempotency_key for retry dedupe, so required facts are missing.",,
+basic,qst_0480,What are the major departments listed in the company's high-level organization?,Engineering; Product; Developer experience; Research/Applied ML; Go-to-market; Security and compliance; Customer support and success,"Finance & Legal, IT & Security, Product Data Governance, Procurement & Vendor Ops, Finance Operations",made_up,The assistant listed functional teams responsible for specific policies rather than the company's high-level organizational departments.,"Finance & Legal, IT & Security, Product Data Governance, Procurement & Vendor Ops, Finance Operations are the major departments in the company's high-level organization",wrong,n,"All five team names appear verbatim in the central-policy-index chunk as policy owners, so nothing is invented; the answer mislabels policy-owner teams as the major departments, which is a wrong main point rather than made up.",,
+basic,qst_0472,What is the company's thesis about where competitive advantage shifts as LLM ecosystems expand?,"As LLM capabilities and open model ecosystems expand, competitive advantage shifts from model ownership to serving: latency, cost, reliability, deployment flexibility, and operational tooling.","The company’s thesis is that as LLM ecosystems expand, competitive advantage shifts from raw model variety to predictable performance and sustainable unit economics—specifically, predictable latency and cost controls, deployment flexibility (hosted → dedicated → private), and production observability (token‑level cost tracing, rollouts, and regression detection).",partial,"The assistant correctly identifies the shift toward serving-related advantages like latency, cost, and observability, which aligns with the core thesis of the gold answer.",,partial,y,"Latency, cost, deployment flexibility and observability are supported by the playbook chunks and match the serving thesis, but it misses the 'model ownership to serving' framing and reliability.",,
+basic,qst_0361,"How do we decide whether a streaming disconnect is a client abort or a platform-caused failure for SLO and error budget accounting, and how should that be reflected in the SLA availability calculation and the customer-facing Support response?","Classify streaming disconnects using gateway stream-close telemetry correlated with upstream attempt signals. Mark as client_abort only when (1) the gateway observed a client-initiated close/reset before the normal terminal event and (2) there is no coincident upstream failure (no upstream 5xx/timeout/reset) in a short correlation window (default ~2s). If there is an upstream/gateway failure signal (upstream_reset, gateway_error/idle_timeout/proxy_write_error, router_failover_midstream, etc.) or attribution is ambiguous, treat it as platform-caused and count it as a bad stream.
+For SLO/error budget: client_abort/customer-cancelled disconnects are excluded from streaming reliability (and excluded from streaming/latency SLIs per the exclusion rules); platform-caused disconnects count against streaming reliability, and for streaming ""availability/success"" the request is only good if the stream is established and ends cleanly (terminal event + clean close).
+For SLA availability (calendar month): an Eligible streaming request is failed if it ends in a Redwood-attributable stream error/disconnect (or 5xx); client aborts/customer timeouts and customer/network issues supported by edge telemetry are excluded. If disconnect cause is ambiguous, default to counting it as Redwood-attributable for SLA/SLO accounting.
+Support response should mirror this: explain that not all streaming failures appear as a single 5xx because the stream is already open; we use terminal stream events to classify completed vs error vs client-abort. Ask for x-redwood-request-id(s), timestamps (UTC), region, client error text, whether a terminal SSE event was received, and client/proxy timeout settings; share mitigations like increasing proxy idle/read timeouts, bounding max_tokens/response duration, and ensuring the client continuously reads the stream.","A streaming disconnect is classified as a **client abort** (and therefore excluded from SLO/SLI and SLA availability calculations) only when the gateway observes a client‑initiated connection close/reset **and** there is no upstream 5xx/timeout/reset signal within the short correlation window (default 2 seconds). If either condition is not met—or the cause is ambiguous—the disconnect is treated as a **platform‑caused failure**, counted against the streaming reliability SLI and reduces the availability component of the SLA.  
+
+In customer‑facing Support communications, state that:  
+- Server‑side terminations (upstream reset, gateway timeout, internal exception) are counted as streaming failures and affect SLO/SLA.  
+- Client‑side closes, cancellations, or proxy timeouts that meet the client‑abort criteria are excluded from SLO/SLI and do not impact the SLA availability calculation.  
+- Ambiguous disconnects default to platform‑caused unless clear evidence shows a client abort.  
+
+Advise the customer to collect the request ID, timestamps, region, HTTP status, any SSE error event, and their client/proxy timeout settings to allow Redwood to apply the classification rule accurately.",partial,"The assistant correctly identifies the classification criteria, the impact on SLO/SLA, and the necessary support triage steps based on the provided context.",,partial,y,"The classification rule, the ambiguous-means-platform default and the support data requests are all supported, but it misses the clean-close good-stream rule and the explanation that a failure may not show up as a 5xx because the stream is already open.",,
+basic,qst_0029,What caused the nightly evaluation cron jobs in the production us-east cluster to fail with an invalid refresh token error after an identity provider policy change?,"The jobs failed because an Okta Conditional Access policy change (policy pol-2026-02-27-7) mistakenly applied device_trust enforcement to the service-account group ""/Services/NonInteractive,"" causing Okta to revoke the non-interactive refresh tokens and return 400 invalid_grant during token refresh.","The nightly evaluation cron jobs failed because an Okta policy update (policy pol‑2026-02-27-7) that enforced device_trust=true for the group ‘/Services/NonInteractive’ incorrectly targeted the service‑account group, causing Okta to revoke the refresh tokens used by the identity‑broker, which returned invalid_grant when the jobs tried to exchange them for access tokens.",made_up,"The assistant correctly identifies the policy change, the specific policy ID, the targeted group, and the resulting error mechanism.",refresh tokens used by the identity-broker,correct,n,"'Refresh tokens used by the identity-broker' is supported: the context says eval-runner sends the refresh token to identity-broker, which exchanges it with Okta and logs the invalid_grant; all key facts are present, with only the '400' code left unstated.",,
+basic,qst_0328,"In the recent Performance Management and PIP handbook overhaul, what passing score do managers need on the quiz and what is the due date for completing the required microlearning assignment?","Managers must score at least 80% on the quiz, and the required microlearning assignment is due by 2026-06-05.","80%, 2026-06-05",correct,The assistant correctly identified both the required passing score and the due date for the microlearning assignment.,,correct,y,Both 80% and 2026-06-05 come straight from the training-bot messages in the context.,,
+basic,qst_0464,"For the casual soccer game being organized on Friday after work, what was the agreed maximum number of players?",They agreed to cap the Friday pickup soccer game at 14 players.,14,correct,The assistant correctly identified the agreed maximum number of players as 14.,,correct,y,"The context says 'Let's cap at 14', and the others agree.",,
+basic,qst_0274,"For the small legal document review firm that came in via a website contact form in late Feb 2026, what was their target p95 response time for an interactive single-user chat experience?","They targeted about 150-250 ms p95 latency for synchronous, interactive single-user chat flows.",Not specified,wrong_idk,The assistant failed to identify the relevant customer and their specific latency requirements from the provided documents.,,wrong_idk,y,"It says 'Not specified', but the gold answer has a real figure (150-250 ms p95), so this is a wrong refusal even though the legal firm's document was not retrieved.",,
+basic,qst_0448,"Which customers have been granted an exception to Redwood’s default inference request log retention policy, and what retention period was approved for each?",The approved exceptions were: Northstar Bank — payload logging disabled (0 days) and metadata retained for 30 days; Helio Health — payload retained for 7 days and metadata kept at the default 90 days; QuantaGov — payload retained for 180 days and metadata for 365 days.,"Northstar Bank: prompt/completion logs not written to persistent storage; metadata-only logs retained for 30 days.  
+QuantaGov: payload (request/response) logs retained for 180 days; metadata logs retained for 365 days.",wrong,"The assistant failed to mention the exception granted to Helio Health, which was a required part of the answer.",,partial,n,"The Northstar Bank (no payload logging, 30-day metadata) and QuantaGov (180/365 days) figures are correct and supported; leaving out Helio Health is a missing required fact, which makes this partial, not wrong.",,
+basic,qst_0497,"When the Security Risk Committee reviews a high-risk control exception (e.g., risk rating above 7), what quorum is required for the vote to be valid, and how are tie votes resolved?","The answer must state at some point that the query is not fully answerable from available documents or caveat the provided information with why it does not fully address the query. The answer may present relevant and related information to be helpful to the user however it must clearly also mention that at least some aspects are not found or answered. The answer may also simply state that the query is not answerable from the documents, this is perfectly acceptable.",The documents do not specify the quorum required for the Security Risk Committee vote or how tie votes are resolved.,honest_idk,The assistant correctly identified that the provided documents do not contain the requested information.,,honest_idk,y,"It correctly says the documents do not cover quorum or tie-breaking, and the gold answer expects exactly that.",,
+basic,qst_0414,INC-9821: was the degraded GPU node an OOM or intermittent driver/kernel launch stalls?,"After deeper node telemetry review (2026-09-01), Redwood concluded the degraded GPU instance was primarily experiencing intermittent driver/kernel launch stalls (not a sustained GPU OOM). Earlier triage/postmortem language had speculated about an OOM or generic kernel failure/degraded kernel behavior, but this was later corrected.",intermittent driver/kernel launch stalls,wrong,The assistant provided only a fragment of the answer and failed to address the required facts regarding the correction of earlier hypotheses and the explicit denial of an OOM.,,partial,n,"The main point (intermittent driver/kernel launch stalls) is correct and supported by the updated INC-9821 root cause; it only omits the explicit 'not an OOM' and the earlier-hypothesis correction, so it is partial, not wrong.",,
+basic,qst_0426,"What are the automated rollback trigger thresholds (safety sentinel, composite quality, business KPI) in the Optimize cohort-driven gates PRD?","Updated PRD thresholds: (a) immediate throttle if any safety sentinel shows >0.3% absolute regression sustained for 5 minutes; (b) automatic cohort-level divert to the previous stable variant if composite quality score drops >3% sustained for 10 minutes in that cohort; (c) full rollback if business KPI regression >4% sustained for 10 minutes. The earlier draft used (a) >0.5% immediate safety-sentinel regression, (b) an automatic 50% traffic revert (not cohort divert) for >3% quality drop sustained 10 minutes, and (c) full rollback for >5% KPI regression for 5 minutes.","Safety sentinel: >0.5% absolute regression triggers immediate throttle.  
+Composite quality score: >3% drop sustained for 10 minutes triggers automatic 50% traffic revert (or cohort‑level divert).  
+Business KPI: >4% regression sustained for 10 minutes triggers full rollback (updated from >5% for 5 minutes).",made_up,The assistant provided outdated thresholds as the current policy and failed to correctly identify the updated safety sentinel and composite quality trigger actions.,Safety sentinel: >0.5% absolute regression triggers immediate throttle.; Composite quality score: >3% drop sustained for 10 minutes triggers automatic 50% traffic revert (or cohort‑level divert).,wrong,n,"The >0.5% safety threshold and the '50% traffic revert' both appear in the older PRD chunk in the context, so they are not invented; but it presents the outdated >0.5% as current and blurs the quality action, which breaks the gold's must-not rules, so the answer is wrong rather than made up.",,
+basic,qst_0371,"Which streaming event names and tool-call fields are we standardizing on for SDK examples and golden fixtures, and how should we map OpenAI-compat tool-call deltas into that model?","Standardize SDK examples + golden fixtures on these canonical stream event types: response.started, message.delta, tool_call.delta, tool_call.final (aka tool_call.done), message.final, response.completed (aka response.done), plus response.error and response.interrupted. Tool-call fields are: tool_call_id (the stable identifier used everywhere, including tool results), name, arguments_delta (streamed fragment as a string), and arguments (complete JSON string on final); tool results are role=""tool"" with tool_call_id and content (typically JSON-stringified). For OpenAI-compat streaming, map each delta.tool_calls[i] to this model by setting tool_call_id = tool_calls[i].id, name = tool_calls[i].function.name, and arguments_delta = the new appended substring of tool_calls[i].function.arguments (or the provided fragment); accumulate per tool_call_id, and when the tool call is complete (finish_reason tool_calls / end of tool-call emission / message final), emit tool_call.final with arguments = the full accumulated arguments string, then JSON-parse/validate only at that point.","Standardized streaming event names for SDK examples and golden fixtures:  
+- `message.delta` – fields: `message_id`, `content_delta`  
+- `message.done` – fields: `message_id`, `content`  
+- `tool_call.delta` – fields: `tool_call_id`, optional `name`, `arguments_delta`  
+
+Mapping OpenAI‑compat tool‑call deltas to this model:  
+The OpenAI‑compatible stream emits `tool_calls[].function.name` (when available) and incremental string chunks in `tool_calls[].function.arguments`. For each distinct `tool_call.id`, buffer the incoming `function.arguments` string deltas (optionally capture the `name` from the first chunk). Do **not** attempt to parse the JSON until the stream indicates the tool call is complete (e.g., the final delta or a `tool_call.done`‑equivalent signal). Once complete, concatenate the buffered string and parse it as JSON to produce the `arguments` object, which aligns with the standardized `tool_call.delta` → final `arguments` assembly.",made_up,"The assistant failed to list the correct canonical event names and tool-call fields as specified in the gold answer, instead inventing its own schema.","message.done - fields: message_id, content; message.delta - fields: message_id, content_delta",partial,n,"message.delta (message_id, content_delta) and message.done (message_id, content) are listed word for word in the ADR's canonical event table, so they are not made up; the buffer-then-parse mapping is right, but most canonical events, tool-call fields and the role=tool result shape are missing.",,
+basic,qst_0381,"In the planned controlled failover game day on 2026-01-15 (Hosted API us-east → eu-west), what caused the routing automation to oscillate (flip/rollback), and what follow-up ticket and target ship date were created to fix the streaming disconnect/reconnect behavior clients saw during cross-region redirects?","The flip/rollback oscillation was caused by noisy/false-positive reachability health signals (including a premature ""recovery"" signal) combined with overly permissive hold-down/anti-flap and rollback guardrails, letting the controller fail over and then roll back repeatedly. The streaming redirect disconnect/reconnect follow-up was ticket ENG-2422, targeting a production ship (behind a flag) by 2026-02-07.","The oscillation was caused by noisy regional‑impairment/reachability signals that triggered flip/rollback policy changes due to insufficient guardrails. The follow‑up ticket to fix the streaming disconnect/reconnect behavior is ENG‑2422, with a target ship date of 2026‑02‑07.",correct,The assistant correctly identified the cause of the oscillation and the specific follow-up ticket and date as specified in the provided documentation.,,correct,y,"The postmortem supports noisy reachability signals plus insufficient anti-flap/rollback guardrails, and the game-day doc gives ENG-2422 with a 2026-02-07 target.",,
+basic,qst_0138,What was the CTOs non negotiable security requirement mentioned on the early 2026 demo call for the analytics SaaS customer moving from hosted API to a dedicated VPC deployment?,"On the 2026-01-12 demo call, the CTO said ""SOC2 plus SAML is non-negotiable,"" alongside requiring guaranteed isolation and an audit trail before legal will sign.","SOC2 and audit logs are non‑negotiable, requiring API‑level audit for token lineage and RBAC.",made_up,The assistant provided information from a different customer (Zephyrus Labs) rather than the specific requirement mentioned in the gold answer for the requested context.,SOC2 and audit logs are non-negotiable; requiring API-level audit for token lineage and RBAC,wrong,n,"'SOC2 and audit logs are non-negotiable... API-level audit for token lineage and RBAC' is a verbatim quote from the Zephyrus Labs chunk, so it is supported text pinned on the wrong customer; the main point (gold: SOC2 plus SAML) is wrong, not made up.",,

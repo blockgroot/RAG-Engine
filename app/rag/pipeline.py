@@ -87,6 +87,7 @@ from .cite import link_citations, strip_citations
 from .context_assemble import assemble_context_texts, describe_hit
 from .decompose import looks_compound, parse_sub_questions
 from .scope_intent import OVERVIEW, classify_scope_intent
+from . import progress
 from .query_cache import QueryAnswerCache
 from .request_budget import RequestBudget
 from .summary_fold import schedule_summary_fold, wait_for_conversation_fold
@@ -123,6 +124,11 @@ WEB_ANSWER_LABEL = "🌐 From a web search (NOT your organization's policy docum
 
 RECOVERY_REASON_GATE_MISS = _RECOVERY_REASON_GATE_MISS
 RECOVERY_REASON_INSUFFICIENT_EVIDENCE = _RECOVERY_REASON_INSUFFICIENT_EVIDENCE
+
+#: How many of the best hits get their neighbouring chunks (RAG_NEIGHBOR_CHUNKS).
+#: The top two cover the answer's main document and a close second; the rest
+#: stay single chunks, which is what keeps the prompt near its old size.
+_NEIGHBOR_TOP_HITS = 2
 
 _MAX_RECOVERY_QUERY_LEN = 200
 
@@ -234,6 +240,20 @@ def _graph_facts_block(org_id: str | None, routed: str | None) -> tuple[str | No
     except Exception:  # noqa: BLE001 - facts may only ever add
         logger.warning("graph facts skipped", exc_info=True)
         return None, False
+
+
+#: Chat's "Deep analysis" mode for this request. A ContextVar for the reason
+#: `use_model` is one (app/llm/routed.py): set at the API edge, read here.
+_DEEP_READ: contextvars.ContextVar[bool] = contextvars.ContextVar("rag_deep_read", default=False)
+
+
+def use_deep_read(on: bool) -> contextvars.Token:
+    """Read the top documents deeply for the rest of this request."""
+    return _DEEP_READ.set(on)
+
+
+def reset_deep_read(token: contextvars.Token) -> None:
+    _DEEP_READ.reset(token)
 
 
 def _cross_plan_active() -> bool:
@@ -662,6 +682,8 @@ class RagPipeline:
             and not _cross_plan_active()
             and current_live_request() is None
             and not current_asker_facts()
+            # The cache is keyed on the scope and the model, not the depth.
+            and not _DEEP_READ.get()
         ):
             cached = self._query_cache.get(
                 org_id,
@@ -693,7 +715,8 @@ class RagPipeline:
             viewer=viewer,
         )
 
-        if conversation_id is None and not result.cache_hit and _is_cacheable(result):
+        if (conversation_id is None and not result.cache_hit and not _DEEP_READ.get()
+                and _is_cacheable(result)):
             self._query_cache.put(
                 org_id,
                 resolved,
@@ -794,6 +817,7 @@ class RagPipeline:
 
         sub_questions: list[str] = [retrieval_question]
         question_decomposed = False
+        recovery_queries: list[str] = []
 
         reused = (
             None
@@ -815,10 +839,23 @@ class RagPipeline:
                 ]
             else:
                 sub_questions = [retrieval_question]
+            search_queries = sub_questions
+            if (
+                not question_decomposed
+                and self._recovery_settings.proactive
+                and budget.can_spend(min_stage)
+            ):
+                # Alternative wordings searched alongside the question, then the
+                # whole pool reranked against the ORIGINAL question, so a
+                # rephrase can add candidates but never decide the ranking.
+                recovery_queries = self._expand_recovery_queries(
+                    question, [], org_id=org_id, conversation_id=conversation_id
+                )
+                search_queries = [retrieval_question, *recovery_queries]
             hits, top_score, gate_doc = self._retrieve_for_subquestions(
                 org_id,
                 question,
-                sub_questions,
+                search_queries,
                 workspace_id=workspace_id,
                 date_range=date_range,
                 tags=tags,
@@ -829,7 +866,6 @@ class RagPipeline:
         top_score_before = top_score
         recovery_used = False
         recovery_reason: str | None = None
-        recovery_queries: list[str] = []
         audit_used = False
         audit_downgraded = False
         audit_reason: str | None = None
@@ -942,7 +978,11 @@ class RagPipeline:
 
         result = self._generate(
             question,
-            hits,
+            # Reused hits are last turn's sources, which already carry their
+            # neighbours; expanding again would repeat them.
+            hits if retrieval_reused else self._with_neighbors(
+                hits, org_id, workspace_id=workspace_id, viewer=viewer
+            ),
             top_score,
             retrieval_reused=retrieval_reused,
             org_id=org_id,
@@ -1016,7 +1056,9 @@ class RagPipeline:
                 )
             result = self._generate(
                 question,
-                hits,
+                self._with_neighbors(
+                    hits, org_id, workspace_id=workspace_id, viewer=viewer
+                ),
                 top_score,
                 retrieval_reused=False,
                 org_id=org_id,
@@ -1052,6 +1094,88 @@ class RagPipeline:
             )
 
         return _finalize(result)
+
+    def _read_settings(self) -> RagSettings:
+        """How much to read: the deep read in Deep analysis mode, else as configured."""
+        return self._settings.deep() if _DEEP_READ.get() else self._settings
+
+    def _with_neighbors(
+        self,
+        hits: list[RetrievedChunk],
+        org_id: str,
+        *,
+        workspace_id: str | None,
+        viewer: Viewer | None,
+    ) -> list[RetrievedChunk]:
+        """The best hits with the chunks either side joined into their block.
+
+        Benchmark 1: Handbook usually had the right document, but only one
+        256-token piece of it, and the answer missed the detail in the next
+        paragraph. Joining neighbours keeps one block per hit, so a citation
+        [n] still points at a document that was really retrieved. The context
+        budget still applies after this and keeps a prefix, so depth on the
+        best hits pushes the weakest hits out rather than growing the prompt.
+
+        Runs after the gate and never changes a score. A neighbour passes the
+        same org, workspace and viewer filter as retrieval, and the injection
+        screen. A whole read already holds every chunk, so it is left alone.
+        Any failure returns ``hits`` unchanged.
+        """
+        rag = self._read_settings()
+        n = rag.neighbor_chunks
+        if n <= 0 or not hits or len(hits) > rag.ranked_max_hits:
+            return hits
+        top_docs = rag.neighbor_top_docs
+        if top_docs > 0:
+            # The best hit of each of the top N documents: depth goes to
+            # different documents, never twice into the same one.
+            firsts: dict[str, RetrievedChunk] = {}
+            for h in hits:
+                if len(firsts) >= top_docs:
+                    break
+                firsts.setdefault(h.document_id, h)
+            top = list(firsts.values())
+        else:
+            top = hits[:_NEIGHBOR_TOP_HITS]
+
+        def window(h: RetrievedChunk) -> range:
+            if top_docs <= 0:
+                return range(max(0, h.chunk_index - n), h.chunk_index + n + 1)
+            # A deep read takes 2n+1 pieces, shifted to start at 0 near a
+            # document's start, so a short document is read from its beginning.
+            start = max(0, h.chunk_index - n)
+            return range(start, start + 2 * n + 1)
+
+        taken = {(h.document_id, h.chunk_index) for h in top}
+        wanted = [
+            (h.document_id, i) for h in top for i in window(h) if i != h.chunk_index
+        ]
+        try:
+            found = self._store.chunks_at(
+                org_id, wanted, workspace_id=workspace_id, viewer=viewer
+            )
+        except Exception:  # noqa: BLE001 - an extra read must never cost an answer
+            logger.warning("neighbour read skipped", exc_info=True)
+            return hits
+        by_key = {
+            (c.document_id, c.chunk_index): c
+            for c in _screen_hits(found, org_id, self._guard_settings)
+        }
+        joined: list[RetrievedChunk] = []
+        for h in top:
+            parts = []
+            for i in window(h):
+                key = (h.document_id, i)
+                if i == h.chunk_index:
+                    parts.append(h.content)
+                elif key in by_key and key not in taken:
+                    taken.add(key)
+                    parts.append(by_key[key].content)
+            joined.append(replace(h, content="\n".join(parts)))
+        top_keys = {(h.document_id, h.chunk_index) for h in top}
+        rest = [h for h in hits if (h.document_id, h.chunk_index) not in taken
+                and (h.document_id, h.chunk_index) not in top_keys]
+        return joined + rest
 
     def _gate_miss(
         self, hits: list[RetrievedChunk], top_score: float | None
@@ -1425,6 +1549,12 @@ class RagPipeline:
             return []
 
         settings = settings or AttachmentSettings.from_env()
+        if _DEEP_READ.get():
+            # Deep analysis reads uploads whole up to the deep budget too, rather
+            # than letting the model pick sections of a mid-sized file.
+            settings = replace(settings, inline_char_budget=max(
+                settings.inline_char_budget, self._settings.deep_max_context_chars))
+        progress.report(f"Reading {', '.join(f.filename for f in files)}")
         if sum(len(f.text) for f in files) <= settings.inline_char_budget:
             return [
                 # The filename rides IN the context for the reason
@@ -1551,6 +1681,8 @@ class RagPipeline:
             for f in files
         ]
 
+        progress.report("Picking the relevant parts of the long file" if len(files) == 1
+                        else "Picking the relevant parts of the long files")
         prompt = build_attachment_paging_prompt(
             question=question,
             preview_block=build_preview_block(files, settings.preview_chars),
@@ -1629,8 +1761,9 @@ class RagPipeline:
         # reused verbatim, which is the point: an attachment must not get its
         # own weaker generation path.
         if contexts is None:
-            # Only `_whole_scope` can return MORE hits than `top_k`; every
-            # other retrieval path caps at it. So this is how generation knows
+            # Only `_whole_scope` can return MORE hits than a ranked read
+            # (`top_k`, or `wide_max_hits` for a wide one); every other
+            # retrieval path caps at that. So this is how generation knows
             # the caller chose to read a narrow corpus whole, without threading
             # a budget through sub-question fusion (where two legs would
             # disagree about which budget won).
@@ -1647,7 +1780,10 @@ class RagPipeline:
             # different denominator, since `describe_hit` adds a provenance
             # line per chunk) could only ever disagree with it. One budget,
             # enforced in one place.
-            whole_read = len(hits) > self._settings.top_k
+            # ponytail: a whole read of top_k..wide_max_hits chunks looks ranked and
+            # gets the wide budget, which already fits that many; thread an explicit
+            # flag from `_whole_scope` if the two limits ever diverge.
+            whole_read = len(hits) > self._settings.ranked_max_hits
             screened = _screen_hits(hits, org_id, self._guard_settings)
             if hits and not screened and not extra_contexts:
                 # Everything retrieved was flagged: refuse without a model call
@@ -1674,10 +1810,11 @@ class RagPipeline:
                 # we had. The date is also what lets a whole read answer
                 # "what happened recently?" at all.
                 [describe_hit(h) for h in prompt_hits],
-                0 if whole_read else self._settings.max_context_chars,
+                0 if whole_read else self._read_settings().context_chars_for(len(hits)),
             )
             # The budget keeps a PREFIX, so block i is prompt_hits[i].
             blocks: list = list(prompt_hits[: len(contexts)])
+            progress.found(blocks, deep_docs=self._settings.deep_top_docs if _DEEP_READ.get() else 0)
         else:
             blocks = [None] * len(contexts)
         # Files the asker attached go in FIRST, ahead of retrieved chunks.
@@ -1687,6 +1824,7 @@ class RagPipeline:
         # carry their own provenance line (`describe_hit` for a chunk,
         # "Attached file: X" for an upload), which is what lets one answer
         # draw on both and still say where each sentence came from.
+        progress.report("Writing the answer")
         if extra_contexts:
             contexts = list(extra_contexts) + contexts
             # A live read is the indexed document, so its block can be cited.
@@ -1723,6 +1861,9 @@ class RagPipeline:
             # which is a wrong contact for a file the asker uploaded --
             # exactly the failure PromptProfile.escalation_hint documents.
             profile=profile or self._prompt_profile,
+            focus_rule=self._settings.focus_rule,
+            partial_rule=self._settings.partial_rule,
+            conflict_rule=self._settings.conflict_rule,
         )
         answer_cap = self._settings.max_answer_tokens
         raw = self._generate_text(
@@ -1885,6 +2026,7 @@ class RagPipeline:
         (graceful degradation — never fails the request).
         """
         del reason
+        progress.report("Searching again with different wording")
         queries = self._expand_recovery_queries(
             question, prior_hits, org_id=org_id, conversation_id=conversation_id
         )
@@ -2388,6 +2530,7 @@ class RagPipeline:
             logger.info("security.web_query_dropped: mostly words the user never typed")
             return None
 
+        progress.report("Searching the web")
         try:
             results = self._web_search.search(
                 query,

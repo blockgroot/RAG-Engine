@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..config.settings import GraphSettings, RagSettings, RetrievalSettings
 from ..reranker.base import Reranker
@@ -169,9 +169,15 @@ class HybridRetriever:
         pool_candidates = candidates[:pool]
         # A connected answer ranks the WHOLE pool so another tool's best chunk
         # can be reserved a slot; a normal answer is byte-identical to before.
-        keep = len(pool_candidates) if graph_cross else top_k
+        rag = self._rag_settings
+        keep = len(pool_candidates) if graph_cross else rag.ranked_max_hits
         if self._reranker is not None and self._settings.rerank_enabled:
-            final = self._reranker.rerank(rerank_q, pool_candidates, keep)
+            final = _drop_weak(
+                self._rerank(rerank_q, pool_candidates, keep),
+                self._settings.rerank_min_ratio,
+            )
+            if not graph_cross:
+                final = _spread(final, top_k, rag.wide_max_hits, rag.wide_doc_ratio, rag.wide_per_doc)
         else:
             final = pool_candidates[:keep]
         if graph_cross:
@@ -181,6 +187,25 @@ class HybridRetriever:
             hits=final, gate_score=gate_score, graph_hits=graph_hits,
             gate_document_id=gate_document_id,
         )
+
+    def _rerank(self, query: str, candidates: list[RetrievedChunk], keep: int) -> list[RetrievedChunk]:
+        """The reranker's order; with ``rerank_with_title`` it reads "title\ntext".
+
+        Only what the reranker sees changes: the returned hits are the original
+        chunks (content untouched for the prompt and citations) carrying the
+        new ``rerank_score``.
+        """
+        if not self._settings.rerank_with_title:
+            return self._reranker.rerank(query, candidates, keep)
+        shown = [
+            replace(c, content=f"{c.document_title}\n{c.content}") if c.document_title else c
+            for c in candidates
+        ]
+        by_key = {(c.document_id, c.chunk_index): c for c in candidates}
+        return [
+            replace(by_key[(r.document_id, r.chunk_index)], rerank_score=r.rerank_score)
+            for r in self._reranker.rerank(query, shown, keep)
+        ]
 
     def _graph_documents(
         self, org_id: str, workspace_id: str | None, query_text: str, viewer: Viewer | None
@@ -401,6 +426,69 @@ class HybridRetriever:
 
         ordered = sorted(rrf_scores, key=lambda key: rrf_scores[key], reverse=True)
         return [chunk_by_key[key] for key in ordered]
+
+
+def _drop_weak(hits: list[RetrievedChunk], ratio: float) -> list[RetrievedChunk]:
+    """Keep hits whose reranker score is at least ``ratio`` x the best one's.
+
+    The best hit always stays, so this can thin the prompt but never empty it,
+    and the gate (computed before reranking) is untouched. Off at 0, and a no-op
+    when the reranker gave no scores or the best score is not positive (a
+    ratio of a non-positive number means nothing).
+    """
+    if ratio <= 0 or not hits:
+        return hits
+    best = hits[0].rerank_score
+    if best is None or best <= 0:
+        return hits
+    return [hits[0]] + [
+        h for h in hits[1:] if h.rerank_score is not None and h.rerank_score >= ratio * best
+    ]
+
+
+def _spread(
+    hits: list[RetrievedChunk], top_k: int, max_hits: int, ratio: float, per_doc: int
+) -> list[RetrievedChunk]:
+    """``top_k`` hits, plus more documents when the evidence is spread out.
+
+    A document is "strong" when its best reranker score is at least ``ratio`` x
+    the top document's. With one strong document the answer lives in one
+    place and the usual ``top_k`` is returned unchanged. With several, the
+    usual ``top_k`` is KEPT and passages from strong documents it does not
+    already cover are added, up to ``max_hits`` and ``per_doc`` per document:
+    new documents first, then a second passage each. So a wide read is always
+    a superset of the narrow one and can only reach more documents, never
+    fewer (Benchmark 1: more passages of the same documents did not help).
+    Reranker scores only; the gate is untouched.
+    """
+    base = hits[:top_k]
+    if max_hits <= top_k or ratio <= 0 or not hits:
+        return base
+    best = hits[0].rerank_score
+    if best is None or best <= 0:
+        return base
+    doc_best: dict[str, float] = {}
+    for h in hits:
+        if h.rerank_score is not None:
+            doc_best.setdefault(h.document_id, h.rerank_score)
+    strong = {d for d, s in doc_best.items() if s >= ratio * best}
+    if len(strong) <= 1:
+        return base
+    taken: dict[str, int] = {}
+    for h in base:
+        taken[h.document_id] = taken.get(h.document_id, 0) + 1
+    added: list[int] = []
+    rest = list(enumerate(hits))[top_k:]
+    for new_docs_only in (True, False):
+        for i, h in rest:
+            if len(base) + len(added) >= max_hits:
+                break
+            n = taken.get(h.document_id, 0)
+            if i in added or h.document_id not in strong or n >= per_doc or (new_docs_only and n):
+                continue
+            taken[h.document_id] = n + 1
+            added.append(i)
+    return base + [hits[i] for i in sorted(added)]
 
 
 def gate_document(chunks) -> str | None:

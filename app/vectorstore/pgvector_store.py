@@ -324,6 +324,46 @@ class PgVectorStore(VectorStore):
             )
         return out
 
+    def chunks_at(
+        self,
+        org_id: str,
+        positions: list[tuple[str, int]],
+        *,
+        workspace_id: str | None = None,
+        viewer: Viewer | None = None,
+    ) -> list[RetrievedChunk]:
+        if not positions:
+            return []
+        viewer_sql, viewer_params = _viewer_clause(viewer)
+        with get_connection(self._settings) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT c.content, c.document_id::text, c.chunk_index,
+                       c.org_id::text, c.injection_score
+                FROM chunks c
+                JOIN documents d ON d.id = c.document_id
+                WHERE c.org_id = %s::uuid
+                  AND c.workspace_id IS NOT DISTINCT FROM %s::uuid
+                  AND (c.document_id, c.chunk_index) IN (
+                      SELECT * FROM unnest(%s::uuid[], %s::int[]))
+                  {viewer_sql.lstrip()}
+                """,
+                (
+                    org_id,
+                    workspace_id,
+                    [doc for doc, _ in positions],
+                    [idx for _, idx in positions],
+                    *viewer_params,
+                ),
+            ).fetchall()
+        return [
+            RetrievedChunk(
+                content=r[0], score=0.0, document_id=r[1], chunk_index=r[2],
+                org_id=r[3], injection_score=r[4],
+            )
+            for r in rows
+        ]
+
     def recent_chunks(
         self,
         org_id: str,
