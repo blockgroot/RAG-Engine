@@ -959,6 +959,17 @@ class GitHubLiveSettings:
     # between ~30 calls and ~130.
     max_reviewed_pull_requests: int = 30
     max_attempts: int = 3
+    #: Charts read GitHub ON DEMAND: a GitHub chart first reads the latest
+    #: pull requests, reviews and commits, unless they were read within this
+    #: many minutes (`GITHUB_CHART_REFRESH_MINUTES`), so asking twice stays fast.
+    chart_refresh_minutes: int = 10
+    #: How long a chart waits for that read (`GITHUB_CHART_REFRESH_WAIT_SECONDS`)
+    #: before answering from what was last read; the read finishes behind it.
+    chart_refresh_wait_seconds: float = 20.0
+    #: Commits read per repo for charts (`GITHUB_CHART_MAX_COMMITS`, one page,
+    #: GitHub's maximum is 100). Separate from `max_commits`, which sizes the
+    #: live Ask prompt and must stay small.
+    chart_max_commits: int = 100
 
     @classmethod
     def from_env(cls) -> "GitHubLiveSettings":
@@ -975,6 +986,10 @@ class GitHubLiveSettings:
                 os.getenv("GITHUB_MAX_REVIEWED_PULL_REQUESTS", "30")
             ),
             max_attempts=int(os.getenv("GITHUB_LIVE_MAX_ATTEMPTS", "3")),
+            chart_refresh_minutes=max(0, int(os.getenv("GITHUB_CHART_REFRESH_MINUTES", "10"))),
+            chart_refresh_wait_seconds=max(0.0, float(
+                os.getenv("GITHUB_CHART_REFRESH_WAIT_SECONDS", "20"))),
+            chart_max_commits=max(1, min(100, int(os.getenv("GITHUB_CHART_MAX_COMMITS", "100")))),
         )
 
 
