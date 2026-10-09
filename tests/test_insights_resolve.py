@@ -723,3 +723,29 @@ def test_a_refusal_says_which_document_tables_exist_or_that_none_were_read():
     assert "turn off Chart mode" in none_read and 'without "chart"' not in none_read
     some = resolve._refusal(metrics, [SimpleNamespace(document_title="Quarterly budget")])
     assert 'Document tables I can use: "Quarterly budget"' in some
+
+
+def test_a_channel_sent_as_a_subject_filter_becomes_the_focus():
+    """"How many different people started threads in #rag-updates each month"
+    came back with the channel as a FILTER on subject and was refused as
+    "cannot be narrowed by 'subject'". It is a focus in the wrong slot."""
+    llm = FakeLLM(json.dumps({
+        "intent": "chart", "metric": "slack_threads", "group_by": None, "period": "month",
+        "measure": "people", "filters": {"subject": "#rag-updates"},
+    }))
+    intent = resolve.classify_question(
+        "How many different people started threads in #rag-updates each month?",
+        providers=["slack"], llm=llm, fail_open=False)
+    assert intent.kind == "chart"
+    assert intent.spec.focus == "#rag-updates" and intent.spec.filters == ()
+    assert intent.spec.measure == "people"
+
+
+def test_a_refusal_names_fields_the_way_people_do():
+    from app.insights import query, registry
+
+    metric = registry.get("slack_threads")
+    with pytest.raises(ValueError) as err:
+        query.validate(metric, group_by=None, split_by=None, measure=None,
+                       filters=(("state", "x"),))
+    assert "Options: person" in str(err.value) and "actor" not in str(err.value)

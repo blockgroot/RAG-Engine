@@ -164,6 +164,8 @@ different people"), the unit from the column header's bracket or the cells'
 symbol written against the number ("₹130 lakh"; `withUnit` mirrors
 `format_value`), and an `explain` line on what each bar/point is and over which
 rows. Built from the measure, header, unit, breakdown and period, never copy.
+A filter on `subject` (one channel/repo/team) is a focus in the wrong slot:
+moved to `focus`, never refused. Refusals name fields by `dim_label`, never keys.
 A breakdown beyond the two a chart draws is named as left out
 (`left_out_words`, kept only when the quote is in the question), never dropped silently.
 A breakdown is kept only when asked for: the model quotes the words that asked
