@@ -77,25 +77,21 @@ def rank(
     tables: list[TableRef], scores: dict[str, float] | None, *,
     floor: float, limit: int = MAX_OFFERED,
     keywords: dict[str, float] | None = None,
-    relevant_only: bool = False,
 ) -> list[TableRef]:
     """Tables closest to the question first, capped at ``limit``.
 
     ``scores`` is the cosine half of ``document_similarity``. Below ``floor``
-    is order, never removal, unless ``relevant_only``: then a table stays
-    only when its cosine is at least ``floor`` or its keyword rank is in
-    the top 3. Offering nothing is correct when nothing is relevant.
-    ``None`` scores (unmeasurable) keep the given order.
+    is order, never removal. ``keywords`` is the any-word half; the two lists
+    are merged with the same reciprocal-rank fusion Ask uses, so a page the
+    question names can lead even when its text embeds as numbers. ``None``
+    scores (unmeasurable) keep the given order -- newest document first.
     """
     if scores is None:
         return list(tables)[:limit]
     if not keywords:
         scored = [(scores.get(t.document_id or "", 0.0), i, t) for i, t in enumerate(tables)]
         ordered = sorted(scored, key=lambda s: (s[0] < floor, -s[0], s[1]))
-        picked = [t for _, _, t in ordered]
-        if relevant_only:
-            picked = _above_floor(picked, scores, None, floor)
-        return picked[:limit]
+        return [t for _, _, t in ordered[:limit]]
     from ..config.settings import DEFAULT_RETRIEVAL_RRF_K
 
     docs: list[str] = []
@@ -116,26 +112,7 @@ def rank(
             fused[doc] = fused.get(doc, 0.0) + 1.0 / (DEFAULT_RETRIEVAL_RRF_K + place + 1)
     scored = [(fused.get(t.document_id or "", 0.0), i, t) for i, t in enumerate(tables)]
     ordered = sorted(scored, key=lambda s: (-s[0], s[1]))
-    picked = [t for _, _, t in ordered]
-    if relevant_only:
-        picked = _above_floor(picked, scores, keywords, floor)
-    return picked[:limit]
-
-
-def _above_floor(tables, scores, keywords, floor):
-    """Drop tables under the cosine floor, except a top-3 keyword hit."""
-    keyword_top: set[str] = set()
-    if keywords:
-        ranked = sorted(
-            (d for d in {t.document_id or "" for t in tables} if keywords.get(d, 0.0) > 0),
-            key=lambda d: keywords[d], reverse=True,
-        )
-        keyword_top = set(ranked[:3])
-    return [
-        t for t in tables
-        if scores.get(t.document_id or "", 0.0) >= floor
-        or (t.document_id or "") in keyword_top
-    ]
+    return [t for _, _, t in ordered[:limit]]
 
 
 def catalogue(tables: list[TableRef]) -> str:
@@ -212,7 +189,7 @@ def _phrase(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
 
 
-def pick_named(table: TableRef, question: str, requested: str | None, *, require_name: bool = False) -> TablePick:
+def pick_named(table: TableRef, question: str, requested: str | None) -> TablePick:
     """A chart of the one table the question named, when the model did not pick it.
 
     A column header is used when that header is a whole phrase in the
@@ -235,13 +212,8 @@ def pick_named(table: TableRef, question: str, requested: str | None, *, require
                 f"\"{table.document_title}\" has more than one {role}: "
                 + ", ".join(c["name"] for c in named) + "."
             )
-        if len(cols) == 1 and not require_name:
+        if len(cols) == 1:
             return cols[0]["key"]
-        if len(cols) == 1 and require_name:
-            raise TableRefusal(
-                f"I can see \"{table.document_title}\", but not which {role} to use. "
-                + _options(table, types, role)
-            )
         if len(cols) > 1:
             raise TableRefusal(
                 f"I can see \"{table.document_title}\", but not which {role} to use. "

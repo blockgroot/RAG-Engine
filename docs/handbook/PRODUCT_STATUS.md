@@ -262,13 +262,6 @@ access; automatic hourly sync; instant updates from Slack, Linear, Notion and Dr
 
 ## 12. In Progress
 
-**Charts v2 generation** (`feat/charts-v2-plan`). Chart mode classifies at temperature 0
-on the org's configured model. With `CHARTS_V2_RESOLVER` and `CHARTS_V2_CANDIDATES` on
-(the defaults), an unrelated table is not offered and a column is charted only when it
-is the measure the question asked for. A missing measure is named. Several measures on
-one table draw as separate series. Period labels (`Q1 FY26`, fiscal years) parse in
-`app/doctables/periods.py`. A question that names a connector ("from Drive") is charted from that connector only. When nothing stored answers, the closest unread documents are read live and their tables and prose figures stored. Prose figures need one figure per clause and the measure named. The web chart is Apache ECharts 5.6.0 (table view, PNG/CSV download). Slack posts the chart as an image (needs the `files:write` scope; tenants reconnect Slack).
-
 **PR #45 — open-ended charts** (`feat/open-ended-charts`, open, not on `main`). The branch adds,
 on top of the 12 metrics already shipping:
 

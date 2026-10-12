@@ -902,16 +902,6 @@ CREATE TABLE IF NOT EXISTS doc_table_rows (
 -- The exact sentence a `text` row was read from, shown on hover so a reader
 -- can check the figure against the document. NULL for a real table's rows.
 ALTER TABLE doc_table_rows ADD COLUMN IF NOT EXISTS quote TEXT;
-ALTER TABLE doc_table_rows ADD COLUMN IF NOT EXISTS period_start DATE;
-ALTER TABLE doc_table_rows ADD COLUMN IF NOT EXISTS period_end DATE;
-ALTER TABLE doc_table_rows ADD COLUMN IF NOT EXISTS period_grain TEXT;
-ALTER TABLE doc_table_rows ADD COLUMN IF NOT EXISTS units JSONB NOT NULL DEFAULT '{}';
-ALTER TABLE doc_table_rows ADD COLUMN IF NOT EXISTS context TEXT;
-ALTER TABLE doc_tables ADD COLUMN IF NOT EXISTS content_hash TEXT;
-ALTER TABLE doc_tables ADD COLUMN IF NOT EXISTS shape TEXT NOT NULL DEFAULT 'long';
-ALTER TABLE doc_tables ADD COLUMN IF NOT EXISTS period_key TEXT;
-ALTER TABLE doc_tables ADD COLUMN IF NOT EXISTS extracted_at TIMESTAMPTZ NOT NULL DEFAULT now();
-CREATE INDEX IF NOT EXISTS idx_doc_tables_hash ON doc_tables (org_id, content_hash);
 
 -- Documents waiting for a BACKGROUND dataset adapter (the text adapter: an AI
 -- reads figures out of sentences). Ingestion only flags a document here after
@@ -1286,8 +1276,6 @@ CREATE INDEX IF NOT EXISTS idx_live_tool_calls_org_time
 -- (org_id, user_id). A fact dies with the chat it came from (the cascade)
 -- unless pinned, which detaches it (source_conversation_id -> NULL).
 ALTER TABLE organizations ADD COLUMN IF NOT EXISTS memory_enabled BOOLEAN NOT NULL DEFAULT TRUE;
--- Display and period parsing only (1 = January, 4 = April).
-ALTER TABLE organizations ADD COLUMN IF NOT EXISTS fiscal_year_start_month SMALLINT NOT NULL DEFAULT 1;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS memory_enabled BOOLEAN NOT NULL DEFAULT TRUE;
 CREATE TABLE IF NOT EXISTS user_memory (
     id                     UUID PRIMARY KEY DEFAULT gen_random_uuid(),

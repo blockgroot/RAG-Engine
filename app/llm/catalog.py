@@ -56,10 +56,6 @@ class ModelChoice:
     #: caps answers at RAG_MAX_ANSWER_TOKENS, and a reasoning model that spends
     #: the cap thinking returns EMPTY content (an LLMProviderError in chat).
     extra_body: dict | None = None
-    #: ``response_format: json_object`` is sent only when this is set. Models
-    #: that reject it keep the regex extractor. Chart models that were probed
-    #: are marked; an org's own model is not, so it is never sent the field.
-    json_object: bool = False
 
 
 # Free-tier OpenRouter ids, each VERIFIED against a live key by
@@ -124,7 +120,6 @@ GROQ_MODELS: tuple[ModelChoice, ...] = (
         note="Strong general reasoning at low latency.",
         backend=BACKEND_GROQ,
         charts=True,
-        json_object=True,
     ),
 )
 
@@ -137,7 +132,6 @@ GEMINI_MODELS: tuple[ModelChoice, ...] = (
         note="Fast and low cost.",
         backend=BACKEND_GEMINI,
         charts=True,
-        json_object=True,
     ),
 )
 

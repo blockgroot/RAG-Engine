@@ -117,68 +117,6 @@ def update_message(token: str, channel: str, ts: str, text: str) -> bool:
         return False
 
 
-#: Bytes go to Slack's upload host, not the API: a 1-2 MB PNG on a slow link
-#: needs longer than an API call, but still a bound.
-_UPLOAD_TIMEOUT = 30.0
-
-
-def upload_file(
-    token: str,
-    channel: str,
-    data: bytes,
-    *,
-    filename: str,
-    title: str,
-    alt_text: str,
-    initial_comment: str | None = None,
-    thread_ts: str | None = None,
-) -> str:
-    """Share a file into a channel or thread. Never raises.
-
-    Slack's two-step external upload (`files.upload` was sunset 2025-11-12):
-    ask for an upload URL, send the bytes there, then complete the upload
-    into the channel. Returns ``"ok"``, ``"missing_scope"`` (the connection
-    predates `files:write`, so an admin must reconnect), or ``"error"``; the
-    caller falls back to text on anything but ``"ok"``.
-    """
-    auth = {"Authorization": f"Bearer {token}"}
-    step = "files.getUploadURLExternal"
-    try:
-        body = httpx.post(
-            f"{_API_BASE}/files.getUploadURLExternal",
-            data={"filename": filename, "length": str(len(data)), "alt_txt": alt_text[:1000]},
-            headers=auth,
-            timeout=_TIMEOUT,
-        ).json()
-        if body.get("ok"):
-            file_id = body.get("file_id")
-            step = "upload"
-            sent = httpx.post(body["upload_url"], content=data, timeout=_UPLOAD_TIMEOUT)
-            if sent.status_code != 200:
-                logger.warning("slack.file upload failed: HTTP %s", sent.status_code)
-                return "error"
-            step = "files.completeUploadExternal"
-            payload: dict = {"files": [{"id": file_id, "title": title}], "channel_id": channel}
-            if thread_ts:
-                payload["thread_ts"] = thread_ts
-            if initial_comment:
-                payload["initial_comment"] = initial_comment
-            body = httpx.post(
-                f"{_API_BASE}/files.completeUploadExternal",
-                json=payload,
-                headers=auth,
-                timeout=_TIMEOUT,
-            ).json()
-        if body.get("ok"):
-            return "ok"
-        error = body.get("error")
-        logger.warning("slack.%s failed: %s", step, error)
-        return "missing_scope" if error == "missing_scope" else "error"
-    except Exception as exc:  # noqa: BLE001 - a failed upload falls back to text
-        logger.warning("slack.%s error: %s", step, exc)
-        return "error"
-
-
 def _get(token: str, method: str, params: dict, *, timeout: float = _TIMEOUT) -> dict:
     try:
         response = httpx.get(

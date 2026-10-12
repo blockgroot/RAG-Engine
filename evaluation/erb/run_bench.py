@@ -77,12 +77,6 @@ def _dsids(document_ids: list[str]) -> list[str]:
     return [rows[d] for d in order if rows.get(d)]
 
 
-def _broad(q: dict) -> bool:
-    """A question a person would ask in Deep analysis: high-level, or one whose
-    answer spans more than one document."""
-    return q["question_type"] == "high_level" or len(q["expected_doc_ids"]) > 1
-
-
 def _errored(rec: dict) -> bool:
     raw = rec["raw"]
     return bool(raw.get("exception") or raw.get("error") or raw.get("http") or raw.get("error_msg"))
@@ -234,9 +228,9 @@ def main() -> None:
                     help="setting for this variant only, e.g. RAG_TOP_K=3 (wins over .env.bench)")
     ap.add_argument("--deep", action="store_true",
                     help="Handbook: ask in chat's Deep analysis mode")
-    ap.add_argument("--deep-broad", action="store_true",
-                    help="Handbook: Deep analysis for broad questions (high-level, or the answer "
-                         "needs more than one document), as a person would pick it; normal for the rest")
+    ap.add_argument("--deep-multi-doc", action="store_true",
+                    help="Handbook: Deep analysis for questions whose answer needs more than one "
+                         "document (as a person would pick it), normal mode for the rest")
     args = ap.parse_args()
     if args.deep:
         from app.rag.deep import use_deep_read
@@ -264,10 +258,10 @@ def main() -> None:
         for i, q in enumerate(questions, 1):
             if (q["question_id"], run) in done or (run > 1 and not q["repeat"]):
                 continue
-            if args.deep_broad:
+            if args.deep_multi_doc:
                 from app.rag.deep import use_deep_read
 
-                use_deep_read(_broad(q))
+                use_deep_read(len(q["expected_doc_ids"]) > 1)
             t0 = time.time()
             try:
                 out = system.ask(q["question"])
@@ -276,7 +270,7 @@ def main() -> None:
             t1 = time.time()
             row = {
                 "system": name, "question_id": q["question_id"], "question_type": q["question_type"],
-                "run": run, "deep": args.deep or (args.deep_broad and _broad(q)),
+                "run": run, "deep": args.deep or (args.deep_multi_doc and len(q["expected_doc_ids"]) > 1),
                 "q_start": t0, "q_end": t1, "seconds": round(t1 - t0, 2), **out,
             }
             with records.open("a") as f:

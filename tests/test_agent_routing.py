@@ -512,20 +512,11 @@ def test_a_page_in_another_workspace_is_named_instead_of_turn_off_chart(monkeypa
     assert "Turn off Chart" not in decision.chart_refusal
 
 
-def _live_source(monkeypatch, text):
-    """The live read goes through the source adapter ingestion uses."""
-    from types import SimpleNamespace
-
-    source = SimpleNamespace(fetch_document=lambda external_id: SimpleNamespace(
-        title=None, content=text, tables=None))
-    monkeypatch.setattr("app.sources.build_source_adapter", lambda *a, **k: source)
-    monkeypatch.setattr("app.auth.get_connection_config", lambda *a, **k: {})
-    monkeypatch.setattr("app.doctables.store.mark_checked", lambda document_id: None)
-
-
 def test_a_page_with_no_stored_table_is_read_live_and_saved(monkeypatch):
     """Chart mode re-reads the named page and stores the table it finds."""
     from types import SimpleNamespace
+
+    from app.livetools.base import OK, ProviderRead
 
     page = (
         "Quarterly update\n\n"
@@ -542,7 +533,10 @@ def test_a_page_with_no_stored_table_is_read_live_and_saved(monkeypatch):
     monkeypatch.setattr(
         "app.auth.credentials.get_live_connection_token", lambda *a, **k: "token",
     )
-    _live_source(monkeypatch, page)
+    monkeypatch.setattr(
+        "app.livetools.notion.read_page",
+        lambda token, external_id: ProviderRead(OK, text=page),
+    )
 
     def _save(document_id, **kwargs):
         saved["id"] = document_id
@@ -560,6 +554,8 @@ def test_a_named_linear_issue_is_read_live_and_saved(monkeypatch):
     """A table in a Linear issue is saved the same way as one on a Notion page."""
     from types import SimpleNamespace
 
+    from app.livetools.base import OK, ProviderRead
+
     issue = (
         "ENG-4 Sprint plan\n\n"
         "| Team | Points |\n"
@@ -575,7 +571,10 @@ def test_a_named_linear_issue_is_read_live_and_saved(monkeypatch):
     monkeypatch.setattr(
         "app.auth.credentials.get_live_connection_token", lambda *a, **k: "token",
     )
-    _live_source(monkeypatch, issue)
+    monkeypatch.setattr(
+        "app.livetools.linear.read_issue",
+        lambda token, external_id: ProviderRead(OK, text=issue),
+    )
 
     def _save(document_id, **kwargs):
         saved["id"] = document_id
@@ -833,11 +832,7 @@ def test_a_new_topic_in_the_same_chat_is_routed_on_its_own_words(monkeypatch):
 
 
 def test_chart_mode_on_a_model_without_charts_names_the_ones_that_can(monkeypatch):
-    """The org's configured model builds the chart, not the Ask picker.
-
-    A catalogued model marked charts=False must not run the classifier.
-    The picker selection is ignored: Chart mode stays on the org model.
-    """
+    """A model that cannot build charts must not make the QUESTION look unchartable."""
     from app.llm.routed import use_model
 
     def boom(*a, **k):
@@ -845,15 +840,15 @@ def test_chart_mode_on_a_model_without_charts_names_the_ones_that_can(monkeypatc
 
     _stub(monkeypatch, connected={"linear"})
     monkeypatch.setattr("app.insights.resolve.classify_question", boom)
-    monkeypatch.setenv("LLM_MODEL", "gemma4:31b")
-    use_model("qwen/qwen3.8-27b")
+    monkeypatch.setenv("LLM_MODEL", "gemini-2.5-flash")
+    use_model("gemma4:31b")
     try:
         decision = routing.choose_agent("Linear issues by priority", ORG, chart_mode=True)
     finally:
         use_model(None)
     assert decision.reason == "chart-model-unsupported"
     assert decision.chart_refusal.startswith("**Gemma 4 31B doesn't support charts**")
-    assert "Gemini 3.1 Flash Lite or Qwen 3.8 27B" in decision.chart_refusal
+    assert "gemini-2.5-flash, Gemini 3.1 Flash Lite or Qwen 3.8 27B" in decision.chart_refusal
 
 
 @pytest.mark.parametrize("model", [None, "qwen/qwen3.8-27b", "acme-own-model"])

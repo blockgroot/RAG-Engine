@@ -602,18 +602,13 @@ def _has_authorized_repos(org_id: str, workspace_id: str | None) -> bool:
 
 
 def _chartable_tables(org_id: str, workspace_id: str | None, viewer, question: str = "",
-                      uploads=None, named: set[str] | None = None) -> list:
+                      uploads=None) -> list:
     """Tables THIS person may chart, for the chart classifier.
 
     Files they uploaded to this chat come FIRST and unranked: a file dropped
     into the chat is what the next question is about, and there are only a
     few. Then document tables, ranked by how close their document is to the
     question.
-
-    ``named`` is the connectors the question NAMES ("from Drive"). Then only
-    those connectors' tables are offered, and no upload: a Drive question was
-    answered from a Notion page because both were offered and the Notion one
-    ranked higher.
 
     No viewer means none: a table is only ever offered through the document
     access predicate, and "no viewer" is the unrestricted reading (ingest,
@@ -622,8 +617,8 @@ def _chartable_tables(org_id: str, workspace_id: str | None, viewer, question: s
     """
     if viewer is None or getattr(viewer, "is_unrestricted", False):
         return []
-    uploaded = [] if named else _upload_tables(org_id, uploads)
-    return uploaded + _document_tables(org_id, workspace_id, viewer, question, named)
+    return _upload_tables(org_id, uploads) + _document_tables(
+        org_id, workspace_id, viewer, question)
 
 
 def _upload_tables(org_id: str, uploads) -> list:
@@ -650,36 +645,27 @@ def _upload_tables(org_id: str, uploads) -> list:
         return []
 
 
-def _document_tables(org_id: str, workspace_id: str | None, viewer, question: str,
-                     named: set[str] | None = None) -> list:
+def _document_tables(org_id: str, workspace_id: str | None, viewer, question: str) -> list:
     try:
         from ..doctables.store import list_tables
         from ..insights import tables as doc_tables
 
         listed = list_tables(org_id=org_id, workspace_id=workspace_id, viewer=viewer)
-        if named:
-            # Filtered BEFORE ranking, so other connectors cannot fill the cap.
-            listed = [t for t in listed if t.provider in named]
         from ..insights.resolve import title_mentioned
 
         named = [t for t in listed if title_mentioned(t.document_title or "", question)]
         rest = [t for t in listed if t not in named]
-        from ..config.settings import ChartsSettings
-
-        charts = ChartsSettings.from_env()
-        floor = (
-            charts.candidate_min_cosine if charts.v2_candidates
-            else RagSettings.from_env().similarity_threshold
-        )
         signals = doc_tables.document_similarity(question, rest, org_id=org_id,
                                                  workspace_id=workspace_id)
         if signals is None:
-            ranked = doc_tables.rank(rest, None, floor=floor)
+            ranked = doc_tables.rank(
+                rest, None, floor=RagSettings.from_env().similarity_threshold,
+            )
         else:
             cosine, keywords = signals
             ranked = doc_tables.rank(
-                rest, cosine, keywords=keywords, floor=floor,
-                relevant_only=charts.v2_candidates,
+                rest, cosine, keywords=keywords,
+                floor=RagSettings.from_env().similarity_threshold,
             )
         # The page they named has to be offered. Six closer tables used to
         # fill the cap and the named page came back as "I don't see it".
@@ -736,15 +722,17 @@ def _chart_unsupported_model() -> str | None:
     from ..config.settings import LLMSettings
     from ..insights.resolve import unsupported_model_message
     from ..llm import catalog
+    from ..llm.routed import selected_model
 
-    # The Ask picker does not choose the chart classifier. The org's
-    # configured model does. A catalogued model marked charts=False refuses;
-    # the default and an org's own model are allowed.
-    model = LLMSettings.from_env().model
-    choice = catalog.get(model) if model else None
-    if choice is None or choice.charts:
+    model = selected_model()
+    if catalog.supports_charts(model):
         return None
-    return unsupported_model_message(choice.label, [m.label for m in catalog.chart_models()])
+    choice = catalog.get(model)
+    label = choice.label if choice else model
+    alternatives = [LLMSettings.from_env().model or "the default model"] + [
+        m.label for m in catalog.chart_models()
+    ]
+    return unsupported_model_message(label, alternatives)
 
 
 def _try_question_route(
@@ -821,17 +809,21 @@ def _document_gap(question, intent, tables, org_id, workspace_id, viewer, user_i
     )
 
 
-def _live_fetch_named_tables(org_id, workspace_id, viewer, title, tools=None) -> bool:
-    """Read one named Notion, Drive, or Linear document live and save its
-    tables and its figures from text (``doctables.ondemand.read_now``).
+def _live_fetch_named_tables(org_id, workspace_id, viewer, title) -> bool:
+    """Read one named Notion, Drive, or Linear document and save any table it contains.
 
-    Only a document already indexed in this scope that the asker may open,
-    and only from a connector the question named, when it named one. Never
-    raises. Returns whether anything was saved.
+    Only a document already indexed in this scope, and only when Chart mode
+    has no table for it. Never raises. Returns whether a table was saved.
     """
     try:
-        from ..doctables import ondemand
-        from ..doctables.store import find_chart_document
+        from ..auth.credentials import get_live_connection_token
+        from ..doctables.base import DocumentText
+        from ..doctables.store import find_chart_document, replace_document_tables
+        from ..doctables.table_adapter import TableAdapter
+        from ..livetools.base import OK
+        from ..livetools.drive import read_file
+        from ..livetools.linear import read_issue
+        from ..livetools.notion import read_page
 
         found = find_chart_document(
             org_id=org_id, workspace_id=workspace_id, viewer=viewer, title_query=title,
@@ -839,68 +831,24 @@ def _live_fetch_named_tables(org_id, workspace_id, viewer, title, tools=None) ->
         if found is None:
             return False
         document_id, provider, external_id, doc_title = found
-        if tools and provider not in tools:
+        reader = {"notion": read_page, "google": read_file, "linear": read_issue}.get(provider)
+        if reader is None:
             return False
-        doc = ondemand.Unread(document_id, provider, external_id, doc_title or title, 1.0)
-        return ondemand.read_now(doc, org_id=org_id, workspace_id=workspace_id) > 0
+        token = get_live_connection_token(org_id, provider, workspace_id=workspace_id)
+        read = reader(token, external_id)
+        if read.outcome != OK or not read.text:
+            return False
+        tables = TableAdapter().extract(DocumentText(
+            external_id=external_id, title=doc_title or title, content=read.text,
+        ))
+        if not tables:
+            return False
+        replace_document_tables(
+            document_id, org_id=org_id, workspace_id=workspace_id, tables=tables,
+        )
+        return True
     except Exception:  # noqa: BLE001 - a live read may only add a table
         logger.warning("Agent routing: live table read failed", exc_info=True)
-        return False
-
-
-def _named_page_tables(org_id, workspace_id, viewer, named, tools) -> list:
-    """Stored tables of the page the question named, when the six offered
-    missed it; read live first when that page has none. Never raises."""
-    if not named or viewer is None or getattr(viewer, "is_unrestricted", False):
-        return []
-    from ..doctables.store import list_tables
-
-    def listed() -> list:
-        try:
-            found = list_tables(org_id=org_id, workspace_id=workspace_id, viewer=viewer,
-                                title_query=named)
-        except Exception:  # noqa: BLE001
-            return []
-        return [t for t in found if not tools or getattr(t, "provider", None) in tools]
-
-    extra = listed()
-    if not extra and _live_fetch_named_tables(org_id, workspace_id, viewer, named, tools):
-        extra = listed()
-    return extra
-
-
-def _read_unread_documents(question, org_id, workspace_id, viewer, tools, offered,
-                           named) -> bool:
-    """Read the closest unread documents live (``doctables.ondemand``).
-
-    The background pass reads a document's prose minutes after a sync, and a
-    file indexed before charts read tables waits for the backfill; a question
-    in that window must not be told the figures do not exist. Bounded by
-    ``CHARTS_ONDEMAND_DOCS`` and ``CHARTS_ONDEMAND_BUDGET_S``. Never raises.
-    """
-    from ..config.settings import ChartsSettings
-
-    charts = ChartsSettings.from_env()
-    if not charts.v2_extraction or viewer is None or getattr(viewer, "is_unrestricted", False):
-        return False
-    try:
-        from ..doctables import ondemand
-
-        docs = ondemand.unread_documents(
-            question, org_id=org_id, workspace_id=workspace_id, viewer=viewer,
-            providers=tools,
-            exclude_ids={t.document_id for t in offered if getattr(t, "document_id", None)},
-            floor=RagSettings.from_env().similarity_threshold,
-            limit=charts.ondemand_docs, title_query=named,
-        )
-        if not docs:
-            return False
-        logger.info("Agent routing: reading %d document(s) for figures now", len(docs))
-        return ondemand.read_relevant(
-            docs, org_id=org_id, workspace_id=workspace_id, budget_s=charts.ondemand_budget_s,
-        ) > 0
-    except Exception:  # noqa: BLE001 - costs the extra read, never the answer
-        logger.warning("Agent routing: on-demand figure read failed", exc_info=True)
         return False
 
 
@@ -928,26 +876,14 @@ def _chart_mode_route(
         return RoutingDecision(INSIGHTS_KEY, "chart-model-unsupported",
                                chart_refusal=unsupported)
     providers = [p for p in sorted(connected) if panel_defs.for_provider(p)]
-    # The connector the question NAMES decides where the chart may come from
-    # ("revenue from the Drive sheet"), exactly as it decides routing for Ask.
-    # Without this, a Notion page that ranked higher answered a Drive question.
-    tools = named_providers(question, connected) or None
-    if tools:
-        providers = [p for p in providers if p in tools]
-    tables = _chartable_tables(org_id, workspace_id, viewer, question, uploads, tools)
-    from ..llm.routed import default_model_only
-
-    def classify(offered) -> object:
-        with default_model_only():
-            return classify_question(
-                question, providers=providers, fail_open=False, offer_github=False,
-                tables=offered,
-                fields=_chart_fields(org_id, workspace_id, viewer),
-                names=_chart_names(org_id, workspace_id, viewer),
-            )
-
+    tables = _chartable_tables(org_id, workspace_id, viewer, question, uploads)
     try:
-        intent = classify(tables)
+        intent = classify_question(
+            question, providers=providers, fail_open=False, offer_github=False,
+            tables=tables,
+            fields=_chart_fields(org_id, workspace_id, viewer),
+            names=_chart_names(org_id, workspace_id, viewer),
+        )
     except CannotChart as exc:
         return RoutingDecision(INSIGHTS_KEY, "chart-refuse", chart_refusal=str(exc))
     except Exception:  # noqa: BLE001
@@ -958,26 +894,41 @@ def _chart_mode_route(
         )
     if intent.kind == "chart" and intent.spec is not None:
         return RoutingDecision(INSIGHTS_KEY, "chart", chart_spec=intent.spec)
-
-    # Nothing offered answers it. Two more places the figures can be, in order:
-    # tables of the page they named that sat outside the six offered, then the
-    # closest documents nobody has read for figures yet, read live right now.
+    # The page or issue they named can sit outside the six tables offered. If
+    # no table is stored yet, read that Notion, Drive, or Linear document live
+    # once, save any table it has, then ask again with only its tables.
     named = getattr(intent, "named_document", None)
-    retry = _named_page_tables(org_id, workspace_id, viewer, named, tools)
-    if not retry and _read_unread_documents(
-        question, org_id, workspace_id, viewer, tools, tables, named,
-    ):
-        retry = _chartable_tables(org_id, workspace_id, viewer, question, uploads, tools)
-    if retry:
+    if named and viewer is not None and not getattr(viewer, "is_unrestricted", False):
         try:
-            intent = classify(retry)
-        except CannotChart as exc:
-            return RoutingDecision(INSIGHTS_KEY, "chart-refuse", chart_refusal=str(exc))
+            from ..doctables.store import list_tables
+
+            extra = list_tables(
+                org_id=org_id, workspace_id=workspace_id, viewer=viewer, title_query=named,
+            )
         except Exception:  # noqa: BLE001
-            logger.warning("Agent routing: chart after reading documents failed", exc_info=True)
-        if intent.kind == "chart" and intent.spec is not None:
-            return RoutingDecision(INSIGHTS_KEY, "chart", chart_spec=intent.spec)
-        tables = retry
+            extra = []
+        if not extra:
+            _live_fetch_named_tables(
+                org_id, workspace_id, viewer, named,
+            )
+            try:
+                extra = list_tables(
+                    org_id=org_id, workspace_id=workspace_id, viewer=viewer, title_query=named,
+                )
+            except Exception:  # noqa: BLE001
+                extra = []
+        if extra:
+            try:
+                intent = classify_question(
+                    question, providers=providers, fail_open=False, offer_github=False,
+                    tables=extra,
+                    fields=_chart_fields(org_id, workspace_id, viewer),
+                    names=_chart_names(org_id, workspace_id, viewer),
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("Agent routing: chart of the named page failed", exc_info=True)
+            if intent.kind == "chart" and intent.spec is not None:
+                return RoutingDecision(INSIGHTS_KEY, "chart", chart_spec=intent.spec)
     gap = _document_gap(question, intent, tables, org_id, workspace_id, viewer, user_id)
     if gap:
         return RoutingDecision(INSIGHTS_KEY, "chart-refuse", chart_refusal=gap)

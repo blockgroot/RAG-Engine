@@ -117,15 +117,11 @@ export function ChatMessageView({
                 groupBy={chart.group_by}
                 splitBy={chart.split_by}
                 blankLabels={chart.blank_labels ?? undefined}
-                seriesUnits={chart.series_units}
                 // The rows the bars are made of. They belong in the HOVER --
                 // repeating a chart's contents underneath it makes the card a
                 // table with a picture on top.
                 details={chart.details}
               />
-              {Array.isArray(chart.missing) && chart.missing.length > 0 && (
-                <p className="viz-panel-caveat">Not found: {chart.missing.join(", ")}</p>
-              )}
               {chart.explain && (
                 // What each bar/point IS, in words, so a number is never
                 // left for the reader to decode from its unit.

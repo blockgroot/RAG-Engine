@@ -368,18 +368,10 @@ class RoutedLLMProvider(LLMProvider):
         if resolved:
             _RESOLVED.set(resolved)
 
-    def generate(
-        self, prompt: str, *, max_tokens: int | None = None,
-        temperature: float | None = None, json_mode: bool = False,
-    ) -> str:
+    def generate(self, prompt: str, *, max_tokens: int | None = None) -> str:
         active = self.active()
         try:
-            from .base import call_generate
-
-            return call_generate(
-                active, prompt, max_tokens=max_tokens,
-                temperature=temperature, json_mode=json_mode,
-            )
+            return active.generate(prompt, max_tokens=max_tokens)
         finally:
             # In `finally` so a failed call still records which model failed —
             # that is exactly when someone needs to know.
