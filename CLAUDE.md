@@ -205,7 +205,13 @@ visibility predicate, re-checked at run time, and never offered without a viewer
 Document tables are filled by dataset adapters (`doctables/base.py`); each
 adapter replaces only its own `origin`. Ingestion never calls a model for
 charts: an AI adapter (`background = True`) only enqueues, and the tick reads
-`doc_text_queue` within the background budget. A figure read from prose is kept
+`doc_text_queue` within the background budget. The awake worker reads that
+queue on its own clock (`FIGURE_READ_SECONDS`); the external tick is the read
+that still happens while the process is asleep. A page is queued when its prose
+has at least three unit-bearing figures (a currency, a percent, or a magnitude
+such as lakh or k). Dates, clause numbers and day counts do not take a slot. The sentence reader
+asks for 8000 tokens, because a reasoning model spends a 1500 cap before the
+JSON is finished; a reply cut off at the cap is retried, not stored as an empty table. A figure read from prose is kept
 only when its quote is in the document, every cell is in that quote, and the
 number sits in one clause with its measure (a period named earlier in the
 same sentence still counts). A number nearer a different measure is dropped,

@@ -186,6 +186,7 @@ class OpenAICompatProvider(LLMProvider):
             return self._client.chat.completions.create(**kwargs)
 
     def generate(self, prompt: str, *, max_tokens: int | None = None) -> str:
+        self.last_truncated = False
         kwargs: dict = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
@@ -251,6 +252,7 @@ class OpenAICompatProvider(LLMProvider):
         if getattr(choice, "finish_reason", None) == "length":
             # Non-empty but CUT: the reader sees an answer ending mid-word
             # ("a combination of pre-") and nothing else says why.
+            self.last_truncated = True
             logger.warning(
                 "llm.truncated model=%s max_tokens=%s completion_tokens=%s -- raise "
                 "RAG_MAX_ANSWER_TOKENS or use a non-reasoning model",

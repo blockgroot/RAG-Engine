@@ -77,6 +77,17 @@ def test_the_right_secret_runs_the_tick_and_reports_what_it_did(client, monkeypa
     }
 
 
+def test_a_figure_read_failure_does_not_escape(monkeypatch):
+    """The worker calls this on its own clock. A down database must not kill it."""
+    from app.jobs import worker
+
+    def boom():
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("app.doctables.queue.run_pending", boom)
+    assert worker.read_figures_tick() == 0
+
+
 def test_get_is_not_allowed(client, monkeypatch):
     """POST only: a cron misconfigured as GET should fail loudly rather than
     look like it is working."""

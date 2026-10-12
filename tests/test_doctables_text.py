@@ -61,6 +61,16 @@ def test_a_document_without_figures_costs_nothing():
     assert not TextAdapter().wants(_doc(policy))
 
 
+def test_a_policy_full_of_dates_and_day_counts_is_not_queued():
+    """Five bare digits used to take a queue slot ahead of a budget page."""
+    policy = (
+        "Leave Policy, updated 12 March 2024 and again on 3 January 2025. "
+        "Employees receive 15 days of annual leave, 12 days of sick leave "
+        "and 10 public holidays. Clause 4.2 applies after 6 months."
+    )
+    assert not TextAdapter().wants(_doc(policy))
+
+
 def test_a_sheet_is_never_sent_to_the_ai():
     assert not TextAdapter().wants(_doc(tables=("parsed",)))
 
@@ -143,6 +153,14 @@ def test_a_table_with_nothing_to_add_up_is_dropped():
 @pytest.mark.parametrize("reply", ["not json", "{\"tables\": \"no\"}", {"tables": []}])
 def test_an_unusable_reply_finds_nothing(reply):
     assert TextAdapter(FakeLLM(reply)).extract(_doc()) == []
+
+
+def test_a_cut_off_reply_is_retried_rather_than_stored_as_empty():
+    """A reasoning model that spends the whole cap must not look like 'no figures'."""
+    llm = FakeLLM({"tables": []})
+    llm.last_truncated = True
+    with pytest.raises(ProviderError):
+        TextAdapter(llm).extract(_doc())
 
 
 def test_a_model_failure_is_retryable():

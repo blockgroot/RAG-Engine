@@ -46,12 +46,15 @@ ORIGIN = "text"
 MAX_TABLES = 5
 MAX_ROWS = 200
 MAX_COLUMNS = 8
-MAX_TOKENS = 1500
-#: A document needs at least this many numbers in its prose to be worth a
-#: call. A COUNT, not a list of currencies or units: "₹12L", "12k", "40 %",
-#: "1.2 Mio." and a figure in any script all count the same, and a policy page
-#: with no figures never costs a call.
-MIN_NUMBERS = 5
+#: A reasoning model spends a small cap before it writes the JSON. At 1500,
+#: gemini-3.1-flash-lite logged `llm.truncated` with the whole budget used
+#: and the page was left with no table. The call stops when the JSON is done.
+MAX_TOKENS = 8000
+#: How many unit-bearing figures a page needs before it is worth a model
+#: call. A bare digit does not count: dates, clause numbers and "15 days"
+#: are why a policy was taking a slot ahead of a budget page. A currency,
+#: a percent, or a magnitude (lakh, k, crore, Mio) does.
+MIN_FIGURES = 3
 
 TEXT_NOTE = (
     "Figures read from sentences in this document by AI. Each value was checked "
@@ -59,7 +62,14 @@ TEXT_NOTE = (
     "is not counted."
 )
 
-_A_NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
+#: A figure worth charting: a currency, a percent, or a magnitude suffix.
+#: "5min" and "3kg" do not match — the suffix has to end the token.
+_CHART_FIGURE = re.compile(
+    r"(?:[₹$€£]|rs\.?|inr|usd|eur|gbp)\s*\d"
+    r"|\d[\d,]*(?:\.\d+)?\s*(?:k|mn|m|bn|b|lakhs?|lac|l|crores?|cr|mio)\b"
+    r"|\d[\d,]*(?:\.\d+)?\s*%",
+    re.I,
+)
 #: Anything a figure can be written as, for comparing a cell to its quote.
 _NUMBER_TOKEN = re.compile(
     r"(?<!\w)\(?-?(?:[₹$€£]|rs\.?|inr|usd|eur|gbp)?\s*\d[\d,\s]*(?:\.\d+)?\s*"
@@ -384,17 +394,19 @@ class TextAdapter(DatasetAdapter):
         self._max_chars = max_chars
 
     def wants(self, doc: DocumentText) -> bool:
-        """Cheap: at least ``MIN_NUMBERS`` numbers in the prose, in any format
-        or script. Most documents (policies, notes) have few and never cost a
-        call; the AI's rows are checked against their sentences either way."""
+        """Cheap: at least ``MIN_FIGURES`` unit-bearing figures in the prose.
+
+        Dates, clause numbers and day counts are not a series, so a policy
+        page does not take a queue slot. The AI's rows are still checked
+        against their sentences."""
         if doc.tables:
             # A Sheet or CSV: its rows ARE the data, read exactly already.
             return False
         prose = _prose(doc.content)
         found = 0
-        for _ in _A_NUMBER.finditer(prose):
+        for _ in _CHART_FIGURE.finditer(prose):
             found += 1
-            if found >= MIN_NUMBERS:
+            if found >= MIN_FIGURES:
                 return True
         return False
 
@@ -408,6 +420,9 @@ class TextAdapter(DatasetAdapter):
             reply = self._llm.generate(build_prompt(doc.title, prose), max_tokens=MAX_TOKENS)
         except Exception as exc:  # noqa: BLE001 - retried by the queue
             raise ProviderError("text adapter: model call failed", cause=exc) from exc
+        if getattr(self._llm, "last_truncated", False):
+            # A cut reply is not "this page has no figures". The queue retries.
+            raise ProviderError("text adapter: the reply was cut off before the table was finished")
 
         match = _JSON.search(reply or "")
         try:

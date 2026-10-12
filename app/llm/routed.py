@@ -370,9 +370,11 @@ class RoutedLLMProvider(LLMProvider):
 
     def generate(self, prompt: str, *, max_tokens: int | None = None) -> str:
         active = self.active()
+        self.last_truncated = False
         try:
             return active.generate(prompt, max_tokens=max_tokens)
         finally:
+            self.last_truncated = bool(getattr(active, "last_truncated", False))
             # In `finally` so a failed call still records which model failed —
             # that is exactly when someone needs to know.
             self._record(active)
