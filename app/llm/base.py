@@ -44,12 +44,17 @@ class LLMProvider(ABC):
     """Abstract chat/completion provider."""
 
     @abstractmethod
-    def generate(self, prompt: str, *, max_tokens: int | None = None) -> str:
+    def generate(
+        self, prompt: str, *, max_tokens: int | None = None,
+        temperature: float | None = None, json_mode: bool = False,
+    ) -> str:
         """Send a single prompt and return the model's text reply.
 
         ``max_tokens``, when set, caps the completion length (latency knob for
-        slow endpoints). Implementations must raise
-        ``core.exceptions.LLMProviderError`` on failure.
+        slow endpoints). ``temperature`` and ``json_mode`` are optional;
+        callers that need a stable JSON object (the chart classifier) set
+        them. Implementations must raise ``core.exceptions.LLMProviderError``
+        on failure.
         """
         raise NotImplementedError
 
@@ -67,3 +72,17 @@ class LLMProvider(ABC):
         ``core.exceptions.LLMProviderError`` on failure.
         """
         raise NotImplementedError("this LLM provider does not support tool calling")
+
+
+def call_generate(
+    llm, prompt: str, *, max_tokens: int | None = None,
+    temperature: float | None = None, json_mode: bool = False,
+) -> str:
+    """Call ``generate`` with the optional knobs, and without them if this
+    provider's signature predates them (test fakes)."""
+    try:
+        return llm.generate(
+            prompt, max_tokens=max_tokens, temperature=temperature, json_mode=json_mode,
+        )
+    except TypeError:
+        return llm.generate(prompt, max_tokens=max_tokens)

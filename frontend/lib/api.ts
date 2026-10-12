@@ -575,6 +575,10 @@ export type InsightPanel = {
   explain?: string;
   /** What an empty value means per field in this tool ("Unassigned"). */
   blank_labels?: Record<string, string>;
+  /** Unit per series, for a chart of two measures. */
+  series_units?: Record<string, string>;
+  /** Measures the question asked for that were not in the data. */
+  missing?: string[];
   /** The rows the bars are made of: what, who, when, and where to open it.
    *  A number nobody can trace is a number nobody trusts. */
   details?: {

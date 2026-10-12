@@ -185,15 +185,42 @@ class OpenAICompatProvider(LLMProvider):
             self._extra_body = None
             return self._client.chat.completions.create(**kwargs)
 
-    def generate(self, prompt: str, *, max_tokens: int | None = None) -> str:
+    def _complete(self, kwargs: dict):
+        """One completion. A 400 on temperature or json mode retries without them.
+
+        Some endpoints reject ``response_format`` or ``temperature``. The
+        chart classifier still gets a reply; the regex extractor reads the JSON.
+        """
+        try:
+            return self._create(kwargs)
+        except BadRequestError:
+            slim = {
+                k: v for k, v in kwargs.items()
+                if k not in ("temperature", "response_format")
+            }
+            if set(slim) == set(kwargs):
+                raise
+            logger.warning(
+                "llm: endpoint rejected temperature or json mode; retrying without them"
+            )
+            return self._create(slim)
+
+    def generate(
+        self, prompt: str, *, max_tokens: int | None = None,
+        temperature: float | None = None, json_mode: bool = False,
+    ) -> str:
         kwargs: dict = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
         }
         if max_tokens is not None and max_tokens > 0:
             kwargs["max_tokens"] = max_tokens
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        if json_mode and _accepts_json_object(self.model):
+            kwargs["response_format"] = {"type": "json_object"}
         try:
-            response = self._create(kwargs)
+            response = self._complete(kwargs)
         except APITimeoutError as exc:
             raise LLMProviderError(
                 f"LLM request timed out after {self.timeout}s", cause=exc
@@ -318,3 +345,11 @@ class OpenAICompatProvider(LLMProvider):
             tool_calls=tool_calls,
             raw_message=message.model_dump(),
         )
+
+def _accepts_json_object(model: str | None) -> bool:
+    """True only for a catalogued model marked as accepting json_object."""
+    from .catalog import get
+
+    choice = get(model) if model else None
+    return bool(choice and choice.json_object)
+

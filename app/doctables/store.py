@@ -484,6 +484,20 @@ class TablePoint:
     value: float
 
 
+
+_GRAIN = ("day", "week", "month", "quarter", "half", "year")
+
+
+def _coarser(period: str, grain: str | None) -> str | None:
+    """The date_trunc unit, or None when the stored grain is already coarser.
+
+    A quarterly table is never split into months: the whole quarter stays one bucket.
+    """
+    if grain in _GRAIN and period in _GRAIN and _GRAIN.index(grain) > _GRAIN.index(period):
+        return None
+    return period
+
+
 def run_table_query(
     table: TableRef,
     *,
@@ -493,6 +507,8 @@ def run_table_query(
     split_key: str | None,
     period: str,
     filters: tuple[tuple[str, str], ...] = (),
+    period_start: str | None = None,
+    period_end: str | None = None,
 ) -> list[TablePoint]:
     """Aggregate one table's rows. The table was already access-checked.
 
@@ -509,6 +525,11 @@ def run_table_query(
     elif measure in AGGREGATES:
         if not value_key:
             raise ValueError(f"{measure} needs a number column")
+        unit = (table.column(value_key) or {}).get("unit")
+        if measure == "sum" and unit == "mixed":
+            raise ValueError(
+                "those rows use more than one unit, so they cannot be added together"
+            )
         select = AGGREGATES[measure].format(col=_col(value_key))
     else:
         raise ValueError(f"unknown measure {measure!r}")
@@ -519,8 +540,12 @@ def run_table_query(
     if split_key and table.column(split_key) is None:
         raise ValueError(f"no column {split_key!r}")
 
-    if group_col is not None and group_col.get("type") == "date":
-        bucket = f"date_trunc('{period}', ({_col(group_key)})::date)"
+    if group_col is not None and group_col.get("type") in ("date", "period"):
+        trunc = _coarser(period, group_col.get("grain"))
+        if trunc:
+            bucket = f"date_trunc('{trunc}', ({_col(group_key)})::date)"
+        else:
+            bucket = f"({_col(group_key)})::date"
         group = _col(split_key) if split_key else "NULL"
         series = "NULL"
     else:
@@ -535,6 +560,12 @@ def run_table_query(
     if value_key and measure != "count":
         # Rows with no parseable number are not zero; they are absent.
         where += f" AND {_col(value_key)} IS NOT NULL"
+    if period_start and group_col is not None and group_col.get("type") in ("date", "period"):
+        where += f" AND ({_col(group_key)})::date >= %(period_start)s"
+        params["period_start"] = period_start
+    if period_end and group_col is not None and group_col.get("type") in ("date", "period"):
+        where += f" AND ({_col(group_key)})::date <= %(period_end)s"
+        params["period_end"] = period_end
 
     sql = f"""
         SELECT {bucket} AS bucket, {group}::text AS "group", {series}::text AS series,

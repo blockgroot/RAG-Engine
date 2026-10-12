@@ -116,7 +116,7 @@ def _capture_scope(monkeypatch) -> list:
 
     def _fake_answer(question, org_id, workspace_id, tags, scope_label=None, **_):
         seen.append(tags)
-        return "answer"
+        return slack_events.SlackAnswer("answer")
 
     monkeypatch.setattr(slack_events, "_answer", _fake_answer)
     return seen
@@ -273,7 +273,7 @@ def _capture_post(monkeypatch, *, update_ok: bool = True) -> tuple[list, list]:
         lambda email: type("U", (), {"id": "u1", "org_id": "org-1", "email": "a@b.com"})(),
     )
     monkeypatch.setattr(slack_events, "_scope_for_channel", lambda *a: None)
-    monkeypatch.setattr(slack_events, "_answer", lambda *a, **k: "the answer")
+    monkeypatch.setattr(slack_events, "_answer", lambda *a, **k: slack_events.SlackAnswer("the answer"))
 
     def _post(tok, ch, text, ts=None):
         posted.append((ch, text, ts))
@@ -354,7 +354,7 @@ def _capture_answer_scope(monkeypatch) -> list:
     monkeypatch.setattr(
         slack_events, "_answer",
         lambda q, org, ws, tags, label=None, **_: seen.append((ws, tags, label))
-        or "answer",
+        or slack_events.SlackAnswer("answer"),
     )
     return seen
 
@@ -473,7 +473,7 @@ def test_the_reply_names_the_source_and_the_scope(monkeypatch):
             return {"response": type("R", (), {"answer": "Tuesday's notes.", "chart": None})()}
 
     monkeypatch.setattr("app.agent.orchestration.build_agent_graph", lambda g: _G())
-    text = slack_events._answer("q", "org-1", "ws-meet", None, "Meeting notes")
+    text = slack_events._answer("q", "org-1", "ws-meet", None, "Meeting notes").text
     assert text.startswith("_Google Drive · Meeting notes_\n")
     assert "Tuesday's notes." in text
 

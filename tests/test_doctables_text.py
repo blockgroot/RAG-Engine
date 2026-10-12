@@ -140,9 +140,17 @@ def test_a_table_with_nothing_to_add_up_is_dropped():
     assert TextAdapter(llm).extract(_doc()) == []
 
 
-@pytest.mark.parametrize("reply", ["not json", "{\"tables\": \"no\"}", {"tables": []}])
-def test_an_unusable_reply_finds_nothing(reply):
-    assert TextAdapter(FakeLLM(reply)).extract(_doc()) == []
+def test_an_empty_reply_finds_nothing():
+    assert TextAdapter(FakeLLM({"tables": []})).extract(_doc()) == []
+
+
+@pytest.mark.parametrize("reply", ["not json", "{\"tables\": \"no\"}"])
+def test_an_unusable_reply_is_retried_not_marked_empty(reply):
+    """A cut-off or prose reply used to mark the document done with no figures."""
+    from app.core.exceptions import ProviderError
+
+    with pytest.raises(ProviderError):
+        TextAdapter(FakeLLM(reply)).extract(_doc())
 
 
 def test_a_model_failure_is_retryable():

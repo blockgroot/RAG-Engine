@@ -389,3 +389,36 @@ def test_reingest_replaces_rather_than_appends(org):
     _ingest(org, doc, text="Region,Revenue\nEast,5\nWest,7\n")
     [table] = table_store.list_tables(org_id=org, workspace_id=None, viewer=SANA)
     assert table.row_count == 2
+
+
+def test_a_table_below_the_relevance_floor_is_not_offered():
+    """The operational-metrics trap: an unrelated table is not even shown."""
+    sales = _ref(document_id="d-sales")
+    ops = _ref(name="Operational Metrics", document_title="2026 H1 Operational Metrics",
+               document_id="d-ops")
+    offered = doc_tables.rank(
+        [ops, sales],
+        {"d-sales": 0.71, "d-ops": 0.12},
+        floor=0.30,
+        relevant_only=True,
+    )
+    assert [t.document_id for t in offered] == ["d-sales"]
+
+
+def test_a_keyword_hit_survives_a_low_cosine_when_the_floor_is_on():
+    sales = _ref(document_id="d-sales")
+    budget = _ref(name="Budget", document_title="Quarterly update", document_id="d-budget")
+    offered = doc_tables.rank(
+        [sales, budget],
+        {"d-sales": 0.9, "d-budget": 0.1},
+        floor=0.30,
+        keywords={"d-budget": 0.4},
+        relevant_only=True,
+    )
+    assert {t.document_id for t in offered} == {"d-sales", "d-budget"}
+
+
+def test_mixed_units_are_marked_and_not_silently_summed():
+    raw = extract.RawTable("t", ["Item", "Amount"], [["A", "₹10"], ["B", "12%"]])
+    amount = next(c for c in extract.profile(raw).columns if c.name == "Amount")
+    assert amount.unit == "mixed"

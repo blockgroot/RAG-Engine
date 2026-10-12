@@ -36,6 +36,10 @@ MIN_COLUMNS = 2
 TYPE_SHARE = 0.8
 #: A category column groups; a free-text column (notes, descriptions) does not.
 MAX_CATEGORY_DISTINCT = 50
+#: Category values kept on the column profile. The chart gate matches a
+#: measure the asker named against these (a "Metric | Value" table), so five
+#: alphabetical values hid every measure after the fifth.
+CATEGORY_SAMPLES = 25
 
 COLUMN_TYPES = ("number", "date", "category", "text")
 
@@ -352,7 +356,7 @@ def profile(raw: RawTable) -> Table | None:
                     unparsed += 1
                 else:
                     cells[row_i][key] = n
-            unit = units.pop() if len(units) == 1 else ""
+            unit = units.pop() if len(units) == 1 else ("mixed" if units else "")
             columns.append(Column(key, names[i], "number", unit=unit,
                                   unparsed=unparsed, distinct=len(set(values)),
                                   samples=tuple(values[:3])))
@@ -364,7 +368,7 @@ def profile(raw: RawTable) -> Table | None:
             if r[i]:
                 cells[row_i][key] = r[i][:200]
         columns.append(Column(key, names[i], kind, distinct=len(distinct),
-                              samples=tuple(distinct[:5])))
+                              samples=tuple(distinct[:CATEGORY_SAMPLES])))
 
     if len(columns) < MIN_COLUMNS:
         return None

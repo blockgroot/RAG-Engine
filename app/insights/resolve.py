@@ -41,7 +41,7 @@ DEFAULT_PERIOD = "month"
 #: Small: the reply is one flat JSON object. A generous cap here just buys room
 #: for a model to ramble before the JSON, which the extractor would then have
 #: to sift through.
-MAX_TOKENS = 200
+MAX_TOKENS = 600
 
 
 class CannotChart(Exception):
@@ -87,6 +87,14 @@ class ChartSpec:
     #: The window the asker named ("over the last year" = 365), kept only
     #: when their words for it are in the question; None = the period's own.
     days: int | None = None
+    #: Number columns when more than one measure was bound. Empty means
+    #: ``value`` alone, so an older spec charts exactly what it always did.
+    values: tuple[str, ...] = ()
+    #: Measures they asked for that matched no column. Named on the chart.
+    missing: tuple[str, ...] = ()
+    #: Inclusive bounds parsed from the range they named. None = no range.
+    period_start: str | None = None
+    period_end: str | None = None
 
 
 def spec_to_dict(spec: ChartSpec) -> dict:
@@ -111,6 +119,10 @@ def spec_to_dict(spec: ChartSpec) -> dict:
         "value": spec.value,
         "left_out": spec.left_out,
         "days": spec.days,
+        "values": list(spec.values),
+        "missing": list(spec.missing),
+        "period_start": spec.period_start,
+        "period_end": spec.period_end,
     }
 
 
@@ -133,6 +145,10 @@ def spec_from_dict(data: dict) -> ChartSpec:
         value=data.get("value"),
         left_out=data.get("left_out"),
         days=data.get("days") if isinstance(data.get("days"), int) else None,
+        values=tuple(str(v) for v in (data.get("values") or ())),
+        missing=tuple(str(v) for v in (data.get("missing") or ())),
+        period_start=data.get("period_start") if isinstance(data.get("period_start"), str) else None,
+        period_end=data.get("period_end") if isinstance(data.get("period_end"), str) else None,
     )
 
 
@@ -526,9 +542,10 @@ def _prompt(
             "sum, average, min or max; value = the number column to add up. "
             "In a TABLE, a time scale (per month, weekly, over time) IS a "
             "breakdown: group_by = the table's date column, with that period. "
-            "Prefer a table when they ask about figures IN a document (sales, "
-            "budget, revenue, headcount); prefer a metric for activity in the "
-            "apps (edits, pull requests, tasks).\n\n"
+            "Use a table when the question is about one of the tables above. "
+            "Use a metric for activity in a connected app.\n"
+            + _v2_measure_rules() +
+            "\n"
             if tables else ""
         ) +
         f"Periods: {', '.join(registry.PERIODS)}\n"
@@ -701,12 +718,13 @@ def classify_question(
     # GitHub is offered as a destination only when it is actually connected.
     github = offer_github and "github" in providers
     try:
-        reply = llm.generate(
-            _prompt(question, metrics, github=github, missing=missing,
-                    tables=offered, fields=fields, chart_mode=not fail_open,
-                    names=names),
-            max_tokens=MAX_TOKENS,
-        )
+        reply = _classify_generate(llm, _prompt(
+            question, metrics, github=github, missing=missing,
+            tables=offered, fields=fields, chart_mode=not fail_open,
+            names=names,
+        ))
+    except CannotChart:
+        raise
     except Exception as exc:  # noqa: BLE001
         logger.warning("insights: chart resolution failed", exc_info=True)
         if fail_open:
@@ -718,6 +736,7 @@ def classify_question(
     intent = _parse_intent(
         reply, metrics, fail_open=fail_open, github=github,
         missing=missing, providers=providers, handles=handles, fields=fields,
+        question=question,
     )
     if not fail_open and not (intent.kind == "chart" and intent.spec is not None):
         # Chart mode, and the model said "written answer" or named no metric.
@@ -856,7 +875,12 @@ def _chart_the_named_table(question: str, reply: str, handles: dict) -> AskInten
         if isinstance(chart, str) and chart.strip() not in ("", "null", "none"):
             requested = chart.strip()
     try:
-        pick = doc_tables.pick_named(table, question, requested)
+        from ..config.settings import ChartsSettings
+
+        pick = doc_tables.pick_named(
+            table, question, requested,
+            require_name=ChartsSettings.from_env().v2_resolver,
+        )
     except doc_tables.TableRefusal as exc:
         return AskIntent("refuse", message=str(exc))
     return AskIntent("chart", spec=ChartSpec(
@@ -1046,6 +1070,7 @@ def _parse_intent(
     providers: list[str] | None = None,
     handles: dict | None = None,
     fields: dict | None = None,
+    question: str = "",
 ) -> AskIntent:
     """Parse and check the model's reply. Nothing gets the benefit of the doubt."""
     allowed = {m.key: m for m in metrics}
@@ -1061,6 +1086,11 @@ def _parse_intent(
         return AskIntent("qa") if fail_open else AskIntent("refuse", message=refusal)
     if not isinstance(data, dict):
         return AskIntent("qa") if fail_open else AskIntent("refuse", message=refusal)
+
+    if question and isinstance(data.get("requested"), list) and data.get("requested"):
+        decided = _from_requested(question, data, handles or {}, metrics)
+        if decided is not None:
+            return decided
 
     intent = data.get("intent")
 
@@ -1281,3 +1311,318 @@ def patch_spec(
         spec = replace(spec, period=period)
 
     return spec
+
+
+def _charts_v2() -> bool:
+    from ..config.settings import ChartsSettings
+
+    return ChartsSettings.from_env().v2_resolver
+
+
+def _v2_measure_rules() -> str:
+    """How to name each measure. Empty unless the resolver gate is on."""
+    if not _charts_v2():
+        return ""
+    return (
+        "For EVERY measure they asked for, add one object to \"requested\": "
+        "{\"words\": \"<their exact words for that one measure>\", "
+        "\"bind\": {\"table\": \"T1\", \"column\": \"<header>\"} "
+        "or {\"metric\": \"<key>\"} or null}. "
+        "words must be copied from their question. "
+        "Bind a column only when it IS that measure. "
+        "A wide table (one label column and several number columns) binds "
+        "each number column they named as its own requested entry. "
+        "Null bind when no listed column is that measure. Do not substitute "
+        "a different column.\n"
+    )
+
+
+def _json_object(text: str) -> bool:
+    match = _JSON_RE.search(text or "")
+    if not match:
+        return False
+    try:
+        data = json.loads(match.group(0))
+    except (ValueError, TypeError):
+        return False
+    return isinstance(data, dict)
+
+
+def _classify_generate(llm, prompt: str) -> str:
+    """Temperature 0. One retry when the reply is not JSON. A 429 is busy."""
+    from ..core.exceptions import LLMRateLimitError
+    from ..llm.base import call_generate
+
+    last = ""
+    for _attempt in range(2):
+        try:
+            last = call_generate(
+                llm, prompt, max_tokens=MAX_TOKENS, temperature=0, json_mode=True,
+            )
+        except LLMRateLimitError as exc:
+            raise CannotChart("**Charts are busy**\nTry again in a minute.") from exc
+        if _json_object(last):
+            return last
+    return last
+
+
+_PROVIDER_ALIAS = {
+    "drive": "google", "google": "google", "google drive": "google",
+    "notion": "notion", "slack": "slack", "linear": "linear", "github": "github",
+}
+
+
+def _from_requested(question: str, data: dict, handles: dict, metrics) -> AskIntent | None:
+    """Coverage gate. None when the reply has no usable ``requested`` entries,
+    so an older reply still takes the metric path."""
+    from ..config.settings import ChartsSettings
+    from ..doctables.periods import parse_period
+    from .coverage import (
+        Binding, MeasureAsk, choose_shape, cover, not_available, squashed,
+    )
+
+    if not ChartsSettings.from_env().v2_resolver:
+        return None
+    asks: list[MeasureAsk] = []
+    allowed = {m.key: m for m in metrics}
+    for item in data.get("requested") or []:
+        if not isinstance(item, dict):
+            continue
+        words = item.get("words")
+        if not isinstance(words, str) or not words.strip():
+            continue
+        bind = item.get("bind") if isinstance(item.get("bind"), dict) else {}
+        metric_key = bind.get("metric") if isinstance(bind.get("metric"), str) else None
+        metric = allowed.get(metric_key) if metric_key else None
+        asks.append(MeasureAsk(
+            words=words.strip(),
+            handle=bind.get("table") if isinstance(bind.get("table"), str) else None,
+            column=(
+                metric.label if metric else
+                bind.get("column") if isinstance(bind.get("column"), str) else None
+            ),
+            metric=metric.key if metric else None,
+        ))
+    if not asks:
+        return None
+
+    narrowed = _restrict_provider(question, data, handles)
+    if isinstance(narrowed, str):
+        return AskIntent("refuse", message=narrowed)
+    handles = narrowed
+    result = cover(
+        question, asks, handles, similarity=_embedding_similarity(),
+        bind_min=ChartsSettings.from_env().bind_min,
+    )
+    table_asks = [a for a in asks if not a.metric]
+    table_binds = [b for b in result.bound if b.table_id]
+    # Activity metrics keep the existing validator (focus, filters, split).
+    # A table measure that did not bind never falls through onto another column.
+    if not table_binds:
+        if not table_asks:
+            return None
+        titles = []
+        for table in handles.values():
+            title = getattr(table, "document_title", "") or ""
+            if title and title not in titles:
+                titles.append(title)
+        missing = list(result.missing) or [a.words for a in table_asks]
+        return AskIntent("refuse", message=not_available(missing, titles))
+    return _table_intent(question, data, handles, table_binds, result.missing)
+
+
+def _embedding_similarity():
+    """Cosine of two short strings with the routing embedder, memoised for one
+    question. None when no embedder is reachable: the format check still runs.
+
+    Measured on the Jina model (2026-10-12): true synonyms score 0.74-0.77
+    ("active customers" ~ "Active users"), while wrong pairs reach 0.59
+    ("revenue" ~ "Billing amount", "expenses" ~ "Revenue"). Hence
+    ``CHARTS_BIND_MIN`` = 0.70: below it a column is a hint, never a binding.
+    """
+    try:
+        from ..agent.routing import _probe_embedder
+
+        embedder = _probe_embedder()
+    except Exception:  # noqa: BLE001
+        return None
+    cache: dict[str, list[float]] = {}
+    broken: list[bool] = []
+
+    def vector(text: str) -> list[float]:
+        if text not in cache:
+            cache[text] = list(embedder.embed([text])[0])
+        return cache[text]
+
+    def similarity(left: str, right: str) -> float:
+        # An embedding outage (quota, network) costs the synonym match only:
+        # 0.0 binds nothing, and the format check still decides. One failure
+        # stops further calls for this question.
+        if broken:
+            return 0.0
+        try:
+            a, b = vector(left), vector(right)
+        except Exception:  # noqa: BLE001
+            logger.warning("insights: measure similarity unavailable", exc_info=True)
+            broken.append(True)
+            return 0.0
+        dot = sum(x * y for x, y in zip(a, b))
+        norm = (sum(x * x for x in a) ** 0.5) * (sum(y * y for y in b) ** 0.5)
+        return dot / norm if norm else 0.0
+
+    return similarity
+
+
+def _restrict_provider(question: str, data: dict, handles: dict):
+    from .coverage import squashed
+
+    words = data.get("source_words")
+    provider = data.get("provider")
+    if not isinstance(words, str) or squashed(words) not in squashed(question):
+        return handles
+    if not isinstance(provider, str):
+        return handles
+    wanted = _PROVIDER_ALIAS.get(provider.strip().lower())
+    if not wanted:
+        return handles
+    kept = {
+        handle: table for handle, table in handles.items()
+        if getattr(table, "provider", None) == wanted
+    }
+    if kept:
+        return kept
+    others = []
+    for table in handles.values():
+        title = getattr(table, "document_title", "") or getattr(table, "name", "")
+        where = getattr(table, "provider", "") or "another source"
+        if title:
+            others.append(f'"{title}" ({where})')
+    closest = others[0] if others else "another connected source"
+    label = "Drive" if wanted == "google" else wanted.title()
+    return f"No table in {label} matched. The closest is in {closest}."
+
+
+def _table_intent(question, data, handles, binds, missing) -> AskIntent:
+    from ..doctables.periods import parse_period
+    from .coverage import choose_shape, squashed
+
+    by_id: dict[str, list] = {}
+    for binding in binds:
+        by_id.setdefault(binding.table_id, []).append(binding)
+    table_id, chosen = max(by_id.items(), key=lambda item: len(item[1]))
+    table = next(t for t in handles.values() if t.id == table_id)
+    keys: list[str] = []
+    filters: list[tuple[str, str]] = []
+    units: list[str] = []
+    for binding in chosen:
+        if binding.series_keys:
+            keys.extend(binding.series_keys)
+            units.extend([binding.unit] * len(binding.series_keys))
+        elif binding.column_key:
+            keys.append(binding.column_key)
+            units.append(binding.unit)
+        filters.extend(binding.filters)
+    # One table only. Measures bound on a different table are missing.
+    left = [b.words for tid, group in by_id.items() if tid != table_id for b in group]
+    left.extend(missing)
+    keys = list(dict.fromkeys(keys))[:4]
+    if not keys:
+        return AskIntent("refuse", message="I couldn't tell which column to chart.")
+
+    group_by = _group_key(data, question, table)
+    group_col = table.column(group_by) if group_by else None
+    has_period = bool(group_col and group_col.get("type") in ("date", "period"))
+    shape_name = data.get("shape") if isinstance(data.get("shape"), str) else data.get("chart")
+    try:
+        shape = choose_shape(
+            shape_name, units=units or [""], n_measures=len(keys), has_period=has_period,
+        )
+    except ValueError as exc:
+        return AskIntent("refuse", message=f"I can't chart it that way. {exc}")
+    start, end = _period_bounds(question, data)
+    period = data.get("period") if data.get("period") in registry.PERIODS else DEFAULT_PERIOD
+    if has_period and isinstance(group_col, dict) and group_col.get("grain") in registry.PERIODS:
+        # A quarterly table is not split into months.
+        grain = group_col["grain"]
+        if registry.PERIODS.index(grain) > registry.PERIODS.index(period) if grain in registry.PERIODS and period in registry.PERIODS else False:
+            period = grain
+    note_missing = tuple(dict.fromkeys(m for m in left if m))
+    return AskIntent("chart", spec=ChartSpec(
+        metric=TABLE_METRIC,
+        group_by=group_by,
+        period=period,
+        chart=shape.shape,
+        measure="sum",
+        filters=tuple(sorted(set(filters))),
+        table_id=table.id,
+        value=keys[0] if len(keys) == 1 else None,
+        values=tuple(keys) if len(keys) > 1 else (),
+        missing=note_missing,
+        period_start=start,
+        period_end=end,
+        left_out=None,
+    ))
+
+
+def _group_key(data: dict, question: str, table) -> str | None:
+    from .coverage import squashed
+
+    raw = data.get("group_by")
+    words, column = None, None
+    if isinstance(raw, dict):
+        words, column = raw.get("words"), raw.get("column")
+    elif isinstance(raw, str):
+        column = raw
+        words = data.get("breakdown_words")
+    if isinstance(words, str) and words.strip() and squashed(words) not in squashed(question):
+        column = None
+    if not isinstance(column, str) or not column.strip():
+        # A wide table's only label column is the axis when several measures were bound.
+        labels = [c for c in table.columns if c.get("type") in ("category", "date", "period")]
+        numbers = [c for c in table.columns if c.get("type") == "number"]
+        if len(labels) == 1 and len(numbers) >= 2:
+            return labels[0]["key"]
+        return None
+    try:
+        return doc_tables._find(table, column, types=("category", "date", "period"), role="breakdown")
+    except doc_tables.TableRefusal:
+        return None
+
+
+def _period_bounds(question: str, data: dict) -> tuple[str | None, str | None]:
+    from ..doctables.periods import parse_period
+    from .coverage import squashed
+
+    raw = data.get("range")
+    if not isinstance(raw, dict):
+        return None, None
+    words, text = raw.get("words"), raw.get("text")
+    if not isinstance(words, str) or squashed(words) not in squashed(question):
+        return None, None
+    if not isinstance(text, str):
+        return None, None
+    parsed = parse_period(text, 1, heading=question)
+    if parsed is None:
+        return None, None
+    return parsed[0].isoformat(), parsed[1].isoformat()
+
+
+def _metric_intent(question, data, metrics, binding, missing) -> AskIntent | None:
+    """One activity metric that the quote actually names. Reuses the old spec."""
+    allowed = {m.key: m for m in metrics}
+    metric = allowed.get(binding.metric)
+    if metric is None:
+        return None
+    group_by = data.get("group_by") if isinstance(data.get("group_by"), str) else None
+    if group_by in ("", "null", "none"):
+        group_by = None
+    period = data.get("period") if data.get("period") in registry.PERIODS else DEFAULT_PERIOD
+    requested = data.get("chart") if isinstance(data.get("chart"), str) else None
+    return AskIntent("chart", spec=ChartSpec(
+        metric=metric.key,
+        group_by=group_by if group_by in query.group_dims(metric) else None,
+        period=period,
+        chart=_pick_chart(metric, group_by if group_by in query.group_dims(metric) else None, requested),
+        missing=tuple(missing),
+    ))
+
