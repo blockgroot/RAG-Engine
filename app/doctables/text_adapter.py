@@ -95,10 +95,56 @@ def _cell_in_quote(cell: str, quote_norm: str, quote_numbers: list[float]) -> bo
     return _norm(cell) in quote_norm
 
 
-def verify_rows(document: str, rows: list[dict]) -> list[tuple[list[str], str]]:
-    """``(cells, quote)`` for each row whose quote is in the document and whose
-    every cell is in its quote. Everything else is dropped -- never repaired."""
+#: How far before a clause its context (a heading, a list's lead-in) may end.
+CONTEXT_WINDOW = 400
+
+
+def _context_ok(context: str, quote_norm: str, doc_norm: str) -> bool:
+    """The context is in the document and sits just before the clause (or
+    contains it). Otherwise a label could be borrowed from anywhere."""
+    ctx = _norm(context)
+    if not ctx or ctx not in doc_norm:
+        return False
+    if quote_norm in ctx:
+        return True
+    at = doc_norm.find(quote_norm)
+    while at != -1:
+        start = doc_norm.rfind(ctx, max(0, at - CONTEXT_WINDOW - len(ctx)), at)
+        if start != -1 and at - (start + len(ctx)) <= CONTEXT_WINDOW:
+            return True
+        at = doc_norm.find(quote_norm, at + 1)
+    return False
+
+
+def _values_left(quote: str, labels: list[str]) -> list[float]:
+    """Numbers in the clause once the row's labels are taken out: "Q2 2026"
+    names a period, it is not a figure."""
+    text = _norm(quote)
+    for label in sorted((_norm(l) for l in labels if l), key=len, reverse=True):
+        text = text.replace(label, " ")
+    return _numbers_in(text)
+
+
+def verify_rows(document: str, rows: list[dict],
+                header: list[str] | None = None) -> list[tuple[list[str], str]]:
+    """``(cells, quote)`` for each row that passes every check. Everything else
+    is dropped -- never repaired.
+
+    1. The clause is in the document, and every cell is in the clause.
+    2. ONE figure per row, and the clause holds exactly that one figure once
+       the row's labels are removed. "Q1 revenue was ₹12L, Q2 grew to ₹15L"
+       holds two, so a row quoting it for Q2 is ambiguous and is dropped:
+       any-number matching used to accept ``["Q2", "₹12L"]``.
+    3. The figure's column is named: its header is in the clause or in the
+       row's ``context`` (verbatim, ending at most ``CONTEXT_WINDOW`` before
+       the clause), or the row carries the measure as a label of its own
+       (a "Metric | Value" table). A revenue figure filed under "Expenses"
+       fails here.
+    """
+    from ..insights.coverage import format_binds
+
     doc_norm = _norm(document)
+    header = header or []
     kept = []
     for row in rows[:MAX_ROWS]:
         if not isinstance(row, dict):
@@ -111,8 +157,19 @@ def verify_rows(document: str, rows: list[dict]) -> list[tuple[list[str], str]]:
         if len(quote_norm) < 6 or len(quote_norm) > 400 or quote_norm not in doc_norm:
             continue
         numbers = _numbers_in(quote)
-        if all(_cell_in_quote(c, quote_norm, numbers) for c in cells):
-            kept.append((cells, quote.strip()))
+        if not all(_cell_in_quote(c, quote_norm, numbers) for c in cells):
+            continue
+        figures = [i for i, c in enumerate(cells)
+                   if c.strip() and extract.parse_number(c)[0] is not None]
+        labels = [c for i, c in enumerate(cells) if i not in figures and c.strip()]
+        if len(figures) != 1 or len(_values_left(quote, labels)) != 1:
+            continue
+        context = row.get("context") if isinstance(row.get("context"), str) else ""
+        named_in = quote + (" " + context if context and _context_ok(context, quote_norm, doc_norm) else "")
+        name = header[figures[0]] if figures[0] < len(header) else ""
+        if header and (not name or not format_binds(name, named_in)):
+            continue
+        kept.append((cells, quote.strip()))
     return kept
 
 
@@ -124,18 +181,25 @@ def build_prompt(title: str, text: str) -> str:
         "as small tables a chart could be drawn from.\n\n"
         "Rules:\n"
         "- Only figures the text states. Never compute, total, convert or guess.\n"
-        "- One table per kind of figure (for example revenue by quarter). Columns "
-        "are short labels (Quarter, Region, Revenue). Cells are copied exactly as "
-        "written in the text (\"₹15L\", \"Q2\", \"North\").\n"
-        "- Every row MUST include \"quote\": the exact sentence (or clause) it was "
-        "read from, copied character for character. Every cell of the row must "
-        "appear inside that quote.\n"
+        "- One table per MEASURE (for example revenue by quarter; operating "
+        "expenses by quarter is another table). Columns are short labels: the "
+        "labels first (Quarter, Region, Plan), then ONE number column named with "
+        "the measure's words as the text writes them (Revenue, Churn rate) -- "
+        "never \"Value\" or \"Amount\". Cells are copied exactly as written "
+        "(\"₹15L\", \"Q2 FY26\", \"North\").\n"
+        "- Every row MUST include \"quote\": the SHORTEST clause holding that "
+        "row's one figure, copied character for character, with no other figure "
+        "in it. Every cell of the row must appear inside that quote. When the "
+        "measure's name or the period is written just before the clause (a "
+        "heading, \"Revenue by quarter:\", the start of the sentence), copy that "
+        "text into \"context\".\n"
         "- Skip figures that are not part of a comparable series (a single phone "
         "number, a page count, a date on its own).\n"
         "- If there are no such figures, return {\"tables\": []}.\n\n"
         "Reply with ONLY a JSON object:\n"
         '{"tables": [{"name": "<short title>", "columns": ["<label>", ...], '
-        '"rows": [{"cells": ["<text>", ...], "quote": "<exact sentence>"}]}]}\n\n'
+        '"rows": [{"cells": ["<text>", ...], "quote": "<exact clause>", '
+        '"context": "<exact text just before it, or null>"}]}]}\n\n'
         f"{UNTRUSTED_POLICY}"
         "<<<UNTRUSTED_DOCUMENT>>>\n"
         f"Title: {scrub_untrusted_text(title)[:200]}\n\n{fenced}\n"
@@ -177,26 +241,33 @@ class TextAdapter(DatasetAdapter):
         truncated = len(prose) > self._max_chars
         prose = prose[: self._max_chars]
         try:
-            reply = self._llm.generate(build_prompt(doc.title, prose), max_tokens=MAX_TOKENS)
+            from ..llm.base import call_generate
+
+            reply = call_generate(
+                self._llm, build_prompt(doc.title, prose),
+                max_tokens=MAX_TOKENS, temperature=0, json_mode=True,
+            )
         except Exception as exc:  # noqa: BLE001 - retried by the queue
             raise ProviderError("text adapter: model call failed", cause=exc) from exc
 
+        # A reply that is not the JSON asked for (cut off at the token cap, or
+        # prose) is a FAILURE to retry, never "this document has no figures":
+        # that used to mark the document done and its figures were never read.
         match = _JSON.search(reply or "")
         try:
-            data = json.loads(match.group(0)) if match else {}
-        except (ValueError, TypeError):
-            data = {}
+            data = json.loads(match.group(0)) if match else None
+        except (ValueError, TypeError) as exc:
+            raise ProviderError("text adapter: reply was not JSON", cause=exc) from exc
         found = data.get("tables") if isinstance(data, dict) else None
         if not isinstance(found, list):
-            logger.info("text adapter: no usable reply for %s", doc.external_id)
-            return []
+            raise ProviderError(f"text adapter: no usable reply for {doc.external_id}")
 
         out: list[extract.Table] = []
         for item in found[:MAX_TABLES]:
             if not isinstance(item, dict):
                 continue
             header = [str(c)[:80] for c in (item.get("columns") or [])][:MAX_COLUMNS]
-            rows = verify_rows(prose, item.get("rows") or [])
+            rows = verify_rows(prose, item.get("rows") or [], header)
             if len(header) < extract.MIN_COLUMNS or len(rows) < extract.MIN_ROWS:
                 continue
             notes = [TEXT_NOTE]

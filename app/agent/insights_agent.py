@@ -173,6 +173,8 @@ def _answer_table(spec: ChartSpec, *, org_id, workspace_id, viewer,
     caption = panel["title"] if panel["points"] else (
         f"{panel['title']}. No rows in that table match."
     )
+    if panel.get("missing"):
+        caption += " Not found: " + ", ".join(panel["missing"]) + "."
     return AgentResponse(answer=caption, grounded=bool(panel["points"]),
                          source=panel["provider"], chart=panel, chart_period=period)
 
@@ -207,23 +209,41 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
         col = table.column(key) if key else None
         if key and (col is None or col.get("type") not in types):
             raise CannotChart(f"I can't chart it that way: that column can't be the {role}.")
-    _need(spec.group_by, ("category", "date"), "breakdown")
+    _need(spec.group_by, ("category", "date", "period"), "breakdown")
     _need(spec.split_by, ("category",), "second breakdown")
+    measure_keys = list(spec.values) or ([spec.value] if spec.value else [])
     if (spec.measure or "count") != "count":
-        if not spec.value:
+        if not measure_keys:
             raise CannotChart("I can't chart it that way: there is no number column to add up.")
-        _need(spec.value, ("number",), "value to add up")
+        for key in measure_keys:
+            _need(key, ("number",), "value to add up")
     for key, _ in spec.filters:
         _need(key, ("category",), "filter")
     filters = tuple(
         (key, _match_table_value(table, key, raw)) for key, raw in spec.filters
     )
     try:
-        points = table_store.run_table_query(
-            table, measure=spec.measure or "count", value_key=spec.value,
-            group_key=spec.group_by, split_key=spec.split_by, period=spec.period,
-            filters=filters,
-        )
+        if len(measure_keys) > 1:
+            points = []
+            for key in measure_keys:
+                part = table_store.run_table_query(
+                    table, measure=spec.measure or "sum", value_key=key,
+                    group_key=spec.group_by, split_key=None, period=spec.period,
+                    filters=filters, period_start=spec.period_start,
+                    period_end=spec.period_end,
+                )
+                label = (table.column(key) or {}).get("name") or key
+                for point in part:
+                    points.append(table_store.TablePoint(
+                        point.bucket or point.group or "", label, None, point.value,
+                    ))
+        else:
+            points = table_store.run_table_query(
+                table, measure=spec.measure or "count", value_key=spec.value,
+                group_key=spec.group_by, split_key=spec.split_by, period=spec.period,
+                filters=filters, period_start=spec.period_start,
+                period_end=spec.period_end,
+            )
     except ValueError as exc:
         raise CannotChart(f"I can't chart it that way. {exc}") from exc
 
@@ -231,12 +251,17 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
         col = table.column(key) if key else None
         return col["name"] if col else key
 
-    value_col = table.column(spec.value) if spec.value else None
+    value_col = table.column(measure_keys[0]) if measure_keys else None
     measure = spec.measure or "count"
     title = describe.table_title(
         measure, value_col, name(spec.group_by) if spec.group_by else None,
         name(spec.split_by) if spec.split_by else None,
     )
+    if len(measure_keys) > 1:
+        labels = ", ".join((table.column(k) or {}).get("name", k) for k in measure_keys)
+        title = labels
+        if spec.group_by:
+            title += f" by {name(spec.group_by)}"
     for key, value in filters:
         title += f" — {name(key)}: {value}"
     title += f" — {table.name}"
@@ -246,7 +271,7 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
         title += " (taken from text)"
 
     group_col = table.column(spec.group_by) if spec.group_by else None
-    by_date = bool(group_col and group_col.get("type") == "date")
+    by_date = bool(group_col and group_col.get("type") in ("date", "period"))
     source = (f"From \"{table.document_title}\", the file you uploaded to this chat."
               if table.is_upload else f"From the table in \"{table.document_title}\".")
     notes = [source] + list(table.notes)
@@ -298,6 +323,13 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
         "table": {"id": table.id, "name": table.name, "document": table.document_title,
                   "origin": table.origin, "upload": table.is_upload},
     }
+    if len(measure_keys) > 1:
+        panel["series_units"] = {
+            (table.column(k) or {}).get("name", k): (table.column(k) or {}).get("unit") or ""
+            for k in measure_keys
+        }
+    if spec.missing:
+        panel["missing"] = list(spec.missing)
     return panel, spec.period
 
 

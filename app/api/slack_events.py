@@ -42,6 +42,7 @@ import hmac
 import re
 import logging
 import time
+from dataclasses import dataclass
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, status
 
@@ -54,11 +55,12 @@ from ..auth.users import get_user_by_email
 from ..sources.google_groups import viewer_for_person
 from ..jobs.autosync import request_sync_external
 from ..vectorstore.base import Viewer
-from ..config.settings import SlackSettings
+from ..chartrender import build_chart_renderer
+from ..config.settings import ChartsSettings, SlackSettings
 from ..core.exceptions import ProviderError
 from ..insights.resolve import spec_to_dict
 from ..db.connection import get_connection
-from ..sources.slack_utils import channel_tag, post_message, update_message
+from ..sources.slack_utils import channel_tag, post_message, update_message, upload_file
 from .deps import get_slack_agent
 
 logger = logging.getLogger(__name__)
@@ -232,6 +234,35 @@ def _dm_scopes(org_id: str, user_id: str) -> list[tuple[str | None, str]]:
     return scopes
 
 
+@dataclass(frozen=True)
+class SlackAnswer:
+    """What `_answer` produced: the text to post and, maybe, a chart to upload.
+
+    ``chart`` is set only when the chart will be sent as an image; then
+    ``text`` is the caption alone and ``with_values`` is the same reply with
+    the numbers written out, posted instead when the image cannot be.
+    """
+
+    text: str
+    chart: dict | None = None
+    period: str = "month"
+    with_values: str = ""
+
+
+def _asks_for_chart(question: str) -> bool:
+    """Does this mention ask to SEE a chart? The same question check Ask runs
+    (``resolve.classify_route``), so an indexed channel's mention reaches
+    Chart mode instead of the Slack-only pipeline, which cannot chart. Never
+    raises: a failed check is an ordinary question."""
+    try:
+        from ..insights.resolve import classify_route
+
+        return classify_route(question, github=False).chart_ask == "visual"
+    except Exception:  # noqa: BLE001
+        logger.warning("slack: chart question check failed", exc_info=True)
+        return False
+
+
 def _answer(
     question: str,
     org_id: str,
@@ -241,7 +272,7 @@ def _answer(
     user_id: str | None = None,
     viewer: Viewer | None = None,
     channel_id: str | None = None,
-) -> str:
+) -> SlackAnswer:
     """Run the existing pipeline. ``tags`` set => channel-scoped Slack only.
 
     ``scope_label`` names where the answer was allowed to look ("Company",
@@ -277,7 +308,7 @@ def _answer(
             channels=(channel_id,) if channel_id else (),
         )
 
-    if tags:
+    if tags and not _asks_for_chart(question):
         # Pinned to Slack and filtered to one channel. Goes through the agent's
         # pipeline rather than the routing graph because `Agent.answer` has no
         # tag argument -- and it must not gain one: a tag filter is meaningful
@@ -301,12 +332,14 @@ def _answer(
                 surface="slack",
                 gate_score=result.top_score,
             )
-        return _to_slack_mrkdwn(result.answer)
+        return SlackAnswer(_to_slack_mrkdwn(result.answer))
 
     # Slack has no Chart toggle: a question the question check reads as
     # asking to SEE a chart is answered in Chart mode; everything else is Ask.
+    # `viewer` is required for document tables: routing offers none without
+    # one. In a channel it is the public-only + this-channel viewer built above.
     decision = choose_agent(question, org_id, workspace_id=workspace_id,
-                            chart_from_words=True)
+                            viewer=viewer, chart_from_words=True)
     from ..agent.orchestration import build_agent_graph
     from .chat import _agent_getters
 
@@ -365,15 +398,24 @@ def _answer(
             surface="slack",
             gate_score=getattr(response, "top_score", None),
         )
-    body = _to_slack_mrkdwn(_with_chart_values(response))
-    if scope_label is None:
-        return body
     # WHICH source and WHICH scope, above the answer. With one box answering
     # from a company's Notion and from several private spaces, "where did this
     # come from?" is not answerable from the text -- and an answer whose origin
     # cannot be checked is the failure this whole codebase is arranged against.
     source = _SOURCE_LABELS.get(decision.agent_key, decision.agent_key)
-    return f"_{source} · {scope_label}_\n{body}"
+    label = "" if scope_label is None else f"_{source} · {scope_label}_\n"
+    with_values = label + _to_slack_mrkdwn(_with_chart_values(response))
+    chart = getattr(response, "chart", None)
+    if (isinstance(chart, dict) and chart.get("points")
+            and ChartsSettings.from_env().v2_slack_images):
+        # The picture carries the numbers; the text is the caption.
+        return SlackAnswer(
+            text=label + _to_slack_mrkdwn(response.answer),
+            chart=chart,
+            period=getattr(response, "chart_period", None) or "month",
+            with_values=with_values,
+        )
+    return SlackAnswer(with_values)
 
 
 def _count(value) -> str:
@@ -397,9 +439,9 @@ def _with_chart_values(response) -> str:
     `AgentResponse.chart` carries the counted rows, and the web UI draws them;
     Slack has no canvas. The caption alone ("Commits by author, last quarter")
     is a title with no data under it, which reads as the bot ignoring the
-    question -- so the buckets are printed. Deliberately NOT an image: a PNG of
-    numbers cannot be scrolled back to or re-scoped, which is the same reason
-    `app/insights/` renders SVG rather than generating pictures.
+    question -- so the buckets are printed. With `files:write` the chart is
+    uploaded as a picture instead (`_upload_chart`); these lines are what a
+    reply falls back to when it cannot be.
     """
     chart = getattr(response, "chart", None)
     points = (chart or {}).get("points") if isinstance(chart, dict) else None
@@ -546,7 +588,7 @@ def _handle(event: dict, team_id: str) -> None:
     placeholder_ts = post_message(token, channel, _SEARCHING, thread_ts)
 
     try:
-        answer = _answer(
+        reply = _answer(
             text,
             org_id,
             answer_workspace_id,
@@ -564,14 +606,61 @@ def _handle(event: dict, team_id: str) -> None:
         )
     except Exception as exc:  # noqa: BLE001 - a failed answer must still reply
         logger.warning("slack.bot answer failed for org %s: %s", org_id, exc, exc_info=True)
-        answer = _ERROR
+        reply = SlackAnswer(_ERROR)
 
     # Edit the placeholder when we have one, post fresh when we do not. A
     # failed edit must still deliver the answer: leaving "Searching..." in
     # place and dropping a grounded reply is the worst of both.
-    if placeholder_ts and update_message(token, channel, placeholder_ts, answer):
+    reply_ts = _deliver(token, channel, placeholder_ts, reply.text, thread_ts)
+    if reply.chart is None:
         return
-    post_message(token, channel, answer, thread_ts)
+    status = _upload_chart(token, channel, thread_ts, reply)
+    if status == "ok":
+        return
+    # No picture: the numbers go back into the text, so the caption is never
+    # a title with nothing under it.
+    fallback = reply.with_values
+    if status == "missing_scope":
+        fallback += f"\n{_RECONNECT_FOR_IMAGES}"
+    _deliver(token, channel, reply_ts, fallback, thread_ts)
+
+
+#: Shown under the text values when the connection lacks `files:write`.
+_RECONNECT_FOR_IMAGES = "_An admin can reconnect Slack to get chart images._"
+
+
+def _deliver(
+    token: str, channel: str, ts: str | None, text: str, thread_ts: str | None
+) -> str | None:
+    """Edit message ``ts`` into ``text``, or post it fresh. Returns the message ts."""
+    if ts and update_message(token, channel, ts, text):
+        return ts
+    return post_message(token, channel, text, thread_ts)
+
+
+def _upload_chart(token: str, channel: str, thread_ts: str | None, reply: SlackAnswer) -> str:
+    """Draw the chart and upload it under the caption. ``"ok"`` | ``"missing_scope"`` | ``"error"``.
+
+    The panel was built for this asker under the same access rules as the
+    text (a channel reply is public-only plus that channel), so the picture
+    discloses nothing the caption's numbers would not.
+    """
+    panel = reply.chart or {}
+    try:
+        png = build_chart_renderer().render_png(panel, period=reply.period)
+    except ProviderError as exc:
+        logger.warning("slack.bot chart render failed: %s", exc)
+        return "error"
+    title = panel.get("title") or "Chart"
+    return upload_file(
+        token, channel, png,
+        filename="chart.png",
+        title=title,
+        alt_text=panel.get("explain") or title,
+        # The caption is already posted as the message above the image.
+        initial_comment=None,
+        thread_ts=thread_ts,
+    )
 
 
 def _is_bot_traffic(event: dict, bot_users: set[str]) -> bool:

@@ -144,6 +144,8 @@ check (`resolve.classify_route`) decides a live GitHub read, `needs_live` and
 and code verifies what it can (a quote is in the question, a value has rows, a type
 came from the source). Format parsers (₹/lakh/k/%) and API enums are not intent.
 `ModelChoice.charts` marks the catalogued models that build charts.
+Chart mode classifies with the org's configured model at temperature 0, not the per-user Ask picker. With `CHARTS_V2_RESOLVER` on, each requested measure is kept only when its quote is in the question and the column is that measure (`insights/coverage.py`); an unbound measure is named as missing and is never replaced. Candidates under `CHARTS_CANDIDATE_MIN_COSINE` are not offered (`CHARTS_V2_CANDIDATES`).
+A connector the question NAMES (`routing.named_providers`) restricts Chart mode to that connector's tables and metrics, filtered before ranking; uploads are not offered then. A measure binds by its words or an abbreviation (`coverage.format_binds`: "opex" yes, "Pro" for profit no) or embedding similarity ≥ `CHARTS_BIND_MIN` (0.70, measured: wrong pairs reach 0.59); a closer-but-lower column is named as a hint, never drawn. When nothing offered answers, Chart mode reads up to `CHARTS_ONDEMAND_DOCS` unread documents LIVE through the source adapter (`doctables/ondemand.py`), never from chunks (chunks carry model-written context). A prose figure is kept only when its clause holds that ONE figure and its column header is in the clause or its `context` (`text_adapter.verify_rows`); a reply that is not JSON is a retry, never "no figures". The queue finishes only its own claim. Slack posts a chart as a PNG (`app/chartrender/`, `slack_utils.upload_file`, needs `files:write`) and falls back to text values.
 The prompt says what `actor` and `subject` ARE in each tool (Linear: assignee,
 team; `registry.ACTOR_LABELS`/`SUBJECT_LABELS`); bare keys sent "by team" to
 Linear's `project` field. An empty value is named in the tool's terms
@@ -254,6 +256,7 @@ app/sources/         Notion, Drive, Slack, Linear
 app/githublive/      GitHub, live, no vectors
 app/agent/           per-source agents and routing
 app/insights/        charts: registry, query grammar, document-table picks
+app/chartrender/     chart PNGs for Slack (matplotlib)
 app/doctables/       tables inside documents, kept as typed rows for charts
 app/graph/           knowledge graph
 app/livetools/       live re-reads

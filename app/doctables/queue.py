@@ -67,7 +67,7 @@ def _claim(limit: int) -> list[tuple]:
               FROM picked
              WHERE q.document_id = picked.document_id
             RETURNING q.document_id, q.org_id, q.workspace_id, q.origin,
-                      q.external_id, q.title, q.text, q.attempts
+                      q.external_id, q.title, q.text, q.attempts, q.claimed_at
             """,
             (limit,),
         ).fetchall()
@@ -75,14 +75,19 @@ def _claim(limit: int) -> list[tuple]:
     return rows
 
 
-def _finish(document_id, status: str) -> None:
+def _finish(document_id, status: str, claimed_at=None) -> bool:
+    """Close OUR claim. ``claimed_at`` is the claim's token: a document
+    re-queued while this tick read it has a NULL claim, so this finds no row
+    and the newer text stays pending instead of being overwritten to done."""
     with get_connection() as conn:
-        conn.execute(
+        cur = conn.execute(
             "UPDATE doc_text_queue SET status = %s, text = NULL, claimed_at = NULL, "
-            "updated_at = now() WHERE document_id = %s",
-            (status, document_id),
+            "updated_at = now() WHERE document_id = %s"
+            + (" AND claimed_at = %s" if claimed_at is not None else ""),
+            (status, document_id) + ((claimed_at,) if claimed_at is not None else ()),
         )
         conn.commit()
+        return cur.rowcount > 0
 
 
 def _release(document_id, *, refund: bool) -> None:
@@ -121,7 +126,7 @@ def run_pending(settings: DocTablesSettings | None = None, *, llm=None,
 
         finished = 0
         for (document_id, org_id, workspace_id, origin, external_id, title, text,
-             attempts) in _claim(settings.text_batch):
+             attempts, claimed_at) in _claim(settings.text_batch):
             adapter = adapters.get(origin)
             if adapter is None or not text:
                 _finish(document_id, "failed")
@@ -143,14 +148,22 @@ def run_pending(settings: DocTablesSettings | None = None, *, llm=None,
                 else:
                     _release(document_id, refund=False)
                 continue
-            if tables:
+            # Stored even when empty: nothing found now replaces figures an
+            # older version of the document had. One document's failure (it
+            # was re-ingested under a new id mid-read) never ends the batch.
+            try:
                 replace_document_tables(
                     str(document_id), org_id=str(org_id),
                     workspace_id=str(workspace_id) if workspace_id else None,
                     tables=tables, origin=origin,
                 )
-            _finish(document_id, "done")
-            finished += 1
+            except ProviderError:
+                logger.warning("doctables: could not store figures of %s", external_id,
+                               exc_info=True)
+                _release(document_id, refund=False)
+                continue
+            if _finish(document_id, "done", claimed_at):
+                finished += 1
         if finished:
             logger.info("doctables: read figures from %s document(s)", finished)
         return finished

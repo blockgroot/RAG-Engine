@@ -888,7 +888,11 @@ DEFAULT_SLACK_BOT_SCOPES = (
     # (reading DMs and mentions is already covered above). Adding it means
     # every existing connection must reconnect once to pick it up -- Slack
     # grants scopes at install time, never retroactively.
-    "chat:write,app_mentions:read"
+    "chat:write,app_mentions:read,"
+    # Slack charts as images (charts-v2 Phase 8): uploading a PNG of a chart
+    # into the reply thread needs `files:write`. Existing connections keep
+    # getting the text values until an admin reconnects.
+    "files:write"
 )
 
 # Phase 2 bounds (plan §6/D11 — "bound the walk itself" discipline, same as
@@ -2134,4 +2138,81 @@ class PersonalMemorySettings:
         return cls(
             enabled=env_bool("PERSONAL_MEMORY_ENABLED", False),
             max_facts=_env_positive_int("PERSONAL_MEMORY_MAX_FACTS", 30),
+        )
+
+
+@dataclass(frozen=True)
+class ChartsSettings:
+    """Chart generation gates from docs/plans/2026-10-12-charts-v2.md.
+
+    ``v2_candidates`` and ``v2_resolver`` default on: Chart mode does not
+    offer an unrelated table, and it does not draw a column that is not the
+    measure the question asked for. Set either to 0 to restore the previous
+    path. The rest stay off until that phase's eval gate passes.
+    """
+
+    v2_datasets: bool = False
+    v2_candidates: bool = True
+    v2_resolver: bool = True
+    v2_extraction: bool = True
+    v2_live: bool = False
+    v2_slack_images: bool = True
+    candidate_min_cosine: float = 0.30
+    bind_min: float = 0.70
+    max_measures: int = 4
+    ondemand_docs: int = 2
+    ondemand_budget_s: int = 20
+    text_max_total_chars: int = 60000
+    spec_cache_ttl_h: int = 24
+    trace_ttl_days: int = 14
+    classifier_max_tokens: int = 600
+
+    @classmethod
+    def from_env(cls) -> "ChartsSettings":
+        def _float(name: str, default: float) -> float:
+            raw = os.getenv(name)
+            if raw is None or not raw.strip():
+                return default
+            try:
+                return float(raw)
+            except ValueError:
+                return default
+
+        return cls(
+            v2_datasets=env_bool("CHARTS_V2_DATASETS", False),
+            v2_candidates=env_bool("CHARTS_V2_CANDIDATES", True),
+            v2_resolver=env_bool("CHARTS_V2_RESOLVER", True),
+            v2_extraction=env_bool("CHARTS_V2_EXTRACTION", True),
+            v2_live=env_bool("CHARTS_V2_LIVE", False),
+            v2_slack_images=env_bool("CHARTS_V2_SLACK_IMAGES", True),
+            candidate_min_cosine=_float("CHARTS_CANDIDATE_MIN_COSINE", 0.30),
+            bind_min=_float("CHARTS_BIND_MIN", 0.70),
+            max_measures=_env_positive_int("CHARTS_MAX_MEASURES", 4),
+            ondemand_docs=_env_positive_int("CHARTS_ONDEMAND_DOCS", 2),
+            ondemand_budget_s=_env_positive_int("CHARTS_ONDEMAND_BUDGET_S", 20),
+            text_max_total_chars=_env_positive_int("CHARTS_TEXT_MAX_TOTAL_CHARS", 60000),
+            spec_cache_ttl_h=_env_positive_int("CHARTS_SPEC_CACHE_TTL_H", 24),
+            trace_ttl_days=_env_positive_int("CHARTS_TRACE_TTL_DAYS", 14),
+            classifier_max_tokens=_env_positive_int("CHARTS_CLASSIFIER_MAX_TOKENS", 600),
+        )
+
+
+@dataclass(frozen=True)
+class ChartRenderSettings:
+    """Size of a chart drawn as a picture (Slack has no canvas to draw on).
+
+    1200x700 at 144 dpi is a 2x image of a ~600px-wide Slack preview: sharp on
+    a retina screen, small enough that a render stays well under a second.
+    """
+
+    width: int = 1200
+    height: int = 700
+    dpi: int = 144
+
+    @classmethod
+    def from_env(cls) -> "ChartRenderSettings":
+        return cls(
+            width=_env_positive_int("CHART_RENDER_WIDTH", 1200),
+            height=_env_positive_int("CHART_RENDER_HEIGHT", 700),
+            dpi=_env_positive_int("CHART_RENDER_DPI", 144),
         )
