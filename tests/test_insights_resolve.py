@@ -824,3 +824,25 @@ def test_a_refusal_names_fields_the_way_people_do():
         query.validate(metric, group_by=None, split_by=None, measure=None,
                        filters=(("state", "x"),))
     assert "Options: person" in str(err.value) and "actor" not in str(err.value)
+
+
+def test_one_page_with_several_tables_is_named_once():
+    """Company-wide listed Project Atlas five times: one page, five tables."""
+    from types import SimpleNamespace
+
+    title = "Project Atlas – Billing Platform Migration"
+    tables = [
+        SimpleNamespace(document_title=title, name=name)
+        for name in ("Billing", "Hours", "Billing")
+    ]
+    msg = resolve.chart_document_gap(
+        "From the quarterly update page in Notion, show the total budget "
+        "for each department using pie charts.",
+        "Quarterly update",
+        tables,
+        [],
+    )
+    assert msg.count(title) == 1
+    assert "Billing" in msg and "Hours" in msg
+    assert "don't see" in msg
+    assert "no table from that page" not in msg

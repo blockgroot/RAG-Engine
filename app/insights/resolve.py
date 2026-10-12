@@ -880,27 +880,34 @@ def chart_document_gap(question: str, named: str | None, tables, places) -> str 
     offered.discard("")
 
     def missing(title: str, *, workspace: str | None, has_table: bool) -> str:
-        shown = ", ".join(
-            f'"{getattr(t, "document_title", "")}"' for t in list(tables or [])[:6]
-            if getattr(t, "document_title", None)
-        )
-        tables_line = f"\nTables in this space: {shown}." if shown else ""
+        by_doc: dict[str, list[str]] = {}
+        for table in tables or []:
+            doc = getattr(table, "document_title", "") or ""
+            name = getattr(table, "name", "") or ""
+            key = doc or name
+            if not key or key in by_doc and (not name or name in by_doc[key]):
+                continue
+            names = by_doc.setdefault(key, [])
+            if name and _squashed(name) not in ("", _squashed(doc)) and name not in names:
+                names.append(name)
+        labels = []
+        for doc, names in list(by_doc.items())[:6]:
+            labels.append(f'"{doc}" ({", ".join(names)})' if names else f'"{doc}"')
+        shown = ", ".join(labels)
+        tables_line = f"\n\nTables in this space: {shown}." if shown else ""
         if workspace:
             return (
-                f"**\"{title}\" is not in this space**\n"
-                f"It is in the {workspace} workspace, so this space cannot "
-                f"chart it. Open that workspace and ask again."
+                f"**\"{title}\" is not in this space.**\n\n"
+                f"It is in the {workspace} workspace. Open that workspace and ask again."
                 + tables_line
             )
         if not has_table:
             return (
-                f"**I can see \"{title}\", but no table has been read from it**\n"
-                "A table is read when its page syncs. Sync it from Sources, "
-                "then ask again."
+                f"**I can see \"{title}\", but no table has been read from it.**\n\n"
+                "Sync it from Sources, then ask again."
             )
         return (
-            f"**I don't see \"{title}\" in this space**\n"
-            "There is no table from that page here, so I can't chart it. "
+            f"**I don't see \"{title}\" in this space.**\n\n"
             "If it lives in a workspace, open that workspace and ask again."
             + tables_line
         )
