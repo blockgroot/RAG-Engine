@@ -75,6 +75,22 @@ def _claim(limit: int) -> list[tuple]:
     return rows
 
 
+def mark_read(document_id: str, *, org_id: str, workspace_id: str | None,
+              external_id: str, title: str) -> None:
+    """A chart-time read found no series, so the next question does not call again.
+
+    A re-ingest deletes the document, and this row with it, so an edited page
+    is read again. Raises; the caller decides a missed mark only costs a repeat.
+    """
+    from .base import DocumentText
+
+    enqueue(
+        document_id, org_id=org_id, workspace_id=workspace_id, origin="text",
+        text=DocumentText(external_id=external_id, title=title or "", content=""),
+    )
+    _finish(document_id, "done")
+
+
 def _finish(document_id, status: str) -> None:
     with get_connection() as conn:
         conn.execute(

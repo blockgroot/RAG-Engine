@@ -242,6 +242,49 @@ def pick_named(table: TableRef, question: str, requested: str | None) -> TablePi
     )
 
 
+def prose_chart(table: TableRef) -> TablePick | None:
+    """The one chart of a table just read from sentences, or None.
+
+    One number column. When a second category is a period (Q1, 2026), the
+    other category is the series, which is a grouped bar. Two number columns
+    are not guessed between.
+    """
+    from ..doctables.extract import PERIOD_TOKEN
+
+    categories = [c for c in table.columns if c.get("type") == "category"]
+    dates = [c for c in table.columns if c.get("type") == "date"]
+    numbers = [c for c in table.columns if c.get("type") == "number"]
+    if len(numbers) != 1 or len(categories) + len(dates) > 2:
+        return None
+    if not categories and not dates:
+        return None
+
+    def period_key(cols: list[dict]) -> str | None:
+        best = None
+        best_hits = 0
+        for column in cols:
+            samples = [str(s).strip() for s in (column.get("samples") or []) if str(s).strip()]
+            if not samples:
+                continue
+            hits = sum(1 for sample in samples if PERIOD_TOKEN.match(re.sub(r"\s+", "", sample)))
+            if hits >= 1 and hits / len(samples) >= 0.5 and hits > best_hits:
+                best, best_hits = column["key"], hits
+        return best
+
+    group = dates[0]["key"] if len(dates) == 1 else period_key(categories)
+    if group is None and len(categories) == 1 and not dates:
+        group = categories[0]["key"]
+    if group is None:
+        return None
+    rest = [c["key"] for c in categories + dates if c["key"] != group]
+    if len(rest) > 1:
+        return None
+    return TablePick(
+        table_id=table.id, measure="sum", value=numbers[0]["key"], group_by=group,
+        split_by=rest[0] if rest else None, filters=(), chart="bar",
+    )
+
+
 def parse_pick(data: dict, handles: dict[str, TableRef]) -> TablePick | None:
     """Validate the model's table pick. None = it did not pick a table.
 

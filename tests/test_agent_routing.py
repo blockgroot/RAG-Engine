@@ -588,6 +588,58 @@ def test_a_named_linear_issue_is_read_live_and_saved(monkeypatch):
     assert len(saved["tables"][0].cells) == 2
 
 
+def test_a_named_page_of_sentences_is_read_for_figures(monkeypatch):
+    """No pipe table: the sentences are read and stored as text, not activity."""
+    import json
+    from types import SimpleNamespace
+
+    from app.livetools.base import OK, ProviderRead
+
+    page = (
+        "Quarterly update\n\n"
+        "Q1 revenue was ₹12L. In Q2 revenue grew to ₹15L. "
+        "Q3 revenue reached ₹18 lakh. Headcount stayed at 40. Churn was 2."
+    )
+    saved = {}
+
+    class _LLM:
+        def generate(self, prompt, *, max_tokens=None):
+            return json.dumps({"tables": [{
+                "name": "Revenue by quarter",
+                "columns": ["Quarter", "Revenue"],
+                "rows": [
+                    {"cells": ["Q1", "₹12L"], "quote": "Q1 revenue was ₹12L"},
+                    {"cells": ["Q2", "₹15L"], "quote": "In Q2 revenue grew to ₹15L"},
+                    {"cells": ["Q3", "₹18 lakh"], "quote": "Q3 revenue reached ₹18 lakh"},
+                ],
+            }]})
+
+    monkeypatch.setattr(
+        "app.doctables.store.find_chart_document",
+        lambda **k: ("doc-1", "notion", "page-1", "Quarterly update"),
+    )
+    monkeypatch.setattr(
+        "app.auth.credentials.get_live_connection_token", lambda *a, **k: "token",
+    )
+    monkeypatch.setattr(
+        "app.livetools.notion.read_page",
+        lambda token, external_id: ProviderRead(OK, text=page),
+    )
+    monkeypatch.setattr("app.llm.factory.build_llm_provider", lambda: _LLM())
+
+    def _save(document_id, **kwargs):
+        saved["id"] = document_id
+        saved["origin"] = kwargs.get("origin")
+        saved["tables"] = kwargs["tables"]
+        return 1
+
+    monkeypatch.setattr("app.doctables.store.replace_document_tables", _save)
+    viewer = SimpleNamespace(is_unrestricted=False, acl=lambda: ["a@b.c"])
+    assert routing._live_fetch_named_tables(ORG, None, viewer, "quarterly update")
+    assert saved["origin"] == "text"
+    assert [row["c0"] for row in saved["tables"][0].cells] == ["Q1", "Q2", "Q3"]
+
+
 def test_chart_mode_charts_the_table_a_live_read_just_saved(monkeypatch):
     """No stored table, then a live read: the second pass charts that page."""
     from types import SimpleNamespace
@@ -671,6 +723,75 @@ def test_chart_mode_names_what_can_be_charted_when_it_cannot_count(monkeypatch):
     decision = routing.choose_agent("chart of team happiness", ORG, chart_mode=True)
     assert decision.reason == "chart-refuse"
     assert decision.chart_refusal.startswith("**This can't be shown as a chart**")
+
+
+def test_chart_mode_charts_figures_read_from_a_paragraph_page(monkeypatch):
+    """A Notion page of sentences is read when nothing stored can be charted."""
+    from app.doctables.store import TableRef
+    from app.doctables.text_adapter import ProseRead
+    from app.insights.resolve import AskIntent, ChartSpec
+    from app.vectorstore.base import Viewer
+
+    table = TableRef(
+        id="t1", name="Quarterly figures", columns=(), row_count=9, truncated=False,
+        notes=(), document_title="Quarterly update", provider="notion", source_uri=None,
+        origin="text", document_id="doc-1",
+    )
+    seen = {}
+
+    def classify(question, **kwargs):
+        tables = kwargs.get("tables") or []
+        if any(getattr(item, "origin", "") == "text" for item in tables):
+            return AskIntent("chart", spec=ChartSpec(
+                metric="doc_table", group_by="c0", split_by="c1", period="month",
+                chart="bar", measure="sum", table_id="t1", value="c2",
+            ))
+        return AskIntent("refuse", message="**This can't be shown as a chart**\nno")
+
+    def listed(**kwargs):
+        return [table] if seen.get("read") else []
+
+    def read(**kwargs):
+        seen["read"] = True
+        seen["providers"] = kwargs.get("providers")
+        return ProseRead(("doc-1",), ())
+
+    _stub(monkeypatch, connected={"notion", "google"})
+    monkeypatch.setattr("app.insights.resolve.classify_question", classify)
+    monkeypatch.setattr("app.doctables.store.list_tables", listed)
+    monkeypatch.setattr("app.doctables.store.document_places", lambda **k: [])
+    monkeypatch.setattr("app.doctables.text_adapter.read_for_chart", read)
+    decision = routing.choose_agent(
+        "Create a grouped bar chart comparing revenue, headcount, and customer "
+        "churn across Q1, Q2, and Q3 in notion.",
+        ORG, chart_mode=True, viewer=Viewer(email="ada@example.com"),
+    )
+    assert decision.reason == "chart"
+    assert decision.chart_spec.table_id == "t1"
+    assert decision.chart_spec.split_by == "c1"
+    assert seen["providers"] == ["notion"]
+
+
+def test_a_specific_refusal_does_not_read_paragraphs(monkeypatch):
+    from app.insights.resolve import AskIntent
+    from app.vectorstore.base import Viewer
+
+    def boom(**kwargs):
+        raise AssertionError("paragraphs were read")
+
+    _stub(monkeypatch, connected={"notion", "google"})
+    monkeypatch.setattr(
+        "app.insights.resolve.classify_question",
+        lambda q, **k: AskIntent("refuse", message="**Which chart should this be?**\n\npages, files"),
+    )
+    monkeypatch.setattr("app.doctables.store.list_tables", lambda **k: [])
+    monkeypatch.setattr("app.doctables.store.document_places", lambda **k: [])
+    monkeypatch.setattr("app.doctables.text_adapter.read_for_chart", boom)
+    decision = routing.choose_agent(
+        "things edited per week", ORG, chart_mode=True, viewer=Viewer(email="ada@example.com"),
+    )
+    assert decision.reason == "chart-refuse"
+    assert "Which chart" in decision.chart_refusal
 
 
 def test_chart_mode_does_not_offer_a_live_code_read(monkeypatch):

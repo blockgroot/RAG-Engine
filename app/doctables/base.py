@@ -9,9 +9,10 @@ only in WHERE the rows come from:
   Sheet, a CSV, a pipe table in Notion/Docs, a Word table. No AI: the source
   already labels every number, so the rows are exact.
 - ``TextAdapter`` (``origin="text"``): figures written in sentences. Only an AI
-  can read prose into rows, so it runs in the BACKGROUND (never inside
-  ingestion), and code keeps a row only when every cell appears in the exact
-  sentence it was quoted from.
+  can read prose into rows, so the library sweep runs in the BACKGROUND
+  (never inside ingestion). Chart mode also reads the one or two matching
+  pages when a question would otherwise have no chart. Code keeps a row only
+  when every cell appears in its quote and each number sits with its measure.
 
 Two methods, split on purpose: ``wants`` is a cheap code check that runs at
 ingest for every document (no AI, no I/O), and ``extract`` does the work --

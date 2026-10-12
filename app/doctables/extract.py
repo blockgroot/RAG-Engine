@@ -38,6 +38,9 @@ TYPE_SHARE = 0.8
 MAX_CATEGORY_DISTINCT = 50
 
 COLUMN_TYPES = ("number", "date", "category", "text")
+#: A cell that names a period (Q1, H2, FY26, 2026). Format, not intent: it
+#: decides which column of a sentence-table is the axis.
+PERIOD_TOKEN = re.compile(r"^(?:q[1-4]|h[12]|fy\s?\d{2,4}|(?:19|20)\d{2})$", re.I)
 
 
 @dataclass(frozen=True)

@@ -397,6 +397,103 @@ def find_chart_document(
     return (row[0], row[1], row[2], row[3])
 
 
+#: Chunks of one page loaded when Chart mode reads its sentences. The text
+#: adapter cuts to its own character cap; this only stops a huge page loading
+#: whole. ponytail: a figure that starts past chunk 8 is unread until the page
+#: is shorter or this cap is raised.
+MAX_PROSE_CHUNKS = 8
+
+
+def matching_prose(
+    *, org_id: str, workspace_id: str | None, viewer, question: str,
+    providers: list[str] | None = None, limit: int = 6,
+) -> list[tuple[str, str, str, str, bool]]:
+    """Pages whose indexed text matches the question and have no sentence-figures yet.
+
+    ``(document_id, external_id, title, text, truncated)``. The viewer predicate
+    is on the document, in the same WHERE as ``org_id``. An unrestricted viewer
+    gets nothing: this is a person's chart question, not ingest.
+    """
+    question = (question or "").strip()[:500]
+    if not question or viewer is None or getattr(viewer, "is_unrestricted", False):
+        return []
+    access, params = _visible(viewer)
+    if not access:
+        return []
+    scope = _scoped("d", workspace_id)
+    query = (
+        "to_tsquery('english', replace(plainto_tsquery('english', %(question)s)::text, '&', '|'))"
+    )
+    sql = f"""
+        WITH ranked AS (
+            SELECT d.id, d.workspace_id, d.source_external_id, d.title,
+                   max(ts_rank(c.content_tsv, {query})) AS rank
+              FROM documents d
+              JOIN chunks c
+                ON c.document_id = d.id
+               AND c.org_id = d.org_id
+               AND c.workspace_id IS NOT DISTINCT FROM d.workspace_id
+             WHERE d.org_id = %(org_id)s
+               {scope}
+               AND c.content_tsv @@ {query}
+               AND (%(providers)s::text[] IS NULL OR d.source_provider = ANY(%(providers)s))
+               AND NOT EXISTS (
+                    SELECT 1 FROM doc_tables t
+                     WHERE t.document_id = d.id AND t.org_id = d.org_id
+                       AND t.origin = 'text'
+               )
+               AND NOT EXISTS (
+                    SELECT 1 FROM doc_text_queue q
+                     WHERE q.document_id = d.id AND q.org_id = d.org_id
+                       AND q.status = 'done'
+               )
+               {access}
+             GROUP BY d.id, d.workspace_id, d.source_external_id, d.title
+             ORDER BY rank DESC
+             LIMIT %(limit)s
+        )
+        SELECT r.id::text, coalesce(r.source_external_id, r.id::text), r.title,
+               c.chunk_index, c.content,
+               (SELECT count(*) FROM chunks c2
+                 WHERE c2.document_id = r.id AND c2.org_id = %(org_id)s
+                   AND c2.workspace_id IS NOT DISTINCT FROM r.workspace_id) AS nchunks
+          FROM ranked r
+          JOIN chunks c
+            ON c.document_id = r.id
+           AND c.org_id = %(org_id)s
+           AND c.workspace_id IS NOT DISTINCT FROM r.workspace_id
+           AND c.chunk_index < %(max_chunks)s
+         ORDER BY r.rank DESC, r.id, c.chunk_index
+    """
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                sql,
+                {"org_id": org_id, "workspace_id": workspace_id, "question": question,
+                 "providers": providers, "limit": limit, "max_chunks": MAX_PROSE_CHUNKS,
+                 **params},
+            ).fetchall()
+    except Exception as exc:  # noqa: BLE001
+        raise ProviderError("doctables: could not find pages with figures", cause=exc) from exc
+    order: list[str] = []
+    pages: dict[str, list] = {}
+    counts: dict[str, int] = {}
+    for document_id, external_id, title, _index, content, nchunks in rows:
+        if document_id not in pages:
+            order.append(document_id)
+            pages[document_id] = [external_id or document_id, title or "", []]
+            counts[document_id] = int(nchunks or 0)
+        pages[document_id][2].append(content or "")
+    out = []
+    for document_id in order:
+        external_id, title, chunks = pages[document_id]
+        out.append((
+            document_id, external_id, title, "\n".join(chunks),
+            counts[document_id] > MAX_PROSE_CHUNKS,
+        ))
+    return out
+
+
 def list_tables(
     *, org_id: str, workspace_id: str | None, viewer, limit: int = MAX_LISTED,
     title_query: str | None = None,

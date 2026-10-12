@@ -360,6 +360,30 @@ def chart_mode_refusal(providers: list[str]) -> str:
     return _refusal(_available(providers))
 
 
+def prose_figures_missing(titles: list[str]) -> str:
+    """A page was read and its sentences did not yield a series."""
+    shown = ", ".join(f'"{title}"' for title in titles[:3]) or "the matching page"
+    return (
+        "**This can't be shown as a chart**\n"
+        f"I read the sentences in {shown}. A chart needs each number to sit "
+        "with its measure in the same sentence, and that did not produce a "
+        "series to plot.\n"
+        "For a written answer, turn off Chart mode."
+    )
+
+
+def prose_figures_unclear(titles: list[str], tables: list[str]) -> str:
+    """Figures were read, and none of them is one comparison."""
+    shown = ", ".join(f'"{title}"' for title in titles[:3]) or "the matching page"
+    found = ", ".join(f'"{name}"' for name in tables[:4])
+    return (
+        "**This can't be shown as a chart**\n"
+        f"I read the sentences in {shown} and found {found}. "
+        "Name the measure and how to break it down.\n"
+        "For a written answer, turn off Chart mode."
+    )
+
+
 #: Ask's question check is short: two booleans.
 ROUTE_MAX_TOKENS = 40
 
@@ -509,6 +533,11 @@ def _prompt(
         "connector is the tag in brackets). This list is the contract, "
         "not a set of example questions:\n"
         f"{_catalogue(metrics, fields, names)}\n\n"
+        "Pick the metric the question's own words fit: a word that belongs to "
+        "one metric's label (files, pages, commits, tasks, conversations) or "
+        "a name listed above. Do not pick a different connector's metric for "
+        "those words. If the question fits none of them, metric null — do not "
+        "guess between two connectors that both count edits.\n\n"
         + (
             "NOT CONNECTED in this scope: " + ", ".join(missing) + ".\n"
             "If the question is about one of THOSE, reply "
@@ -533,7 +562,10 @@ def _prompt(
         ) +
         f"Periods: {', '.join(registry.PERIODS)}\n"
         "Shapes: line = over time; bar = ranking; pie = share of a whole "
-        "(needs group_by); stacked_bar = mix of states.\n\n"
+        "(needs group_by); stacked_bar = mix of states. "
+        "A grouped bar comparing several measures across the same periods is "
+        "chart=bar, group_by = the period column, split_by = the measure "
+        "column, value = the number column.\n\n"
         "Reply with ONLY a JSON object:\n"
         + (
             '{"intent": "qa"|"chart"|"github_live", "metric": "<key or null>", '
@@ -649,6 +681,269 @@ def _pick_chart(
     return _chart_for(metric, group_by)
 
 
+def _metric_words(metric: registry.Metric) -> set[str]:
+    """Words of this metric's own label and unit. Not a list of connectors."""
+    return {w for w in _squashed(f"{metric.label} {metric.unit}").split() if len(w) >= 4}
+
+
+def _operation_words() -> set[str]:
+    """Measure words shared by two or more connectors: "people", "count".
+
+    They describe how to count, not which resource is counted, so a question
+    that says "how many people" is not about the sentiment metric.
+    """
+    owners: dict[str, set[str]] = {}
+    for metric in registry.METRICS.values():
+        for measure in query.measures_for(metric).values():
+            for word in _squashed(measure.name).split():
+                if len(word) >= 4:
+                    owners.setdefault(word, set()).add(metric.provider)
+    return {word for word, found in owners.items() if len(found) > 1}
+
+
+def _label_evidence(question: str) -> tuple[set[str], set[str]]:
+    """Connectors whose own metric wording is in the question, and those words.
+
+    A word used by two connectors ("edited" is both pages and files) identifies
+    neither, and a shared measure word does not either. ``(providers, words)``.
+    """
+    skip = _operation_words()
+    owners: dict[str, set[str]] = {}
+    for metric in registry.METRICS.values():
+        for word in _metric_words(metric) - skip:
+            owners.setdefault(word, set()).add(metric.provider)
+    providers: set[str] = set()
+    words: set[str] = set()
+    for word in _squashed(question).split():
+        found = owners.get(word)
+        if found and len(found) == 1:
+            providers |= found
+            words.add(word)
+    return providers, words
+
+
+def _name_evidence(question: str, names: dict | None) -> set[str]:
+    """Connectors that hold a real subject or person the question names.
+
+    ``names`` is ``store.scope_names``: the rows this scope actually has.
+    A name stored on two connectors does not decide between them.
+    """
+    asked = f" {_squashed(question)} "
+    owners: dict[str, set[str]] = {}
+    for (provider, _kind), dims in (names or {}).items():
+        for values in dims.values():
+            for value in values:
+                phrase = _squashed(str(value))
+                if len(phrase.replace(" ", "")) < 3 or f" {phrase} " not in asked:
+                    continue
+                owners.setdefault(phrase, set()).add(provider)
+    found: set[str] = set()
+    for providers in owners.values():
+        if len(providers) == 1:
+            found |= providers
+    return found
+
+
+def _mentioned_tables(question: str, tables) -> list:
+    """Offered tables whose document or table name is in the question."""
+    hits = []
+    seen: set[str] = set()
+    for table in tables or []:
+        if table.id in seen:
+            continue
+        if title_mentioned(getattr(table, "document_title", "") or "", question) or title_mentioned(
+            getattr(table, "name", "") or "", question
+        ):
+            seen.add(table.id)
+            hits.append(table)
+    return hits
+
+
+def _choice_line(metrics: list[registry.Metric]) -> str:
+    labels = sorted({m.label.lower() for m in metrics})
+    return ", ".join(labels) or "nothing yet"
+
+
+def _spec_on_metric(spec: ChartSpec, metric: registry.Metric, fields) -> ChartSpec | None:
+    """The same chart on ``metric``. A breakdown that only fit the other
+    connector is dropped; a column key from a document table is not a
+    dimension here."""
+    metric_fields = (fields or {}).get(metric.key) if fields else None
+
+    def fits(group_by, split_by, measure, filters) -> bool:
+        try:
+            query.validate(
+                metric, group_by=group_by, split_by=split_by,
+                measure=measure, filters=filters, attrs=metric_fields,
+            )
+        except ValueError:
+            return False
+        return True
+
+    group_by, split_by = spec.group_by, spec.split_by
+    measure, filters = spec.measure, spec.filters
+    if spec.table_id or not fits(group_by, split_by, measure, filters):
+        group_by, split_by, measure, filters = None, None, None, ()
+        if not fits(None, None, None, ()):
+            return None
+    chart = spec.chart if spec.chart in _allowed_shapes(metric) else _chart_for(metric, group_by)
+    return replace(
+        spec, metric=metric.key, group_by=group_by, split_by=split_by,
+        measure=measure, filters=filters, table_id=None, value=None, chart=chart,
+    )
+
+
+def _best_metric(
+    provider: str, metrics: list[registry.Metric], words: set[str],
+) -> list[registry.Metric]:
+    """Metrics on ``provider`` the question's words actually fit.
+
+    The unique best overlap wins. No overlap means the question identified
+    the connector (a stored name, a document) but not which of its metrics.
+    """
+    scored = []
+    for metric in metrics:
+        if metric.provider != provider:
+            continue
+        overlap = words & _metric_words(metric)
+        if overlap:
+            scored.append((len(overlap), metric))
+    if not scored:
+        return []
+    best = max(score for score, _ in scored)
+    return [metric for score, metric in scored if score == best]
+
+
+def _chart_table(table, question: str, requested: str | None) -> AskIntent:
+    try:
+        pick = doc_tables.pick_named(table, question, requested)
+    except doc_tables.TableRefusal as exc:
+        return AskIntent("refuse", message=str(exc))
+    return AskIntent("chart", spec=ChartSpec(
+        metric=TABLE_METRIC, group_by=pick.group_by, period=DEFAULT_PERIOD,
+        chart=pick.chart, measure=pick.measure, filters=pick.filters,
+        table_id=pick.table_id, value=pick.value,
+    ))
+
+
+def _align_connector(
+    intent: AskIntent, question: str, metrics: list[registry.Metric],
+    handles: dict, fields: dict | None, names: dict | None,
+) -> AskIntent:
+    """Point the chart at the resource the question actually matches.
+
+    Not by a list of product names. A connector is the one whose own metrics
+    share the most words with the question ("files edited" fits files, not
+    pages), or that holds a subject, person, or document the question names.
+    A tie, including a word two connectors share, decides nothing.
+    Drive and Notion share ``doc_changed``, so a model pick of the other
+    connector draws the wrong rows. Nothing matched, and two connectors
+    share the picked kind: refuse, rather than draw one of them.
+    """
+    if intent.kind != "chart" or intent.spec is None:
+        return intent
+    spec = intent.spec
+    label_providers, words = _label_evidence(question)
+    providers = set(label_providers)
+    providers |= _name_evidence(question, names)
+    table_hits = _mentioned_tables(question, handles.values())
+    providers |= {table.provider for table in table_hits if table.provider}
+    connected = {metric.provider for metric in metrics}
+
+    if len(providers) == 1:
+        provider = next(iter(providers))
+        if provider not in connected:
+            return AskIntent("refuse", message=_unavailable_message(provider))
+        ours = [table for table in table_hits if table.provider == provider]
+        if spec.table_id and spec.table_id in {table.id for table in ours}:
+            return intent
+        if len(ours) == 1:
+            return _chart_table(ours[0], question, spec.chart)
+        if len(ours) > 1:
+            listed = ", ".join(f'"{table.document_title}"' for table in ours[:6])
+            return AskIntent(
+                "refuse",
+                message=(
+                    "**Which document should the chart use?**\n\n"
+                    f"The question matches more than one: {listed}."
+                ),
+            )
+        current = registry.METRICS.get(spec.metric)
+        if current is not None and current.provider == provider and not spec.table_id:
+            return intent
+        winners = _best_metric(provider, metrics, words)
+        if len(winners) != 1:
+            return AskIntent(
+                "refuse",
+                message=(
+                    "**Which chart should this be?**\n\n"
+                    "The question matches more than one thing I can count: "
+                    f"{_choice_line(winners or [m for m in metrics if m.provider == provider])}."
+                ),
+            )
+        moved = _spec_on_metric(spec, winners[0], fields)
+        if moved is None:
+            return AskIntent(
+                "refuse",
+                message=(
+                    f"**I can't chart that as {winners[0].label.lower()}.**\n\n"
+                    "The breakdown doesn't fit that chart."
+                ),
+            )
+        if moved.metric != spec.metric or moved.table_id != spec.table_id:
+            logger.info(
+                "insights: question matches %s; model picked %s; using %s",
+                provider, spec.metric, moved.metric,
+            )
+        return replace(intent, spec=moved)
+
+    if len(providers) > 1:
+        current = registry.METRICS.get(spec.metric)
+        if current is not None and current.provider in providers and not spec.table_id:
+            return intent
+        if spec.table_id and any(table.id == spec.table_id for table in table_hits):
+            return intent
+        return AskIntent(
+            "refuse",
+            message=(
+                "**Which chart should this be?**\n\n"
+                "The question matches more than one thing I can count: "
+                f"{_choice_line([m for m in metrics if m.provider in providers])}."
+            ),
+        )
+
+    # Nothing in the question picks a connector. A kind two connectors share
+    # would draw whichever the model guessed.
+    if spec.table_id:
+        table_providers = {table.provider for table in handles.values() if table.provider}
+        if len(table_providers) > 1:
+            listed = ", ".join(
+                f'"{table.document_title}"' for table in list(handles.values())[:6]
+            )
+            return AskIntent(
+                "refuse",
+                message=(
+                    "**Which document should the chart use?**\n\n"
+                    f"I can chart {listed}."
+                ),
+            )
+        return intent
+    current = registry.METRICS.get(spec.metric)
+    if current is None:
+        return intent
+    others = [m for m in metrics if m.kind == current.kind and m.provider != current.provider]
+    if not others:
+        return intent
+    return AskIntent(
+        "refuse",
+        message=(
+            "**Which chart should this be?**\n\n"
+            "Nothing in the question picks one of these, and they count different "
+            f"things: {_choice_line([current, *others])}."
+        ),
+    )
+
+
 def classify_question(
     question: str,
     *,
@@ -725,6 +1020,10 @@ def classify_question(
         rescued = _chart_the_named_table(question, reply, handles)
         if rescued is not None:
             intent = rescued
+    # The model may pick a connected connector the question did not name.
+    # Drive and Notion share one activity kind, so that pick draws the other
+    # connector's rows. The question's connector wins.
+    intent = _align_connector(intent, question, metrics, handles, fields, names)
     return replace(
         _note_range(_note_left_out(_honour_breakdown(intent, question, reply, fields),
                                    question, reply), question, reply),

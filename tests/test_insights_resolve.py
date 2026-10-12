@@ -800,6 +800,115 @@ def test_a_refusal_says_which_document_tables_exist_or_that_none_were_read():
     assert 'Document tables I can use: "Quarterly budget"' in some
 
 
+def _picked(metric):
+    return FakeLLM(json.dumps({
+        "intent": "chart", "metric": metric, "group_by": None,
+        "period": "week", "chart": "line",
+    }))
+
+
+def test_files_are_not_charted_as_notion_pages():
+    """The question never says Drive. "files" belongs to one metric, so a
+    Notion pick must not draw Notion pages."""
+    intent = resolve.classify_question(
+        "files edited per week",
+        providers=["notion", "google"], llm=_picked("docs_changed"), fail_open=False,
+    )
+    assert intent.kind == "chart"
+    assert intent.spec.metric == "drive_docs_changed"
+
+
+def test_pages_are_not_charted_as_drive_files():
+    intent = resolve.classify_question(
+        "pages edited per week",
+        providers=["notion", "google"], llm=_picked("drive_docs_changed"), fail_open=False,
+    )
+    assert intent.spec.metric == "docs_changed"
+
+
+def test_a_shared_kind_the_question_does_not_distinguish_is_refused():
+    """"edited" is both pages and files. Guessing one of them is the mix-up."""
+    intent = resolve.classify_question(
+        "things edited per week",
+        providers=["notion", "google"], llm=_picked("docs_changed"), fail_open=False,
+    )
+    assert intent.kind == "refuse" and intent.spec is None
+    assert "pages created or edited" in intent.message
+    assert "files created or edited" in intent.message
+
+
+def test_a_stored_name_picks_the_connector_that_holds_it():
+    """No product name in the question. The repository exists only on GitHub."""
+    intent = resolve.classify_question(
+        "commits in chain-guard per week",
+        providers=["notion", "github"], llm=_picked("docs_changed"), fail_open=False,
+        names={("github", "commit"): {"subject": ["chain-guard"], "actor": ["ada"]}},
+    )
+    assert intent.kind == "chart"
+    assert intent.spec.metric == "commits_by_author"
+
+
+def test_a_name_stored_on_two_connectors_does_not_decide():
+    intent = resolve.classify_question(
+        "what did ada edit per week",
+        providers=["notion", "google"], llm=_picked("docs_changed"), fail_open=False,
+        names={
+            ("notion", "doc_changed"): {"actor": ["ada"]},
+            ("google", "doc_changed"): {"actor": ["ada"]},
+        },
+    )
+    assert intent.kind == "refuse" and intent.spec is None
+
+
+def test_a_metric_that_is_not_connected_is_not_replaced_by_another():
+    """"conversations" is Slack's metric. Notion must not stand in for it."""
+    intent = resolve.classify_question(
+        "conversations per week",
+        providers=["notion"], llm=_picked("docs_changed"), fail_open=False,
+    )
+    assert intent.kind == "refuse"
+    assert "Slack" in intent.message and "not connected" in intent.message
+
+
+def test_a_named_document_is_charted_instead_of_another_connectors_metric():
+    llm = FakeLLM(json.dumps({
+        "intent": "chart", "metric": "drive_docs_changed", "period": "week", "chart": "bar",
+    }))
+    intent = resolve.classify_question(
+        "From the quarterly update, show the total budget for each department.",
+        providers=["notion", "google"], llm=llm, fail_open=False,
+        tables=[_budget_table()],
+    )
+    assert intent.kind == "chart"
+    assert intent.spec.table_id == "t1"
+    assert intent.spec.metric == resolve.TABLE_METRIC
+
+
+def test_two_documents_and_no_name_is_not_a_guess():
+    from app.doctables.store import TableRef
+
+    other = TableRef(
+        id="t2", name="Salaries",
+        columns=(
+            {"key": "c0", "name": "Team", "type": "category"},
+            {"key": "c1", "name": "Salary", "type": "number"},
+        ),
+        row_count=3, truncated=False, notes=(),
+        document_title="Payroll 2026", provider="google", source_uri=None,
+    )
+    llm = FakeLLM(json.dumps({
+        "intent": "chart", "metric": None, "table": "T1",
+        "group_by": "Department", "value": "Budget", "measure": "sum",
+    }))
+    intent = resolve.classify_question(
+        "chart the totals",
+        providers=["notion", "google"], llm=llm, fail_open=False,
+        tables=[_budget_table(), other],
+    )
+    assert intent.kind == "refuse"
+    assert "Quarterly update" in intent.message and "Payroll 2026" in intent.message
+
+
 def test_a_channel_sent_as_a_subject_filter_becomes_the_focus():
     """"How many different people started threads in #rag-updates each month"
     came back with the channel as a FILTER on subject and was refused as

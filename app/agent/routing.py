@@ -838,18 +838,142 @@ def _live_fetch_named_tables(org_id, workspace_id, viewer, title) -> bool:
         read = reader(token, external_id)
         if read.outcome != OK or not read.text:
             return False
-        tables = TableAdapter().extract(DocumentText(
+        doc = DocumentText(
             external_id=external_id, title=doc_title or title, content=read.text,
-        ))
+        )
+        adapter = TableAdapter()
+        tables = adapter.extract(doc)
+        origin = adapter.origin
         if not tables:
-            return False
+            # The page is sentences. The same check the upload path uses: the
+            # person is waiting, so this one page is read now.
+            from ..doctables.factory import build_upload_text_adapter
+            from ..doctables.queue import mark_read
+            from ..llm.factory import build_llm_provider
+
+            text = build_upload_text_adapter(build_llm_provider())
+            if text.wants(doc):
+                tables = text.extract(doc)
+                origin = text.origin
+            if not tables:
+                if text.wants(doc):
+                    mark_read(
+                        document_id, org_id=org_id, workspace_id=workspace_id,
+                        external_id=external_id, title=doc_title or title,
+                    )
+                return False
         replace_document_tables(
             document_id, org_id=org_id, workspace_id=workspace_id, tables=tables,
+            origin=origin,
         )
         return True
     except Exception:  # noqa: BLE001 - a live read may only add a table
         logger.warning("Agent routing: live table read failed", exc_info=True)
         return False
+
+
+def _providers_named(question: str, connected: set[str]) -> list[str] | None:
+    """Provider ids that appear as words in the question.
+
+    The stored id (``notion``, ``google``), not a display name. "in notion"
+    keeps the read on Notion pages; a question that names no id searches
+    every connected source.
+    """
+    words = set(re.findall(r"[a-z0-9]+", (question or "").lower()))
+    named = [provider for provider in connected if provider and provider.lower() in words]
+    return named or None
+
+
+def _worth_prose(intent, viewer) -> bool:
+    """Chart mode has no chart yet, and the refusal is not already specific."""
+    from ..vectorstore.base import Viewer
+
+    if not isinstance(viewer, Viewer) or viewer.is_unrestricted:
+        return False
+    if getattr(intent, "kind", None) == "chart" and getattr(intent, "spec", None) is not None:
+        return False
+    message = getattr(intent, "message", None) or ""
+    if intent.kind == "refuse" and message and not message.startswith(
+        "**This can't be shown as a chart**"
+    ):
+        return False
+    return intent.kind in ("refuse", "qa", "chart")
+
+
+def _chart_from_prose(question, intent, connected, org_id, workspace_id, viewer, providers):
+    """Chart figures from the page the question matches, or say the sentences had none.
+
+    None leaves the caller's own refusal in place. An activity metric is not
+    substituted when the page does not yield a series.
+    """
+    if not _worth_prose(intent, viewer):
+        return None
+    from ..doctables.store import list_tables
+    from ..doctables.text_adapter import read_for_chart
+    from ..insights.resolve import (
+        DEFAULT_PERIOD,
+        TABLE_METRIC,
+        ChartSpec,
+        classify_question,
+        prose_figures_missing,
+        prose_figures_unclear,
+    )
+    from ..insights import tables as doc_tables
+    from ..llm.factory import build_llm_provider
+
+    try:
+        read = read_for_chart(
+            org_id=org_id, workspace_id=workspace_id, viewer=viewer, question=question,
+            providers=_providers_named(question, set(connected)), llm=build_llm_provider(),
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("Agent routing: paragraph read failed", exc_info=True)
+        return None
+    fresh = []
+    if read.document_ids:
+        try:
+            listed = list_tables(org_id=org_id, workspace_id=workspace_id, viewer=viewer)
+            wanted = set(read.document_ids)
+            fresh = [table for table in listed if table.document_id in wanted]
+        except Exception:  # noqa: BLE001
+            logger.warning("Agent routing: could not list figures just read", exc_info=True)
+            fresh = []
+    if fresh:
+        again = None
+        try:
+            again = classify_question(
+                question, providers=providers, fail_open=False, offer_github=False,
+                tables=fresh,
+                fields=_chart_fields(org_id, workspace_id, viewer),
+                names=_chart_names(org_id, workspace_id, viewer),
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("Agent routing: chart of the read page failed", exc_info=True)
+        fresh_ids = {table.id for table in fresh}
+        spec = getattr(again, "spec", None)
+        if getattr(again, "kind", None) == "chart" and spec is not None and spec.table_id in fresh_ids:
+            return RoutingDecision(INSIGHTS_KEY, "chart", chart_spec=spec)
+        if len(fresh) == 1:
+            pick = doc_tables.prose_chart(fresh[0])
+            if pick is not None:
+                return RoutingDecision(INSIGHTS_KEY, "chart", chart_spec=ChartSpec(
+                    metric=TABLE_METRIC, group_by=pick.group_by, split_by=pick.split_by,
+                    period=DEFAULT_PERIOD, chart=pick.chart, measure=pick.measure,
+                    filters=pick.filters, table_id=pick.table_id, value=pick.value,
+                ))
+        return RoutingDecision(
+            INSIGHTS_KEY, "chart-refuse",
+            chart_refusal=prose_figures_unclear(
+                sorted({table.document_title for table in fresh}),
+                [table.name for table in fresh],
+            ),
+        )
+    if read.empty_titles:
+        return RoutingDecision(
+            INSIGHTS_KEY, "chart-refuse",
+            chart_refusal=prose_figures_missing(list(read.empty_titles)),
+        )
+    return None
 
 
 def _chart_mode_route(
@@ -932,6 +1056,11 @@ def _chart_mode_route(
     gap = _document_gap(question, intent, tables, org_id, workspace_id, viewer, user_id)
     if gap:
         return RoutingDecision(INSIGHTS_KEY, "chart-refuse", chart_refusal=gap)
+    prose = _chart_from_prose(
+        question, intent, connected, org_id, workspace_id, viewer, providers,
+    )
+    if prose is not None:
+        return prose
     if intent.kind == "refuse" and intent.message:
         return RoutingDecision(INSIGHTS_KEY, "chart-refuse", chart_refusal=intent.message)
     if intent.kind in ("qa", "github_live"):

@@ -142,7 +142,14 @@ check (`resolve.classify_route`) decides a live GitHub read, `needs_live` and
 `chart_ask` ("visual" gets the Chart-mode hint, "count" the Turn on Chart button).
 **No word list decides intent anywhere in charts**: the model reads the question
 and code verifies what it can (a quote is in the question, a value has rows, a type
-came from the source). Format parsers (₹/lakh/k/%) and API enums are not intent.
+came from the source). Which connector a chart uses is decided the same way,
+not by a list of product names: a word that belongs to only one metric's own
+label or unit ("files", "pages", "commits"), or a subject, person, or document
+title that exists on only one connector in this scope. Drive and Notion share
+`doc_changed`, so the provider on the query is what keeps their rows apart —
+a pick the question does not match is moved to the metric it does match, and
+a shared kind the question does not distinguish is refused rather than drawn.
+Format parsers (₹/lakh/k/%) and API enums are not intent.
 `ModelChoice.charts` marks the catalogued models that build charts.
 The prompt says what `actor` and `subject` ARE in each tool (Linear: assignee,
 team; `registry.ACTOR_LABELS`/`SUBJECT_LABELS`); bare keys sent "by team" to
@@ -199,8 +206,15 @@ Document tables are filled by dataset adapters (`doctables/base.py`); each
 adapter replaces only its own `origin`. Ingestion never calls a model for
 charts: an AI adapter (`background = True`) only enqueues, and the tick reads
 `doc_text_queue` within the background budget. A figure read from prose is kept
-only when its quote is in the document and every cell is in its quote; a
-mismatch is dropped, never repaired, and the chart says "taken from text".
+only when its quote is in the document, every cell is in that quote, and the
+number sits in one clause with its measure (a period named earlier in the
+same sentence still counts). A number nearer a different measure is dropped,
+never repaired; the chart says "taken from text", and a dropped row is named
+so a partial series is not presented as complete. Chart mode, when nothing
+stored is chartable, reads the sentences of at most two pages the asker can
+open whose text matches the question. The background flag still governs the
+library sweep. A page whose sentences yield no series is said so, and an
+activity chart is not drawn in its place.
 `DOCTABLES_TEXT_ENABLED` stays off unless background quota is budgeted for it.
 A sync skips unchanged documents, so `documents.tables_checked_at` marks what the
 adapters have read; `backfill_tables` re-fetches a bounded batch of unchecked
