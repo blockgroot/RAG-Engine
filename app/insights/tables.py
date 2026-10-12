@@ -8,12 +8,11 @@ HEADER TEXT; this module maps each name to the table's own column key and
 refuses, naming the options, anything that does not fit: a sum of a text
 column, a grouping by free text, a filter on a number.
 
-Which tables are offered is decided by MEANING, not by shared words: the
-question is compared with the stored embeddings of each table's document (a
-Sheet's description of its columns, a page's text) -- the same index and
-model retrieval uses, so it works in any wording or language and needs no
-stop-word list. A table whose document does not clear the retrieval gate is
-not offered: listing an unrelated sheet invites the model to chart it.
+Which tables are offered is the same merge Ask uses: the question against
+each table's document embedding, and the any-word keyword match on that
+document's text and title. Reciprocal rank fusion orders them. A table is
+never dropped for a low score: a page that is mostly numbers embeds poorly,
+and the words the asker used are what still find it.
 """
 
 from __future__ import annotations
@@ -31,53 +30,88 @@ MEASURES = ("count",) + tuple(AGGREGATES)
 
 def document_similarity(
     question: str, tables: list[TableRef], *, org_id: str, workspace_id: str | None,
-) -> dict[str, float] | None:
-    """Best cosine between the question and each table's document, by
-    document id. ``None`` when it cannot be measured (no embedder, no
-    database): the caller then offers the newest tables instead."""
+) -> tuple[dict[str, float], dict[str, float]] | None:
+    """Cosine and keyword score of the question against each table's document.
+
+    ``(cosine, keywords)`` by document id. The keyword score is the any-word
+    match Ask uses, on the chunk text or the document title, whichever is
+    stronger. ``None`` when it cannot be measured (no embedder, no database):
+    the caller then offers the newest tables instead.
+    """
     ids = sorted({t.document_id for t in tables if t.document_id})
     if not question or not ids:
-        return {}
+        return {}, {}
     try:
         from ..agent.routing import _probe_embedder
         from ..db.connection import get_connection
+        from ..vectorstore.pgvector_store import _ANY_WORD
 
         vector = _probe_embedder().embed([question])[0]
         with get_connection() as conn:
             rows = conn.execute(
-                """
-                SELECT c.document_id::text, MAX(1 - (c.embedding <=> %s::vector))
+                f"""
+                SELECT c.document_id::text,
+                       MAX(1 - (c.embedding <=> %s::vector)),
+                       GREATEST(
+                         COALESCE(MAX(ts_rank(c.content_tsv, {_ANY_WORD})), 0),
+                         ts_rank(
+                           to_tsvector('english', coalesce(MAX(d.title), '')),
+                           {_ANY_WORD}))
                   FROM chunks c
+                  JOIN documents d ON d.id = c.document_id AND d.org_id = c.org_id
                  WHERE c.org_id = %s
                    AND c.workspace_id IS NOT DISTINCT FROM %s
                    AND c.document_id = ANY(%s::uuid[])
                  GROUP BY c.document_id
                 """,
-                (vector, org_id, workspace_id, ids),
+                (vector, question, question, org_id, workspace_id, ids),
             ).fetchall()
     except Exception:  # noqa: BLE001 - ranking is a convenience, never a failure
         return None
-    return {r[0]: float(r[1]) for r in rows if r[1] is not None}
+    cosine = {r[0]: float(r[1]) for r in rows if r[1] is not None}
+    keywords = {r[0]: float(r[2]) for r in rows if r[2]}
+    return cosine, keywords
 
 
 def rank(
     tables: list[TableRef], scores: dict[str, float] | None, *,
     floor: float, limit: int = MAX_OFFERED,
+    keywords: dict[str, float] | None = None,
 ) -> list[TableRef]:
-    """Tables closest to the question first; those clearing ``floor`` lead.
+    """Tables closest to the question first, capped at ``limit``.
 
-    Below the floor is ORDER, never removal: a page that is mostly a table
-    embeds as numbers and scored under the gate, so "chart the quarterly
-    budget page" was offered no table at all. The model sees each table's
-    document title and picks, or refuses naming what exists.
-
-    ``scores`` is ``document_similarity``; ``None`` (unmeasurable) keeps the
-    given order -- newest document first -- capped at ``limit``.
+    ``scores`` is the cosine half of ``document_similarity``. Below ``floor``
+    is order, never removal. ``keywords`` is the any-word half; the two lists
+    are merged with the same reciprocal-rank fusion Ask uses, so a page the
+    question names can lead even when its text embeds as numbers. ``None``
+    scores (unmeasurable) keep the given order -- newest document first.
     """
     if scores is None:
         return list(tables)[:limit]
-    scored = [(scores.get(t.document_id or "", 0.0), i, t) for i, t in enumerate(tables)]
-    ordered = sorted(scored, key=lambda s: (s[0] < floor, -s[0], s[1]))
+    if not keywords:
+        scored = [(scores.get(t.document_id or "", 0.0), i, t) for i, t in enumerate(tables)]
+        ordered = sorted(scored, key=lambda s: (s[0] < floor, -s[0], s[1]))
+        return [t for _, _, t in ordered[:limit]]
+    from ..config.settings import DEFAULT_RETRIEVAL_RRF_K
+
+    docs: list[str] = []
+    seen: set[str] = set()
+    for table in tables:
+        doc = table.document_id or ""
+        if doc not in seen:
+            seen.add(doc)
+            docs.append(doc)
+    by_cosine = sorted(docs, key=lambda d: scores.get(d, 0.0), reverse=True)
+    by_keyword = sorted(
+        (d for d in docs if keywords.get(d, 0.0) > 0),
+        key=lambda d: keywords[d], reverse=True,
+    )
+    fused: dict[str, float] = {}
+    for leg in (by_cosine, by_keyword):
+        for place, doc in enumerate(leg):
+            fused[doc] = fused.get(doc, 0.0) + 1.0 / (DEFAULT_RETRIEVAL_RRF_K + place + 1)
+    scored = [(fused.get(t.document_id or "", 0.0), i, t) for i, t in enumerate(tables)]
+    ordered = sorted(scored, key=lambda s: (-s[0], s[1]))
     return [t for _, _, t in ordered[:limit]]
 
 

@@ -166,6 +166,20 @@ def test_tables_are_offered_by_meaning_closest_first():
     assert doc_tables.rank([hiring, sales], {"d-sales": 0.1}, floor=0.35) == [sales, hiring]
 
 
+def test_a_keyword_match_is_merged_ahead_of_a_closer_embedding():
+    """A budget table embeds as numbers and loses a cosine race. The words
+    in the question still bring that page forward, fused with the cosine."""
+    sales = _ref(document_id="d-sales")
+    update = _ref(name="Budget", document_title="Quarterly update", document_id="d-update")
+    offered = doc_tables.rank(
+        [sales, update],
+        {"d-sales": 0.9, "d-update": 0.2},
+        floor=0.35,
+        keywords={"d-update": 0.4},
+    )
+    assert offered[0].document_id == "d-update"
+
+
 def test_unmeasurable_similarity_offers_the_newest_tables():
     tables = [_ref(name=f"T{i}", document_id=f"d{i}") for i in range(9)]
     assert doc_tables.rank(tables, None, floor=0.35) == tables[:doc_tables.MAX_OFFERED]

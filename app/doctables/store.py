@@ -257,8 +257,18 @@ class DocumentPlace:
 _TITLE_CAP = 400
 
 
+def _title_like(fragment: str | None) -> str | None:
+    """A bound ILIKE pattern for a page title the asker named. None when it
+    is too short to be a title. ``%`` and ``_`` in the name are not wildcards."""
+    text = re.sub(r"[%_\\]", "", (fragment or "").strip())
+    if len(re.sub(r"\W", "", text)) < 8:
+        return None
+    return f"%{text}%"
+
+
 def document_places(
     *, org_id: str, workspace_id: str | None, viewer, user_id: str | None,
+    title_query: str | None = None,
 ) -> list[DocumentPlace]:
     """Titles this viewer may see, in this scope and in workspaces they belong to.
 
@@ -311,16 +321,94 @@ def document_places(
                     {"org_id": org_id, "workspace_id": workspace_id,
                      "user_id": user_id, "limit": _TITLE_CAP, **params},
                 ).fetchall()
+            # The newest-400 list misses an older page. The title they named
+            # is looked up on its own, still only in scopes they can see.
+            like = _title_like(title_query)
+            if like:
+                rows += conn.execute(
+                    f"""
+                    SELECT d.title, NULL::text, {has_table}
+                      FROM documents d
+                     WHERE d.org_id = %(org_id)s AND {scope}
+                       AND d.title ILIKE %(like)s
+                       {access}
+                     LIMIT 20
+                    """,
+                    {"org_id": org_id, "workspace_id": workspace_id, "like": like, **params},
+                ).fetchall()
+                if user_id:
+                    rows += conn.execute(
+                        f"""
+                        SELECT d.title, w.name, {has_table}
+                          FROM documents d
+                          JOIN workspaces w ON w.id = d.workspace_id AND w.org_id = d.org_id
+                          JOIN workspace_members wm
+                            ON wm.workspace_id = w.id AND wm.user_id = %(user_id)s::uuid
+                         WHERE d.org_id = %(org_id)s
+                           AND d.workspace_id IS DISTINCT FROM %(workspace_id)s::uuid
+                           AND d.title ILIKE %(like)s
+                           {access}
+                         LIMIT 20
+                        """,
+                        {"org_id": org_id, "workspace_id": workspace_id,
+                         "user_id": user_id, "like": like, **params},
+                    ).fetchall()
     except Exception as exc:  # noqa: BLE001
         raise ProviderError("doctables: could not look up document titles", cause=exc) from exc
     return [DocumentPlace(title=r[0], workspace_name=r[1], has_table=bool(r[2])) for r in rows]
 
 
+def find_chart_document(
+    *, org_id: str, workspace_id: str | None, viewer, title_query: str | None,
+) -> tuple[str, str, str, str] | None:
+    """One Notion, Drive, or Linear document in this scope whose title matches, or None.
+
+    ``(id, provider, external_id, title)``. The live chart read uses this so
+    it can only re-read a page the asker may already open here.
+    """
+    like = _title_like(title_query)
+    if not like or viewer is None or getattr(viewer, "is_unrestricted", False):
+        return None
+    access, params = _visible(viewer)
+    scope = (
+        "d.workspace_id IS NULL" if workspace_id is None
+        else "d.workspace_id = %(workspace_id)s"
+    )
+    try:
+        with get_connection() as conn:
+            row = conn.execute(
+                f"""
+                SELECT d.id::text, d.source_provider, d.source_external_id, d.title
+                  FROM documents d
+                 WHERE d.org_id = %(org_id)s AND {scope}
+                   AND d.source_provider IN ('notion', 'google', 'linear')
+                   AND d.source_external_id IS NOT NULL
+                   AND d.title ILIKE %(like)s
+                   {access}
+                 ORDER BY d.source_last_modified DESC NULLS LAST
+                 LIMIT 1
+                """,
+                {"org_id": org_id, "workspace_id": workspace_id, "like": like, **params},
+            ).fetchone()
+    except Exception as exc:  # noqa: BLE001
+        raise ProviderError("doctables: could not find the named page", cause=exc) from exc
+    if row is None or not row[2]:
+        return None
+    return (row[0], row[1], row[2], row[3])
+
+
 def list_tables(
     *, org_id: str, workspace_id: str | None, viewer, limit: int = MAX_LISTED,
+    title_query: str | None = None,
 ) -> list[TableRef]:
-    """Every table this viewer may chart in this scope, newest document first."""
+    """Every table this viewer may chart in this scope, newest document first.
+
+    ``title_query`` keeps only documents whose title contains that name, so a
+    page they named is found even when newer tables filled the usual list.
+    """
     access, params = _visible(viewer)
+    like = _title_like(title_query)
+    titled = " AND d.title ILIKE %(like)s" if like else ""
     sql = f"""
         SELECT t.id, t.name, t.columns, t.row_count, t.truncated, t.notes,
                d.title, d.source_provider, d.source_uri, t.origin, t.document_id
@@ -328,6 +416,7 @@ def list_tables(
           JOIN documents d ON d.id = t.document_id
          WHERE t.org_id = %(org_id)s
            {_scoped("t", workspace_id)}
+           {titled}
            {access}
          ORDER BY d.source_last_modified DESC NULLS LAST, t.position
          LIMIT %(limit)s
@@ -336,7 +425,7 @@ def list_tables(
         with get_connection() as conn:
             rows = conn.execute(
                 sql, {"org_id": org_id, "workspace_id": workspace_id,
-                      "limit": limit, **params},
+                      "limit": limit, "like": like, **params},
             ).fetchall()
     except Exception as exc:  # noqa: BLE001
         raise ProviderError("doctables: could not list tables", cause=exc) from exc

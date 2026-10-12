@@ -464,6 +464,29 @@ def test_chart_mode_goes_straight_to_a_chart(monkeypatch):
     assert decision.chart_spec == spec
 
 
+def test_a_named_company_page_is_offered_ahead_of_six_other_tables(monkeypatch):
+    """Company-wide filled the six slots with Project Atlas, so Quarterly
+    update — already in company-wide sources — was reported as missing."""
+    from app.doctables.store import TableRef
+
+    def ref(i, title):
+        return TableRef(
+            id=str(i), name="Budget", columns=(), row_count=2, truncated=False,
+            notes=(), document_title=title, provider="notion", source_uri=None,
+            document_id=str(i),
+        )
+
+    listed = [ref(i, "Project Atlas – Billing Platform Migration") for i in range(6)]
+    listed.append(ref(9, "Quarterly update"))
+    monkeypatch.setattr("app.doctables.store.list_tables", lambda **k: listed)
+    monkeypatch.setattr("app.insights.tables.document_similarity", lambda *a, **k: ({}, {}))
+    offered = routing._document_tables(
+        "org", None, object(),
+        "From the quarterly update page in Notion, show the total budget.",
+    )
+    assert offered[0].document_title == "Quarterly update"
+
+
 def test_a_page_in_another_workspace_is_named_instead_of_turn_off_chart(monkeypatch):
     """Company-wide asked for the hiring plan, which lives in a workspace.
     That used to read as "turn off Chart", as if they had wanted a written answer."""
@@ -487,6 +510,121 @@ def test_a_page_in_another_workspace_is_named_instead_of_turn_off_chart(monkeypa
     assert "Hiring plan 2026" in decision.chart_refusal
     assert "Coding" in decision.chart_refusal
     assert "Turn off Chart" not in decision.chart_refusal
+
+
+def test_a_page_with_no_stored_table_is_read_live_and_saved(monkeypatch):
+    """Chart mode re-reads the named page and stores the table it finds."""
+    from types import SimpleNamespace
+
+    from app.livetools.base import OK, ProviderRead
+
+    page = (
+        "Quarterly update\n\n"
+        "| Department | Budget |\n"
+        "| --- | --- |\n"
+        "| Engineering | 40 |\n"
+        "| Design | 10 |\n"
+    )
+    saved = {}
+    monkeypatch.setattr(
+        "app.doctables.store.find_chart_document",
+        lambda **k: ("doc-1", "notion", "page-1", "Quarterly update"),
+    )
+    monkeypatch.setattr(
+        "app.auth.credentials.get_live_connection_token", lambda *a, **k: "token",
+    )
+    monkeypatch.setattr(
+        "app.livetools.notion.read_page",
+        lambda token, external_id: ProviderRead(OK, text=page),
+    )
+
+    def _save(document_id, **kwargs):
+        saved["id"] = document_id
+        saved["tables"] = kwargs["tables"]
+        return 1
+
+    monkeypatch.setattr("app.doctables.store.replace_document_tables", _save)
+    viewer = SimpleNamespace(is_unrestricted=False, acl=lambda: ["a@b.c"])
+    assert routing._live_fetch_named_tables(ORG, None, viewer, "quarterly update")
+    assert saved["id"] == "doc-1"
+    assert len(saved["tables"][0].cells) == 2
+
+
+def test_a_named_linear_issue_is_read_live_and_saved(monkeypatch):
+    """A table in a Linear issue is saved the same way as one on a Notion page."""
+    from types import SimpleNamespace
+
+    from app.livetools.base import OK, ProviderRead
+
+    issue = (
+        "ENG-4 Sprint plan\n\n"
+        "| Team | Points |\n"
+        "| --- | --- |\n"
+        "| Platform | 8 |\n"
+        "| Design | 3 |\n"
+    )
+    saved = {}
+    monkeypatch.setattr(
+        "app.doctables.store.find_chart_document",
+        lambda **k: ("issue-1", "linear", "lin-1", "ENG-4 Sprint plan"),
+    )
+    monkeypatch.setattr(
+        "app.auth.credentials.get_live_connection_token", lambda *a, **k: "token",
+    )
+    monkeypatch.setattr(
+        "app.livetools.linear.read_issue",
+        lambda token, external_id: ProviderRead(OK, text=issue),
+    )
+
+    def _save(document_id, **kwargs):
+        saved["id"] = document_id
+        saved["tables"] = kwargs["tables"]
+        return 1
+
+    monkeypatch.setattr("app.doctables.store.replace_document_tables", _save)
+    viewer = SimpleNamespace(is_unrestricted=False, acl=lambda: ["a@b.c"])
+    assert routing._live_fetch_named_tables(ORG, None, viewer, "sprint plan")
+    assert saved["id"] == "issue-1"
+    assert len(saved["tables"][0].cells) == 2
+
+
+def test_chart_mode_charts_the_table_a_live_read_just_saved(monkeypatch):
+    """No stored table, then a live read: the second pass charts that page."""
+    from types import SimpleNamespace
+
+    from app.insights.resolve import AskIntent, ChartSpec
+
+    seen = {}
+
+    def classify(question, **kwargs):
+        if kwargs.get("tables"):
+            seen["tables"] = kwargs["tables"]
+            return AskIntent("chart", spec=ChartSpec(
+                metric="table", group_by="c0", period="month", chart="pie",
+            ))
+        return AskIntent("qa", named_document="quarterly update")
+
+    def listed(**kwargs):
+        if kwargs.get("title_query") and seen.get("fetched"):
+            return ["saved-table"]
+        return []
+
+    _stub(monkeypatch, connected={"notion"})
+    monkeypatch.setattr("app.insights.resolve.classify_question", classify)
+    monkeypatch.setattr("app.doctables.store.list_tables", listed)
+    monkeypatch.setattr(
+        "app.agent.routing._live_fetch_named_tables",
+        lambda *a, **k: seen.setdefault("fetched", True),
+    )
+    decision = routing.choose_agent(
+        "From the quarterly update page, show the total budget for each department.",
+        ORG, chart_mode=True,
+        viewer=SimpleNamespace(is_unrestricted=False, acl=lambda: ["a@b.c"]),
+    )
+    assert seen["fetched"] is True
+    assert seen["tables"] == ["saved-table"]
+    assert decision.reason == "chart"
+    assert decision.chart_spec.chart == "pie"
 
 
 def test_a_named_page_with_no_table_here_is_said_plainly(monkeypatch):

@@ -181,9 +181,10 @@ A breakdown beyond the two a chart draws is named as left out
 A breakdown is kept only when asked for: the model quotes the words that asked
 (`breakdown_words`) and the quote must be in the question, or the breakdown's own
 label from the data must be; otherwise it is dropped (`resolve._honour_breakdown`).
-Document tables are offered by the similarity of their DOCUMENT to the question
-(`tables.document_similarity`), never by word overlap; the gate orders them and
-never removes one (a table-heavy page embeds as numbers). A one-time data fix goes
+Document tables are offered by reciprocal-rank fusion of the document's
+similarity and the any-word keyword match Ask uses, on the chunk text or the
+title (`tables.document_similarity`); the gate never removes one (a table-heavy
+page embeds as numbers). A one-time data fix goes
 in `schema.sql` behind a `schema_marks` row, never as a bare UPDATE.
 Chart-mode starters come from the scope's metrics and discovered fields
 (`GET /chat/chart-starters`), never page copy.

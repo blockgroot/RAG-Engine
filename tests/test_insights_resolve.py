@@ -846,3 +846,14 @@ def test_one_page_with_several_tables_is_named_once():
     assert "Billing" in msg and "Hours" in msg
     assert "don't see" in msg
     assert "no table from that page" not in msg
+
+
+def test_a_longer_title_still_matches_the_words_they_used():
+    assert resolve.title_mentioned(
+        "Quarterly update 2026",
+        "From the quarterly update page in Notion, show the total budget.",
+    )
+    assert not resolve.title_mentioned(
+        "Project Atlas – Billing Platform Migration",
+        "From the quarterly update page in Notion, show the total budget.",
+    )

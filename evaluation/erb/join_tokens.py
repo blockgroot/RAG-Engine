@@ -56,9 +56,15 @@ def stage_of(row: dict) -> str:
 
 
 def main() -> None:
-    shared = sorted((json.loads(line) for line in (BENCH / "proxy.jsonl").open()), key=lambda r: r["ts_start"])
+    record_files = sorted(RUNS.glob("*.records.jsonl"))
+    own_logs = {f"proxy.{f.name.removesuffix('.records.jsonl')}.jsonl" for f in record_files}
+    # Every other proxy log in the folder is shared: a run logged to a renamed
+    # file (proxy5.jsonl) once joined to nothing, and its answers were graded
+    # with no context. Calls are matched by time, so merging logs is safe.
+    shared = sorted((json.loads(line) for path in BENCH.glob("proxy*.jsonl") if path.name not in own_logs
+                     for line in path.open()), key=lambda r: r["ts_start"])
     split = {q["question_id"]: q["split"] for q in json.loads((BENCH / "manifest.json").read_text())["questions"]}
-    for records_file in sorted(RUNS.glob("*.records.jsonl")):
+    for records_file in record_files:
         system = records_file.name.removesuffix(".records.jsonl")
         # A system run at the same time as another has its own proxy and log
         # (proxy.<system>.jsonl): calls are matched to questions by time, so two

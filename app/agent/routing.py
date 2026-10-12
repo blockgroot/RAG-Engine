@@ -651,10 +651,25 @@ def _document_tables(org_id: str, workspace_id: str | None, viewer, question: st
         from ..insights import tables as doc_tables
 
         listed = list_tables(org_id=org_id, workspace_id=workspace_id, viewer=viewer)
-        scores = doc_tables.document_similarity(question, listed, org_id=org_id,
-                                                workspace_id=workspace_id)
-        return doc_tables.rank(listed, scores,
-                               floor=RagSettings.from_env().similarity_threshold)
+        from ..insights.resolve import title_mentioned
+
+        named = [t for t in listed if title_mentioned(t.document_title or "", question)]
+        rest = [t for t in listed if t not in named]
+        signals = doc_tables.document_similarity(question, rest, org_id=org_id,
+                                                 workspace_id=workspace_id)
+        if signals is None:
+            ranked = doc_tables.rank(
+                rest, None, floor=RagSettings.from_env().similarity_threshold,
+            )
+        else:
+            cosine, keywords = signals
+            ranked = doc_tables.rank(
+                rest, cosine, keywords=keywords,
+                floor=RagSettings.from_env().similarity_threshold,
+            )
+        # The page they named has to be offered. Six closer tables used to
+        # fill the cap and the named page came back as "I don't see it".
+        return (named + ranked)[: doc_tables.MAX_OFFERED]
     except Exception:  # noqa: BLE001
         logger.warning("Agent routing: could not list document tables", exc_info=True)
         return []
@@ -784,6 +799,7 @@ def _document_gap(question, intent, tables, org_id, workspace_id, viewer, user_i
 
         places = document_places(
             org_id=org_id, workspace_id=workspace_id, viewer=viewer, user_id=user_id,
+            title_query=getattr(intent, "named_document", None),
         )
     except Exception:  # noqa: BLE001
         logger.warning("Agent routing: could not look up named documents", exc_info=True)
@@ -791,6 +807,49 @@ def _document_gap(question, intent, tables, org_id, workspace_id, viewer, user_i
     return chart_document_gap(
         question, getattr(intent, "named_document", None), tables, places,
     )
+
+
+def _live_fetch_named_tables(org_id, workspace_id, viewer, title) -> bool:
+    """Read one named Notion, Drive, or Linear document and save any table it contains.
+
+    Only a document already indexed in this scope, and only when Chart mode
+    has no table for it. Never raises. Returns whether a table was saved.
+    """
+    try:
+        from ..auth.credentials import get_live_connection_token
+        from ..doctables.base import DocumentText
+        from ..doctables.store import find_chart_document, replace_document_tables
+        from ..doctables.table_adapter import TableAdapter
+        from ..livetools.base import OK
+        from ..livetools.drive import read_file
+        from ..livetools.linear import read_issue
+        from ..livetools.notion import read_page
+
+        found = find_chart_document(
+            org_id=org_id, workspace_id=workspace_id, viewer=viewer, title_query=title,
+        )
+        if found is None:
+            return False
+        document_id, provider, external_id, doc_title = found
+        reader = {"notion": read_page, "google": read_file, "linear": read_issue}.get(provider)
+        if reader is None:
+            return False
+        token = get_live_connection_token(org_id, provider, workspace_id=workspace_id)
+        read = reader(token, external_id)
+        if read.outcome != OK or not read.text:
+            return False
+        tables = TableAdapter().extract(DocumentText(
+            external_id=external_id, title=doc_title or title, content=read.text,
+        ))
+        if not tables:
+            return False
+        replace_document_tables(
+            document_id, org_id=org_id, workspace_id=workspace_id, tables=tables,
+        )
+        return True
+    except Exception:  # noqa: BLE001 - a live read may only add a table
+        logger.warning("Agent routing: live table read failed", exc_info=True)
+        return False
 
 
 def _chart_mode_route(
@@ -835,6 +894,41 @@ def _chart_mode_route(
         )
     if intent.kind == "chart" and intent.spec is not None:
         return RoutingDecision(INSIGHTS_KEY, "chart", chart_spec=intent.spec)
+    # The page or issue they named can sit outside the six tables offered. If
+    # no table is stored yet, read that Notion, Drive, or Linear document live
+    # once, save any table it has, then ask again with only its tables.
+    named = getattr(intent, "named_document", None)
+    if named and viewer is not None and not getattr(viewer, "is_unrestricted", False):
+        try:
+            from ..doctables.store import list_tables
+
+            extra = list_tables(
+                org_id=org_id, workspace_id=workspace_id, viewer=viewer, title_query=named,
+            )
+        except Exception:  # noqa: BLE001
+            extra = []
+        if not extra:
+            _live_fetch_named_tables(
+                org_id, workspace_id, viewer, named,
+            )
+            try:
+                extra = list_tables(
+                    org_id=org_id, workspace_id=workspace_id, viewer=viewer, title_query=named,
+                )
+            except Exception:  # noqa: BLE001
+                extra = []
+        if extra:
+            try:
+                intent = classify_question(
+                    question, providers=providers, fail_open=False, offer_github=False,
+                    tables=extra,
+                    fields=_chart_fields(org_id, workspace_id, viewer),
+                    names=_chart_names(org_id, workspace_id, viewer),
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("Agent routing: chart of the named page failed", exc_info=True)
+            if intent.kind == "chart" and intent.spec is not None:
+                return RoutingDecision(INSIGHTS_KEY, "chart", chart_spec=intent.spec)
     gap = _document_gap(question, intent, tables, org_id, workspace_id, viewer, user_id)
     if gap:
         return RoutingDecision(INSIGHTS_KEY, "chart-refuse", chart_refusal=gap)

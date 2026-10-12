@@ -807,6 +807,22 @@ def _squashed(text: str) -> str:
     return re.sub(r"\W+", " ", (text or "").lower()).strip()
 
 
+def title_mentioned(title: str, question: str) -> bool:
+    """True when some run of the stored title, at least 8 letters, is in the question.
+
+    "Quarterly update 2026" still matches "the quarterly update page". A title
+    that shares no such run does not, so an unrelated page is not pulled in.
+    """
+    words = _squashed(title).split()
+    asked = f" {_squashed(question)} "
+    for length in range(len(words), 0, -1):
+        for start in range(len(words) - length + 1):
+            phrase = " ".join(words[start:start + length])
+            if len(phrase.replace(" ", "")) >= 8 and f" {phrase} " in asked:
+                return True
+    return False
+
+
 def _chart_the_named_table(question: str, reply: str, handles: dict) -> AskIntent | None:
     """Chart mode named a page we already offered, and the model picked nothing.
 
@@ -907,8 +923,8 @@ def chart_document_gap(question: str, named: str | None, tables, places) -> str 
                 "Sync it from Sources, then ask again."
             )
         return (
-            f"**I don't see \"{title}\" in this space.**\n\n"
-            "If it lives in a workspace, open that workspace and ask again."
+            f"**I can see \"{title}\" in this space.**\n\n"
+            "I couldn't tell which of its columns to chart."
             + tables_line
         )
 
@@ -921,7 +937,7 @@ def chart_document_gap(question: str, named: str | None, tables, places) -> str 
         if len(key) < 8 or key in offered:
             continue
         # The stored title is in the question, or the name they gave is in the title.
-        if key not in asked and not (len(quote) >= 8 and quote in key):
+        if not title_mentioned(place.title, question) and not (len(quote) >= 8 and quote in key):
             continue
         if best is None or len(key) > len(_squashed(best.title)):
             best = place
@@ -932,7 +948,26 @@ def chart_document_gap(question: str, named: str | None, tables, places) -> str 
         return None
     if any(quote in name or name in quote for name in offered if name):
         return None
-    return missing(named.strip(), workspace=None, has_table=True)
+    by_doc: dict[str, list[str]] = {}
+    for table in tables or []:
+        doc = getattr(table, "document_title", "") or ""
+        name = getattr(table, "name", "") or ""
+        key = doc or name
+        if not key:
+            continue
+        names = by_doc.setdefault(key, [])
+        if name and _squashed(name) not in ("", _squashed(doc)) and name not in names:
+            names.append(name)
+    labels = [
+        f'"{doc}" ({", ".join(names)})' if names else f'"{doc}"'
+        for doc, names in list(by_doc.items())[:6]
+    ]
+    shown = ("\n\nTables in this space: " + ", ".join(labels) + ".") if labels else ""
+    return (
+        f"**I don't see \"{named.strip()}\" in this space.**\n\n"
+        "If it lives in a workspace, open that workspace and ask again."
+        + shown
+    )
 
 
 def _honour_breakdown(intent: AskIntent, question: str, reply: str, fields) -> AskIntent:

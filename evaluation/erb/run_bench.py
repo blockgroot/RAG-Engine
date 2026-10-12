@@ -228,6 +228,9 @@ def main() -> None:
                     help="setting for this variant only, e.g. RAG_TOP_K=3 (wins over .env.bench)")
     ap.add_argument("--deep", action="store_true",
                     help="Handbook: ask in chat's Deep analysis mode")
+    ap.add_argument("--deep-multi-doc", action="store_true",
+                    help="Handbook: Deep analysis for questions whose answer needs more than one "
+                         "document (as a person would pick it), normal mode for the rest")
     args = ap.parse_args()
     if args.deep:
         from app.rag.deep import use_deep_read
@@ -255,6 +258,10 @@ def main() -> None:
         for i, q in enumerate(questions, 1):
             if (q["question_id"], run) in done or (run > 1 and not q["repeat"]):
                 continue
+            if args.deep_multi_doc:
+                from app.rag.deep import use_deep_read
+
+                use_deep_read(len(q["expected_doc_ids"]) > 1)
             t0 = time.time()
             try:
                 out = system.ask(q["question"])
@@ -263,7 +270,8 @@ def main() -> None:
             t1 = time.time()
             row = {
                 "system": name, "question_id": q["question_id"], "question_type": q["question_type"],
-                "run": run, "q_start": t0, "q_end": t1, "seconds": round(t1 - t0, 2), **out,
+                "run": run, "deep": args.deep or (args.deep_multi_doc and len(q["expected_doc_ids"]) > 1),
+                "q_start": t0, "q_end": t1, "seconds": round(t1 - t0, 2), **out,
             }
             with records.open("a") as f:
                 f.write(json.dumps(row) + "\n")
