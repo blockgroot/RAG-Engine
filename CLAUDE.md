@@ -82,7 +82,9 @@ GitHub; employees get answers from *their* data.
   so a reopened chart never disagrees with the answer beside it.
   So is who answered (`conversation_turns.meta`: source, agent, tools, files, live
   reads, model, a passage COUNT), written by the `done` event; never the passages.
-  Slack strips the markers.
+  Slack strips the markers. A Slack chart is uploaded as a PNG
+  (`app/chartrender/`, needs `files:write`); without the scope or on a render
+  failure the numbers are written as text under the caption.
 - Audit and moderation judge the answer with the markers removed.
 - A link in an answer survives only if it appeared verbatim in the text the model
   was shown (`security/links.py`).
@@ -136,7 +138,11 @@ emails; ≤40 keys) and the chartable set is DISCOVERED per scope and viewer
 list of what may be charted. Chat and Slack pass a
 spec through `resolve.spec_to_dict`, never a hand-built dict (that dropped `focus`).
 Charts are built only in Chart mode (chat sends `mode: "chart"`; Slack: a question
-the question check reads as a chart ask). Chart mode answers with a chart or a
+the question check reads as a chart ask, "visual" or "count"). Slack passes the
+asker's `Viewer` into routing (a DM charts what they can open); a chart ask in a
+CHANNEL charts that channel only (`channel_tag`: Slack metrics focused on the
+channel, tables and paragraphs from its threads, the room's public+channel
+viewer), never another connector. Chart mode answers with a chart or a
 refusal, never a document answer. Ask never runs the chart classifier: its question
 check (`resolve.classify_route`) decides a live GitHub read, `needs_live` and
 `chart_ask` ("visual" gets the Chart-mode hint, "count" the Turn on Chart button).
@@ -149,6 +155,10 @@ title that exists on only one connector in this scope. Drive and Notion share
 `doc_changed`, so the provider on the query is what keeps their rows apart —
 a pick the question does not match is moved to the metric it does match, and
 a shared kind the question does not distinguish is refused rather than drawn.
+A connector the question NAMES ("the Google doc") is `AskIntent.source`, kept only
+when its `source_words` quote is in the question; then no other connector's
+table is drawn, and the retry, the live read and the paragraph read all stay on
+that connector. A table pick is never swapped for an activity metric.
 Format parsers (₹/lakh/k/%) and API enums are not intent.
 `ModelChoice.charts` marks the catalogued models that build charts.
 The prompt says what `actor` and `subject` ARE in each tool (Linear: assignee,
@@ -203,25 +213,30 @@ The prompt maps the asker's wording to the two tokens; code matches no word list
 A document table is exactly as visible as its document: offered only through the
 visibility predicate, re-checked at run time, and never offered without a viewer.
 Document tables are filled by dataset adapters (`doctables/base.py`); each
-adapter replaces only its own `origin`. Ingestion never calls a model for
-charts: an AI adapter (`background = True`) only enqueues, and the tick reads
-`doc_text_queue` within the background budget. The awake worker reads that
-queue on its own clock (`FIGURE_READ_SECONDS`); the external tick is the read
-that still happens while the process is asleep. A page is queued when its prose
-has at least three unit-bearing figures (a currency, a percent, or a magnitude
-such as lakh or k). Dates, clause numbers and day counts do not take a slot. The sentence reader
+adapter replaces only its own `origin`. Every adapter runs INLINE at ingest
+(`ingestion.pipeline._store_tables`); there is no figures queue or tick. The text
+adapter built with no model uses the aux model after `wait_for_background_slot`;
+one built with a model is interactive (Chart mode, uploads). Ingest reads a page
+whose prose has at least three unit-bearing figures (a currency, a percent, or a
+magnitude such as lakh or k); dates, clause numbers and day counts do not count.
+An interactive read needs two non-year numbers of any kind. A page read with no
+series is marked `done` in `doc_text_queue` (now only a read marker). The sentence reader
 asks for 8000 tokens, because a reasoning model spends a 1500 cap before the
-JSON is finished; a reply cut off at the cap is retried, not stored as an empty table. A figure read from prose is kept
+JSON is finished; a reply cut off at the cap raises, never stored as an empty table. A figure read from prose is kept
 only when its quote is in the document, every cell is in that quote, and the
-number sits in one clause with its measure (a period named earlier in the
-same sentence still counts). A number nearer a different measure is dropped,
+cells bind (`text_adapter._bind_group`): each label to its own figure (one
+sentence, one convention: labels after or before their figures; a tie keeps
+only rows both readings bind; a label every row of the sentence shares is
+context), and, when the measure is written in the quote, the figure to that
+measure (the nearest measure column before it; after an intervening figure, no
+long word between). The measure need NOT be in the same clause: requiring it
+dropped most real paragraphs. A figure another measure governs is dropped,
 never repaired; the chart says "taken from text", and a dropped row is named
 so a partial series is not presented as complete. Chart mode, when nothing
-stored is chartable, reads the sentences of at most two pages the asker can
-open whose text matches the question. The background flag still governs the
-library sweep. A page whose sentences yield no series is said so, and an
-activity chart is not drawn in its place.
-`DOCTABLES_TEXT_ENABLED` stays off unless background quota is budgeted for it.
+stored is chartable, reads the page the asker NAMED live, then the sentences of
+at most two pages whose text matches, BEFORE any "no table" refusal. A page
+whose sentences yield no series is said so, and an activity chart is not drawn
+in its place. `DOCTABLES_TEXT_ENABLED` is on by default; off, only Chart mode reads prose.
 A sync skips unchanged documents, so `documents.tables_checked_at` marks what the
 adapters have read; `backfill_tables` re-fetches a bounded batch of unchecked
 ones per sync (tables only, no re-embedding) and a failed fetch stays unchecked.

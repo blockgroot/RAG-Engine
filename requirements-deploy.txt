@@ -43,6 +43,8 @@ pypdf>=4.0.0
 python-docx>=1.1.0
 openpyxl>=3.1.0
 pdfplumber>=0.11.0
+# Slack charts as images (app/chartrender/); imported only when one is drawn.
+matplotlib==3.9.2
 ddgs>=6.0.0
 cryptography>=42.0.0
 httpx>=0.27.0

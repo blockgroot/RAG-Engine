@@ -2,8 +2,8 @@
 
 "Q1 revenue was ₹12L, Q2 grew to ₹15L" is data nobody put in a table, and no
 parser can turn prose into rows: knowing that ₹15L is Q2's revenue is reading
-comprehension. So an AI reads it -- in the BACKGROUND (``background = True``;
-``queue.py`` runs it on the tick, never inside ingestion) -- and returns small
+comprehension. So an AI reads it -- inline at INGEST on the background model
+budget, and in Chart mode for a page ingest did not read -- and returns small
 tables where every row carries the exact sentence it came from.
 
 The AI is not trusted with the result. Code keeps a row only when:
@@ -11,9 +11,11 @@ The AI is not trusted with the result. Code keeps a row only when:
 - its quote appears in the document (whitespace- and case-insensitive),
 - EVERY cell appears in that quote: a number must equal a number written in
   the quote (₹15L == 1,500,000), a label must occur in it verbatim, and
-- each number sits in one clause with its own measure. A period named earlier
-  in the same sentence still counts. A number nearer a different measure
-  ("150" of headcount written under Revenue) is dropped, never moved.
+- the cells bind: each label to its own figure ("140 in January, 150 in June"
+  -- one sentence, one convention, label after or before its figure), and
+  each figure to its own measure when the measure is written in the quote.
+  A figure another measure governs ("revenue was ₹40L while headcount
+  reached 150": 150 is not revenue) is dropped, never moved.
 
 So an invented figure, a changed figure, or a figure moved onto the wrong
 label ("Q3" on a sentence about Q2, revenue plotted as headcount) fails the
@@ -50,11 +52,16 @@ MAX_COLUMNS = 8
 #: gemini-3.1-flash-lite logged `llm.truncated` with the whole budget used
 #: and the page was left with no table. The call stops when the JSON is done.
 MAX_TOKENS = 8000
-#: How many unit-bearing figures a page needs before it is worth a model
-#: call. A bare digit does not count: dates, clause numbers and "15 days"
-#: are why a policy was taking a slot ahead of a budget page. A currency,
-#: a percent, or a magnitude (lakh, k, crore, Mio) does.
+#: How many unit-bearing figures a page needs before ingest spends a model
+#: call on it. A bare digit does not count: dates, clause numbers and "15
+#: days" are why a policy was costing a call. A currency, a percent, or a
+#: magnitude (lakh, k, crore, Mio) does.
 MIN_FIGURES = 3
+#: When someone is waiting on a chart of THIS page, two numbers of any kind
+#: ("hired 12 in Q1 and 18 in Q2") are enough to read it: the rows are still
+#: checked against their sentences, and refusing before reading was the
+#: failure ("no table" for a page full of figures).
+MIN_CHART_NUMBERS = 2
 
 TEXT_NOTE = (
     "Figures read from sentences in this document by AI. Each value was checked "
@@ -124,7 +131,10 @@ _UNIT_WORDS = frozenset({
     "lakh", "lakhs", "lac", "crore", "crores", "cr", "million", "billion",
     "thousand", "percent", "percentage",
 })
-_BREAK = re.compile(r"[.!?;\n]+|\b(?:while|whereas|but|and)\b|,", re.I)
+#: A word long enough to name a measure. Between a measure and a figure that
+#: follows an earlier figure, such a word ("while headcount reached") means
+#: the measure has changed. Short glue ("in", "and", "to", "rose") does not.
+_LONG_WORD = re.compile(r"[^\W\d_]{5,}")
 
 
 def _header_words(header: str) -> list[str]:
@@ -157,10 +167,6 @@ def _is_year(value: float) -> bool:
     return value == int(value) and 1900 <= int(value) <= 2099
 
 
-def _period_cell(cell: str) -> bool:
-    return extract.PERIOD_TOKEN.match(_norm(cell).replace(" ", "")) is not None
-
-
 def _label_spans(label: str, text: str) -> list[tuple[int, int]]:
     needle = _norm(label)
     if not needle:
@@ -172,12 +178,6 @@ def _label_spans(label: str, text: str) -> list[tuple[int, int]]:
     return [(m.start(), m.end()) for m in re.finditer(pattern, text)]
 
 
-def _dist(left: tuple[int, int], right: tuple[int, int]) -> int:
-    if left[0] <= right[1] and right[0] <= left[1]:
-        return 0
-    return min(abs(left[0] - right[1]), abs(right[0] - left[1]))
-
-
 def _num_spans(text: str) -> list[tuple[float, int, int]]:
     out = []
     for match in _NUMBER_TOKEN.finditer(text):
@@ -187,146 +187,141 @@ def _num_spans(text: str) -> list[tuple[float, int, int]]:
     return out
 
 
-def _clause_spans(quote: str) -> list[tuple[str, int, int]]:
-    """Pieces of a sentence that each carry their own figure.
+def _overlaps(a: tuple[int, int], b: tuple[int, int]) -> bool:
+    return a[0] < b[1] and b[0] < a[1]
 
-    "revenue was ₹40 lakh while headcount reached 150" is two clauses.
-    "Headcount moved from 140 in January to 150 in June" stays one: nothing
-    splits it, and the month beside each number is what binds it.
+
+def _is_label(header: str, cell: str, quote: str) -> bool:
+    """A cell that names the row (Q2, North, June, 2024) rather than a figure.
+    A year is a label unless its own header is a measure written in the quote."""
+    value, _unit = extract.parse_number(cell)
+    return value is None or (_is_year(value) and not _header_spans(header, quote))
+
+
+def _bound(span, nums, *, follows: bool):
+    """The figure a label belongs to: the one just before it ("140 in
+    January") when labels follow their figures, the one just after it ("Q2
+    closed at ₹15L") when they lead. The other side only when there is none."""
+    before = [n for n in nums if n[2] <= span[0]]
+    after = [n for n in nums if n[1] >= span[1]]
+    first, second = (before[-1:], after[:1]) if follows else (after[:1], before[-1:])
+    return (first or second or [None])[0]
+
+
+def _measure_binds(header, value, measures, quote, nums, allowed, names) -> bool:
+    """The figure belongs to this column's measure, not to another one.
+
+    No constraint when the measure is not written in the quote ("In Q1 we
+    brought in ₹12 lakh" under Revenue: the section names the measure). When
+    it is, the measure governing the figure -- the nearest measure written
+    before it among the table's own columns, else the nearest after -- must be
+    this one. And when other figures sit between the measure and this one
+    ("spend was $40k in April, $55k in May"), the stretch after the last of
+    them must not name something else ("revenue was ₹40L while headcount
+    reached 150": 150 is not revenue).
     """
-    parts: list[tuple[str, int, int]] = []
-    last = 0
-    for match in _BREAK.finditer(quote):
-        parts.append((quote[last:match.start()], last, match.start()))
-        last = match.end()
-    parts.append((quote[last:], last, len(quote)))
-    parts = [(text.strip(), start, end) for text, start, end in parts if text.strip()]
-    if not parts:
-        return [(quote, 0, len(quote))]
-    merged = [parts[0]]
-    for text, start, end in parts[1:]:
-        prev, prev_start, _prev_end = merged[-1]
-        if _numbers_in(prev) and _numbers_in(text):
-            merged.append((text, start, end))
-        else:
-            merged[-1] = (quote[prev_start:end].strip(), prev_start, end)
-    return merged
-
-
-def _number_binds(
-    header: str, cell: str, value: float, columns: list[str], cells: list[str], quote: str,
-) -> bool:
-    """This number's clause names its measure, and every other label either
-    sits beside it or is a period named earlier in the same sentence."""
-    specific = bool(_header_words(header))
-    for clause, start, _end in _clause_spans(quote):
-        spans = _num_spans(clause)
-        matching = [(s, e) for n, s, e in spans if _close(n, value)]
-        if not matching:
-            continue
-        others = [(s, e) for n, s, e in spans if not _close(n, value)]
-        if specific and not _header_spans(header, clause):
-            continue
-        labels = _other_labels(columns, cells, cell, clause)
-        if not specific and not any(len(_norm(label)) >= 4 for label in labels):
-            continue
-        if not _nearest_header(header, columns, matching, clause):
-            continue
-        if all(_label_binds(label, clause, start, quote, matching, others) for label in labels):
-            return True
-    return False
-
-
-def _other_labels(columns: list[str], cells: list[str], cell: str, clause: str) -> list[str]:
-    labels = []
-    for other_header, other in zip(columns, cells):
-        other = (other or "").strip()
-        if not other or other == cell:
-            continue
-        value, _unit = extract.parse_number(other)
-        if value is not None and not (_is_year(value) and not _header_spans(other_header, clause)):
-            continue
-        labels.append(other)
-    return labels
-
-
-def _nearest_header(
-    header: str, columns: list[str], matching: list[tuple[int, int]], clause: str,
-) -> bool:
-    """A different column's measure sitting closer to the number means the
-    number is that measure's, so this column does not get it."""
-    own = _header_spans(header, clause)
+    own = _header_spans(header, quote)
+    if not _header_words(header):
+        # "Value" or "Count" names no measure, so the row must: a long row's
+        # measure cell ("headcount"), never a bare "Q1".
+        return any(len(_norm(name)) >= 4 for name in names)
     if not own:
         return True
-    rivals = []
-    for other in columns:
-        if other == header:
+    rivals = [s for other in measures if other != header for s in _header_spans(other, quote)]
+    for _v, start, end in [n for n in nums if _close(n[0], value)]:
+        mentions = [(s, True) for s in own] + [(s, False) for s in rivals]
+        before = [m for m in mentions if m[0][1] <= start]
+        after = [m for m in mentions if m[0][0] >= end]
+        if before:
+            governing, is_own = max(before, key=lambda m: m[0][1])
+            gap = (governing[1], start)
+            between = [n for n in nums if n[1] >= gap[0] and n[2] <= gap[1]]
+            stretch = quote[between[-1][2]:start] if between else ""
+        elif after:
+            governing, is_own = min(after, key=lambda m: m[0][0])
+            gap = (end, governing[0])
+            between = [n for n in nums if n[1] >= gap[0] and n[2] <= gap[1]]
+            stretch = quote[end:between[0][1]] if between else ""
+        else:
             continue
-        rivals.extend(_header_spans(other, clause))
-    if not rivals:
-        return True
-    for span in matching:
-        own_dist = min(_dist(span, item) for item in own)
-        if all(own_dist <= _dist(span, rival) for rival in rivals):
+        if is_own and all(w in allowed for w in _LONG_WORD.findall(stretch)):
             return True
     return False
 
 
-def _closest_number(label: tuple[int, int], spans: list[tuple[int, int]]) -> tuple[int, int]:
-    """The number this label belongs to. A tie goes to the number before the label
-    ("140 in January", not the 150 that follows it)."""
-    best = spans[0]
-    best_key = None
-    for span in spans:
-        key = (_dist(label, span), 0 if span[1] <= label[0] else 1)
-        if best_key is None or key < best_key:
-            best_key, best = key, span
-    return best
+def _bind_group(columns: list[str], rows: list[list[str]], quote: str) -> list[bool]:
+    """Which of these rows (all quoting ``quote``) bind cell to cell.
 
+    Each figure binds to its own measure (``_measure_binds``), and each label
+    to its own figure. Rows of one sentence follow one convention -- labels
+    after their figures or before them -- so the convention that binds the
+    most rows is the sentence's, and a row it does not bind is dropped (a tie
+    keeps only the rows both readings bind). A
+    label every row of the sentence shares ("In 2024, ...") is context, not
+    a binding. A mismatch is dropped, never repaired.
+    """
+    label_cells = [
+        [(h, c) for h, c in zip(columns, cells) if c.strip() and _is_label(h, c, quote)]
+        for cells in rows
+    ]
+    label_spans = [s for labels in label_cells for _h, c in labels for s in _label_spans(c, quote)]
+    nums = [n for n in _num_spans(quote) if not any(_overlaps((n[1], n[2]), s) for s in label_spans)]
+    allowed = set(_UNIT_WORDS)
+    for labels in label_cells:
+        allowed |= {w for _h, c in labels for w in _norm(c).split()}
+    for header in columns:
+        allowed |= set(_header_words(header)) | set(_norm(header).split())
+    shared = {(h, _norm(c)) for h, c in label_cells[0]} if len(rows) > 1 else set()
+    for labels in label_cells[1:]:
+        shared &= {(h, _norm(c)) for h, c in labels}
 
-def _label_binds(
-    label: str, clause: str, clause_start: int, quote: str,
-    matching: list[tuple[int, int]], others: list[tuple[int, int]],
-) -> bool:
-    inside = _label_spans(label, clause)
-    if inside:
-        if not others:
-            return True
-        pool = matching + others
-        return any(_closest_number(label_span, pool) in matching for label_span in inside)
-    if _period_cell(label) and any(end <= clause_start for _start, end in _label_spans(label, quote)):
+    values_by_row = [
+        [(h, extract.parse_number(c)[0]) for h, c in zip(columns, cells)
+         if c.strip() and not _is_label(h, c, quote)]
+        for cells in rows
+    ]
+    # Only number columns compete for a figure; "Region" is not a measure.
+    measures = sorted({h for values in values_by_row for h, _v in values})
+    measured = []
+    figures = []
+    for values, labels in zip(values_by_row, label_cells):
+        figures.append([v for _h, v in values])
+        names = [c for _h, c in labels]
+        measured.append(bool(values) and all(
+            _measure_binds(h, v, measures, quote, nums, allowed, names) for h, v in values
+        ))
+
+    def binds(index: int, follows: bool) -> bool:
+        for header, cell in label_cells[index]:
+            if (header, _norm(cell)) in shared:
+                continue
+            spans = _label_spans(cell, quote)
+            hits = [_bound(s, nums, follows=follows) for s in spans]
+            if not any(h and any(_close(h[0], v) for v in figures[index]) for h in hits):
+                return False
         return True
-    return False
 
-
-def _row_binds(columns: list[str], cells: list[str], quote: str) -> bool:
-    saw = False
-    for header, cell in zip(columns, cells):
-        cell = (cell or "").strip()
-        if not cell:
-            continue
-        value, _unit = extract.parse_number(cell)
-        if value is None or (_is_year(value) and not _header_spans(header, quote)):
-            continue
-        saw = True
-        if not _number_binds(header, cell, value, columns, cells, quote):
-            return False
-    return saw
+    lead = [measured[i] and binds(i, False) for i in range(len(rows))]
+    trail = [measured[i] and binds(i, True) for i in range(len(rows))]
+    if sum(lead) != sum(trail):
+        return lead if sum(lead) > sum(trail) else trail
+    # Neither reading of the sentence wins: keep only what both agree on.
+    return [a and b for a, b in zip(lead, trail)]
 
 
 def verify_rows(
     document: str, rows: list[dict], columns: list[str] | None = None,
 ) -> list[tuple[list[str], str]]:
-    """``(cells, quote)`` for each row whose quote is in the document and whose
-    every cell is in its quote.
+    """``(cells, quote)`` for each row whose quote is in the document, whose
+    every cell is in its quote, and (with ``columns``) whose cells bind to
+    each other (``_bind_group``).
 
-    With ``columns``, each number must also sit in one clause with its measure.
     A mismatch is dropped, never repaired. ``columns`` is omitted only by tests
     of the quote check itself; extraction always passes them.
     """
     doc_norm = _norm(document)
-    kept = []
     header = [str(c) for c in columns[:MAX_COLUMNS]] if columns else None
+    checked: list[tuple[list[str], str, str]] = []
     for row in rows[:MAX_ROWS]:
         if not isinstance(row, dict):
             continue
@@ -340,12 +335,20 @@ def verify_rows(
         numbers = _numbers_in(quote)
         if not all(_cell_in_quote(c, quote_norm, numbers) for c in cells):
             continue
-        if header is not None:
-            width = header[:len(cells)] if len(header) >= len(cells) else None
-            if width is None or not _row_binds(width, cells, quote_norm):
-                continue
-        kept.append((cells, quote.strip()))
-    return kept
+        if header is not None and len(cells) > len(header):
+            continue
+        checked.append((cells, quote.strip(), quote_norm))
+    if header is None:
+        return [(cells, quote) for cells, quote, _ in checked]
+    keep = [False] * len(checked)
+    groups: dict[str, list[int]] = {}
+    for index, (_cells, _quote, quote_norm) in enumerate(checked):
+        groups.setdefault(quote_norm, []).append(index)
+    for quote_norm, indexes in groups.items():
+        verdicts = _bind_group(header, [checked[i][0] for i in indexes], quote_norm)
+        for i, ok in zip(indexes, verdicts):
+            keep[i] = ok
+    return [(cells, quote) for (cells, quote, _), ok in zip(checked, keep) if ok]
 
 
 def build_prompt(title: str, text: str) -> str:
@@ -387,22 +390,28 @@ _JSON = re.compile(r"\{.*\}", re.S)
 
 class TextAdapter(DatasetAdapter):
     origin = ORIGIN
-    background = True
 
-    def __init__(self, llm=None, *, max_chars: int = 12000):
+    def __init__(self, llm=None, *, max_chars: int = 12000, interactive: bool = False):
+        """``llm=None`` is ingest: the background (aux) model, after a
+        background slot is free. ``interactive`` is a read someone is waiting
+        on (Chart mode, an upload): a looser figures check."""
         self._llm = llm
         self._max_chars = max_chars
+        self._interactive = interactive
 
     def wants(self, doc: DocumentText) -> bool:
-        """Cheap: at least ``MIN_FIGURES`` unit-bearing figures in the prose.
+        """Cheap: enough figures in the prose to be worth a model call.
 
-        Dates, clause numbers and day counts are not a series, so a policy
-        page does not take a queue slot. The AI's rows are still checked
-        against their sentences."""
+        At ingest, ``MIN_FIGURES`` unit-bearing ones, so a policy of dates
+        and day counts costs nothing. Interactive, ``MIN_CHART_NUMBERS`` of
+        any kind. The AI's rows are checked against their sentences either way."""
         if doc.tables:
             # A Sheet or CSV: its rows ARE the data, read exactly already.
             return False
         prose = _prose(doc.content)
+        if self._interactive:
+            numbers = [v for v, _s, _e in _num_spans(prose) if not _is_year(v)]
+            return len(numbers) >= MIN_CHART_NUMBERS
         found = 0
         for _ in _CHART_FIGURE.finditer(prose):
             found += 1
@@ -410,18 +419,27 @@ class TextAdapter(DatasetAdapter):
                 return True
         return False
 
+    def _model(self):
+        if self._llm is not None:
+            return self._llm
+        from ..llm.factory import build_aux_llm_provider
+        from ..llm.pacing import wait_for_background_slot
+
+        if not wait_for_background_slot():
+            raise ProviderError("text adapter: no background model slot came free")
+        return build_aux_llm_provider()
+
     def extract(self, doc: DocumentText) -> list[extract.Table]:
-        if self._llm is None:
-            raise ProviderError("text adapter: no model configured")
         prose = _prose(doc.content)
         truncated = len(prose) > self._max_chars
         prose = prose[: self._max_chars]
+        llm = self._model()
         try:
-            reply = self._llm.generate(build_prompt(doc.title, prose), max_tokens=MAX_TOKENS)
-        except Exception as exc:  # noqa: BLE001 - retried by the queue
+            reply = llm.generate(build_prompt(doc.title, prose), max_tokens=MAX_TOKENS)
+        except Exception as exc:  # noqa: BLE001 - our type, the caller decides
             raise ProviderError("text adapter: model call failed", cause=exc) from exc
-        if getattr(self._llm, "last_truncated", False):
-            # A cut reply is not "this page has no figures". The queue retries.
+        if getattr(llm, "last_truncated", False):
+            # A cut reply is not "this page has no figures": never marked read.
             raise ProviderError("text adapter: the reply was cut off before the table was finished")
 
         match = _JSON.search(reply or "")
@@ -448,7 +466,7 @@ class TextAdapter(DatasetAdapter):
             if claimed > len(rows):
                 notes.append(
                     f"{claimed - len(rows)} figure(s) were left out because the "
-                    "number did not sit with its measure in the same sentence."
+                    "number did not bind to its label or measure in its sentence."
                 )
             if truncated:
                 notes.append(f"Only the first {self._max_chars} characters were read.")
@@ -527,13 +545,16 @@ class ProseRead:
 
 def read_for_chart(
     *, org_id: str, workspace_id: str | None, viewer, question: str,
-    providers: list[str] | None, llm,
+    providers: list[str] | None, llm, tag: str | None = None,
 ) -> ProseRead:
     """Read figures from at most two pages whose text matches the question.
 
-    The library sweep stays off (``DOCTABLES_TEXT_ENABLED``). This runs because
-    someone is waiting in Chart mode and nothing stored answers them. Never
-    raises: a failed read costs the chart, not the refusal.
+    Ingest reads pages with enough unit-bearing figures; this covers the rest
+    (fewer or plainer figures, a page indexed before ingest read prose, a
+    failed ingest read) because someone is waiting in Chart mode and nothing
+    stored answers them. ``providers`` keeps the read on the connector the
+    question names; ``tag`` on one Slack channel. Never raises: a failed read
+    costs the chart, not the refusal.
     """
     from ..config.settings import DocTablesSettings
 
@@ -545,12 +566,13 @@ def read_for_chart(
     try:
         pages = matching_prose(
             org_id=org_id, workspace_id=workspace_id, viewer=viewer,
-            question=question, providers=providers,
+            question=question, providers=providers, tag=tag,
         )
     except Exception:  # noqa: BLE001
         logger.warning("text adapter: could not find pages to read", exc_info=True)
         return ProseRead((), ())
-    adapter = TextAdapter(llm, max_chars=DocTablesSettings.from_env().text_max_chars)
+    adapter = TextAdapter(llm, max_chars=DocTablesSettings.from_env().text_max_chars,
+                          interactive=True)
     saved: list[str] = []
     empty: list[str] = []
     calls = 0

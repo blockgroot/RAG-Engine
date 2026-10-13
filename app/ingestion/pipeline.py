@@ -477,40 +477,49 @@ def _store_scores(store: VectorStore, document_id: str, scores, guard: Injection
 def _store_tables(document_id, doc, *, org_id: str, workspace_id: str | None) -> None:
     """Hand the document to the dataset adapters (app/doctables), for charts.
 
-    A FOREGROUND adapter (tables the document already has; no AI) runs here.
-    A BACKGROUND adapter (figures in sentences; needs AI) is only asked the
-    cheap ``wants`` question here and, if yes, the document is queued for the
-    tick -- ingestion never waits on a model call for charts.
+    Every adapter runs HERE, inline: the tables the document already has (no
+    AI), and the figures in its sentences (one paced background-model call,
+    only for a page that passes the cheap figures check). A queue read on a
+    later tick left a page uncharted for minutes; reading at ingest costs the
+    ingest a call instead, and a webhook re-ingest keeps the figures as fresh
+    as the text. A page whose sentences held no series is marked read, so
+    Chart mode does not pay for the same call again.
 
     A re-ingest deletes and re-inserts the `documents` row and its tables
     cascade with it, so an adapter with nothing to say costs no query. Never
     raises: a chart that failed to store must not cost the indexed document.
     """
-    try:
-        from ..doctables import base, factory
-        from ..doctables.store import replace_document_tables
+    from ..doctables import base, factory
 
-        text = base.DocumentText(
-            external_id=doc.external_id, title=doc.title, content=doc.content or "",
-            tables=tuple(doc.tables) if doc.tables is not None else None,
-        )
-        for adapter in factory.build_dataset_adapters():
+    text = base.DocumentText(
+        external_id=doc.external_id, title=doc.title, content=doc.content or "",
+        tables=tuple(doc.tables) if doc.tables is not None else None,
+    )
+    try:
+        adapters = factory.build_dataset_adapters()
+    except Exception:  # noqa: BLE001 - see docstring
+        logger.warning("Could not build table readers for %s", doc.external_id, exc_info=True)
+        adapters = []
+    for adapter in adapters:
+        try:
             if not adapter.wants(text):
                 continue
-            if adapter.background:
-                from ..doctables.queue import enqueue
+            from ..doctables.store import replace_document_tables
 
-                enqueue(document_id, org_id=org_id, workspace_id=workspace_id,
-                        origin=adapter.origin, text=text)
-                continue
             tables = adapter.extract(text)
             if tables:
                 replace_document_tables(
                     document_id, org_id=org_id, workspace_id=workspace_id,
                     tables=tables, origin=adapter.origin,
                 )
-    except Exception:  # noqa: BLE001 - see docstring
-        logger.warning("Could not store tables of %s", doc.external_id, exc_info=True)
+            elif adapter.origin == "text":
+                from ..doctables.queue import mark_read
+
+                mark_read(document_id, org_id=org_id, workspace_id=workspace_id,
+                          external_id=doc.external_id, title=doc.title or "")
+        except Exception:  # noqa: BLE001 - see docstring; Chart mode can still read it
+            logger.warning("Could not store %s tables of %s", adapter.origin,
+                           doc.external_id, exc_info=True)
     try:
         # Stamped even when an adapter failed: the failure is logged, and a
         # document that always fails must not take a backfill slot forever.

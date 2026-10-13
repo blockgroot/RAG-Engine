@@ -602,13 +602,15 @@ def _has_authorized_repos(org_id: str, workspace_id: str | None) -> bool:
 
 
 def _chartable_tables(org_id: str, workspace_id: str | None, viewer, question: str = "",
-                      uploads=None) -> list:
+                      uploads=None, *, providers: list[str] | None = None,
+                      tag: str | None = None) -> list:
     """Tables THIS person may chart, for the chart classifier.
 
     Files they uploaded to this chat come FIRST and unranked: a file dropped
     into the chat is what the next question is about, and there are only a
     few. Then document tables, ranked by how close their document is to the
-    question.
+    question; ``providers`` / ``tag`` keep them to one connector / one Slack
+    channel.
 
     No viewer means none: a table is only ever offered through the document
     access predicate, and "no viewer" is the unrestricted reading (ingest,
@@ -618,7 +620,7 @@ def _chartable_tables(org_id: str, workspace_id: str | None, viewer, question: s
     if viewer is None or getattr(viewer, "is_unrestricted", False):
         return []
     return _upload_tables(org_id, uploads) + _document_tables(
-        org_id, workspace_id, viewer, question)
+        org_id, workspace_id, viewer, question, providers=providers, tag=tag)
 
 
 def _upload_tables(org_id: str, uploads) -> list:
@@ -645,12 +647,14 @@ def _upload_tables(org_id: str, uploads) -> list:
         return []
 
 
-def _document_tables(org_id: str, workspace_id: str | None, viewer, question: str) -> list:
+def _document_tables(org_id: str, workspace_id: str | None, viewer, question: str, *,
+                     providers: list[str] | None = None, tag: str | None = None) -> list:
     try:
         from ..doctables.store import list_tables
         from ..insights import tables as doc_tables
 
-        listed = list_tables(org_id=org_id, workspace_id=workspace_id, viewer=viewer)
+        listed = list_tables(org_id=org_id, workspace_id=workspace_id, viewer=viewer,
+                             providers=providers, tag=tag)
         from ..insights.resolve import title_mentioned
 
         named = [t for t in listed if title_mentioned(t.document_title or "", question)]
@@ -764,12 +768,15 @@ def _try_question_route(
         live_out.append(getattr(intent, "needs_live", None))
     if chart_out is not None:
         chart_out.append(getattr(intent, "chart_ask", None))
-    if getattr(intent, "chart_ask", None) == "visual":
-        # They asked to SEE a chart. Slack has no toggle, so there the ask
-        # IS Chart mode; the web chat says where charts live instead of
-        # answering a chart request in words.
-        if chart_from_words:
-            return _chart_mode_route(question, connected, org_id, workspace_id, viewer)
+    ask = getattr(intent, "chart_ask", None)
+    if chart_from_words and ask in ("visual", "count"):
+        # Slack has no toggle: a question asking to see a chart, or how many
+        # of something, IS Chart mode there -- a counted answer beats prose
+        # about the same rows, and no Turn on Chart button exists to offer.
+        return _chart_mode_route(question, connected, org_id, workspace_id, viewer)
+    if ask == "visual":
+        # They asked to SEE a chart; the web chat says where charts live
+        # instead of answering a chart request in words.
         return RoutingDecision(INSIGHTS_KEY, "chart-mode-off", chart_refusal=CHART_MODE_HINT)
     if intent.kind != "github_live":
         return None
@@ -809,11 +816,16 @@ def _document_gap(question, intent, tables, org_id, workspace_id, viewer, user_i
     )
 
 
-def _live_fetch_named_tables(org_id, workspace_id, viewer, title) -> bool:
-    """Read one named Notion, Drive, or Linear document and save any table it contains.
+def _live_fetch_named_tables(org_id, workspace_id, viewer, title,
+                             providers: list[str] | None = None) -> str | None:
+    """Read one named Notion, Drive, or Linear document live and save its figures.
 
-    Only a document already indexed in this scope, and only when Chart mode
-    has no table for it. Never raises. Returns whether a table was saved.
+    Only a document already indexed in this scope (on ``providers`` when the
+    question named one), and only when Chart mode has no table for it. Its
+    tables are read exactly; a page of sentences is read by the text adapter
+    now, because the person is waiting. Returns ``"saved"``, the page's title
+    when it was read and held no series, or None (not found, not readable).
+    Never raises.
     """
     try:
         from ..auth.credentials import get_live_connection_token
@@ -827,17 +839,18 @@ def _live_fetch_named_tables(org_id, workspace_id, viewer, title) -> bool:
 
         found = find_chart_document(
             org_id=org_id, workspace_id=workspace_id, viewer=viewer, title_query=title,
+            providers=providers,
         )
         if found is None:
-            return False
+            return None
         document_id, provider, external_id, doc_title = found
         reader = {"notion": read_page, "google": read_file, "linear": read_issue}.get(provider)
         if reader is None:
-            return False
+            return None
         token = get_live_connection_token(org_id, provider, workspace_id=workspace_id)
         read = reader(token, external_id)
         if read.outcome != OK or not read.text:
-            return False
+            return None
         doc = DocumentText(
             external_id=external_id, title=doc_title or title, content=read.text,
         )
@@ -845,66 +858,50 @@ def _live_fetch_named_tables(org_id, workspace_id, viewer, title) -> bool:
         tables = adapter.extract(doc)
         origin = adapter.origin
         if not tables:
-            # The page is sentences. The same check the upload path uses: the
-            # person is waiting, so this one page is read now.
             from ..doctables.factory import build_upload_text_adapter
             from ..doctables.queue import mark_read
             from ..llm.factory import build_llm_provider
 
             text = build_upload_text_adapter(build_llm_provider())
-            if text.wants(doc):
-                tables = text.extract(doc)
-                origin = text.origin
+            if not text.wants(doc):
+                return doc_title or title
+            tables = text.extract(doc)
+            origin = text.origin
             if not tables:
-                if text.wants(doc):
-                    mark_read(
-                        document_id, org_id=org_id, workspace_id=workspace_id,
-                        external_id=external_id, title=doc_title or title,
-                    )
-                return False
+                mark_read(
+                    document_id, org_id=org_id, workspace_id=workspace_id,
+                    external_id=external_id, title=doc_title or title,
+                )
+                return doc_title or title
         replace_document_tables(
             document_id, org_id=org_id, workspace_id=workspace_id, tables=tables,
             origin=origin,
         )
-        return True
+        return "saved"
     except Exception:  # noqa: BLE001 - a live read may only add a table
         logger.warning("Agent routing: live table read failed", exc_info=True)
-        return False
-
-
-def _providers_named(question: str, connected: set[str]) -> list[str] | None:
-    """Provider ids that appear as words in the question.
-
-    The stored id (``notion``, ``google``), not a display name. "in notion"
-    keeps the read on Notion pages; a question that names no id searches
-    every connected source.
-    """
-    words = set(re.findall(r"[a-z0-9]+", (question or "").lower()))
-    named = [provider for provider in connected if provider and provider.lower() in words]
-    return named or None
+        return None
 
 
 def _worth_prose(intent, viewer) -> bool:
-    """Chart mode has no chart yet, and the refusal is not already specific."""
+    """Chart mode has no chart yet and a real person is asking."""
     from ..vectorstore.base import Viewer
 
     if not isinstance(viewer, Viewer) or viewer.is_unrestricted:
         return False
     if getattr(intent, "kind", None) == "chart" and getattr(intent, "spec", None) is not None:
         return False
-    message = getattr(intent, "message", None) or ""
-    if intent.kind == "refuse" and message and not message.startswith(
-        "**This can't be shown as a chart**"
-    ):
-        return False
     return intent.kind in ("refuse", "qa", "chart")
 
 
-def _chart_from_prose(question, intent, connected, org_id, workspace_id, viewer, providers):
+def _chart_from_prose(question, intent, org_id, workspace_id, viewer, providers,
+                      *, read_providers=None, tag=None):
     """Chart figures from the page the question matches, or say the sentences had none.
 
-    None leaves the caller's own refusal in place. An activity metric is not
-    substituted when the page does not yield a series.
+    ``read_providers`` keeps the read on the connector the question named;
+    ``tag`` on one Slack channel. None leaves the caller's own refusal in
+    place. An activity metric is not substituted when the page does not
+    yield a series.
     """
     if not _worth_prose(intent, viewer):
         return None
@@ -914,7 +911,6 @@ def _chart_from_prose(question, intent, connected, org_id, workspace_id, viewer,
         DEFAULT_PERIOD,
         TABLE_METRIC,
         ChartSpec,
-        classify_question,
         prose_figures_missing,
         prose_figures_unclear,
     )
@@ -924,7 +920,7 @@ def _chart_from_prose(question, intent, connected, org_id, workspace_id, viewer,
     try:
         read = read_for_chart(
             org_id=org_id, workspace_id=workspace_id, viewer=viewer, question=question,
-            providers=_providers_named(question, set(connected)), llm=build_llm_provider(),
+            providers=read_providers, llm=build_llm_provider(), tag=tag,
         )
     except Exception:  # noqa: BLE001
         logger.warning("Agent routing: paragraph read failed", exc_info=True)
@@ -932,26 +928,16 @@ def _chart_from_prose(question, intent, connected, org_id, workspace_id, viewer,
     fresh = []
     if read.document_ids:
         try:
-            listed = list_tables(org_id=org_id, workspace_id=workspace_id, viewer=viewer)
+            listed = list_tables(org_id=org_id, workspace_id=workspace_id, viewer=viewer,
+                                 providers=read_providers, tag=tag)
             wanted = set(read.document_ids)
             fresh = [table for table in listed if table.document_id in wanted]
         except Exception:  # noqa: BLE001
             logger.warning("Agent routing: could not list figures just read", exc_info=True)
             fresh = []
     if fresh:
-        again = None
-        try:
-            again = classify_question(
-                question, providers=providers, fail_open=False, offer_github=False,
-                tables=fresh,
-                fields=_chart_fields(org_id, workspace_id, viewer),
-                names=_chart_names(org_id, workspace_id, viewer),
-            )
-        except Exception:  # noqa: BLE001
-            logger.warning("Agent routing: chart of the read page failed", exc_info=True)
-        fresh_ids = {table.id for table in fresh}
-        spec = getattr(again, "spec", None)
-        if getattr(again, "kind", None) == "chart" and spec is not None and spec.table_id in fresh_ids:
+        spec = _classify_tables(question, providers, fresh, org_id, workspace_id, viewer)
+        if spec is not None:
             return RoutingDecision(INSIGHTS_KEY, "chart", chart_spec=spec)
         if len(fresh) == 1:
             pick = doc_tables.prose_chart(fresh[0])
@@ -976,6 +962,71 @@ def _chart_from_prose(question, intent, connected, org_id, workspace_id, viewer,
     return None
 
 
+def _classify_tables(question, providers, tables, org_id, workspace_id, viewer):
+    """A chart spec on one of ``tables`` (and only those), or None. Never raises."""
+    from ..insights.resolve import classify_question
+
+    try:
+        again = classify_question(
+            question, providers=providers, fail_open=False, offer_github=False,
+            tables=tables,
+            fields=_chart_fields(org_id, workspace_id, viewer),
+            names=_chart_names(org_id, workspace_id, viewer),
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("Agent routing: chart of the read tables failed", exc_info=True)
+        return None
+    spec = getattr(again, "spec", None)
+    if getattr(again, "kind", None) == "chart" and spec is not None and \
+            spec.table_id in {table.id for table in tables}:
+        return spec
+    return None
+
+
+def _channel_subject(org_id: str, workspace_id: str | None, tag: str) -> str | None:
+    """The channel name its conversations are counted under (``#general``):
+    the ``subject`` facts.py stores for a Slack thread. None when nothing from
+    the channel is indexed. Never raises."""
+    try:
+        from ..db.connection import get_connection
+
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT split_part(title, ':', 1) FROM documents "
+                "WHERE org_id = %s AND workspace_id IS NOT DISTINCT FROM %s::uuid "
+                "AND source_provider = 'slack' AND tags @> ARRAY[%s::text] "
+                "ORDER BY source_last_modified DESC NULLS LAST LIMIT 1",
+                (org_id, workspace_id, tag),
+            ).fetchone()
+    except Exception:  # noqa: BLE001
+        logger.warning("Agent routing: could not read the channel name", exc_info=True)
+        return None
+    if row is None:
+        return None
+    return (row[0] or "").strip() or None
+
+
+#: Chart mode in a Slack channel, when the question is not about the channel.
+CHANNEL_CHART_ONLY = (
+    "**In a channel I chart this channel only**\n"
+    "Ask about this channel's conversations or the figures posted in it. "
+    "For company-wide charts, message me directly."
+)
+
+
+def _in_channel(spec, subject: str | None):
+    """A spec that reads only this channel, or None. A Slack metric is
+    focused on the channel; a table was already listed from it alone."""
+    from ..insights import registry
+
+    if spec.table_id:
+        return spec
+    metric = registry.METRICS.get(spec.metric)
+    if metric is None or metric.provider != "slack" or not subject:
+        return None
+    return replace(spec, focus=subject)
+
+
 def _chart_mode_route(
     question: str,
     connected: set[str],
@@ -984,9 +1035,20 @@ def _chart_mode_route(
     viewer=None,
     uploads=None,
     user_id: str | None = None,
+    channel_tag: str | None = None,
 ) -> RoutingDecision:
     """Chart mode: the asker chose a chart, so the answer is a chart or a
-    plain refusal -- never a document answer, never a guess. Never raises."""
+    plain refusal -- never a document answer, never a guess. Never raises.
+
+    In order: the stored tables and activity; when the question named a
+    connector and the pick was another's, that connector's tables alone; the
+    page they named, read live; the pages whose text matches, read for figures
+    in their sentences; then a refusal that says which of these failed.
+
+    ``channel_tag`` is a Slack channel: only that channel's conversations and
+    the figures posted in it are charted (everyone in the room can read
+    those), never another connector or channel.
+    """
     from ..insights import panels as panel_defs
     from ..insights.resolve import (
         CHART_MODE_TEXT_QUESTION,
@@ -1000,7 +1062,20 @@ def _chart_mode_route(
         return RoutingDecision(INSIGHTS_KEY, "chart-model-unsupported",
                                chart_refusal=unsupported)
     providers = [p for p in sorted(connected) if panel_defs.for_provider(p)]
-    tables = _chartable_tables(org_id, workspace_id, viewer, question, uploads)
+    subject = None
+    if channel_tag:
+        providers = [p for p in providers if p == "slack"]
+        subject = _channel_subject(org_id, workspace_id, channel_tag)
+
+    def chart(spec, reason="chart"):
+        if channel_tag:
+            spec = _in_channel(spec, subject)
+            if spec is None:
+                return RoutingDecision(INSIGHTS_KEY, "chart-refuse",
+                                       chart_refusal=CHANNEL_CHART_ONLY)
+        return RoutingDecision(INSIGHTS_KEY, reason, chart_spec=spec)
+
+    tables = _chartable_tables(org_id, workspace_id, viewer, question, uploads, tag=channel_tag)
     try:
         intent = classify_question(
             question, providers=providers, fail_open=False, offer_github=False,
@@ -1017,50 +1092,65 @@ def _chart_mode_route(
             chart_refusal="**Couldn't build this chart just now**\nTry again in a moment.",
         )
     if intent.kind == "chart" and intent.spec is not None:
-        return RoutingDecision(INSIGHTS_KEY, "chart", chart_spec=intent.spec)
-    # The page or issue they named can sit outside the six tables offered. If
-    # no table is stored yet, read that Notion, Drive, or Linear document live
-    # once, save any table it has, then ask again with only its tables.
+        return chart(intent.spec)
+    source = getattr(intent, "source", None)
+    only = [source] if source else None
+    # They named a connector and what was offered was mostly another's: ask
+    # again with that connector's tables alone.
+    if source and any(t.provider != source for t in tables):
+        own = _document_tables(org_id, workspace_id, viewer, question,
+                               providers=only, tag=channel_tag)
+        spec = _classify_tables(question, providers, own, org_id, workspace_id,
+                                viewer) if own else None
+        if spec is not None:
+            return chart(spec)
+    # The page they named can sit outside the six tables offered. If no table
+    # is stored for it, read it live once, save what it holds, and ask again
+    # with only its tables.
     named = getattr(intent, "named_document", None)
-    if named and viewer is not None and not getattr(viewer, "is_unrestricted", False):
+    if named and not channel_tag and viewer is not None \
+            and not getattr(viewer, "is_unrestricted", False):
         try:
             from ..doctables.store import list_tables
 
-            extra = list_tables(
-                org_id=org_id, workspace_id=workspace_id, viewer=viewer, title_query=named,
-            )
+            extra = list_tables(org_id=org_id, workspace_id=workspace_id, viewer=viewer,
+                                title_query=named, providers=only)
         except Exception:  # noqa: BLE001
             extra = []
+        read = None
         if not extra:
-            _live_fetch_named_tables(
-                org_id, workspace_id, viewer, named,
-            )
-            try:
-                extra = list_tables(
-                    org_id=org_id, workspace_id=workspace_id, viewer=viewer, title_query=named,
-                )
-            except Exception:  # noqa: BLE001
-                extra = []
+            read = _live_fetch_named_tables(org_id, workspace_id, viewer, named, only)
+            if read == "saved":
+                try:
+                    extra = list_tables(org_id=org_id, workspace_id=workspace_id,
+                                        viewer=viewer, title_query=named, providers=only)
+                except Exception:  # noqa: BLE001
+                    extra = []
         if extra:
-            try:
-                intent = classify_question(
-                    question, providers=providers, fail_open=False, offer_github=False,
-                    tables=extra,
-                    fields=_chart_fields(org_id, workspace_id, viewer),
-                    names=_chart_names(org_id, workspace_id, viewer),
-                )
-            except Exception:  # noqa: BLE001
-                logger.warning("Agent routing: chart of the named page failed", exc_info=True)
-            if intent.kind == "chart" and intent.spec is not None:
-                return RoutingDecision(INSIGHTS_KEY, "chart", chart_spec=intent.spec)
-    gap = _document_gap(question, intent, tables, org_id, workspace_id, viewer, user_id)
-    if gap:
-        return RoutingDecision(INSIGHTS_KEY, "chart-refuse", chart_refusal=gap)
+            spec = _classify_tables(question, providers, extra, org_id, workspace_id, viewer)
+            if spec is not None:
+                return chart(spec)
+            if len(extra) == 1:
+                prose = _single_table_chart(extra[0])
+                if prose is not None:
+                    return chart(prose)
+        elif read and read != "saved":
+            from ..insights.resolve import prose_figures_missing
+
+            return RoutingDecision(INSIGHTS_KEY, "chart-refuse",
+                                   chart_refusal=prose_figures_missing([read]))
     prose = _chart_from_prose(
-        question, intent, connected, org_id, workspace_id, viewer, providers,
+        question, intent, org_id, workspace_id, viewer, providers,
+        read_providers=only or (["slack"] if channel_tag else None), tag=channel_tag,
     )
     if prose is not None:
+        if prose.chart_spec is not None:
+            return chart(prose.chart_spec)
         return prose
+    if not channel_tag:
+        gap = _document_gap(question, intent, tables, org_id, workspace_id, viewer, user_id)
+        if gap:
+            return RoutingDecision(INSIGHTS_KEY, "chart-refuse", chart_refusal=gap)
     if intent.kind == "refuse" and intent.message:
         return RoutingDecision(INSIGHTS_KEY, "chart-refuse", chart_refusal=intent.message)
     if intent.kind in ("qa", "github_live"):
@@ -1069,6 +1159,21 @@ def _chart_mode_route(
                                chart_refusal=CHART_MODE_TEXT_QUESTION)
     return RoutingDecision(INSIGHTS_KEY, "chart-refuse",
                            chart_refusal=chart_mode_refusal(providers))
+
+
+def _single_table_chart(table):
+    """The one obvious chart of a page's only table (``tables.prose_chart``)."""
+    from ..insights import tables as doc_tables
+    from ..insights.resolve import DEFAULT_PERIOD, TABLE_METRIC, ChartSpec
+
+    pick = doc_tables.prose_chart(table)
+    if pick is None:
+        return None
+    return ChartSpec(
+        metric=TABLE_METRIC, group_by=pick.group_by, split_by=pick.split_by,
+        period=DEFAULT_PERIOD, chart=pick.chart, measure=pick.measure,
+        filters=pick.filters, table_id=pick.table_id, value=pick.value,
+    )
 
 
 # ponytail: calibrated on four live pairs (follow-ups 0.01-0.03 apart, new
@@ -1129,8 +1234,11 @@ def choose_agent(
     chart_from_words: bool = False,
     uploads=None,
     user_id: str | None = None,
+    channel_tag: str | None = None,
 ) -> RoutingDecision:
     """Which agent answers, plus the question check's live-data verdict.
+
+    ``channel_tag`` (Slack, a channel's chart ask) charts that channel only.
 
     ``chart_from_words`` is Slack, which has no Chart toggle: a question the
     check reads as asking to SEE a chart is answered in Chart mode.
@@ -1147,7 +1255,7 @@ def choose_agent(
         question, org_id, workspace_id=workspace_id, requested_agent=requested_agent,
         context=context, graph_plan=graph_plan, live_out=live, viewer=viewer,
         chart_mode=chart_mode, chart_out=chart, chart_from_words=chart_from_words,
-        uploads=uploads, user_id=user_id,
+        uploads=uploads, user_id=user_id, channel_tag=channel_tag,
     )
     return replace(decision, needs_live=live[0] if live else None,
                    chart_ask=chart[0] if chart else None)
@@ -1168,6 +1276,7 @@ def _choose_agent(
     chart_from_words: bool = False,
     uploads=None,
     user_id: str | None = None,
+    channel_tag: str | None = None,
 ) -> RoutingDecision:
     """Decide which agent answers ``question``. Never raises.
 
@@ -1232,7 +1341,7 @@ def _choose_agent(
 
     if chart_mode:
         return _chart_mode_route(question, connected, org_id, workspace_id, viewer,
-                                 uploads=uploads, user_id=user_id)
+                                 uploads=uploads, user_id=user_id, channel_tag=channel_tag)
 
     if not connected:
         return RoutingDecision(default_key, "no-sources")

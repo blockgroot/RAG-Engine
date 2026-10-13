@@ -959,6 +959,27 @@ BEGIN
     END IF;
 END $$;
 
+-- Figures in SENTENCES were read only by a background queue that was off by
+-- default until 2026-10, so prose pages were stamped "checked" without ever
+-- being read. Ingest now reads them inline; unstamp the ones with no figures
+-- read and no "read, none found" mark so `backfill_tables` reads them (a
+-- bounded batch per sync). The old queue's unfinished rows are dropped:
+-- nothing works through them any more.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'prose_figures_read_at_ingest') THEN
+        UPDATE documents d SET tables_checked_at = NULL
+         WHERE d.source_provider IN ('notion', 'google', 'slack', 'linear')
+           AND d.tables_checked_at IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM doc_tables t
+                            WHERE t.document_id = d.id AND t.origin = 'text')
+           AND NOT EXISTS (SELECT 1 FROM doc_text_queue q
+                            WHERE q.document_id = d.id AND q.status = 'done');
+        DELETE FROM doc_text_queue WHERE status <> 'done';
+        INSERT INTO schema_marks (name) VALUES ('prose_figures_read_at_ingest');
+    END IF;
+END $$;
+
 -- A chart a member asked for and kept. Personal, scoped `(org_id, user_id)`
 -- like `schedulers` and unlike every other tenant table -- a pin is one
 -- person's shortcut, never published to anyone, which is why this feature has

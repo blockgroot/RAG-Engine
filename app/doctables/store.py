@@ -360,11 +360,13 @@ def document_places(
 
 def find_chart_document(
     *, org_id: str, workspace_id: str | None, viewer, title_query: str | None,
+    providers: list[str] | None = None,
 ) -> tuple[str, str, str, str] | None:
     """One Notion, Drive, or Linear document in this scope whose title matches, or None.
 
     ``(id, provider, external_id, title)``. The live chart read uses this so
-    it can only re-read a page the asker may already open here.
+    it can only re-read a page the asker may already open here. ``providers``
+    keeps it on the connector the question named.
     """
     like = _title_like(title_query)
     if not like or viewer is None or getattr(viewer, "is_unrestricted", False):
@@ -382,13 +384,15 @@ def find_chart_document(
                   FROM documents d
                  WHERE d.org_id = %(org_id)s AND {scope}
                    AND d.source_provider IN ('notion', 'google', 'linear')
+                   AND (%(providers)s::text[] IS NULL OR d.source_provider = ANY(%(providers)s))
                    AND d.source_external_id IS NOT NULL
                    AND d.title ILIKE %(like)s
                    {access}
                  ORDER BY d.source_last_modified DESC NULLS LAST
                  LIMIT 1
                 """,
-                {"org_id": org_id, "workspace_id": workspace_id, "like": like, **params},
+                {"org_id": org_id, "workspace_id": workspace_id, "like": like,
+                 "providers": providers, **params},
             ).fetchone()
     except Exception as exc:  # noqa: BLE001
         raise ProviderError("doctables: could not find the named page", cause=exc) from exc
@@ -406,13 +410,14 @@ MAX_PROSE_CHUNKS = 8
 
 def matching_prose(
     *, org_id: str, workspace_id: str | None, viewer, question: str,
-    providers: list[str] | None = None, limit: int = 6,
+    providers: list[str] | None = None, limit: int = 6, tag: str | None = None,
 ) -> list[tuple[str, str, str, str, bool]]:
     """Pages whose indexed text matches the question and have no sentence-figures yet.
 
     ``(document_id, external_id, title, text, truncated)``. The viewer predicate
     is on the document, in the same WHERE as ``org_id``. An unrestricted viewer
-    gets nothing: this is a person's chart question, not ingest.
+    gets nothing: this is a person's chart question, not ingest. ``tag`` keeps
+    only documents carrying it (one Slack channel).
     """
     question = (question or "").strip()[:500]
     if not question or viewer is None or getattr(viewer, "is_unrestricted", False):
@@ -437,6 +442,7 @@ def matching_prose(
                {scope}
                AND c.content_tsv @@ {query}
                AND (%(providers)s::text[] IS NULL OR d.source_provider = ANY(%(providers)s))
+               AND (%(tag)s::text IS NULL OR d.tags @> ARRAY[%(tag)s::text])
                AND NOT EXISTS (
                     SELECT 1 FROM doc_tables t
                      WHERE t.document_id = d.id AND t.org_id = d.org_id
@@ -471,7 +477,7 @@ def matching_prose(
                 sql,
                 {"org_id": org_id, "workspace_id": workspace_id, "question": question,
                  "providers": providers, "limit": limit, "max_chunks": MAX_PROSE_CHUNKS,
-                 **params},
+                 "tag": tag, **params},
             ).fetchall()
     except Exception as exc:  # noqa: BLE001
         raise ProviderError("doctables: could not find pages with figures", cause=exc) from exc
@@ -496,16 +502,23 @@ def matching_prose(
 
 def list_tables(
     *, org_id: str, workspace_id: str | None, viewer, limit: int = MAX_LISTED,
-    title_query: str | None = None,
+    title_query: str | None = None, providers: list[str] | None = None,
+    tag: str | None = None,
 ) -> list[TableRef]:
     """Every table this viewer may chart in this scope, newest document first.
 
     ``title_query`` keeps only documents whose title contains that name, so a
     page they named is found even when newer tables filled the usual list.
+    ``providers`` keeps one connector's documents (a question that names
+    Drive is never charted from Notion); ``tag`` one Slack channel's.
     """
     access, params = _visible(viewer)
     like = _title_like(title_query)
     titled = " AND d.title ILIKE %(like)s" if like else ""
+    if providers:
+        titled += " AND d.source_provider = ANY(%(providers)s)"
+    if tag:
+        titled += " AND d.tags @> ARRAY[%(tag)s::text]"
     sql = f"""
         SELECT t.id, t.name, t.columns, t.row_count, t.truncated, t.notes,
                d.title, d.source_provider, d.source_uri, t.origin, t.document_id
@@ -522,7 +535,8 @@ def list_tables(
         with get_connection() as conn:
             rows = conn.execute(
                 sql, {"org_id": org_id, "workspace_id": workspace_id,
-                      "limit": limit, "like": like, **params},
+                      "limit": limit, "like": like, "providers": providers,
+                      "tag": tag, **params},
             ).fetchall()
     except Exception as exc:  # noqa: BLE001
         raise ProviderError("doctables: could not list tables", cause=exc) from exc

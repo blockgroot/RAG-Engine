@@ -966,3 +966,47 @@ def test_a_longer_title_still_matches_the_words_they_used():
         "Project Atlas – Billing Platform Migration",
         "From the quarterly update page in Notion, show the total budget.",
     )
+
+
+# --------------------------------------------------------------------------
+# The connector the question names: a Google doc is never charted from Notion
+# --------------------------------------------------------------------------
+
+
+def _pick_t1(**extra):
+    return json.dumps({"intent": "chart", "metric": None, "table": "T1",
+                       "group_by": "Department", "measure": "sum", "value": "Budget",
+                       **extra})
+
+
+def test_a_question_about_a_google_doc_never_charts_a_notion_table():
+    q = "Chart the budget per department from the planning google doc"
+    intent = resolve.classify_question(
+        q, providers=["notion", "google"], fail_open=False, tables=[_budget_table()],
+        llm=FakeLLM(_pick_t1(source="google", source_words="google doc")),
+    )
+    assert intent.kind != "chart"
+    assert intent.source == "google"
+
+
+def test_a_named_connector_keeps_its_own_table():
+    q = "Chart the budget per department from the planning notion page"
+    intent = resolve.classify_question(
+        q, providers=["notion", "google"], fail_open=False, tables=[_budget_table()],
+        llm=FakeLLM(_pick_t1(source="notion", source_words="notion page")),
+    )
+    assert intent.kind == "chart" and intent.spec.table_id == "t1"
+
+
+@pytest.mark.parametrize("source, words", [
+    ("google", "google doc"),     # the words are not in the question
+    ("dropbox", "planning"),      # not a connector in this scope
+    ("google", None),             # no quote at all
+])
+def test_a_source_is_kept_only_when_its_words_are_in_the_question(source, words):
+    q = "Chart the budget per department from the planning page"
+    intent = resolve.classify_question(
+        q, providers=["notion", "google"], fail_open=False, tables=[_budget_table()],
+        llm=FakeLLM(_pick_t1(source=source, source_words=words)),
+    )
+    assert intent.source is None

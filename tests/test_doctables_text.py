@@ -302,3 +302,74 @@ def test_two_number_columns_are_not_guessed():
         provider="notion", source_uri=None, origin="text", document_id="d1",
     )
     assert prose_chart(table) is None
+
+
+# --------------------------------------------------------------------------
+# Real paragraphs: the measure is often not written beside each figure
+# --------------------------------------------------------------------------
+
+
+PARAGRAPHS = (
+    "Quarterly update. In Q1 we brought in ₹12 lakh from subscriptions. Q2 closed at "
+    "₹15 lakh, and Q3 reached ₹19 lakh.\n"
+    "The team grew from 14 people in January to 22 in June.\n"
+    "Marketing spend was $40k in April, $55k in May and $61k in June.\n"
+    "Sales: North region did 1,200 units, South region did 950 units and West did 700 units."
+)
+
+
+def _rows(*pairs):
+    return [{"cells": list(cells), "quote": quote} for cells, quote in pairs]
+
+
+@pytest.mark.parametrize("columns, rows", [
+    # The measure is the section's, not the sentence's: "Revenue" is not written.
+    (["Quarter", "Revenue"], _rows(
+        (("Q1", "₹12 lakh"), "In Q1 we brought in ₹12 lakh from subscriptions."),
+        (("Q2", "₹15 lakh"), "Q2 closed at ₹15 lakh, and Q3 reached ₹19 lakh."),
+        (("Q3", "₹19 lakh"), "Q2 closed at ₹15 lakh, and Q3 reached ₹19 lakh."))),
+    # Labels after their figures: "14 people in January".
+    (["Month", "Headcount"], _rows(
+        (("January", "14"), "The team grew from 14 people in January to 22 in June."),
+        (("June", "22"), "The team grew from 14 people in January to 22 in June."))),
+    # One measure, a list of figures after it.
+    (["Month", "Marketing spend"], _rows(
+        (("April", "$40k"), "Marketing spend was $40k in April, $55k in May and $61k in June."),
+        (("May", "$55k"), "Marketing spend was $40k in April, $55k in May and $61k in June."),
+        (("June", "$61k"), "Marketing spend was $40k in April, $55k in May and $61k in June."))),
+    # A label column's header ("Region") is not a rival measure.
+    (["Region", "Units"], _rows(
+        (("North", "1,200"), "Sales: North region did 1,200 units, South region did 950 units and West did 700 units."),
+        (("South", "950"), "Sales: North region did 1,200 units, South region did 950 units and West did 700 units."),
+        (("West", "700"), "Sales: North region did 1,200 units, South region did 950 units and West did 700 units."))),
+])
+def test_figures_in_ordinary_paragraphs_are_kept(columns, rows):
+    """Every one of these was dropped by the old same-clause rule, so pages
+    full of figures were refused as having "no table"."""
+    assert len(verify_rows(PARAGRAPHS, rows, columns)) == len(rows)
+
+
+def test_a_label_swapped_between_figures_in_one_sentence_is_dropped():
+    quote = "Marketing spend was $40k in April, $55k in May and $61k in June."
+    kept = verify_rows(PARAGRAPHS, _rows(
+        (("April", "$40k"), quote), (("May", "$61k"), quote), (("June", "$55k"), quote),
+    ), ["Month", "Marketing spend"])
+    assert ("May", "$61k") not in [tuple(cells) for cells, _ in kept]
+    assert ("June", "$55k") not in [tuple(cells) for cells, _ in kept]
+
+
+def test_a_page_someone_is_waiting_on_is_read_with_plain_numbers():
+    """"Hired 12 in Q1, 18 in Q2" has no currency or percent: ingest skips
+    it, but Chart mode reads it rather than refusing before reading."""
+    page = _doc("Hiring. We hired 12 engineers in Q1, 18 in Q2 and 25 in Q3.")
+    assert not TextAdapter().wants(page)
+    assert TextAdapter(interactive=True).wants(page)
+    assert not TextAdapter(interactive=True).wants(_doc("Founded in 2019, renamed in 2021."))
+
+
+def test_ingest_waits_for_a_background_slot(monkeypatch):
+    """No model handed in = ingest: the paced background model, never the
+    quota a person is waiting on."""
+    monkeypatch.setattr("app.llm.pacing.wait_for_background_slot", lambda: False)
+    with pytest.raises(ProviderError):
+        TextAdapter().extract(_doc())

@@ -1,10 +1,11 @@
-"""Background figures: ingestion flags, the tick reads.
+"""Figures in sentences are read AT INGEST, inline.
 
-Pinned: ingestion never calls a model for charts (it only flags a document
-after a no-AI check); the tick reads a bounded batch; a model failure is
-retried up to the cap and then given up on; a busy background budget does not
-count against the document; the text pass never touches the tables ingestion
-stored; and nothing happens at all while the text adapter is switched off.
+Pinned: a page with figures is charted as soon as it is ingested (no queue,
+no tick); the paced background model is used, never a person's quota; a page
+without figures costs no call; a page whose sentences hold no series is
+marked read so Chart mode does not pay again; a failed read never costs the
+document or the tables it already has; and the text pass never touches the
+tables ingestion stored exactly.
 """
 
 from __future__ import annotations
@@ -14,9 +15,7 @@ import uuid
 
 import pytest
 
-from app.config.settings import DocTablesSettings
 from app.db import get_connection
-from app.doctables import extract, queue
 from app.doctables import store as table_store
 from app.ingestion.pipeline import _store_tables
 from app.sources.base import SourceDocument
@@ -35,7 +34,6 @@ REPLY = {"tables": [{"name": "Revenue by quarter", "columns": ["Quarter", "Reven
     {"cells": ["Q2", "₹15L"], "quote": "In Q2 revenue grew to ₹15L"},
     {"cells": ["Q3", "₹18 lakh"], "quote": "Q3 revenue reached ₹18 lakh"},
 ]}]}
-ON = DocTablesSettings(text_enabled=True, text_batch=5, text_max_attempts=2)
 VIEWER = Viewer(email="sana@acme.test")
 
 
@@ -62,6 +60,15 @@ def org(org_cleanup):
     return str(row[0])
 
 
+@pytest.fixture
+def llm(monkeypatch):
+    fake = FakeLLM()
+    monkeypatch.delenv("DOCTABLES_TEXT_ENABLED", raising=False)  # on by default
+    monkeypatch.setattr("app.llm.factory.build_aux_llm_provider", lambda *a, **k: fake)
+    monkeypatch.setattr("app.llm.pacing.wait_for_background_slot", lambda *a, **k: True)
+    return fake
+
+
 def _document(org_id, title="Quarterly update"):
     with get_connection() as conn:
         row = conn.execute(
@@ -74,7 +81,7 @@ def _document(org_id, title="Quarterly update"):
     return str(row[0])
 
 
-def _ingest(org_id, content=PROSE, monkeypatch=None):
+def _ingest(org_id, content=PROSE):
     doc_id = _document(org_id)
     _store_tables(doc_id, SourceDocument(external_id="p", title="Quarterly update",
                                          content=content),
@@ -82,50 +89,25 @@ def _ingest(org_id, content=PROSE, monkeypatch=None):
     return doc_id
 
 
-def _queue_row(doc_id):
+def _marked(doc_id):
     with get_connection() as conn:
-        return conn.execute(
-            "SELECT status, attempts, text IS NOT NULL FROM doc_text_queue "
-            "WHERE document_id = %s", (doc_id,),
+        row = conn.execute(
+            "SELECT status FROM doc_text_queue WHERE document_id = %s", (doc_id,),
         ).fetchone()
+    return row[0] if row else None
 
 
-@pytest.fixture
-def text_on(monkeypatch):
-    monkeypatch.setenv("DOCTABLES_TEXT_ENABLED", "true")
+def _tables(org):
+    return {t.origin: t for t in
+            table_store.list_tables(org_id=org, workspace_id=None, viewer=VIEWER)}
 
 
-def test_ingestion_only_flags_and_never_calls_a_model(org, text_on, monkeypatch):
-    def boom(*a, **k):
-        raise AssertionError("ingestion must not call a model for charts")
-    monkeypatch.setattr("app.doctables.text_adapter.TextAdapter.extract", boom)
-    doc_id = _ingest(org)
-    assert _queue_row(doc_id) == ("pending", 0, True)
-    # The pipe table was stored at once by the table adapter, exactly.
-    [table] = table_store.list_tables(org_id=org, workspace_id=None, viewer=VIEWER)
-    assert (table.name, table.origin) == ("Budget", "table")
-
-
-def test_a_document_without_figures_is_not_queued(org, text_on):
-    doc_id = _ingest(org, "Leave policy. Ask your manager before booking time off.")
-    assert _queue_row(doc_id) is None
-
-
-def test_nothing_is_queued_while_the_text_adapter_is_off(org, monkeypatch):
-    monkeypatch.delenv("DOCTABLES_TEXT_ENABLED", raising=False)
-    assert _queue_row(_ingest(org)) is None
-    assert queue.run_pending(DocTablesSettings(text_enabled=False)) == 0
-
-
-def test_the_tick_reads_figures_and_keeps_the_ingested_table(org, text_on):
-    doc_id = _ingest(org)
-    llm = FakeLLM()
-    assert queue.run_pending(ON, llm=llm, wait_for_slot=lambda: True) == 1
+def test_ingest_reads_the_figures_and_keeps_the_exact_table(org, llm):
+    _ingest(org)
     assert llm.calls == 1
-    assert _queue_row(doc_id) == ("done", 1, False)  # text cleared once done
-    tables = {t.origin: t for t in
-              table_store.list_tables(org_id=org, workspace_id=None, viewer=VIEWER)}
+    tables = _tables(org)
     assert set(tables) == {"table", "text"}
+    assert tables["table"].name == "Budget"
     text = tables["text"]
     rows = table_store.list_rows(text)
     assert [cells["c1"] for cells, _, _ in rows] == [1200000, 1500000, 1800000]
@@ -139,51 +121,43 @@ def test_the_tick_reads_figures_and_keeps_the_ingested_table(org, text_on):
     panel, _ = run_table_spec(spec, org_id=org, workspace_id=None, viewer=VIEWER)
     assert panel["title"].endswith("(taken from text)")
     assert "read from sentences" in panel["caveat"]
-    assert panel["details"][0]["subject"] == "“Q1 revenue was ₹12L”"
     assert {p["group"]: p["value"] for p in panel["points"]} == {
         "Q1": 1200000, "Q2": 1500000, "Q3": 1800000}
-    # A second tick has nothing left to do.
-    assert queue.run_pending(ON, llm=llm, wait_for_slot=lambda: True) == 0
-    assert llm.calls == 1
 
 
-def test_a_failing_document_is_retried_then_given_up_on(org, text_on):
-    doc_id = _ingest(org)
-    llm = FakeLLM(RuntimeError("429"))
-    with get_connection() as conn:  # make the claim immediately re-claimable
-        conn.execute("UPDATE doc_text_queue SET claimed_at = NULL")
-        conn.commit()
-    queue.run_pending(ON, llm=llm, wait_for_slot=lambda: True)
-    assert _queue_row(doc_id)[:2] == ("pending", 1)
-    queue.run_pending(ON, llm=llm, wait_for_slot=lambda: True)
-    assert _queue_row(doc_id) == ("failed", 2, False)
-    assert llm.calls == 2
-
-
-def test_a_busy_background_budget_does_not_cost_the_document_an_attempt(org, text_on):
-    doc_id = _ingest(org)
-    llm = FakeLLM()
-    queue.run_pending(ON, llm=llm, wait_for_slot=lambda: False)
+def test_a_page_without_figures_costs_no_call(org, llm):
+    _ingest(org, "Leave policy. Ask your manager before booking time off.")
     assert llm.calls == 0
-    assert _queue_row(doc_id)[:2] == ("pending", 0)
 
 
-def test_a_batch_is_bounded(org, text_on):
-    for _ in range(4):
-        _ingest(org)
-    llm = FakeLLM()
-    small = DocTablesSettings(text_enabled=True, text_batch=2)
-    assert queue.run_pending(small, llm=llm, wait_for_slot=lambda: True) == 2
-    assert llm.calls == 2
-
-
-def test_a_reingest_starts_over(org, text_on):
-    """A re-ingest replaces the documents row, so its queue row and its text
-    tables cascade away and the new row is flagged afresh."""
+def test_a_page_whose_sentences_hold_no_series_is_marked_read(org, llm):
+    llm.reply = {"tables": []}
     doc_id = _ingest(org)
-    queue.run_pending(ON, llm=FakeLLM(), wait_for_slot=lambda: True)
+    assert _marked(doc_id) == "done"
+    # Chart mode skips a page already read (matching_prose excludes it).
+    assert table_store.matching_prose(
+        org_id=org, workspace_id=None, viewer=VIEWER, question="revenue") == []
+
+
+def test_a_failed_read_keeps_the_document_and_its_exact_table(org, llm):
+    llm.reply = RuntimeError("429")
+    doc_id = _ingest(org)
+    assert set(_tables(org)) == {"table"}
+    assert _marked(doc_id) is None  # not marked: Chart mode may still read it
+
+
+def test_switched_off_reads_nothing(org, llm, monkeypatch):
+    monkeypatch.setenv("DOCTABLES_TEXT_ENABLED", "false")
+    _ingest(org)
+    assert llm.calls == 0 and set(_tables(org)) == {"table"}
+
+
+def test_a_reingest_starts_over(org, llm):
+    """A re-ingest replaces the documents row, so its text tables and its
+    read mark cascade away and the new row is read afresh."""
+    doc_id = _ingest(org)
     with get_connection() as conn:
         conn.execute("DELETE FROM documents WHERE id = %s", (doc_id,))
         conn.commit()
-    assert _queue_row(doc_id) is None
+    assert _marked(doc_id) is None
     assert table_store.list_tables(org_id=org, workspace_id=None, viewer=VIEWER) == []

@@ -9,14 +9,13 @@ only in WHERE the rows come from:
   Sheet, a CSV, a pipe table in Notion/Docs, a Word table. No AI: the source
   already labels every number, so the rows are exact.
 - ``TextAdapter`` (``origin="text"``): figures written in sentences. Only an AI
-  can read prose into rows, so the library sweep runs in the BACKGROUND
-  (never inside ingestion). Chart mode also reads the one or two matching
-  pages when a question would otherwise have no chart. Code keeps a row only
-  when every cell appears in its quote and each number sits with its measure.
+  can read prose into rows, so it runs inline at ingest on the background
+  model budget, and Chart mode reads a matching page ingest did not cover.
+  Code keeps a row only when its quote is in the document, every cell is in
+  its quote, and each number binds to its own label and measure.
 
 Two methods, split on purpose: ``wants`` is a cheap code check that runs at
-ingest for every document (no AI, no I/O), and ``extract`` does the work --
-inline for a foreground adapter, later on the tick for a background one.
+ingest for every document (no AI, no I/O), and ``extract`` does the work.
 """
 
 from __future__ import annotations
@@ -42,8 +41,6 @@ class DatasetAdapter(ABC):
     #: Stored on every table this adapter writes; an adapter only ever
     #: replaces its OWN tables for a document.
     origin: str = ""
-    #: True = never run inside ingestion; queued and run on the tick.
-    background: bool = False
 
     @abstractmethod
     def wants(self, doc: DocumentText) -> bool:

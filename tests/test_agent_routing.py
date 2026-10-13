@@ -647,18 +647,20 @@ def test_chart_mode_charts_the_table_a_live_read_just_saved(monkeypatch):
     from app.insights.resolve import AskIntent, ChartSpec
 
     seen = {}
+    saved = SimpleNamespace(id="t-saved", provider="notion")
 
     def classify(question, **kwargs):
         if kwargs.get("tables"):
             seen["tables"] = kwargs["tables"]
             return AskIntent("chart", spec=ChartSpec(
                 metric="table", group_by="c0", period="month", chart="pie",
+                table_id="t-saved",
             ))
         return AskIntent("qa", named_document="quarterly update")
 
     def listed(**kwargs):
         if kwargs.get("title_query") and seen.get("fetched"):
-            return ["saved-table"]
+            return [saved]
         return []
 
     _stub(monkeypatch, connected={"notion"})
@@ -666,7 +668,7 @@ def test_chart_mode_charts_the_table_a_live_read_just_saved(monkeypatch):
     monkeypatch.setattr("app.doctables.store.list_tables", listed)
     monkeypatch.setattr(
         "app.agent.routing._live_fetch_named_tables",
-        lambda *a, **k: seen.setdefault("fetched", True),
+        lambda *a, **k: "saved" if seen.setdefault("fetched", True) else None,
     )
     decision = routing.choose_agent(
         "From the quarterly update page, show the total budget for each department.",
@@ -674,7 +676,7 @@ def test_chart_mode_charts_the_table_a_live_read_just_saved(monkeypatch):
         viewer=SimpleNamespace(is_unrestricted=False, acl=lambda: ["a@b.c"]),
     )
     assert seen["fetched"] is True
-    assert seen["tables"] == ["saved-table"]
+    assert seen["tables"] == [saved]
     assert decision.reason == "chart"
     assert decision.chart_spec.chart == "pie"
 
@@ -746,7 +748,8 @@ def test_chart_mode_charts_figures_read_from_a_paragraph_page(monkeypatch):
                 metric="doc_table", group_by="c0", split_by="c1", period="month",
                 chart="bar", measure="sum", table_id="t1", value="c2",
             ))
-        return AskIntent("refuse", message="**This can't be shown as a chart**\nno")
+        return AskIntent("refuse", message="**This can't be shown as a chart**\nno",
+                         source="notion")
 
     def listed(**kwargs):
         return [table] if seen.get("read") else []
@@ -772,12 +775,18 @@ def test_chart_mode_charts_figures_read_from_a_paragraph_page(monkeypatch):
     assert seen["providers"] == ["notion"]
 
 
-def test_a_specific_refusal_does_not_read_paragraphs(monkeypatch):
+def test_a_specific_refusal_stands_when_no_paragraph_answers(monkeypatch):
+    """Paragraphs are read before any refusal (the old order said "no table"
+    without reading); when they hold nothing, the specific refusal stands."""
+    from app.doctables.text_adapter import ProseRead
     from app.insights.resolve import AskIntent
     from app.vectorstore.base import Viewer
 
-    def boom(**kwargs):
-        raise AssertionError("paragraphs were read")
+    seen = {}
+
+    def read(**kwargs):
+        seen["read"] = True
+        return ProseRead((), ())
 
     _stub(monkeypatch, connected={"notion", "google"})
     monkeypatch.setattr(
@@ -786,10 +795,11 @@ def test_a_specific_refusal_does_not_read_paragraphs(monkeypatch):
     )
     monkeypatch.setattr("app.doctables.store.list_tables", lambda **k: [])
     monkeypatch.setattr("app.doctables.store.document_places", lambda **k: [])
-    monkeypatch.setattr("app.doctables.text_adapter.read_for_chart", boom)
+    monkeypatch.setattr("app.doctables.text_adapter.read_for_chart", read)
     decision = routing.choose_agent(
         "things edited per week", ORG, chart_mode=True, viewer=Viewer(email="ada@example.com"),
     )
+    assert seen["read"] is True
     assert decision.reason == "chart-refuse"
     assert "Which chart" in decision.chart_refusal
 
@@ -1041,3 +1051,130 @@ def test_a_count_ask_is_carried_for_the_chart_button(monkeypatch):
                         lambda q, **k: AskIntent("qa", chart_ask="count"))
     decision = routing.choose_agent("how many issues did we close?", ORG)
     assert (decision.agent_key, decision.chart_ask) == ("notion", "count")
+
+
+# --------------------------------------------------------------------------
+# Chart mode keeps to the connector the question names, and to one channel
+# --------------------------------------------------------------------------
+
+
+def _table(table_id, provider, origin="table"):
+    from app.doctables.store import TableRef
+
+    return TableRef(
+        id=table_id, name="Budget", columns=(), row_count=3, truncated=False, notes=(),
+        document_title=f"{provider} plan", provider=provider, source_uri=None,
+        origin=origin, document_id=f"doc-{table_id}",
+    )
+
+
+def test_a_named_connector_is_asked_again_with_its_own_tables(monkeypatch):
+    """The Google doc question was answered from a Notion table; now the
+    Notion pick is refused and only Drive tables are offered again."""
+    from app.insights.resolve import AskIntent, ChartSpec
+    from app.vectorstore.base import Viewer
+
+    notion, drive = _table("n1", "notion"), _table("g1", "google")
+    offered = []
+
+    def listed(**kwargs):
+        return [drive] if kwargs.get("providers") == ["google"] else [notion]
+
+    def classify(question, **kwargs):
+        tables = kwargs.get("tables") or []
+        offered.append([t.id for t in tables])
+        if [t.provider for t in tables] == ["google"]:
+            return AskIntent("chart", source="google", spec=ChartSpec(
+                metric="doc_table", group_by="c0", period="month", chart="bar",
+                table_id="g1", value="c1", measure="sum"))
+        return AskIntent("refuse", source="google")
+
+    _stub(monkeypatch, connected={"notion", "google"})
+    monkeypatch.setattr("app.insights.resolve.classify_question", classify)
+    monkeypatch.setattr("app.doctables.store.list_tables", listed)
+    monkeypatch.setattr("app.insights.tables.document_similarity", lambda *a, **k: None)
+    decision = routing.choose_agent(
+        "chart the budget from the google doc", ORG, chart_mode=True,
+        viewer=Viewer(email="ada@example.com"),
+    )
+    assert decision.reason == "chart" and decision.chart_spec.table_id == "g1"
+    assert offered[-1] == ["g1"]
+
+
+def test_paragraphs_are_read_only_on_the_named_connector(monkeypatch):
+    from app.doctables.text_adapter import ProseRead
+    from app.insights.resolve import AskIntent
+    from app.vectorstore.base import Viewer
+
+    seen = {}
+
+    def read(**kwargs):
+        seen.update(kwargs)
+        return ProseRead((), ("Planning doc",))
+
+    _stub(monkeypatch, connected={"notion", "google"})
+    monkeypatch.setattr("app.insights.resolve.classify_question",
+                        lambda q, **k: AskIntent("refuse", source="google"))
+    monkeypatch.setattr("app.doctables.store.list_tables", lambda **k: [])
+    monkeypatch.setattr("app.doctables.text_adapter.read_for_chart", read)
+    decision = routing.choose_agent(
+        "chart revenue from the google doc", ORG, chart_mode=True,
+        viewer=Viewer(email="ada@example.com"),
+    )
+    assert seen["providers"] == ["google"]
+    assert "Planning doc" in decision.chart_refusal
+
+
+def test_a_channel_chart_is_focused_on_that_channel(monkeypatch):
+    from app.insights.resolve import AskIntent, ChartSpec
+    from app.vectorstore.base import Viewer
+
+    seen = {}
+
+    def classify(question, **kwargs):
+        seen["providers"] = kwargs["providers"]
+        return AskIntent("chart", spec=ChartSpec(
+            metric="slack_threads", group_by="actor", period="week", chart="bar"))
+
+    _stub(monkeypatch, connected={"slack", "notion", "google"})
+    monkeypatch.setattr("app.insights.resolve.classify_question", classify)
+    monkeypatch.setattr("app.doctables.store.list_tables", lambda **k: [])
+    monkeypatch.setattr(routing, "_channel_subject", lambda *a: "#growth")
+    decision = routing.choose_agent(
+        "chart who started the most threads here", ORG, chart_mode=True,
+        viewer=Viewer(public_only=True, channels=("C1",)), channel_tag="slack:channel:C1",
+    )
+    assert seen["providers"] == ["slack"]
+    assert decision.reason == "chart" and decision.chart_spec.focus == "#growth"
+
+
+def test_a_channel_never_charts_another_connector(monkeypatch):
+    from app.insights.resolve import AskIntent, ChartSpec
+    from app.vectorstore.base import Viewer
+
+    _stub(monkeypatch, connected={"slack", "notion"})
+    monkeypatch.setattr("app.insights.resolve.classify_question", lambda q, **k: AskIntent(
+        "chart", spec=ChartSpec(metric="docs_changed", group_by=None, period="week", chart="line")))
+    monkeypatch.setattr("app.doctables.store.list_tables", lambda **k: [])
+    monkeypatch.setattr(routing, "_channel_subject", lambda *a: "#growth")
+    decision = routing.choose_agent(
+        "chart pages edited", ORG, chart_mode=True,
+        viewer=Viewer(public_only=True, channels=("C1",)), channel_tag="slack:channel:C1",
+    )
+    assert decision.chart_refusal == routing.CHANNEL_CHART_ONLY
+
+
+def test_slack_charts_a_how_many_question_too(monkeypatch):
+    """Slack has no Turn on Chart button: a count ask is Chart mode there."""
+    from app.insights.resolve import AskIntent
+
+    seen = {}
+    _stub(monkeypatch, connected={"linear"})
+    monkeypatch.setattr(routing, "_try_question_route", _real_question_route)
+    monkeypatch.setattr("app.insights.resolve.classify_route",
+                        lambda q, **k: AskIntent("qa", chart_ask="count"))
+    monkeypatch.setattr(routing, "_chart_mode_route",
+                        lambda *a, **k: seen.setdefault("chart", routing.RoutingDecision(
+                            INSIGHTS_KEY, "chart")))
+    routing.choose_agent("how many issues closed per week?", ORG, chart_from_words=True)
+    assert "chart" in seen
