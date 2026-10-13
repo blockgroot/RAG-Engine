@@ -52,15 +52,12 @@ MAX_COLUMNS = 8
 #: gemini-3.1-flash-lite logged `llm.truncated` with the whole budget used
 #: and the page was left with no table. The call stops when the JSON is done.
 MAX_TOKENS = 8000
-#: How many unit-bearing figures a page needs before ingest spends a model
-#: call on it. A bare digit does not count: dates, clause numbers and "15
-#: days" are why a policy was costing a call. A currency, a percent, or a
-#: magnitude (lakh, k, crore, Mio) does.
+#: How many figures a page needs before ingest spends a model call on it, and
+#: (``MIN_CHART_NUMBERS``) before a page someone is waiting on is read. A
+#: figure is any number that is not a year; no list of currencies, units or
+#: measure words decides it, so "we hired 12 in Q1 and 18 in Q2" counts as
+#: much as "₹12L". What the model returns is still checked against the text.
 MIN_FIGURES = 3
-#: When someone is waiting on a chart of THIS page, two numbers of any kind
-#: ("hired 12 in Q1 and 18 in Q2") are enough to read it: the rows are still
-#: checked against their sentences, and refusing before reading was the
-#: failure ("no table" for a page full of figures).
 MIN_CHART_NUMBERS = 2
 
 TEXT_NOTE = (
@@ -69,15 +66,9 @@ TEXT_NOTE = (
     "is not counted."
 )
 
-#: A figure worth charting: a currency, a percent, or a magnitude suffix.
-#: "5min" and "3kg" do not match — the suffix has to end the token.
-_CHART_FIGURE = re.compile(
-    r"(?:[₹$€£]|rs\.?|inr|usd|eur|gbp)\s*\d"
-    r"|\d[\d,]*(?:\.\d+)?\s*(?:k|mn|m|bn|b|lakhs?|lac|l|crores?|cr|mio)\b"
-    r"|\d[\d,]*(?:\.\d+)?\s*%",
-    re.I,
-)
 #: Anything a figure can be written as, for comparing a cell to its quote.
+#: A format parser (₹ / lakh / k / %), not intent: it reads a number, it does
+#: not decide whether the page is worth charting.
 _NUMBER_TOKEN = re.compile(
     r"(?<!\w)\(?-?(?:[₹$€£]|rs\.?|inr|usd|eur|gbp)?\s*\d[\d,\s]*(?:\.\d+)?\s*"
     r"(?:k|mn|m|bn|b|lakhs?|lac|l|crores?|cr)?\b\s*%?\)?",
@@ -121,28 +112,17 @@ def _cell_in_quote(cell: str, quote_norm: str, quote_numbers: list[float]) -> bo
     return _norm(cell) in quote_norm
 
 
-#: Headers that name no measure. "Count" matched inside "headcount" and became
-#: a chart of a number that belonged to something else.
-_GENERIC = frozenset({
-    "value", "values", "count", "counts", "amount", "amounts", "total", "totals",
-    "number", "numbers", "figure", "figures", "metric", "metrics",
-})
-_UNIT_WORDS = frozenset({
-    "lakh", "lakhs", "lac", "crore", "crores", "cr", "million", "billion",
-    "thousand", "percent", "percentage",
-})
 #: A word long enough to name a measure. Between a measure and a figure that
 #: follows an earlier figure, such a word ("while headcount reached") means
 #: the measure has changed. Short glue ("in", "and", "to", "rose") does not.
+#: Length, not a vocabulary: it reads the same in any language.
 _LONG_WORD = re.compile(r"[^\W\d_]{5,}")
 
 
 def _header_words(header: str) -> list[str]:
+    """The words of a column's name, its bracketed unit removed."""
     name, _unit = split_header(header or "")
-    return [
-        w for w in _norm(name).split()
-        if len(w) >= 3 and w not in _UNIT_WORDS and w not in _GENERIC
-    ]
+    return [w for w in _norm(name).split() if len(w) >= 3]
 
 
 def _header_pattern(header: str) -> str | None:
@@ -208,11 +188,12 @@ def _bound(span, nums, *, follows: bool):
     return (first or second or [None])[0]
 
 
-def _measure_binds(header, value, measures, quote, nums, allowed, names) -> bool:
+def _measure_binds(header, value, measures, quote, nums, allowed) -> bool:
     """The figure belongs to this column's measure, not to another one.
 
-    No constraint when the measure is not written in the quote ("In Q1 we
-    brought in ₹12 lakh" under Revenue: the section names the measure). When
+    No constraint when the column's name is not written in the quote ("In Q1
+    we brought in ₹12 lakh" under Revenue: the section names the measure, or
+    the model named it). The figure is still bound to its label. When
     it is, the measure governing the figure -- the nearest measure written
     before it among the table's own columns, else the nearest after -- must be
     this one. And when other figures sit between the measure and this one
@@ -221,10 +202,6 @@ def _measure_binds(header, value, measures, quote, nums, allowed, names) -> bool
     reached 150": 150 is not revenue).
     """
     own = _header_spans(header, quote)
-    if not _header_words(header):
-        # "Value" or "Count" names no measure, so the row must: a long row's
-        # measure cell ("headcount"), never a bare "Q1".
-        return any(len(_norm(name)) >= 4 for name in names)
     if not own:
         return True
     rivals = [s for other in measures if other != header for s in _header_spans(other, quote)]
@@ -266,7 +243,10 @@ def _bind_group(columns: list[str], rows: list[list[str]], quote: str) -> list[b
     ]
     label_spans = [s for labels in label_cells for _h, c in labels for s in _label_spans(c, quote)]
     nums = [n for n in _num_spans(quote) if not any(_overlaps((n[1], n[2]), s) for s in label_spans)]
-    allowed = set(_UNIT_WORDS)
+    # Words a stretch may hold without naming another measure: the rows'
+    # labels, the column names, and the word right after each figure (its
+    # unit, whatever the language: "40 million", "150 Mitarbeiter").
+    allowed = {m.group(1) for m in re.finditer(r"\d\S*\s+([^\W\d_]+)", quote)}
     for labels in label_cells:
         allowed |= {w for _h, c in labels for w in _norm(c).split()}
     for header in columns:
@@ -286,9 +266,8 @@ def _bind_group(columns: list[str], rows: list[list[str]], quote: str) -> list[b
     figures = []
     for values, labels in zip(values_by_row, label_cells):
         figures.append([v for _h, v in values])
-        names = [c for _h, c in labels]
         measured.append(bool(values) and all(
-            _measure_binds(h, v, measures, quote, nums, allowed, names) for h, v in values
+            _measure_binds(h, v, measures, quote, nums, allowed) for h, v in values
         ))
 
     def binds(index: int, follows: bool) -> bool:
@@ -402,22 +381,15 @@ class TextAdapter(DatasetAdapter):
     def wants(self, doc: DocumentText) -> bool:
         """Cheap: enough figures in the prose to be worth a model call.
 
-        At ingest, ``MIN_FIGURES`` unit-bearing ones, so a policy of dates
-        and day counts costs nothing. Interactive, ``MIN_CHART_NUMBERS`` of
-        any kind. The AI's rows are checked against their sentences either way."""
+        ``MIN_FIGURES`` at ingest, ``MIN_CHART_NUMBERS`` when someone is
+        waiting. Any number but a year counts; the AI's rows are checked
+        against their sentences either way."""
         if doc.tables:
             # A Sheet or CSV: its rows ARE the data, read exactly already.
             return False
         prose = _prose(doc.content)
-        if self._interactive:
-            numbers = [v for v, _s, _e in _num_spans(prose) if not _is_year(v)]
-            return len(numbers) >= MIN_CHART_NUMBERS
-        found = 0
-        for _ in _CHART_FIGURE.finditer(prose):
-            found += 1
-            if found >= MIN_FIGURES:
-                return True
-        return False
+        figures = [v for v, _s, _e in _num_spans(prose) if not _is_year(v)]
+        return len(figures) >= (MIN_CHART_NUMBERS if self._interactive else MIN_FIGURES)
 
     def _model(self):
         if self._llm is not None:

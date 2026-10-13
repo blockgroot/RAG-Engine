@@ -265,6 +265,22 @@ def _asks_for_chart(question: str) -> bool:
         return False
 
 
+#: Other spaces a DM chart is tried in when the probed one has none. Each try
+#: is a classifier call (and maybe a paragraph read), so it is bounded.
+MAX_DM_CHART_SCOPES = 3
+
+
+def _chart_refused(decision) -> bool:
+    """Chart mode answered with a refusal that another scope could change.
+
+    Not a model that cannot chart, and not a question that wanted words."""
+    return (
+        getattr(decision, "agent_key", None) == "insights"
+        and getattr(decision, "chart_spec", None) is None
+        and getattr(decision, "reason", None) == "chart-refuse"
+    )
+
+
 def _answer(
     question: str,
     org_id: str,
@@ -274,6 +290,7 @@ def _answer(
     user_id: str | None = None,
     viewer: Viewer | None = None,
     channel_id: str | None = None,
+    other_scopes: list[tuple[str | None, str]] | None = None,
 ) -> SlackAnswer:
     """Run the existing pipeline. ``tags`` set => channel-scoped Slack only.
 
@@ -350,6 +367,17 @@ def _answer(
         # figures -- without it Chart mode offers none.
         decision = choose_agent(question, org_id, workspace_id=workspace_id,
                                 viewer=viewer, chart_from_words=True)
+        if other_scopes and _chart_refused(decision):
+            # A DM reaches everything the asker can: company-wide and each of
+            # their spaces. The probed scope had no chart for this, so the
+            # others are asked in turn, and the first chart answers -- the
+            # label names the space it came from.
+            for scope_id, name in other_scopes[:MAX_DM_CHART_SCOPES]:
+                other = choose_agent(question, org_id, workspace_id=scope_id,
+                                     viewer=viewer, chart_mode=True)
+                if getattr(other, "chart_spec", None) is not None:
+                    decision, workspace_id, scope_label = other, scope_id, name
+                    break
     from ..agent.orchestration import build_agent_graph
     from .chat import _agent_getters
 
@@ -556,6 +584,7 @@ def _handle(event: dict, team_id: str) -> None:
         scopes = _dm_scopes(org_id, user.id)
         answer_workspace_id, tags = None, None
         scope_label = "Company"
+        other_scopes = None
         if len(scopes) > 1:
             # The counterpart to `choose_agent`, and the same router module --
             # a DM is the one surface with no UI to say which space it means.
@@ -565,6 +594,7 @@ def _handle(event: dict, team_id: str) -> None:
                 scope_label = next(
                     (name for sid, name in scopes if sid == best), "Company"
                 )
+            other_scopes = [(sid, name) for sid, name in scopes if sid != answer_workspace_id]
     else:
         tag = channel_tag(channel)
         resolved = _scope_for_channel(org_id, tag)
@@ -583,6 +613,7 @@ def _handle(event: dict, team_id: str) -> None:
         # No label in a channel: the asker is standing in the only place the
         # answer could have come from, so naming it is noise.
         scope_label = None
+        other_scopes = None
 
     # A grounded answer is ~6 LLM calls and routinely takes 10-30 seconds. Slack
     # shows nothing at all in that window, so the bot reads as broken or
@@ -612,6 +643,7 @@ def _handle(event: dict, team_id: str) -> None:
             # The room the reply lands in, so a channel answer may read that
             # channel's own threads without being anybody.
             channel_id=channel,
+            other_scopes=other_scopes,
         )
     except Exception as exc:  # noqa: BLE001 - a failed answer must still reply
         logger.warning("slack.bot answer failed for org %s: %s", org_id, exc, exc_info=True)

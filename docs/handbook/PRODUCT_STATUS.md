@@ -290,7 +290,10 @@ Ask on `main` still charts only the 12 registry metrics.
   page has no table.
 - **Drive vs Notion:** a question that names a connector ("the Google doc") is never charted
   from another connector's table.
-- **Slack:** DMs chart with the asker's access; a chart ask in a channel charts that channel only;
+- **No word lists** decide what a paragraph reader reads or keeps: any page with three
+  non-year numbers is read at ingest, and the checks are positional, in any language.
+- **Slack:** DMs chart with the asker's access, company-wide and then their other spaces until
+  one has the chart; a chart ask in a channel charts that channel only;
   charts are uploaded as PNG images (needs `files:write`, so each Slack connection reconnects
   once; until then the numbers are written as text).
 

@@ -678,3 +678,54 @@ def test_an_ordinary_channel_question_stays_on_the_channel_pipeline(monkeypatch)
     slack_events._answer("what did we decide?", "org-1", None, [channel_tag("C9")],
                          None, channel_id="C9")
     assert calls == [[channel_tag("C9")]] and seen == []
+
+
+def test_a_dm_chart_tries_the_askers_other_spaces(monkeypatch):
+    """Company-wide had no chart for this; the asker's Finance space does.
+    A DM charts whatever the asker can open, like picking the space in the app."""
+    tried = []
+
+    def choose(q, org, workspace_id=None, **kwargs):
+        tried.append(workspace_id)
+        spec = None if workspace_id != "ws-fin" else type("S", (), {})()
+        return type("D", (), {"agent_key": "insights", "chart_spec": spec,
+                              "reason": "chart" if spec else "chart-refuse",
+                              "chart_refusal": None if spec else "no"})()
+
+    monkeypatch.setattr(slack_events, "choose_agent", choose)
+    monkeypatch.setattr(slack_events, "spec_to_dict", lambda spec: {"metric": "x"})
+    states = []
+
+    class _G:
+        def invoke(self, state):
+            states.append(state)
+            return {"response": type("R", (), {"answer": "Budget", "chart": None})()}
+
+    monkeypatch.setattr("app.agent.orchestration.build_agent_graph", lambda g: _G())
+    reply = slack_events._answer(
+        "chart the budget", "org-1", None, None, "Company",
+        other_scopes=[("ws-eng", "Engineering"), ("ws-fin", "Finance")],
+    )
+    assert tried == [None, "ws-eng", "ws-fin"]
+    assert states[0]["workspace_id"] == "ws-fin"
+    assert "· Finance_" in reply.text
+
+
+def test_a_dm_answer_that_is_not_a_chart_never_tries_other_spaces(monkeypatch):
+    tried = []
+
+    def choose(q, org, workspace_id=None, **kwargs):
+        tried.append(workspace_id)
+        return type("D", (), {"agent_key": "notion", "chart_spec": None,
+                              "reason": "best-match", "chart_refusal": None})()
+
+    monkeypatch.setattr(slack_events, "choose_agent", choose)
+
+    class _G:
+        def invoke(self, state):
+            return {"response": type("R", (), {"answer": "a", "chart": None})()}
+
+    monkeypatch.setattr("app.agent.orchestration.build_agent_graph", lambda g: _G())
+    slack_events._answer("what is the leave policy?", "org-1", None, None, "Company",
+                         other_scopes=[("ws-eng", "Engineering")])
+    assert tried == [None]

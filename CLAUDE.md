@@ -139,7 +139,9 @@ list of what may be charted. Chat and Slack pass a
 spec through `resolve.spec_to_dict`, never a hand-built dict (that dropped `focus`).
 Charts are built only in Chart mode (chat sends `mode: "chart"`; Slack: a question
 the question check reads as a chart ask, "visual" or "count"). Slack passes the
-asker's `Viewer` into routing (a DM charts what they can open); a chart ask in a
+asker's `Viewer` into routing. A DM charts what they can open: the probed scope
+first, then (on a chart refusal) up to `MAX_DM_CHART_SCOPES` of their other
+scopes, and the reply names the scope that answered; a chart ask in a
 CHANNEL charts that channel only (`channel_tag`: Slack metrics focused on the
 channel, tables and paragraphs from its threads, the room's public+channel
 viewer), never another connector. Chart mode answers with a chart or a
@@ -217,9 +219,10 @@ adapter replaces only its own `origin`. Every adapter runs INLINE at ingest
 (`ingestion.pipeline._store_tables`); there is no figures queue or tick. The text
 adapter built with no model uses the aux model after `wait_for_background_slot`;
 one built with a model is interactive (Chart mode, uploads). Ingest reads a page
-whose prose has at least three unit-bearing figures (a currency, a percent, or a
-magnitude such as lakh or k); dates, clause numbers and day counts do not count.
-An interactive read needs two non-year numbers of any kind. A page read with no
+whose prose has at least three numbers that are not years; an interactive read
+needs two. No list of currencies, units or measure words decides what is read
+or kept: the reader and its checks are positional (number, label, column name),
+in any language. Number PARSING (₹/lakh/k/%) is format, not intent. A page read with no
 series is marked `done` in `doc_text_queue` (now only a read marker). The sentence reader
 asks for 8000 tokens, because a reasoning model spends a 1500 cap before the
 JSON is finished; a reply cut off at the cap raises, never stored as an empty table. A figure read from prose is kept
@@ -227,10 +230,11 @@ only when its quote is in the document, every cell is in that quote, and the
 cells bind (`text_adapter._bind_group`): each label to its own figure (one
 sentence, one convention: labels after or before their figures; a tie keeps
 only rows both readings bind; a label every row of the sentence shares is
-context), and, when the measure is written in the quote, the figure to that
-measure (the nearest measure column before it; after an intervening figure, no
-long word between). The measure need NOT be in the same clause: requiring it
-dropped most real paragraphs. A figure another measure governs is dropped,
+context), and, when the column's name is written in the quote, the figure to
+it (the nearest number column's name before it; after an intervening figure, no
+word of five or more letters between other than labels, column names and the
+word right after a figure). A column name need NOT be in the sentence at all:
+requiring it dropped most real paragraphs. A figure another measure governs is dropped,
 never repaired; the chart says "taken from text", and a dropped row is named
 so a partial series is not presented as complete. Chart mode, when nothing
 stored is chartable, reads the page the asker NAMED live, then the sentences of

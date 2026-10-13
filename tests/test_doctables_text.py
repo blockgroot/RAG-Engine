@@ -61,14 +61,16 @@ def test_a_document_without_figures_costs_nothing():
     assert not TextAdapter().wants(_doc(policy))
 
 
-def test_a_policy_full_of_dates_and_day_counts_is_not_queued():
-    """Five bare digits used to take a queue slot ahead of a budget page."""
+def test_plain_figures_are_read_without_any_unit_or_measure_word():
+    """No list of currencies, units or measure words decides what is read:
+    day counts are figures too, and only years are not."""
     policy = (
         "Leave Policy, updated 12 March 2024 and again on 3 January 2025. "
         "Employees receive 15 days of annual leave, 12 days of sick leave "
-        "and 10 public holidays. Clause 4.2 applies after 6 months."
+        "and 10 public holidays."
     )
-    assert not TextAdapter().wants(_doc(policy))
+    assert TextAdapter().wants(_doc(policy))
+    assert not TextAdapter().wants(_doc("Founded in 2019, renamed in 2021, moved in 2023."))
 
 
 def test_a_sheet_is_never_sent_to_the_ai():
@@ -204,14 +206,27 @@ def test_a_number_kept_under_the_wrong_measure_is_dropped():
     assert kept == []
 
 
-def test_count_inside_headcount_is_not_a_measure():
+def test_a_column_name_need_not_be_written_in_the_sentence():
+    """The model names the column; the figure only has to bind to its label.
+    "Count" is not matched inside "headcount" (whole words only)."""
     quote = "In Q1 headcount reached 150 after hiring."
-    assert verify_rows(
+    kept = verify_rows(
         quote + " In Q2 headcount reached 162 after hiring.",
         [{"cells": ["Q1", "150"], "quote": quote},
          {"cells": ["Q2", "162"], "quote": "In Q2 headcount reached 162 after hiring."}],
         ["Quarter", "Count"],
-    ) == []
+    )
+    assert [cells for cells, _ in kept] == [["Q1", "150"], ["Q2", "162"]]
+
+
+def test_a_unit_in_another_language_does_not_break_a_list():
+    quote = "Umsatz war 40 Millionen im April, 55 Millionen im Mai und 61 Millionen im Juni."
+    kept = verify_rows(quote, [
+        {"cells": ["April", "40"], "quote": quote},
+        {"cells": ["Mai", "55"], "quote": quote},
+        {"cells": ["Juni", "61"], "quote": quote},
+    ], ["Monat", "Umsatz"])
+    assert len(kept) == 3
 
 
 def test_the_measure_cell_keeps_a_long_row():
@@ -359,11 +374,11 @@ def test_a_label_swapped_between_figures_in_one_sentence_is_dropped():
 
 
 def test_a_page_someone_is_waiting_on_is_read_with_plain_numbers():
-    """"Hired 12 in Q1, 18 in Q2" has no currency or percent: ingest skips
-    it, but Chart mode reads it rather than refusing before reading."""
+    """"Hired 12 in Q1, 18 in Q2" has no currency or percent and is still
+    read, at ingest and when someone is waiting on it."""
     page = _doc("Hiring. We hired 12 engineers in Q1, 18 in Q2 and 25 in Q3.")
-    assert not TextAdapter().wants(page)
-    assert TextAdapter(interactive=True).wants(page)
+    assert TextAdapter().wants(page)
+    assert TextAdapter(interactive=True).wants(_doc("We hired 12 in Q1 and 18 in Q2."))
     assert not TextAdapter(interactive=True).wants(_doc("Founded in 2019, renamed in 2021."))
 
 
