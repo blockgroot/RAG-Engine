@@ -486,3 +486,14 @@ def test_a_unit_only_some_figures_carry_is_not_the_column_unit():
         rows=[["Jan", "utilisation", "76%"], ["Feb", "downtime", "19"], ["Mar", "downtime", "14"]],
     ))
     assert next(c for c in table.columns if c.type == "number").unit == ""
+
+
+def test_a_word_unit_is_the_column_unit_only_when_no_figure_parsed_without_it():
+    """Staging: "76%" beside "4.2 kWh" made the column "Figure (kWh)"."""
+    from app.doctables.text_adapter import _split_units
+
+    rows = [{"cells": ["Jan", "utilisation", "76%"], "quote": "q"},
+            {"cells": ["Jan", "electricity", "4.2 kWh"], "quote": "q"}]
+    header, units = _split_units(["Month", "Measure", "Figure"], rows)
+    assert header[2] == "Figure"
+    assert units[(("Jan", "electricity", "4.2"), "q")] == "kWh"

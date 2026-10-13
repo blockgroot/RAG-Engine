@@ -45,7 +45,7 @@ from .base import DatasetAdapter, DocumentText
 logger = logging.getLogger(__name__)
 
 ORIGIN = "text"
-MAX_TABLES = 10
+MAX_TABLES = 15
 MAX_ROWS = 200
 MAX_COLUMNS = 8
 #: A reasoning model spends a small cap before it writes the JSON. At 1500,
@@ -442,6 +442,19 @@ def build_prompt(title: str, text: str) -> str:
         "- One table per kind of figure (for example revenue by quarter). Columns "
         "are short labels (Quarter, Region, Revenue). Cells are copied exactly as "
         "written in the text (\"₹15L\", \"Q2\", \"North\").\n"
+        "- One kind of item per column: never put two kinds of thing (sites and "
+        "products, teams and people) in one column; give each kind its own table.\n"
+        "- One name per item across the whole table: when the text calls the same "
+        "item by a longer name and, elsewhere, a shorter name written ON ITS OWN, "
+        "use that shorter name in every row (it is inside the longer one, so it is "
+        "still in the sentence). Never shorten a name the text never writes alone.\n"
+        "- A total over a span (a year to date, the first four months) is not one "
+        "more period of the series it sums: give totals their own table.\n"
+        "- When every row of a table is the same measure, name the figure column "
+        "after it (Units, Production) and add NO measure column. A measure column "
+        "is only for a table that holds several measures, and each of its cells is "
+        "the thing measured as the sentence writes it (waste, downtime), never the "
+        "verb that reports it (produced, accounted for, was).\n"
         "- When several measures share the same periods (revenue, headcount and "
         "churn for Q1, Q2 and Q3), return ONE table with a column for the period, "
         "a column for the measure (the word in the sentence — revenue, headcount, "
@@ -483,13 +496,19 @@ def _split_units(header: list[str], rows: list[dict]) -> tuple[list[str], dict]:
     """
     per_row: dict[int, str] = {}
     column_unit: dict[int, set[str]] = {}
+    #: Figures per column that already parsed ("76%"): a column where some do
+    #: is not wholly in the word unit the others carry ("4.2 kWh").
+    plain: dict[int, int] = {}
     for index, row in enumerate(rows):
         cells = row.get("cells")
         if not isinstance(cells, list):
             continue
         for i, cell in enumerate(cells[:len(header)]):
             text = str(cell or "").strip()
-            if not text or extract.parse_number(text)[0] is not None:
+            if text and extract.parse_number(text)[0] is not None:
+                plain[i] = plain.get(i, 0) + 1
+                continue
+            if not text:
                 continue
             match = _NUMBER_THEN_WORD.fullmatch(text)
             if not match or extract.parse_number(match.group(1))[0] is None:
@@ -498,7 +517,7 @@ def _split_units(header: list[str], rows: list[dict]) -> tuple[list[str], dict]:
             column_unit.setdefault(i, set()).add(match.group(2))
             per_row[index] = match.group(2)
     header = list(header)
-    shared = {i: next(iter(u)) for i, u in column_unit.items() if len(u) == 1}
+    shared = {i: next(iter(u)) for i, u in column_unit.items() if len(u) == 1 and not plain.get(i)}
     for i, unit in shared.items():
         name, bracket = split_header(header[i])
         if not bracket:
