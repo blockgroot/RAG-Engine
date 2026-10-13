@@ -51,6 +51,7 @@ from ..agent.orchestration import build_agent_graph, route_agent_key
 from ..agent.routing import (
     _ROUTING_POOL,
     EMBEDDED_PROVIDERS,
+    NOT_CHART_GAPS,
     _connected_providers,
     choose_agent,
     named_providers,
@@ -1481,7 +1482,11 @@ def _stream_answer_body(
     # though a real deletion might be one: "not found or not accessible"
     # cannot tell deletion from revoked access, and a false gap sends an admin
     # to rewrite a document that exists (live-tools plan D8a).
-    if not result.grounded and not result.access_restricted and not getattr(result, "live_withheld", False):
+    # A Chart-mode reply that is not a missing chart ("Chart mode only builds
+    # charts") is not a gap of either kind.
+    if (not result.grounded and not result.access_restricted
+            and not getattr(result, "live_withheld", False)
+            and decision.reason not in NOT_CHART_GAPS):
         record_gap(
             org_id=org_id,
             question=question,

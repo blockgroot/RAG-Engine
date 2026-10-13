@@ -200,3 +200,32 @@ def test_a_bad_reason_is_refused(org):
 def test_a_blank_question_is_not_a_gap(org):
     feedback.record_gap(org_id=org, question="   ", user_id=_user(org))
     assert feedback.list_gaps(org_id=org) == []
+
+
+def test_a_refused_chart_is_listed_with_why_and_not_as_a_missing_document(org):
+    """A chart nothing could draw is not a document nobody wrote: it has its
+    own list, and the latest refusal's heading says what to fix."""
+    one, two = _user(org), _user(org)
+    for who, answer in ((one, "**This can't be shown as a chart**\nTopics in text."),
+                        (two, "**Slack is not connected here**\nAn admin can connect it.")):
+        feedback.record_gap(org_id=org, question="Slack messages per person",
+                            user_id=who, agent="insights", answer=answer)
+    feedback.record_gap(org_id=org, question="parental leave policy", user_id=one,
+                        agent="notion")
+
+    assert [g.question for g in feedback.list_gaps(org_id=org)] == ["parental leave policy"]
+    [chart] = feedback.list_chart_gaps(org_id=org)
+    assert (chart.question, chart.asked_by, chart.times) == ("Slack messages per person", 2, 2)
+    assert chart.why == "Slack is not connected here"
+
+
+def test_chart_gaps_are_per_company(org, org_cleanup):
+    with get_connection() as conn:
+        other = str(conn.execute(
+            "INSERT INTO organizations (name) VALUES (%s) RETURNING id",
+            (f"feedback-{uuid.uuid4().hex[:8]}",),
+        ).fetchone()[0])
+        conn.commit()
+    org_cleanup.append(other)
+    feedback.record_gap(org_id=other, question="theirs", agent="insights", answer="no")
+    assert feedback.list_chart_gaps(org_id=org) == []

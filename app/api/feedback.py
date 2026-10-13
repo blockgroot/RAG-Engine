@@ -17,6 +17,7 @@ from ..feedback import (
     MAX_ROWS,
     RATING_REASONS,
     list_downvoted,
+    list_chart_gaps,
     list_gaps,
     rating_counts,
     record_rating,
@@ -120,6 +121,7 @@ def admin_feedback(
     days = max(1, min(int(days), MAX_WINDOW_DAYS))
     gaps = list_gaps(org_id=session.org_id, days=days, limit=MAX_ROWS)
     downvoted = list_downvoted(org_id=session.org_id, days=days, limit=MAX_ROWS)
+    charts = list_chart_gaps(org_id=session.org_id, days=days, limit=MAX_ROWS)
     return {
         "days": days,
         "counts": rating_counts(org_id=session.org_id, days=days),
@@ -137,6 +139,11 @@ def admin_feedback(
                 "last_asked": g.last_asked,
             }
             for g in gaps
+        ],
+        "chart_gaps": [
+            {"question": c.question, "asked_by": c.asked_by, "times": c.times,
+             "why": c.why, "last_asked": c.last_asked}
+            for c in charts
         ],
         "downvoted": [
             {

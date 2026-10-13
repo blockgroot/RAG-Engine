@@ -1006,6 +1006,13 @@ def _channel_subject(org_id: str, workspace_id: str | None, tag: str) -> str | N
     return (row[0] or "").strip() or None
 
 
+#: Chart-mode replies that are not a missing chart: the question wanted words,
+#: the model cannot chart, or Chart mode was off. Never logged as chart gaps.
+NOT_CHART_GAPS = frozenset({
+    "chart-mode-text-question", "chart-model-unsupported", "chart-mode-off",
+})
+
+
 #: Chart mode in a Slack channel, when the question is not about the channel.
 CHANNEL_CHART_ONLY = (
     "**In a channel I chart this channel only**\n"

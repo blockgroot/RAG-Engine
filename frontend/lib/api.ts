@@ -70,6 +70,16 @@ export interface FeedbackGap {
   last_asked: string;
 }
 
+/** A chart someone asked for and did not get. `why` is the latest refusal's
+ *  heading: connect a source, record a field, or add a live read. */
+export interface FeedbackChartGap {
+  question: string;
+  asked_by: number;
+  times: number;
+  why: string;
+  last_asked: string;
+}
+
 export interface FeedbackDownvote {
   id: string;
   question: string;
@@ -84,6 +94,8 @@ export interface FeedbackSummary {
   days: number;
   counts: { up: number; down: number; refusals: number };
   gaps: FeedbackGap[];
+  /** Absent from a server older than this list. */
+  chart_gaps?: FeedbackChartGap[];
   downvoted: FeedbackDownvote[];
 }
 

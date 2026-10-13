@@ -46,7 +46,7 @@ from dataclasses import dataclass
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Request, status
 
-from ..agent.routing import _NO_MATCH, choose_agent, choose_scope
+from ..agent.routing import _NO_MATCH, NOT_CHART_GAPS, choose_agent, choose_scope
 from ..feedback import record_gap
 from ..guard.live import watch_question
 from ..rag.cite import strip_citations
@@ -424,7 +424,7 @@ def _answer(
     # was one.
     if not getattr(response, "grounded", True) and not getattr(
         response, "access_restricted", False
-    ):
+    ) and getattr(decision, "reason", None) not in NOT_CHART_GAPS:
         record_gap(
             org_id=org_id,
             question=question,

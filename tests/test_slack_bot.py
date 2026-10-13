@@ -729,3 +729,21 @@ def test_a_dm_answer_that_is_not_a_chart_never_tries_other_spaces(monkeypatch):
     slack_events._answer("what is the leave policy?", "org-1", None, None, "Company",
                          other_scopes=[("ws-eng", "Engineering")])
     assert tried == [None]
+
+
+def test_a_reply_that_is_not_a_missing_chart_is_not_logged(monkeypatch):
+    """"Chart mode only builds charts" is not a gap of either kind."""
+    logged = []
+    monkeypatch.setattr(slack_events, "record_gap", lambda **k: logged.append(k))
+    monkeypatch.setattr(slack_events, "choose_agent", lambda q, org, **k: type(
+        "D", (), {"agent_key": "insights", "chart_spec": None, "chart_refusal": "words",
+                  "reason": "chart-mode-text-question"})())
+
+    class _G:
+        def invoke(self, state):
+            return {"response": type("R", (), {"answer": "words", "chart": None,
+                                               "grounded": False})()}
+
+    monkeypatch.setattr("app.agent.orchestration.build_agent_graph", lambda g: _G())
+    slack_events._answer("what is our leave policy?", "org-1", None, None, "Company")
+    assert logged == []
