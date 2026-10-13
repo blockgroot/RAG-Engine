@@ -27,3 +27,27 @@ def mark_read(document_id: str, *, org_id: str, workspace_id: str | None,
             (document_id, org_id, workspace_id, external_id, (title or "")[:300]),
         )
         conn.commit()
+
+
+def note_unreadable(document_id: str, *, org_id: str, workspace_id: str | None,
+                    external_id: str, title: str) -> int:
+    """Count a read whose reply could not be used; returns the count so far.
+
+    Not "no figures": the page is read again on a later sync, up to the
+    caller's cap, because a cut or garbled reply says nothing about the page.
+    """
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            INSERT INTO doc_text_queue
+                (document_id, org_id, workspace_id, origin, external_id, title, status, attempts)
+            VALUES (%s, %s, %s, 'text', %s, %s, 'unreadable', 1)
+            ON CONFLICT (document_id) DO UPDATE
+               SET status = 'unreadable', attempts = doc_text_queue.attempts + 1,
+                   updated_at = now()
+            RETURNING attempts
+            """,
+            (document_id, org_id, workspace_id, external_id, (title or "")[:300]),
+        ).fetchone()
+        conn.commit()
+    return int(row[0])

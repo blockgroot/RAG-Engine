@@ -520,8 +520,14 @@ def _store_tables(document_id, doc, *, org_id: str, workspace_id: str | None) ->
                           external_id=doc.external_id, title=doc.title or "")
         except Exception as exc:  # noqa: BLE001 - see docstring; Chart mode can still read it
             from ..core.exceptions import LLMRateLimitError
+            from ..doctables.text_adapter import UnreadableReply
 
-            if isinstance(exc.__cause__, LLMRateLimitError):
+            if isinstance(exc, UnreadableReply) and _unreadable_again(document_id, doc, org_id,
+                                                                       workspace_id):
+                # A cut or garbled reply says nothing about the page: read it
+                # again on a later sync, a few times, never "no figures".
+                retry_later = True
+            elif isinstance(exc.__cause__, LLMRateLimitError):
                 # The quota, not this document: left unchecked so the next
                 # sync's backfill reads it once the quota is back.
                 retry_later = True
@@ -541,6 +547,25 @@ def _store_tables(document_id, doc, *, org_id: str, workspace_id: str | None) ->
         mark_checked(document_id)
     except Exception:  # noqa: BLE001 - see docstring
         logger.warning("Could not stamp tables check of %s", doc.external_id, exc_info=True)
+
+
+#: Reads of one page whose reply was unusable before it is left as checked.
+MAX_UNREADABLE_READS = 3
+
+
+def _unreadable_again(document_id, doc, org_id, workspace_id) -> bool:
+    """Count this unusable read; True while the page should be read again."""
+    try:
+        from ..doctables.queue import note_unreadable
+
+        attempts = note_unreadable(document_id, org_id=org_id, workspace_id=workspace_id,
+                                   external_id=doc.external_id, title=doc.title or "")
+    except Exception:  # noqa: BLE001 - uncounted means one more read, not a lost page
+        logger.warning("Could not count an unreadable read of %s", doc.external_id, exc_info=True)
+        return True
+    logger.warning("Unreadable figures reply for %s (read %d of %d)", doc.external_id,
+                   attempts, MAX_UNREADABLE_READS)
+    return attempts < MAX_UNREADABLE_READS
 
 
 def backfill_tables(

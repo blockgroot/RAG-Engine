@@ -45,7 +45,7 @@ class FakeLLM:
         self.calls += 1
         if isinstance(self.reply, Exception):
             raise self.reply
-        return json.dumps(self.reply)
+        return self.reply if isinstance(self.reply, str) else json.dumps(self.reply)
 
 
 @pytest.fixture
@@ -174,3 +174,23 @@ def test_a_spent_quota_leaves_the_page_for_a_later_sync(org, llm):
         checked = conn.execute(
             "SELECT tables_checked_at FROM documents WHERE id = %s", (doc_id,)).fetchone()[0]
     assert checked is None and _marked(doc_id) is None
+
+
+def test_an_unusable_reply_is_read_again_by_later_syncs_then_left(org, llm):
+    """Production, 13 Oct: a reply that did not parse marked the report "read,
+    no figures" for good, and no sync ever read it again."""
+    llm.reply = "Sorry, here are the figures: {not json"
+    doc_id = _document(org)
+    page = SourceDocument(external_id="p", title="Quarterly update", content=PROSE)
+
+    def checked():
+        with get_connection() as conn:
+            return conn.execute("SELECT tables_checked_at FROM documents WHERE id = %s",
+                                (doc_id,)).fetchone()[0]
+
+    for _ in range(2):
+        _store_tables(doc_id, page, org_id=org, workspace_id=None)
+        assert checked() is None and _marked(doc_id) == "unreadable"
+    _store_tables(doc_id, page, org_id=org, workspace_id=None)  # the third: give up
+    assert checked() is not None
+    assert "text" not in _tables(org)

@@ -159,9 +159,39 @@ def test_a_table_with_nothing_to_add_up_is_dropped():
     assert TextAdapter(llm).extract(_doc()) == []
 
 
-@pytest.mark.parametrize("reply", ["not json", "{\"facts\": \"no\"}", {"facts": []}])
-def test_an_unusable_reply_finds_nothing(reply):
-    assert TextAdapter(FakeLLM(reply)).extract(_doc()) == []
+def test_a_clean_empty_reply_finds_nothing():
+    assert TextAdapter(FakeLLM({"facts": []})).extract(_doc()) == []
+
+
+@pytest.mark.parametrize("reply", ["not json", "{\"facts\": \"no\"}", ""])
+def test_an_unusable_reply_is_a_failure_never_no_figures(reply):
+    """Production, 13 Oct: a reply that did not parse marked the report "read,
+    no figures" for good. It says nothing about the page."""
+    from app.doctables.text_adapter import UnreadableReply
+
+    with pytest.raises(UnreadableReply):
+        TextAdapter(FakeLLM(reply)).extract(_doc())
+
+
+def test_a_cut_off_reply_keeps_every_complete_fact_and_says_so():
+    whole = json.dumps(GOOD_FACTS)
+    cut = whole[: whole.rindex('{"measure"') + 30]  # the last fact half-written
+    [table] = TextAdapter(FakeLLM(cut)).extract(_doc())
+    assert len(table.cells) == 2
+    assert any("cut off" in n for n in table.notes)
+
+
+def test_a_blank_unit_joins_its_measure_s_only_unit():
+    """Claude Haiku left "units" off some plant figures: one table, not two."""
+    from app.doctables.text_adapter import facts_to_tables
+
+    text = "Plant A made 2,400 units in January and 2,600 in February. Plant B made 2,100 units in January."
+    q = text.split(". ")[0] + "."
+    facts = [{"measure": "production", "unit": u, "period": p, "items": {"Plant": n}, "value": v, "quote": qq}
+             for u, p, n, v, qq in (("units", "January", "Plant A", "2,400", q), ("", "February", "Plant A", "2,600", q),
+                                    ("", "January", "Plant B", "2,100", "Plant B made 2,100 units in January."))]
+    [table] = facts_to_tables(text, facts)
+    assert table.name == "Production (units) by Plant" and len(table.raw) == 3
 
 
 def test_a_cut_off_reply_is_retried_rather_than_stored_as_empty():

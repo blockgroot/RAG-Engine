@@ -48,6 +48,11 @@ from .base import DatasetAdapter, DocumentText
 
 logger = logging.getLogger(__name__)
 
+
+class UnreadableReply(ProviderError):
+    """The model answered, but not with facts we could read (cut off, not
+    JSON). Says nothing about the page, so it is never "no figures"."""
+
 ORIGIN = "text"
 MAX_TABLES = 40
 MAX_ROWS = 200
@@ -616,6 +621,7 @@ class TextAdapter(DatasetAdapter):
         unread = len(sections) - MAX_SECTIONS
         llm = self._model()
         facts: list[dict] = []
+        self._partial = False
         for index, section in enumerate(sections[:MAX_SECTIONS]):
             if index and self._llm is None:
                 from ..llm.pacing import wait_for_background_slot
@@ -627,7 +633,13 @@ class TextAdapter(DatasetAdapter):
         notes = []
         if unread > 0:
             notes.append(f"Only the first {MAX_SECTIONS} sections of this page were read.")
-        return facts_to_tables(prose, facts, extra_notes=notes)
+        if self._partial:
+            notes.append("The AI's reply was cut off; figures after the last one it "
+                         "finished are missing.")
+        tables = facts_to_tables(prose, facts, extra_notes=notes)
+        logger.info("text adapter: %s: %d facts returned, %d tables kept (%d rows)",
+                    doc.external_id, len(facts), len(tables), sum(len(t.raw) for t in tables))
+        return tables
 
     def _read(self, llm, doc: DocumentText, section: str) -> list[dict]:
         try:
@@ -639,14 +651,37 @@ class TextAdapter(DatasetAdapter):
             raise ProviderError("text adapter: the reply was cut off before the facts were finished")
         match = _JSON.search(reply or "")
         try:
-            data = json.loads(match.group(0)) if match else {}
+            data = json.loads(match.group(0)) if match else None
         except (ValueError, TypeError):
-            data = {}
+            data = None
         found = data.get("facts") if isinstance(data, dict) else None
-        if not isinstance(found, list):
-            logger.info("text adapter: no usable reply for %s", doc.external_id)
-            return []
-        return [f for f in found if isinstance(f, dict)]
+        if isinstance(found, list):
+            return [f for f in found if isinstance(f, dict)]
+        # Not one valid object: a reply cut off at the provider's limit, or
+        # one bad fact among fifty. Every COMPLETE fact is still a fact.
+        salvaged = salvage_facts(reply or "")
+        if not salvaged:
+            logger.warning("text adapter: unreadable reply for %s (%d chars)",
+                           doc.external_id, len(reply or ""))
+            raise UnreadableReply("text adapter: the reply held no readable facts")
+        self._partial = True
+        logger.warning("text adapter: damaged reply for %s, %d facts recovered",
+                       doc.external_id, len(salvaged))
+        return salvaged
+
+
+def salvage_facts(reply: str) -> list[dict]:
+    """Each complete ``{...}`` fact in a reply that is not valid JSON as a whole."""
+    decoder = json.JSONDecoder()
+    out: list[dict] = []
+    for start in (m.start() for m in re.finditer(r'\{\s*"measure"', reply)):
+        try:
+            fact, _end = decoder.raw_decode(reply, start)
+        except ValueError:
+            continue
+        if isinstance(fact, dict):
+            out.append(fact)
+    return out
 
 
 def _sections(prose: str, size: int) -> list[str]:
@@ -724,6 +759,14 @@ def facts_to_tables(prose: str, facts: list[dict], *, extra_notes=()) -> list[ex
     the same checks as before (``verify_rows``: quote in the page, cells in the
     quote, label bound to figure). Fewer than two kept figures is not a series.
     """
+    # A unit left blank on some facts of a measure is that measure's unit when
+    # it has exactly one ("2,400" beside "2,600 units"): never two tables.
+    known: dict[str, set[str]] = {}
+    for f in facts:
+        if _text(f.get("unit")):
+            known.setdefault(_norm(_text(f.get("measure"))), set()).add(_text(f.get("unit")))
+    facts = [f if _text(f.get("unit")) or len(known.get(_norm(_text(f.get("measure"))), ())) != 1
+             else {**f, "unit": next(iter(known[_norm(_text(f.get("measure")))]))} for f in facts]
     units = {_norm(_text(f.get("unit"))) for f in facts if _norm(_text(f.get("unit"))).isalpha()}
     measures: dict[tuple[str, str], list[dict]] = {}
     for fact in facts:

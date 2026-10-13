@@ -918,7 +918,7 @@ CREATE TABLE IF NOT EXISTS doc_text_queue (
     external_id  TEXT NOT NULL,
     title        TEXT NOT NULL,
     text         TEXT,
-    status       TEXT NOT NULL DEFAULT 'pending',   -- pending | done | failed
+    status       TEXT NOT NULL DEFAULT 'pending',   -- done (read, no series) | unreadable (retried)
     attempts     INT NOT NULL DEFAULT 0,
     claimed_at   TIMESTAMPTZ,
     updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -1008,6 +1008,24 @@ BEGIN
          WHERE EXISTS (SELECT 1 FROM doc_tables t
                         WHERE t.document_id = d.id AND t.origin = 'text');
         INSERT INTO schema_marks (name) VALUES ('prose_figures_as_facts');
+    END IF;
+END $$;
+
+-- A reply that did not parse was marked "read, no series" (`done`) for good:
+-- production, 13 Oct, a report with 50 figures stored none. An unusable reply
+-- is now retried; pages marked done with no figures are read once more.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'prose_done_reread') THEN
+        UPDATE documents d SET tables_checked_at = NULL
+         WHERE EXISTS (SELECT 1 FROM doc_text_queue q
+                        WHERE q.document_id = d.id AND q.status = 'done')
+           AND NOT EXISTS (SELECT 1 FROM doc_tables t
+                            WHERE t.document_id = d.id AND t.origin = 'text');
+        DELETE FROM doc_text_queue q WHERE q.status = 'done'
+           AND NOT EXISTS (SELECT 1 FROM doc_tables t
+                            WHERE t.document_id = q.document_id AND t.origin = 'text');
+        INSERT INTO schema_marks (name) VALUES ('prose_done_reread');
     END IF;
 END $$;
 
