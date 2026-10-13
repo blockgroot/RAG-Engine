@@ -1401,10 +1401,12 @@ def _table_period_axis(intent: AskIntent, question: str, reply: str, handles) ->
         group, split = keys[0], group
     if split is None:
         # A column the question names by its OWN header ("each plant" -> Plant)
-        # that is not drawn yet is the series.
+        # that is not drawn yet is the series. EVERY word of the header: a
+        # shared word is not a name ("uptime target" is not "Latency target").
         asked = _words(question)
         named = [k for k in keys if k != group
-                 and _words(str((table.column(k) or {}).get("name", ""))) & asked]
+                 and (header := _words(str((table.column(k) or {}).get("name", ""))))
+                 and header <= asked]
         if len(named) == 1:
             split = named[0]
     if (group, split) == (spec.group_by, spec.split_by):

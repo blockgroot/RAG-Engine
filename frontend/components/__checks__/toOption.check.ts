@@ -195,6 +195,17 @@ const arr = (x: unknown): any[] => (x == null ? [] : Array.isArray(x) ? x : [x])
   check(!label.includes("Unknown"), `no breakdown is never "Unknown" (${label})`);
 }
 
+{
+  // Long category names are all shown, cut to fit -- never hidden.
+  const long = "Associate Systems Analyst / Business Development Executives / Sales and Marketing team / Interns";
+  const o: any = toOption({ chart: "bar", period: "month", groupBy: "c0", ordered: true, points: [
+    { bucket: "", group: long, value: 60000 }, { bucket: "", group: "Senior Systems Analyst", value: 40000 },
+    { bucket: "", group: "Systems Lead", value: 20000 }] });
+  const label = arr(o.xAxis)[0]?.axisLabel ?? {};
+  check(label.interval === 0 && label.hideOverlap === false && label.overflow === "truncate",
+    "few long categories: every label shown, truncated");
+}
+
 if (failed) {
   console.error(`\n${failed} failure(s)`);
   process.exit(1);

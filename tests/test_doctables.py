@@ -471,3 +471,20 @@ def test_the_asker_s_period_is_the_axis_and_a_named_column_the_series(reply, que
     out = _table_period_axis(AskIntent("chart", spec=spec), question,
                              json.dumps({"table": "T1", **reply}), {"T1": table})
     assert (out.spec.group_by, out.spec.split_by, out.spec.chart) == want
+
+
+def test_a_word_shared_with_a_column_does_not_make_it_the_series():
+    """Production: "uptime target for each service" split the bars by the
+    "Latency target" column, a list of sentences, because of "target"."""
+    from app.insights.resolve import AskIntent, ChartSpec, TABLE_METRIC, _table_period_axis
+
+    table = _ref(name="Service operating targets", columns=(
+        {"key": "c0", "name": "Service", "type": "category", "samples": ["Atlas Intake"]},
+        {"key": "c1", "name": "Latency target", "type": "category", "samples": ["p95 under 1.5 s"]},
+        {"key": "c2", "name": "Uptime target", "type": "number", "unit": "%"}))
+    spec = ChartSpec(metric=TABLE_METRIC, group_by="c0", period="month", chart="bar",
+                     measure="average", table_id=table.id, value="c2")
+    out = _table_period_axis(AskIntent("chart", spec=spec),
+                             "Show the uptime target for each service",
+                             json.dumps({"table": "T1", "group_by": "Service"}), {"T1": table})
+    assert (out.spec.group_by, out.spec.split_by) == ("c0", None)
