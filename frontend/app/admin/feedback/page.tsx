@@ -142,6 +142,47 @@ export default function FeedbackPage() {
           )}
         </section>
 
+        <section className="studio-panel stack" aria-labelledby="charts-title">
+          <div className="studio-section-head">
+            <h2 id="charts-title">Charts people couldn’t get</h2>
+            <p className="muted">
+              Most-asked first, with why each was refused. Many people asking for the same
+              chart is the signal to connect a source or start recording that field.
+            </p>
+          </div>
+
+          {!data ? (
+            <p className="muted">Loading…</p>
+          ) : !data.chart_gaps?.length ? (
+            <p className="muted">Every chart asked for in this window was drawn.</p>
+          ) : (
+            <table className="gap-table">
+              <thead>
+                <tr>
+                  <th>Question</th>
+                  <th>Asked by</th>
+                  <th>Times</th>
+                  <th>Why it was refused</th>
+                  <th>Last asked</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.chart_gaps.map((c) => (
+                  <tr key={c.question + c.last_asked}>
+                    <td>{c.question}</td>
+                    <td>
+                      {c.asked_by} {c.asked_by === 1 ? "person" : "people"}
+                    </td>
+                    <td>{c.times}</td>
+                    <td className="muted">{c.why || "—"}</td>
+                    <td className="muted">{when(c.last_asked)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+
         <section className="studio-panel stack" aria-labelledby="wrong-title">
           <div className="studio-section-head">
             <h2 id="wrong-title">Answers someone marked wrong</h2>

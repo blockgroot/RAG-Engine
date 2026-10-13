@@ -8,8 +8,10 @@ live in one table.
 from .store import (
     MAX_ROWS,
     RATING_REASONS,
+    ChartGapRow,
     GapRow,
     RatedRow,
+    list_chart_gaps,
     list_downvoted,
     list_gaps,
     normalize_question,
@@ -19,10 +21,12 @@ from .store import (
 )
 
 __all__ = [
+    "ChartGapRow",
     "GapRow",
     "MAX_ROWS",
     "RATING_REASONS",
     "RatedRow",
+    "list_chart_gaps",
     "list_downvoted",
     "list_gaps",
     "normalize_question",

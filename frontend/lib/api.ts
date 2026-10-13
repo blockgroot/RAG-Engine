@@ -70,6 +70,16 @@ export interface FeedbackGap {
   last_asked: string;
 }
 
+/** A chart someone asked for and did not get. `why` is the latest refusal's
+ *  heading: connect a source, record a field, or add a live read. */
+export interface FeedbackChartGap {
+  question: string;
+  asked_by: number;
+  times: number;
+  why: string;
+  last_asked: string;
+}
+
 export interface FeedbackDownvote {
   id: string;
   question: string;
@@ -84,6 +94,8 @@ export interface FeedbackSummary {
   days: number;
   counts: { up: number; down: number; refusals: number };
   gaps: FeedbackGap[];
+  /** Absent from a server older than this list. */
+  chart_gaps?: FeedbackChartGap[];
   downvoted: FeedbackDownvote[];
 }
 
@@ -575,6 +587,13 @@ export type InsightPanel = {
   explain?: string;
   /** What an empty value means per field in this tool ("Unassigned"). */
   blank_labels?: Record<string, string>;
+  /** Unit per series, for a chart of two measures. */
+  series_units?: Record<string, string>;
+  /** Measures the question asked for that were not in the data. */
+  missing?: string[];
+  /** Set when the chart is a table from a document or upload: drawn in the
+   *  document's order, never ranked. */
+  table?: { id: string; name: string; document: string; origin: string; upload: boolean } | null;
   /** The rows the bars are made of: what, who, when, and where to open it.
    *  A number nobody can trace is a number nobody trusts. */
   details?: {

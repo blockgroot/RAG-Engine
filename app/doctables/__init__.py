@@ -5,8 +5,9 @@ the same storage (``store.py``, tagged with its ``origin``) and one chart
 pipeline reads it. ``factory.build_dataset_adapters`` decides which run:
 
 - ``table_adapter`` -- tables the document already has (no AI, exact);
-- ``text_adapter`` -- figures in sentences, read by an AI in the background
-  and kept only when every cell appears in the quoted sentence (opt-in).
+- ``text_adapter`` -- figures in sentences, read by an AI at ingest (and in
+  Chart mode for a page ingest did not read), kept only when every cell is in
+  the quoted sentence and each number binds to its own label.
 """
 
 from .extract import Table, describe, find_markdown_tables, parse_csv, profile

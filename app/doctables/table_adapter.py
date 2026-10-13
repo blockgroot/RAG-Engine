@@ -16,7 +16,6 @@ ORIGIN = "table"
 
 class TableAdapter(DatasetAdapter):
     origin = ORIGIN
-    background = False
 
     def wants(self, doc: DocumentText) -> bool:
         # A pipe table needs a `|---|` separator line; that is the cheap test.

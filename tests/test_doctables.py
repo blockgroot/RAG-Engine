@@ -389,3 +389,43 @@ def test_reingest_replaces_rather_than_appends(org):
     _ingest(org, doc, text="Region,Revenue\nEast,5\nWest,7\n")
     [table] = table_store.list_tables(org_id=org, workspace_id=None, viewer=SANA)
     assert table.row_count == 2
+
+
+def test_a_percentage_is_averaged_never_summed():
+    """87% and 91% are not 178%: a % column defaults to the average, and an
+    explicit sum of one is refused. Known from the cells' symbol, not a word."""
+    ref = _ref(columns=(
+        {"key": "c0", "name": "Month", "type": "date"},
+        {"key": "c1", "name": "Utilisation", "type": "number", "unit": "%"},
+    ))
+    handles = {"T1": ref}
+    pick = doc_tables.parse_pick({"table": "T1", "group_by": "Month", "value": "Utilisation"}, handles)
+    assert pick.measure == "average"
+    assert doc_tables.pick_named(ref, "chart utilisation by month", None).measure == "average"
+    with pytest.raises(doc_tables.TableRefusal, match="percentage"):
+        doc_tables.parse_pick({"table": "T1", "value": "Utilisation", "measure": "sum"}, handles)
+    # A currency column still adds up.
+    assert doc_tables.parse_pick({"table": "T1", "value": "Revenue"}, {"T1": _ref()}).measure == "sum"
+
+
+def test_the_offered_tables_are_the_named_page_ordered_by_their_own_labels():
+    """Staging: "units by each plant per month from the Annual Manufacturing
+    Performance Report" was offered the Notion "Customer Support Performance
+    Update" (it shares "Performance") and never the report's Plant table."""
+    from app.insights.resolve import title_match
+
+    q = "Chart units produced by each plant per month from the Annual Manufacturing Performance Report"
+    assert title_match("Annual Manufacturing Performance Report — 2025", q) > \
+        title_match("Customer Support Performance Update — 2026", q) >= 8
+    plant = _ref(name="Production (units) by Plant", columns=(
+        {"key": "c0", "name": "Period", "type": "category", "samples": ["January"]},
+        {"key": "c1", "name": "Plant", "type": "category", "samples": ["Plant A"]},
+        {"key": "c2", "name": "Production (units)", "type": "number"}))
+    yearly = _ref(name="Production (units) by year", columns=(
+        {"key": "c0", "name": "Year", "type": "date"},
+        {"key": "c1", "name": "Production (units)", "type": "number"}))
+    assert doc_tables.label_hits(q, plant) > doc_tables.label_hits(q, yearly)
+    # Two breakdowns: the table's first column is the axis.
+    pick = doc_tables.parse_pick({"table": "T1", "group_by": "Plant", "split_by": "Period",
+                                  "value": "Production (units)"}, {"T1": plant})
+    assert (pick.group_by, pick.split_by) == ("c0", "c1")

@@ -12,6 +12,8 @@ number from chunk text.
 
 from __future__ import annotations
 
+import re
+
 import logging
 from datetime import datetime
 from collections.abc import Iterator
@@ -218,10 +220,18 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
     filters = tuple(
         (key, _match_table_value(table, key, raw)) for key, raw in spec.filters
     )
+    # A column of bare years ("2024", "FY2025") is a yearly axis: drawn by
+    # month it read "Jan 2024". Format, not intent.
+    period = spec.period
+    group_col = table.column(spec.group_by) if spec.group_by else None
+    samples = [str(x).strip() for x in (group_col or {}).get("samples", []) if str(x).strip()]
+    if (group_col or {}).get("type") == "date" and samples and all(
+            re.fullmatch(r"(?i)(fy\s?)?\d{4}", x) for x in samples):
+        period = "year"
     try:
         points = table_store.run_table_query(
             table, measure=spec.measure or "count", value_key=spec.value,
-            group_key=spec.group_by, split_key=spec.split_by, period=spec.period,
+            group_key=spec.group_by, split_key=spec.split_by, period=period,
             filters=filters,
         )
     except ValueError as exc:
@@ -268,7 +278,7 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
         measure, value_col,
         group=name(spec.group_by) if spec.group_by else None,
         split=name(spec.split_by) if spec.split_by else None,
-        period=spec.period, by_date=by_date, chart=spec.chart,
+        period=period, by_date=by_date, chart=spec.chart,
         rows=rows_used if rows_used is not None else table.row_count,
         total=sum(p.value for p in points), unit=unit,
     )
@@ -298,7 +308,7 @@ def run_table_spec(spec: ChartSpec, *, org_id, workspace_id, viewer,
         "table": {"id": table.id, "name": table.name, "document": table.document_title,
                   "origin": table.origin, "upload": table.is_upload},
     }
-    return panel, spec.period
+    return panel, period
 
 
 def _match_table_value(table, key, raw) -> str:
@@ -349,7 +359,7 @@ def _table_details(table, filters, *, date_key) -> list[dict]:
             "subject": shown[:300],
             "url": table.source_uri,
             # Cell values by column key, so the hover matches a bar on the
-            # column it is grouped by (Chart.tsx `fieldOf`).
+            # column it is grouped by (charts/toOption.ts `fieldOf`).
             "attrs": {k: str(v) for k, v in cells.items()},
         }
         if date_key and cells.get(date_key):

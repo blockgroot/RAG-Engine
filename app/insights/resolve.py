@@ -184,6 +184,11 @@ class AskIntent:
     #: A page, file or sheet the question named, copied from the question.
     #: Set only when those words are really in the question.
     named_document: str | None = None
+    #: The connector the question names or plainly means ("the Google doc",
+    #: "in Notion"), as its stored id. Read by the model, kept only when the
+    #: words it quoted are in the question and the connector is in scope. A
+    #: chart is never drawn from another connector's rows when this is set.
+    source: str | None = None
 
 
 _JSON_RE = re.compile(r"\{.*\}", re.S)
@@ -202,12 +207,17 @@ def _available(providers: list[str]) -> list[registry.Metric]:
     return out
 
 
-def _allowed_shapes(metric: registry.Metric) -> tuple[str, ...]:
+def _allowed_shapes(metric: registry.Metric, group_by: str | None = None,
+                   split_by: str | None = None) -> tuple[str, ...]:
+    """Every shape this metric can take; with a breakdown, only those that fit."""
     if metric.chart == "diverging_bar":
         return ("diverging_bar",)
-    if metric.chart == "stacked_bar":
-        return ("stacked_bar", "bar", "pie")
-    return ("line", "bar", "pie")
+    if group_by is None and split_by is None:
+        seen: list[str] = []
+        for n in (0, 1, 2):
+            seen += [s for s in registry.shapes_for(time=True, breakdowns=n) if s not in seen]
+        return tuple(seen)
+    return registry.shapes_for(time=True, breakdowns=1 + bool(split_by))
 
 
 def _catalogue(metrics: list[registry.Metric], fields: dict | None = None,
@@ -478,6 +488,19 @@ def _missing(providers: list[str]) -> list[str]:
     return [p for p in _chartable_providers() if p not in connected]
 
 
+#: How each connector tag is described to the classifier, so "the Google doc"
+#: can be read as ``google``. A description for the model; the pick is kept
+#: only when the words it quotes are in the question (``_quoted_source``).
+_CONNECTOR_NAMES = {
+    "google": "Google Drive (Google Docs, Sheets, Slides and files)",
+    "notion": "Notion (pages and databases)",
+    "slack": "Slack (channels and threads)",
+    "linear": "Linear (issues, projects, teams)",
+    "github": "GitHub (repositories, commits, pull requests)",
+    "forms": "Google Forms (survey responses)",
+}
+
+
 def _prompt(
     question: str, metrics: list[registry.Metric], *, github: bool = False,
     missing: list[str] | None = None, tables: list | None = None,
@@ -529,6 +552,8 @@ def _prompt(
             "with that metric; github_live is for what cannot be counted.\n\n"
             if github else ""
         ) +
+        "Connectors (the tag in brackets): "
+        + "; ".join(f"{tag} = {name}" for tag, name in _CONNECTOR_NAMES.items()) + ".\n"
         "Available countable things (pick ONLY from this list; the "
         "connector is the tag in brackets). This list is the contract, "
         "not a set of example questions:\n"
@@ -561,8 +586,11 @@ def _prompt(
             if tables else ""
         ) +
         f"Periods: {', '.join(registry.PERIODS)}\n"
-        "Shapes: line = over time; bar = ranking; pie = share of a whole "
-        "(needs group_by); stacked_bar = mix of states. "
+        "Shapes: line or area = over time; bar or horizontal_bar = ranking; "
+        "pie or donut = share of a whole; stacked_bar or stacked_area = a "
+        "breakdown's mix over time; heatmap = two breakdowns as a grid (a "
+        "breakdown by period, or group_by by split_by). Pick the shape they "
+        "asked for; code keeps it only when the data has that form. "
         "A grouped bar comparing several measures across the same periods is "
         "chart=bar, group_by = the period column, split_by = the measure "
         "column, value = the number column.\n\n"
@@ -579,6 +607,8 @@ def _prompt(
         '"period": "<period>", '
         '"chart": "<shape or null>", "focus": "<one named thing or null>", '
         '"document": "<the page, file or sheet they named, copied exactly, or null>", '
+        '"source": "<connector tag they named or plainly meant, or null>", '
+        '"source_words": "<their exact words naming that connector, or null>", '
         '"breakdown_words": "<their exact words asking for the breakdown, or null>", '
         '"left_out_words": "<their exact words for any breakdown beyond the two charted, or null>", '
         '"range_words": "<their exact words giving a time range, or null>", '
@@ -604,6 +634,11 @@ def _prompt(
         "Null when they named none. If that name is not in the tables above, "
         "intent is still chart, metric null, and document is set. Never "
         "intent=qa only because the page is missing from the list.\n"
+        "- source = the connector tag the question names or plainly means: "
+        "\"the Google doc\", \"my Drive sheet\" is google; \"the Notion page\" "
+        "is notion. Copy their words for it into source_words. Null when they "
+        "named none. A table or metric from a DIFFERENT connector never answers "
+        "a question that named one.\n"
         "- focus = ONE thing they narrowed to: a repository, channel, team, "
         "page or file NAME. \"commits in the DAO repo\" is focus=\"DAO\", "
         "not a grouping. Null when they asked about everything. When that "
@@ -664,10 +699,12 @@ def _chart_for(metric: registry.Metric, group_by: str | None) -> str:
 
 
 def _pick_chart(
-    metric: registry.Metric, group_by: str | None, requested: str | None
+    metric: registry.Metric, group_by: str | None, requested: str | None,
+    split_by: str | None = None,
 ) -> str:
     """Admit a requested shape only if we can actually draw it for this grain."""
-    allowed = _allowed_shapes(metric)
+    allowed = (_allowed_shapes(metric, group_by, split_by) if group_by
+               else registry.shapes_for(time=True, breakdowns=0))
     if metric.chart == "diverging_bar":
         return "diverging_bar"
     # A pie with no second breakdown is a pie of the time buckets. The chart
@@ -786,7 +823,7 @@ def _spec_on_metric(spec: ChartSpec, metric: registry.Metric, fields) -> ChartSp
         group_by, split_by, measure, filters = None, None, None, ()
         if not fits(None, None, None, ()):
             return None
-    chart = spec.chart if spec.chart in _allowed_shapes(metric) else _chart_for(metric, group_by)
+    chart = _pick_chart(metric, group_by, spec.chart, split_by)
     return replace(
         spec, metric=metric.key, group_by=group_by, split_by=split_by,
         measure=measure, filters=filters, table_id=None, value=None, chart=chart,
@@ -843,12 +880,25 @@ def _align_connector(
     if intent.kind != "chart" or intent.spec is None:
         return intent
     spec = intent.spec
+    picked = next((t for t in handles.values() if t.id == spec.table_id), None) \
+        if spec.table_id else None
     label_providers, words = _label_evidence(question)
-    providers = set(label_providers)
-    providers |= _name_evidence(question, names)
     table_hits = _mentioned_tables(question, handles.values())
-    providers |= {table.provider for table in table_hits if table.provider}
+    if intent.source:
+        # They named the connector. Another connector's table is not drawn
+        # in its place ("the Google doc" answered from a Notion page): no
+        # chart here, so Chart mode reads the named connector's pages.
+        if picked is not None and picked.provider != intent.source:
+            logger.info("insights: question names %s; dropped a %s table",
+                        intent.source, picked.provider)
+            return AskIntent("refuse")
+        providers = {intent.source}
+    else:
+        providers = set(label_providers)
+        providers |= _name_evidence(question, names)
+        providers |= {table.provider for table in table_hits if table.provider}
     connected = {metric.provider for metric in metrics}
+    connected |= {t.provider for t in handles.values() if t.provider}
 
     if len(providers) == 1:
         provider = next(iter(providers))
@@ -868,6 +918,12 @@ def _align_connector(
                     f"The question matches more than one: {listed}."
                 ),
             )
+        if picked is not None:
+            # A table on this connector the title does not spell out: still
+            # figures in a document, never swapped for an activity count.
+            if picked.provider == provider:
+                return intent
+            return AskIntent("refuse")
         current = registry.METRICS.get(spec.metric)
         if current is not None and current.provider == provider and not spec.table_id:
             return intent
@@ -1014,6 +1070,9 @@ def classify_question(
         reply, metrics, fail_open=fail_open, github=github,
         missing=missing, providers=providers, handles=handles, fields=fields,
     )
+    source = _quoted_source(
+        question, reply, set(providers) | {t.provider for t in offered if t.provider},
+    )
     if not fail_open and not (intent.kind == "chart" and intent.spec is not None):
         # Chart mode, and the model said "written answer" or named no metric.
         # A page in the question that we already offered is still a chart.
@@ -1023,12 +1082,14 @@ def classify_question(
     # The model may pick a connected connector the question did not name.
     # Drive and Notion share one activity kind, so that pick draws the other
     # connector's rows. The question's connector wins.
-    intent = _align_connector(intent, question, metrics, handles, fields, names)
+    intent = _align_connector(replace(intent, source=source), question, metrics,
+                              handles, fields, names)
     return replace(
         _note_range(_note_left_out(_honour_breakdown(intent, question, reply, fields),
                                    question, reply), question, reply),
         needs_live=parse_live(reply),
         named_document=_quoted_document(question, reply),
+        source=source,
     )
 
 
@@ -1112,14 +1173,23 @@ def title_mentioned(title: str, question: str) -> bool:
     "Quarterly update 2026" still matches "the quarterly update page". A title
     that shares no such run does not, so an unrelated page is not pulled in.
     """
+    return title_match(title, question) >= 8
+
+
+def title_match(title: str, question: str) -> int:
+    """Letters in the longest run of the title the question contains. Callers
+    choosing among pages keep the longest: "Annual Manufacturing Performance
+    Report" over "Customer Support Performance Update", which shares only
+    "Performance" with the question."""
     words = _squashed(title).split()
     asked = f" {_squashed(question)} "
     for length in range(len(words), 0, -1):
-        for start in range(len(words) - length + 1):
-            phrase = " ".join(words[start:start + length])
-            if len(phrase.replace(" ", "")) >= 8 and f" {phrase} " in asked:
-                return True
-    return False
+        found = [len(" ".join(words[start:start + length]).replace(" ", ""))
+                 for start in range(len(words) - length + 1)
+                 if f" {' '.join(words[start:start + length])} " in asked]
+        if found:
+            return max(found)
+    return 0
 
 
 def _chart_the_named_table(question: str, reply: str, handles: dict) -> AskIntent | None:
@@ -1179,6 +1249,26 @@ def _quoted_document(question: str, reply: str) -> str | None:
     if _squashed(words) not in _squashed(question):
         return None
     return words.strip()[:120]
+
+
+def _quoted_source(question: str, reply: str, known: set[str]) -> str | None:
+    """The connector the model says they named, kept only when it is one in
+    this scope and the words it quoted for it are really in the question."""
+    match = _JSON_RE.search(reply or "")
+    try:
+        data = json.loads(match.group(0)) if match else {}
+    except (ValueError, TypeError):
+        data = {}
+    if not isinstance(data, dict):
+        return None
+    tag, words = data.get("source"), data.get("source_words")
+    if not isinstance(tag, str) or tag.strip().lower() not in known:
+        return None
+    if not isinstance(words, str) or not _squashed(words):
+        return None
+    if f" {_squashed(words)} " not in f" {_squashed(question)} ":
+        return None
+    return tag.strip().lower()
 
 
 def chart_document_gap(question: str, named: str | None, tables, places) -> str | None:
@@ -1510,7 +1600,7 @@ def _parse_intent(
         metric=metric.key,
         group_by=group_by,
         period=period,
-        chart=_pick_chart(metric, group_by, requested),
+        chart=_pick_chart(metric, group_by, requested, split_by),
         focus=focus,
         split_by=split_by,
         measure=measure,

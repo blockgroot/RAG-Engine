@@ -116,7 +116,7 @@ def _capture_scope(monkeypatch) -> list:
 
     def _fake_answer(question, org_id, workspace_id, tags, scope_label=None, **_):
         seen.append(tags)
-        return "answer"
+        return slack_events.SlackAnswer("answer")
 
     monkeypatch.setattr(slack_events, "_answer", _fake_answer)
     return seen
@@ -273,7 +273,7 @@ def _capture_post(monkeypatch, *, update_ok: bool = True) -> tuple[list, list]:
         lambda email: type("U", (), {"id": "u1", "org_id": "org-1", "email": "a@b.com"})(),
     )
     monkeypatch.setattr(slack_events, "_scope_for_channel", lambda *a: None)
-    monkeypatch.setattr(slack_events, "_answer", lambda *a, **k: "the answer")
+    monkeypatch.setattr(slack_events, "_answer", lambda *a, **k: slack_events.SlackAnswer("the answer"))
 
     def _post(tok, ch, text, ts=None):
         posted.append((ch, text, ts))
@@ -354,7 +354,7 @@ def _capture_answer_scope(monkeypatch) -> list:
     monkeypatch.setattr(
         slack_events, "_answer",
         lambda q, org, ws, tags, label=None, **_: seen.append((ws, tags, label))
-        or "answer",
+        or slack_events.SlackAnswer("answer"),
     )
     return seen
 
@@ -473,7 +473,7 @@ def test_the_reply_names_the_source_and_the_scope(monkeypatch):
             return {"response": type("R", (), {"answer": "Tuesday's notes.", "chart": None})()}
 
     monkeypatch.setattr("app.agent.orchestration.build_agent_graph", lambda g: _G())
-    text = slack_events._answer("q", "org-1", "ws-meet", None, "Meeting notes")
+    text = slack_events._answer("q", "org-1", "ws-meet", None, "Meeting notes").text
     assert text.startswith("_Google Drive · Meeting notes_\n")
     assert "Tuesday's notes." in text
 
@@ -614,3 +614,136 @@ def test_model_text_cannot_carry_slack_markup(payload):
 
 def test_ampersand_is_escaped_first_so_nothing_double_decodes():
     assert slack_events._to_slack_mrkdwn("R&D and &lt;x&gt;") == "R&amp;D and &amp;lt;x&amp;gt;"
+
+
+# --------------------------------------------------------------------------
+# Charts in Slack: a DM charts what the asker can open, a channel only itself
+# --------------------------------------------------------------------------
+
+
+def _capture_choose(monkeypatch) -> list:
+    seen = []
+
+    def choose(q, org, workspace_id=None, **kwargs):
+        seen.append(kwargs)
+        return type("D", (), {"agent_key": "insights", "chart_spec": None,
+                              "chart_refusal": "no"})()
+
+    monkeypatch.setattr(slack_events, "choose_agent", choose)
+
+    class _G:
+        def invoke(self, state):
+            return {"response": type("R", (), {"answer": "no", "chart": None})()}
+
+    monkeypatch.setattr("app.agent.orchestration.build_agent_graph", lambda g: _G())
+    return seen
+
+
+def test_a_dm_chart_is_routed_with_the_askers_access(monkeypatch):
+    """Without the viewer, Chart mode offered no document table and read no
+    paragraph, so every document chart in a DM was refused."""
+    from app.vectorstore.base import Viewer
+
+    seen = _capture_choose(monkeypatch)
+    viewer = Viewer(email="ada@example.com")
+    slack_events._answer("chart revenue by quarter", "org-1", None, None, "Company",
+                         viewer=viewer)
+    assert seen[0]["viewer"] is viewer and seen[0]["chart_from_words"] is True
+
+
+def test_a_chart_ask_in_a_channel_charts_only_that_channel(monkeypatch):
+    seen = _capture_choose(monkeypatch)
+    monkeypatch.setattr(slack_events, "_asks_for_chart", lambda q: True)
+    slack_events._answer("chart threads per week", "org-1", None, [channel_tag("C9")],
+                         None, viewer=None, channel_id="C9")
+    kwargs = seen[0]
+    assert kwargs["chart_mode"] is True and kwargs["channel_tag"] == channel_tag("C9")
+    # The room's viewer, never the asker's: public plus this one channel.
+    assert kwargs["viewer"].public_only and kwargs["viewer"].channels == ("C9",)
+
+
+def test_an_ordinary_channel_question_stays_on_the_channel_pipeline(monkeypatch):
+    seen = _capture_choose(monkeypatch)
+    monkeypatch.setattr(slack_events, "_asks_for_chart", lambda q: False)
+    calls = []
+
+    class _Pipe:
+        def answer(self, question, **kw):
+            calls.append(kw["tags"])
+            return type("R", (), {"answer": "a", "answered": True,
+                                  "access_restricted": False})()
+
+    monkeypatch.setattr(slack_events, "get_slack_agent",
+                        lambda: type("A", (), {"pipeline": _Pipe()})())
+    slack_events._answer("what did we decide?", "org-1", None, [channel_tag("C9")],
+                         None, channel_id="C9")
+    assert calls == [[channel_tag("C9")]] and seen == []
+
+
+def test_a_dm_chart_tries_the_askers_other_spaces(monkeypatch):
+    """Company-wide had no chart for this; the asker's Finance space does.
+    A DM charts whatever the asker can open, like picking the space in the app."""
+    tried = []
+
+    def choose(q, org, workspace_id=None, **kwargs):
+        tried.append(workspace_id)
+        spec = None if workspace_id != "ws-fin" else type("S", (), {})()
+        return type("D", (), {"agent_key": "insights", "chart_spec": spec,
+                              "reason": "chart" if spec else "chart-refuse",
+                              "chart_refusal": None if spec else "no"})()
+
+    monkeypatch.setattr(slack_events, "choose_agent", choose)
+    monkeypatch.setattr(slack_events, "spec_to_dict", lambda spec: {"metric": "x"})
+    states = []
+
+    class _G:
+        def invoke(self, state):
+            states.append(state)
+            return {"response": type("R", (), {"answer": "Budget", "chart": None})()}
+
+    monkeypatch.setattr("app.agent.orchestration.build_agent_graph", lambda g: _G())
+    reply = slack_events._answer(
+        "chart the budget", "org-1", None, None, "Company",
+        other_scopes=[("ws-eng", "Engineering"), ("ws-fin", "Finance")],
+    )
+    assert tried == [None, "ws-eng", "ws-fin"]
+    assert states[0]["workspace_id"] == "ws-fin"
+    assert "· Finance_" in reply.text
+
+
+def test_a_dm_answer_that_is_not_a_chart_never_tries_other_spaces(monkeypatch):
+    tried = []
+
+    def choose(q, org, workspace_id=None, **kwargs):
+        tried.append(workspace_id)
+        return type("D", (), {"agent_key": "notion", "chart_spec": None,
+                              "reason": "best-match", "chart_refusal": None})()
+
+    monkeypatch.setattr(slack_events, "choose_agent", choose)
+
+    class _G:
+        def invoke(self, state):
+            return {"response": type("R", (), {"answer": "a", "chart": None})()}
+
+    monkeypatch.setattr("app.agent.orchestration.build_agent_graph", lambda g: _G())
+    slack_events._answer("what is the leave policy?", "org-1", None, None, "Company",
+                         other_scopes=[("ws-eng", "Engineering")])
+    assert tried == [None]
+
+
+def test_a_reply_that_is_not_a_missing_chart_is_not_logged(monkeypatch):
+    """"Chart mode only builds charts" is not a gap of either kind."""
+    logged = []
+    monkeypatch.setattr(slack_events, "record_gap", lambda **k: logged.append(k))
+    monkeypatch.setattr(slack_events, "choose_agent", lambda q, org, **k: type(
+        "D", (), {"agent_key": "insights", "chart_spec": None, "chart_refusal": "words",
+                  "reason": "chart-mode-text-question"})())
+
+    class _G:
+        def invoke(self, state):
+            return {"response": type("R", (), {"answer": "words", "chart": None,
+                                               "grounded": False})()}
+
+    monkeypatch.setattr("app.agent.orchestration.build_agent_graph", lambda g: _G())
+    slack_events._answer("what is our leave policy?", "org-1", None, None, "Company")
+    assert logged == []

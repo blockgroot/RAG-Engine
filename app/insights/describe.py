@@ -53,7 +53,8 @@ def format_value(value: float, unit: str) -> str:
 
 
 def _mark(chart: str | None) -> str:
-    return {"line": "point", "pie": "slice"}.get(chart or "", "bar")
+    return {"line": "point", "area": "point", "stacked_area": "point", "pie": "slice",
+            "donut": "slice", "heatmap": "cell"}.get(chart or "", "bar")
 
 
 def _where(group: str | None, split: str | None, period: str, *, by_date: bool) -> str:

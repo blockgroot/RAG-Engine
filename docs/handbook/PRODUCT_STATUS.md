@@ -279,6 +279,28 @@ on top of the 12 metrics already shipping:
 The rule on the branch is the same: **the AI never produces a number**. It is under review.
 Ask on `main` still charts only the 12 registry metrics.
 
+**Branch `fix/charts-docs-prose-slack` (13 Oct 2026, not merged)** — chart fixes:
+
+- **Figures in paragraphs** are read **at ingest**, inline (no background queue or tick), on the
+  background model budget; a webhook re-ingest refreshes them. Pages indexed before this are
+  re-read by the sync backfill (`schema_marks: prose_figures_read_at_ingest`). The checker that
+  binds each figure to its label and measure no longer requires the measure word in the same
+  clause; it was dropping most real paragraphs (4 of 11 sample rows kept before, 11 of 11 after).
+- **Chart mode** reads the named page live, then matching pages' sentences, **before** saying a
+  page has no table.
+- **Drive vs Notion:** a question that names a connector ("the Google doc") is never charted
+  from another connector's table.
+- **No word lists** decide what a paragraph reader reads or keeps: any page with three
+  non-year numbers is read at ingest, and the checks are positional, in any language.
+- **Slack:** DMs chart with the asker's access, company-wide and then their other spaces until
+  one has the chart; a chart ask in a channel charts that channel only;
+  charts are uploaded as PNG images (needs `files:write`, so each Slack connection reconnects
+  once; until then the numbers are written as text).
+
+Covered by `tests/test_doctables_text.py`, `tests/test_doctables_ingest.py`,
+`tests/test_agent_routing.py`, `tests/test_insights_resolve.py`, `tests/test_slack_bot.py`,
+`tests/test_slack_chart_upload.py`, `tests/test_chartrender.py`. Not yet walked through on staging.
+
 ## 13. Testing & Verification
 
 - **Automated suite:** 167 test modules and about 1,900 test functions, before parametrized

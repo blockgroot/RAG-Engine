@@ -205,8 +205,58 @@ def record_rating(
     return row[0]
 
 
+#: The agent key of Chart mode (`agent.orchestration.INSIGHTS_KEY`). A chart
+#: it could not draw is not a document nobody wrote, so it has its own list.
+CHART_AGENT = "insights"
+
+
+@dataclass(frozen=True)
+class ChartGapRow:
+    """One chart question that came back refused, aggregated over the window."""
+
+    question: str
+    asked_by: int
+    times: int
+    #: The heading of the latest refusal ("Slack is not connected here", "This
+    #: can't be shown as a chart"): what to fix -- connect a source, record a
+    #: field, add a live read.
+    why: str
+    last_asked: str
+
+
+def _heading(answer: str | None) -> str:
+    """A refusal's first line, without its markdown."""
+    line = next((text for text in (answer or "").splitlines() if text.strip()), "")
+    return line.replace("**", "").strip()[:200]
+
+
+def list_chart_gaps(*, org_id: str, days: int = 30, limit: int = MAX_ROWS) -> list[ChartGapRow]:
+    """Charts people asked for and did not get, most people first.
+
+    What gets charted next comes from here: a question many people asked that
+    nothing recorded can answer is a field to record at sync or a live read
+    to add. The latest refusal says why, so the fix is visible in the row.
+    """
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT max(question), count(DISTINCT user_id), count(*), "
+            "       (array_agg(answer ORDER BY created_at DESC))[1], "
+            "       max(created_at)::text "
+            "FROM feedback_and_gaps "
+            "WHERE org_id = %s AND created_at > now() - make_interval(days => %s) "
+            "  AND refusal AND agent = %s "
+            "GROUP BY normalized_question "
+            "ORDER BY count(DISTINCT user_id) DESC, count(*) DESC "
+            "LIMIT %s",
+            (org_id, days, CHART_AGENT, limit),
+        ).fetchall()
+    return [ChartGapRow(r[0], r[1], r[2], _heading(r[3]), r[4]) for r in rows]
+
+
 def list_gaps(*, org_id: str, days: int = 30, limit: int = MAX_ROWS) -> list[GapRow]:
     """Questions this org could not answer, grouped, worst first.
+
+    A refused CHART is not here (``list_chart_gaps``): no document is missing.
 
     Ordered by the number of DISTINCT people who hit it, then by how often --
     "nine people asked about parental leave" is the line that gets a document
@@ -223,10 +273,11 @@ def list_gaps(*, org_id: str, days: int = 30, limit: int = MAX_ROWS) -> list[Gap
             "FROM feedback_and_gaps "
             "WHERE org_id = %s AND created_at > now() - make_interval(days => %s) "
             "  AND (refusal OR rating = -1) "
+            "  AND NOT (refusal AND agent IS NOT DISTINCT FROM %s) "
             "GROUP BY normalized_question "
             "ORDER BY count(DISTINCT user_id) DESC, count(*) DESC "
             "LIMIT %s",
-            (org_id, days, limit),
+            (org_id, days, CHART_AGENT, limit),
         ).fetchall()
     return [GapRow(r[0], r[1], r[2], r[3], r[4], r[5], r[6]) for r in rows]
 

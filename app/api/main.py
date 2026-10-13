@@ -71,9 +71,7 @@ def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
     from ..jobs import queue
     from ..jobs.autosync import start_cooled_down_pushes
     from ..jobs.worker import (
-        FIGURE_READ_SECONDS,
         PUSH_CHECK_SECONDS,
-        read_figures_tick,
         run_once,
         run_scheduler_tick,
     )
@@ -109,7 +107,6 @@ def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
             logger.exception("Failed to re-queue interrupted scheduler runs")
         last_reap = 0.0
         last_push = 0.0
-        last_figures = -FIGURE_READ_SECONDS
         # Start at -poll_seconds so the first scheduler tick happens promptly
         # after boot rather than one whole interval later — a scheduler that
         # came due while the process was down should not wait 5 more minutes.
@@ -124,11 +121,6 @@ def _start_in_api_worker(stop: threading.Event) -> threading.Thread:
                     # A push inside the cooldown waits ~3 min here, not ~10 for the tick.
                     start_cooled_down_pushes()
                     last_push = now
-                if now - last_figures >= FIGURE_READ_SECONDS:
-                    # Sentence figures. The GitHub tick that also does this
-                    # arrives hours late; this loop is already awake.
-                    read_figures_tick()
-                    last_figures = now
                 if (
                     scheduler_settings.enabled
                     and now - last_scheduler >= scheduler_settings.poll_seconds

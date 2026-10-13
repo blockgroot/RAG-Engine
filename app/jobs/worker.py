@@ -22,10 +22,6 @@ from .autosync import start_cooled_down_pushes
 
 #: How often a worker loop starts pushes whose cooldown has ended (`autosync`).
 PUSH_CHECK_SECONDS = 15.0
-#: How often an awake worker reads sentence figures. The GitHub schedule that
-#: wakes a sleeping box is written as every 10 minutes and arrives hours late,
-#: and figure reading used to live only on that request.
-FIGURE_READ_SECONDS = 300.0
 
 logger = logging.getLogger(__name__)
 
@@ -469,10 +465,6 @@ def run_external_tick() -> dict[str, int]:
     except Exception:  # noqa: BLE001 - an unscored chunk, never a failed tick
         logger.exception("External tick: injection-score backfill failed")
 
-    # Figures in sentences. The awake worker reads the same queue on its own
-    # clock; this call covers the hours the GitHub schedule skips.
-    figures_read = read_figures_tick()
-
     scheduler_settings = SchedulerSettings.from_env()
     schedulers_ran = (
         run_scheduler_tick(scheduler_settings) if scheduler_settings.enabled else 0
@@ -487,25 +479,8 @@ def run_external_tick() -> dict[str, int]:
         "attachments_purged": attachments_purged,
         "conversations_purged": conversations_purged,
         "injection_scored": injection_scored,
-        "figures_read": figures_read,
         "schedulers_ran": schedulers_ran,
     }
-
-
-def read_figures_tick() -> int:
-    """Read one batch of sentence figures. Never raises. Returns how many finished.
-
-    Called from the external tick and from both worker loops. A no-op unless
-    ``DOCTABLES_TEXT_ENABLED``. A missed GitHub schedule then only delays
-    figures while the process is asleep.
-    """
-    try:
-        from ..doctables.queue import run_pending
-
-        return run_pending()
-    except Exception:  # noqa: BLE001 - an unread page, never a dead worker
-        logger.exception("Figure read failed")
-        return 0
 
 
 def run_scheduler_tick(settings=None) -> int:
@@ -571,7 +546,6 @@ def run_forever(
     last_maintenance = 0.0
     last_sync = 0.0
     last_push = 0.0
-    last_figures = -FIGURE_READ_SECONDS
     last_scheduler = -float(scheduler_settings.poll_seconds)
     while True:
         now = time.monotonic()
@@ -590,9 +564,6 @@ def run_forever(
             # splitting their timers would mean two freshness stories.
             run_facts_tick()
             last_sync = now
-        if now - last_figures >= FIGURE_READ_SECONDS:
-            read_figures_tick()
-            last_figures = now
         if (
             scheduler_settings.enabled
             and now - last_scheduler >= scheduler_settings.poll_seconds

@@ -8,28 +8,27 @@ from .base import DatasetAdapter
 from .table_adapter import TableAdapter
 
 
-def build_dataset_adapters(
-    settings: DocTablesSettings | None = None, llm=None,
-) -> list[DatasetAdapter]:
-    """The table adapter always; the text adapter when switched on.
+def build_dataset_adapters(settings: DocTablesSettings | None = None) -> list[DatasetAdapter]:
+    """What ingestion runs: the table adapter always; the text adapter when on.
 
-    ``llm`` is only needed by the text adapter, and only when it actually
-    runs (on the tick); ingestion never passes one.
+    The text adapter is built without a model, so it uses the background
+    (aux) model and waits for a background slot -- ingest never takes the
+    quota a person is waiting on.
     """
     settings = settings or DocTablesSettings.from_env()
     adapters: list[DatasetAdapter] = [TableAdapter()]
     if settings.text_enabled:
         from .text_adapter import TextAdapter
 
-        adapters.append(TextAdapter(llm=llm, max_chars=settings.text_max_chars))
+        adapters.append(TextAdapter(max_chars=settings.text_max_chars))
     return adapters
 
 
 def build_upload_text_adapter(llm, settings: DocTablesSettings | None = None) -> DatasetAdapter:
-    """The text adapter for a file uploaded to a chat, run when the asker is
-    waiting in Chart mode -- so not gated on ``text_enabled``, which budgets
-    BACKGROUND quota for the indexed library. Interactive, once per file."""
+    """The text adapter for a read made while someone waits in Chart mode (an
+    uploaded file, a named page): the interactive model, not gated on
+    ``text_enabled``, and the looser figures check (``wants_for_chart``)."""
     from .text_adapter import TextAdapter
 
     settings = settings or DocTablesSettings.from_env()
-    return TextAdapter(llm=llm, max_chars=settings.text_max_chars)
+    return TextAdapter(llm=llm, max_chars=settings.text_max_chars, interactive=True)

@@ -20,8 +20,31 @@ from dataclasses import dataclass
 #: cannot render -- a registry entry that resolves to a blank panel is worse
 #: than one that does not exist.
 CHART_TYPES = (
-    "line", "bar", "pie", "stacked_bar", "diverging_bar", "histogram", "stat", "table",
+    "line", "area", "bar", "horizontal_bar", "pie", "donut", "stacked_bar",
+    "stacked_area", "heatmap", "diverging_bar", "histogram", "stat", "table",
 )
+
+
+def shapes_for(*, time: bool, breakdowns: int) -> tuple[str, ...]:
+    """The shapes a chart of this FORM can be drawn as, default first.
+
+    Decided by the data, not the metric: whether it has a time axis, and how
+    many breakdowns sit on it (an activity count always has periods; a table
+    has them only when grouped by its date column). One rule for activity and
+    for document tables, so a new shape is added here and drawn in
+    ``frontend/components/charts/toOption.ts`` and ``app/chartrender``.
+    A pie of the periods is allowed: "each month as a slice".
+    """
+    if time:
+        return {
+            0: ("line", "area", "bar", "pie", "donut"),
+            1: ("bar", "line", "stacked_bar", "stacked_area", "heatmap",
+                "pie", "donut", "horizontal_bar"),
+        }.get(breakdowns, ("bar", "horizontal_bar", "heatmap"))
+    return {
+        0: ("bar",),
+        1: ("bar", "horizontal_bar", "pie", "donut"),
+    }.get(breakdowns, ("bar", "stacked_bar", "horizontal_bar", "heatmap"))
 
 #: The ONLY groupings any metric may accept. A ``group_by`` becomes a SQL
 #: identifier, so it can never originate in user text -- only here. Values are
@@ -397,9 +420,8 @@ _add(Metric(
 #
 # `corpus_size` counts `documents`, not `activity_facts`. Same reason.
 #
-# Slack's `active_hours` heatmap needs a chart shape `Chart.tsx` does not draw
-# (day x hour), so it waits for that rather than shipping as a table nobody
-# reads. `thread_response_time` needs per-message timestamps the index does not
+# Slack's `active_hours` (day x hour) can now be drawn as a `heatmap`, but it
+# needs day-of-week and hour dimensions the query grammar does not have yet. `thread_response_time` needs per-message timestamps the index does not
 # keep -- it stores a thread, not its replies.
 #
 # `open_pr_age` is a histogram over `now() - occurred_at` for pull requests

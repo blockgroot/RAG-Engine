@@ -888,7 +888,11 @@ DEFAULT_SLACK_BOT_SCOPES = (
     # (reading DMs and mentions is already covered above). Adding it means
     # every existing connection must reconnect once to pick it up -- Slack
     # grants scopes at install time, never retroactively.
-    "chat:write,app_mentions:read"
+    "chat:write,app_mentions:read,"
+    # Slack charts as images: uploading a PNG of a chart into the reply
+    # thread needs `files:write`. Existing connections keep getting the
+    # numbers as text until an admin reconnects.
+    "files:write"
 )
 
 # Phase 2 bounds (plan §6/D11 — "bound the walk itself" discipline, same as
@@ -1223,39 +1227,32 @@ class DocTablesSettings:
     """Charts from figures INSIDE documents (``app/doctables``).
 
     Tables a document already has are always kept (no AI, exact). Figures
-    written in SENTENCES need an AI to read them, so that adapter is opt-in:
+    written in SENTENCES need an AI to read them:
 
-    - ``text_enabled``  `DOCTABLES_TEXT_ENABLED`: read figures from prose.
-      Off by default because it spends background LLM quota -- one call per
-      document that passes the cheap figures check, re-run only when the
-      document changes. Never runs inside ingestion.
-    - ``text_batch``  documents read per tick (`DOCTABLES_TEXT_BATCH`). Small:
-      it shares the background budget with contextualization, and live
-      questions keep `LLM_RESERVE_RPM` regardless.
+    - ``text_enabled``  `DOCTABLES_TEXT_ENABLED`: read figures from prose AT
+      INGEST, inline, for a document that passes the cheap figures check. On
+      by default: a background queue left pages unread for a tick or more, and
+      a webhook re-ingest keeps the figures as fresh as the text. The call is
+      paced on the background budget (``LLM_RESERVE_RPM`` stays free). Off,
+      Chart mode still reads a page when someone asks for its chart.
     - ``text_max_chars``  how much of a document the AI is shown
       (`DOCTABLES_TEXT_MAX_CHARS`). Longer documents are read up to the limit
       and the chart says so.
-    - ``text_max_attempts``  a document that keeps failing is given up on
-      after this many tries, so one bad page cannot hold the queue.
     - ``backfill_batch``  already-indexed documents re-read for tables per
       sync (`DOCTABLES_BACKFILL_BATCH`, 0 = off). A sync skips unchanged
       documents, so without this a sheet indexed before charts read tables
       would never be charted. One source fetch each, no re-embedding.
     """
 
-    text_enabled: bool = False
-    text_batch: int = 5
+    text_enabled: bool = True
     text_max_chars: int = 12000
-    text_max_attempts: int = 3
     backfill_batch: int = 20
 
     @classmethod
     def from_env(cls) -> "DocTablesSettings":
         return cls(
-            text_enabled=env_bool("DOCTABLES_TEXT_ENABLED", False),
-            text_batch=max(1, int(os.getenv("DOCTABLES_TEXT_BATCH") or 5)),
+            text_enabled=env_bool("DOCTABLES_TEXT_ENABLED", True),
             text_max_chars=max(1000, int(os.getenv("DOCTABLES_TEXT_MAX_CHARS") or 12000)),
-            text_max_attempts=max(1, int(os.getenv("DOCTABLES_TEXT_MAX_ATTEMPTS") or 3)),
             backfill_batch=max(0, int(os.getenv("DOCTABLES_BACKFILL_BATCH") or 20)),
         )
 
@@ -2134,4 +2131,25 @@ class PersonalMemorySettings:
         return cls(
             enabled=env_bool("PERSONAL_MEMORY_ENABLED", False),
             max_facts=_env_positive_int("PERSONAL_MEMORY_MAX_FACTS", 30),
+        )
+
+
+@dataclass(frozen=True)
+class ChartRenderSettings:
+    """Size of a chart drawn as a picture (Slack has no canvas to draw on).
+
+    1200x700 at 144 dpi is a 2x image of a ~600px-wide Slack preview: sharp on
+    a retina screen, small enough that a render stays well under a second.
+    """
+
+    width: int = 1200
+    height: int = 700
+    dpi: int = 144
+
+    @classmethod
+    def from_env(cls) -> "ChartRenderSettings":
+        return cls(
+            width=_env_positive_int("CHART_RENDER_WIDTH", 1200),
+            height=_env_positive_int("CHART_RENDER_HEIGHT", 700),
+            dpi=_env_positive_int("CHART_RENDER_DPI", 144),
         )
