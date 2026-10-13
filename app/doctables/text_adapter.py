@@ -511,6 +511,33 @@ def _split_units(header: list[str], rows: list[dict]) -> tuple[list[str], dict]:
     return header, units
 
 
+def _merge_labels(rows, header: list[str]):
+    """One name per item: "Product Alpha" in January and "Alpha" after it are
+    one product, or the chart draws six series for three. A label is shortened
+    only to ANOTHER label in its column, by dropping the column's own name
+    ("Product"), so "Plant A" stays "Plant A" when no "A" was written."""
+    for i, name in enumerate(header):
+        words = _norm(name).split()
+        if not words:
+            continue
+        values: dict[str, str] = {}
+        for cells, _ in rows:
+            if i < len(cells) and cells[i]:
+                values.setdefault(_norm(cells[i]), cells[i])
+        for cells, _ in rows:
+            if i >= len(cells) or not cells[i]:
+                continue
+            # "raw material consumption" and "Raw material consumption" too.
+            cells[i] = values[_norm(cells[i])]
+            parts = _norm(cells[i]).split()
+            for short in (parts[len(words):] if parts[:len(words)] == words else None,
+                          parts[:-len(words)] if parts[-len(words):] == words else None):
+                if short and " ".join(short) in values:
+                    cells[i] = values[" ".join(short)]
+                    break
+    return rows
+
+
 def _carry_units(rows, units: dict, header: list[str]):
     """Put a row's own unit on its last label ("production waste (kg)"). A row
     whose unit has no label to sit on is dropped: a figure without its unit
@@ -596,7 +623,8 @@ class TextAdapter(DatasetAdapter):
             header = [str(c)[:80] for c in (item.get("columns") or [])][:MAX_COLUMNS]
             raw_rows = [r for r in (item.get("rows") or []) if isinstance(r, dict)]
             header, units = _split_units(header, raw_rows)
-            rows = _carry_units(verify_rows(prose, raw_rows, header), units, header)
+            rows = _merge_labels(
+                _carry_units(verify_rows(prose, raw_rows, header), units, header), header)
             if len(header) < extract.MIN_COLUMNS or len(rows) < extract.MIN_ROWS:
                 continue
             notes = [TEXT_NOTE]

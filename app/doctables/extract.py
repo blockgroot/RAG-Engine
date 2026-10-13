@@ -355,7 +355,10 @@ def profile(raw: RawTable) -> Table | None:
                     unparsed += 1
                 else:
                     cells[row_i][key] = n
-            unit = units.pop() if len(units) == 1 else ""
+            # A unit only when EVERY figure carries it: "19" hours beside "76%"
+            # is not a column of percentages.
+            unit = units.pop() if len(units) == 1 and all(
+                u for n, u in numbers if n is not None) else ""
             columns.append(Column(key, names[i], "number", unit=unit,
                                   unparsed=unparsed, distinct=len(set(values)),
                                   samples=tuple(values[:3])))

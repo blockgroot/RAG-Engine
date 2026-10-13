@@ -464,3 +464,25 @@ def test_a_unit_word_after_a_figure_is_moved_never_summed_across_units():
     ]}]})
     [table] = TextAdapter(one_unit).extract(_doc(text))
     assert [c.name for c in table.columns] == ["Month", "Waste (kg)"]
+
+
+def test_one_name_per_item_across_sentences():
+    """Staging report: "Product Alpha" in January, "Alpha" after it, and
+    "raw material" in two cases drew as separate series."""
+    from app.doctables.text_adapter import _merge_labels
+
+    rows = [(["January", "Product Alpha", "2,800"], "q"), (["February", "Alpha", "3,000"], "q"),
+            (["January", "Plant A", "2,400"], "q"),
+            (["January", "Raw material", "18.5"], "q"), (["April", "raw material", "20.1"], "q")]
+    merged = _merge_labels(rows, ["Month", "Product", "Units"])
+    assert [cells[1] for cells, _ in merged] == ["Alpha", "Alpha", "Plant A", "Raw material", "Raw material"]
+
+
+def test_a_unit_only_some_figures_carry_is_not_the_column_unit():
+    from app.doctables import extract
+
+    table = extract.profile(extract.RawTable(
+        name="t", header=["Month", "Measure", "Figure"],
+        rows=[["Jan", "utilisation", "76%"], ["Feb", "downtime", "19"], ["Mar", "downtime", "14"]],
+    ))
+    assert next(c for c in table.columns if c.type == "number").unit == ""
