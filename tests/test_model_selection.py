@@ -753,3 +753,10 @@ def test_claude_as_the_default_model_is_sent_with_thinking_off():
     gemini = adapters.build_provider(
         adapters.resolve("google", base_url=None, model="gemini-3.1-flash-lite", api_key="k"), timeout=5)
     assert gemini._extra_body is None
+
+
+def test_gemini_is_asked_to_think_minimally_and_may_drop_it():
+    """Gemini Flash thinks by default and the thinking is billed as output."""
+    from app.llm.routed import preset_extra_body
+
+    assert preset_extra_body("google") == ({"reasoning_effort": "minimal"}, True)

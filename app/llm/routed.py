@@ -118,6 +118,11 @@ _PRESET_EXTRA_BODY: dict[str, dict] = {
     # (production, 9 Oct: the chart classifier's 200 tokens all spent thinking,
     # empty reply). Verified live: disabled, the same prompt answers in 61 tokens.
     "anthropic": {"thinking": {"type": "disabled"}},
+    # Gemini Flash thinks by default, and thinking tokens are billed and
+    # counted as output: the same cap problem as Claude above. "minimal" is the
+    # lowest a Gemini 3 model accepts; measured live, "low" made flash-lite think
+    # MORE (220 tokens against 52 for the same one-line answer).
+    "google": {"reasoning_effort": "minimal"},
 }
 
 #: Presets whose ``extra_body`` may be DROPPED when the endpoint rejects it.
@@ -128,13 +133,14 @@ _PRESET_EXTRA_BODY: dict[str, dict] = {
 #: and the rest answer it with a 400. Sending it unconditionally therefore made
 #: every OTHER NVIDIA model impossible to save — the admin saw NVIDIA rejecting
 #: a field they never typed, on a page whose whole job is to tell a wrong key
-#: from a wrong model id.
+#: from a wrong model id. Google too: a Gemini model that does not think
+#: (Gemma) may reject ``reasoning_effort``, and is then sent without it.
 #:
 #: OpenRouter is deliberately ABSENT: its extras carry
 #: ``data_collection: "deny"``, and a retry without them would put the tenant's
 #: retrieved private chunks in front of a provider that may train on them. That
 #: request must fail.
-_PRESET_EXTRA_OPTIONAL = frozenset({"nvidia"})
+_PRESET_EXTRA_OPTIONAL = frozenset({"nvidia", "google"})
 
 
 def preset_extra_body(preset_id: str) -> tuple[dict | None, bool]:
