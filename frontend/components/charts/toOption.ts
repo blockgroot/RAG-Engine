@@ -240,7 +240,8 @@ type Model =
 
 function model(p: ChartProps): Model {
   const blankLabels = p.blankLabels ?? {};
-  const blankFor = (dim?: string | null) => (dim && blankLabels[dim]) || "Unknown";
+  // No breakdown at all is the total, not an unknown category.
+  const blankFor = (dim?: string | null) => (dim ? blankLabels[dim] || "Unknown" : "Total");
   const split = Boolean(p.groupBy && p.splitBy);
   const groupBy = split ? `${p.groupBy}+${p.splitBy}` : p.groupBy ?? null;
   const points = split
@@ -641,6 +642,11 @@ export function toOption(p: ChartProps, theme: ChartTheme = DEFAULT_THEME): ECha
   };
   const single = m.series.length === 1;
   const zoom = m.buckets.length > ZOOM_AFTER;
+  // One series of a few bars: a colour per bar, so January and March read
+  // apart at a glance. Past the palette's size a rainbow is noise, and a
+  // line or several series already use colour to tell series apart.
+  const barColors = single && m.buckets.length > 1 && m.buckets.length <= SERIES_COLORS.length
+    ? categoryColors(m.labels) : null;
   const series = m.series.map((name, si) => {
     const asLine = m.combo ? si > 0 : m.shape !== "bar";
     const c = color(pick(palette, name, si));
@@ -659,7 +665,9 @@ export function toOption(p: ChartProps, theme: ChartTheme = DEFAULT_THEME): ECha
       // fills hide each other, so only area charts fill several.
       areaStyle: asLine && !m.combo && (m.shape === "area" || single) ? { opacity: m.shape === "area" ? 0.25 : 0.12 } : undefined,
       label: showValues ? { show: true, position: "top" as const, color: theme.text, formatter: (x: { value?: unknown }) => Number(x.value).toLocaleString() } : undefined,
-      data: m.buckets.map((b) => m.at(b, name)),
+      data: barColors && !asLine
+        ? m.buckets.map((b, i) => ({ value: m.at(b, name), itemStyle: { color: color(pick(barColors, m.labels[i], i)) } }))
+        : m.buckets.map((b) => m.at(b, name)),
     };
   });
   const yAxis = m.combo

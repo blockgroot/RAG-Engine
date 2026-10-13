@@ -252,7 +252,12 @@ latest value of its column opening a sentence earlier in that paragraph
 column in it is context for every figure there. A year is four bare digits
 ("1,900 units" is a figure). A unit word after a figure ("420 kg") is moved to
 the column name when the column shares it, else onto the row's measure label,
-never summed across units. A percentage column (its cells' `%`) is averaged by default and a sum of it is refused (`tables._default_measure`). A 429 at ingest leaves the document unchecked so a
+never summed across units. A percentage column (its cells' `%`) is averaged by default and a sum of it is refused (`tables._default_measure`). A reply that is not valid JSON keeps every complete fact
+(`salvage_facts`); one with none is `UnreadableReply`, retried by later syncs
+(`MAX_UNREADABLE_READS`), never "no figures"; the admin feedback page shows it
+(`store.figure_health`). A table chart with no breakdown uses the table's first
+column; the asker's period word makes that column the axis and a column the
+question names by its header the series (`resolve._table_period_axis`). A 429 at ingest leaves the document unchecked so a
 later sync's backfill reads it. A figure another measure governs is dropped,
 never repaired; the chart says "taken from text", and a dropped row is named
 so a partial series is not presented as complete. Chart mode, when nothing

@@ -182,6 +182,19 @@ const arr = (x: unknown): any[] => (x == null ? [] : Array.isArray(x) ? x : [x])
     "document table: one breakdown keeps document order, not value order");
 }
 
+{
+  // One series of a few bars: each bar its own colour. A bar with no
+  // breakdown is the "Total", never "Unknown".
+  const o: any = toOption({ chart: "bar", period: "month", groupBy: "c0", ordered: true, points: [
+    { bucket: "", group: "January", value: 3200 }, { bucket: "", group: "February", value: 3750 },
+    { bucket: "", group: "March", value: 4100 }] });
+  const colors = arr(o.series)[0].data.map((d: any) => d.itemStyle?.color);
+  check(new Set(colors).size === 3, "single-series bars: a colour per bar");
+  const total: any = toOption({ chart: "bar", period: "month", points: [{ bucket: "", group: null, value: 11050 }] });
+  const label = JSON.stringify(arr(total.xAxis)[0]?.data ?? arr(total.yAxis)[0]?.data ?? arr(total.series)[0]?.data);
+  check(!label.includes("Unknown"), `no breakdown is never "Unknown" (${label})`);
+}
+
 if (failed) {
   console.error(`\n${failed} failure(s)`);
   process.exit(1);

@@ -90,8 +90,23 @@ export interface FeedbackDownvote {
   created_at: string;
 }
 
+export interface FigureHealth {
+  pages_with_figures: number;
+  tables: number;
+  no_figures: number;
+  /** Unusable model reply; read again by a later sync. */
+  retrying: number;
+  /** Unusable `max_tries` times; left until the page changes. */
+  gave_up: number;
+  waiting: number;
+  max_tries: number;
+  problems: { title: string; provider: string; tries: number; last_try: string }[];
+}
+
 export interface FeedbackSummary {
   days: number;
+  /** Null when it could not be read; absent from an older server. */
+  figures?: FigureHealth | null;
   counts: { up: number; down: number; refusals: number };
   gaps: FeedbackGap[];
   /** Absent from a server older than this list. */

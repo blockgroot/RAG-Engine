@@ -391,14 +391,21 @@ def parse_pick(data: dict, handles: dict[str, TableRef]) -> TablePick | None:
                 filters.append((key, wanted.strip()[:120]))
 
     requested = data.get("chart") if isinstance(data.get("chart"), str) else None
-    if group_by is None and requested == "line":
-        # A line IS a time axis, and in a table the time axis is its date
-        # column: "revenue per month as a line" drew one bar, the total,
-        # because the period rode on nothing. Only when there is exactly one
-        # date column -- with two, which one is the asker's call.
+    if group_by is None:
+        # No breakdown is one bar of every row added up, labelled with
+        # nothing: "tickets per month" came back from Claude Haiku with the
+        # month in the activity `period` field and no column, and drew 11,050
+        # under "Unknown". A table's axis is its first column that can be one
+        # (a read page's period, a real table's row label); a date column
+        # first when there is exactly one, since that IS a time axis.
+        filtered = {k for k, _ in filters}
         dates = [c["key"] for c in table.columns if c.get("type") == "date"]
-        if len(dates) == 1:
+        axis = [c["key"] for c in table.columns
+                if c.get("type") in ("category", "date") and c["key"] not in filtered]
+        if len(dates) == 1 and dates[0] not in filtered:
             group_by = dates[0]
+        elif axis:
+            group_by = axis[0]
     chart = table_shape(table, group_by, split_by, requested)
     return TablePick(
         table_id=table.id, measure=measure, value=value, group_by=group_by,

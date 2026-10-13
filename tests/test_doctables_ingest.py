@@ -188,9 +188,16 @@ def test_an_unusable_reply_is_read_again_by_later_syncs_then_left(org, llm):
             return conn.execute("SELECT tables_checked_at FROM documents WHERE id = %s",
                                 (doc_id,)).fetchone()[0]
 
-    for _ in range(2):
+    def health():
+        h = table_store.figure_health(org_id=org, viewer=Viewer(email=None), max_tries=3)
+        return h.retrying, h.gave_up, [p[2] for p in h.problems]
+
+    for tries in (1, 2):
         _store_tables(doc_id, page, org_id=org, workspace_id=None)
         assert checked() is None and _marked(doc_id) == "unreadable"
+        # The admin page says it, so nobody reads logs to find out.
+        assert health() == (1, 0, [tries])
     _store_tables(doc_id, page, org_id=org, workspace_id=None)  # the third: give up
     assert checked() is not None
     assert "text" not in _tables(org)
+    assert health() == (0, 1, [3])

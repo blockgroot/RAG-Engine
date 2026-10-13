@@ -183,6 +183,61 @@ export default function FeedbackPage() {
           )}
         </section>
 
+        <section className="studio-panel stack" aria-labelledby="figures-title">
+          <div className="studio-section-head">
+            <h2 id="figures-title">Reading figures from documents</h2>
+            <p className="muted">
+              Figures written in paragraphs are read when a page syncs, so they can be charted.
+              A page whose read failed is retried by later syncs on its own; it is listed here
+              so nobody has to check logs.
+            </p>
+          </div>
+
+          {!data ? (
+            <p className="muted">Loading…</p>
+          ) : !data.figures ? (
+            <p className="muted">Not available right now.</p>
+          ) : (
+            <>
+              <p>
+                {data.figures.pages_with_figures} {data.figures.pages_with_figures === 1 ? "page" : "pages"} with
+                figures ({data.figures.tables} tables) · {data.figures.no_figures} read with none ·{" "}
+                {data.figures.waiting} waiting for the next sync
+                {data.figures.retrying ? ` · ${data.figures.retrying} being retried` : ""}
+                {data.figures.gave_up ? ` · ${data.figures.gave_up} could not be read` : ""}
+              </p>
+              {data.figures.problems.length === 0 ? (
+                <p className="muted">Every page read so far was read cleanly.</p>
+              ) : (
+                <table className="gap-table">
+                  <thead>
+                    <tr>
+                      <th>Page</th>
+                      <th>Source</th>
+                      <th>Status</th>
+                      <th>Last try</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.figures.problems.map((p) => (
+                      <tr key={p.title + p.last_try}>
+                        <td>{p.title}</td>
+                        <td className="muted">{p.provider}</td>
+                        <td>
+                          {p.tries >= data.figures!.max_tries
+                            ? `Could not be read after ${p.tries} tries — edit the page to try again`
+                            : `Retrying (${p.tries} of ${data.figures!.max_tries})`}
+                        </td>
+                        <td className="muted">{when(p.last_try)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </>
+          )}
+        </section>
+
         <section className="studio-panel stack" aria-labelledby="wrong-title">
           <div className="studio-section-head">
             <h2 id="wrong-title">Answers someone marked wrong</h2>

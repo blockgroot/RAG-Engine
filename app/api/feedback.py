@@ -124,6 +124,7 @@ def admin_feedback(
     charts = list_chart_gaps(org_id=session.org_id, days=days, limit=MAX_ROWS)
     return {
         "days": days,
+        "figures": _figure_health(session),
         "counts": rating_counts(org_id=session.org_id, days=days),
         "gaps": [
             {
@@ -157,4 +158,26 @@ def admin_feedback(
             }
             for r in downvoted
         ],
+    }
+
+
+def _figure_health(session) -> dict | None:
+    """Figures read from documents: what is stored, retried and given up.
+    None when it cannot be read; the rest of the page still loads."""
+    from ..doctables.store import figure_health
+    from ..ingestion.pipeline import MAX_UNREADABLE_READS
+    from .deps import viewer_for
+
+    try:
+        h = figure_health(org_id=session.org_id, viewer=viewer_for(session),
+                          max_tries=MAX_UNREADABLE_READS)
+    except Exception:  # noqa: BLE001 - one panel, never the page
+        logger.warning("admin feedback: figure health unavailable", exc_info=True)
+        return None
+    return {
+        "pages_with_figures": h.pages_with_figures, "tables": h.tables,
+        "no_figures": h.no_figures, "retrying": h.retrying, "gave_up": h.gave_up,
+        "waiting": h.waiting, "max_tries": MAX_UNREADABLE_READS,
+        "problems": [{"title": t, "provider": p, "tries": a, "last_try": w}
+                     for t, p, a, w in h.problems],
     }

@@ -429,3 +429,45 @@ def test_the_offered_tables_are_the_named_page_ordered_by_their_own_labels():
     pick = doc_tables.parse_pick({"table": "T1", "group_by": "Plant", "split_by": "Period",
                                   "value": "Production (units)"}, {"T1": plant})
     assert (pick.group_by, pick.split_by) == ("c0", "c1")
+
+
+def _plants():
+    return _ref(name="Production (units) by Plant", columns=(
+        {"key": "c0", "name": "Period", "type": "category", "samples": ["January", "February"]},
+        {"key": "c1", "name": "Plant", "type": "category", "samples": ["Plant A", "Plant B"]},
+        {"key": "c2", "name": "Production (units)", "type": "number"}))
+
+
+def test_a_table_chart_with_no_breakdown_uses_the_table_s_first_column():
+    """Production, Claude Haiku: "tickets per month" came back with no column
+    and drew every row added up under "Unknown"."""
+    pick = doc_tables.parse_pick({"table": "T1", "value": "Production (units)"}, {"T1": _plants()})
+    assert pick.group_by == "c0"
+    # Filtered to one period: that column is not the axis.
+    pick = doc_tables.parse_pick({"table": "T1", "value": "Production (units)",
+                                  "filters": {"Period": "January"}}, {"T1": _plants()})
+    assert pick.group_by == "c1"
+
+
+@pytest.mark.parametrize("reply, question, want", [
+    # The model put "per month" in the activity period field and picked Plant.
+    ({"group_by": "Plant", "period": "month", "chart": "bar"},
+     "Chart units by each plant per month", ("c0", "c1", "bar")),
+    # The model picked nothing; the question names the Plant column.
+    ({"group_by": None, "period": "month", "chart": "stacked_bar"},
+     "Show plant output by month as a stacked bar", ("c0", "c1", "stacked_bar")),
+    # No period asked for and no column named: left as the model chose.
+    ({"group_by": "Plant", "period": "month", "chart": "bar"},
+     "Total units by plant", ("c1", None, "bar")),
+])
+def test_the_asker_s_period_is_the_axis_and_a_named_column_the_series(reply, question, want):
+    from app.insights.resolve import AskIntent, ChartSpec, TABLE_METRIC, _table_period_axis
+
+    table = _plants()
+    pick = doc_tables.parse_pick({"table": "T1", "value": "Production (units)", **reply},
+                                 {"T1": table})
+    spec = ChartSpec(metric=TABLE_METRIC, group_by=pick.group_by, split_by=pick.split_by,
+                     period="month", chart=pick.chart, table_id=table.id, value=pick.value)
+    out = _table_period_axis(AskIntent("chart", spec=spec), question,
+                             json.dumps({"table": "T1", **reply}), {"T1": table})
+    assert (out.spec.group_by, out.spec.split_by, out.spec.chart) == want

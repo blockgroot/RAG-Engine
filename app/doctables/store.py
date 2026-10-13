@@ -756,3 +756,62 @@ def list_unchecked(
             (org_id, provider, workspace_id, limit),
         ).fetchall()
     return [(str(r[0]), r[1]) for r in rows]
+
+
+@dataclass(frozen=True)
+class FigureHealth:
+    """How reading figures from this org's documents is going, from what is
+    stored -- so nobody has to read logs to know a page was missed."""
+
+    pages_with_figures: int
+    tables: int
+    no_figures: int
+    retrying: int
+    gave_up: int
+    waiting: int
+    #: ``(title, provider, attempts, last_try)`` of pages that failed to read,
+    #: worst first; only pages the viewer may open are named.
+    problems: tuple[tuple[str, str, int, str], ...]
+
+
+def figure_health(*, org_id: str, viewer, max_tries: int, limit: int = 20) -> FigureHealth:
+    """Counts for the whole org (numbers name nothing); titles through the
+    document access predicate. Raises; the caller shows the rest of its page."""
+    from ..security.visibility import viewer_clause
+
+    clause, params = viewer_clause(viewer, "d")
+    with get_connection() as conn:
+        counts = conn.execute(
+            """
+            SELECT
+              (SELECT count(DISTINCT t.document_id) FROM doc_tables t
+                WHERE t.org_id = %(o)s AND t.origin = 'text' AND t.document_id IS NOT NULL),
+              (SELECT count(*) FROM doc_tables t
+                WHERE t.org_id = %(o)s AND t.origin = 'text' AND t.document_id IS NOT NULL),
+              (SELECT count(*) FROM doc_text_queue q WHERE q.org_id = %(o)s AND q.status = 'done'),
+              (SELECT count(*) FROM doc_text_queue q JOIN documents d ON d.id = q.document_id
+                WHERE q.org_id = %(o)s AND q.status = 'unreadable' AND d.tables_checked_at IS NULL),
+              (SELECT count(*) FROM doc_text_queue q JOIN documents d ON d.id = q.document_id
+                WHERE q.org_id = %(o)s AND q.status = 'unreadable' AND d.tables_checked_at IS NOT NULL),
+              (SELECT count(*) FROM documents d
+                WHERE d.org_id = %(o)s AND d.tables_checked_at IS NULL
+                  AND d.source_external_id IS NOT NULL)
+            """,
+            {"o": org_id},
+        ).fetchone()
+        rows = conn.execute(
+            f"""
+            SELECT d.title, d.source_provider, q.attempts, q.updated_at::text
+              FROM doc_text_queue q JOIN documents d ON d.id = q.document_id
+             WHERE q.org_id = %s AND q.status = 'unreadable'{clause}
+             ORDER BY q.attempts DESC, q.updated_at DESC
+             LIMIT %s
+            """,
+            [org_id, *params, limit],
+        ).fetchall()
+    return FigureHealth(
+        pages_with_figures=int(counts[0]), tables=int(counts[1]), no_figures=int(counts[2]),
+        retrying=int(counts[3]), gave_up=int(counts[4]), waiting=int(counts[5]),
+        problems=tuple((r[0] or "Untitled", r[1] or "", min(int(r[2]), max_tries), r[3])
+                       for r in rows),
+    )

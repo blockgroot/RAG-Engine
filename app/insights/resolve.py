@@ -1084,6 +1084,7 @@ def classify_question(
     # connector's rows. The question's connector wins.
     intent = _align_connector(replace(intent, source=source), question, metrics,
                               handles, fields, names)
+    intent = _table_period_axis(intent, question, reply, handles)
     return replace(
         _note_range(_note_left_out(_honour_breakdown(intent, question, reply, fields),
                                    question, reply), question, reply),
@@ -1148,6 +1149,16 @@ def _note_left_out(intent: AskIntent, question: str, reply: str) -> AskIntent:
     if not quote or quote not in _squashed(question):
         return intent
     return replace(intent, spec=replace(spec, left_out=words.strip()[:80]))
+
+
+def _json_object(reply: str) -> dict | None:
+    """The reply's JSON object, or None."""
+    match = _JSON_RE.search(reply or "")
+    try:
+        data = json.loads(match.group(0)) if match else None
+    except (ValueError, TypeError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def _breakdown_words(reply: str) -> str | None:
@@ -1357,6 +1368,52 @@ def chart_document_gap(question: str, named: str | None, tables, places) -> str 
         "If it lives in a workspace, open that workspace and ask again."
         + shown
     )
+
+
+def _table_period_axis(intent: AskIntent, question: str, reply: str, handles) -> AskIntent:
+    """"Units by each plant PER MONTH" on a table: the asker's period is the
+    table's axis, the model's breakdown its series.
+
+    Claude Haiku put "month" in the activity ``period`` field and drew plant
+    totals. When that period word is in the question, the table's first
+    column (its axis: a read page's period, a real table's row label) is not
+    used yet, and it is not filtered, it becomes ``group_by`` and the model's
+    pick ``split_by``. Format and position only; the model's word must be
+    the asker's.
+    """
+    spec = intent.spec
+    if intent.kind != "chart" or spec is None or not spec.table_id or spec.split_by:
+        return intent
+    table = next((t for t in (handles or {}).values() if t.id == spec.table_id), None)
+    if table is None:
+        return intent
+    from .tables import _words, table_shape
+
+    filtered = {k for k, _ in spec.filters}
+    keys = [c["key"] for c in table.columns
+            if c.get("type") in ("category", "date") and c["key"] not in filtered]
+    group, split = spec.group_by, None
+    data = _json_object(reply) or {}
+    # The shape they asked for, before a one-breakdown pick narrowed it to bar.
+    requested = data.get("chart") if isinstance(data.get("chart"), str) else spec.chart
+    word = _squashed(str(data.get("period") or ""))
+    if keys and word and f" {word}" in f" {_squashed(question)}" and keys[0] != group:
+        group, split = keys[0], group
+    if split is None:
+        # A column the question names by its OWN header ("each plant" -> Plant)
+        # that is not drawn yet is the series.
+        asked = _words(question)
+        named = [k for k in keys if k != group
+                 and _words(str((table.column(k) or {}).get("name", ""))) & asked]
+        if len(named) == 1:
+            split = named[0]
+    if (group, split) == (spec.group_by, spec.split_by):
+        return intent
+    if group is None:
+        group, split = split, None
+    return replace(intent, spec=replace(
+        spec, group_by=group, split_by=split,
+        chart=table_shape(table, group, split, requested)))
 
 
 def _honour_breakdown(intent: AskIntent, question: str, reply: str, fields) -> AskIntent:
