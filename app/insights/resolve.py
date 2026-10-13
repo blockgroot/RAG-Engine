@@ -630,7 +630,7 @@ def _prompt(
         "words of their question that asked for it into breakdown_words "
         "(\"by person\", \"who edited the most\"); null when they did not.\n"
         "- document = the page, file or sheet they named, copied exactly from "
-        "their question (\"hiring plan 2026\", \"quarterly budget page\"). "
+        "their question (\"travel policy\", \"Q3 vendor review\"). "
         "Null when they named none. If that name is not in the tables above, "
         "intent is still chart, metric null, and document is set. Never "
         "intent=qa only because the page is missing from the list.\n"
