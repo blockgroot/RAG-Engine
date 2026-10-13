@@ -174,6 +174,9 @@ def verify_model(endpoint: Endpoint, *, timeout: float = 10.0, client=None) -> M
                 base_url=endpoint.base_url,
                 timeout=timeout,
                 max_retries=0,
+                # Anthropic's compatible endpoint refuses /models without it;
+                # every other provider ignores an unknown header.
+                default_headers={"anthropic-version": "2023-06-01"},
             )
         listed = {_normalize(m.id) for m in client.models.list()}
     except Exception as exc:  # noqa: BLE001 — any failure means "could not check"

@@ -52,6 +52,10 @@ _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _MAX_BACKOFF_SECONDS = 8.0
 
 
+class EmptyRepositoryError(SourceError):
+    """GitHub's 409 for a repository with no commits yet."""
+
+
 def _parse_dt(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -256,12 +260,16 @@ class RestGitHubReader(GitHubReader):
         if since:
             params["since"] = since
 
-        payload = self._request(
-            f"{GITHUB_API_BASE}/repos/{full_name}/commits",
-            accept=_JSON_ACCEPT,
-            params=params,
-            what=f"commit history of {full_name}",
-        ).json()
+        try:
+            payload = self._request(
+                f"{GITHUB_API_BASE}/repos/{full_name}/commits",
+                accept=_JSON_ACCEPT,
+                params=params,
+                what=f"commit history of {full_name}",
+            ).json()
+        except EmptyRepositoryError:
+            # A repository with no commits yet: that IS its history, not a failure.
+            return []
 
         summaries: list[CommitSummary] = []
         for item in payload or []:
@@ -500,6 +508,8 @@ class RestGitHubReader(GitHubReader):
                 last_detail = f"HTTP {status}"
                 continue
 
+            if status == 409:
+                raise EmptyRepositoryError(self._describe_error(status, what, response))
             raise SourceError(self._describe_error(status, what, response))
 
         raise SourceError(
