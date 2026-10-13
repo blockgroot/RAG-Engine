@@ -1098,8 +1098,13 @@ def _chart_mode_route(
             INSIGHTS_KEY, "chart-refuse",
             chart_refusal="**Couldn't build this chart just now**\nTry again in a moment.",
         )
+    named = getattr(intent, "named_document", None)
     if intent.kind == "chart" and intent.spec is not None:
-        return chart(intent.spec)
+        # A page they NAMED that has figures beats an activity metric: "tickets
+        # from the Customer Support update" was charted from Linear issues.
+        if intent.spec.table_id or not named or not _named_has_tables(
+                org_id, workspace_id, viewer, named, channel_tag):
+            return chart(intent.spec)
     source = getattr(intent, "source", None)
     only = [source] if source else None
     # They named a connector and what was offered was mostly another's: ask
@@ -1114,7 +1119,6 @@ def _chart_mode_route(
     # The page they named can sit outside the six tables offered. If no table
     # is stored for it, read it live once, save what it holds, and ask again
     # with only its tables.
-    named = getattr(intent, "named_document", None)
     if named and not channel_tag and viewer is not None \
             and not getattr(viewer, "is_unrestricted", False):
         try:
@@ -1174,6 +1178,19 @@ def _chart_mode_route(
                                chart_refusal=CHART_MODE_TEXT_QUESTION)
     return RoutingDecision(INSIGHTS_KEY, "chart-refuse",
                            chart_refusal=chart_mode_refusal(providers))
+
+
+def _named_has_tables(org_id, workspace_id, viewer, named, channel_tag) -> bool:
+    """The page the question named has figures this viewer may chart."""
+    if channel_tag or viewer is None or getattr(viewer, "is_unrestricted", False):
+        return False
+    try:
+        from ..doctables.store import list_tables
+
+        return bool(list_tables(org_id=org_id, workspace_id=workspace_id, viewer=viewer,
+                                title_query=named))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _single_table_chart(table):

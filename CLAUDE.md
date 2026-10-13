@@ -226,7 +226,10 @@ Document tables are filled by dataset adapters (`doctables/base.py`); each
 adapter replaces only its own `origin`. Every adapter runs INLINE at ingest
 (`ingestion.pipeline._store_tables`); there is no figures queue or tick. The text
 adapter built with no model uses the aux model after `wait_for_background_slot`;
-one built with a model is interactive (Chart mode, uploads). Ingest reads a page
+one built with a model is interactive (Chart mode, uploads). The reader lists FACTS (measure, unit,
+period, items, value, quote) over the WHOLE page, section by section; code builds
+one table per measure, unit, breakdown and period grain (`facts_to_tables`), never
+the model, so two measures are never added. Ingest reads a page
 whose prose has at least three numbers that are not years; an interactive read
 needs two. No list of currencies, units or measure words decides what is read
 or kept: the reader and its checks are positional (number, label, column name),

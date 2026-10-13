@@ -3,8 +3,11 @@
 "Q1 revenue was ₹12L, Q2 grew to ₹15L" is data nobody put in a table, and no
 parser can turn prose into rows: knowing that ₹15L is Q2's revenue is reading
 comprehension. So an AI reads it -- inline at INGEST on the background model
-budget, and in Chart mode for a page ingest did not read -- and returns small
-tables where every row carries the exact sentence it came from.
+budget, and in Chart mode for a page ingest did not read -- and lists every
+FACT: one figure, what it measures, its unit, period and item, and the exact
+sentence. The AI never designs a table: code groups the facts into one table
+per measure (and unit), with a column for the period and one per kind of item,
+so every read of a page has the same shape and two measures are never added.
 
 The AI is not trusted with the result. Code keeps a row only when:
 
@@ -23,9 +26,10 @@ check and is dropped. What the check cannot catch is a figure the AI MISSED
 -- the chart says it was read from text, and a dropped row is named so a
 partial series is not presented as complete.
 
-Bounded: ``max_chars`` of the document (pipe tables removed -- the table
-adapter already has those, exactly), at most ``MAX_TABLES`` tables of
-``MAX_ROWS`` rows, and one model call per document.
+Bounded: the whole document (pipe tables removed -- the table adapter already
+has those, exactly) in sections of ``max_chars``, at most ``MAX_SECTIONS``
+model calls, ``MAX_TABLES`` measures and ``MAX_ROWS`` facts each; anything
+beyond is named on the chart.
 """
 
 from __future__ import annotations
@@ -45,13 +49,19 @@ from .base import DatasetAdapter, DocumentText
 logger = logging.getLogger(__name__)
 
 ORIGIN = "text"
-MAX_TABLES = 15
+MAX_TABLES = 40
 MAX_ROWS = 200
+#: Model calls per document: a long page is read section by section, at
+#: paragraph boundaries, rather than cut off.
+MAX_SECTIONS = 6
+#: Kinds of item a measure is broken down by (Plant, Product); a chart draws two.
+MAX_KINDS = 2
 MAX_COLUMNS = 8
 #: A reasoning model spends a small cap before it writes the JSON. At 1500,
 #: gemini-3.1-flash-lite logged `llm.truncated` with the whole budget used
 #: and the page was left with no table. The call stops when the JSON is done.
-MAX_TOKENS = 8000
+#: A section's facts are verbose JSON (~60 tokens each); 16000 holds ~200.
+MAX_TOKENS = 16000
 #: How many figures a page needs before ingest spends a model call on it, and
 #: (``MIN_CHART_NUMBERS``) before a page someone is waiting on is read. A
 #: figure is any number that is not a year; no list of currencies, units or
@@ -431,45 +441,33 @@ def build_prompt(title: str, text: str) -> str:
     """The prompt. The document is outside text: policy before, reminder after."""
     fenced = scrub_untrusted_text(text)
     return (
-        "Find FIGURES written in the sentences of this document and return them "
-        "as small tables a chart could be drawn from.\n\n"
+        "List EVERY figure written in the sentences of this document as a fact.\n\n"
         "Rules:\n"
-        "- Only figures the text states. Never compute, total, convert or guess.\n"
-        "- Return EVERY series in the document, not only the main one: each "
-        "measure written for two or more periods or items (production, waste, "
-        "downtime, headcount, rates...) is a series. A measure given only once is "
-        "not.\n"
-        "- One table per kind of figure (for example revenue by quarter). Columns "
-        "are short labels (Quarter, Region, Revenue). Cells are copied exactly as "
-        "written in the text (\"₹15L\", \"Q2\", \"North\").\n"
-        "- One kind of item per column: never put two kinds of thing (sites and "
-        "products, teams and people) in one column; give each kind its own table.\n"
-        "- One name per item across the whole table: when the text calls the same "
-        "item by a longer name and, elsewhere, a shorter name written ON ITS OWN, "
-        "use that shorter name in every row (it is inside the longer one, so it is "
-        "still in the sentence). Never shorten a name the text never writes alone.\n"
-        "- A total over a span (a year to date, the first four months) is not one "
-        "more period of the series it sums: give totals their own table.\n"
-        "- When every row of a table is the same measure, name the figure column "
-        "after it (Units, Production) and add NO measure column. A measure column "
-        "is only for a table that holds several measures, and each of its cells is "
-        "the thing measured as the sentence writes it (waste, downtime), never the "
-        "verb that reports it (produced, accounted for, was).\n"
-        "- When several measures share the same periods (revenue, headcount and "
-        "churn for Q1, Q2 and Q3), return ONE table with a column for the period, "
-        "a column for the measure (the word in the sentence — revenue, headcount, "
-        "churn — never Count or Value), and a column for the figure. One row per "
-        "figure.\n"
-        "- Every row MUST include \"quote\": the exact sentence it was read from, "
-        "copied character for character. Every cell of the row must appear inside "
-        "that quote, and the figure's measure must be in the same clause as the "
-        "figure.\n"
-        "- Skip figures that are not part of a comparable series (a single phone "
-        "number, a page count, a date on its own).\n"
-        "- If there are no such figures, return {\"tables\": []}.\n\n"
+        "- One fact per number the text states. Never compute, total, convert or "
+        "guess. Skip numbers that measure nothing (a phone number, a page number, "
+        "a date on its own).\n"
+        "- \"measure\": what the number measures, in the text's own words "
+        "(production, waste, tickets resolved, customer satisfaction). Use the SAME "
+        "words for every fact of the same measure.\n"
+        "- \"unit\": the unit written with the number (units, kg, tonnes, hours, "
+        "%, ₹), or \"\".\n"
+        "- \"period\": the period the number is for, as written (January, Q2, "
+        "2025, end of April), or \"\". It may come from an earlier sentence of the "
+        "same paragraph (\"In January, ... . Plant A made 2,400\": January).\n"
+        "- \"items\": what the number belongs to, as {\"<kind>\": \"<name>\"} "
+        "(Plant: Plant A, Product: Alpha, Region: North), or {}. Use the same kind "
+        "and the same name for the same thing in every fact: when the text writes a "
+        "longer and, elsewhere, a shorter name ON ITS OWN, use the shorter one.\n"
+        "- A total over several periods (the first four months, year to date) has "
+        "that span as its period and \"total\": true.\n"
+        "- \"value\": the number exactly as written (\"2,400\", \"₹15L\", "
+        "\"76%\").\n"
+        "- \"quote\": the exact sentence the number is in, copied character for "
+        "character.\n"
+        "- If there are no figures, return {\"facts\": []}.\n\n"
         "Reply with ONLY a JSON object:\n"
-        '{"tables": [{"name": "<short title>", "columns": ["<label>", ...], '
-        '"rows": [{"cells": ["<text>", ...], "quote": "<exact sentence>"}]}]}\n\n'
+        '{"facts": [{"measure": "...", "unit": "...", "period": "...", '
+        '"items": {"<kind>": "<name>"}, "total": false, "value": "...", "quote": "..."}]}\n\n'
         f"{UNTRUSTED_POLICY}"
         "<<<UNTRUSTED_DOCUMENT>>>\n"
         f"Title: {scrub_untrusted_text(title)[:200]}\n\n{fenced}\n"
@@ -614,108 +612,199 @@ class TextAdapter(DatasetAdapter):
 
     def extract(self, doc: DocumentText) -> list[extract.Table]:
         prose = _prose(doc.content)
-        truncated = len(prose) > self._max_chars
-        prose = prose[: self._max_chars]
+        sections = _sections(prose, self._max_chars)
+        unread = len(sections) - MAX_SECTIONS
         llm = self._model()
+        facts: list[dict] = []
+        for index, section in enumerate(sections[:MAX_SECTIONS]):
+            if index and self._llm is None:
+                from ..llm.pacing import wait_for_background_slot
+
+                # Ingest: every call waits its turn, so chat keeps its reserve.
+                if not wait_for_background_slot():
+                    raise ProviderError("text adapter: no background model slot came free")
+            facts.extend(self._read(llm, doc, section))
+        notes = []
+        if unread > 0:
+            notes.append(f"Only the first {MAX_SECTIONS} sections of this page were read.")
+        return facts_to_tables(prose, facts, extra_notes=notes)
+
+    def _read(self, llm, doc: DocumentText, section: str) -> list[dict]:
         try:
-            reply = llm.generate(build_prompt(doc.title, prose), max_tokens=MAX_TOKENS)
+            reply = llm.generate(build_prompt(doc.title, section), max_tokens=MAX_TOKENS)
         except Exception as exc:  # noqa: BLE001 - our type, the caller decides
             raise ProviderError("text adapter: model call failed", cause=exc) from exc
         if getattr(llm, "last_truncated", False):
             # A cut reply is not "this page has no figures": never marked read.
-            raise ProviderError("text adapter: the reply was cut off before the table was finished")
-
+            raise ProviderError("text adapter: the reply was cut off before the facts were finished")
         match = _JSON.search(reply or "")
         try:
             data = json.loads(match.group(0)) if match else {}
         except (ValueError, TypeError):
             data = {}
-        found = data.get("tables") if isinstance(data, dict) else None
+        found = data.get("facts") if isinstance(data, dict) else None
         if not isinstance(found, list):
             logger.info("text adapter: no usable reply for %s", doc.external_id)
             return []
-
-        out: list[extract.Table] = []
-        for item in found[:MAX_TABLES]:
-            if not isinstance(item, dict):
-                continue
-            header = [str(c)[:80] for c in (item.get("columns") or [])][:MAX_COLUMNS]
-            raw_rows = [r for r in (item.get("rows") or []) if isinstance(r, dict)]
-            header, units = _split_units(header, raw_rows)
-            rows = _merge_labels(
-                _carry_units(verify_rows(prose, raw_rows, header), units, header), header)
-            if len(header) < extract.MIN_COLUMNS or len(rows) < extract.MIN_ROWS:
-                continue
-            notes = [TEXT_NOTE]
-            claimed = sum(isinstance(r, dict) for r in raw_rows)
-            if claimed > len(rows):
-                notes.append(
-                    f"{claimed - len(rows)} figure(s) were left out because the "
-                    "number did not bind to its label or measure in its sentence."
-                )
-            if truncated:
-                notes.append(f"Only the first {self._max_chars} characters were read.")
-            if len(found) > MAX_TABLES:
-                notes.append(f"{len(found) - MAX_TABLES} more series in this document were not read.")
-            raw = extract.RawTable(
-                name=str(item.get("name") or doc.title)[:200],
-                header=header,
-                rows=[cells + [""] * (len(header) - len(cells)) for cells, _ in rows],
-                notes=tuple(notes),
-            )
-            table = extract.profile(raw)
-            if table is None or not any(c.type == "number" for c in table.columns):
-                continue  # nothing to add up is not a chart
-            table = _as_long(replace(table, quotes=tuple(q for _, q in rows)))
-            out.append(table)
-        return out
+        return [f for f in found if isinstance(f, dict)]
 
 
-def _column_is_period(column: extract.Column) -> bool:
-    samples = [str(sample) for sample in column.samples if str(sample).strip()]
-    if not samples:
+def _sections(prose: str, size: int) -> list[str]:
+    """The page in pieces of at most ``size`` characters, cut between
+    paragraphs, so a long page is read whole and no sentence is split."""
+    out: list[str] = []
+    current = ""
+    for line in prose.splitlines(keepends=True):
+        while len(line) > size:  # one paragraph longer than a section
+            if current:
+                out.append(current)
+                current = ""
+            cut = line.rfind(". ", 0, size) + 1 or size  # at a sentence end if any
+            out.append(line[:cut])
+            line = line[cut:]
+        if len(current) + len(line) > size and current:
+            out.append(current)
+            current = ""
+        current += line
+    if current.strip():
+        out.append(current)
+    return out
+
+
+def _text(value) -> str:
+    return re.sub(r"\s+", " ", str(value if value is not None else "")).strip()[:120]
+
+
+_YEAR = re.compile(r"^(?:fy\s?)?(?:19|20)\d{2}$", re.I)
+
+
+def _grain(fact: dict) -> str:
+    """Which series a fact's period belongs to: years apart from months, and a
+    total over a span apart from the periods it sums. Format only."""
+    period = _norm(_text(fact.get("period")))
+    if not period:
+        return ""
+    if fact.get("total") is True:
+        return "total"
+    return "year" if _YEAR.match(period) else "period"
+
+
+def _items(fact: dict) -> dict[str, tuple[str, str]]:
+    """``{normalized kind: (kind as written, name)}``."""
+    items = fact.get("items") if isinstance(fact.get("items"), dict) else {}
+    return {_norm(str(k)): (_text(k), _text(v)) for k, v in items.items() if _text(v)}
+
+
+_WORD_AFTER = re.compile(r"\s*([^\W\d_]+)")
+
+
+def _other_units_word(fact: dict, units: set[str]) -> bool:
+    """True when every place the quote writes this figure, the word right after
+    it is ANOTHER measure's unit: "waste per 1,000 units" is not 1,000 kg.
+    The units are the page's own, read from its facts; no list decides it."""
+    unit = _norm(_text(fact.get("unit")))
+    if not unit.isalpha():
         return False
-    hits = sum(1 for sample in samples if extract.PERIOD_TOKEN.match(_norm(sample).replace(" ", "")))
-    return hits / len(samples) >= 0.5
+    wanted = extract.parse_number(_text(fact.get("value")))[0]
+    quote = str(fact.get("quote") or "")
+    after = [_WORD_AFTER.match(quote, end) for value, _start, end in _num_spans(quote)
+             if wanted is not None and _close(value, wanted)]
+    words = [_norm(m.group(1)) for m in after if m]
+    return bool(words) and len(words) == len(after) and all(
+        w in units and not (w.startswith(unit) or unit.startswith(w)) for w in words)
 
 
-def _as_long(table: extract.Table) -> extract.Table:
-    """Several measures in one period row become period, measure, value.
+def facts_to_tables(prose: str, facts: list[dict], *, extra_notes=()) -> list[extract.Table]:
+    """Tables built by code, never by the model: one per measure and unit, per
+    what it is broken down by (Plant, Product) and per period grain (years,
+    months, a span's total), so no two kinds of figure are ever added.
 
-    A grouped bar needs one number column and a series. The numbers were
-    already checked against their own headers; this only reshapes them.
+    A kind of item with one name across the whole measure ("support team") is
+    the subject, not a breakdown, and is left out. Every row then goes through
+    the same checks as before (``verify_rows``: quote in the page, cells in the
+    quote, label bound to figure). Fewer than two kept figures is not a series.
     """
-    cols = list(table.columns)
-    categories = [c for c in cols if c.type == "category"]
-    numbers = [c for c in cols if c.type == "number"]
-    if len(categories) != 1 or len(numbers) < 2 or not _column_is_period(categories[0]):
-        return table
-    period = categories[0]
-    rows: list[list[str]] = []
-    quotes: list[str | None] = []
-    stored_quotes = list(table.quotes) + [None] * (len(table.cells) - len(table.quotes))
-    for cells, raw, quote in zip(table.cells, table.raw, stored_quotes):
-        index = cols.index(period)
-        period_text = raw[index] if index < len(raw) else ""
-        if not str(period_text).strip():
+    units = {_norm(_text(f.get("unit"))) for f in facts if _norm(_text(f.get("unit"))).isalpha()}
+    measures: dict[tuple[str, str], list[dict]] = {}
+    for fact in facts:
+        if _other_units_word(fact, units):
             continue
-        for number in numbers:
-            index = cols.index(number)
-            if number.key not in cells:
-                continue
-            text = raw[index] if index < len(raw) else ""
-            if not str(text).strip():
-                continue
-            rows.append([str(period_text), number.name, str(text)])
-            quotes.append(quote)
-    if len(rows) < extract.MIN_ROWS:
-        return table
-    melted = extract.profile(extract.RawTable(
-        name=table.name, header=[period.name, "Measure", "Value"], rows=rows, notes=table.notes,
-    ))
-    if melted is None or not any(c.type == "number" for c in melted.columns):
-        return table
-    return replace(melted, quotes=tuple(quotes), notes=table.notes)
+        measure, value = _text(fact.get("measure")), _text(fact.get("value"))
+        if not measure or not value or not str(fact.get("quote") or "").strip():
+            continue
+        measures.setdefault((_norm(measure), _norm(_text(fact.get("unit")))), []).append(fact)
+
+    groups: dict[tuple, list[dict]] = {}
+    for key, group in measures.items():
+        names: dict[str, set[str]] = {}
+        for fact in group:
+            for kind, (_shown, name) in _items(fact).items():
+                names.setdefault(kind, set()).add(_norm(name))
+        breakdowns = {kind for kind, seen in names.items() if len(seen) > 1}
+        for fact in group:
+            kinds = tuple(sorted(k for k in _items(fact) if k in breakdowns))[:MAX_KINDS]
+            groups.setdefault((*key, kinds, _grain(fact)), []).append(fact)
+
+    out: list[extract.Table] = []
+    for (_m, _u, kinds, grain), group in list(groups.items())[:MAX_TABLES]:
+        measure = _text(group[0].get("measure"))
+        unit = _text(group[0].get("unit"))
+        shown = {}
+        for fact in group:
+            for kind, (written, _name) in _items(fact).items():
+                shown.setdefault(kind, written)
+        figure = measure[:1].upper() + measure[1:]
+        if unit and _norm(unit) not in _norm(measure):
+            figure = f"{figure} ({unit})"
+        period_name = {"year": "Year", "total": "Span"}.get(grain, "Period")
+        header = ([period_name] if grain else []) + \
+            [shown[k][:1].upper() + shown[k][1:] for k in kinds] + [figure]
+
+        raw_rows, seen = [], set()
+        for fact in group[:MAX_ROWS]:
+            items = _items(fact)
+            cells = ([_text(fact.get("period"))] if grain else []) + \
+                [items[k][1] for k in kinds] + [_text(fact.get("value"))]
+            quote = str(fact.get("quote") or "").strip()
+            if (tuple(cells), quote) in seen:
+                continue  # the same fact read twice
+            seen.add((tuple(cells), quote))
+            raw_rows.append({"cells": cells, "quote": quote})
+
+        header, row_units = _split_units(header, raw_rows)
+        rows = _merge_labels(
+            _carry_units(verify_rows(prose, raw_rows, header), row_units, header), header)
+        # Two different figures for the same period and item ("the same
+        # period": 3.8% and 2.6%) cannot both be that point: neither is kept.
+        values: dict[tuple, set] = {}
+        for cells, _q in rows:
+            values.setdefault(tuple(_norm(c) for c in cells[:-1]), set()).add(_norm(cells[-1]))
+        rows = [(cells, q) for cells, q in rows
+                if len(values[tuple(_norm(c) for c in cells[:-1])]) == 1]
+        if len(rows) < extract.MIN_ROWS:
+            continue
+        notes = [TEXT_NOTE, *extra_notes]
+        if len(raw_rows) > len(rows):
+            notes.append(
+                f"{len(raw_rows) - len(rows)} figure(s) were left out because the "
+                "number did not bind to its label or measure in its sentence."
+            )
+        if len(group) > MAX_ROWS:
+            notes.append(f"Only the first {MAX_ROWS} figures of this measure were read.")
+        if len(groups) > MAX_TABLES:
+            notes.append(f"{len(groups) - MAX_TABLES} more series in this document were not read.")
+        name = figure
+        if kinds:
+            name += " by " + " and ".join(header[1 if grain else 0:-1])
+        name += {"year": " by year", "total": " (totals)"}.get(grain, "")
+        table = extract.profile(extract.RawTable(
+            name=name[:200], header=header,
+            rows=[cells for cells, _ in rows], notes=tuple(notes),
+        ))
+        if table is None or not any(c.type == "number" for c in table.columns):
+            continue  # nothing to add up is not a chart
+        out.append(replace(table, quotes=tuple(q for _, q in rows)))
+    return out
 
 
 #: Pages whose sentences are read while someone waits in Chart mode.

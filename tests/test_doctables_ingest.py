@@ -29,11 +29,11 @@ PROSE = (
     "after the launch. Q3 revenue reached ₹18 lakh.\n\n"
     "## Budget\n\n| Team | Budget |\n|---|---|\n| Core | 10 |\n| Growth | 5 |\n"
 )
-REPLY = {"tables": [{"name": "Revenue by quarter", "columns": ["Quarter", "Revenue"], "rows": [
-    {"cells": ["Q1", "₹12L"], "quote": "Q1 revenue was ₹12L"},
-    {"cells": ["Q2", "₹15L"], "quote": "In Q2 revenue grew to ₹15L"},
-    {"cells": ["Q3", "₹18 lakh"], "quote": "Q3 revenue reached ₹18 lakh"},
-]}]}
+REPLY = {"facts": [
+    {"measure": "revenue", "unit": "", "period": p, "items": {}, "value": v, "quote": q}
+    for p, v, q in (("Q1", "₹12L", "Q1 revenue was ₹12L"), ("Q2", "₹15L", "In Q2 revenue grew to ₹15L"),
+                    ("Q3", "₹18 lakh", "Q3 revenue reached ₹18 lakh"))
+]}
 VIEWER = Viewer(email="sana@acme.test")
 
 
@@ -131,7 +131,7 @@ def test_a_page_without_figures_costs_no_call(org, llm):
 
 
 def test_a_page_whose_sentences_hold_no_series_is_marked_read(org, llm):
-    llm.reply = {"tables": []}
+    llm.reply = {"facts": []}
     doc_id = _ingest(org)
     assert _marked(doc_id) == "done"
     # Chart mode skips a page already read (matching_prose excludes it).

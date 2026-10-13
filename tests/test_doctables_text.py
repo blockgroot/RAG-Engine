@@ -47,6 +47,15 @@ GOOD_ROWS = [
 ]
 
 
+def rev_facts(rows, measure="revenue"):
+    """The model's reply: one fact per row of (period, value)."""
+    return {"facts": [{"measure": measure, "unit": "", "period": r["cells"][0], "items": {},
+                       "value": r["cells"][1], "quote": r.get("quote")} for r in rows]}
+
+
+GOOD_FACTS = rev_facts(GOOD_ROWS)
+
+
 # --------------------------------------------------------------------------
 # Which documents are worth a call (no AI)
 # --------------------------------------------------------------------------
@@ -130,9 +139,7 @@ def test_spacing_and_case_do_not_matter_but_words_do():
 
 
 def test_extract_builds_a_chartable_table_with_its_quotes():
-    llm = FakeLLM({"tables": [{"name": "Revenue by quarter", "columns": ["Quarter", "Revenue"],
-                               "rows": GOOD_ROWS}]})
-    [table] = TextAdapter(llm).extract(_doc())
+    [table] = TextAdapter(FakeLLM(GOOD_FACTS)).extract(_doc())
     assert [c.type for c in table.columns] == ["category", "number"]
     assert [row["c1"] for row in table.cells] == [1200000.0, 1500000.0, 1800000.0]
     assert table.quotes[1] == "In Q2 revenue grew to ₹15L"
@@ -141,25 +148,25 @@ def test_extract_builds_a_chartable_table_with_its_quotes():
 
 def test_a_table_left_with_one_good_row_is_not_a_chart():
     rows = [GOOD_ROWS[0], {"cells": ["Q2", "₹99L"], "quote": "In Q2 revenue grew to ₹15L"}]
-    llm = FakeLLM({"tables": [{"name": "Revenue", "columns": ["Quarter", "Revenue"], "rows": rows}]})
+    llm = FakeLLM(rev_facts(rows))
     assert TextAdapter(llm).extract(_doc()) == []
 
 
 def test_a_table_with_nothing_to_add_up_is_dropped():
     rows = [{"cells": ["Q1", "below plan"], "quote": "Q1 revenue was ₹12L, which was below plan"},
             {"cells": ["Q2", "launch"], "quote": "In Q2 revenue grew to ₹15L after the launch"}]
-    llm = FakeLLM({"tables": [{"name": "Notes", "columns": ["Quarter", "Note"], "rows": rows}]})
+    llm = FakeLLM(rev_facts(rows, measure="note"))
     assert TextAdapter(llm).extract(_doc()) == []
 
 
-@pytest.mark.parametrize("reply", ["not json", "{\"tables\": \"no\"}", {"tables": []}])
+@pytest.mark.parametrize("reply", ["not json", "{\"facts\": \"no\"}", {"facts": []}])
 def test_an_unusable_reply_finds_nothing(reply):
     assert TextAdapter(FakeLLM(reply)).extract(_doc()) == []
 
 
 def test_a_cut_off_reply_is_retried_rather_than_stored_as_empty():
     """A reasoning model that spends the whole cap must not look like 'no figures'."""
-    llm = FakeLLM({"tables": []})
+    llm = FakeLLM({"facts": []})
     llm.last_truncated = True
     with pytest.raises(ProviderError):
         TextAdapter(llm).extract(_doc())
@@ -170,13 +177,14 @@ def test_a_model_failure_is_retryable():
         TextAdapter(FakeLLM(RuntimeError("429"))).extract(_doc())
 
 
-def test_long_documents_are_cut_and_the_chart_says_so():
+def test_a_long_document_is_read_section_by_section_and_the_rest_named():
     long = DOC + ("filler sentence. " * 2000)
-    llm = FakeLLM({"tables": [{"name": "Revenue", "columns": ["Quarter", "Revenue"],
-                               "rows": GOOD_ROWS}]})
+    llm = FakeLLM(GOOD_FACTS)
     [table] = TextAdapter(llm, max_chars=2000).extract(_doc(long))
-    assert any("first 2000 characters" in n for n in table.notes)
-    assert len(llm.prompts[0]) < 2000 + 4000  # the cut text, plus the instructions
+    assert len(llm.prompts) == 6  # MAX_SECTIONS, each at most a section long
+    assert all(len(p) < 2000 + 4000 for p in llm.prompts)
+    assert any("first 6 sections" in n for n in table.notes)
+    assert len(table.cells) == 3  # the same fact read twice is one row
 
 
 def test_the_prompt_fences_the_document_with_the_shared_policy():
@@ -248,20 +256,58 @@ def test_a_month_binds_to_the_number_it_follows():
     assert [cells[0] for cells, _ in kept] == ["January", "June"]
 
 
-def test_a_wide_table_becomes_one_series_per_measure():
-    rows = [
-        {"cells": ["Q1", "₹40 lakh", "150", "3%"],
-         "quote": "In Q1, revenue was ₹40 lakh while headcount reached 150 and churn was 3%"},
-        {"cells": ["Q2", "₹55 lakh", "162", "2%"],
-         "quote": "In Q2, revenue was ₹55 lakh while headcount reached 162 and churn was 2%"},
-    ]
-    llm = FakeLLM({"tables": [{"name": "Quarterly figures",
-                               "columns": ["Quarter", "Revenue", "Headcount", "Churn"],
-                               "rows": rows}]})
-    [table] = TextAdapter(llm).extract(_doc(SERIES))
-    assert [c.name for c in table.columns] == ["Quarter", "Measure", "Value"]
-    assert {row["c1"] for row in table.cells} == {"Revenue", "Headcount", "Churn"}
-    assert all(row["c0"] in ("Q1", "Q2") for row in table.cells)
+def test_every_measure_is_its_own_table_built_by_code():
+    """The model lists facts; code groups them. Revenue, headcount and churn
+    are never one column to be added together."""
+    q1 = "In Q1, revenue was ₹40 lakh while headcount reached 150 and churn was 3%"
+    q2 = "In Q2, revenue was ₹55 lakh while headcount reached 162 and churn was 2%"
+    facts = [{"measure": m, "unit": u, "period": p, "items": {}, "value": v, "quote": q}
+             for p, q, vals in (("Q1", q1, ("₹40 lakh", "150", "3%")), ("Q2", q2, ("₹55 lakh", "162", "2%")))
+             for (m, u), v in zip((("revenue", "₹"), ("headcount", ""), ("churn", "%")), vals)]
+    tables = TextAdapter(FakeLLM({"facts": facts})).extract(_doc(SERIES))
+    assert [t.name for t in tables] == ["Revenue (₹)", "Headcount", "Churn (%)"]
+    assert all([c.name for c in t.columns][0] == "Period" and len(t.cells) == 2 for t in tables)
+
+
+def test_items_become_columns_and_one_kind_never_shares_a_column():
+    text = ("In January, Plant A made 2,400 units, Plant B made 2,100. Product Alpha "
+            "was 2,800 units and Beta was 2,000.\nIn February, Plant A made 2,600 units, "
+            "Plant B made 2,300. Alpha was 3,000 units and Beta was 2,200.\n")
+    jan, feb = text.splitlines()
+    def fact(period, kind, name, value, quote):
+        return {"measure": "production", "unit": "units", "period": period,
+                "items": {kind: name}, "value": value, "quote": quote}
+    facts = [fact("January", "Plant", "Plant A", "2,400", jan), fact("January", "Plant", "Plant B", "2,100", jan),
+             fact("January", "Product", "Alpha", "2,800", jan), fact("January", "Product", "Beta", "2,000", jan),
+             fact("February", "Plant", "Plant A", "2,600", feb), fact("February", "Plant", "Plant B", "2,300", feb),
+             fact("February", "Product", "Alpha", "3,000", feb), fact("February", "Product", "Beta", "2,200", feb)]
+    plants, products = TextAdapter(FakeLLM({"facts": facts})).extract(_doc(text))
+    assert plants.name == "Production (units) by Plant"
+    assert [c.name for c in plants.columns] == ["Period", "Plant", "Production (units)"]
+    assert {r[1] for r in plants.raw} == {"Plant A", "Plant B"}
+    assert {r[1] for r in products.raw} == {"Alpha", "Beta"}
+
+
+def test_a_subject_is_not_a_breakdown_and_years_are_apart_from_months():
+    """"support team" on every fact names the subject; 2024/2025 totals are
+    not two more months; a total over a span is its own table."""
+    from app.doctables.text_adapter import facts_to_tables
+
+    text = ("The team resolved 3,200 tickets in January and 3,750 in February. "
+            "It resolved 30,000 tickets in 2024 and 41,000 in 2025. "
+            "It resolved 6,950 over the first two months, and 7,000 over the first quarter.")
+    q1, q2, q3 = [x.strip() + "." for x in text.split(".") if x.strip()]
+    def fact(period, value, quote, total=False):
+        return {"measure": "tickets resolved", "unit": "", "period": period, "total": total,
+                "items": {"team": "support team"}, "value": value, "quote": quote}
+    tables = facts_to_tables(text, [
+        fact("January", "3,200", q1), fact("February", "3,750", q1),
+        fact("2024", "30,000", q2), fact("2025", "41,000", q2),
+        fact("the first two months", "6,950", q3, True), fact("the first quarter", "7,000", q3, True),
+    ])
+    assert [t.name for t in tables] == [
+        "Tickets resolved", "Tickets resolved by year", "Tickets resolved (totals)"]
+    assert all(len(t.columns) == 2 for t in tables)
 
 
 def test_a_dropped_figure_is_named_on_the_chart():
@@ -270,17 +316,18 @@ def test_a_dropped_figure_is_named_on_the_chart():
     ]
     # The bad quote has to be in the document or it is a different failure.
     text = DOC + " In Q1, revenue was ₹40 lakh while headcount reached 150."
-    llm = FakeLLM({"tables": [{"name": "Revenue", "columns": ["Quarter", "Revenue"], "rows": rows}]})
+    llm = FakeLLM(rev_facts(rows))
     [table] = TextAdapter(llm).extract(_doc(text))
     assert any("left out" in note for note in table.notes)
     assert 150 not in [row.get("c1") for row in table.cells]
 
 
-def test_a_figure_only_in_the_unread_tail_is_dropped():
-    head = "No figures in this part. "
+def test_a_figure_late_in_a_long_page_is_read():
+    head = "No figures in this part. " * 40 + "\n"
     tail = "Q1 revenue was ₹12L. In Q2 revenue grew to ₹15L. Q3 revenue reached ₹18 lakh."
-    llm = FakeLLM({"tables": [{"name": "Revenue", "columns": ["Quarter", "Revenue"], "rows": GOOD_ROWS}]})
-    assert TextAdapter(llm, max_chars=len(head)).extract(_doc(head + tail)) == []
+    llm = FakeLLM(GOOD_FACTS)
+    [table] = TextAdapter(llm, max_chars=500).extract(_doc(head + tail))
+    assert len(table.cells) == 3 and len(llm.prompts) > 1
 
 
 def test_a_period_and_a_measure_chart_as_a_grouped_bar():
@@ -447,23 +494,24 @@ def test_a_unit_word_after_a_figure_is_moved_never_summed_across_units():
            "waste amounted to 420 kg.")
     feb = ("In February, raw material consumption increased to 19.2 tonnes, while "
            "production waste declined to 390 kg.")
-    llm = FakeLLM({"tables": [{"name": "Materials", "columns": ["Month", "Measure", "Figure"],
-                               "rows": [
-        {"cells": ["January", "raw material consumption", "18.5 tonnes"], "quote": jan},
-        {"cells": ["January", "production waste", "420 kg"], "quote": jan},
-        {"cells": ["February", "raw material consumption", "19.2 tonnes"], "quote": feb},
-        {"cells": ["February", "production waste", "390 kg"], "quote": feb},
-    ]}]})
-    [table] = TextAdapter(llm).extract(_doc(text))
-    assert sorted({row["c1"] for row in table.cells}) == [
-        "production waste (kg)", "raw material consumption (tonnes)"]
-    assert [row["c2"] for row in table.cells] == [18.5, 420, 19.2, 390]
+    def fact(measure, unit, period, value, quote):
+        return {"measure": measure, "unit": unit, "period": period, "items": {},
+                "value": value, "quote": quote}
+    llm = FakeLLM({"facts": [
+        fact("raw material consumption", "tonnes", "January", "18.5", jan),
+        fact("production waste", "kg", "January", "420", jan),
+        fact("raw material consumption", "tonnes", "February", "19.2", feb),
+        fact("production waste", "kg", "February", "390", feb),
+    ]})
+    tables = TextAdapter(llm).extract(_doc(text))
+    assert [t.name for t in tables] == ["Raw material consumption (tonnes)", "Production waste (kg)"]
+    assert [[row["c1"] for row in t.cells] for t in tables] == [[18.5, 19.2], [420, 390]]
 
-    one_unit = FakeLLM({"tables": [{"name": "Waste", "columns": ["Month", "Waste"], "rows": [
-        {"cells": ["January", "420 kg"], "quote": jan}, {"cells": ["February", "390 kg"], "quote": feb},
-    ]}]})
+    # The unit written only in the value is moved to the column name.
+    one_unit = FakeLLM({"facts": [fact("waste", "", "January", "420 kg", jan),
+                                  fact("waste", "", "February", "390 kg", feb)]})
     [table] = TextAdapter(one_unit).extract(_doc(text))
-    assert [c.name for c in table.columns] == ["Month", "Waste (kg)"]
+    assert [c.name for c in table.columns] == ["Period", "Waste (kg)"]
 
 
 def test_one_name_per_item_across_sentences():
@@ -497,3 +545,29 @@ def test_a_word_unit_is_the_column_unit_only_when_no_figure_parsed_without_it():
     header, units = _split_units(["Month", "Measure", "Figure"], rows)
     assert header[2] == "Figure"
     assert units[(("Jan", "electricity", "4.2"), "q")] == "kWh"
+
+
+def test_a_denominator_and_an_ambiguous_period_never_become_points():
+    """Live, the staging report: "waste per 1,000 units in April" came back as
+    1,000 kg of waste, and "from 3.8% to 2.6% over the same period" as two
+    figures for one period."""
+    from app.doctables.text_adapter import facts_to_tables
+
+    text = ("Waste was 420 kg in January and 390 kg in February. Production was 6,200 units "
+            "in January and 6,800 units in February. Plant C had the lowest waste per 1,000 "
+            "units in April. The defect rate fell from 3.8% to 2.6% over the same period.")
+    q = [x.strip() + "." for x in text.split(".") if x.strip()]
+    def fact(measure, unit, period, value, quote):
+        return {"measure": measure, "unit": unit, "period": period, "items": {},
+                "value": value, "quote": quote}
+    tables = facts_to_tables(text, [
+        fact("waste", "kg", "January", "420", q[0]), fact("waste", "kg", "February", "390", q[0]),
+        fact("waste", "kg", "April", "1,000", q[2]),
+        fact("production", "units", "January", "6,200", q[1]),
+        fact("production", "units", "February", "6,800", q[1]),
+        fact("defect rate", "%", "the same period", "3.8%", q[3]),
+        fact("defect rate", "%", "the same period", "2.6%", q[3]),
+    ])
+    waste = next(t for t in tables if t.name.startswith("Waste"))
+    assert [r[0] for r in waste.raw] == ["January", "February"]
+    assert not any(t.name.startswith("Defect") for t in tables)

@@ -980,6 +980,37 @@ BEGIN
     END IF;
 END $$;
 
+-- The same, once more: deploys between the mark above and reading at ingest
+-- still queued prose pages on that dead queue and stamped them checked, so
+-- they would never be read (staging, 13 Oct: 20 pages, one a Notion report).
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'prose_figures_inline_recheck') THEN
+        UPDATE documents d SET tables_checked_at = NULL
+         WHERE d.tables_checked_at IS NOT NULL
+           AND EXISTS (SELECT 1 FROM doc_text_queue q
+                        WHERE q.document_id = d.id AND q.status <> 'done')
+           AND NOT EXISTS (SELECT 1 FROM doc_tables t
+                            WHERE t.document_id = d.id AND t.origin = 'text');
+        DELETE FROM doc_text_queue WHERE status <> 'done';
+        INSERT INTO schema_marks (name) VALUES ('prose_figures_inline_recheck');
+    END IF;
+END $$;
+
+-- Figures read from sentences before the reader listed FACTS and code built
+-- the tables (one per measure, unit, breakdown and period grain): the model
+-- used to design the tables, and mixed measures ("satisfaction by month" was
+-- tickets + minutes + %). Read once more by the next sync. Text tables only.
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM schema_marks WHERE name = 'prose_figures_as_facts') THEN
+        UPDATE documents d SET tables_checked_at = NULL
+         WHERE EXISTS (SELECT 1 FROM doc_tables t
+                        WHERE t.document_id = d.id AND t.origin = 'text');
+        INSERT INTO schema_marks (name) VALUES ('prose_figures_as_facts');
+    END IF;
+END $$;
+
 -- A chart a member asked for and kept. Personal, scoped `(org_id, user_id)`
 -- like `schedulers` and unlike every other tenant table -- a pin is one
 -- person's shortcut, never published to anyone, which is why this feature has

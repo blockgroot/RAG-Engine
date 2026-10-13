@@ -604,15 +604,12 @@ def test_a_named_page_of_sentences_is_read_for_figures(monkeypatch):
 
     class _LLM:
         def generate(self, prompt, *, max_tokens=None):
-            return json.dumps({"tables": [{
-                "name": "Revenue by quarter",
-                "columns": ["Quarter", "Revenue"],
-                "rows": [
-                    {"cells": ["Q1", "₹12L"], "quote": "Q1 revenue was ₹12L"},
-                    {"cells": ["Q2", "₹15L"], "quote": "In Q2 revenue grew to ₹15L"},
-                    {"cells": ["Q3", "₹18 lakh"], "quote": "Q3 revenue reached ₹18 lakh"},
-                ],
-            }]})
+            return json.dumps({"facts": [
+                {"measure": "revenue", "unit": "", "period": p, "items": {}, "value": v, "quote": q}
+                for p, v, q in (("Q1", "₹12L", "Q1 revenue was ₹12L"),
+                                ("Q2", "₹15L", "In Q2 revenue grew to ₹15L"),
+                                ("Q3", "₹18 lakh", "Q3 revenue reached ₹18 lakh"))
+            ]})
 
     monkeypatch.setattr(
         "app.doctables.store.find_chart_document",
@@ -708,6 +705,35 @@ def test_a_named_page_whose_tables_do_not_fit_never_reads_another_page(monkeypat
     assert decision.reason == "chart-refuse"
     assert '"Annual Report"' in decision.chart_refusal
     assert '"Annual Production"' in decision.chart_refusal
+
+
+def test_a_named_page_with_figures_beats_an_activity_metric(monkeypatch):
+    """Staging: "tickets resolved per month from the Customer Support update"
+    was drawn from Linear's completed issues."""
+    from types import SimpleNamespace
+
+    from app.insights.resolve import AskIntent, ChartSpec
+
+    page = SimpleNamespace(id="t-page", provider="notion", name="Support metrics",
+                           document_title="Customer Support update")
+
+    def classify(question, **kwargs):
+        if kwargs.get("tables") == [page]:
+            return AskIntent("chart", spec=ChartSpec(metric="table", group_by="c0", period="month",
+                                                     chart="bar", table_id="t-page"))
+        return AskIntent("chart", spec=ChartSpec(metric="issues_completed", group_by=None,
+                                                 period="month", chart="bar"),
+                         named_document="Customer Support update")
+
+    _stub(monkeypatch, connected={"notion", "linear"})
+    monkeypatch.setattr("app.insights.resolve.classify_question", classify)
+    monkeypatch.setattr("app.doctables.store.list_tables",
+                        lambda **k: [page] if k.get("title_query") else [])
+    decision = routing.choose_agent(
+        "Chart tickets resolved per month from the Customer Support update", ORG,
+        chart_mode=True, viewer=SimpleNamespace(is_unrestricted=False, acl=lambda: ["a@b.c"]),
+    )
+    assert decision.chart_spec.table_id == "t-page"
 
 
 def test_a_named_page_with_no_table_here_is_said_plainly(monkeypatch):
