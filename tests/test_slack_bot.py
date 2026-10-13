@@ -761,3 +761,16 @@ def test_a_dm_chart_links_to_the_interactive_chart_in_the_web_app(monkeypatch):
     assert "/workspaces/ws-1/ask?mode=chart" in _interactive_link("q", "ws-1")
     monkeypatch.delenv("FRONTEND_URL")
     assert _interactive_link("q", None) == ""
+
+
+def test_a_channel_chart_link_names_the_channel_for_the_web_app(monkeypatch):
+    """"This channel" means nothing in the web app, so the link's question
+    names the channel it was asked in; an unknown name leaves it as asked."""
+    from app.api import slack_events
+
+    monkeypatch.setattr("app.agent.slack_agent._channel_names_for",
+                        lambda org, ws: {"C1": "rag-updates"})
+    assert slack_events._naming_channel("chart this channel", "o", "ws", "C1") == (
+        "chart this channel (in #rag-updates)")
+    assert slack_events._naming_channel("chart this channel", "o", "ws", "C2") == (
+        "chart this channel")

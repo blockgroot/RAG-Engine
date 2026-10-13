@@ -445,9 +445,12 @@ def _answer(
     with_values = label + _to_slack_mrkdwn(_with_chart_values(response))
     chart = getattr(response, "chart", None)
     if isinstance(chart, dict) and chart.get("points"):
-        # A channel chart reads that one channel, which the web app cannot
-        # scope to, so the link is offered in a DM only.
-        link = _interactive_link(question, workspace_id) if scope_label is not None else ""
+        # A channel chart opens that channel's space; "this channel" means
+        # nothing there, so the link's question names the channel.
+        asked = question if scope_label is not None else _naming_channel(
+            question, org_id, workspace_id, channel_id
+        )
+        link = _interactive_link(asked, workspace_id)
         # The picture carries the numbers; the text is the caption.
         return SlackAnswer(
             text=label + _to_slack_mrkdwn(response.answer) + link,
@@ -456,6 +459,17 @@ def _answer(
             with_values=with_values + link,
         )
     return SlackAnswer(with_values)
+
+
+def _naming_channel(
+    question: str, org_id: str, workspace_id: str | None, channel_id: str | None
+) -> str:
+    """The question with the channel it was asked in, for the web app, where
+    the asker is no longer standing in it. Unchanged when the name is unknown."""
+    from ..agent.slack_agent import _channel_names_for
+
+    name = _channel_names_for(org_id, workspace_id).get(channel_id or "")
+    return f"{question} (in #{name})" if name else question
 
 
 def _interactive_link(question: str, workspace_id: str | None) -> str:
