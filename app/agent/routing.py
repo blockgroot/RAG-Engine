@@ -1141,6 +1141,14 @@ def _chart_mode_route(
                 prose = _single_table_chart(extra[0])
                 if prose is not None:
                     return chart(prose)
+            # They named this page: never answer from another one that merely
+            # matches the words. Say what the named page does hold.
+            from ..insights.resolve import prose_figures_unclear
+
+            return RoutingDecision(INSIGHTS_KEY, "chart-refuse", chart_refusal=prose_figures_unclear(
+                sorted({table.document_title for table in extra}),
+                [table.name for table in extra],
+            ))
         elif read and read != "saved":
             from ..insights.resolve import prose_figures_missing
 

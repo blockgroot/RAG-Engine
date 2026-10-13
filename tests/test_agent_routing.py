@@ -681,6 +681,35 @@ def test_chart_mode_charts_the_table_a_live_read_just_saved(monkeypatch):
     assert decision.chart_spec.chart == "pie"
 
 
+def test_a_named_page_whose_tables_do_not_fit_never_reads_another_page(monkeypatch):
+    """Staging, 13 Oct: the report's tables held no plant-by-month series, and
+    the chart was then read from "AI Development Ecosystem", a page the asker
+    never named."""
+    from types import SimpleNamespace
+
+    from app.insights.resolve import AskIntent
+
+    stored = [SimpleNamespace(id=f"t{i}", provider="google", name=name,
+                              document_title="Annual Report") for i, name in
+              enumerate(["Annual Production", "Workforce"])]
+
+    def classify(question, **kwargs):
+        return AskIntent("refuse", message="no", named_document="Annual Report")
+
+    _stub(monkeypatch, connected={"google"})
+    monkeypatch.setattr("app.insights.resolve.classify_question", classify)
+    monkeypatch.setattr("app.doctables.store.list_tables", lambda **k: stored)
+    monkeypatch.setattr("app.agent.routing._chart_from_prose",
+                        lambda *a, **k: pytest.fail("read a page nobody named"))
+    decision = routing.choose_agent(
+        "Chart units by plant per month from the Annual Report google doc", ORG,
+        chart_mode=True, viewer=SimpleNamespace(is_unrestricted=False, acl=lambda: ["a@b.c"]),
+    )
+    assert decision.reason == "chart-refuse"
+    assert '"Annual Report"' in decision.chart_refusal
+    assert '"Annual Production"' in decision.chart_refusal
+
+
 def test_a_named_page_with_no_table_here_is_said_plainly(monkeypatch):
     """The quarterly budget page was not among the tables offered, and the
     reply blamed themes in text instead of saying the page is not here."""
