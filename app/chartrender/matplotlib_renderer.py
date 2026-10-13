@@ -1,6 +1,6 @@
 """Draw a chart panel as a PNG with matplotlib.
 
-The picture follows the web chart's rules (frontend/components/Chart.tsx) so a
+The picture follows the web chart's rules (frontend/components/charts/toOption.ts) so a
 chart reads the same in Slack as in the app: time axes stay in time order, a
 long category list becomes a ranked horizontal bar, values carry their unit,
 and every category keeps the colour the web gives it.
@@ -55,7 +55,7 @@ _GRID = "#e4e7ec"
 # A category chart with more bars than this is a ranking: horizontal, sorted.
 _MAX_VERTICAL_CATEGORIES = 8
 _MAX_LABEL = 28
-_TIME_CHARTS = {"line", "area"}
+_TIME_CHARTS = {"line", "area", "stacked_area"}
 
 
 def _djb2(key: str) -> int:
@@ -99,7 +99,7 @@ def _color(palette: dict[str, str], name: str, index: int) -> str:
 
 
 def format_bucket(iso: str, period: str) -> str:
-    """`formatBucket` in Chart.tsx, in a fixed English locale."""
+    """`formatBucket` in charts/toOption.ts, in a fixed English locale."""
     try:
         d = date.fromisoformat(iso[:10])
     except ValueError:
@@ -199,6 +199,10 @@ class MatplotlibChartRenderer(ChartRenderer):
         series_units = panel.get("series_units") or {}
         kind = panel.get("chart") or "bar"
         timed, xs, names, cells = _pivot(points)
+        if kind == "heatmap" and panel.get("split_by"):
+            # Two breakdowns: the first across, the second down, summed over
+            # time -- as the web draws it.
+            timed, xs, names, cells = _pivot([{**p, "bucket": ""} for p in points])
         labels = [format_bucket(x, period) if timed else _short(x or "(blank)") for x in xs]
         # Whole-number data gets whole-number ticks: "2.5 issues" is not a count.
         whole = all(float(p.get("value") or 0).is_integer() for p in points)
@@ -224,8 +228,10 @@ class MatplotlibChartRenderer(ChartRenderer):
             def axis_label(u: str) -> str:
                 return u if u and u[0].isalpha() else ""
 
-            if kind == "pie":
+            if kind in ("pie", "donut"):
                 self._pie(ax, xs, names, cells, labels, unit)
+            elif kind == "heatmap":
+                self._heatmap(fig, ax, xs, names, cells, labels, unit)
             elif kind == "combo" and len(names) >= 2:
                 self._combo(ax, xs, names, cells, labels, series_units, ticks, axis_label,
                             lambda: MaxNLocator(nbins=5, integer=whole))
@@ -238,7 +244,8 @@ class MatplotlibChartRenderer(ChartRenderer):
                     xs = [xs[i] for i in order]
                     labels = [labels[i] for i in order]
                 if kind in _TIME_CHARTS and len(xs) > 1:
-                    self._lines(ax, xs, names, cells, area=kind == "area")
+                    self._lines(ax, xs, names, cells, area=kind != "line",
+                                stacked=kind == "stacked_area")
                 else:
                     self._bars(ax, xs, names, cells, unit,
                                stacked=kind in ("stacked_bar", "diverging_bar"),
@@ -256,7 +263,7 @@ class MatplotlibChartRenderer(ChartRenderer):
                     if len(xs) > 6 or max((len(lab) for lab in labels), default=0) > 12:
                         plt.setp(ax.get_xticklabels(), rotation=30, ha="right")
 
-            if len([n for n in names if n]) > 1 and kind != "pie":
+            if len([n for n in names if n]) > 1 and kind not in ("pie", "donut", "heatmap"):
                 handles, legend_labels = [], []
                 for a in fig.axes:
                     h, lab = a.get_legend_handles_labels()
@@ -316,15 +323,35 @@ class MatplotlibChartRenderer(ChartRenderer):
                              padding=3, fontsize=8, color=_INK)
 
     @staticmethod
-    def _lines(ax, xs, names, cells, *, area: bool) -> None:
+    def _lines(ax, xs, names, cells, *, area: bool, stacked: bool = False) -> None:
         palette = category_colors(names)
+        base = [0.0] * len(xs)
         for i, name in enumerate(names):
             values = [cells.get((x, name), 0.0) for x in xs]
+            top = [b + v for b, v in zip(base, values)] if stacked else values
             color = _color(palette, name, i)
-            ax.plot(range(len(xs)), values, color=color, linewidth=2, marker="o",
+            ax.plot(range(len(xs)), top, color=color, linewidth=2, marker="o",
                     markersize=3.5, label=name or None)
             if area:
-                ax.fill_between(range(len(xs)), values, color=color, alpha=0.15)
+                ax.fill_between(range(len(xs)), base if stacked else 0, top, color=color,
+                                alpha=0.35 if stacked else 0.15)
+            if stacked:
+                base = top
+
+    @staticmethod
+    def _heatmap(fig, ax, xs, names, cells, labels, unit) -> None:
+        """Columns are the x keys, rows the series -- the web's heatmap."""
+        grid = [[cells.get((x, name), 0.0) for x in xs] for name in names]
+        image = ax.imshow(grid, aspect="auto", cmap="Greens", vmin=0)
+        ax.set_xticks(range(len(xs)), labels)
+        ax.set_yticks(range(len(names)), [_short(n or "(blank)") for n in names])
+        if len(xs) * len(names) <= 60:
+            peak = max((v for row in grid for v in row), default=0) or 1
+            for r, row in enumerate(grid):
+                for c, v in enumerate(row):
+                    ax.text(c, r, format_value(v, unit), ha="center", va="center", fontsize=8,
+                            color="white" if v > peak * 0.6 else _INK)
+        fig.colorbar(image, ax=ax, shrink=0.8)
 
     @staticmethod
     def _combo(ax, xs, names, cells, labels, series_units, ticks, axis_label, locator) -> None:

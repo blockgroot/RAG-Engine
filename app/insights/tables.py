@@ -229,17 +229,27 @@ def pick_named(table: TableRef, question: str, requested: str | None) -> TablePi
             + _options(table, ("category", "date", "number"), "chart")
         )
     measure = "sum" if value else "count"
-    group_type = table.column(group_by).get("type") if group_by else None
-    if group_type == "date":
-        chart = requested if requested in ("line", "bar", "pie") else "line"
-    elif group_by:
-        chart = requested if requested in ("bar", "pie") else "bar"
-    else:
-        chart = "bar"
+    chart = table_shape(table, group_by, None, requested)
     return TablePick(
         table_id=table.id, measure=measure, value=value, group_by=group_by,
         split_by=None, filters=(), chart=chart,
     )
+
+
+def table_shape(table: TableRef, group_by: str | None, split_by: str | None,
+                requested: str | None) -> str:
+    """The requested shape when this table's form allows it, else the default.
+
+    A date breakdown is a time axis, with the split (if any) as its series;
+    otherwise each breakdown counts (``registry.shapes_for``)."""
+    from .registry import shapes_for
+
+    timed = bool(group_by) and (table.column(group_by) or {}).get("type") == "date"
+    if timed:
+        allowed = shapes_for(time=True, breakdowns=1 if split_by else 0)
+    else:
+        allowed = shapes_for(time=False, breakdowns=bool(group_by) + bool(split_by))
+    return requested if requested in allowed else allowed[0]
 
 
 def prose_chart(table: TableRef) -> TablePick | None:
@@ -341,13 +351,7 @@ def parse_pick(data: dict, handles: dict[str, TableRef]) -> TablePick | None:
         dates = [c["key"] for c in table.columns if c.get("type") == "date"]
         if len(dates) == 1:
             group_by = dates[0]
-    group_type = table.column(group_by).get("type") if group_by else None
-    if group_type == "date":
-        chart = requested if requested in ("line", "bar") else "line"
-    elif group_by:
-        chart = requested if requested in ("bar", "pie") else "bar"
-    else:
-        chart = "bar"
+    chart = table_shape(table, group_by, split_by, requested)
     return TablePick(
         table_id=table.id, measure=measure, value=value, group_by=group_by,
         split_by=split_by, filters=tuple(sorted(filters)), chart=chart,

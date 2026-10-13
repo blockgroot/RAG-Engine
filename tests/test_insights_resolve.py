@@ -1010,3 +1010,31 @@ def test_a_source_is_kept_only_when_its_words_are_in_the_question(source, words)
         llm=FakeLLM(_pick_t1(source=source, source_words=words)),
     )
     assert intent.source is None
+
+
+# --------------------------------------------------------------------------
+# Shapes follow the data's form: a heatmap needs two dimensions
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("group_by, requested, expected", [
+    ("actor", "heatmap", "heatmap"),            # people x periods
+    (None, "heatmap", "line"),                  # a single trend has no grid
+    ("actor", "stacked_area", "stacked_area"),
+    (None, "area", "area"),
+    ("actor", "donut", "donut"),
+])
+def test_a_requested_shape_is_kept_only_when_the_data_has_that_form(group_by, requested, expected):
+    from app.insights import registry
+
+    metric = next(m for m in registry.METRICS.values() if m.chart == "line" and "actor" in m.dims)
+    assert resolve._pick_chart(metric, group_by, requested) == expected
+
+
+def test_a_table_heatmap_needs_two_breakdowns():
+    from app.insights.tables import table_shape
+
+    table = _budget_table()
+    assert table_shape(table, "c0", None, "heatmap") == "bar"
+    assert table_shape(table, "c0", "c0x", "heatmap") == "heatmap"
+    assert table_shape(table, "c0", None, "donut") == "donut"

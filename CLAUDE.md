@@ -82,7 +82,12 @@ GitHub; employees get answers from *their* data.
   so a reopened chart never disagrees with the answer beside it.
   So is who answered (`conversation_turns.meta`: source, agent, tools, files, live
   reads, model, a passage COUNT), written by the `done` event; never the passages.
-  Slack strips the markers. A Slack chart is uploaded as a PNG
+  Slack strips the markers. The web draws a chart with ECharts
+  (`frontend/components/charts/`: `toOption.ts` is pure and checked by
+  `npm run check:charts`; ECharts loads only when a chart is on screen). Which
+  shapes a chart may take is `registry.shapes_for` (time axis? how many
+  breakdowns?), one rule for activity and tables; a new shape is added there,
+  in `toOption.ts` and in `app/chartrender`. A Slack chart is uploaded as a PNG
   (`app/chartrender/`, needs `files:write`); without the scope or on a render
   failure the numbers are written as text under the caption.
 - Audit and moderation judge the answer with the markers removed.

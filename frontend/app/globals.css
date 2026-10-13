@@ -6154,10 +6154,9 @@ a.people-card:hover { color: inherit; }
 /* ---------------------------------------------------------------------------
    Visualizations
 
-   Charts are plain SVG (see components/Chart.tsx) - no chart library, because
-   this stylesheet is the design system and a framework would bring its own.
-   The series palette is defined here rather than in the component so a chart
-   stays recognisably part of the product.
+   Charts are drawn by ECharts (components/charts/), themed from these
+   variables at mount and on a colour-scheme change, so a chart stays
+   recognisably part of the product.
    --------------------------------------------------------------------------- */
 
 :root {
@@ -6261,43 +6260,87 @@ a.people-card:hover { color: inherit; }
   margin-top: 1rem;
 }
 
-/* Wide charts scroll inside their own panel - the page body must never scroll
+/* The chart card (components/Chart.tsx). ECharts draws into .chart-canvas;
+   wide content scrolls inside the card - the page body must never scroll
    horizontally. */
+.chart-card {
+  min-width: 0;
+}
 .chart-scroll {
   position: relative;
   overflow-x: auto;
   min-width: 0;
 }
-.chart-svg {
-  display: block;
-  max-width: 100%;
-  height: auto;
+.chart-canvas,
+.chart-skeleton {
+  width: 100%;
+  min-width: 0;
 }
-.chart-grid {
-  stroke: var(--chart-grid);
-  stroke-width: 1;
+.chart-skeleton {
+  height: 280px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
 }
-.chart-axis {
-  font-size: 11px;
-  fill: var(--ink-muted);
+.chart-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin-top: 0.5rem;
 }
-/* What one section of a chart is made of, while the cursor is on it.
-   `pointer-events: none` is load-bearing: a tip that can sit between the
-   cursor and its own section would un-hover it and flicker. */
-.chart-tip {
-  position: absolute;
-  z-index: 5;
-  pointer-events: none;
-  transform: translate(12px, -50%);
-  max-width: 20rem;
-  padding: 0.5rem 0.625rem;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  box-shadow: 0 6px 24px rgba(15, 23, 42, 0.14);
+.chart-action {
+  font: inherit;
   font-size: 0.75rem;
-  line-height: 1.45;
+  padding: 0.25rem 0.625rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-elevated);
+  color: var(--ink-muted);
+  cursor: pointer;
 }
+.chart-action:hover:not(:disabled) { color: var(--ink); border-color: var(--border-strong); }
+.chart-action:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.chart-action[aria-pressed="true"] { color: var(--accent-strong); border-color: var(--accent); }
+.chart-action:disabled { opacity: 0.5; cursor: not-allowed; }
+.chart-table-wrap {
+  overflow-x: auto;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.chart-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+.chart-table th,
+.chart-table td {
+  padding: 0.3125rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  text-align: right;
+  white-space: nowrap;
+}
+.chart-table th[scope="row"],
+.chart-table thead th:first-child {
+  text-align: left;
+  font-weight: 500;
+  white-space: normal;
+}
+.chart-table thead th {
+  color: var(--ink-muted);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  background: var(--surface-elevated);
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+/* The ECharts tooltip body: what one section is made of. */
 .chart-tip-title {
   margin: 0;
   font-size: 0.8125rem;
@@ -6313,6 +6356,7 @@ a.people-card:hover { color: inherit; }
   font-variant-numeric: tabular-nums;
 }
 .chart-tip-share {
+  margin: 0;
   font-weight: 600;
   color: var(--chart-1);
 }
@@ -6342,266 +6386,6 @@ a.people-card:hover { color: inherit; }
   font-variant-numeric: tabular-nums;
 }
 .chart-tip-more {
-  color: var(--ink-muted);
-}
-
-/* The baseline a bar chart stands on. Heavier than a gridline, because
-   without a visible axis a bar chart is a set of floating rectangles. */
-.chart-axis-line {
-  stroke: var(--border);
-  stroke-width: 1.5;
-}
-.chart-bar-group {
-  cursor: default;
-}
-
-/* The vertical guide following the cursor. Faint on purpose: it locates a
-   reading, it is not one. */
-.chart-guide {
-  stroke: var(--ink-muted);
-  stroke-width: 1;
-  stroke-dasharray: 3 3;
-  opacity: 0.5;
-  pointer-events: none;
-}
-/* The reading itself, under the plot. A `<title>` tooltip needs a hit on a
-   4px dot, which on a dense chart is most of the way to unusable. */
-.chart-readout {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.375rem 0.75rem;
-  margin: 0.5rem 0 0;
-  font-size: 0.8125rem;
-  color: var(--ink);
-  min-height: 1.25rem;
-}
-.chart-readout-bucket {
-  font-weight: 600;
-}
-.chart-readout-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--ink-muted);
-}
-
-/* The value printed on a point or a bar. Small charts should not need a hover
-   to read four numbers off them. */
-.chart-value {
-  font-size: 11px;
-  font-weight: 600;
-  fill: var(--ink);
-}
-.chart-legend {
-  list-style: none;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.25rem 0.875rem;
-  margin: 0.5rem 0 0;
-  padding: 0;
-  font-size: 0.75rem;
-  color: var(--ink-muted);
-}
-.chart-legend li {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  padding: 0.125rem 0.375rem;
-  border-radius: 5px;
-  transition: background 0.12s ease, color 0.12s ease;
-}
-.chart-legend li[data-active] {
-  background: var(--surface-muted);
-  color: var(--ink);
-}
-.chart-legend-name {
-  font-weight: 550;
-  color: var(--ink);
-}
-.chart-legend li {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-.chart-swatch {
-  width: 0.625rem;
-  height: 0.625rem;
-  border-radius: 2px;
-  display: inline-block;
-}
-
-.chart-pie {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.75rem;
-}
-.chart-pie-slice {
-  cursor: pointer;
-  /* NO transform on hover. Scaling the hovered slice moves its own geometry
-     out from under the cursor, which un-hovers it, which shrinks it back
-     under the cursor -- a feedback loop that made the chart visibly twitch on
-     its own. Emphasis is opacity and stroke only: neither changes the hit
-     area, so hover cannot re-trigger itself. */
-  transition: opacity 0.15s ease, stroke-width 0.15s ease;
-}
-/* The total inside the ring. A donut's hole is the only place a share chart
-   can state the whole without a caption. */
-.chart-donut-total {
-  font-size: 22px;
-  font-weight: 680;
-  fill: var(--ink);
-  font-variant-numeric: tabular-nums;
-}
-.chart-donut-caption {
-  font-size: 10px;
-  font-weight: 500;
-  fill: var(--ink-muted);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-/* Bars and slices grow in once, from the axis. A chart that assembles itself
-   reads as live data; the same chart appearing fully formed reads as an
-   image. Disabled outright for reduced motion. */
-.chart-bar {
-  transform-origin: center bottom;
-  animation: chart-rise 0.45s cubic-bezier(0.22, 0.61, 0.36, 1) both;
-}
-@keyframes chart-rise {
-  from { transform: scaleY(0); }
-  to { transform: scaleY(1); }
-}
-.chart-rank-fill {
-  animation: chart-grow 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) both;
-}
-@keyframes chart-grow {
-  from { transform: scaleX(0); }
-  to { transform: scaleX(1); }
-}
-.chart-rank-fill {
-  transform-origin: left center;
-}
-@media (prefers-reduced-motion: reduce) {
-  .chart-bar,
-  .chart-rank-fill {
-    animation: none;
-  }
-}
-.chart-pie-label {
-  font-size: 11px;
-  font-weight: 600;
-  fill: #fff;
-  paint-order: stroke;
-  stroke: rgba(0, 0, 0, 0.35);
-  stroke-width: 2px;
-}
-.chart-pie-hover {
-  margin: 0;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  min-height: 1.25em;
-}
-.chart-legend li[data-active="true"] {
-  color: var(--ink);
-  font-weight: 600;
-}
-.chart-legend-name {
-  font-weight: 500;
-}
-.chart-legend-value {
-  color: var(--ink-muted);
-}
-
-/* A grouped bar chart is a leaderboard, so it renders as ranked rows rather
-   than one bar per person per bucket - which nobody can read. */
-.chart-rank {
-  position: relative;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-.chart-rank-row {
-  display: grid;
-  grid-template-columns: minmax(5rem, 9rem) 1fr auto;
-  gap: 0.625rem;
-  align-items: center;
-  font-size: 0.875rem;
-}
-.chart-rank-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-.chart-rank-index {
-  flex: none;
-  min-width: 1.125rem;
-  font-size: 0.6875rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--ink-muted);
-  text-align: right;
-}
-.chart-rank-track {
-  background: var(--surface-muted);
-  border-radius: 3px;
-  height: 0.75rem;
-  overflow: hidden;
-}
-.chart-rank-fill {
-  display: block;
-  height: 100%;
-  border-radius: 3px;
-  min-width: 2px;
-}
-.chart-rank-value {
-  font-variant-numeric: tabular-nums;
-  color: var(--ink-muted);
-  display: flex;
-  gap: 0.5rem;
-  align-items: baseline;
-}
-.chart-rank-share {
-  font-size: 0.75rem;
-  color: var(--ink-subtle, var(--ink-muted));
-  min-width: 2.25rem;
-  text-align: right;
-}
-
-/* One group: the number, not a shape. See Chart.tsx::Stat. */
-.chart-stat {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  padding: 0.25rem 0;
-}
-.chart-stat-value {
-  margin: 0;
-  font-size: 2rem;
-  font-weight: 650;
-  letter-spacing: -0.02em;
-  font-variant-numeric: tabular-nums;
-  color: var(--chart-1);
-}
-.chart-stat-label {
-  margin: 0;
-  font-size: 0.9375rem;
-  color: var(--ink);
-}
-.chart-stat-spark {
-  max-width: 100%;
-  height: auto;
-}
-.chart-stat-range {
-  margin: 0;
-  font-size: 0.75rem;
   color: var(--ink-muted);
 }
 
@@ -6654,57 +6438,6 @@ a.people-card:hover { color: inherit; }
   font-size: 0.875rem;
 }
 
-/* Diverging stacked bar: neutral centred, so every topic shares a baseline. */
-.chart-diverge {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-}
-.chart-diverge-row {
-  display: grid;
-  grid-template-columns: minmax(6rem, 12rem) 1fr 3rem;
-  gap: 0.625rem;
-  align-items: center;
-  font-size: 0.8125rem;
-}
-.chart-diverge-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.chart-diverge-track {
-  position: relative;
-  display: block;
-  height: 0.875rem;
-  background: var(--surface-muted);
-  border-radius: 3px;
-  overflow: hidden;
-}
-/* The centre axis every row is measured against. */
-.chart-diverge-track::before {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: var(--border-strong);
-  z-index: 1;
-}
-.chart-diverge-bar {
-  display: flex;
-  height: 100%;
-  width: 100%;
-}
-.chart-diverge-seg {
-  display: block;
-  height: 100%;
-}
-.chart-diverge-value {
-  font-variant-numeric: tabular-nums;
-  color: var(--ink-muted);
-  text-align: right;
-}
 .chart-note {
   font-size: 0.75rem;
   color: var(--ink-muted);
@@ -6793,23 +6526,6 @@ a.people-card:hover { color: inherit; }
   .chat-composer { padding-left: 0.8rem; gap: 0.4rem; }
   .composer-model { max-width: 6.5rem; font-size: 0.74rem; padding-left: 0.65rem; }
   .chat-composer-input { font-size: 0.98rem; }
-}
-
-@media (max-width: 560px) {
-  /* A ranked row is label | bar | value. Below ~560px the 5rem label floor and
-     the bar were fighting for the same pixels, so the bar -- the part that
-     carries the comparison -- was the one that lost. */
-  .chart-rank-row { grid-template-columns: minmax(4rem, 6.5rem) 1fr auto; }
-}
-
-/* Flipped to the cursor's left when the tip would run past the card's right
-   edge (ChartTip measures that itself). Same 12px gap, mirrored. */
-.chart-tip.is-flipped { transform: translate(calc(-100% - 12px), -50%); }
-
-@media (max-width: 560px) {
-  /* On a phone the card is narrower than the tip's desktop cap, so it would
-     be clipped whichever side it sat on. */
-  .chart-tip { max-width: min(20rem, calc(100vw - 4rem)); font-size: 0.72rem; }
 }
 
 /* ===========================================================================

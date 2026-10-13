@@ -30,7 +30,17 @@ PANELS = {
     "diverging_bar": [_p("", c, None, (-1) ** i * (i + 1)) for i, c in enumerate(CATS[:4])],
     "combo": [_p(m, None, s, v) for m in MONTHS for s, v in [("Revenue", 1200.0), ("Margin", 12.5)]],
     "pie": [_p("", c, None, i + 1) for i, c in enumerate(CATS)],
+    "donut": [_p("", c, None, i + 1) for i, c in enumerate(CATS[:4])],
+    "stacked_area": [_p(m, g, None, 1 + j) for m in MONTHS for j, g in enumerate(["ana", "raj"])],
+    "heatmap": [_p(m, g, None, i + j) for i, m in enumerate(MONTHS) for j, g in enumerate(["ana", "raj"])],
 }
+
+
+def test_a_two_breakdown_heatmap_draws_group_by_split():
+    panel = {"title": "t", "chart": "heatmap", "split_by": "c1",
+             "points": [_p("", "North", "Q1", 3), _p("", "South", "Q2", 2)]}
+    png = build_chart_renderer(ChartRenderSettings(width=600, height=350, dpi=72)).render_png(panel)
+    assert png.startswith(b"\x89PNG")
 
 
 @pytest.mark.parametrize("chart", sorted(PANELS))

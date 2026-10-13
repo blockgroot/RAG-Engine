@@ -349,7 +349,7 @@ def _table_details(table, filters, *, date_key) -> list[dict]:
             "subject": shown[:300],
             "url": table.source_uri,
             # Cell values by column key, so the hover matches a bar on the
-            # column it is grouped by (Chart.tsx `fieldOf`).
+            # column it is grouped by (charts/toOption.ts `fieldOf`).
             "attrs": {k: str(v) for k, v in cells.items()},
         }
         if date_key and cells.get(date_key):

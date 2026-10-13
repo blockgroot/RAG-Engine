@@ -207,12 +207,17 @@ def _available(providers: list[str]) -> list[registry.Metric]:
     return out
 
 
-def _allowed_shapes(metric: registry.Metric) -> tuple[str, ...]:
+def _allowed_shapes(metric: registry.Metric, group_by: str | None = None,
+                   split_by: str | None = None) -> tuple[str, ...]:
+    """Every shape this metric can take; with a breakdown, only those that fit."""
     if metric.chart == "diverging_bar":
         return ("diverging_bar",)
-    if metric.chart == "stacked_bar":
-        return ("stacked_bar", "bar", "pie")
-    return ("line", "bar", "pie")
+    if group_by is None and split_by is None:
+        seen: list[str] = []
+        for n in (0, 1, 2):
+            seen += [s for s in registry.shapes_for(time=True, breakdowns=n) if s not in seen]
+        return tuple(seen)
+    return registry.shapes_for(time=True, breakdowns=1 + bool(split_by))
 
 
 def _catalogue(metrics: list[registry.Metric], fields: dict | None = None,
@@ -581,8 +586,11 @@ def _prompt(
             if tables else ""
         ) +
         f"Periods: {', '.join(registry.PERIODS)}\n"
-        "Shapes: line = over time; bar = ranking; pie = share of a whole "
-        "(needs group_by); stacked_bar = mix of states. "
+        "Shapes: line or area = over time; bar or horizontal_bar = ranking; "
+        "pie or donut = share of a whole; stacked_bar or stacked_area = a "
+        "breakdown's mix over time; heatmap = two breakdowns as a grid (a "
+        "breakdown by period, or group_by by split_by). Pick the shape they "
+        "asked for; code keeps it only when the data has that form. "
         "A grouped bar comparing several measures across the same periods is "
         "chart=bar, group_by = the period column, split_by = the measure "
         "column, value = the number column.\n\n"
@@ -691,10 +699,12 @@ def _chart_for(metric: registry.Metric, group_by: str | None) -> str:
 
 
 def _pick_chart(
-    metric: registry.Metric, group_by: str | None, requested: str | None
+    metric: registry.Metric, group_by: str | None, requested: str | None,
+    split_by: str | None = None,
 ) -> str:
     """Admit a requested shape only if we can actually draw it for this grain."""
-    allowed = _allowed_shapes(metric)
+    allowed = (_allowed_shapes(metric, group_by, split_by) if group_by
+               else registry.shapes_for(time=True, breakdowns=0))
     if metric.chart == "diverging_bar":
         return "diverging_bar"
     # A pie with no second breakdown is a pie of the time buckets. The chart
@@ -813,7 +823,7 @@ def _spec_on_metric(spec: ChartSpec, metric: registry.Metric, fields) -> ChartSp
         group_by, split_by, measure, filters = None, None, None, ()
         if not fits(None, None, None, ()):
             return None
-    chart = spec.chart if spec.chart in _allowed_shapes(metric) else _chart_for(metric, group_by)
+    chart = _pick_chart(metric, group_by, spec.chart, split_by)
     return replace(
         spec, metric=metric.key, group_by=group_by, split_by=split_by,
         measure=measure, filters=filters, table_id=None, value=None, chart=chart,
@@ -1581,7 +1591,7 @@ def _parse_intent(
         metric=metric.key,
         group_by=group_by,
         period=period,
-        chart=_pick_chart(metric, group_by, requested),
+        chart=_pick_chart(metric, group_by, requested, split_by),
         focus=focus,
         split_by=split_by,
         measure=measure,
