@@ -72,13 +72,13 @@ function svgToPng(chart: ECharts): Promise<string> {
 }
 
 export function Chart(props: ChartProps) {
-  const { chart, points, period, unit, seriesUnits, groupBy, splitBy, blankLabels, details } = props;
+  const { chart, points, period, unit, seriesUnits, groupBy, splitBy, blankLabels, details, ordered } = props;
   const [showTable, setShowTable] = useState(false);
   const instance = useRef<ECharts | null>(null);
 
   const stable = useMemo<ChartProps>(
-    () => ({ chart, points, period, unit, seriesUnits, groupBy, splitBy, blankLabels, details }),
-    [chart, points, period, unit, seriesUnits, groupBy, splitBy, blankLabels, details],
+    () => ({ chart, points, period, unit, seriesUnits, groupBy, splitBy, blankLabels, details, ordered }),
+    [chart, points, period, unit, seriesUnits, groupBy, splitBy, blankLabels, details, ordered],
   );
   const build = useCallback((theme: ChartTheme) => toOption(stable, theme), [stable]);
   const table = useMemo(() => toTable(stable), [stable]);

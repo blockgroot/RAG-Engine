@@ -591,6 +591,9 @@ export type InsightPanel = {
   series_units?: Record<string, string>;
   /** Measures the question asked for that were not in the data. */
   missing?: string[];
+  /** Set when the chart is a table from a document or upload: drawn in the
+   *  document's order, never ranked. */
+  table?: { id: string; name: string; document: string; origin: string; upload: boolean } | null;
   /** The rows the bars are made of: what, who, when, and where to open it.
    *  A number nobody can trace is a number nobody trusts. */
   details?: {

@@ -44,7 +44,7 @@ def shapes_for(*, time: bool, breakdowns: int) -> tuple[str, ...]:
     return {
         0: ("bar",),
         1: ("bar", "horizontal_bar", "pie", "donut"),
-    }.get(breakdowns, ("bar", "horizontal_bar", "heatmap"))
+    }.get(breakdowns, ("bar", "stacked_bar", "horizontal_bar", "heatmap"))
 
 #: The ONLY groupings any metric may accept. A ``group_by`` becomes a SQL
 #: identifier, so it can never originate in user text -- only here. Values are

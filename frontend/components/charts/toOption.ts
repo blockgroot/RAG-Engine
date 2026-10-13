@@ -45,6 +45,10 @@ export type ChartProps = {
   splitBy?: string | null;
   /** The rows this chart counted, shown in the tooltip for the hovered section. */
   details?: DetailRow[];
+  /** A table from a document: its categories keep the document's order
+   *  (January before March), and two breakdowns draw on an axis -- the first
+   *  along it, the second as the series -- never as a ranked leaderboard. */
+  ordered?: boolean;
 };
 
 export type ChartTheme = {
@@ -269,6 +273,28 @@ function model(p: ChartProps): Model {
   }
 
   if (p.chart === "heatmap") return heatmap(p, blankFor);
+
+  const keepOrder = p.ordered && p.chart !== "pie" && p.chart !== "donut"
+    && p.chart !== "horizontal_bar" && !p.points.some((pt) => ISO_DATE.test(pt.bucket));
+  if (keepOrder) {
+    const { buckets, series, at } = pivot(p.points.map((pt) => ({
+      bucket: (pt.group ?? "").trim() || blankFor(p.groupBy),
+      group: split ? (pt.series ?? "").trim() || blankFor(p.splitBy) : "",
+      value: pt.value,
+    })));
+    return {
+      kind: "axis",
+      buckets,
+      labels: buckets,
+      series,
+      at,
+      shape: p.chart === "area" || p.chart === "stacked_area" ? "area"
+        : p.chart === "line" && buckets.length >= 3 ? "line" : "bar",
+      stacked: p.chart === "stacked_bar" || p.chart === "stacked_area",
+      combo: false,
+      timeAxis: false,
+    };
+  }
 
   const { buckets, series, at } = pivot(points);
   // A time axis stays in time order. Ranking quarters by value turned them

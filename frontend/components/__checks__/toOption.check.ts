@@ -162,6 +162,26 @@ const arr = (x: unknown): any[] => (x == null ? [] : Array.isArray(x) ? x : [x])
     "stacked area: one filled, stacked line per series");
 }
 
+{
+  // A document table: months keep the document's order, plants are the
+  // series, and a stacked bar stacks -- never "March · Plant A" ranked.
+  const points = ["January", "February", "March"].flatMap((m, i) => [
+    { bucket: "", group: m, series: "Plant A", value: 2400 + i * 300 },
+    { bucket: "", group: m, series: "Plant B", value: 2100 + i * 100 },
+  ]);
+  const o: any = toOption({ chart: "stacked_bar", period: "month", groupBy: "c0", splitBy: "c1",
+                            points, ordered: true });
+  check(JSON.stringify(arr(o.xAxis)[0]?.data) === JSON.stringify(["January", "February", "March"]),
+    "document table: categories in document order on the axis");
+  const s = arr(o.series);
+  check(s.length === 2 && s.every((x: any) => x.stack), "document table: second breakdown is stacked series");
+  const one: any = toOption({ chart: "bar", period: "month", groupBy: "c0", ordered: true, points: [
+    { bucket: "", group: "January", value: 3200 }, { bucket: "", group: "February", value: 3750 },
+    { bucket: "", group: "March", value: 4100 }] });
+  check(JSON.stringify(arr(one.xAxis)[0]?.data) === JSON.stringify(["January", "February", "March"]),
+    "document table: one breakdown keeps document order, not value order");
+}
+
 if (failed) {
   console.error(`\n${failed} failure(s)`);
   process.exit(1);

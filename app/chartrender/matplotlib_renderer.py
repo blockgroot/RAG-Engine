@@ -238,7 +238,9 @@ class MatplotlibChartRenderer(ChartRenderer):
             else:
                 horizontal = kind == "horizontal_bar" or (
                     not timed and kind not in _TIME_CHARTS and len(xs) > _MAX_VERTICAL_CATEGORIES)
-                if horizontal and not timed:
+                # A document table keeps the document's order (January
+                # before March); only activity is ranked.
+                if horizontal and not timed and not panel.get("table"):
                     order = sorted(range(len(xs)), key=lambda i: sum(
                         cells.get((xs[i], s), 0.0) for s in names), reverse=True)
                     xs = [xs[i] for i in order]
