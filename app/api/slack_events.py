@@ -545,7 +545,10 @@ def _handle(event: dict, team_id: str) -> None:
     """Resolve who asked, answer, and post back. Runs AFTER Slack was acked."""
     channel = event.get("channel")
     slack_user = event.get("user")
-    text = (event.get("text") or "").strip()
+    # The leading "<@U…>" is the address to the bot, not the question: left
+    # in, it reached the model and the web link's question. A mention later
+    # in the sentence is part of what was asked and stays.
+    text = re.sub(r"^(?:<@[A-Z0-9]+>\s*)+", "", (event.get("text") or "").strip())
     # ALWAYS answer in a thread: an existing one when the question was already
     # inside it, otherwise a new thread hanging off the question itself.
     #

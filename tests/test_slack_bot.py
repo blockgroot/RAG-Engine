@@ -763,6 +763,7 @@ def test_a_dm_chart_links_to_the_interactive_chart_in_the_web_app(monkeypatch):
     assert _interactive_link("q", None) == ""
 
 
+<<<<<<< Updated upstream
 def test_a_channel_chart_link_names_the_channel_for_the_web_app(monkeypatch):
     """"This channel" means nothing in the web app, so the link's question
     names the channel it was asked in; an unknown name leaves it as asked."""
@@ -774,3 +775,15 @@ def test_a_channel_chart_link_names_the_channel_for_the_web_app(monkeypatch):
         "chart this channel (in #rag-updates)")
     assert slack_events._naming_channel("chart this channel", "o", "ws", "C2") == (
         "chart this channel")
+=======
+def test_the_mention_that_addresses_the_bot_is_not_part_of_the_question(monkeypatch):
+    """The leading "<@U…>" reached the model and the web link's question; a
+    mention later in the sentence is what was asked and stays."""
+    _capture_scope(monkeypatch)
+    asked: list = []
+    monkeypatch.setattr(slack_events, "_answer",
+                        lambda q, *a, **k: asked.append(q) or slack_events.SlackAnswer("a"))
+    slack_events._handle({"type": "app_mention", "channel": "C1", "user": "U1", "ts": "1",
+                          "text": "<@UBOT1> chart commits by <@U22>"}, "T1")
+    assert asked == ["chart commits by <@U22>"]
+>>>>>>> Stashed changes
