@@ -26,7 +26,10 @@ A plain walk through each feature: [current-features.md](docs/handbook/current-f
   hourly re-check as the floor.
 - **Second Brain** — a knowledge graph across tools, live re-reads of current state, and
   personal memory.
-- **Charts in Ask** — numbers from SQL over recorded activity, never from the model.
+- **Charts** (Chart mode) — from tool activity, tables inside documents, figures written in
+  paragraphs, and uploaded files (Excel, CSV, Word, PDF). The model fills in a request; code
+  checks it and SQL adds up stored rows, so no number comes from the model. Drawn with ECharts
+  on the web; in Slack, a PNG with a link to the interactive chart.
 - **File uploads in chat** — stored privately in Cloudinary, used together with company documents.
 - **Ask in Slack**, **scheduled reports** by email (SendGrid), **spaces**, **feedback and
   documentation-gap tracking**, a **needs-attention bell**, and **chat history**.
@@ -57,7 +60,9 @@ app/
   agent/        per-source agents, routing, LangGraph orchestration
   graph/        Second Brain knowledge graph (identities, builder, walk, plan)
   livetools/    Second Brain live connector reads
-  insights/     charts: metric registry, facts, SQL store, resolver
+  insights/     charts: metric registry, query grammar, resolver, SQL store, document-table picks
+  doctables/    tables and paragraph figures inside documents and uploads, saved as rows
+  chartrender/  PNG charts for Slack
   attachments/  chat uploads: extraction, limits, Cloudinary blob store
   feedback/     answer ratings + documentation gaps
   schedulers/   scheduled reports

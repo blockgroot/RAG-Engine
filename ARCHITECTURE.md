@@ -120,7 +120,8 @@ There are **two end-to-end flows**: the **write path** (ingestion) and the **rea
 3. **List, then fetch what changed.** `list_documents()` is also where sharing is captured (`DocAccess` on the ref). Unchanged documents are not re-fetched. A listing that looks like it deleted most of the corpus is refused.
 4. **For each changed document:** the adapter renders plain text; text is chunked at **256 tokens / 40 overlap** with a **4,000-character** ceiling; chunks are embedded (1024-dim) and stored with `org_id` and, when set, `workspace_id`. A short context line may be prepended at ingest. Empty documents are skipped.
 5. **Access is stored on the row**, not inferred later: `doc_is_public` and `doc_viewers`. An ACL-capable provider that cannot read sharing indexes the document for the connected account only. An already-indexed document whose sharing goes unreadable keeps its last viewer list.
-6. **After a successful job:** activity facts for charts, knowledge-graph capture, and a clear of that org's answer cache. GitHub does not ingest; its charts come from a separate live facts sync.
+6. **Document tables, inline.** Each changed document goes through the dataset adapters (`ingestion.pipeline._store_tables`): the table adapter saves tables the document already has (no AI), and the text adapter has the background model list the figures written in its sentences, which code turns into tables (see §6.3). Rows go to `doc_tables`/`doc_table_rows` with the document's access. `documents.tables_checked_at` marks what was read; each sync backfills a bounded batch of unchecked documents.
+7. **After a successful job:** activity facts for charts, knowledge-graph capture, and a clear of that org's answer cache. GitHub does not ingest; its charts come from a separate facts sync, refreshed when a chart asks.
 
 Contextual retrieval spends LLM calls, so background work leaves headroom for live questions (`app/llm/pacing.py`). `INGEST_CONTEXTUAL_ENABLED=false` stores bare chunks.
 
@@ -129,7 +130,7 @@ Contextual retrieval spends LLM calls, so background work leaves headroom for li
 ## 6. END-TO-END FLOW B — Query (the read path)
 
 **Entrypoints:** `POST` chat (web), the Slack bot, and `scripts/cli.py`.
-**Router:** `app/agent/routing.py::choose_agent`, then a LangGraph node. The corpus (cosine over each connected tool) picks a document agent. A chart question goes to `InsightsAgent` (SQL). A code question, when GitHub is connected, goes to `GitHubAgent` (live tools, nothing embedded). `PolicyAgent` is a legacy fallback, not the product path.
+**Router:** `app/agent/routing.py::choose_agent`, then a LangGraph node. The corpus (cosine over each connected tool) picks a document agent. A Chart-mode question goes to `InsightsAgent` (SQL over stored rows, §6.3). A code question, when GitHub is connected, goes to `GitHubAgent` (live tools, nothing embedded). `PolicyAgent` is a legacy fallback, not the product path.
 
 `org_id` comes from the signed session. A space id is paired with it. The asker's email (and prior emails) becomes the `Viewer` that retrieval filters on.
 
@@ -166,7 +167,17 @@ flowchart TD
 
 GitHub answers are composed only from tool output (README, commit, commits, pull requests, reviews, branches). No tool call, a bad argument, or a failure returns the fixed fallback. Private repositories are readable only when the asker's linked GitHub login can open them.
 
-Charts never let the model emit a number. `InsightsAgent` runs a whitelisted metric from `app/insights/registry.py` (12 metrics across Notion, Drive, GitHub, Linear, Slack, and Forms sentiment).
+### 6.3 Charts
+
+Charts are built only in Chart mode (the web chat sends `mode: "chart"`; in Slack, a question the classifier reads as a chart ask). **The model never emits a number, an axis or a date.**
+
+1. **Spec.** The model fills in a spec (`app/insights/resolve.py`): what to count, splits, filters, measure, period, range and shape, quoting the asker's words for each. Code keeps a part only when its quote is in the question or its value has real rows.
+2. **Source of numbers.** Either an activity metric (`activity_facts`: 12 registry metrics plus simple fields discovered per scope, `insights/attr_catalog.py`) or a document table (`doc_tables`/`doc_table_rows`, ranked by document similarity and by matching the question against each table's own name and columns, `insights/tables.py`). A page the question names wins. Uploaded files' tables are reachable only through `doctables.store.UploadScope` (that chat, that uploader).
+3. **Validate twice, then SQL.** The resolver and the store both check the spec; only our own identifiers are spliced into SQL and every value is bound. A spec that fails is refused with the reason, never repaired. The viewer predicate applies to every table and fact.
+4. **Nothing stored?** Chart mode reads the named page live, then the sentences of at most two matching pages, before refusing.
+5. **Draw.** The panel (points, title with measure and unit, an `explain` line) goes to the web, drawn by ECharts (`frontend/components/charts/toOption.ts`), and is stored on the turn as drawn. Slack gets a matplotlib PNG (`app/chartrender/`) and an "Open interactive chart" link.
+
+**Paragraph figures** (`app/doctables/text_adapter.py`). A page with at least three non-year numbers is read in sections (up to 6). The model lists facts `{measure, unit, period, items, value, quote}`; code builds one table per measure, unit, breakdown and period grain (`facts_to_tables`) and keeps a row only when its quote is in the document, every cell is in the quote, and the number binds to its own label. No word lists decide what is read. A damaged reply keeps its complete facts; an unreadable one is retried by later syncs (`MAX_UNREADABLE_READS`) and shown on the admin Feedback page.
 
 ---
 
@@ -192,7 +203,9 @@ Charts never let the model emit a number. `InsightsAgent` runs a whitelisted met
 | `guard/` | `InjectionGuard` | `prompt_guard.py`, `safeguard.py`, `moderation.py` | Prompt-injection scoring at ingest, answer moderation. |
 | `graph/` | — | `identities`, `builder`, `walk`, `plan` | Second Brain knowledge graph. |
 | `livetools/` | — | `gateway.py` + per-provider readers | Second Brain live connector reads. |
-| `insights/` | — | `registry`, `facts`, `store`, `resolve`, `pins` | Charts from SQL over `activity_facts`. |
+| `insights/` | — | `registry`, `query`, `resolve`, `store`, `tables`, `describe`, `attr_catalog`, `pins` | Chart specs, validation and SQL over `activity_facts` and document tables. |
+| `doctables/` | `DatasetAdapter` | `table_adapter.py`, `text_adapter.py`, `store.py`, `uploads.py` | Tables inside documents and uploads, saved as typed rows for charts. |
+| `chartrender/` | `ChartRenderer` | `matplotlib_renderer.py` | PNG charts for Slack. |
 | `attachments/` | — | `extract`, `limits`, `store`, `blobstore` | Chat uploads; bytes + extracted text in Cloudinary. |
 | `feedback/` | — | `store.py` | Answer ratings and documentation gaps. |
 | `schedulers/` | — | `store`, `activity`, `runner`, `worker` | Scheduled reports, emailed via `auth/email.py` (SendGrid in prod). |
@@ -218,7 +231,7 @@ The full column list lives in `schema.sql` and in CLAUDE.md §6. The groups that
 | Connectors | `oauth_connections` (encrypted tokens, `source_config`), `drive_watch_channels`, `github_install_pending` |
 | Corpus | `documents` (`doc_is_public`, `doc_viewers`, `source_meta`), `chunks` (`vector(1024)`, generated `content_tsv`, injection score) |
 | Ask | `conversations` (personal: `user_id`), `conversation_turns`, `conversation_last_retrieval`, `conversation_attachments` (metadata only), `query_answer_cache`, `user_memory` |
-| Charts & graph | `activity_facts`, `insight_pins`, `kg_entities`, `kg_edges`, `kg_evidence`, `person_identities` |
+| Charts & graph | `activity_facts`, `insight_pins`, `doc_tables`, `doc_table_rows`, `doc_text_queue` (read marker), `kg_entities`, `kg_edges`, `kg_evidence`, `person_identities` |
 | Ops | `ingestion_jobs`, `schedulers`, `scheduler_reports`, `feedback_and_gaps`, `live_tool_calls`, `api_rate_counters` |
 
 `chunks.embedding` is `vector(1024)` to match BGE-M3. Changing the model means changing `EMBEDDING_DIM` and re-ingesting. Deletes cascade from `organizations` and `workspaces`. A workspace id is nullable: `NULL` means org-wide, and a space query never also returns org-wide rows.
@@ -319,7 +332,7 @@ pytest -m "not network and not live_llm"
 | 7 | (A) Formal `PolicyAgent` behind `Agent`; (B) Golden-set evaluation (path-firing tier + RAGAS tier) wired into CI |
 | 8 | (A) Incremental summarization; (B) retrieval reuse (deterministic non-LLM cosine check) + `conversation_last_retrieval` table |
 | 9 | (A) Single interactive `rich` CLI over `PolicyAgent` (retired `ask.py`/`chat.py`); (B) per-organization Notion credentials (`NOTION_TOKEN_<NAME>`, `resolve_token`, no fallback) + `list_organizations` |
-| 10+ | HTTP API + Next.js portal, magic-link auth, OAuth per connector, signup approval, ingestion queue; Drive, Slack, Linear adapters; GitHub live reads; spaces; per-source routing; Ask in Slack; scheduled reports; multi-model + BYOM; automatic sync; charts in Ask; attachments in Cloudinary; feedback and gaps; needs-attention bell; prompt-injection defense; Second Brain (graph, live reads, personal memory); document-level access control; push sync (PR #44, 2026-10-01); inline citations. See `docs/handbook/PRODUCT_STATUS.md` and `CLAUDE.md`. |
+| 10+ | HTTP API + Next.js portal, magic-link auth, OAuth per connector, signup approval, ingestion queue; Drive, Slack, Linear adapters; GitHub live reads; spaces; per-source routing; Ask in Slack; scheduled reports; multi-model + BYOM; automatic sync; charts in Ask; attachments in Cloudinary; feedback and gaps; needs-attention bell; prompt-injection defense; Second Brain (graph, live reads, personal memory); document-level access control; push sync (PR #44, 2026-10-01); inline citations; open-ended charts with document tables, paragraph figures and uploads (PR #45, #50–#52, 2026-10-13). See `docs/handbook/PRODUCT_STATUS.md` and `CLAUDE.md`. |
 
 ---
 
@@ -344,4 +357,4 @@ three-mode grounded prompt, §6.2 step 6).
 See `docs/handbook/PRODUCT_STATUS.md` for the current list. In short: Notion per-page access
 (no provider API), Google Groups in production (needs a Workspace-admin connection), more
 connectors (Confluence, Jira, Zendesk, Salesforce, SharePoint), NLI proof that a cited sentence is supported (inline citations are built),
-Postgres RLS, the self-hosted Docker image, and open-ended charts (PR #45, in review).
+Postgres RLS, and the self-hosted Docker image.

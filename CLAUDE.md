@@ -89,7 +89,9 @@ GitHub; employees get answers from *their* data.
   breakdowns?), one rule for activity and tables; a new shape is added there,
   in `toOption.ts` and in `app/chartrender`. A Slack chart is uploaded as a PNG
   (`app/chartrender/`, needs `files:write`); without the scope or on a render
-  failure the numbers are written as text under the caption.
+  failure the numbers are written as text under the caption. Under it, "Open interactive
+  chart" re-asks the QUESTION in the web app (never the numbers), as the clicker; a channel's
+  link opens its space and names the channel. The leading bot mention is not part of a question.
 - Audit and moderation judge the answer with the markers removed.
 - A link in an answer survives only if it appeared verbatim in the text the model
   was shown (`security/links.py`).

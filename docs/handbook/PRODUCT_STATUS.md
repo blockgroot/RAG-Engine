@@ -1,9 +1,9 @@
-# Product Status — October 1, 2026
+# Product Status — October 13, 2026
 
 > **The canonical source of truth for what Handbook does today.** Product behavior verified
-> against `5901c13` (PR #44, 1 Oct 2026). This file was corrected the same day against the
-> code: chart metrics, the retrieval pool, and the test count. Design reasoning lives in
-> `CLAUDE.md`; decision history in git.
+> against `5901c13` (PR #44, 1 Oct 2026). Charts (§4, §5, §12) updated against `783da74`
+> (13 Oct 2026), after open-ended charts (PR #45) and the chart fixes (PR #50–#52) merged.
+> Design reasoning lives in `CLAUDE.md`; decision history in git.
 >
 > **Keep it fresh:** whoever ships, verifies or blocks a feature updates this file in the same
 > pull request. Every status carries a date and how we know.
@@ -50,11 +50,11 @@ rights, §11) or on an open pull request (§12).
 |---|---|---|
 | Ask | Grounded answers with sources, honest refusals, follow-ups, whole-space summaries, web search for outside topics, choice of AI model | Live |
 | Chat | Private chat history in the left rail, linkable chats, delete | Live |
-| Files | Upload PDF, Word, CSV, TSV, text, Markdown, JSON files into a chat; stored in Cloudinary | Live |
-| Charts | Charts in Ask from recorded activity; hover shows the items behind each bar; pins | Live |
+| Files | Upload PDF, Word, Excel, CSV, TSV, text, Markdown, JSON files into a chat; stored in Cloudinary; their tables and figures can be charted | Live |
+| Charts | Chart mode: charts from tool activity, from tables and paragraph figures inside documents, and from uploaded files; ECharts on the web, PNG in Slack | Live |
 | Second Brain | Knowledge graph across tools, live re-reads of current state, personal memory | Live |
 | Spaces | Private areas with their own members and tools | Live |
-| Slack | Ask the bot in channels and DMs | Live |
+| Slack | Ask the bot in channels and DMs; charts as images with a link to the interactive chart | Live |
 | Reports | Scheduled reports by email (SendGrid) | Live |
 | Feedback | Thumbs with reasons; automatic documentation-gap list for admins | Live |
 | Access | Company and space isolation; per-document access for Drive, Slack, Linear; per-repo for GitHub; charts follow access | Live / staging-verified (§6) |
@@ -74,11 +74,11 @@ rights, §11) or on an open pull request (§12).
 | Model choice / bring your own model | Members pick the answering model; admins can plug in one of 14 provider presets | Live | `tests/test_model_selection.py`, `tests/test_llm_adapters.py` | Free-tier quotas of hosted models apply |
 | Chat history | Recent chats in the rail, `?c=` links, delete; each chat private to its owner | Live | `tests/test_conversation_history.py`; UI checked by hand (30 Sep) | No automated browser test |
 | File uploads | Files join retrieval for the chat they're in | Live | `tests/test_attachment*.py` | No images; no reusable file library |
-| Charts in Ask | Charts drawn from SQL over recorded activity; the AI never produces a number | Live | `tests/test_insights_*.py` | 12 fixed metrics (§4). A freer query shape is PR #45, not merged (§12) |
+| Charts | The AI fills in a request; code checks it and SQL adds up stored rows. The AI never produces a number | Live | `tests/test_insights_*.py`, `tests/test_doctables*.py`, `npm run check:charts` | GitHub charts are space-level; figures are charted only when a sentence states them (§4) |
 | Spaces | Private sub-workspaces; members see only their space's content | Live | `tests/test_workspaces.py`, `tests/test_isolation.py` | — |
-| Ask in Slack | Channel answers in a thread from that channel only; DMs answer as the person | Live | `tests/test_slack_bot.py` | No thumbs in Slack (gaps are still logged) |
+| Ask in Slack | Channel answers in a thread from that channel only; DMs answer as the person; charts as PNG images | Live | `tests/test_slack_bot.py`, `tests/test_slack_chart_upload.py` | No thumbs in Slack (gaps are still logged); Slack charts are static images |
 | Scheduled reports | Daily/weekly/monthly, saved in-app, email notification | Live | `tests/test_scheduler_*.py`; emails verified live (30 Sep) | Reports describe current content, not diffs |
-| Feedback and gaps | Thumbs with reasons; refusals logged automatically; `/admin/feedback` | Live | `tests/test_feedback.py` | Grouping is exact text, not by meaning |
+| Feedback and gaps | Thumbs with reasons; refusals and refused charts logged automatically; figure-reading health; Feedback in the admin sidebar | Live | `tests/test_feedback.py` | Grouping is exact text, not by meaning |
 | Needs-attention bell | Expired or unscoped connections, shown to whoever can fix them | Live | `tests/test_notifications.py` | — |
 | Knowledge graph | Who worked on what across tools; one answer can span tools | Live | `tests/test_graph_*.py` | — |
 | Live tool reads | Re-reads a Linear issue, Drive file or Notion page when the question is about current state | Live | `tests/test_live_tools.py`; Notion and Drive verified on staging | Slack reader kept off (Slack's rate tier) |
@@ -113,12 +113,28 @@ rights, §11) or on an open pull request (§12).
     "keep it short") are saved with an Undo, used to interpret later questions, and never used as
     evidence. Sensitive topics are never stored. People manage them on `/account`; admins can turn
     memory off for the company.
-- **Charts.** Twelve fixed counts, all from SQL: Notion pages changed, Drive files changed,
-  GitHub pull requests opened, merged, reviewed, and their lead time, commits by author,
-  Linear issues completed, by state, and cycle time, Slack threads, and Forms sentiment by
-  topic. The model picks which of those to show. It never invents a number. Hover shows the
-  rows behind a bar. GitHub charts are still for the whole space, not filtered to the repos
-  one person can open.
+- **Charts** (Chart mode, web and Slack). The AI fills in a request: what to count, how to
+  split it, the period, the shape. Code checks every part against real rows and SQL adds them
+  up; a request that can't be checked is refused with the reason. **The AI never produces a
+  number.** Three kinds of data:
+  - **Tool activity** (`activity_facts`): 12 measures (Notion and Drive changes; GitHub commits,
+    pull requests, reviews, lead time; Linear issues, states, cycle time; Slack conversations;
+    Forms sentiment) plus any simple field a tool returns, discovered per space. GitHub is read
+    fresh when a chart asks for it. GitHub charts are still space-level, not per person.
+  - **Tables in documents** (`doc_tables`, `doc_table_rows`): Notion tables and inline
+    databases, Docs, Sheets and Word tables, saved as rows at sync with no AI.
+  - **Figures written in paragraphs:** at sync, a page with three or more figures is read by
+    the background AI model, the whole page in sections. The AI lists each figure (measure,
+    unit, period, label, quote); code builds the tables and keeps a figure only when its quote
+    is in the page and the number binds to its label. No word lists, any language. A damaged
+    AI reply keeps its complete figures; an unreadable one is retried by up to 3 later syncs and
+    shown on the admin Feedback page. Chart mode reads a named or closely matching page live
+    when nothing is saved.
+
+  Shapes follow the data (`registry.shapes_for`): bar, horizontal and stacked bar, line, area,
+  pie, donut, heatmap. A document table keeps its own row order and uses its first column as
+  the axis; percentages are averaged, never summed. Each chart names its measure and unit and
+  says what a bar counts. Charts follow the same access rules as answers.
 - **Knowledge-gap management.** Every unanswered question is recorded automatically (web and
   Slack). Admins see the most-asked ones and how many different people asked. A question
   withheld for access reasons is not counted as a gap.
@@ -130,7 +146,7 @@ rights, §11) or on an open pull request (§12).
 
 ## 5. Files & Documents
 
-- **Upload:** PDF, DOCX, CSV, TSV, TXT, Markdown, LOG and JSON, several at once. Each file is
+- **Upload:** PDF, DOCX, XLSX, CSV, TSV, TXT, Markdown, LOG and JSON, several at once. Each file is
   checked separately; unreadable, empty, oversized, over-length (too many tokens) or over-limit
   files are refused with a reason while the others upload.
 - **Processing:** text is extracted once at upload. CSV and TSV skip the length limit because
@@ -142,6 +158,9 @@ rights, §11) or on an open pull request (§12).
 - **Retrieval:** a file joins whatever the question retrieves from company documents, so "is
   this bill claimable?" is answered against the bill and the expense policy together. If the
   company documents don't match, the answer comes from the file alone.
+- **Charts from files:** Excel sheets, CSV, Word tables and PDF tables are saved as rows at
+  upload, with no AI, and never fail the upload. Figures in a file's sentences are read once,
+  in Chart mode. Only the uploader, in that chat, can chart a file; removing it removes its tables.
 - **Indexed documents:** Google Docs, PDF and Word files in the chosen Drive folder; Notion
   pages shared with the integration; Slack threads; Linear issues. Google Sheets are not indexed.
 
@@ -180,7 +199,11 @@ one line who can get answers from that tool.
 
   A burst of changes makes at most one sync every 3 minutes. Each receiver is closed until its
   secret is configured.
-- **Slack bot** posts "Searching…" and edits it into the answer; link previews are off.
+- **Slack bot** posts "Searching…" and edits it into the answer; link previews are off. A chart
+  is uploaded as a PNG (needs `files:write`; without it the numbers are written as text) with an
+  **Open interactive chart** link that re-asks the question in the web app under the clicker's
+  own access. A DM charts what the person can open, trying their other spaces if needed; a
+  channel charts that channel only, and its link opens the channel's space.
 - **Hourly re-check** of every tool, driven by an external tick, catches anything a webhook
   missed.
 
@@ -219,14 +242,17 @@ scored by the safety model; the answer fact-checker is off (§11).
   list is stored on the turn, so a reopened chat shows the same sources. Slack strips the numbers.
 - **Chat history** in the left rail, with linkable, deletable, private chats.
 - **Uploads** attach to a chat with a per-file result.
-- **Charts** appear in the chat; hover shows the rows behind each bar.
+- **Charts** (Chart mode beside the message box) are drawn with ECharts: hover shows the rows
+  behind a bar; table view, PNG and CSV download, pins. A reopened chat shows the chart as drawn.
+  Starter questions come from the space's own metrics and fields.
 - **"Remembered · Undo"** under an answer when memory saved a fact.
 - **Refusals that help:** "I don't know", "this exists but isn't shared with you", "link your
   GitHub account", or "ask me in a direct message", depending on the reason.
 - **Account page:** sign-in email (change with confirmation), linked GitHub account, personal
   memory.
 - **Admins:** Sources (connect, choose folders and channels, who-can-see notes), feedback and
-  gaps, the needs-attention bell, model settings, people.
+  gaps (Feedback in the sidebar: unanswered questions, refused charts, figure reading), the
+  needs-attention bell, model settings, people.
 
 ## 10. Production Status
 
@@ -254,6 +280,8 @@ access; automatic hourly sync; instant updates from Slack, Linear, Notion and Dr
 | Linear instant updates for existing tenants | Needs action | An OAuth-app webhook is created only when a workspace authorizes after it is enabled | External | Each tenant reconnects Linear once |
 | GitHub private repos | Live (verified in production 1 Oct) | Each member must link their GitHub account; unlinked members get public repos only | Product rule | Members link GitHub |
 | GitHub in charts | Limitation | Charts built from GitHub activity are space-level, not per person | Not built | Filter GitHub facts by the asker's visible repos |
+| Interactive charts in Slack | Not possible | Slack messages cannot run scripts, so a chart is a PNG plus a link to the web app | External (Slack platform) | — |
+| Figures in paragraphs | Limitation | A figure is charted only when a sentence states it with its label; implied or computed figures are skipped | Decided | — |
 | Google Forms sentiment | Built, not verified | Never run on a real form; switching it on makes every tenant reconnect Google | Verification | A live walkthrough before enabling `GOOGLE_FORMS_ENABLED` |
 | Answer fact-checker (LettuceDetect) | Built, off | Hugging Face now requires a paid plan for the CPU host | Dependency / cost | A paid CPU host |
 | More connectors (Confluence, Jira, Zendesk, Salesforce, SharePoint) | Not on `main` | No provider blocker. A Confluence branch exists and is not the shipping product | — | Review and merge, or build the others |
@@ -262,44 +290,13 @@ access; automatic hourly sync; instant updates from Slack, Linear, Notion and Dr
 
 ## 12. In Progress
 
-**PR #45 — open-ended charts** (`feat/open-ended-charts`, open, not on `main`). The branch adds,
-on top of the 12 metrics already shipping:
+**Act mode for write actions** — plan only (`docs/plans/2026-10-13-write-actions.md`),
+nothing built yet.
 
-- **Chart query grammar** (`app/insights/query.py`): split, measure and filters over one metric,
-  checked before it runs, so "pull requests merged per repository, split by person" is a real
-  query rather than a nearest registry metric.
-- **Chart attributes:** fields the tools already return (for example labels) kept so they can be
-  charted.
-- **Tables inside documents** (`app/doctables/`): rows extracted at sync, for example a sales
-  table in a Doc.
-- **Charts from uploaded files** (`app/doctables/uploads.py`): Excel, CSV, Word and PDF tables,
-  or figures in a file's sentences, charted in Chart mode; private to the uploader and chat.
-  Adds `.xlsx` uploads (`openpyxl`) and PDF table reading (`pdfplumber`).
-
-The rule on the branch is the same: **the AI never produces a number**. It is under review.
-Ask on `main` still charts only the 12 registry metrics.
-
-**Branch `fix/charts-docs-prose-slack` (13 Oct 2026, not merged)** — chart fixes:
-
-- **Figures in paragraphs** are read **at ingest**, inline (no background queue or tick), on the
-  background model budget; a webhook re-ingest refreshes them. Pages indexed before this are
-  re-read by the sync backfill (`schema_marks: prose_figures_read_at_ingest`). The checker that
-  binds each figure to its label and measure no longer requires the measure word in the same
-  clause; it was dropping most real paragraphs (4 of 11 sample rows kept before, 11 of 11 after).
-- **Chart mode** reads the named page live, then matching pages' sentences, **before** saying a
-  page has no table.
-- **Drive vs Notion:** a question that names a connector ("the Google doc") is never charted
-  from another connector's table.
-- **No word lists** decide what a paragraph reader reads or keeps: any page with three
-  non-year numbers is read at ingest, and the checks are positional, in any language.
-- **Slack:** DMs chart with the asker's access, company-wide and then their other spaces until
-  one has the chart; a chart ask in a channel charts that channel only;
-  charts are uploaded as PNG images (needs `files:write`, so each Slack connection reconnects
-  once; until then the numbers are written as text).
-
-Covered by `tests/test_doctables_text.py`, `tests/test_doctables_ingest.py`,
-`tests/test_agent_routing.py`, `tests/test_insights_resolve.py`, `tests/test_slack_bot.py`,
-`tests/test_slack_chart_upload.py`, `tests/test_chartrender.py`. Not yet walked through on staging.
+Charts are complete on `main`: PR #45 (open-ended charts) and PR #50–#52 (chart fixes, paragraph
+figures, Slack charts) are merged and were walked through on production data on 13 Oct 2026
+(Notion and Drive paragraph figures, document tables, Slack, Linear and GitHub activity, Slack
+DM and channel charts).
 
 ## 13. Testing & Verification
 
@@ -320,7 +317,7 @@ Covered by `tests/test_doctables_text.py`, `tests/test_doctables_ingest.py`,
 ## 14. Current Product Snapshot
 
 - **Implemented:** grounded Ask with routing, follow-ups, summaries and web search; chat
-  history; uploads; charts; spaces; Slack bot; scheduled reports; feedback and gaps; Second
+  history; uploads; charts (activity, document tables, paragraph figures, uploads); spaces; Slack bot; scheduled reports; feedback and gaps; Second
   Brain; per-document access for Drive, Slack and Linear, per-repo for GitHub; instant updates
   for four tools; layered prompt-injection defense.
 - **Working in production:** all of the above except what follows.
@@ -328,4 +325,4 @@ Covered by `tests/test_doctables_text.py`, `tests/test_doctables_ingest.py`,
 - **Partially supported:** Notion access is per space, not per page; GitHub charts are space-level.
 - **Blocked or waiting on an external party:** Notion per-page access (API), Google Groups (admin),
   Linear private teams (Business plan), answer fact-checker (paid host).
-- **Being worked on:** open-ended charts (PR #45).
+- **Being worked on:** Act mode for write actions (plan only).
