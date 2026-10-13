@@ -73,10 +73,28 @@ def document_similarity(
     return cosine, keywords
 
 
+def _words(text: str) -> set[str]:
+    """Words of three letters or more, any language, a plural "s" dropped."""
+    return {w.rstrip("s") for w in re.findall(r"[^\W\d_]{3,}", (text or "").lower())}
+
+
+def label_hits(question: str, table: TableRef) -> int:
+    """How many of the question's words are the table's OWN labels: its name,
+    its column names and the values seen in them. "Units by each plant" finds
+    the table with a Plant column among eleven tables of one report, which a
+    document-level score cannot tell apart. The data's words, not a list."""
+    own = _words(table.name)
+    for c in table.columns:
+        own |= _words(str(c.get("name", "")))
+        for sample in c.get("samples", []) or []:
+            own |= _words(str(sample))
+    return len(_words(question) & own)
+
+
 def rank(
     tables: list[TableRef], scores: dict[str, float] | None, *,
     floor: float, limit: int = MAX_OFFERED,
-    keywords: dict[str, float] | None = None,
+    keywords: dict[str, float] | None = None, question: str = "",
 ) -> list[TableRef]:
     """Tables closest to the question first, capped at ``limit``.
 
@@ -90,7 +108,8 @@ def rank(
         return list(tables)[:limit]
     if not keywords:
         scored = [(scores.get(t.document_id or "", 0.0), i, t) for i, t in enumerate(tables)]
-        ordered = sorted(scored, key=lambda s: (s[0] < floor, -s[0], s[1]))
+        ordered = sorted(scored, key=lambda s: (
+            s[0] < floor, -s[0], -label_hits(question, s[2]), s[1]))
         return [t for _, _, t in ordered[:limit]]
     from ..config.settings import DEFAULT_RETRIEVAL_RRF_K
 
@@ -110,7 +129,13 @@ def rank(
     for leg in (by_cosine, by_keyword):
         for place, doc in enumerate(leg):
             fused[doc] = fused.get(doc, 0.0) + 1.0 / (DEFAULT_RETRIEVAL_RRF_K + place + 1)
-    scored = [(fused.get(t.document_id or "", 0.0), i, t) for i, t in enumerate(tables)]
+    # A third leg, per TABLE: the question's words among the table's labels.
+    by_label = sorted(
+        ((label_hits(question, t), i) for i, t in enumerate(tables)), key=lambda x: -x[0])
+    own = {i: 1.0 / (DEFAULT_RETRIEVAL_RRF_K + place + 1)
+           for place, (hits, i) in enumerate(by_label) if hits > 0}
+    scored = [(fused.get(t.document_id or "", 0.0) + own.get(i, 0.0), i, t)
+              for i, t in enumerate(tables)]
     ordered = sorted(scored, key=lambda s: (-s[0], s[1]))
     return [t for _, _, t in ordered[:limit]]
 
@@ -257,6 +282,10 @@ def table_shape(table: TableRef, group_by: str | None, split_by: str | None,
         allowed = shapes_for(time=True, breakdowns=1 if split_by else 0)
     else:
         allowed = shapes_for(time=False, breakdowns=bool(group_by) + bool(split_by))
+        if group_by:
+            # A table's categories are drawn in the document's order, so a
+            # line or area across them ("each month" written as words) reads.
+            allowed += ("line", "area") + (("stacked_area",) if split_by else ())
     return requested if requested in allowed else allowed[0]
 
 
@@ -324,6 +353,12 @@ def parse_pick(data: dict, handles: dict[str, TableRef]) -> TablePick | None:
         group_by, split_by = split_by, None
     if split_by and split_by == group_by:
         split_by = None
+    keys = [c["key"] for c in table.columns]
+    if split_by and group_by in keys and split_by in keys and keys.index(split_by) < keys.index(group_by):
+        # The table's earlier column is the axis: a read page puts its period
+        # first, a real table its row label. "Each plant per month" drew the
+        # plants along the axis with the months as colours.
+        group_by, split_by = split_by, group_by
     value = _find(table, data.get("value"), types=("number",), role="value to add up")
 
     measure = data.get("measure")

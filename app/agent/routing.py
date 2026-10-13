@@ -655,21 +655,28 @@ def _document_tables(org_id: str, workspace_id: str | None, viewer, question: st
 
         listed = list_tables(org_id=org_id, workspace_id=workspace_id, viewer=viewer,
                              providers=providers, tag=tag)
-        from ..insights.resolve import title_mentioned
+        from ..insights.resolve import title_match
 
-        named = [t for t in listed if title_mentioned(t.document_title or "", question)]
+        # The page they named: the LONGEST title run in the question, so a
+        # shared word ("Performance") does not name a second page. Its own
+        # tables are ordered by the question's words among their labels.
+        matched = {id(t): title_match(t.document_title or "", question) for t in listed}
+        best = max(matched.values(), default=0)
+        named = sorted((t for t in listed if best >= 8 and matched[id(t)] == best),
+                       key=lambda t: -doc_tables.label_hits(question, t))
         rest = [t for t in listed if t not in named]
         signals = doc_tables.document_similarity(question, rest, org_id=org_id,
                                                  workspace_id=workspace_id)
         if signals is None:
             ranked = doc_tables.rank(
                 rest, None, floor=RagSettings.from_env().similarity_threshold,
+                question=question,
             )
         else:
             cosine, keywords = signals
             ranked = doc_tables.rank(
                 rest, cosine, keywords=keywords,
-                floor=RagSettings.from_env().similarity_threshold,
+                floor=RagSettings.from_env().similarity_threshold, question=question,
             )
         # The page they named has to be offered. Six closer tables used to
         # fill the cap and the named page came back as "I don't see it".

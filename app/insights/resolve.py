@@ -1173,14 +1173,23 @@ def title_mentioned(title: str, question: str) -> bool:
     "Quarterly update 2026" still matches "the quarterly update page". A title
     that shares no such run does not, so an unrelated page is not pulled in.
     """
+    return title_match(title, question) >= 8
+
+
+def title_match(title: str, question: str) -> int:
+    """Letters in the longest run of the title the question contains. Callers
+    choosing among pages keep the longest: "Annual Manufacturing Performance
+    Report" over "Customer Support Performance Update", which shares only
+    "Performance" with the question."""
     words = _squashed(title).split()
     asked = f" {_squashed(question)} "
     for length in range(len(words), 0, -1):
-        for start in range(len(words) - length + 1):
-            phrase = " ".join(words[start:start + length])
-            if len(phrase.replace(" ", "")) >= 8 and f" {phrase} " in asked:
-                return True
-    return False
+        found = [len(" ".join(words[start:start + length]).replace(" ", ""))
+                 for start in range(len(words) - length + 1)
+                 if f" {' '.join(words[start:start + length])} " in asked]
+        if found:
+            return max(found)
+    return 0
 
 
 def _chart_the_named_table(question: str, reply: str, handles: dict) -> AskIntent | None:
