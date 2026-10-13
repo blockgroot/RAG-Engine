@@ -445,14 +445,37 @@ def _answer(
     with_values = label + _to_slack_mrkdwn(_with_chart_values(response))
     chart = getattr(response, "chart", None)
     if isinstance(chart, dict) and chart.get("points"):
+        # A channel chart reads that one channel, which the web app cannot
+        # scope to, so the link is offered in a DM only.
+        link = _interactive_link(question, workspace_id) if scope_label is not None else ""
         # The picture carries the numbers; the text is the caption.
         return SlackAnswer(
-            text=label + _to_slack_mrkdwn(response.answer),
+            text=label + _to_slack_mrkdwn(response.answer) + link,
             chart=chart,
             period=getattr(response, "chart_period", None) or "month",
-            with_values=with_values,
+            with_values=with_values + link,
         )
     return SlackAnswer(with_values)
+
+
+def _interactive_link(question: str, workspace_id: str | None) -> str:
+    """A Slack link that opens this question in the web app's Chart mode.
+
+    Slack messages cannot run a chart (no scripts, no embeds), so the image is
+    a picture of it. The link re-asks in the web app as whoever clicks, under
+    THEIR access -- it carries the question, never the chart's numbers, so it
+    shows nobody more than they could ask for themselves. Empty when the web
+    app's address is not configured."""
+    from urllib.parse import quote
+
+    from ..config.settings import ApiSettings
+
+    base = (ApiSettings.from_env().frontend_url or "").rstrip("/")
+    if not base.startswith(("https://", "http://")):
+        return ""
+    path = f"/workspaces/{quote(workspace_id)}/ask" if workspace_id else "/chat"
+    url = f"{base}{path}?mode=chart&q={quote(question[:500], safe='')}"
+    return f"\n<{url}|Open interactive chart>"
 
 
 def _count(value) -> str:

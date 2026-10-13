@@ -722,6 +722,27 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
 
   }
 
+  // "Open interactive chart" from Slack: /chat?mode=chart&q=... asks the
+  // question here, once, as whoever opened it -- their own access decides
+  // what the chart shows. Two steps so Chart mode (and a chart-capable model)
+  // is in place before the question goes.
+  const linkQuestion = searchParams.get("q");
+  const [pendingAsk, setPendingAsk] = useState<string | null>(null);
+  useEffect(() => {
+    if (!linkQuestion || !me || conversationParam) return;
+    toggleChartMode(searchParams.get("mode") === "chart");
+    setPendingAsk(linkQuestion.slice(0, 500));
+    router.replace(pathname);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linkQuestion, me]);
+  useEffect(() => {
+    if (!pendingAsk || busy) return;
+    const question = pendingAsk;
+    setPendingAsk(null);
+    void ask(question);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingAsk, busy]);
+
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     ask(input.trim());

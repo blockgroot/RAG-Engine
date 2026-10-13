@@ -747,3 +747,17 @@ def test_a_reply_that_is_not_a_missing_chart_is_not_logged(monkeypatch):
     monkeypatch.setattr("app.agent.orchestration.build_agent_graph", lambda g: _G())
     slack_events._answer("what is our leave policy?", "org-1", None, None, "Company")
     assert logged == []
+
+
+def test_a_dm_chart_links_to_the_interactive_chart_in_the_web_app(monkeypatch):
+    """Slack cannot run a chart, so the picture carries a link that re-asks the
+    question in the web app's Chart mode, as whoever clicks it."""
+    from app.api.slack_events import _interactive_link
+
+    monkeypatch.setenv("FRONTEND_URL", "https://hand-book.vercel.app/")
+    link = _interactive_link("Chart tickets per month & by team", None)
+    assert link == ("\n<https://hand-book.vercel.app/chat?mode=chart&q=Chart%20tickets%20per%20month"
+                    "%20%26%20by%20team|Open interactive chart>")
+    assert "/workspaces/ws-1/ask?mode=chart" in _interactive_link("q", "ws-1")
+    monkeypatch.delenv("FRONTEND_URL")
+    assert _interactive_link("q", None) == ""
