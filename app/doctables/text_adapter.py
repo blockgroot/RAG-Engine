@@ -175,7 +175,9 @@ def _is_label(header: str, cell: str, quote: str) -> bool:
     """A cell that names the row (Q2, North, June, 2024) rather than a figure.
     A year is a label unless its own header is a measure written in the quote."""
     value, _unit = extract.parse_number(cell)
-    return value is None or (_is_year(value) and not _header_spans(header, quote))
+    # A year is written as four bare digits: "1,900 units" is a figure.
+    year = re.fullmatch(r"\d{4}", cell.strip()) is not None and _is_year(value or 0)
+    return value is None or (year and not _header_spans(header, quote))
 
 
 def _bound(span, nums, *, follows: bool):
@@ -188,7 +190,25 @@ def _bound(span, nums, *, follows: bool):
     return (first or second or [None])[0]
 
 
-def _measure_binds(header, value, measures, quote, nums, allowed) -> bool:
+def _clean_stretch(stretch: str, allowed: set[str], names: list[str]) -> bool:
+    """Nothing between an earlier figure and this one names another measure.
+
+    When the row's own label opens the clause ("..., and Plant C contributed
+    1,700"), the list item is that label, a verb and its figure: what follows
+    the label may hold one connecting word. Otherwise every long word must be
+    a label, a column name or a unit ("while headcount reached 150" fails).
+    """
+    last = -1
+    for name in names:
+        for _start, end in _label_spans(name, stretch):
+            last = max(last, end)
+    if last >= 0:
+        extra = [w for w in _LONG_WORD.findall(stretch[last:]) if w not in allowed]
+        return len(extra) <= 1
+    return all(w in allowed for w in _LONG_WORD.findall(stretch))
+
+
+def _measure_binds(header, value, measures, quote, nums, allowed, names=()) -> bool:
     """The figure belongs to this column's measure, not to another one.
 
     No constraint when the column's name is not written in the quote ("In Q1
@@ -221,12 +241,28 @@ def _measure_binds(header, value, measures, quote, nums, allowed) -> bool:
             stretch = quote[end:between[0][1]] if between else ""
         else:
             continue
-        if is_own and all(w in allowed for w in _LONG_WORD.findall(stretch)):
+        if is_own and _clean_stretch(stretch, allowed, list(names)):
             return True
     return False
 
 
-def _bind_group(columns: list[str], rows: list[list[str]], quote: str) -> list[bool]:
+def _opens_alone(cell: str, others: set[str], quote: str) -> bool:
+    """The label opens a sentence of the quote ("In January, ...") and no
+    other value of its column is in the quote: it is the context of every
+    figure there, not bound to the nearest one."""
+    starts = [0] + [m.end() for m in re.finditer(r"[.!?]\s+", quote)]
+    opens = any(
+        start - max(s for s in starts if s <= start) <= _OPENING_CHARS
+        for start, _end in _label_spans(cell, quote)
+    )
+    want = _norm(cell)
+    return opens and not any(
+        _label_spans(v, quote) for v in others if _norm(v) != want
+    )
+
+
+def _bind_group(columns: list[str], rows: list[list[str]], quote: str,
+                column_values: dict[int, set[str]] | None = None) -> list[bool]:
     """Which of these rows (all quoting ``quote``) bind cell to cell.
 
     Each figure binds to its own measure (``_measure_binds``), and each label
@@ -237,8 +273,11 @@ def _bind_group(columns: list[str], rows: list[list[str]], quote: str) -> list[b
     label every row of the sentence shares ("In 2024, ...") is context, not
     a binding. A mismatch is dropped, never repaired.
     """
+    # A label written before the sentence (``_context_label``) was checked
+    # there; only labels inside the quote bind to a figure in it.
     label_cells = [
-        [(h, c) for h, c in zip(columns, cells) if c.strip() and _is_label(h, c, quote)]
+        [(h, c) for h, c in zip(columns, cells)
+         if c.strip() and _is_label(h, c, quote) and _label_spans(c, quote)]
         for cells in rows
     ]
     label_spans = [s for labels in label_cells for _h, c in labels for s in _label_spans(c, quote)]
@@ -266,13 +305,17 @@ def _bind_group(columns: list[str], rows: list[list[str]], quote: str) -> list[b
     figures = []
     for values, labels in zip(values_by_row, label_cells):
         figures.append([v for _h, v in values])
+        names = [c for _h, c in labels]
         measured.append(bool(values) and all(
-            _measure_binds(h, v, measures, quote, nums, allowed) for h, v in values
+            _measure_binds(h, v, measures, quote, nums, allowed, names) for h, v in values
         ))
 
     def binds(index: int, follows: bool) -> bool:
         for header, cell in label_cells[index]:
             if (header, _norm(cell)) in shared:
+                continue
+            others = (column_values or {}).get(columns.index(header), set())
+            if _opens_alone(cell, others, quote):
                 continue
             spans = _label_spans(cell, quote)
             hits = [_bound(s, nums, follows=follows) for s in spans]
@@ -288,18 +331,66 @@ def _bind_group(columns: list[str], rows: list[list[str]], quote: str) -> list[b
     return [a and b for a, b in zip(lead, trail)]
 
 
+#: How far into a sentence a value still OPENS it ("In March, ...").
+_OPENING_CHARS = 12
+
+
+def _context_label(cell: str, values: set[str], quote_norm: str, paragraphs: list[str]) -> bool:
+    """A label the sentence leaves to an earlier one in its paragraph.
+
+    "In January, the facility produced 6,200 units. Plant A manufactured 2,400
+    units" -- the month is not in the second sentence. It is kept only when it
+    is the LAST of its column's values written before the quote in that
+    paragraph -- preferring one that opens its sentence -- so "January" on a
+    February sentence is still dropped.
+    """
+    want = _norm(cell)
+    for paragraph in paragraphs:
+        at = paragraph.find(quote_norm)
+        if at < 0:
+            continue
+        before = paragraph[:at]
+        # Where each sentence before the quote starts: a value in a sentence's
+        # opening words ("In March, ...") sets the context; one in passing
+        # ("compared with 19 hours in February") does not, unless no sentence
+        # opens with one.
+        starts = [0] + [m.end() for m in re.finditer(r"[.!?]\s+", before)]
+        last = lead = None
+        last_at = lead_at = -1
+        for value in values:
+            for start, _end in _label_spans(value, before):
+                if start > last_at:
+                    last, last_at = _norm(value), start
+                opening = max(s for s in starts if s <= start)
+                if start - opening <= _OPENING_CHARS and start > lead_at:
+                    lead, lead_at = _norm(value), start
+        return (lead or last) == want
+    return False
+
+
 def verify_rows(
     document: str, rows: list[dict], columns: list[str] | None = None,
 ) -> list[tuple[list[str], str]]:
     """``(cells, quote)`` for each row whose quote is in the document, whose
-    every cell is in its quote, and (with ``columns``) whose cells bind to
-    each other (``_bind_group``).
+    every cell is in its quote -- or, for a label, written just before it in
+    the same paragraph (``_context_label``) -- and (with ``columns``) whose
+    cells bind to each other (``_bind_group``).
 
     A mismatch is dropped, never repaired. ``columns`` is omitted only by tests
     of the quote check itself; extraction always passes them.
     """
     doc_norm = _norm(document)
+    paragraphs = [_norm(line) for line in (document or "").splitlines() if line.strip()]
     header = [str(c) for c in columns[:MAX_COLUMNS]] if columns else None
+    # Every value the model gave each column: the candidates a context label
+    # is chosen among.
+    column_values: dict[int, set[str]] = {}
+    for row in rows[:MAX_ROWS]:
+        cells = row.get("cells") if isinstance(row, dict) else None
+        for i, cell in enumerate(cells if isinstance(cells, list) else []):
+            text = str(cell or "").strip()
+            if text and extract.parse_number(text)[0] is None:
+                column_values.setdefault(i, set()).add(text)
     checked: list[tuple[list[str], str, str]] = []
     for row in rows[:MAX_ROWS]:
         if not isinstance(row, dict):
@@ -312,7 +403,12 @@ def verify_rows(
         if len(quote_norm) < 6 or len(quote_norm) > 400 or quote_norm not in doc_norm:
             continue
         numbers = _numbers_in(quote)
-        if not all(_cell_in_quote(c, quote_norm, numbers) for c in cells):
+        if not all(
+            _cell_in_quote(c, quote_norm, numbers)
+            or (extract.parse_number(c)[0] is None
+                and _context_label(c, column_values.get(i, set()), quote_norm, paragraphs))
+            for i, c in enumerate(cells)
+        ):
             continue
         if header is not None and len(cells) > len(header):
             continue
@@ -324,7 +420,8 @@ def verify_rows(
     for index, (_cells, _quote, quote_norm) in enumerate(checked):
         groups.setdefault(quote_norm, []).append(index)
     for quote_norm, indexes in groups.items():
-        verdicts = _bind_group(header, [checked[i][0] for i in indexes], quote_norm)
+        verdicts = _bind_group(header, [checked[i][0] for i in indexes], quote_norm,
+                               column_values)
         for i, ok in zip(indexes, verdicts):
             keep[i] = ok
     return [(cells, quote) for (cells, quote, _), ok in zip(checked, keep) if ok]
@@ -338,6 +435,10 @@ def build_prompt(title: str, text: str) -> str:
         "as small tables a chart could be drawn from.\n\n"
         "Rules:\n"
         "- Only figures the text states. Never compute, total, convert or guess.\n"
+        "- Return EVERY series in the document, not only the main one: each "
+        "measure written for two or more periods or items (production, waste, "
+        "downtime, headcount, rates...) is a series. A measure given only once is "
+        "not.\n"
         "- One table per kind of figure (for example revenue by quarter). Columns "
         "are short labels (Quarter, Region, Revenue). Cells are copied exactly as "
         "written in the text (\"₹15L\", \"Q2\", \"North\").\n"
@@ -365,6 +466,70 @@ def build_prompt(title: str, text: str) -> str:
 
 
 _JSON = re.compile(r"\{.*\}", re.S)
+
+
+_NUMBER_THEN_WORD = re.compile(r"(.*\d)\s*([^\W\d_]{1,16})\.?")
+
+
+def _split_units(header: list[str], rows: list[dict]) -> tuple[list[str], dict]:
+    """"18.5 tonnes" -> "18.5", whatever the word after the number is.
+
+    The number parser knows formats (₹, lakh, k, %), not every unit a page can
+    use, so a cell like "420 kg" read as text and its row had no figure. The
+    unit is moved, never dropped: into the column name when the whole column
+    shares it ("Figure (tonnes)"), else onto that row's own label afterwards
+    (``_carry_units``), so tonnes and kilograms are never one series. Rows are
+    changed in place; returns the header and ``{(cells, quote): unit}``.
+    """
+    per_row: dict[int, str] = {}
+    column_unit: dict[int, set[str]] = {}
+    for index, row in enumerate(rows):
+        cells = row.get("cells")
+        if not isinstance(cells, list):
+            continue
+        for i, cell in enumerate(cells[:len(header)]):
+            text = str(cell or "").strip()
+            if not text or extract.parse_number(text)[0] is not None:
+                continue
+            match = _NUMBER_THEN_WORD.fullmatch(text)
+            if not match or extract.parse_number(match.group(1))[0] is None:
+                continue
+            cells[i] = match.group(1).strip()
+            column_unit.setdefault(i, set()).add(match.group(2))
+            per_row[index] = match.group(2)
+    header = list(header)
+    shared = {i: next(iter(u)) for i, u in column_unit.items() if len(u) == 1}
+    for i, unit in shared.items():
+        name, bracket = split_header(header[i])
+        if not bracket:
+            header[i] = f"{header[i]} ({unit})"
+    units = {}
+    if len(shared) != len(column_unit):
+        for index, unit in per_row.items():
+            cells = rows[index].get("cells") or []
+            units[(tuple(str(c) if c is not None else "" for c in cells), str(rows[index].get("quote", "")).strip())] = unit
+    return header, units
+
+
+def _carry_units(rows, units: dict, header: list[str]):
+    """Put a row's own unit on its last label ("production waste (kg)"). A row
+    whose unit has no label to sit on is dropped: a figure without its unit
+    beside figures in another unit would be added to them."""
+    if not units:
+        return rows
+    out = []
+    for cells, quote in rows:
+        unit = units.get((tuple(cells), quote))
+        if unit is None:
+            out.append((cells, quote))
+            continue
+        labels = [i for i, c in enumerate(cells) if c.strip() and extract.parse_number(c)[0] is None]
+        if not labels:
+            continue
+        cells = list(cells)
+        cells[labels[-1]] = f"{cells[labels[-1]]} ({unit})"
+        out.append((cells, quote))
+    return out
 
 
 class TextAdapter(DatasetAdapter):
@@ -429,8 +594,9 @@ class TextAdapter(DatasetAdapter):
             if not isinstance(item, dict):
                 continue
             header = [str(c)[:80] for c in (item.get("columns") or [])][:MAX_COLUMNS]
-            raw_rows = item.get("rows") or []
-            rows = verify_rows(prose, raw_rows, header)
+            raw_rows = [r for r in (item.get("rows") or []) if isinstance(r, dict)]
+            header, units = _split_units(header, raw_rows)
+            rows = _carry_units(verify_rows(prose, raw_rows, header), units, header)
             if len(header) < extract.MIN_COLUMNS or len(rows) < extract.MIN_ROWS:
                 continue
             notes = [TEXT_NOTE]

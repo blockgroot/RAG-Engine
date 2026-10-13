@@ -161,3 +161,16 @@ def test_a_reingest_starts_over(org, llm):
         conn.commit()
     assert _marked(doc_id) is None
     assert table_store.list_tables(org_id=org, workspace_id=None, viewer=VIEWER) == []
+
+
+def test_a_spent_quota_leaves_the_page_for_a_later_sync(org, llm):
+    """A 429 is the quota, not the page: not stamped checked, so the next
+    sync's backfill reads it, and not marked read."""
+    from app.core.exceptions import LLMRateLimitError
+
+    llm.reply = LLMRateLimitError("429 quota")
+    doc_id = _ingest(org)
+    with get_connection() as conn:
+        checked = conn.execute(
+            "SELECT tables_checked_at FROM documents WHERE id = %s", (doc_id,)).fetchone()[0]
+    assert checked is None and _marked(doc_id) is None

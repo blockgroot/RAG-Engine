@@ -500,6 +500,7 @@ def _store_tables(document_id, doc, *, org_id: str, workspace_id: str | None) ->
     except Exception:  # noqa: BLE001 - see docstring
         logger.warning("Could not build table readers for %s", doc.external_id, exc_info=True)
         adapters = []
+    retry_later = False
     for adapter in adapters:
         try:
             if not adapter.wants(text):
@@ -517,12 +518,24 @@ def _store_tables(document_id, doc, *, org_id: str, workspace_id: str | None) ->
 
                 mark_read(document_id, org_id=org_id, workspace_id=workspace_id,
                           external_id=doc.external_id, title=doc.title or "")
-        except Exception:  # noqa: BLE001 - see docstring; Chart mode can still read it
-            logger.warning("Could not store %s tables of %s", adapter.origin,
-                           doc.external_id, exc_info=True)
+        except Exception as exc:  # noqa: BLE001 - see docstring; Chart mode can still read it
+            from ..core.exceptions import LLMRateLimitError
+
+            if isinstance(exc.__cause__, LLMRateLimitError):
+                # The quota, not this document: left unchecked so the next
+                # sync's backfill reads it once the quota is back.
+                retry_later = True
+                logger.warning("Model quota spent; %s tables of %s left for a later sync",
+                               adapter.origin, doc.external_id)
+            else:
+                logger.warning("Could not store %s tables of %s", adapter.origin,
+                               doc.external_id, exc_info=True)
+    if retry_later:
+        return
     try:
-        # Stamped even when an adapter failed: the failure is logged, and a
-        # document that always fails must not take a backfill slot forever.
+        # Stamped even when an adapter failed for any other reason: the failure
+        # is logged, and a document that always fails must not take a backfill
+        # slot forever.
         from ..doctables.store import mark_checked
 
         mark_checked(document_id)

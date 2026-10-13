@@ -388,3 +388,79 @@ def test_ingest_waits_for_a_background_slot(monkeypatch):
     monkeypatch.setattr("app.llm.pacing.wait_for_background_slot", lambda: False)
     with pytest.raises(ProviderError):
         TextAdapter().extract(_doc())
+
+
+# --------------------------------------------------------------------------
+# A label the sentence leaves to the one before it (a real Drive report)
+# --------------------------------------------------------------------------
+
+
+REPORT = (
+    "Annual Manufacturing Performance Report\n"
+    "In January, the facility produced 6,200 units. Plant A manufactured 2,400 units, "
+    "Plant B produced 2,100, and Plant C contributed 1,700.\n"
+    "In February, production increased to 6,800 units. Plant A produced 2,600 units, "
+    "Plant B manufactured 2,300, and Plant C contributed 1,900.\n"
+)
+JAN = "Plant A manufactured 2,400 units, Plant B produced 2,100, and Plant C contributed 1,700."
+FEB = "Plant A produced 2,600 units, Plant B manufactured 2,300, and Plant C contributed 1,900."
+
+
+def test_the_month_from_the_sentence_before_is_kept():
+    """The model's real reply for this report: every quote is the plant
+    sentence, and the month is in the sentence before it."""
+    rows = [{"cells": [m, p, v], "quote": q} for m, q, vals in (
+        ("January", JAN, ("2,400", "2,100", "1,700")), ("February", FEB, ("2,600", "2,300", "1,900")),
+    ) for p, v in zip(("Plant A", "Plant B", "Plant C"), vals)]
+    kept = verify_rows(REPORT, rows, ["Month", "Plant", "units"])
+    assert len(kept) == 6  # the last list item ("and Plant C contributed") too
+
+
+def test_a_month_from_another_paragraph_is_dropped():
+    """January's figures labelled February: the last month before the
+    quote in its paragraph is January, so the row is dropped."""
+    kept = verify_rows(REPORT, [
+        {"cells": ["February", "Plant A", "2,400"], "quote": JAN},
+        {"cells": ["January", "Plant A", "2,400"], "quote": JAN},
+    ], ["Month", "Plant", "units"])
+    assert [cells[0] for cells, _ in kept] == ["January"]
+
+
+def test_a_month_mentioned_in_passing_does_not_take_over_the_paragraph():
+    text = ("In March, total production reached 7,500 units. Average machine downtime "
+            "declined to 14 hours, compared with 19 hours in February. Production waste "
+            "was recorded at 365 kg.\n")
+    kept = verify_rows(text, [
+        {"cells": ["March", "365"], "quote": "Production waste was recorded at 365 kg."},
+        {"cells": ["February", "365"], "quote": "Production waste was recorded at 365 kg."},
+    ], ["Month", "Production waste"])
+    assert [cells[0] for cells, _ in kept] == ["March"]
+
+
+def test_a_unit_word_after_a_figure_is_moved_never_summed_across_units():
+    """"420 kg" and "18.5 tonnes" are figures. One shared unit goes to the
+    column name; different units go onto each row's own measure label."""
+    text = ("In January, raw material consumption was 18.5 tonnes, and total production "
+            "waste amounted to 420 kg.\nIn February, raw material consumption increased "
+            "to 19.2 tonnes, while production waste declined to 390 kg.\n")
+    jan = ("In January, raw material consumption was 18.5 tonnes, and total production "
+           "waste amounted to 420 kg.")
+    feb = ("In February, raw material consumption increased to 19.2 tonnes, while "
+           "production waste declined to 390 kg.")
+    llm = FakeLLM({"tables": [{"name": "Materials", "columns": ["Month", "Measure", "Figure"],
+                               "rows": [
+        {"cells": ["January", "raw material consumption", "18.5 tonnes"], "quote": jan},
+        {"cells": ["January", "production waste", "420 kg"], "quote": jan},
+        {"cells": ["February", "raw material consumption", "19.2 tonnes"], "quote": feb},
+        {"cells": ["February", "production waste", "390 kg"], "quote": feb},
+    ]}]})
+    [table] = TextAdapter(llm).extract(_doc(text))
+    assert sorted({row["c1"] for row in table.cells}) == [
+        "production waste (kg)", "raw material consumption (tonnes)"]
+    assert [row["c2"] for row in table.cells] == [18.5, 420, 19.2, 390]
+
+    one_unit = FakeLLM({"tables": [{"name": "Waste", "columns": ["Month", "Waste"], "rows": [
+        {"cells": ["January", "420 kg"], "quote": jan}, {"cells": ["February", "390 kg"], "quote": feb},
+    ]}]})
+    [table] = TextAdapter(one_unit).extract(_doc(text))
+    assert [c.name for c in table.columns] == ["Month", "Waste (kg)"]

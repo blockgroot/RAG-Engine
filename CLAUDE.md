@@ -242,7 +242,15 @@ context), and, when the column's name is written in the quote, the figure to
 it (the nearest number column's name before it; after an intervening figure, no
 word of five or more letters between other than labels, column names and the
 word right after a figure). A column name need NOT be in the sentence at all:
-requiring it dropped most real paragraphs. A figure another measure governs is dropped,
+requiring it dropped most real paragraphs. A label may sit before its sentence
+("In January, … . Plant A manufactured 2,400 units"): kept only when it is the
+latest value of its column opening a sentence earlier in that paragraph
+(`_context_label`), and a period opening the quote with no other value of its
+column in it is context for every figure there. A year is four bare digits
+("1,900 units" is a figure). A unit word after a figure ("420 kg") is moved to
+the column name when the column shares it, else onto the row's measure label,
+never summed across units. A 429 at ingest leaves the document unchecked so a
+later sync's backfill reads it. A figure another measure governs is dropped,
 never repaired; the chart says "taken from text", and a dropped row is named
 so a partial series is not presented as complete. Chart mode, when nothing
 stored is chartable, reads the page the asker NAMED live, then the sentences of
