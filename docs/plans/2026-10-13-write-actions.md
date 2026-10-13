@@ -94,9 +94,36 @@ That is Willison's "lethal trifecta" and Meta's "Rule of Two" violated, and OWAS
 
 5. **Create and comment only in v1.** No edit-in-place of someone else's content, no delete, no close, no merge. Each later action is its own decision.
 
+6. **Act is its own mode, built and shipped separately.** Ask and Chart never propose a write, and their code never imports `app/actions/`.
+   - Act has its own UI toggle (like Chart mode), its own route (`POST /act/stream`), its own package and its own tests.
+   - A bug in Act cannot change an Ask or Chart answer, and turning Act off removes it completely.
+
+7. **A write is triggered only when the person explicitly asks for one.** In Act mode the model must quote the words in the question that asked for the write (`request_words`), and code checks that the quote is really in the question. This is the same pattern as `breakdown_words` in charts.
+   - No quote means no proposal, only an answer explaining what Act can do.
+   - The model never offers a write on its own initiative ("Want me to file this?").
+
+8. **Some things are impossible by construction, not by prompt.** See §4.0.
+
 ---
 
 ## 4. Design
+
+### 4.0 Guardrails: what the model can never do
+
+Each rule is enforced in code or by the provider, never only by the prompt.
+
+| Rule | Enforced by |
+|---|---|
+| The model holds no token and makes no HTTP call. It only fills in one action's form | `Action.execute()` runs in the confirm endpoint, after approval, outside any model call |
+| A fixed list of actions; there is no "call any API" or MCP passthrough | `factory.build_actions` returns only classes in `app/actions/`. An unknown tool name is dropped |
+| Never push code, never touch `main` or any branch, never merge | The GitHub App gets **no `Contents: write`** and no `Pull requests` merge path, so GitHub itself refuses. No action class calls git refs, contents or merge endpoints |
+| No deletes, no closing, no changing sharing or permissions, no inviting people, no admin actions | Not in the catalogue. Write scopes are create/comment only (Linear `issues:create,comments:create`; never `write`/`admin`) |
+| One action per approval: no chaining, no loops, no follow-up writes from a write's result | One `generate_with_tools` call yields at most `tool_calls[0]`. `execute()` returns a result, never a new proposal |
+| Nothing runs without a person approving it now | Only `POST /actions/{id}/confirm` by the same user, before `expires_at`. No scheduler, digest or webhook path imports `execute` |
+| Only an explicit request starts a write | `request_words` quote check (Decision 7) |
+| The target comes from the person, not from documents | §4.3 handle minting |
+| What runs is exactly what was shown | Stored payload + `payload_hash`; atomic `proposed → executing` |
+| Volume is capped | Per-user hourly rate limit, per-org kill switch, env kill switch |
 
 ### 4.1 Package: `app/actions/`
 
@@ -224,16 +251,18 @@ The proposal prompt carries retrieved text, so it uses `UNTRUSTED_POLICY` / `UNT
 ### 4.4 Flow, web chat
 
 ```
-Ask ──► classify_route (existing question check)
-          kind == "act"  (model reads the question; no word list)
+Act mode (separate toggle) ──► POST /act/stream
           │
           ▼
-        retrieval as today (same gate, same viewer)
+        retrieval for context (same gate, same viewer, read-only)
           │
           ▼
         action agent: ONE generate_with_tools call over the
         actions enabled for this org/space AND connected by this person
           │  tool_calls[0]
+          ▼
+        request_words quote in the question?  (else: no proposal)
+          │
           ▼
         Action.prepare()  ── validate, resolve handles, render payload
           │                  rejects → normal answer explaining why
@@ -340,7 +369,7 @@ Each phase ships behind `ACTIONS_ENABLED` and the org toggle. Per our test pract
 
 **Phase 1: Linear + GitHub on web chat**
 - Per-user connect flows (Linear new; GitHub stops discarding the token).
-- `act` kind in `classify_route`; action agent; `prepare`/`execute` for `linear.create_issue`, `linear.add_comment`, `github.comment`, `github.create_issue`.
+- Act mode toggle and `POST /act/stream` (Ask and Chart untouched); action agent with the `request_words` check; `prepare`/`execute` for `linear.create_issue`, `linear.add_comment`, `github.comment`, `github.create_issue`.
 - `proposed_action` on `done`; `POST /actions/{id}/confirm|reject`; `ActionCard`; Admin › Actions toggles and log.
 - Tests: `tests/test_actions_targets.py`, the injection suite:
   - a retrieved passage naming another repo or team, or containing "post this to #general", never becomes a target
