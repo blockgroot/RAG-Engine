@@ -77,6 +77,12 @@ def _dsids(document_ids: list[str]) -> list[str]:
     return [rows[d] for d in order if rows.get(d)]
 
 
+def _broad(q: dict) -> bool:
+    """A question a person would ask in Deep analysis: high-level, or one whose
+    answer spans more than one document."""
+    return q["question_type"] == "high_level" or len(q["expected_doc_ids"]) > 1
+
+
 def _errored(rec: dict) -> bool:
     raw = rec["raw"]
     return bool(raw.get("exception") or raw.get("error") or raw.get("http") or raw.get("error_msg"))
@@ -228,6 +234,9 @@ def main() -> None:
                     help="setting for this variant only, e.g. RAG_TOP_K=3 (wins over .env.bench)")
     ap.add_argument("--deep", action="store_true",
                     help="Handbook: ask in chat's Deep analysis mode")
+    ap.add_argument("--deep-broad", action="store_true",
+                    help="Handbook: Deep analysis for broad questions (high-level, or the answer "
+                         "needs more than one document), as a person would pick it; normal for the rest")
     ap.add_argument("--deep-multi-doc", action="store_true",
                     help="Handbook: Deep analysis for questions whose answer needs more than one "
                          "document (as a person would pick it), normal mode for the rest")
@@ -262,6 +271,10 @@ def main() -> None:
                 from app.rag.deep import use_deep_read
 
                 use_deep_read(len(q["expected_doc_ids"]) > 1)
+            if args.deep_broad:
+                from app.rag.deep import use_deep_read
+
+                use_deep_read(_broad(q))
             t0 = time.time()
             try:
                 out = system.ask(q["question"])

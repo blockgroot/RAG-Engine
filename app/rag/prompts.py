@@ -192,6 +192,16 @@ _CONFLICT_RULE = (
     "say briefly that the earlier value was superseded."
 )
 
+_ASSEMBLE_RULE = (
+    "If the QUESTION asks about the company or a product as a whole (its "
+    "strategy, offering, features, structure, or a list of them) and no single "
+    "block states the whole answer, put the answer together from the blocks "
+    "that each hold a piece: lead with the combined answer (mode A), cite each "
+    "piece, and include every item CONTEXT supports, even beyond rule 5's 3-5 "
+    "points. Do not open with what is missing; end with one short line saying "
+    "it is gathered from several documents rather than stated in one place."
+)
+
 
 def build_grounded_prompt(
     question: str,
@@ -203,6 +213,7 @@ def build_grounded_prompt(
     focus_rule: bool = False,
     partial_rule: bool = False,
     conflict_rule: bool = False,
+    assemble_rule: bool = False,
 ) -> str:
     """Build the grounded-answer prompt (facts from CONTEXT only).
 
@@ -210,8 +221,11 @@ def build_grounded_prompt(
     and Benchmark 1's second-largest loss was a real fact attached to the wrong
     customer, incident or version. ``partial_rule`` lets a partly covered
     question get the covered part instead of the fallback; ``conflict_rule``
-    prefers the newer of two disagreeing blocks (Benchmark 2). Each is off by
-    default, and with all off the prompt is unchanged.
+    prefers the newer of two disagreeing blocks (Benchmark 2); ``assemble_rule``
+    lets a company-wide question be answered from pieces spread over several
+    blocks (Benchmark 3: such answers opened with "no single document states
+    this" and were graded refusals). Each is off by default, and with all off
+    the prompt is unchanged.
 
     ``asker_facts`` (personal memory) sit OUTSIDE the context, after it, and
     are framed as interpretation only: they may decide WHICH office or team a
@@ -291,7 +305,7 @@ def build_grounded_prompt(
             f"{n}. {rule}\n"
             for n, rule in enumerate(
                 [r for on, r in ((focus_rule, _FOCUS_RULE), (partial_rule, _PARTIAL_RULE),
-                                 (conflict_rule, _CONFLICT_RULE)) if on],
+                                 (conflict_rule, _CONFLICT_RULE), (assemble_rule, _ASSEMBLE_RULE)) if on],
                 start=6,
             )
         )

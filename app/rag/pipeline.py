@@ -1195,15 +1195,18 @@ class RagPipeline:
             (c.document_id, c.chunk_index): c
             for c in _screen_hits(found, org_id, self._guard_settings)
         }
-        # Normal Ask: neighbours only fill room left after EVERY selected hit's
-        # own piece, so they never push another document out of the budget
-        # (RCA, 9 Oct: a short read lost a right document to the top hits'
-        # neighbours). A deep read is already sized by the budget.
+        # Neighbours only fill room left after EVERY selected hit's own piece,
+        # so they never push another document out of the budget (RCA, 9 Oct: a
+        # short read lost a right document to the top hits' neighbours). A
+        # narrow deep read is already sized by the budget; a WIDE one is not:
+        # three documents read in depth filled it and the prefix cut every
+        # other document, so a company-wide question saw 2-3 documents and
+        # half its facts. Breadth first there, depth with what is left.
         hit_keys = {(h.document_id, h.chunk_index) for h in hits}
         room = (
             rag.context_chars_for(len(hits))
             - sum(len(h.content) + _PROVENANCE_CHARS for h in hits)
-            if top_docs <= 0 else None
+            if top_docs <= 0 or len(hits) > rag.top_k else None
         )
         joined: list[RetrievedChunk] = []
         for h in top:
@@ -1917,6 +1920,7 @@ class RagPipeline:
             focus_rule=self._settings.focus_rule,
             partial_rule=self._settings.partial_rule,
             conflict_rule=self._settings.conflict_rule,
+            assemble_rule=self._settings.assemble_rule,
         )
         answer_cap = self._settings.max_answer_tokens
         raw = self._generate_text(
