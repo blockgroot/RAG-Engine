@@ -389,3 +389,20 @@ def test_reingest_replaces_rather_than_appends(org):
     _ingest(org, doc, text="Region,Revenue\nEast,5\nWest,7\n")
     [table] = table_store.list_tables(org_id=org, workspace_id=None, viewer=SANA)
     assert table.row_count == 2
+
+
+def test_a_percentage_is_averaged_never_summed():
+    """87% and 91% are not 178%: a % column defaults to the average, and an
+    explicit sum of one is refused. Known from the cells' symbol, not a word."""
+    ref = _ref(columns=(
+        {"key": "c0", "name": "Month", "type": "date"},
+        {"key": "c1", "name": "Utilisation", "type": "number", "unit": "%"},
+    ))
+    handles = {"T1": ref}
+    pick = doc_tables.parse_pick({"table": "T1", "group_by": "Month", "value": "Utilisation"}, handles)
+    assert pick.measure == "average"
+    assert doc_tables.pick_named(ref, "chart utilisation by month", None).measure == "average"
+    with pytest.raises(doc_tables.TableRefusal, match="percentage"):
+        doc_tables.parse_pick({"table": "T1", "value": "Utilisation", "measure": "sum"}, handles)
+    # A currency column still adds up.
+    assert doc_tables.parse_pick({"table": "T1", "value": "Revenue"}, {"T1": _ref()}).measure == "sum"

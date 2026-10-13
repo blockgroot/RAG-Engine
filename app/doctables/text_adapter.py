@@ -45,7 +45,7 @@ from .base import DatasetAdapter, DocumentText
 logger = logging.getLogger(__name__)
 
 ORIGIN = "text"
-MAX_TABLES = 5
+MAX_TABLES = 10
 MAX_ROWS = 200
 MAX_COLUMNS = 8
 #: A reasoning model spends a small cap before it writes the JSON. At 1500,
@@ -608,6 +608,8 @@ class TextAdapter(DatasetAdapter):
                 )
             if truncated:
                 notes.append(f"Only the first {self._max_chars} characters were read.")
+            if len(found) > MAX_TABLES:
+                notes.append(f"{len(found) - MAX_TABLES} more series in this document were not read.")
             raw = extract.RawTable(
                 name=str(item.get("name") or doc.title)[:200],
                 header=header,

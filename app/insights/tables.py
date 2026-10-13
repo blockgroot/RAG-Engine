@@ -185,6 +185,14 @@ def _options(table: TableRef, types: tuple[str, ...], role: str) -> str:
             if names else f"This table has no column that works for the {role}.")
 
 
+def _default_measure(table: TableRef, value: str | None) -> str:
+    """Sum, except for a percentage: 87% and 91% are not 178%. The unit is the
+    cells' own symbol (format), so this holds for any measure in any language."""
+    if not value:
+        return "count"
+    return "average" if (table.column(value) or {}).get("unit") == "%" else "sum"
+
+
 def _phrase(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
 
@@ -228,7 +236,7 @@ def pick_named(table: TableRef, question: str, requested: str | None) -> TablePi
             f"I can see \"{table.document_title}\", but it has no column to chart. "
             + _options(table, ("category", "date", "number"), "chart")
         )
-    measure = "sum" if value else "count"
+    measure = _default_measure(table, value)
     chart = table_shape(table, group_by, None, requested)
     return TablePick(
         table_id=table.id, measure=measure, value=value, group_by=group_by,
@@ -290,7 +298,8 @@ def prose_chart(table: TableRef) -> TablePick | None:
     if len(rest) > 1:
         return None
     return TablePick(
-        table_id=table.id, measure="sum", value=numbers[0]["key"], group_by=group,
+        table_id=table.id, measure=_default_measure(table, numbers[0]["key"]),
+        value=numbers[0]["key"], group_by=group,
         split_by=rest[0] if rest else None, filters=(), chart="bar",
     )
 
@@ -320,7 +329,7 @@ def parse_pick(data: dict, handles: dict[str, TableRef]) -> TablePick | None:
     measure = data.get("measure")
     measure = measure.lower() if isinstance(measure, str) else None
     if measure in (None, "", "null", "none", "total", "count_rows"):
-        measure = "sum" if value else "count"
+        measure = _default_measure(table, value)
     if measure == "avg":
         measure = "average"
     if measure not in MEASURES:
@@ -331,6 +340,10 @@ def parse_pick(data: dict, handles: dict[str, TableRef]) -> TablePick | None:
                            + _options(table, ("number",), "value to add up"))
     if measure == "count":
         value = None
+    if measure == "sum" and _default_measure(table, value) == "average":
+        raise TableRefusal(f"\"{(table.column(value) or {}).get('name')}\" is a percentage; "
+                           "adding percentages gives a meaningless total. I can take "
+                           "the average, minimum or maximum instead.")
 
     filters = []
     raw_filters = data.get("filters")

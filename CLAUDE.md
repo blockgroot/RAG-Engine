@@ -249,7 +249,7 @@ latest value of its column opening a sentence earlier in that paragraph
 column in it is context for every figure there. A year is four bare digits
 ("1,900 units" is a figure). A unit word after a figure ("420 kg") is moved to
 the column name when the column shares it, else onto the row's measure label,
-never summed across units. A 429 at ingest leaves the document unchecked so a
+never summed across units. A percentage column (its cells' `%`) is averaged by default and a sum of it is refused (`tables._default_measure`). A 429 at ingest leaves the document unchecked so a
 later sync's backfill reads it. A figure another measure governs is dropped,
 never repaired; the chart says "taken from text", and a dropped row is named
 so a partial series is not presented as complete. Chart mode, when nothing
