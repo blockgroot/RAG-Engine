@@ -488,6 +488,9 @@ class RagSettings:
     # streams?") is answered by a sentence in each of many documents; ten
     # passages, three of them read in depth, held half its facts.
     deep_wide_max_hits: int = 20
+    # Deep's answer may run longer than normal Ask's cap: a complete list of 30-40
+    # items does not fit 700 tokens, and a cut-off list reads as the whole list.
+    deep_max_answer_tokens: int = 2000
 
     def deep(self) -> "RagSettings":
         """These settings with the deep read on, one budget for ranked and wide reads.
@@ -500,6 +503,8 @@ class RagSettings:
         return replace(
             self,
             wide_max_hits=max(self.wide_max_hits, self.deep_wide_max_hits),
+            max_answer_tokens=(None if self.max_answer_tokens is None
+                               else max(self.max_answer_tokens, self.deep_max_answer_tokens)),
             neighbor_top_docs=self.deep_top_docs,
             neighbor_chunks=self.deep_neighbor_chunks,
             max_context_chars=self.deep_max_context_chars,
@@ -560,6 +565,7 @@ class RagSettings:
             deep_neighbor_chunks=int(os.getenv("RAG_DEEP_NEIGHBOR_CHUNKS") or 8),
             deep_max_context_chars=int(os.getenv("RAG_DEEP_MAX_CONTEXT_CHARS") or 30000),
             deep_wide_max_hits=int(os.getenv("RAG_DEEP_WIDE_MAX_HITS") or 20),
+            deep_max_answer_tokens=int(os.getenv("RAG_DEEP_MAX_ANSWER_TOKENS") or 2000),
         )
 
 

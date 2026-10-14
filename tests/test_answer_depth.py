@@ -223,6 +223,7 @@ def test_partial_and_conflict_rules_are_off_by_default_and_numbered_after_focus(
     all_on = build_grounded_prompt("q?", ["ctx"], FALLBACK, focus_rule=True, partial_rule=True,
                                    conflict_rule=True, assemble_rule=True)
     assert "9. If the QUESTION asks about the company" in all_on
+    assert "how many there are" in all_on and "even beyond rule 5" in all_on  # lists are complete
     assert all_on.index("9. If the QUESTION") < all_on.index("\nCONTEXT:\n<<<")
 
 
@@ -351,6 +352,7 @@ def test_a_wide_deep_read_keeps_every_document_and_deepens_only_with_room_left()
     token = use_deep_read(True)
     try:
         assert pipe._read_settings().wide_max_hits == 20  # Deep may read more documents
+        assert pipe._read_settings().max_answer_tokens == 2000  # and answer a whole list
         out = pipe._with_neighbors(hits, ORG, workspace_id=None, viewer=None)
     finally:
         reset_deep_read(token)

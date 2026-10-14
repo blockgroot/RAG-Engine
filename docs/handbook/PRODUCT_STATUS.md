@@ -279,16 +279,20 @@ on top of the 12 metrics already shipping:
 The rule on the branch is the same: **the AI never produces a number**. It is under review.
 Ask on `main` still charts only the 12 registry metrics.
 
-**High-level questions in Deep analysis** (`fix/high-level-questions`, open, not on `main`).
+**High-level and list questions in Deep analysis** (`fix/high-level-questions`, PR #53, open).
 A company-wide question ("what are our revenue streams?") is answered by one sentence in each
-of many documents. Deep read the top three in depth, which filled its budget, so the model saw
-2-3 documents. On the branch a spread-out Deep read takes up to `RAG_DEEP_WIDE_MAX_HITS` (20)
-documents, one passage each first, and reads in depth only with the room left; and a new answer
-rule (`RAG_ASSEMBLE_RULE`) leads with the answer gathered from the pieces instead of opening with
-"no document states this". Benchmark 3 retest, 13 Oct, Claude Haiku, graded by Gemma 4 31B:
-high-level 3/10 right -> 4/10, facts 50% -> 63%; other broad questions 0/8 -> 1/8, facts 45% ->
-48%; normal questions 9/10 both. Four high-level answers are not in the benchmark's documents
-at all, so "I don't know" stays the right answer there.
+of many documents, and a list question ("every weekly update marked At Risk") by every matching
+document. Deep read the top three in depth, which filled its budget, so the model saw 2-3
+documents; and the answer prompt's "3-5 points" kept about half the facts it was given. On the
+branch: a spread-out Deep read takes up to `RAG_DEEP_WIDE_MAX_HITS` (20) documents, one passage
+each first, and reads in depth only with the room left; the answer rule `RAG_ASSEMBLE_RULE`
+gathers a company-wide, list, count or "which has the most" answer from every block and keeps
+every item; and Deep may answer up to `RAG_DEEP_MAX_ANSWER_TOKENS` (2000; normal Ask keeps 700).
+Benchmark 3 retest, 13-14 Oct, Claude Haiku, graded by Gemma 4 31B, before -> after on the
+same questions: high-level facts 50% -> 70%; list/count questions' facts 53% -> 61%; normal
+questions 9/10 both. Four high-level answers are not in the benchmark's documents at all, so
+"I don't know" stays the right answer there. Not done: a separate search per part of a
+question (the cause of the remaining list misses), held back for its latency and cost.
 
 ## 13. Testing & Verification
 
