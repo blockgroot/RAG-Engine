@@ -76,6 +76,22 @@ everything after that is ordinary code.
 9. **Everything is logged:** who asked, what was sent, where, the decision and the result.
    A timeout is marked "unknown" and never retried automatically, so there are no duplicates.
 
+## Private content reaching a wider audience
+
+Approval alone doesn't stop this. Priya can read a private HR doc, asks Act to "post a summary of the
+reorg doc to #general", and approves it, because it's what she asked for. So every proposal
+records which documents the draft used and compares their viewers with the destination's audience:
+
+| Destination audience | Result |
+|---|---|
+| Only people who can already see every private source | Normal card |
+| Some people who can't see a private source, or audience unknown (Notion, private GitHub repo) | Card names the docs and how many people are newly exposed. **Approve stays disabled until you tick** "I understand this shares private content" |
+| Public (public Slack channel, public GitHub repo) | **Blocked** |
+
+Warn-with-tick, not block, for the middle row: turning a private thread into an issue for the same
+team is the main legitimate use, and the team rarely matches the thread exactly. An org can turn
+the middle row into a block too (`ACTIONS_BLOCK_WIDER`).
+
 ## What a user sees
 
 1. Switch to **Act** and type: *"Create a Linear issue in Platform about the login timeout

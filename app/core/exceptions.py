@@ -93,3 +93,28 @@ class AuthError(ProviderError):
 class NotFoundError(ProviderError):
     """Raised when a referenced resource (by id/email/etc.) does not exist
     in the scope the caller is allowed to see."""
+
+
+class ActionError(ProviderError):
+    """Raised when an Act-mode write cannot be proposed or run.
+
+    Every subclass is shown to the person in plain words; none is retried
+    automatically, because a retried write can be a duplicate write.
+    """
+
+
+class ActionRejected(ActionError):
+    """The proposal itself is not allowed (bad target, blocked exposure, off)."""
+
+
+class ActionExpired(ActionError):
+    """The approval came after the card's time ran out."""
+
+
+class ActionConflict(ActionError):
+    """The approval does not match the stored proposal: already decided, a
+    different payload than the one shown, or a missing acknowledgement."""
+
+
+class ActionOutcomeUnknown(ActionError):
+    """The write was sent and no answer came back: it may or may not exist."""
