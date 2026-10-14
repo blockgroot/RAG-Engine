@@ -8567,35 +8567,15 @@ a.people-card:hover { color: inherit; }
   color: var(--accent-strong);
 }
 .act-card-error { margin: 0; color: var(--provenance-none); font-size: 0.9rem; }
-.act-page {
-  max-width: 960px;
-  gap: 1.1rem;
+/* Act on the Account page: one section, heading and "Open Act in chat"
+   side by side, then the accounts and the history. */
+.act-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
 }
-.act-page > .page-header { margin-bottom: 0.15rem; }
-.act-page .page-header-copy { max-width: 39rem; }
-.act-page .lede { max-width: 62ch; }
-.act-step-label {
-  margin: 0;
-  color: var(--accent-strong);
-  font-size: 0.7rem;
-  font-weight: 750;
-  letter-spacing: 0.1em;
-  line-height: 1.3;
-  text-transform: uppercase;
-}
-.act-accounts-panel {
-  gap: 0.85rem;
-  padding: 1.15rem;
-  border-radius: 18px;
-  background: color-mix(in srgb, var(--surface) 78%, white);
-  box-shadow: none;
-}
-.act-accounts-panel .studio-section-head { gap: 0.35rem; }
-.act-accounts-panel .studio-section-head h2 { font-size: 1.12rem; }
-.act-accounts-panel .studio-section-head .muted {
-  font-size: 0.82rem;
-  line-height: 1.5;
-}
+.act-panel-head .button { flex: none; }
 .act-providers {
   list-style: none;
   display: grid;
@@ -8646,11 +8626,8 @@ a.people-card:hover { color: inherit; }
   text-underline-offset: 0.2em;
 }
 .act-text-button:hover { color: var(--accent-strong); }
-.act-recent {
-  gap: 0.75rem;
-  padding: 1.15rem 1.25rem;
-  box-shadow: none;
-}
+.act-recent { display: grid; gap: 0.6rem; }
+.act-recent-title { margin: 0; font-size: 0.95rem; }
 .act-history-list {
   display: grid;
   border-top: 1px solid var(--border);
@@ -8855,7 +8832,7 @@ a.people-card:hover { color: inherit; }
   .action-safety-note { align-items: flex-start; flex-direction: column; gap: 0.15rem; }
 }
 @media (max-width: 600px) {
-  .act-accounts-panel { padding: 1.1rem; border-radius: 18px; }
+  .act-panel-head { flex-direction: column; }
   .act-history-row {
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 0.35rem 0.75rem;

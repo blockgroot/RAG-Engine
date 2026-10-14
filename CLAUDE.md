@@ -295,7 +295,8 @@ origin at `/api`; Next rewrites to FastAPI. Do not point `NEXT_PUBLIC_API_BASE_U
 at Render. `render.yaml` does not configure production Hand-Book. Supabase uses the
 session pooler (5432).
 
-**Act (writes).** `app/actions/`, its own page and routes; Ask, Chart, sync and
+**Act (writes).** `app/actions/` and its own routes (UI: the chat's Act mode,
+Account → Act, Admin › Actions); Ask, Chart, sync and
 the Slack bot import nothing from it. The model only fills in one action's form:
 a write runs only from `confirm`, by the person who proposed it, before
 `expires_at`, with the STORED payload (`payload_hash` compared, `store.claim` is
