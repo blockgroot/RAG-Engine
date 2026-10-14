@@ -305,8 +305,9 @@ Covered by `tests/test_doctables_text.py`, `tests/test_doctables_ingest.py`,
 Plan: `docs/plans/2026-10-13-write-actions.md`; plain version: `plan.md`. Off unless
 `ACTIONS_ENABLED=true`, then off per action until an org admin switches it on (Admin › Actions).
 
-- **Act page (`/act`)**, separate from Ask: "File a Linear issue in Platform about …" is drafted,
-  shown on a card, and sent **only when the person approves**, exactly as shown, once.
+- **Act page (`/act`)**, separate from Ask: a focused three-step flow makes the person name the
+  tool and target, review the exact draft, then approve it. The write is sent **only when the
+  person approves**, exactly as shown, once; account readiness stays visible beside the request.
 - **Each person connects their own Linear / GitHub account**, so a write runs with their rights
   and shows their name. Linear: create issue, comment. GitHub: open issue, comment on issue or PR.
   No edit, close, delete, merge or code push. The GitHub App needs **Issues: write** only (accepted
