@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import uuid
 from functools import lru_cache
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
@@ -45,6 +46,7 @@ from ..core.exceptions import (
     ActionConflict,
     ActionError,
     ActionExpired,
+    AuthError,
     ConfigurationError,
     LLMProviderError,
     NotFoundError,
@@ -53,6 +55,7 @@ from ..core.exceptions import (
 )
 from ..db.connection import get_connection
 from ..security.rate_limit import check_rate_limit
+from ..workspaces import assert_member
 from .deps import SessionClaims, get_session, require_admin, viewer_for
 
 logger = logging.getLogger("actions")
@@ -114,6 +117,10 @@ def _card(row: ActionRow, exposure: Exposure | None = None) -> dict:
         "provider": cls.provider if cls else None,
         "target": row.target,
         "payload": row.payload,
+        # The drafted words as the person reads and edits them (a Slack post
+        # without the line naming who asked), and whether they edited them.
+        "draft": cls().editable(row.payload) if cls else {},
+        "edited": row.original_payload is not None,
         "payload_hash": row.payload_hash,
         "status": row.status,
         "exposure": row.exposure,
@@ -172,6 +179,8 @@ def act_status(session: SessionClaims = Depends(get_session)):
 
 class ActRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
+    #: Act mode in a space's chat drafts from that space; a non-member is 403.
+    workspace_id: uuid.UUID | None = None
 
 
 @router.post("/act")
@@ -183,12 +192,18 @@ def act(body: ActRequest, session: SessionClaims = Depends(get_session)):
     if user is None or not user.email or viewer.is_unrestricted or not viewer.email:
         # An asker we cannot name does not act -- never "unrestricted".
         raise HTTPException(status_code=403, detail="Sign in again to use Act.")
+    workspace_id = str(body.workspace_id) if body.workspace_id else None
+    if workspace_id is not None:
+        try:
+            assert_member(workspace_id, session.org_id, session.user_id)
+        except AuthError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
     try:
         outcome = service.propose(
             body.question.strip(),
             org_id=session.org_id, user_id=session.user_id, email=user.email,
             viewer=viewer, llm=_llm(), embedder=_embedder(), vstore=_vstore(),
-            settings=settings,
+            settings=settings, scope_workspace_id=workspace_id,
         )
     except LLMProviderError as exc:
         logger.warning("Act model unavailable: %s", exc)
@@ -229,6 +244,33 @@ def confirm(action_id: str, body: ConfirmRequest, session: SessionClaims = Depen
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ActionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"action": _card(row)}
+
+
+class EditRequest(BaseModel):
+    payload_hash: str = Field(min_length=64, max_length=64)
+    #: Drafted words only; ``Action.edit`` refuses any other field.
+    fields: dict[str, Annotated[str, Field(max_length=20000)]] = Field(max_length=2)
+
+
+@router.patch("/act/actions/{action_id}")
+def edit(action_id: str, body: EditRequest, session: SessionClaims = Depends(get_session)):
+    """Save the person's edit of a pending draft; returns the new card and hash."""
+    settings = _require_on(session.org_id)
+    try:
+        row = service.edit(
+            org_id=session.org_id, user_id=session.user_id,
+            action_id=_action_id(action_id), shown_hash=body.payload_hash,
+            fields=body.fields, settings=settings,
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail="No such action.") from exc
+    except ActionExpired as exc:
+        raise HTTPException(status_code=410, detail=str(exc)) from exc
+    except ActionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ActionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"action": _card(row)}
 
 

@@ -8379,6 +8379,15 @@ a.people-card:hover { color: inherit; }
 }
 .act-card-title { font-weight: 600; }
 .act-card-body { white-space: pre-wrap; max-height: 18rem; overflow: auto; font-size: 0.93rem; }
+.act-card-edit-title,
+.act-card-edit-body { width: 100%; font: inherit; font-size: 0.93rem; }
+.act-card-edit-body { resize: vertical; min-height: 6rem; white-space: pre-wrap; }
+.act-card-fields dd:has(.act-card-edit-body) { max-height: none; overflow: visible; }
+.act-card-edited { margin: 0; font-size: 0.82rem; }
+/* Act mode in chat: the wrapper takes no box, so bubbles keep their own
+   alignment in .chat-log; the draft card sits under its reply. */
+.chat-turn { display: contents; }
+.chat-act-card { align-self: flex-start; width: min(100%, 44rem); }
 .act-card-exposure {
   display: grid;
   gap: 0.6rem;

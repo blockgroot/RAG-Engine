@@ -11,7 +11,10 @@ import { ApiError, api, type ActCard } from "@/lib/api";
  * stored copy and nothing else: Approve returns only this card's fingerprint.
  * When the draft used private documents that some people at the destination
  * cannot see, it says so with numbers, and Approve stays off until the person
- * ticks that they understand. Nothing here can change the payload.
+ * ticks that they understand. Edit sends the person's own words to the
+ * server, which stores them and returns a new fingerprint; Approve stays off
+ * while an edit is unsaved, so only what was saved and shown can be sent.
+ * Where it goes is never editable: cancel and ask again for that.
  */
 
 const PROVIDER_LABEL: Record<string, string> = {
@@ -52,6 +55,7 @@ export function ActionCard({
   const [ack, setAck] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<{ title?: string; body?: string } | null>(null);
 
   const pending = card.status === "proposed";
   useEffect(() => {
@@ -64,6 +68,9 @@ export function ActionCard({
   const expired = pending && secondsLeft === 0;
   const needsAck = card.exposure === "wider" || card.exposure === "unknown";
   const provider = PROVIDER_LABEL[card.provider ?? ""] ?? card.provider ?? "the tool";
+  const draft = card.draft ?? card.payload;
+  const bodyLabel =
+    draft.title !== undefined ? "Description" : card.provider === "slack" ? "Message" : "Comment";
 
   async function approve() {
     setBusy(true);
@@ -73,6 +80,29 @@ export function ActionCard({
       onChange(action);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not send it. Nothing was sent.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveEdit() {
+    if (!editing) return;
+    const fields: { title?: string; body?: string } = {};
+    if (editing.title !== undefined && editing.title !== draft.title) fields.title = editing.title;
+    if (editing.body !== undefined && editing.body !== draft.body) fields.body = editing.body;
+    if (Object.keys(fields).length === 0) {
+      setEditing(null);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const { action } = await api.editAction(card.id, card.payload_hash, fields);
+      setEditing(null);
+      setAck(false);
+      onChange(action);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not save your edit. Nothing was sent.");
     } finally {
       setBusy(false);
     }
@@ -117,19 +147,49 @@ export function ActionCard({
             card.target.name
           )}
         </dd>
-        {card.payload.title !== undefined && (
+        {draft.title !== undefined && (
           <>
-            <dt>Title</dt>
-            <dd className="act-card-title">{card.payload.title}</dd>
+            <dt>
+              <label htmlFor={`act-title-${card.id}`}>Title</label>
+            </dt>
+            <dd className="act-card-title">
+              {editing ? (
+                <input
+                  id={`act-title-${card.id}`}
+                  className="input act-card-edit-title"
+                  maxLength={255}
+                  value={editing.title ?? ""}
+                  onChange={(e) => setEditing({ ...editing, title: e.target.value })}
+                />
+              ) : (
+                draft.title
+              )}
+            </dd>
           </>
         )}
-        {card.payload.body !== undefined && (
+        {draft.body !== undefined && (
           <>
-            <dt>{card.payload.title !== undefined ? "Description" : "Comment"}</dt>
-            <dd className="act-card-body">{card.payload.body || <span className="muted">(empty)</span>}</dd>
+            <dt>
+              <label htmlFor={`act-body-${card.id}`}>{bodyLabel}</label>
+            </dt>
+            <dd className="act-card-body">
+              {editing ? (
+                <textarea
+                  id={`act-body-${card.id}`}
+                  className="input act-card-edit-body"
+                  rows={Math.min(12, Math.max(4, (editing.body ?? "").split("\n").length + 1))}
+                  maxLength={8000}
+                  value={editing.body ?? ""}
+                  onChange={(e) => setEditing({ ...editing, body: e.target.value })}
+                />
+              ) : (
+                draft.body || <span className="muted">(empty)</span>
+              )}
+            </dd>
           </>
         )}
       </dl>
+      {card.edited && !editing && <p className="muted act-card-edited">Edited by you</p>}
 
       {needsAck && pending && (
         <div className="act-card-exposure" role="alert">
@@ -155,7 +215,22 @@ export function ActionCard({
         </div>
       )}
 
-      {pending && !expired ? (
+      {pending && !expired && editing ? (
+        <div className="act-card-actions">
+          <button type="button" className="button" onClick={saveEdit} disabled={busy}>
+            {busy ? "Saving…" : "Save changes"}
+          </button>
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={() => setEditing(null)}
+            disabled={busy}
+          >
+            Discard changes
+          </button>
+          <span className="muted act-card-timer">To change where it goes, cancel and ask again.</span>
+        </div>
+      ) : pending && !expired ? (
         <div className="act-card-actions">
           <button
             type="button"
@@ -164,6 +239,14 @@ export function ActionCard({
             disabled={busy || (needsAck && !ack)}
           >
             {busy ? "Sending…" : "Approve"}
+          </button>
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={() => setEditing({ ...draft })}
+            disabled={busy}
+          >
+            Edit
           </button>
           <button type="button" className="button button-secondary" onClick={cancel} disabled={busy}>
             Cancel
