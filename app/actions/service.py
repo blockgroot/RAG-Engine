@@ -48,6 +48,9 @@ logger = logging.getLogger("actions")
 #: Passages shown to the model for drafting. Few, because every one of them is
 #: a source the exposure check must count.
 CONTEXT_HITS = 6
+#: The fields that carry drafted words. Every other field is a target, already
+#: required to be in the asker's own words (``draft.require_named``).
+DRAFT_FIELDS = ("title", "body", "text")
 PROVIDER_NAMES = {"linear": "Linear", "github": "GitHub", "notion": "Notion",
                   "google": "Google Drive", "slack": "Slack"}
 
@@ -136,6 +139,17 @@ def _context(
     return list({h.document_id: docs[h.document_id] for h in kept}.values()), passages
 
 
+def _only_askers_words(args: dict, question: str) -> bool:
+    """True when every drafted field is text the asker typed themselves.
+
+    Then no passage reached the draft, whatever the model was shown, so none
+    is a source: "comment on X: shipped today" carries nothing private.
+    Anything else keeps the rule that every passage shown counts.
+    """
+    drafted = [args.get(f) for f in DRAFT_FIELDS if args.get(f) not in (None, "")]
+    return bool(drafted) and all(isinstance(v, str) and asked_in(v, question) for v in drafted)
+
+
 def offered_actions(
     org_id: str, user_id: str, settings: ActionsSettings, slack_user: str | None = None
 ) -> tuple[list[Action], str | None]:
@@ -213,6 +227,8 @@ def propose(
         return ActOutcome("I only act when you ask me to do something directly, "
                           "for example “file an issue in Platform about …”.")
 
+    if _only_askers_words(args, question):
+        sources = []
     name = PROVIDER_NAMES.get(action.provider, action.provider)
     try:
         token = action.token_for(org_id, user_id)

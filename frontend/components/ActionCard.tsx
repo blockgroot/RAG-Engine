@@ -36,6 +36,11 @@ function remaining(expiresAt: string, now: number): number {
   return Math.max(0, Math.floor((new Date(expiresAt).getTime() - now) / 1000));
 }
 
+/** A source as a short label: a Slack thread's title is its first message. */
+function shortLabel(title: string): string {
+  return title.length > 60 ? `${title.slice(0, 57).trimEnd()}…` : title;
+}
+
 export function ActionCard({
   card,
   onChange,
@@ -99,7 +104,13 @@ export function ActionCard({
         <dt>Where</dt>
         <dd>
           {card.target.url ? (
-            <a href={card.target.url} target="_blank" rel="noreferrer">
+            <a
+              className="act-card-target-link"
+              href={card.target.url}
+              target="_blank"
+              rel="noreferrer"
+              aria-label={`Open ${card.target.name} in ${provider}`}
+            >
               {card.target.name}
             </a>
           ) : (
@@ -123,23 +134,23 @@ export function ActionCard({
       {needsAck && pending && (
         <div className="act-card-exposure" role="alert">
           <p>
+            This draft may include private content only some people can see, from{" "}
+            {card.sources.map(shortLabel).join("; ")}.{" "}
             {card.exposure === "wider" ? (
-              <>
-                This uses {card.sources.length === 1 ? "a private document" : `${card.sources.length} private documents`}{" "}
-                ({card.sources.join(", ")}).{" "}
-                {card.audience_size ?? "Some"} people can read the destination, and{" "}
-                <strong>{card.outsiders ?? "some"} of them can&rsquo;t see {card.sources.length === 1 ? "it" : "those documents"}</strong>.
-              </>
+              <strong>
+                {card.audience_size ?? "Some"} people can open where it&rsquo;s going, and{" "}
+                {card.outsiders ?? "some"} of them can&rsquo;t see that content today.
+              </strong>
             ) : (
-              <>
-                This uses private documents ({card.sources.join(", ")}), and I can&rsquo;t tell who
-                can read the destination. <strong>Some people there may not be able to see them.</strong>
-              </>
+              <strong>
+                I can&rsquo;t check who can open where it&rsquo;s going, so people who can&rsquo;t see
+                that content might read it there.
+              </strong>
             )}
           </p>
           <label className="act-card-ack">
             <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} />
-            I understand this shares content from private documents with people who can&rsquo;t see them.
+            I&rsquo;ve read the draft and I&rsquo;m OK sharing it there.
           </label>
         </div>
       )}
@@ -165,8 +176,8 @@ export function ActionCard({
         <p className="act-card-status">
           <span className="studio-chip">{expired ? STATUS_LINE.expired : STATUS_LINE[card.status]}</span>
           {card.status === "succeeded" && card.result?.url && (
-            <a href={card.result.url} target="_blank" rel="noreferrer">
-              Open {card.result.external_id ?? "it"} in {provider}
+            <a className="act-card-result-link" href={card.result.url} target="_blank" rel="noreferrer">
+              Open in {provider}
             </a>
           )}
           {(card.status === "failed" || card.status === "unknown") && card.result?.error && (

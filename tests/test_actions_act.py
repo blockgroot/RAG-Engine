@@ -425,7 +425,8 @@ def test_private_sources_into_a_wider_team_need_the_tick(org, monkeypatch):
         [PLATFORM], members=[{"email": org.member.email}, {"email": "outsider@x.com"}]))
     secret = _doc(org.id, "Reorg plan", public=False, viewers=[org.member.email])
     llm = OneCallLLM("linear_create_issue", {"request_words": "file an issue",
-                                             "team": "Platform", "title": "Reorg", "body": "b"})
+                                             "team": "Platform", "title": "Reorg",
+                                             "body": "The reorg moves Platform under Infra."})
     out = _propose(org, "file an issue in Platform about the reorg", llm, [secret])
     assert out.action is not None
     assert out.action.exposure == "wider" and out.exposure.outsiders == 1
@@ -456,7 +457,7 @@ def test_private_sources_never_go_to_a_public_repo(org, company_github):
     policy.set_policy(org.id, "github.create_issue", True)
     secret = _doc(org.id, "Reorg plan", public=False, viewers=[org.member.email])
     llm = OneCallLLM("github_create_issue", {"request_words": "open an issue", "repo": "site",
-                                             "title": "Reorg", "body": "b"})
+                                             "title": "Reorg", "body": "The reorg moves Platform under Infra."})
     out = _propose(org, "open an issue in site about the reorg", llm, [secret])
     assert out.action is None and "somewhere public" in out.reply
     assert store.list_for_org(org.id) == []
@@ -646,3 +647,21 @@ def test_a_different_linear_workspace_is_refused(client, org, monkeypatch):
         "viewer": {"id": "x"}, "organization": {}})
     done = client.get(f"/auth/linear/callback?code=c&state={state}", follow_redirects=False)
     assert "reason=workspace" in done.headers["location"]
+
+
+@requires_db
+def test_a_draft_in_the_askers_own_words_uses_no_sources(org, monkeypatch):
+    """Passages shown to the model are not in a draft the asker dictated, so
+    private ones raise no warning (a staging comment did, from a Slack message)."""
+    monkeypatch.setattr(linear, "gql", FakeLinear(
+        [PLATFORM], members=[{"email": org.member.email}, {"email": "outsider@x.com"}]))
+    secret = _doc(org.id, "Reorg plan", public=False, viewers=[org.member.email])
+    question = "file an issue in Platform titled Smoke test saying: the smoke test passed."
+    llm = OneCallLLM("linear_create_issue", {"request_words": "file an issue", "team": "Platform",
+                                             "title": "Smoke test", "body": "the smoke test passed."})
+    out = _propose(org, question, llm, [secret])
+    assert out.action is not None and out.action.exposure == "none" and out.action.sources == []
+    # One drafted word that is not the asker's, and every passage counts again.
+    llm = OneCallLLM("linear_create_issue", {"request_words": "file an issue", "team": "Platform",
+                                             "title": "Smoke test", "body": "Reorg moves Platform."})
+    assert _propose(org, question, llm, [secret]).action.exposure == "wider"

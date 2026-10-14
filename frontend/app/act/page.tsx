@@ -11,7 +11,7 @@
  * than one who knows it goes out under their name.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { ActionCard } from "@/components/ActionCard";
 import { AppShell } from "@/components/AppShell";
@@ -43,6 +43,46 @@ function CheckIcon() {
   );
 }
 
+function ModelUnavailableDialog({ message, onClose }: { message: string; onClose: () => void }) {
+  const buttonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    buttonRef.current?.focus();
+  }, []);
+
+  return (
+    <div className="act-dialog-backdrop" role="presentation">
+      <section
+        className="act-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="act-dialog-title"
+        aria-describedby="act-dialog-message"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") onClose();
+          if (event.key === "Tab") {
+            event.preventDefault();
+            buttonRef.current?.focus();
+          }
+        }}
+      >
+        <div className="act-dialog-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M12 8v4m0 4h.01M10.3 4.6 2.5 18a2 2 0 0 0 1.7 3h15.6a2 2 0 0 0 1.7-3L13.7 4.6a2 2 0 0 0-3.4 0Z" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </div>
+        <div className="act-dialog-copy">
+          <h2 id="act-dialog-title">The model is busy</h2>
+          <p id="act-dialog-message">{message}</p>
+        </div>
+        <button ref={buttonRef} type="button" className="button act-dialog-button" onClick={onClose}>
+          Okay
+        </button>
+      </section>
+    </div>
+  );
+}
+
 export default function ActPage() {
   const { me, loading } = useMe();
   const [status, setStatus] = useState<ActStatus | null>(null);
@@ -53,6 +93,8 @@ export default function ActPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [modelError, setModelError] = useState<string | null>(null);
+  const questionRef = useRef<HTMLTextAreaElement>(null);
 
   const load = useCallback(async () => {
     try {
@@ -99,7 +141,11 @@ export default function ActPage() {
       setReply(out.reply);
       setCard(out.action);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Something went wrong. Nothing was sent.");
+      if (err instanceof ApiError && err.status === 503) {
+        setModelError(err.message);
+      } else {
+        setError(err instanceof ApiError ? err.message : "Something went wrong. Nothing was sent.");
+      }
     } finally {
       setBusy(false);
     }
@@ -116,11 +162,18 @@ export default function ActPage() {
   }
 
   function updated(next: ActCard) {
+    if (next.status === "succeeded" && card?.id === next.id) {
+      setQuestion("");
+    }
     setCard((c) => (c && c.id === next.id ? next : c));
     setRecent((all) => [next, ...all.filter((a) => a.id !== next.id)]);
   }
 
   const shownProviders = (status?.providers ?? []).filter((p) => p.needed || p.connected || p.needs_reauth);
+  const closeModelError = () => {
+    setModelError(null);
+    window.requestAnimationFrame(() => questionRef.current?.focus());
+  };
 
   return (
     <AppShell me={me}>
@@ -168,6 +221,7 @@ export default function ActPage() {
                 <form onSubmit={submit} className="act-form">
                   <label className="sr-only" htmlFor="act-question">Describe the action</label>
                   <textarea
+                    ref={questionRef}
                     id="act-question"
                     className="input act-input"
                     rows={5}
@@ -242,6 +296,7 @@ export default function ActPage() {
             )}
           </>
         ) : null}
+        {modelError && <ModelUnavailableDialog message={modelError} onClose={closeModelError} />}
       </main>
     </AppShell>
   );
