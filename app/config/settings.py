@@ -475,22 +475,36 @@ class RagSettings:
     partial_rule: bool = False
     # When blocks disagree, prefer the newer or superseding one and say so.
     conflict_rule: bool = False
+    # A company-wide question answered from pieces spread over several blocks.
+    assemble_rule: bool = False
     # Chat's "Deep analysis" mode: the deep read the Benchmark 2 follow-up
     # measured (6/15 failing broad questions right instead of 1/15, ~2.3x the
     # tokens, no extra AI call). Per request, so normal Ask keeps its cost.
     deep_top_docs: int = 3
     deep_neighbor_chunks: int = 8
     deep_max_context_chars: int = 30000
+    # How many passages a Deep read may take when the evidence is spread over
+    # several documents. A company-wide question ("what are our revenue
+    # streams?") is answered by a sentence in each of many documents; ten
+    # passages, three of them read in depth, held half its facts.
+    deep_wide_max_hits: int = 20
+    # Deep's answer may run longer than normal Ask's cap: a complete list of 30-40
+    # items does not fit 700 tokens, and a cut-off list reads as the whole list.
+    deep_max_answer_tokens: int = 2000
 
     def deep(self) -> "RagSettings":
         """These settings with the deep read on, one budget for ranked and wide reads.
 
-        A bigger pool (80) and a passage from every non-weak document were
-        tried for breadth and found no more of the right documents on the
-        Benchmark 2 retest, so Deep keeps the normal search.
+        A bigger pool (80) was tried for breadth and found no more of the
+        right documents on the Benchmark 2 retest, so Deep keeps the normal
+        search. A spread-out question may take ``deep_wide_max_hits``
+        passages from it, one per document first (`retrieval._spread`).
         """
         return replace(
             self,
+            wide_max_hits=max(self.wide_max_hits, self.deep_wide_max_hits),
+            max_answer_tokens=(None if self.max_answer_tokens is None
+                               else max(self.max_answer_tokens, self.deep_max_answer_tokens)),
             neighbor_top_docs=self.deep_top_docs,
             neighbor_chunks=self.deep_neighbor_chunks,
             max_context_chars=self.deep_max_context_chars,
@@ -546,9 +560,12 @@ class RagSettings:
             wide_max_context_chars=int(os.getenv("RAG_WIDE_MAX_CONTEXT_CHARS") or 0),
             partial_rule=env_bool("RAG_PARTIAL_RULE", True),
             conflict_rule=env_bool("RAG_CONFLICT_RULE", True),
+            assemble_rule=env_bool("RAG_ASSEMBLE_RULE", True),
             deep_top_docs=int(os.getenv("RAG_DEEP_TOP_DOCS") or 3),
             deep_neighbor_chunks=int(os.getenv("RAG_DEEP_NEIGHBOR_CHUNKS") or 8),
             deep_max_context_chars=int(os.getenv("RAG_DEEP_MAX_CONTEXT_CHARS") or 30000),
+            deep_wide_max_hits=int(os.getenv("RAG_DEEP_WIDE_MAX_HITS") or 20),
+            deep_max_answer_tokens=int(os.getenv("RAG_DEEP_MAX_ANSWER_TOKENS") or 2000),
         )
 
 
