@@ -47,6 +47,16 @@ function IconReports() {
   );
 }
 
+function IconAct() {
+  // A check inside a square: something you approve, then it is done.
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <rect x="3" y="3" width="18" height="18" rx="4" stroke="currentColor" strokeWidth="1.75" />
+      <path d="m8 12.5 2.8 2.8L16.5 9" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function IconSources() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -294,6 +304,22 @@ export function AppShell({
                 <span className="rail-link-hint">Emailed on a schedule</span>
               </span>
             </Link>
+            {me?.act_enabled && (
+              <Link
+                href="/act"
+                className="rail-link"
+                data-active={pathname.startsWith("/act") ? "true" : "false"}
+                aria-current={pathname.startsWith("/act") ? "page" : undefined}
+              >
+                <span className="rail-ico">
+                  <IconAct />
+                </span>
+                <span className="rail-link-copy">
+                  <span className="rail-link-title">Act</span>
+                  <span className="rail-link-hint">You approve, it&rsquo;s done</span>
+                </span>
+              </Link>
+            )}
 
             {/* Below the destinations, not inside them. Sitting between "Ask"
                 and "Spaces" it split one list of PLACES TO GO in half with a
@@ -365,6 +391,22 @@ export function AppShell({
                     <span className="rail-link-hint">Gaps, charts, data health</span>
                   </span>
                 </Link>
+                {me?.act_enabled && (
+                  <Link
+                    href="/admin/actions"
+                    className="rail-link"
+                    data-active={pathname.startsWith("/admin/actions") ? "true" : "false"}
+                    aria-current={pathname.startsWith("/admin/actions") ? "page" : undefined}
+                  >
+                    <span className="rail-ico">
+                      <IconAct />
+                    </span>
+                    <span className="rail-link-copy">
+                      <span className="rail-link-title">Actions</span>
+                      <span className="rail-link-hint">What Handbook may do</span>
+                    </span>
+                  </Link>
+                )}
               </>
             )}
           </nav>

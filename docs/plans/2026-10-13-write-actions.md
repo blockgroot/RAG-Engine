@@ -1,6 +1,6 @@
 # Write Actions Plan
 
-> **Status (2026-10-13): PROPOSED.** Nothing here is built. Research sources are
+> **Status (2026-10-14): Phases 0–3 BUILT** on `feat/write-actions-plan` (not merged). Off unless `ACTIONS_ENABLED=true`. Research sources are
 > listed in §10. Facts marked *(unverified)* were not confirmed in a primary doc.
 
 **Goal:** an employee can ask the assistant to *do* something in a connected tool:
@@ -72,7 +72,7 @@ That is Willison's "lethal trifecta" and Meta's "Rule of Two" violated, and OWAS
    | Provider | Write identity | Scopes / permissions | Who it shows as |
    |---|---|---|---|
    | Linear | User OAuth, `actor=user` | `read,issues:create,comments:create` (never `write`/`admin`) | The person |
-   | GitHub | GitHub App **user-to-server** token (the "link" flow, kept instead of discarded) | App gains Issues: write, Pull requests: write. Contents: write only if "open a PR" ever ships | The person, with the App badge. Can do only what both the person and the App can do |
+   | GitHub | GitHub App **user-to-server** token, narrowed per write to one repo + `issues: write` | App gains **Issues: write only**. No Pull requests: write (it would allow approving, editing and closing PRs as the person; a PR comment is an issue comment). No Contents: write | The person, with the App badge. Can do only what both the person and the App can do |
    | Notion | Per-user **public OAuth** ("acts on behalf of the individual user who authorized them") | Insert content, Update content, Insert comments | Comments use `display_name: {type: "user"}`. Page edit attribution *(unverified)* |
    | Google | Per-user OAuth, **`drive.file`** only, added through incremental consent | `drive.file` (non-sensitive) | The person |
    | Slack | **The org's bot**, not a user token | Existing `chat:write` | The bot, with "on behalf of @person" in the message |
@@ -94,9 +94,36 @@ That is Willison's "lethal trifecta" and Meta's "Rule of Two" violated, and OWAS
 
 5. **Create and comment only in v1.** No edit-in-place of someone else's content, no delete, no close, no merge. Each later action is its own decision.
 
+6. **Act is its own mode, built and shipped separately.** Ask and Chart never propose a write, and their code never imports `app/actions/`.
+   - Act has its own UI toggle (like Chart mode), its own route (`POST /act/stream`), its own package and its own tests.
+   - A bug in Act cannot change an Ask or Chart answer, and turning Act off removes it completely.
+
+7. **A write is triggered only when the person explicitly asks for one.** In Act mode the model must quote the words in the question that asked for the write (`request_words`), and code checks that the quote is really in the question. This is the same pattern as `breakdown_words` in charts.
+   - No quote means no proposal, only an answer explaining what Act can do.
+   - The model never offers a write on its own initiative ("Want me to file this?").
+
+8. **Some things are impossible by construction, not by prompt.** See §4.0.
+
 ---
 
 ## 4. Design
+
+### 4.0 Guardrails: what the model can never do
+
+Each rule is enforced in code or by the provider, never only by the prompt.
+
+| Rule | Enforced by |
+|---|---|
+| The model holds no token and makes no HTTP call. It only fills in one action's form | `Action.execute()` runs in the confirm endpoint, after approval, outside any model call |
+| A fixed list of actions; there is no "call any API" or MCP passthrough | `factory.build_actions` returns only classes in `app/actions/`. An unknown tool name is dropped |
+| Never push code, never touch `main` or any branch, never merge or approve | The GitHub App gets **no `Contents: write`** (merge, refs, commits and git push all require it) and **no `Pull requests: write`** (approve/edit/close). Each write token is narrowed to one repo and `issues: write`. No action class calls git refs, contents, pulls or merge endpoints |
+| No deletes, no closing, no changing sharing or permissions, no inviting people, no admin actions | Not in the catalogue. Write scopes are create/comment only (Linear `issues:create,comments:create`; never `write`/`admin`) |
+| One action per approval: no chaining, no loops, no follow-up writes from a write's result | One `generate_with_tools` call yields at most `tool_calls[0]`. `execute()` returns a result, never a new proposal |
+| Nothing runs without a person approving it now | Only `POST /actions/{id}/confirm` by the same user, before `expires_at`. No scheduler, digest or webhook path imports `execute` |
+| Only an explicit request starts a write | `request_words` quote check (Decision 7) |
+| The target comes from the person, not from documents | §4.3 handle minting |
+| What runs is exactly what was shown | Stored payload + `payload_hash`; atomic `proposed → executing` |
+| Volume is capped | Per-user hourly rate limit, per-org kill switch, env kill switch |
 
 ### 4.1 Package: `app/actions/`
 
@@ -135,7 +162,7 @@ class Action(ABC):
         """One write, with the asker's token. Returns external id + http(s) url."""
 ```
 
-Exceptions are `ActionError(ProviderError)`, with subclasses `ActionRejected`, `ActionExpired`, `ActionForbidden` and `ActionOutcomeUnknown`. Each takes `cause=` and uses `raise ... from`.
+Exceptions are `ActionError(ProviderError)`, with subclasses `ActionRejected`, `ActionExpired`, `ActionConflict` and `ActionOutcomeUnknown`. Each takes `cause=` and uses `raise ... from`.
 
 Config is a frozen dataclass `ActionsSettings.from_env()` in `settings.py`:
 - `ACTIONS_ENABLED=false`
@@ -190,7 +217,10 @@ CREATE TABLE IF NOT EXISTS actions (
     target          JSONB NOT NULL,         -- resolved: {kind, external_id, name, url}
     payload         JSONB NOT NULL,         -- exactly what will be sent
     payload_hash    TEXT NOT NULL,          -- sha256(canonical json of action+target+payload)
-    status          TEXT NOT NULL,          -- proposed|approved|executing|succeeded|failed|unknown|rejected|expired
+    sources         JSONB NOT NULL DEFAULT '[]',  -- documents the draft drew on: {document_id, title, public, viewers}
+    exposure        TEXT NOT NULL DEFAULT 'none', -- none|narrower|wider|unknown|public (§4.3a)
+    acknowledged    BOOLEAN NOT NULL DEFAULT false, -- the person ticked the widening warning
+    status          TEXT NOT NULL,          -- proposed|executing|succeeded|failed|unknown|rejected|expired
     expires_at      TIMESTAMPTZ NOT NULL,
     decided_at      TIMESTAMPTZ,
     executed_at     TIMESTAMPTZ,
@@ -221,19 +251,48 @@ Payload text (title, body) **may** be drafted from retrieved passages, since sum
 
 The proposal prompt carries retrieved text, so it uses `UNTRUSTED_POLICY` / `UNTRUSTED_REMINDER`, and `tests/test_untrusted_policy.py` covers it.
 
+### 4.3a Private content reaching a wider audience
+
+**The gap.** Priya can read a private HR doc. She asks Act to "post a summary of the reorg doc to #general". Every other check passes: she asked, she is a member, she approved. But content 5 people could see now reaches 300. Approval does not catch this well, because people approve what they asked for.
+
+**The rule.** Every proposal records the documents its draft drew on (`actions.sources`), using the same hits the viewer was shown, each with `doc_is_public` and `doc_viewers`. `prepare()` then compares that with the destination's audience and stores a verdict in `actions.exposure`:
+
+| Verdict | When | What happens |
+|---|---|---|
+| `none` | No source, or every source is public | Normal card |
+| `narrower` | Every person in the destination audience is a viewer of **every** private source | Normal card |
+| `wider` | The destination audience is known and includes someone who cannot see a private source | **Warning on the card, and Approve stays disabled until the person ticks** "I understand this shares content from private documents with people who can't see them". The tick is stored (`acknowledged`) and the confirm endpoint refuses without it |
+| `unknown` | The destination audience cannot be read (Notion page, private GitHub repo without collaborator access, a Linear team whose members can't be listed) | Same as `wider`: warning plus tick. An unknown audience is never treated as safe |
+| `public` | The destination is readable by everyone in the company or the world (a public Slack channel, a public GitHub repo) | **Blocked.** No proposal is stored; the answer says why and suggests a private destination or drafting without the private sources |
+
+The card names the facts, never just "warning": *"Uses 2 private documents (Reorg plan, HR budget), visible to 5 people. #leads has 41 members, 36 of whom can't see them."* Titles shown are only those the asker can already see.
+
+**Destination audiences,** read at `prepare()` time with the asker's own token, bounded and marked truncated (a truncated member list counts as `unknown`):
+- Slack channel: `conversations.members`. A public channel is `public`.
+- Linear team: the team's members.
+- GitHub repo: public means `public`; private means `unknown` unless the collaborator list is readable.
+- Notion page: `unknown` (no permission API).
+- A new Google Doc in the person's own Drive: only them, so `narrower`.
+
+Emails are compared lowercased, through the same alias table the `Viewer` uses.
+
+**Why warn-with-tick for `wider` and not block.** Turning a private Slack thread into an issue for the same team is the most common legitimate use, and the team rarely matches the thread's membership exactly. Blocking every `wider` case would make Act useless for its main job. A public destination is different: it cannot be undone, and its audience includes everyone. An org setting `ACTIONS_BLOCK_WIDER` turns `wider` and `unknown` into blocks for orgs that want it.
+
 ### 4.4 Flow, web chat
 
 ```
-Ask ──► classify_route (existing question check)
-          kind == "act"  (model reads the question; no word list)
+Act mode (separate toggle) ──► POST /act/stream
           │
           ▼
-        retrieval as today (same gate, same viewer)
+        retrieval for context (same gate, same viewer, read-only)
           │
           ▼
         action agent: ONE generate_with_tools call over the
         actions enabled for this org/space AND connected by this person
           │  tool_calls[0]
+          ▼
+        request_words quote in the question?  (else: no proposal)
+          │
           ▼
         Action.prepare()  ── validate, resolve handles, render payload
           │                  rejects → normal answer explaining why
@@ -252,6 +311,7 @@ Ask ──► classify_route (existing question check)
           1. row belongs to session org_id + user_id   (else 404)
           2. status == proposed AND not expired        (else 409 / expired)
           3. hash matches                              (else 409)
+          3a. exposure wider/unknown → acknowledged     (else 409); public never stored
           4. policy still enabled; rate limit
           5. user_connection present, not needs_reauth (else "Reconnect")
           6. UPDATE … SET status='executing' WHERE id=$1 AND status='proposed'
@@ -264,7 +324,7 @@ Notes:
 - **No missing-connection path.** If the person has no `user_connection` for the provider, the action agent does not offer that action. The answer says "Connect Linear to let me file this for you" and links the per-user connect flow.
 - **Approval binds to the payload.** The card shows the payload, and the server executes the stored payload, never one re-sent by the client. The hash proves the user saw this version.
 - **Timeouts are not retried.** A timeout or 5xx after sending is `unknown`. The card says "may have been created, check Linear" and links the target. Duplicates are worse than a manual check.
-  - Linear's `issueCreate` accepts a client-chosen `id` *(unverified)*. If so, pass `actions.id` and a retry becomes safe for Linear.
+  - Linear is the exception: `IssueCreateInput.id` and `CommentCreateInput.id` take a client UUID ("If none is provided, the backend will generate one"). We pass `actions.id`, so a repeated send cannot create a second issue.
 - **Reject and expire.** Reject sets `rejected`. An expiry sweep in the existing worker tick sets `expired`, with a bounded batch per tick (a CTE, per CLAUDE.md).
 - **Editing.** The card offers no edit in v1. The person cancels and rephrases. An edited body would come from the person, so it would be safe to add later.
 
@@ -300,18 +360,26 @@ Phase 3. It needs an Interactivity Request URL (`POST /slack/interactivity`, sam
 **Linear.**
 - Add a second OAuth app or client configuration for user write tokens (`actor=user`, `issues:create,comments:create`). Linear suggests separate tokens per actor mode.
 - Do not widen the org read connection.
-- Whether `actor=user` limits creation to the person's teams is *(unverified)*. We also check that the target team is one the asker sees (team membership is already the ACL for issues).
+- **Verified:** any workspace member may create issues in a **public** team without joining it; a **private** team's issues exist only for its members; guests see only their own teams. Linear documents no specific error for an inaccessible team, so `prepare()` resolves the team against the root `teams` query run with the asker's token ("public teams and private teams the user is a member of") and refuses anything else before sending.
 
 **GitHub.**
-- Add Issues: write and Pull requests: write to the App. Every installation owner must **approve the new permissions** on GitHub. Until they do, reads keep working and writes return 403, which we surface as "Ask your GitHub admin to accept the new permissions."
+- **One App, least privilege per token (decided 2026-10-14).** The App gains Issues: write only. Every installation owner must approve it; until they do, "the installation will continue to use the old permissions", reads keep working, and `company_repo` refuses with "Your GitHub admin hasn't accepted…" (read live from `GET /app/installations/{id}`).
+- **Reading tokens are read-only:** `mint_installation_token` asks for every granted permission at `read` (`workflows` has no read level and is left out), so the sync and live-read paths cannot write even though the App can. Fails closed: no grant read, no token.
+- **Each write is narrowed:** right before sending, the person's token is exchanged at `POST /applications/{client_id}/token/scoped` for one limited to the one repo and `issues: write` (`actions/github.py::scoped_token`). A refusal there means nothing is sent.
 - Store the user-to-server token from the link flow. It lasts 8 h with a 6-month refresh token; keep expiry on.
-- Commenting on a PR uses the issues comments endpoint and needs Pull requests: write.
+- **A refresh token is single-use**: "Once you use a refresh token, that refresh token and the old user access token will no longer work." Refresh holds a row lock (`SELECT … FOR UPDATE` on the `user_connections` row) and saves the new pair in the same transaction, so two requests cannot both refresh and break the connection.
+- Commenting on a PR uses the issues comments endpoint, which accepts Issues: write ("at least one of" Issues or Pull requests write).
 - "Open a PR" (Contents: write) is out of scope.
 
 **Notion.**
-- Per-user public OAuth. The person chooses pages in Notion's picker, so writes reach only pages they shared and can edit. This is the first place we get a real per-person Notion check: a page they cannot access returns `object_not_found`, which we show as "you can't edit that page".
-- The org-wide read integration stays as it is. The Sources card wording about Notion permissions stays true for reads.
-- Notion Personal Access Tokens (May 2026) also act as their creator. Do not use them; pasting a token is worse UX and lacks a refresh path.
+- **A SEPARATE public connection, "Handbook Actions" (decided 2026-10-14).** Notion capabilities belong to the connection, not to an authorization: the authorize URL takes no scope, and "you receive an `access_token` with the capabilities your connection requested". Adding write to the read connection would give the admin's org-wide indexing token write over every page it was shared, and show write capabilities on every admin's consent screen. GitHub can narrow a token per request; Notion cannot, so the split must be two connections. It costs users nothing: each person connects Act separately anyway.
+  - "Handbook" (existing): read content only, connected by admins, unchanged.
+  - "Handbook Actions" (new): insert content, insert comments, read comments. Update content only if an edit action ever ships. Its own `NOTION_ACT_CLIENT_ID` / `_SECRET` / `_REDIRECT_URI`.
+- Per person: "Public connections act on behalf of the individual user who authorized them". The person picks the pages in Notion's picker, so writes reach only pages they shared.
+- **Attribution.** Comments: verified. We send `display_name: {"type": "user"}`, which shows the person's name. Pages and blocks: not documented; every sign (`/v1/users/me` is "your token's bot user", the token carries a `bot_id`) points to the connection's bot. The card says "added via Handbook Actions, for you" for page writes, never "as you", until a live test proves otherwise.
+- **Edit rights are not exposed by the API** (no permission field on a page). Whether a person with only "can comment" can write through the connection is not documented. So `prepare` also requires the target page to be visible to the asker in our index (`visibility_predicate`), and a 403 `restricted_resource` / 404 `object_not_found` is shown as "you can't edit that page".
+- **Live test before Phase 2 ships** (needs a test workspace): create a child page, append a block and post a comment as a can-comment-only user; record `created_by`, page history and whether Notion refused.
+- Rejected: Personal Access Tokens (Notion: "Don't use a PAT to authenticate a product used by many Notion users"; no OAuth, pasted tokens; owners-only by default on Business and Enterprise). Notion's hosted MCP server acts as the user, but server-side multi-tenant use and attribution are not confirmed and Enterprise admins can block unapproved clients. Worth a later test, not the plan.
 
 **Google.**
 - Separate per-user OAuth: `drive.file`, `access_type=offline`, `include_granted_scopes=true`.
@@ -320,6 +388,8 @@ Phase 3. It needs an Interactivity Request URL (`POST /slack/interactivity`, sam
 - Editing an existing file requires that the person picked it in Google Picker. That is Phase 4.
 
 **Slack.** No new scopes. Membership checks use `conversations.members`, which works only for channels the bot is in; a channel the bot isn't in is refused. Do not request `chat:write.public` or `chat:write.customize`.
+- The write design holds listed or unlisted: bot token, text naming the person ("DO clearly attribute app actions to a user"; "DON'T impersonate a user"), an ephemeral preview, and Approve checked against the stored requester (`user.id` and team), single-use, expiring within `response_url`'s 30 minutes.
+- **Found while researching, bigger than Act (2026-10-14):** Slack's API Terms say "You may not Commercially Distribute an Application ... unless you are authorised to do so under a separate agreement", which for most apps "simply means submitting to our Marketplace"; "Commercially Distribute" includes any app tied to a paid product. And since 29 May 2025, a NEW install of an unlisted commercial app gets `conversations.history` / `conversations.replies` at 1 request per minute and 15 messages, which breaks indexing for every new customer (existing installs are exempt per the current docs). A listing keeps indexing allowed as long as the Agent/Assistant UI is NOT enabled (its rule is "DON'T store any Slack data"); the review looks hard at `*:history` scopes, the 90-day free-plan limit, sentiment features and LLM disclosures. Decision pending with the product owner.
 
 ---
 
@@ -328,32 +398,55 @@ Phase 3. It needs an Interactivity Request URL (`POST /slack/interactivity`, sam
 Each phase ships behind `ACTIONS_ENABLED` and the org toggle. Per our test practice, each phase runs **only its own new test file**.
 
 **Phase 0: groundwork (no user-visible change)**
-- Set `connected_by_user_id` in both `save_connection` calls.
 - Add `user_connections`, `actions`, `action_policies`.
 - `app/actions/` skeleton, `ActionsSettings`, exceptions.
-- Fix the Slack user mapping so it reads aliases.
+- `app/auth/user_connections.py`: save, read and delete a person's write token, encrypted like `oauth_connections`.
+- The exposure verdict (§4.3a) as a pure function, so every later phase uses the same one.
 - Tests: `tests/test_actions_store.py`:
   - single execution under concurrent confirms
   - org and user isolation on every query
   - an expired proposal can never execute
   - hash mismatch is refused
+  - `wider`/`unknown` without the tick is refused; `public` is never stored
+- Kept **out** of Act, so it stays a separate piece of work:
+  - Setting `oauth_connections.connected_by_user_id` touches the shared GitHub connect flow. It is a separate cleanup.
+  - The Slack alias fix moves to Phase 3, where Slack approval needs it.
 
-**Phase 1: Linear + GitHub on web chat**
-- Per-user connect flows (Linear new; GitHub stops discarding the token).
-- `act` kind in `classify_route`; action agent; `prepare`/`execute` for `linear.create_issue`, `linear.add_comment`, `github.comment`, `github.create_issue`.
-- `proposed_action` on `done`; `POST /actions/{id}/confirm|reject`; `ActionCard`; Admin › Actions toggles and log.
-- Tests: `tests/test_actions_targets.py`, the injection suite:
-  - a retrieved passage naming another repo or team, or containing "post this to #general", never becomes a target
-  - links not in the asker's text are stripped
-  - a non-member's handle does not resolve
-  - a Viewer that can't see the source doc can't target it
+**Phase 1: Linear + GitHub on the web — BUILT (2026-10-14)**
+- Per-person connect: `GET /act/connect/{linear|github}`. The state is bound to the person (`linear_act` / `github_act`) and finished from the provider's existing callback (`api/actions.py::finish_act_connect`). Linear asks for `read,issues:create,comments:create`; a Linear account from another Linear workspace than the company's is refused. GitHub keeps the user-to-server token (`GitHubAppProvider.exchange_user_code`); the link flow still discards its token.
+- Refresh under a row lock (`user_connections.fresh_user_token`), because GitHub's refresh token is single-use.
+- **Act is its own page (`/act`), not a mode inside chat.** `POST /act` makes one model call (`actions/service.py::propose`); `POST /act/actions/{id}/confirm|reject`; `GET /act/status`; Admin › Actions (`/admin/actions`) with toggles and the log. Ask and Chart import nothing from `app/actions/`.
+- Actions: `linear.create_issue`, `linear.comment`, `github.create_issue`, `github.comment`.
+- Context: the same vector search, visibility predicate and 0.35 gate as Ask, org-wide only; a guard-flagged chunk is dropped whatever the guard's mode; each document's viewers are read again with the predicate.
+- **Changes from the design above, decided while building:**
+  - A target comes **only from the asker's own words** (`draft.require_named`), checked before any API call, then resolved with their token. Pickers and "the document I referred to" as a target are later work; until then nothing in a retrieved passage can choose a target.
+  - **Every passage shown to the model counts as a source** for the exposure check, used or not. Stricter than "what the draft used", which only the model could claim, and an injected model would lie.
+  - A **public Linear team**'s audience is every active member of the Linear workspace (`users`, ≤250, else unknown); a `restricted` team is unknown. A **private GitHub repo** is unknown; a public one is `public`, so private sources are refused there.
+  - Linear writes send the `actions` row id as Linear's client `id`.
+  - No conversation storage: the Act page lists the person's recent actions from `actions` itself.
+- Tests: `tests/test_actions_act.py` (29), plus the Act prompt in `tests/test_untrusted_policy.py`.
 
-**Phase 2: Notion + Google Docs (create) on web chat**
-- `notion.add_comment`, `notion.append_to_page`, `notion.create_child_page`, `drive.create_doc`.
+**Phase 2: Notion + Google Docs on the web — BUILT (2026-10-14), live Notion test still to run**
+- Actions: `notion.comment`, `notion.append` (text added at the end of a page), `notion.create_page` (under a page), `drive.create_doc` (a new Doc in the person's own Drive).
+- Notion through the separate "Handbook Actions" connection (`NOTION_ACT_*`, `api/actions.py::_act_oauth`); the read connection is never used to write. A page is found by its link or an exact, unique title the asker wrote, among the pages they shared with Handbook Actions; a page Handbook indexed company-wide must be readable by the asker there; Notion's 403/404 says how to share the page. Texts are cut to Notion's 2,000 characters per text object and 100 blocks per call. Comments carry `display_name: user`; page and block writes say "via Handbook Actions, for you" on the card.
+- Google: the same client, `drive.file` only, `include_granted_scopes=false` (so the token never picks up a broader scope the person once granted as an admin). The Doc is uploaded as a Google Doc in one multipart request. Its audience is the asker alone.
+- **Every Act account must be the company's** (all four tools): the Linear or Notion workspace the company connected for reading, the person's own work address (or prior address) on Google, and for GitHub a repo in the company's installation. Otherwise company content could be written somewhere the company does not control. Linear now also requires the company's Linear connection to exist.
+- The asker is never counted as an outsider of their own sources (they may read one through a group or an old address their email is not literally in).
+- Tests: `tests/test_actions_notion_drive.py` (16).
+- **Still to do before Notion page writes are promised:** the live test in §5 Notion (attribution, can-comment-only user).
 
-**Phase 3: Slack**
-- `slack.post_message` (bot, membership-checked, names the asker).
-- `/slack/interactivity`; ephemeral approval in Slack for every Phase 1–2 action.
+**Phase 3: Slack — BUILT (2026-10-14)**
+- **`slack.post_message`** (`actions/slack.py`): the company's bot token, never a person's (`token_for`); the text opens with "<@asker> asked Handbook to post this" and the draft is escaped like every bot reply, so a drafted `<!channel>` or `<url|text>` is inert. From a channel: only a reply in the same thread. Elsewhere: a channel the asker named, the bot is already in, and the asker belongs to (`conversations.members`, bounded; a cut list is "can't check"). A public channel is a public destination; a private one's audience is its members' emails (≤500, else unknown).
+- **Act from Slack, in plain words** (`api/slack_act.py::slack_request`): `@Handbook create a Linear issue in Platform about this thread` in a channel, the same words in a DM. One small model check (`build_intent_prompt`) says whether the message ASKS for an action and quotes the words that do; the verdict is kept only when the quote is in the message. A question, an unreadable reply or a failed check is answered exactly as before. The check runs only where that Slack surface is switched on. `act <request>` still forces a draft without the check; with `ACTIONS_ENABLED` off, both are just questions. This replaced an explicit-`act`-only rule after looking at @Linear and @Jira (both plain words); safety rests on the approval, the quote check and the named target, not on a keyword. Every action works from Slack, not only Slack posting.
+- **Each place is its own permission decision:**
+  - DM: drafts from company-wide content as the PERSON (`viewer_for_person`); the card is a DM message.
+  - Channel (public or private): drafts from THAT channel only, as the room (`Viewer(public_only=True, channels=(channel,))` + the channel tag), exactly like a channel answer, so the asker's private documents never reach a room. The card is ephemeral (only the asker sees it), falling back to the app DM.
+  - Each surface has its own admin switch (`policy.SURFACES`, stored as `surface:slack_dm` / `surface:slack_channel` in `action_policies`), off by default and re-checked at approval. `actions.surface` records which.
+  - Only the company's org-wide Slack connection can act; a space's Slack connection says so.
+- **The click** (`POST /slack/interactivity`): signature-checked like `/slack/events`, acknowledged at once, decided in the background. The clicker's Slack account is resolved to a Handbook person and must be the proposer (`store.get` by org + user), the payload hash travels in the button, the tick travels in `state.values`, and the outcome replaces the card through `response_url`. A missing tick keeps the card.
+- Slack users are found by their current or a prior work address (`users.get_member_by_address`), for answers too. A Slack request records the person's Slack account, so the web Act page can post to Slack for them.
+- No new Slack scopes. Setup: Interactivity on, Request URL `https://<api-host>/slack/interactivity`.
+- Tests: `tests/test_actions_slack.py` (28).
 
 **Phase 4: later, each its own decision**
 - Edit a Drive file chosen in Picker.
@@ -369,6 +462,7 @@ Each phase ships behind `ACTIONS_ENABLED` and the org toggle. Per our test pract
 - A write uses the asker's `user_connection`, never `oauth_connections`. The Slack bot is the one exception, and it names the asker and checks membership.
 - A target is never taken from retrieved text alone.
 - A link in written content is in the asker's own words or is a cited `source_uri`.
+- Content from a private document never goes to a public destination. A destination wider than a private source's viewers, or of unknown audience, needs the person's stored acknowledgement.
 - A timeout after sending is `unknown`, never retried automatically.
 - `ActionOutcomeUnknown` and `failed` are shown to the person, never swallowed.
 - No action runs unattended (no scheduler, digest or channel-triggered writes).
@@ -388,9 +482,9 @@ Each phase ships behind `ACTIONS_ENABLED` and the org toggle. Per our test pract
 
 ## 9. Open questions
 
-1. Is a Slack Marketplace listing planned? If so, our Slack *indexing* conflicts with the AI-app rule "DON'T store any Slack data" independently of writes. Worth deciding before Phase 3.
+1. Slack Marketplace listing: recommended (see §5 Slack: the API Terms and the new-install rate limit). Indexing stays allowed if the Agent/Assistant UI stays off. Pending.
 2. Should workspace owners be able to **enable** an action the org left off for their space, or only disable? The plan says only disable.
-3. GitHub: are we comfortable asking every installation to approve new write permissions, or should writes be a second, opt-in GitHub App?
+3. ~~GitHub: one App or two?~~ Decided 2026-10-14: one App with Issues: write only, read-only installation tokens, and a narrowed token per write (§5 GitHub).
 4. Retention: keep `actions` forever, or purge after N days like `live_tool_calls`? Payloads contain company text.
 
 ---

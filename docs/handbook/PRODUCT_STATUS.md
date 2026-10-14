@@ -313,6 +313,36 @@ questions 9/10 both. Four high-level answers are not in the benchmark's document
 "I don't know" stays the right answer there. Not done: a separate search per part of a
 question (the cause of the remaining list misses), held back for its latency and cost.
 
+**Branch `feat/write-actions-plan` (14 Oct 2026, not merged): Act (writes into connected tools).**
+Plan: `docs/plans/2026-10-13-write-actions.md`; plain version: `plan.md`. Off unless
+`ACTIONS_ENABLED=true`, then off per action until an org admin switches it on (Admin › Actions).
+
+- **Act page (`/act`)**, separate from Ask: "File a Linear issue in Platform about …" is drafted,
+  shown on a card, and sent **only when the person approves**, exactly as shown, once.
+- **Each person connects their own Linear / GitHub account**, so a write runs with their rights
+  and shows their name. Linear: create issue, comment. GitHub: open issue, comment on issue or PR.
+  No edit, close, delete, merge or code push. The GitHub App needs **Issues: write** only (accepted
+  by each installation's owner); each write uses a token GitHub narrows to one repo, and Handbook's
+  own reading tokens are minted read-only.
+- **Targets only from the person's own words**; links and @-mentions only if they wrote them.
+- **Private content:** never sent to a public place (a public repo); a destination where some
+  readers cannot see the private documents used needs a ticked acknowledgement
+  (`ACTIONS_BLOCK_WIDER=true` refuses instead).
+- **Notion** (comment, add to a page, create a page) through a separate "Handbook Actions"
+  connection, so the read connection stays read-only; **Google Docs** (a new Doc in the person's
+  own Drive, `drive.file` only). Every connected account must be the company's own workspace or
+  the person's work address.
+- **Slack:** the bot posts "on behalf of @person" (never as them). From Slack, `act <request>`
+  works in a DM (drafts with the person's access) or a channel (drafts from that channel only;
+  the card is shown only to the asker; a Slack post can only be a reply in that thread). Each
+  Slack surface has its own admin switch. Needs Interactivity on, with Request URL
+  `/slack/interactivity`; no new Slack scopes.
+- Every proposal and outcome is kept in `actions` (the admin log).
+
+Covered by `tests/test_actions_store.py`, `tests/test_actions_act.py`,
+`tests/test_actions_notion_drive.py` and `tests/test_actions_slack.py`. Not yet tried against real accounts; Notion page writes need
+one live test to see whose name Notion records.
+
 ## 13. Testing & Verification
 
 - **Automated suite:** 167 test modules and about 1,900 test functions, before parametrized

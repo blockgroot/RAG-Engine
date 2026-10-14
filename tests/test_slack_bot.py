@@ -107,8 +107,8 @@ def _capture_scope(monkeypatch) -> list:
     monkeypatch.setattr(slack_events, "_slack_email", lambda t, u: "a@b.com")
     monkeypatch.setattr(
         slack_events,
-        "get_user_by_email",
-        lambda email: type("U", (), {"id": "u1", "org_id": "org-1", "email": "a@b.com"})(),
+        "get_member_by_address",
+        lambda email, org_id: type("U", (), {"id": "u1", "org_id": "org-1", "email": "a@b.com"})(),
     )
     monkeypatch.setattr(slack_events, "post_message", lambda *a, **k: None)
     monkeypatch.setattr(slack_events, "_scope_for_channel", lambda *a: None)
@@ -152,7 +152,7 @@ def test_a_person_without_an_account_is_refused(monkeypatch):
     """Never answer org-scoped content without resolving who is asking."""
     posted: list = []
     _capture_scope(monkeypatch)
-    monkeypatch.setattr(slack_events, "get_user_by_email", lambda email: None)
+    monkeypatch.setattr(slack_events, "get_member_by_address", lambda email, org_id: None)
     monkeypatch.setattr(
         slack_events, "post_message", lambda tok, ch, text, ts=None: posted.append(text)
     )
@@ -269,8 +269,8 @@ def _capture_post(monkeypatch, *, update_ok: bool = True) -> tuple[list, list]:
     monkeypatch.setattr(slack_events, "get_live_connection_token", lambda *a, **k: "tok")
     monkeypatch.setattr(slack_events, "_slack_email", lambda t, u: "a@b.com")
     monkeypatch.setattr(
-        slack_events, "get_user_by_email",
-        lambda email: type("U", (), {"id": "u1", "org_id": "org-1", "email": "a@b.com"})(),
+        slack_events, "get_member_by_address",
+        lambda email, org_id: type("U", (), {"id": "u1", "org_id": "org-1", "email": "a@b.com"})(),
     )
     monkeypatch.setattr(slack_events, "_scope_for_channel", lambda *a: None)
     monkeypatch.setattr(slack_events, "_answer", lambda *a, **k: slack_events.SlackAnswer("the answer"))
@@ -342,8 +342,8 @@ def _capture_answer_scope(monkeypatch) -> list:
     monkeypatch.setattr(slack_events, "get_live_connection_token", lambda *a, **k: "tok")
     monkeypatch.setattr(slack_events, "_slack_email", lambda t, u: "a@b.com")
     monkeypatch.setattr(
-        slack_events, "get_user_by_email",
-        lambda email: type("U", (), {"id": "u1", "org_id": "org-1", "email": "a@b.com"})(),
+        slack_events, "get_member_by_address",
+        lambda email, org_id: type("U", (), {"id": "u1", "org_id": "org-1", "email": "a@b.com"})(),
     )
     monkeypatch.setattr(slack_events, "post_message", lambda *a, **k: None)
     # Default to "no name in the question" so each test exercises the path it

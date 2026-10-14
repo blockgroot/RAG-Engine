@@ -1361,3 +1361,80 @@ ALTER TABLE user_memory ADD COLUMN IF NOT EXISTS announced BOOLEAN NOT NULL DEFA
 CREATE UNIQUE INDEX IF NOT EXISTS uq_user_memory_text
     ON user_memory (org_id, user_id, lower(text));
 CREATE INDEX IF NOT EXISTS idx_user_memory_owner ON user_memory (org_id, user_id, created_at DESC);
+
+-- Act mode (docs/plans/2026-10-13-write-actions.md). Three tables, kept apart
+-- from every read path: nothing in Ask, Chart, sync or the Slack bot reads them.
+--
+-- A person's OWN token for acting in a tool, granted by them on the tool's
+-- consent page. Never used for reads or sync (those stay on oauth_connections),
+-- so a write runs with that person's rights and shows them as the author. Dies
+-- with the person (cascade), which is what revokes their writes on removal.
+CREATE TABLE IF NOT EXISTS user_connections (
+    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id                  UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    user_id                 UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+    provider                TEXT NOT NULL,
+    external_user_id        TEXT NOT NULL,
+    external_user_name      TEXT,
+    scopes                  TEXT[] NOT NULL DEFAULT '{}',
+    access_token_encrypted  TEXT NOT NULL,
+    refresh_token_encrypted TEXT,
+    expires_at              TIMESTAMPTZ,
+    needs_reauth            BOOLEAN NOT NULL DEFAULT false,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (org_id, user_id, provider)
+);
+
+-- Which actions are switched on. workspace_id NULL is the org's setting; a
+-- space's row can only switch an action OFF there (policy.is_enabled).
+CREATE TABLE IF NOT EXISTS action_policies (
+    org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE,
+    action       TEXT NOT NULL,
+    enabled      BOOLEAN NOT NULL,
+    updated_by   UUID REFERENCES users (id) ON DELETE SET NULL,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_action_policies_orgwide
+    ON action_policies (org_id, action) WHERE workspace_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_action_policies_workspace
+    ON action_policies (org_id, workspace_id, action) WHERE workspace_id IS NOT NULL;
+
+-- One proposed write, from proposal to outcome: the approval queue AND the
+-- audit log, so the two can never disagree. The payload stored here is what
+-- runs -- never a copy the client sends back. A public exposure is never
+-- stored (CHECK), so private content cannot reach a public place even if a
+-- caller forgets to refuse it first.
+CREATE TABLE IF NOT EXISTS actions (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id          UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    workspace_id    UUID REFERENCES workspaces (id) ON DELETE SET NULL,
+    user_id         UUID REFERENCES users (id) ON DELETE SET NULL,
+    conversation_id UUID,
+    surface         TEXT NOT NULL CHECK (surface IN ('web', 'slack')),
+    action          TEXT NOT NULL,
+    target          JSONB NOT NULL,
+    payload         JSONB NOT NULL,
+    payload_hash    TEXT NOT NULL,
+    sources         JSONB NOT NULL DEFAULT '[]',
+    exposure        TEXT NOT NULL DEFAULT 'none'
+                    CHECK (exposure IN ('none', 'narrower', 'wider', 'unknown')),
+    acknowledged    BOOLEAN NOT NULL DEFAULT false,
+    status          TEXT NOT NULL DEFAULT 'proposed'
+                    CHECK (status IN ('proposed', 'executing', 'succeeded', 'failed',
+                                      'unknown', 'rejected', 'expired')),
+    expires_at      TIMESTAMPTZ NOT NULL,
+    decided_at      TIMESTAMPTZ,
+    executed_at     TIMESTAMPTZ,
+    result          JSONB,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_actions_org_time ON actions (org_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_actions_user_status ON actions (org_id, user_id, status);
+CREATE INDEX IF NOT EXISTS idx_actions_proposed_expiry
+    ON actions (expires_at) WHERE status = 'proposed';
+-- Act from Slack (Phase 3): where a proposal was made decides what it may read
+-- and where it may post, and an admin switches each Slack surface on apart.
+ALTER TABLE actions DROP CONSTRAINT IF EXISTS actions_surface_check;
+ALTER TABLE actions ADD CONSTRAINT actions_surface_check
+    CHECK (surface IN ('web', 'slack_dm', 'slack_channel'));
