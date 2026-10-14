@@ -138,17 +138,25 @@ def slack_request(text: str, *, org_id: str, is_dm: bool, llm=None) -> str | Non
     """
     try:
         if not policy.act_on(org_id):
+            logger.info("slack.act org=%s: not a request (Act is off)", org_id)
             return None
     except Exception:  # noqa: BLE001 - an unreadable switch is "off": answer, never write
         logger.warning("slack.act: could not read the Act switch", exc_info=True)
         return None
     explicit = act_request(text)
     if explicit is not None:
+        logger.info("slack.act org=%s: request (act command)", org_id)
         return explicit
-    if not policy.surface_enabled(org_id, "slack_dm" if is_dm else "slack_channel"):
+    kind = "slack_dm" if is_dm else "slack_channel"
+    if not policy.surface_enabled(org_id, kind):
+        logger.info("slack.act org=%s: not a request (%s is off)", org_id, kind)
         return None
     words = plain_slack_text(_MENTION.sub(" ", text)).strip()
-    return words if words and asks_to_act(words, llm=llm) else None
+    asked = bool(words) and asks_to_act(words, llm=llm)
+    # Logged so "why was this answered, not drafted?" has an answer in the logs.
+    logger.info("slack.act org=%s: %s (plain words, %s)", org_id,
+                "request" if asked else "not a request", kind)
+    return words if asked else None
 
 
 def plain_slack_text(text: str) -> str:

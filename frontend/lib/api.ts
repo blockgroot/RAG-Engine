@@ -331,6 +331,8 @@ export interface ConnectionSourceConfig {
   folder_id?: string;
   folder_name?: string;
   installation_id?: string;
+  /** GitHub: the installation's own settings page (organization or personal). */
+  manage_url?: string;
   account_login?: string;
   repository_selection?: "all" | "selected";
   repos?: GitHubRepoRef[];
@@ -847,10 +849,14 @@ export const api = {
     ),
   actStatus: () => request<ActStatus>("/act/status"),
   /** Draft one action. In a space's chat, ``workspaceId`` drafts from that space. */
-  act: (question: string, workspaceId?: string | null) =>
+  act: (question: string, workspaceId?: string | null, model?: string | null) =>
     request<{ reply: string; action: ActCard | null }>("/act", {
       method: "POST",
-      body: JSON.stringify({ question, workspace_id: workspaceId ?? null }),
+      body: JSON.stringify({
+        question,
+        workspace_id: workspaceId ?? null,
+        model: model && model !== "auto" ? model : null,
+      }),
     }),
   confirmAction: (id: string, payloadHash: string, acknowledged: boolean) =>
     request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}/confirm`, {

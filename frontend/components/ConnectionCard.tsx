@@ -87,6 +87,10 @@ function manageExternalHref(
   connection: ConnectionRecord
 ): string | null {
   if (provider === "github") {
+    // GitHub's own link for the installation (organization or personal
+    // account); the hand-built one below is only right for a personal one.
+    const url = connection.source_config?.manage_url;
+    if (url) return url;
     const id = connection.source_config?.installation_id;
     return id ? githubInstallSettingsUrl(id) : null;
   }

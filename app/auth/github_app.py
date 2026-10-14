@@ -120,6 +120,25 @@ def installation_permissions(
     permission takes effect only once the owner approves it, and Act asks this
     to tell "not approved yet" from "approved".
     """
+    permissions = _installation(installation_id, settings).get("permissions") or {}
+    return {str(k): str(v) for k, v in permissions.items()}
+
+
+def installation_settings_url(
+    installation_id: str, settings: GitHubSettings | None = None
+) -> str | None:
+    """GitHub's own settings page for this installation, as GitHub gives it.
+
+    Built by hand it was always ``/settings/installations/<id>``, which is a
+    404 for an installation on an ORGANIZATION (that page lives under
+    ``/organizations/<org>/settings/installations/<id>``).
+    """
+    url = str(_installation(installation_id, settings).get("html_url") or "")
+    return url if url.startswith("https://github.com/") else None
+
+
+def _installation(installation_id: str, settings: GitHubSettings | None = None) -> dict:
+    """``GET /app/installations/<id>``, as the App."""
     settings = settings or GitHubSettings.from_env()
     app_jwt = build_app_jwt(client_id=settings.client_id, private_key_pem=settings.private_key)
     try:
@@ -134,8 +153,7 @@ def installation_permissions(
             f"GitHub installation lookup failed for installation {installation_id}: {exc}",
             cause=exc,
         ) from exc
-    permissions = (response.json() or {}).get("permissions") or {}
-    return {str(k): str(v) for k, v in permissions.items()}
+    return response.json() or {}
 
 
 def read_only(permissions: dict[str, str]) -> dict[str, str]:
