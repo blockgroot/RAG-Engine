@@ -216,7 +216,9 @@ A refused chart is a CHART gap (`feedback.list_chart_gaps`, with the refusal's
 heading as why), never on the documentation-gap list; a reply in
 `routing.NOT_CHART_GAPS` (wanted words, model can't chart, Chart mode off) is
 neither. Chart-mode starters come from the scope's metrics and discovered fields
-(`GET /chat/chart-starters`), never page copy.
+and its document tables (columns + page title), never page copy
+(`GET /chat/chart-starters`): only a metric with recorded facts, every source
+before any repeats, each phrased a different way so the list teaches asking.
 "Open"/"closed" on a state filter is a GROUP of real states (not finished / finished),
 `query.AnyOf`, compiled to `= ANY(...)` and still bound; an exact state wins first.
 "Finished" is the SOURCE's own state type (`attrs.state_type`, `store.state_types`),

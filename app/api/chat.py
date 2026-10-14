@@ -9,6 +9,7 @@ import logging
 import os
 import dataclasses
 import queue
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -371,37 +372,96 @@ def _combined_suggestions(
     return {"agent": None, "sources": sorted(per_provider), "questions": questions}
 
 
-#: Chart-mode starters shown at once; more would push the box off a phone.
-MAX_CHART_STARTERS = 4
+#: Chart-mode starters shown at once: two columns of three on a wide screen.
+MAX_CHART_STARTERS = 6
+
+#: Order sources take turns in, documents first: their tables are the data a
+#: person is least likely to know can be charted.
+_STARTER_SOURCES = ("notion", "google", "slack", "linear", "github", "forms")
 
 
-def chart_starters(metrics, fields: dict | None) -> list[str]:
+def _starter_label(label: str) -> str:
+    """A metric label mid-sentence: "Where the work sits" -> "where the work
+    sits", while "PRs" or "GitHub" keep their capitals."""
+    return label[:1].lower() + label[1:] if label[1:2].islower() else label
+
+
+def _metric_starter(metric, attrs, variant: int) -> str:
+    """One way of asking per starter, so the list also teaches how to ask: a
+    trend over a range, a breakdown, a split, a pie. Built from the metric's
+    own label, dimensions and discovered fields, never written per metric."""
+    from ..rag.prompts import _TOOL_NAMES
+
+    tool = _TOOL_NAMES.get(metric.provider, metric.provider.title())
+    label = _starter_label(metric.label)
+    dims = [query.dim_label(metric, d) for d in metric.dims]
+    if attrs:
+        return f"Show {label} by {attrs[0].label} in {tool}"
+    if metric.chart == "line":
+        if variant % 3 == 1 and dims:
+            return f"Show {label} per month in {tool}, split by {dims[0]}"
+        if variant % 3 == 2 and dims:
+            return f"Show {label} by {dims[0]} in {tool}"
+        return f"Show {label} per week in {tool} over the last 3 months"
+    if dims and metric.dims[0] == "state":
+        return f"Pie chart of {label} by {dims[0]} in {tool}"
+    return f"Show {label} by {dims[0]} in {tool}" if dims else f"Show {label} in {tool}"
+
+
+def _table_starter(table) -> str | None:
+    """A document table asked for by its own column names and its page's
+    title, which is what picks that page. None for a table with nothing to
+    plot (one row, or no number column)."""
+    if table.row_count < 2 or not table.columns:
+        return None
+    axis = table.columns[0]
+    number = next((c for c in table.columns[1:] if c.get("type") == "number"), None)
+    if not number or not axis.get("name"):
+        return None
+    measure = _starter_label(
+        re.sub(r"\s*\([^)]*\)\s*$", "", number["name"])[:_STARTER_NAME_CHARS])
+    axis_name = _starter_label(axis["name"][:_STARTER_NAME_CHARS])
+    title = table.document_title
+    if len(title) > 50:
+        title = title[:50].rsplit(" ", 1)[0] + "…"
+    if axis.get("type") == "date":
+        return f"Line chart of {measure} over time from \u201c{title}\u201d"
+    return f"Show {measure} by {axis_name} from \u201c{title}\u201d"
+
+
+def chart_starters(metrics, fields: dict | None, tables=(), recorded=None) -> list[str]:
     """Starter questions built from what THIS scope can chart.
 
-    No product copy: each one is a metric this scope has, phrased from its
-    own label, either over time (a trend metric) or by a field the data
-    actually holds (discovered by ``attr_catalog``) -- so every starter can be
-    drawn, and a new field becomes a starter without anyone writing one.
-    One per metric, interleaved across tools.
+    No product copy: each one is a metric this scope has data for (``recorded``
+    pairs of provider and kind; ``None`` = not known, keep all), phrased from
+    its own label and the fields the data holds, or a document table phrased
+    from its own columns and title -- so every starter can be drawn. Sources
+    take turns, so every connected one is shown before any repeats.
     """
-    by_provider: dict[str, list[str]] = {}
+    by_provider: dict[str, list] = {}
+    for table in tables:
+        text = _table_starter(table)
+        items = by_provider.setdefault(table.provider, [])
+        if text and text not in items and len(items) < 2:
+            items.append(text)
     for metric in metrics:
+        if recorded is not None and (metric.provider, metric.kind) not in recorded:
+            continue
         attrs = [a for a in ((fields or {}).get(metric.key) or ())
                  if a.type in ("category", "tags")]
-        if attrs:
-            text = f"{metric.label} by {attrs[0].label}"
-        elif metric.chart == "line":
-            text = f"{metric.label} per week"
-        else:
-            dim = metric.dims[0] if metric.dims else None
-            text = (f"{metric.label} by {query.dim_label(metric, dim)}" if dim
-                    else metric.label)
-        by_provider.setdefault(metric.provider, []).append(text)
+        by_provider.setdefault(metric.provider, []).append((metric, attrs))
+    order = sorted(by_provider, key=lambda p: (
+        _STARTER_SOURCES.index(p) if p in _STARTER_SOURCES else len(_STARTER_SOURCES), p))
     out: list[str] = []
+    asked = 0  # metric starters so far: each one shows the next way of asking
     while len(out) < MAX_CHART_STARTERS and any(by_provider.values()):
-        for items in by_provider.values():
+        for provider in order:
+            items = by_provider[provider]
             if items and len(out) < MAX_CHART_STARTERS:
-                out.append(items.pop(0))
+                item = items.pop(0)
+                if isinstance(item, tuple):
+                    item, asked = _metric_starter(*item, asked), asked + 1
+                out.append(item)
     return out
 
 
@@ -446,6 +506,7 @@ def list_chart_starters(
         except AuthError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
     from ..insights import attr_catalog, registry, scopes
+    from ..insights import store as insights_store
 
     try:
         connected = _connected_providers(session.org_id, workspace_id)
@@ -473,7 +534,20 @@ def list_chart_starters(
                 list_upload_tables(org_id=session.org_id, uploads=uploads))
         except Exception:  # noqa: BLE001 - starters are a convenience
             logger.warning("chart starters: could not list uploaded tables", exc_info=True)
-    questions = (from_files + chart_starters(metrics, fields))[:MAX_CHART_STARTERS]
+    viewer = viewer_for(session)
+    try:
+        recorded = insights_store.recorded_kinds(
+            org_id=session.org_id, workspace_id=workspace_id, viewer=viewer)
+    except Exception:  # noqa: BLE001 - starters are a convenience
+        recorded = None
+    try:
+        from ..doctables.store import list_tables
+
+        tables = list_tables(org_id=session.org_id, workspace_id=workspace_id,
+                             viewer=viewer, limit=50)
+    except Exception:  # noqa: BLE001
+        tables = []
+    questions = (from_files + chart_starters(metrics, fields, tables, recorded))[:MAX_CHART_STARTERS]
     return {"questions": questions}
 
 

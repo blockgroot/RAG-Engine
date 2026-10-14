@@ -731,5 +731,40 @@ def test_chart_starters_come_from_what_the_scope_can_chart():
     metrics = [registry.get("issue_states"), registry.get("prs_merged"),
                registry.get("drive_docs_changed")]
     got = chart_starters(metrics, {"issue_states": (priority,)})
-    assert got == ["Where the work sits by priority", "Pull requests merged per week",
-                   "Files created or edited per week"]
+    assert got == ["Show files created or edited per week in Google Drive over the last 3 months",
+                   "Show where the work sits by priority in Linear",
+                   "Show pull requests merged by person in GitHub"]
+
+
+def test_chart_starters_cover_each_source_and_its_document_tables():
+    """Document tables are offered by their own columns and page title, a
+    metric with nothing recorded is not offered, and every source gets a turn
+    before any repeats."""
+    from app.api.chat import chart_starters
+    from app.doctables.store import TableRef
+    from app.insights import registry
+
+    def table(title, provider, cols, rows=4):
+        return TableRef(id=title, name="t", columns=cols, row_count=rows, truncated=False,
+                        notes=(), document_title=title, provider=provider, source_uri=None)
+
+    tables = [
+        table("Support update", "notion", ({"key": "c0", "name": "Month", "type": "category"},
+                                           {"key": "c1", "name": "Resolved tickets (tickets)",
+                                            "type": "number"})),
+        table("Sales log", "google", ({"key": "c0", "name": "Day", "type": "date"},
+                                      {"key": "c1", "name": "Revenue", "type": "number"})),
+        table("One row", "google", ({"key": "c0", "name": "A", "type": "category"},
+                                    {"key": "c1", "name": "B", "type": "number"}), rows=1),
+    ]
+    metrics = [registry.get("commits_by_author"), registry.get("prs_merged"),
+               registry.get("slack_threads"), registry.get("issue_states")]
+    recorded = {("github", "commit"), ("slack", "doc_changed"), ("linear", "issue_state")}
+    got = chart_starters(metrics, None, tables, recorded)
+    assert got == [
+        "Show resolved tickets by month from \u201cSupport update\u201d",
+        "Line chart of revenue over time from \u201cSales log\u201d",
+        "Show conversations per week in Slack over the last 3 months",
+        "Pie chart of where the work sits by state in Linear",
+        "Show commits by person in GitHub",
+    ]
