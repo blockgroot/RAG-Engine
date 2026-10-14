@@ -71,6 +71,13 @@ def test_only_the_askers_links_and_mentions_survive():
     assert "bob@example.com" in out  # an email is not a mention
 
 
+def test_a_non_text_value_from_the_model_is_refused_not_crashed_on():
+    with pytest.raises(ActionRejected):
+        draft.require_named(["Platform"], "file it in Platform", "team")
+    assert not draft.asked_in({"x": 1}, "file it")
+    assert draft.clean_body(42, "q", []) == ""
+
+
 def test_long_text_is_cut_visibly():
     out = draft.clean_body("x" * 9000, "q", [])
     assert len(out) <= draft.BODY_LIMIT and out.endswith(draft.TRIMMED)
