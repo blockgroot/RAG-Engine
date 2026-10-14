@@ -1922,7 +1922,7 @@ class RagPipeline:
             conflict_rule=self._settings.conflict_rule,
             assemble_rule=self._settings.assemble_rule,
         )
-        answer_cap = self._settings.max_answer_tokens
+        answer_cap = self._read_settings().max_answer_tokens  # Deep may answer longer
         raw = self._generate_text(
             STAGE_GENERATE,
             prompt,

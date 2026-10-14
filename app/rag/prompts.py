@@ -194,12 +194,14 @@ _CONFLICT_RULE = (
 
 _ASSEMBLE_RULE = (
     "If the QUESTION asks about the company or a product as a whole (its "
-    "strategy, offering, features, structure, or a list of them) and no single "
-    "block states the whole answer, put the answer together from the blocks "
-    "that each hold a piece: lead with the combined answer (mode A), cite each "
-    "piece, and include every item CONTEXT supports, even beyond rule 5's 3-5 "
-    "points. Do not open with what is missing; end with one short line saying "
-    "it is gathered from several documents rather than stated in one place."
+    "strategy, offering, features or structure), or asks for every item of a "
+    "kind, how many there are, or which one has the most, its answer is often "
+    "spread over several blocks: gather it from all of them, lead with the "
+    "combined answer (mode A), cite each piece, and include every item CONTEXT "
+    "supports, even beyond rule 5's 3-5 points. Count only items CONTEXT "
+    "shows. Do not open with what is missing; when no single block states the "
+    "whole answer, end with one short line saying it is gathered from several "
+    "documents."
 )
 
 
@@ -222,9 +224,10 @@ def build_grounded_prompt(
     customer, incident or version. ``partial_rule`` lets a partly covered
     question get the covered part instead of the fallback; ``conflict_rule``
     prefers the newer of two disagreeing blocks (Benchmark 2); ``assemble_rule``
-    lets a company-wide question be answered from pieces spread over several
-    blocks (Benchmark 3: such answers opened with "no single document states
-    this" and were graded refusals). Each is off by default, and with all off
+    lets a company-wide or list/count question be answered from pieces spread
+    over several blocks (Benchmark 3: such answers opened with "no single
+    document states this" and were graded refusals, and rule 5's "3-5 points"
+    kept 21 of the 37 facts a 46-fact list was given). Each is off by default, and with all off
     the prompt is unchanged.
 
     ``asker_facts`` (personal memory) sit OUTSIDE the context, after it, and
