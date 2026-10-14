@@ -13,6 +13,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
+from ..core.exceptions import ActionRejected
+from .draft import clean_body, clean_title
+
 
 @dataclass(frozen=True)
 class ActionTarget:
@@ -132,6 +135,31 @@ class Action(ABC):
         from ..auth.user_connections import fresh_user_token
 
         return fresh_user_token(org_id, user_id, self.provider)
+
+    #: Payload fields the person may rewrite before approving: drafted words
+    #: only. Where it goes is never editable (cancel and ask again).
+    editable_fields: ClassVar[tuple[str, ...]] = ("title", "body")
+
+    def editable(self, payload: dict[str, Any]) -> dict[str, str]:
+        """The drafted words as the person reads and edits them."""
+        return {k: payload[k] for k in self.editable_fields if k in payload}
+
+    def edit(self, payload: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
+        """The stored payload with the person's edit applied, cleaned like a
+        draft. The edit is the person's own writing, so its links and
+        @-mentions are theirs; everything else in the payload is kept."""
+        current = self.editable(payload)
+        if not fields or set(fields) - set(current):
+            raise ActionRejected(
+                "Only the drafted text can be edited. To change where it goes, cancel and ask again."
+            )
+        new = dict(payload)
+        for key, value in fields.items():
+            text = value if isinstance(value, str) else ""
+            new[key] = clean_title(text) if key == "title" else clean_body(text, text, ())
+        if "title" not in new and not new.get("body"):
+            raise ActionRejected("The draft is empty.")
+        return new
 
     @abstractmethod
     def prepare(self, args: dict[str, Any], ctx: ActionContext) -> Proposal:

@@ -11,7 +11,10 @@ import { ApiError, api, type ActCard } from "@/lib/api";
  * stored copy and nothing else: Approve returns only this card's fingerprint.
  * When the draft used private documents that some people at the destination
  * cannot see, it says so with numbers, and Approve stays off until the person
- * ticks that they understand. Nothing here can change the payload.
+ * ticks that they understand. Edit sends the person's own words to the
+ * server, which stores them and returns a new fingerprint; Approve stays off
+ * while an edit is unsaved, so only what was saved and shown can be sent.
+ * Where it goes is never editable: cancel and ask again for that.
  */
 
 const PROVIDER_LABEL: Record<string, string> = {
@@ -36,6 +39,11 @@ function remaining(expiresAt: string, now: number): number {
   return Math.max(0, Math.floor((new Date(expiresAt).getTime() - now) / 1000));
 }
 
+/** A source as a short label: a Slack thread's title is its first message. */
+function shortLabel(title: string): string {
+  return title.length > 60 ? `${title.slice(0, 57).trimEnd()}…` : title;
+}
+
 export function ActionCard({
   card,
   onChange,
@@ -47,6 +55,7 @@ export function ActionCard({
   const [ack, setAck] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<{ title?: string; body?: string } | null>(null);
 
   const pending = card.status === "proposed";
   useEffect(() => {
@@ -59,6 +68,9 @@ export function ActionCard({
   const expired = pending && secondsLeft === 0;
   const needsAck = card.exposure === "wider" || card.exposure === "unknown";
   const provider = PROVIDER_LABEL[card.provider ?? ""] ?? card.provider ?? "the tool";
+  const draft = card.draft ?? card.payload;
+  const bodyLabel =
+    draft.title !== undefined ? "Description" : card.provider === "slack" ? "Message" : "Comment";
 
   async function approve() {
     setBusy(true);
@@ -68,6 +80,29 @@ export function ActionCard({
       onChange(action);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not send it. Nothing was sent.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveEdit() {
+    if (!editing) return;
+    const fields: { title?: string; body?: string } = {};
+    if (editing.title !== undefined && editing.title !== draft.title) fields.title = editing.title;
+    if (editing.body !== undefined && editing.body !== draft.body) fields.body = editing.body;
+    if (Object.keys(fields).length === 0) {
+      setEditing(null);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const { action } = await api.editAction(card.id, card.payload_hash, fields);
+      setEditing(null);
+      setAck(false);
+      onChange(action);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not save your edit. Nothing was sent.");
     } finally {
       setBusy(false);
     }
@@ -99,52 +134,103 @@ export function ActionCard({
         <dt>Where</dt>
         <dd>
           {card.target.url ? (
-            <a href={card.target.url} target="_blank" rel="noreferrer">
+            <a
+              className="act-card-target-link"
+              href={card.target.url}
+              target="_blank"
+              rel="noreferrer"
+              aria-label={`Open ${card.target.name} in ${provider}`}
+            >
               {card.target.name}
             </a>
           ) : (
             card.target.name
           )}
         </dd>
-        {card.payload.title !== undefined && (
+        {draft.title !== undefined && (
           <>
-            <dt>Title</dt>
-            <dd className="act-card-title">{card.payload.title}</dd>
+            <dt>
+              <label htmlFor={`act-title-${card.id}`}>Title</label>
+            </dt>
+            <dd className="act-card-title">
+              {editing ? (
+                <input
+                  id={`act-title-${card.id}`}
+                  className="input act-card-edit-title"
+                  maxLength={255}
+                  value={editing.title ?? ""}
+                  onChange={(e) => setEditing({ ...editing, title: e.target.value })}
+                />
+              ) : (
+                draft.title
+              )}
+            </dd>
           </>
         )}
-        {card.payload.body !== undefined && (
+        {draft.body !== undefined && (
           <>
-            <dt>{card.payload.title !== undefined ? "Description" : "Comment"}</dt>
-            <dd className="act-card-body">{card.payload.body || <span className="muted">(empty)</span>}</dd>
+            <dt>
+              <label htmlFor={`act-body-${card.id}`}>{bodyLabel}</label>
+            </dt>
+            <dd className="act-card-body">
+              {editing ? (
+                <textarea
+                  id={`act-body-${card.id}`}
+                  className="input act-card-edit-body"
+                  rows={Math.min(12, Math.max(4, (editing.body ?? "").split("\n").length + 1))}
+                  maxLength={8000}
+                  value={editing.body ?? ""}
+                  onChange={(e) => setEditing({ ...editing, body: e.target.value })}
+                />
+              ) : (
+                draft.body || <span className="muted">(empty)</span>
+              )}
+            </dd>
           </>
         )}
       </dl>
+      {card.edited && !editing && <p className="muted act-card-edited">Edited by you</p>}
 
       {needsAck && pending && (
         <div className="act-card-exposure" role="alert">
           <p>
+            This draft may include private content only some people can see, from{" "}
+            {card.sources.map(shortLabel).join("; ")}.{" "}
             {card.exposure === "wider" ? (
-              <>
-                This uses {card.sources.length === 1 ? "a private document" : `${card.sources.length} private documents`}{" "}
-                ({card.sources.join(", ")}).{" "}
-                {card.audience_size ?? "Some"} people can read the destination, and{" "}
-                <strong>{card.outsiders ?? "some"} of them can&rsquo;t see {card.sources.length === 1 ? "it" : "those documents"}</strong>.
-              </>
+              <strong>
+                {card.audience_size ?? "Some"} people can open where it&rsquo;s going, and{" "}
+                {card.outsiders ?? "some"} of them can&rsquo;t see that content today.
+              </strong>
             ) : (
-              <>
-                This uses private documents ({card.sources.join(", ")}), and I can&rsquo;t tell who
-                can read the destination. <strong>Some people there may not be able to see them.</strong>
-              </>
+              <strong>
+                I can&rsquo;t check who can open where it&rsquo;s going, so people who can&rsquo;t see
+                that content might read it there.
+              </strong>
             )}
           </p>
           <label className="act-card-ack">
             <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} />
-            I understand this shares content from private documents with people who can&rsquo;t see them.
+            I&rsquo;ve read the draft and I&rsquo;m OK sharing it there.
           </label>
         </div>
       )}
 
-      {pending && !expired ? (
+      {pending && !expired && editing ? (
+        <div className="act-card-actions">
+          <button type="button" className="button" onClick={saveEdit} disabled={busy}>
+            {busy ? "Saving…" : "Save changes"}
+          </button>
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={() => setEditing(null)}
+            disabled={busy}
+          >
+            Discard changes
+          </button>
+          <span className="muted act-card-timer">To change where it goes, cancel and ask again.</span>
+        </div>
+      ) : pending && !expired ? (
         <div className="act-card-actions">
           <button
             type="button"
@@ -153,6 +239,14 @@ export function ActionCard({
             disabled={busy || (needsAck && !ack)}
           >
             {busy ? "Sending…" : "Approve"}
+          </button>
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={() => setEditing({ ...draft })}
+            disabled={busy}
+          >
+            Edit
           </button>
           <button type="button" className="button button-secondary" onClick={cancel} disabled={busy}>
             Cancel
@@ -165,8 +259,8 @@ export function ActionCard({
         <p className="act-card-status">
           <span className="studio-chip">{expired ? STATUS_LINE.expired : STATUS_LINE[card.status]}</span>
           {card.status === "succeeded" && card.result?.url && (
-            <a href={card.result.url} target="_blank" rel="noreferrer">
-              Open {card.result.external_id ?? "it"} in {provider}
+            <a className="act-card-result-link" href={card.result.url} target="_blank" rel="noreferrer">
+              Open in {provider}
             </a>
           )}
           {(card.status === "failed" || card.status === "unknown") && card.result?.error && (

@@ -34,7 +34,7 @@ _COLUMNS = (
     "id::text, org_id::text, workspace_id::text, user_id::text, "
     "conversation_id::text, surface, action, target, payload, payload_hash, "
     "sources, exposure, acknowledged, status, expires_at, decided_at, "
-    "executed_at, result, created_at"
+    "executed_at, result, created_at, original_payload"
 )
 
 
@@ -59,6 +59,8 @@ class ActionRow:
     executed_at: datetime | None
     result: dict[str, Any] | None
     created_at: datetime
+    #: The model's draft, set on the person's first edit; ``None`` if unedited.
+    original_payload: dict[str, Any] | None = None
 
 
 def _row(r) -> ActionRow:
@@ -157,6 +159,16 @@ def claim(
     if r:
         return _row(r)
 
+    row = _why_not(org_id, user_id, action_id, shown_hash)
+    raise ActionConflict(
+        "This shares private content with people who can't see it. "
+        "Tick the acknowledgement to approve."
+    )
+
+
+def _why_not(org_id: str, user_id: str, action_id: str, shown_hash: str) -> ActionRow:
+    """After a guarded UPDATE matched nothing: raise for the first reason that
+    applies, or return the row when only the acknowledgement was missing."""
     row = get(org_id, user_id, action_id)
     if row is None:
         raise NotFoundError("No such action.")
@@ -166,10 +178,39 @@ def claim(
         raise ActionExpired("This approval has expired. Ask again to get a fresh one.")
     if row.payload_hash != shown_hash:
         raise ActionConflict("What you approved is not what is stored. Ask again.")
-    raise ActionConflict(
-        "This shares private content with people who can't see it. "
-        "Tick the acknowledgement to approve."
-    )
+    return row
+
+
+def update_payload(
+    org_id: str, user_id: str, action_id: str, *, shown_hash: str, payload: dict[str, Any],
+) -> ActionRow:
+    """Replace a pending draft with the person's edit, in ONE guarded UPDATE.
+
+    Same conditions as ``claim`` (the proposer, still proposed, not expired,
+    the version they saw), so an edit can never race an approval into
+    sending something unseen. The target, sources, exposure and expiry stay
+    as they were; the model's first draft is kept in ``original_payload``.
+    """
+    row = get(org_id, user_id, action_id)
+    if row is None:
+        raise NotFoundError("No such action.")
+    new_hash = payload_hash(row.action, row.target, payload)
+    with get_connection() as conn:
+        r = conn.execute(
+            f"""
+            UPDATE actions
+               SET payload = %s, payload_hash = %s,
+                   original_payload = COALESCE(original_payload, payload)
+             WHERE id = %s::uuid AND org_id = %s::uuid AND user_id = %s::uuid
+               AND status = 'proposed' AND expires_at > now() AND payload_hash = %s
+            RETURNING {_COLUMNS}
+            """,
+            (Json(payload), new_hash, action_id, org_id, user_id, shown_hash),
+        ).fetchone()
+    if r:
+        return _row(r)
+    _why_not(org_id, user_id, action_id, shown_hash)
+    raise ActionConflict("This draft changed. Reload it and try again.")
 
 
 def finish(org_id: str, action_id: str, *, status: str, result: dict[str, Any]) -> None:

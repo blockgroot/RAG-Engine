@@ -48,6 +48,9 @@ logger = logging.getLogger("actions")
 #: Passages shown to the model for drafting. Few, because every one of them is
 #: a source the exposure check must count.
 CONTEXT_HITS = 6
+#: The fields that carry drafted words. Every other field is a target, already
+#: required to be in the asker's own words (``draft.require_named``).
+DRAFT_FIELDS = ("title", "body", "text")
 PROVIDER_NAMES = {"linear": "Linear", "github": "GitHub", "notion": "Notion",
                   "google": "Google Drive", "slack": "Slack"}
 
@@ -136,6 +139,17 @@ def _context(
     return list({h.document_id: docs[h.document_id] for h in kept}.values()), passages
 
 
+def _only_askers_words(args: dict, question: str) -> bool:
+    """True when every drafted field is text the asker typed themselves.
+
+    Then no passage reached the draft, whatever the model was shown, so none
+    is a source: "comment on X: shipped today" carries nothing private.
+    Anything else keeps the rule that every passage shown counts.
+    """
+    drafted = [args.get(f) for f in DRAFT_FIELDS if args.get(f) not in (None, "")]
+    return bool(drafted) and all(isinstance(v, str) and asked_in(v, question) for v in drafted)
+
+
 def offered_actions(
     org_id: str, user_id: str, settings: ActionsSettings, slack_user: str | None = None
 ) -> tuple[list[Action], str | None]:
@@ -213,6 +227,8 @@ def propose(
         return ActOutcome("I only act when you ask me to do something directly, "
                           "for example “file an issue in Platform about …”.")
 
+    if _only_askers_words(args, question):
+        sources = []
     name = PROVIDER_NAMES.get(action.provider, action.provider)
     try:
         token = action.token_for(org_id, user_id)
@@ -243,6 +259,35 @@ def propose(
         exposure=exposure.verdict, ttl_seconds=settings.ttl_seconds,
     )
     return ActOutcome("Here's what I'll do. Check it, then approve.", row, exposure)
+
+
+def edit(
+    *,
+    org_id: str,
+    user_id: str,
+    action_id: str,
+    shown_hash: str,
+    fields: dict,
+    settings: ActionsSettings | None = None,
+) -> ActionRow:
+    """Replace a pending draft's words with the person's own.
+
+    Only drafted text changes (``Action.edit``); where it goes, the sources
+    and the exposure verdict stay, because code cannot tell whether an edit
+    still carries private content. The acknowledgement is given with the
+    Approve click, so it is asked for again on the edited text.
+    """
+    settings = settings or ActionsSettings.from_env()
+    if not settings.enabled:
+        raise ActionRejected("Act is switched off for Handbook.")
+    row = store.get(org_id, user_id, action_id)
+    if row is None:
+        raise NotFoundError("No such action.")
+    action = get_action(row.action)
+    if action is None:
+        raise ActionRejected("This action is no longer available.")
+    return store.update_payload(org_id, user_id, action_id, shown_hash=shown_hash,
+                                payload=action.edit(row.payload, fields))
 
 
 def confirm(

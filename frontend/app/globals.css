@@ -8318,8 +8318,24 @@ a.people-card:hover { color: inherit; }
 .act-card-fields { display: grid; grid-template-columns: max-content 1fr; gap: 0.4rem 1rem; margin: 0; }
 .act-card-fields dt { font-size: 0.8rem; font-weight: 600; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.04em; padding-top: 0.15rem; }
 .act-card-fields dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.act-card-target-link {
+  color: #344054;
+  font-weight: 600;
+  text-decoration-color: #98a2b3;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+}
+.act-card-target-link:hover {
+  color: var(--accent-strong);
+  text-decoration-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
 .act-card-title { font-weight: 600; }
 .act-card-body { white-space: pre-wrap; max-height: 18rem; overflow: auto; font-size: 0.93rem; }
+.act-card-edit-title,
+.act-card-edit-body { width: 100%; font: inherit; font-size: 0.93rem; }
+.act-card-edit-body { resize: vertical; min-height: 6rem; white-space: pre-wrap; }
+.act-card-fields dd:has(.act-card-edit-body) { max-height: none; overflow: visible; }
+.act-card-edited { margin: 0; font-size: 0.82rem; }
 .act-card-exposure {
   display: grid;
   gap: 0.6rem;
@@ -8335,8 +8351,73 @@ a.people-card:hover { color: inherit; }
 .act-card-ack input { margin-top: 0.2rem; }
 .act-card-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
 .act-card-timer { font-size: 0.85rem; }
-.act-card-status { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; margin: 0; }
+.act-card-status { display: flex; flex-wrap: wrap; gap: 0.7rem; align-items: center; margin: 0; }
+.act-card-result-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.5rem;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 999px;
+  background: var(--surface-elevated);
+  color: var(--accent-strong);
+  font-size: 0.84rem;
+  font-weight: 650;
+  line-height: 1;
+  text-decoration: none;
+  transition: background 0.18s var(--ease), border-color 0.18s var(--ease), color 0.18s var(--ease);
+}
+.act-card-result-link:hover {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 32%, white);
+  color: var(--accent-strong);
+}
 .act-card-error { margin: 0; color: var(--provenance-none); font-size: 0.9rem; }
+.act-dialog-backdrop {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+  background: rgba(16, 24, 40, 0.34);
+  backdrop-filter: blur(4px);
+}
+.act-dialog {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.9rem 1rem;
+  width: min(100%, 27rem);
+  padding: 1.35rem;
+  border: 1px solid color-mix(in srgb, #f79009 35%, var(--border));
+  border-radius: 18px;
+  background: var(--surface-elevated);
+  box-shadow: 0 24px 70px -28px rgba(16, 24, 40, 0.5);
+  animation: rise-in 0.22s var(--ease) both;
+}
+.act-dialog-mark {
+  display: grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 12px;
+  background: #fff7e8;
+  color: #b54708;
+}
+.act-dialog-mark svg { width: 1.25rem; height: 1.25rem; }
+.act-dialog-copy { display: grid; gap: 0.35rem; }
+.act-dialog-copy h2 { font-size: 1.08rem; }
+.act-dialog-copy p {
+  color: var(--ink-muted);
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+.act-dialog-button {
+  grid-column: 2;
+  justify-self: end;
+  min-width: 5.5rem;
+  min-height: 2.75rem;
+}
 .act-page {
   max-width: 960px;
   gap: 1.1rem;
@@ -8477,7 +8558,63 @@ a.people-card:hover { color: inherit; }
   text-underline-offset: 0.2em;
 }
 .act-text-button:hover { color: var(--accent-strong); }
-.act-recent { gap: 1rem; }
+.act-recent {
+  gap: 0.75rem;
+  padding: 1.15rem 1.25rem;
+  box-shadow: none;
+}
+.act-history-list {
+  display: grid;
+  border-top: 1px solid var(--border);
+}
+.act-history-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(8.5rem, auto);
+  align-items: center;
+  gap: 1rem;
+  min-height: 3.6rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.act-history-copy {
+  display: grid;
+  gap: 0.16rem;
+  min-width: 0;
+}
+.act-history-copy strong,
+.act-history-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.act-history-copy strong { font-size: 0.82rem; }
+.act-history-copy span,
+.act-history-row > time {
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+}
+.act-history-row > time { white-space: nowrap; }
+.act-history-outcome {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.55rem;
+  font-size: 0.74rem;
+}
+.act-history-outcome > span {
+  color: var(--ink-muted);
+  font-weight: 700;
+}
+.act-history-outcome > span[data-status="succeeded"] { color: var(--provenance-policy); }
+.act-history-outcome > span[data-status="failed"],
+.act-history-outcome > span[data-status="unknown"] { color: var(--provenance-none); }
+.act-history-outcome a {
+  color: var(--accent-strong);
+  font-weight: 650;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.act-history-outcome a:hover { text-decoration: underline; text-underline-offset: 0.18em; }
 
 /* Actions admin: permissions read as a small control surface, not a legal
    document. The switches are grouped by destination and the audit trail is
@@ -8678,6 +8815,15 @@ a.people-card:hover { color: inherit; }
   .action-safety-note { align-items: flex-start; flex-direction: column; gap: 0.15rem; }
 }
 @media (max-width: 600px) {
+  .act-dialog {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    text-align: center;
+  }
+  .act-dialog-button {
+    grid-column: 1;
+    justify-self: stretch;
+  }
   .act-compose-panel,
   .act-accounts-panel { padding: 1.1rem; border-radius: 18px; }
   .act-form-footer {
@@ -8685,6 +8831,13 @@ a.people-card:hover { color: inherit; }
     flex-direction: column;
   }
   .act-draft-button { width: 100%; }
+  .act-history-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.35rem 0.75rem;
+    padding: 0.7rem 0;
+  }
+  .act-history-row > time { grid-column: 1; grid-row: 2; }
+  .act-history-outcome { grid-column: 2; grid-row: 1 / 3; flex-direction: column; align-items: flex-end; gap: 0.15rem; }
   .actions-permissions-panel,
   .actions-slack-panel,
   .actions-activity-panel { padding: 1.05rem; }

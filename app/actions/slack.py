@@ -103,6 +103,10 @@ def escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def unescape(text: str) -> str:
+    return text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+
+
 class SlackPostMessage(Action):
     name = "slack.post_message"
     provider = "slack"
@@ -137,6 +141,26 @@ class SlackPostMessage(Action):
             },
         },
     }
+
+    # The stored text is "<@asker> asked Handbook to post this:" + a newline +
+    # the escaped message. Only the message is the person's to edit; the
+    # first line, naming who asked, is rebuilt as it was.
+    editable_fields = ("body",)
+
+    def editable(self, payload: dict[str, Any]) -> dict[str, str]:
+        return {"body": unescape(payload.get("text", "").partition("\n")[2])}
+
+    def edit(self, payload: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
+        if set(fields) != {"body"}:
+            raise ActionRejected(
+                "Only the message can be edited. To post somewhere else, cancel and ask again."
+            )
+        text = fields["body"] if isinstance(fields["body"], str) else ""
+        body = clean_body(text, text, ())
+        if not body:
+            raise ActionRejected("The draft is empty.")
+        lead = payload.get("text", "").partition("\n")[0]
+        return {**payload, "text": f"{lead}\n{escape(body)}"}
 
     def token_for(self, org_id: str, user_id: str) -> str:
         """The company's bot token: Slack lets an app post, never a person."""

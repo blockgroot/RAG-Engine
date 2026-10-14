@@ -248,7 +248,12 @@ export interface ActCard {
    *  where the tool records its own bot (Notion pages). */
   attribution: string | null;
   target: { kind: string; external_id: string; name: string; url: string | null };
-  payload: { title?: string; body?: string };
+  payload: { title?: string; body?: string; text?: string };
+  /** The drafted words as shown and edited (a Slack post without the line
+   *  naming who asked). Only these can be edited, never where it goes. */
+  draft: { title?: string; body?: string };
+  /** The person changed the model's draft before approving. */
+  edited: boolean;
   payload_hash: string;
   status: "proposed" | "executing" | "succeeded" | "failed" | "unknown" | "rejected" | "expired";
   /** none | narrower: nobody new sees private content. wider | unknown: the
@@ -851,6 +856,11 @@ export const api = {
     request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}/confirm`, {
       method: "POST",
       body: JSON.stringify({ payload_hash: payloadHash, acknowledged }),
+    }),
+  editAction: (id: string, payloadHash: string, fields: { title?: string; body?: string }) =>
+    request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ payload_hash: payloadHash, fields }),
     }),
   rejectAction: (id: string) =>
     request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}/reject`, {

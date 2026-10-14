@@ -185,6 +185,11 @@ def _escape(text: str) -> str:
     return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def _short(title: str) -> str:
+    """A source as a short label: a Slack thread's title is its first message."""
+    return title if len(title) <= 60 else title[:57].rstrip() + "…"
+
+
 def card_blocks(row: ActionRow, *, audience_size: int | None, outsiders: int | None) -> list[dict]:
     """The approval card. Shows exactly what will be sent; plain text, so a
     draft cannot format itself into a link or a ping."""
@@ -203,20 +208,21 @@ def card_blocks(row: ActionRow, *, audience_size: int | None, outsiders: int | N
         for i in range(0, max(len(value), 1), _SECTION_LIMIT):
             blocks.append({"type": "section", "text": {
                 "type": "plain_text", "text": (f"{title}: " if i == 0 else "") + (value[i:i + _SECTION_LIMIT] or "(empty)")}})
-    private = [s.get("title") for s in row.sources if not s.get("public")]
+    private = [_short(s.get("title") or "") for s in row.sources if not s.get("public")]
     if row.exposure in NEEDS_ACK:
+        warn = f"This draft may include private content only some people can see, from {'; '.join(private)}. "
         if row.exposure == "wider":
-            warn = (f"This uses private documents ({', '.join(private)}). {audience_size or 'Some'} "
-                    f"people can read the destination, and {outsiders or 'some'} of them can't see them.")
+            warn += (f"{audience_size or 'Some'} people can open where it's going, and "
+                     f"{outsiders or 'some'} of them can't see that content today.")
         else:
-            warn = (f"This uses private documents ({', '.join(private)}), and I can't tell who can "
-                    "read the destination.")
+            warn += ("I can't check who can open where it's going, so people who can't see "
+                     "that content might read it there.")
         blocks += [
             {"type": "section", "text": {"type": "plain_text", "text": f"⚠️ {warn}"}},
             {"type": "actions", "block_id": "act_ack", "elements": [{
                 "type": "checkboxes", "action_id": "act_ack", "options": [{
                     "text": {"type": "plain_text", "text":
-                             "I understand this shares content from private documents with people who can't see them."},
+                             "I've read the draft and I'm OK sharing it there."},
                     "value": "ack"}]}]},
         ]
     blocks += [
