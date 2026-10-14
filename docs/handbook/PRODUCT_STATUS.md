@@ -305,9 +305,10 @@ Covered by `tests/test_doctables_text.py`, `tests/test_doctables_ingest.py`,
 Plan: `docs/plans/2026-10-13-write-actions.md`; plain version: `plan.md`. Off unless
 `ACTIONS_ENABLED=true`, then off per action until an org admin switches it on (Admin › Actions).
 
-- **Act page (`/act`)**, separate from Ask: a focused three-step flow makes the person name the
-  tool and target, review the exact draft, then approve it. The write is sent **only when the
-  person approves**, exactly as shown, once; account readiness stays visible beside the request.
+- **Act page (`/act`)**, separate from Ask: a focused request form makes the person name the tool
+  and target, review the exact draft, then approve it. The write is sent **only when the person
+  approves**, exactly as shown, once; account readiness stays visible beside the request. A busy
+  model returns a clear try-again message (and confirms nothing was sent), never an internal error.
 - **Each person connects their own Linear / GitHub account**, so a write runs with their rights
   and shows their name. Linear: create issue, comment. GitHub: open issue, comment on issue or PR.
   No edit, close, delete, merge or code push. The GitHub App needs **Issues: write** only (accepted
@@ -326,7 +327,8 @@ Plan: `docs/plans/2026-10-13-write-actions.md`; plain version: `plan.md`. Off un
   the card is shown only to the asker; a Slack post can only be a reply in that thread). Each
   Slack surface has its own admin switch. Needs Interactivity on, with Request URL
   `/slack/interactivity`; no new Slack scopes.
-- Every proposal and outcome is kept in `actions` (the admin log).
+- Every proposal and outcome is kept in `actions`. Admin › Actions groups switches by tool,
+  separates the two Slack surfaces, and shows the audit trail as plain activity rows.
 
 Covered by `tests/test_actions_store.py`, `tests/test_actions_act.py`,
 `tests/test_actions_notion_drive.py` and `tests/test_actions_slack.py`. Not yet tried against real accounts; Notion page writes need
