@@ -218,7 +218,8 @@ heading as why), never on the documentation-gap list; a reply in
 neither. Chart-mode starters come from the scope's metrics and discovered fields
 and its document tables (columns + page title), never page copy
 (`GET /chat/chart-starters`): only a metric with recorded facts, every source
-before any repeats, each phrased a different way so the list teaches asking.
+before any repeats, each naming a chart type (never "donut") that its form allows
+and no earlier starter used, so the list shows what Chart mode draws.
 "Open"/"closed" on a state filter is a GROUP of real states (not finished / finished),
 `query.AnyOf`, compiled to `= ANY(...)` and still bound; an exact state wins first.
 "Finished" is the SOURCE's own state type (`attrs.state_type`, `store.state_types`),

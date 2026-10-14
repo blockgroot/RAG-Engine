@@ -723,7 +723,7 @@ def test_live_is_claimed_only_for_a_read_the_answer_cites():
 
 def test_chart_starters_come_from_what_the_scope_can_chart():
     """Never page copy: a metric's own label, by a field the data holds, or
-    over time; one per metric, interleaved across tools."""
+    over time, each naming a chart type no earlier starter used."""
     from app.api.chat import chart_starters
     from app.insights import registry
 
@@ -731,9 +731,9 @@ def test_chart_starters_come_from_what_the_scope_can_chart():
     metrics = [registry.get("issue_states"), registry.get("prs_merged"),
                registry.get("drive_docs_changed")]
     got = chart_starters(metrics, {"issue_states": (priority,)})
-    assert got == ["Show files created or edited per week in Google Drive over the last 3 months",
-                   "Show where the work sits by priority in Linear",
-                   "Show pull requests merged by person in GitHub"]
+    assert got == ["Bar chart of files created or edited by person in Google Drive",
+                   "Pie chart of where the work sits by priority in Linear",
+                   "Line chart of pull requests merged per week in GitHub over the last 3 months"]
 
 
 def test_chart_starters_cover_each_source_and_its_document_tables():
@@ -762,9 +762,10 @@ def test_chart_starters_cover_each_source_and_its_document_tables():
     recorded = {("github", "commit"), ("slack", "doc_changed"), ("linear", "issue_state")}
     got = chart_starters(metrics, None, tables, recorded)
     assert got == [
-        "Show resolved tickets by month from \u201cSupport update\u201d",
+        "Bar chart of resolved tickets by month from \u201cSupport update\u201d",
         "Line chart of revenue over time from \u201cSales log\u201d",
-        "Show conversations per week in Slack over the last 3 months",
-        "Pie chart of where the work sits by state in Linear",
-        "Show commits by person in GitHub",
+        "Pie chart of conversations by channel in Slack",
+        "Stacked bar chart of where the work sits by team in Linear, split by state",
+        "Area chart of commits per month in GitHub",
     ]
+    assert all(" donut" not in q.lower() for q in got)

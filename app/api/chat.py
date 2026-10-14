@@ -386,47 +386,102 @@ def _starter_label(label: str) -> str:
     return label[:1].lower() + label[1:] if label[1:2].islower() else label
 
 
-def _metric_starter(metric, attrs, variant: int) -> str:
-    """One way of asking per starter, so the list also teaches how to ask: a
-    trend over a range, a breakdown, a split, a pie. Built from the metric's
-    own label, dimensions and discovered fields, never written per metric."""
+#: How each shape is asked for. Every starter names its chart type, so the
+#: list shows what Chart mode can draw; "donut" is never offered (a pie).
+_SHAPE_WORDS = {
+    "line": "Line chart", "area": "Area chart", "bar": "Bar chart",
+    "horizontal_bar": "Horizontal bar chart", "stacked_bar": "Stacked bar chart",
+    "stacked_area": "Stacked area chart", "heatmap": "Heatmap", "pie": "Pie chart",
+}
+
+
+#: Which chart types the list shows first, so six starters cover the common
+#: ones before the rarer stacked area and heatmap.
+_SHOWCASE = ("bar", "line", "pie", "stacked_bar", "area", "horizontal_bar",
+             "heatmap", "stacked_area")
+
+
+def _metric_forms(metric, attrs) -> list[tuple[str, str]]:
+    """Every ``(shape, question)`` this metric can be drawn as, natural shape
+    first. Built from the metric's own label, dimensions and discovered
+    fields, never written per metric; each shape is one ``registry.shapes_for``
+    allows for that form. A median is never added up, so it gets no pie and
+    no stack."""
     from ..rag.prompts import _TOOL_NAMES
 
     tool = _TOOL_NAMES.get(metric.provider, metric.provider.title())
     label = _starter_label(metric.label)
+    if metric.chart not in _SHAPE_WORDS:
+        return [(metric.chart, f"Chart {label} in {tool}")]
     dims = [query.dim_label(metric, d) for d in metric.dims]
-    if attrs:
-        return f"Show {label} by {attrs[0].label} in {tool}"
-    if metric.chart == "line":
-        if variant % 3 == 1 and dims:
-            return f"Show {label} per month in {tool}, split by {dims[0]}"
-        if variant % 3 == 2 and dims:
-            return f"Show {label} by {dims[0]} in {tool}"
-        return f"Show {label} per week in {tool} over the last 3 months"
-    if dims and metric.dims[0] == "state":
-        return f"Pie chart of {label} by {dims[0]} in {tool}"
-    return f"Show {label} by {dims[0]} in {tool}" if dims else f"Show {label} in {tool}"
+    by = attrs[0].label if attrs else (dims[0] if dims else None)
+    adds = metric.select.lower().startswith("count")
+    trend = [
+        ("line", f"per week in {tool} over the last 3 months"),
+        ("area", f"per month in {tool}"),
+    ]
+    split = [
+        ("stacked_bar", f"per month in {tool}, split by {by}"),
+        ("stacked_area", f"per week in {tool}, split by {by}"),
+        ("heatmap", f"per month by {by} in {tool}"),
+    ] if by and adds else []
+    breakdown = [
+        ("bar", f"by {by} in {tool}"),
+        ("horizontal_bar", f"by {by} in {tool}"),
+    ] + ([("pie", f"by {by} in {tool}")] if adds else []) if by else []
+    if metric.chart in ("line", "area"):
+        forms = trend + split + breakdown
+    elif metric.chart == "stacked_bar":
+        forms = split + breakdown + trend
+    else:
+        forms = breakdown + trend + split
+    if metric.dims and metric.dims[0] == "state":
+        # Where work sits NOW: a breakdown, never a trend; its stack is by a
+        # second real column, split by state.
+        from ..insights import registry
+
+        forms = [f for f in breakdown]
+        other = next((query.dim_label(metric, d) for d in metric.dims[1:]
+                      if d in registry.DIMENSIONS), None)
+        if other and adds:
+            forms.append(("stacked_bar", f"by {other} in {tool}, split by {dims[0]}"))
+    return [(shape, f"{_SHAPE_WORDS[shape]} of {label} {rest}") for shape, rest in forms]
 
 
-def _table_starter(table) -> str | None:
+def _table_forms(table) -> list[tuple[str, str]]:
     """A document table asked for by its own column names and its page's
-    title, which is what picks that page. None for a table with nothing to
-    plot (one row, or no number column)."""
+    title, which is what picks that page. Empty for a table with nothing to
+    plot (one row, or no number column). A pie only for a few rows of a
+    measure that adds up (not a percentage)."""
     if table.row_count < 2 or not table.columns:
-        return None
+        return []
     axis = table.columns[0]
     number = next((c for c in table.columns[1:] if c.get("type") == "number"), None)
     if not number or not axis.get("name"):
-        return None
+        return []
     measure = _starter_label(
         re.sub(r"\s*\([^)]*\)\s*$", "", number["name"])[:_STARTER_NAME_CHARS])
     axis_name = _starter_label(axis["name"][:_STARTER_NAME_CHARS])
     title = table.document_title
     if len(title) > 50:
         title = title[:50].rsplit(" ", 1)[0] + "…"
+    source = f"from \u201c{title}\u201d"
     if axis.get("type") == "date":
-        return f"Line chart of {measure} over time from \u201c{title}\u201d"
-    return f"Show {measure} by {axis_name} from \u201c{title}\u201d"
+        forms = [("line", f"over time {source}"), ("area", f"over time {source}"),
+                 ("bar", f"over time {source}")]
+    else:
+        forms = [("bar", f"by {axis_name} {source}"),
+                 ("horizontal_bar", f"by {axis_name} {source}")]
+        if table.row_count >= 3:
+            forms.append(("line", f"by {axis_name} {source}"))
+        if table.row_count <= 8 and "%" not in number["name"] and number.get("unit") != "%":
+            forms.append(("pie", f"by {axis_name} {source}"))
+        second = next((c for c in table.columns[1:] if c.get("type") == "category"
+                       and c.get("name")), None)
+        if second:
+            split = _starter_label(second["name"][:_STARTER_NAME_CHARS])
+            forms.insert(1, ("stacked_bar", f"by {axis_name}, split by {split} {source}"))
+    return [(shape, f"{_SHAPE_WORDS[shape]} of {measure} {rest}") for shape, rest in forms]
 
 
 def chart_starters(metrics, fields: dict | None, tables=(), recorded=None) -> list[str]:
@@ -436,32 +491,36 @@ def chart_starters(metrics, fields: dict | None, tables=(), recorded=None) -> li
     pairs of provider and kind; ``None`` = not known, keep all), phrased from
     its own label and the fields the data holds, or a document table phrased
     from its own columns and title -- so every starter can be drawn. Sources
-    take turns, so every connected one is shown before any repeats.
+    take turns, so every connected one is shown before any repeats, and each
+    starter takes a chart type no earlier one used, so the list shows what
+    Chart mode can draw.
     """
     by_provider: dict[str, list] = {}
     for table in tables:
-        text = _table_starter(table)
+        forms = _table_forms(table)
         items = by_provider.setdefault(table.provider, [])
-        if text and text not in items and len(items) < 2:
-            items.append(text)
+        if forms and forms not in items and len(items) < 2:
+            items.append(forms)
     for metric in metrics:
         if recorded is not None and (metric.provider, metric.kind) not in recorded:
             continue
         attrs = [a for a in ((fields or {}).get(metric.key) or ())
                  if a.type in ("category", "tags")]
-        by_provider.setdefault(metric.provider, []).append((metric, attrs))
+        by_provider.setdefault(metric.provider, []).append(_metric_forms(metric, attrs))
     order = sorted(by_provider, key=lambda p: (
         _STARTER_SOURCES.index(p) if p in _STARTER_SOURCES else len(_STARTER_SOURCES), p))
     out: list[str] = []
-    asked = 0  # metric starters so far: each one shows the next way of asking
+    used: set[str] = set()
     while len(out) < MAX_CHART_STARTERS and any(by_provider.values()):
         for provider in order:
             items = by_provider[provider]
             if items and len(out) < MAX_CHART_STARTERS:
-                item = items.pop(0)
-                if isinstance(item, tuple):
-                    item, asked = _metric_starter(*item, asked), asked + 1
-                out.append(item)
+                forms = items.pop(0)
+                fresh = [f for f in forms if f[0] not in used]
+                shape, text = min(fresh, key=lambda f: _SHOWCASE.index(f[0])
+                                  if f[0] in _SHOWCASE else len(_SHOWCASE)) if fresh else forms[0]
+                used.add(shape)
+                out.append(text)
     return out
 
 
