@@ -27,15 +27,13 @@ from fastapi.testclient import TestClient
 
 from app.actions import ActionContext, Source, policy, service, store
 from app.actions import draft, github, linear
-from app.actions.base import Action, ActionResult, Audience
+from app.actions.base import ActionResult, Audience
 from app.auth import create_admin, create_session_token
 from app.auth.user_connections import UserTokens, get_user_token, save_user_connection
 from app.auth.users import invite_member
 from app.config.settings import ActionsSettings
 from app.core.exceptions import (
-    ActionConflict,
     ActionError,
-    ActionExpired,
     ActionOutcomeUnknown,
     ActionRejected,
     LLMProviderError,
@@ -470,9 +468,6 @@ class FakeAction:
 
     provider = "linear"
     sent: list = []
-    editable_fields = Action.editable_fields
-    editable = Action.editable
-    edit = Action.edit
     raises: Exception | None = None
 
     def token_for(self, org_id, user_id):
@@ -532,104 +527,6 @@ def test_only_the_proposer_can_confirm(org, proposal):
         service.confirm(org_id=org.id, user_id=org.admin.id, action_id=proposal.id,
                         shown_hash=proposal.payload_hash, acknowledged=False, settings=ON)
     assert FakeAction.sent == []
-
-
-# --------------------------------------------------------------------------
-# Editing a draft before approving it
-# --------------------------------------------------------------------------
-
-
-def _edit(org, row, fields, *, user=None, shown=None):
-    return service.edit(org_id=org.id, user_id=(user or org.member).id, action_id=row.id,
-                        shown_hash=shown or row.payload_hash, fields=fields, settings=ON)
-
-
-@requires_db
-def test_an_edit_replaces_the_stored_draft_and_approve_sends_it(org, proposal):
-    edited = _edit(org, proposal, {"title": "Login times out", "body": "Since Monday, see https://status.example/1"})
-    assert edited.payload == {"title": "Login times out",
-                              "body": "Since Monday, see https://status.example/1"}  # typed link kept
-    assert edited.payload_hash != proposal.payload_hash
-    assert edited.original_payload == proposal.payload           # the model's draft is kept
-    assert edited.target == proposal.target and edited.expires_at == proposal.expires_at
-    with pytest.raises(ActionConflict, match="not what is stored"):  # the card seen before the edit
-        service.confirm(org_id=org.id, user_id=org.member.id, action_id=proposal.id,
-                        shown_hash=proposal.payload_hash, acknowledged=False, settings=ON)
-    assert FakeAction.sent == []
-    service.confirm(org_id=org.id, user_id=org.member.id, action_id=proposal.id,
-                    shown_hash=edited.payload_hash, acknowledged=False, settings=ON)
-    [(_key, _target, payload, _token)] = FakeAction.sent
-    assert payload == edited.payload
-
-
-@requires_db
-def test_only_the_drafted_words_of_your_own_pending_draft_can_change(org, proposal):
-    with pytest.raises(NotFoundError):
-        _edit(org, proposal, {"title": "x"}, user=org.admin)
-    with pytest.raises(ActionRejected, match="cancel and ask again"):
-        _edit(org, proposal, {"team": "Secret"})
-    with pytest.raises(ActionRejected, match="no title"):
-        _edit(org, proposal, {"title": "  "})
-    with pytest.raises(ActionConflict, match="not what is stored"):
-        _edit(org, proposal, {"title": "x"}, shown="0" * 64)
-    with get_connection() as conn:
-        conn.execute("UPDATE actions SET expires_at = now() - interval '1 second' WHERE id = %s",
-                     (proposal.id,))
-    with pytest.raises(ActionExpired):
-        _edit(org, proposal, {"title": "x"})
-    store.reject(org.id, org.member.id, proposal.id)
-    with pytest.raises(ActionConflict, match="already rejected"):
-        _edit(org, proposal, {"title": "x"})
-    assert store.get(org.id, org.member.id, proposal.id).payload == proposal.payload
-
-
-@requires_db
-def test_an_edited_draft_still_needs_the_tick(org, monkeypatch):
-    monkeypatch.setattr(linear, "gql", FakeLinear(
-        [PLATFORM], members=[{"email": org.member.email}, {"email": "outsider@x.com"}]))
-    secret = _doc(org.id, "Reorg plan", public=False, viewers=[org.member.email])
-    llm = OneCallLLM("linear_create_issue", {"request_words": "file an issue", "team": "Platform",
-                                             "title": "Reorg", "body": "The reorg moves Platform."})
-    row = _propose(org, "file an issue in Platform about the reorg", llm, [secret]).action
-    edited = _edit(org, row, {"body": "Something else entirely."})
-    assert edited.exposure == "wider" and edited.sources == row.sources
-    with pytest.raises(ActionConflict, match="Tick"):
-        store.claim(org.id, org.member.id, row.id, shown_hash=edited.payload_hash)
-
-
-def test_a_slack_edit_keeps_who_asked_and_stays_inert():
-    from app.actions.slack import SlackPostMessage
-
-    post = SlackPostMessage()
-    payload = {"text": "<@U1> asked Handbook to post this:\nShip &amp; tell", "thread_ts": "9.1"}
-    assert post.editable(payload) == {"body": "Ship & tell"}
-    new = post.edit(payload, {"body": "Done <!channel> <https://x.example|click>"})
-    assert new == {"text": "<@U1> asked Handbook to post this:\n"
-                           "Done &lt;!channel&gt; &lt;https://x.example|click&gt;",
-                   "thread_ts": "9.1"}
-    with pytest.raises(ActionRejected, match="post somewhere else"):
-        post.edit(payload, {"channel": "#general"})
-    with pytest.raises(ActionRejected, match="empty"):
-        post.edit(payload, {"body": " "})
-
-
-@requires_db
-def test_edit_over_http_returns_the_new_card(client, org, proposal):
-    r = client.patch(f"/act/actions/{proposal.id}",
-                     json={"payload_hash": proposal.payload_hash, "fields": {"team": "X"}},
-                     cookies=_cookies(org.member))
-    assert r.status_code == 422
-    r = client.patch(f"/act/actions/{proposal.id}",
-                     json={"payload_hash": proposal.payload_hash, "fields": {"body": "New words"}},
-                     cookies=_cookies(org.member))
-    card = r.json()["action"]
-    assert r.status_code == 200 and card["edited"] is True
-    assert card["draft"] == {"title": "Login", "body": "New words"}
-    assert card["payload_hash"] != proposal.payload_hash
-    r = client.patch(f"/act/actions/{proposal.id}",
-                     json={"payload_hash": card["payload_hash"], "fields": {"body": "x"}},
-                     cookies=_cookies(org.admin))
-    assert r.status_code == 404
 
 
 # --------------------------------------------------------------------------

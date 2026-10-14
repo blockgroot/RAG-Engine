@@ -151,12 +151,14 @@ def _only_askers_words(args: dict, question: str) -> bool:
 
 
 def offered_actions(
-    org_id: str, user_id: str, settings: ActionsSettings, slack_user: str | None = None
+    org_id: str, user_id: str, settings: ActionsSettings, slack_user: str | None = None,
+    workspace_id: str | None = None,
 ) -> tuple[list[Action], str | None]:
-    """The actions to offer, or why there are none, in the person's terms."""
+    """The actions to offer, or why there are none, in the person's terms.
+    In a space, an action the space switched off is not offered."""
     if not settings.enabled:
         return [], "Act is switched off for Handbook."
-    enabled = {n for n in policy.enabled_actions(org_id, None) if n in ACTIONS}
+    enabled = {n for n in policy.enabled_actions(org_id, workspace_id) if n in ACTIONS}
     if not enabled:
         return [], "Your admin hasn't switched on any actions yet."
     providers = connected_providers(org_id, user_id) | slack_available(org_id, user_id, slack_user)
@@ -195,7 +197,8 @@ def propose(
         return ActOutcome("Your admin hasn't turned on Act here. You can use it on Handbook's Act page.")
     if kind == "web":
         surface["slack_user"] = slack_user_for(org_id, user_id)
-    offered, why_not = offered_actions(org_id, user_id, settings, surface.get("slack_user"))
+    offered, why_not = offered_actions(org_id, user_id, settings, surface.get("slack_user"),
+                                       scope_workspace_id)
     if why_not:
         return ActOutcome(why_not)
 
