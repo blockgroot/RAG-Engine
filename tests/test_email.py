@@ -140,7 +140,7 @@ def test_sendgrid_posts_to_https_api(monkeypatch):
     assert captured["url"] == "https://api.sendgrid.com/v3/mail/send"
     assert captured["headers"]["Authorization"] == "Bearer SG_test_key"
     assert captured["json"]["personalizations"] == [{"to": [{"email": "admin@othercompany.com"}]}]
-    assert captured["json"]["from"] == {"email": "Handbook <beth.t@example.com>"}
+    assert captured["json"]["from"] == {"email": "beth.t@example.com", "name": "Handbook"}
     assert {"type": "text/plain", "value": "plain body"} in captured["json"]["content"]
     assert {"type": "text/html", "value": "<p>hi</p>"} in captured["json"]["content"]
 
@@ -183,3 +183,30 @@ def test_sendgrid_surfaces_provider_error_body(monkeypatch):
     )
     with pytest.raises(ProviderError, match="sender identity not verified"):
         _dispatch("a@b.com", "s", "b", settings)
+
+
+def test_sendgrid_takes_a_display_name_in_the_from_address(monkeypatch):
+    """SendGrid wants the name in its own field; "Handbook <a@b.com>" sent
+    whole as the email is rejected."""
+    sent: list = []
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def post(self, url, headers=None, json=None):
+            sent.append(json["from"])
+            return type("R", (), {"status_code": 202, "text": ""})()
+
+    monkeypatch.setattr("app.auth.email.httpx.Client", _Client)
+    for value in ("Handbook <ops@example.com>", "ops@example.com"):
+        _dispatch("a@b.com", "s", "b", EmailSettings(
+            sender="sendgrid", sendgrid_api_key="SG_x", smtp_from=value))
+    assert sent == [{"email": "ops@example.com", "name": "Handbook"},
+                    {"email": "ops@example.com"}]
