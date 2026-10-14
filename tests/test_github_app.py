@@ -217,3 +217,15 @@ def test_settings_default_to_none_when_unset(monkeypatch) -> None:
 
     assert settings.app_slug is None
     assert settings.private_key is None
+
+
+def test_the_manage_link_is_githubs_own_for_an_organization(monkeypatch):
+    """A hand-built /settings/installations/<id> is a 404 for an org install."""
+    from app.auth import github_app
+
+    org_url = "https://github.com/organizations/18-sana/settings/installations/42"
+    monkeypatch.setattr(github_app, "_installation", lambda iid, settings=None: {"html_url": org_url})
+    assert github_app.installation_settings_url("42") == org_url
+    monkeypatch.setattr(github_app, "_installation",
+                        lambda iid, settings=None: {"html_url": "javascript:alert(1)"})
+    assert github_app.installation_settings_url("42") is None

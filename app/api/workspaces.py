@@ -36,6 +36,7 @@ from ..core.exceptions import (
     SourceError,
 )
 from ..githublive import refresh_installation_scope
+from ..githublive.scope import with_manage_url
 from ..ingestion import detect_source_changes
 from ..jobs import JobAlreadyActiveError, enqueue, get_job, has_active_job, list_jobs
 from ..jobs.autosync import sync_now
@@ -354,7 +355,10 @@ def get_connections(workspace_id: str, session: SessionClaims = Depends(get_sess
             "provider": c.provider,
             "external_workspace_name": c.external_workspace_name,
             "created_at": c.created_at.isoformat(),
-            "source_config": c.source_config,
+            "source_config": (
+                with_manage_url(session.org_id, workspace_id, c.source_config)
+                if c.provider == "github" else c.source_config
+            ),
             "needs_reauth": c.needs_reauth,
             "reauth_reason": c.reauth_reason,
             "last_sync_at": c.last_sync_at.isoformat() if c.last_sync_at else None,

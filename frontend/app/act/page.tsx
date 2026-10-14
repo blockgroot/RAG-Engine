@@ -1,17 +1,17 @@
 "use client";
 
 /**
- * Act: ask Handbook to DO something in a connected tool.
+ * Act: the person's own accounts for writing, and what they asked Handbook to do.
  *
- * A separate page from Ask on purpose. Ask only reads; here every request
- * ends in a card the person approves, and nothing is sent before that. Each
- * person connects their own account, so a write runs with their rights and
- * shows them as its author. The page says all of that in plain words,
- * because a person who thinks "the bot did it" reviews a draft less carefully
- * than one who knows it goes out under their name.
+ * Requests are made in the chat (+ then Act), so there is one place to ask,
+ * with the model picker. This page is where a person connects the accounts a
+ * write runs as -- their own, so a write has their rights and shows them as
+ * its author -- and where their drafts and results are listed. Drafts still
+ * waiting can be approved, edited or cancelled here too.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 
 import { ActionCard } from "@/components/ActionCard";
 import { AppShell } from "@/components/AppShell";
@@ -80,58 +80,12 @@ function ActionHistoryRow({ action }: { action: ActCard }) {
   );
 }
 
-function ModelUnavailableDialog({ message, onClose }: { message: string; onClose: () => void }) {
-  const buttonRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    buttonRef.current?.focus();
-  }, []);
-
-  return (
-    <div className="act-dialog-backdrop" role="presentation">
-      <section
-        className="act-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="act-dialog-title"
-        aria-describedby="act-dialog-message"
-        onKeyDown={(event) => {
-          if (event.key === "Escape") onClose();
-          if (event.key === "Tab") {
-            event.preventDefault();
-            buttonRef.current?.focus();
-          }
-        }}
-      >
-        <div className="act-dialog-mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none">
-            <path d="M12 8v4m0 4h.01M10.3 4.6 2.5 18a2 2 0 0 0 1.7 3h15.6a2 2 0 0 0 1.7-3L13.7 4.6a2 2 0 0 0-3.4 0Z" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </div>
-        <div className="act-dialog-copy">
-          <h2 id="act-dialog-title">The model is busy</h2>
-          <p id="act-dialog-message">{message}</p>
-        </div>
-        <button ref={buttonRef} type="button" className="button act-dialog-button" onClick={onClose}>
-          Okay
-        </button>
-      </section>
-    </div>
-  );
-}
-
 export default function ActPage() {
   const { me, loading } = useMe();
   const [status, setStatus] = useState<ActStatus | null>(null);
-  const [question, setQuestion] = useState("");
-  const [reply, setReply] = useState<string | null>(null);
-  const [card, setCard] = useState<ActCard | null>(null);
   const [recent, setRecent] = useState<ActCard[]>([]);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [modelError, setModelError] = useState<string | null>(null);
-  const questionRef = useRef<HTMLTextAreaElement>(null);
 
   const load = useCallback(async () => {
     try {
@@ -166,28 +120,6 @@ export default function ActPage() {
     );
   }
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!question.trim()) return;
-    setBusy(true);
-    setError(null);
-    setReply(null);
-    setCard(null);
-    try {
-      const out = await api.act(question.trim());
-      setReply(out.reply);
-      setCard(out.action);
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 503) {
-        setModelError(err.message);
-      } else {
-        setError(err instanceof ApiError ? err.message : "Something went wrong. Nothing was sent.");
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function disconnect(provider: string) {
     setError(null);
     try {
@@ -199,26 +131,18 @@ export default function ActPage() {
   }
 
   function updated(next: ActCard) {
-    if (next.status === "succeeded" && card?.id === next.id) {
-      setQuestion("");
-    }
-    setCard((c) => (c && c.id === next.id ? next : c));
     setRecent((all) => [next, ...all.filter((a) => a.id !== next.id)]);
   }
 
   const shownProviders = (status?.providers ?? []).filter((p) => p.needed || p.connected || p.needs_reauth);
-  const closeModelError = () => {
-    setModelError(null);
-    window.requestAnimationFrame(() => questionRef.current?.focus());
-  };
 
   return (
     <AppShell me={me}>
       <main className="page-wide studio-page stack act-page">
         <PageHeader
           eyebrow="Act"
-          title="Turn a request into action"
-          description="Name the tool and destination. Handbook prepares a draft; nothing is sent until you review and approve it."
+          title="Your accounts and actions"
+          description="Connect the tools Handbook may write to for you, and see what you've asked it to do. Requests are made in the chat."
         />
 
         {error && (
@@ -249,33 +173,19 @@ export default function ActPage() {
             <div className="act-workspace">
               <section className="studio-panel act-compose-panel" aria-labelledby="act-ask">
                 <div className="act-compose-heading">
-                  <p className="act-step-label">Your request</p>
-                  <h2 id="act-ask">What should Handbook do?</h2>
+                  <p className="act-step-label">Ask</p>
+                  <h2 id="act-ask">Ask Handbook to do it, in the chat</h2>
                   <p className="muted">
-                    Name the tool and the exact team, repo, page, or channel. Handbook will never choose a destination for you.
+                    Open the chat, choose + then Act, and describe what to do: the tool and the exact team,
+                    repo, page or channel. You can pick the model there. Handbook never chooses a destination for you.
                   </p>
                 </div>
-                <form onSubmit={submit} className="act-form">
-                  <label className="sr-only" htmlFor="act-question">Describe the action</label>
-                  <textarea
-                    ref={questionRef}
-                    id="act-question"
-                    className="input act-input"
-                    rows={5}
-                    maxLength={4000}
-                    value={question}
-                    onChange={(e) => setQuestion(e.target.value)}
-                    placeholder={'For example: Create a Linear issue in Platform called "Fix scheduler retries" using yesterday’s #eng discussion.'}
-                  />
-                  <div className="act-form-footer">
-                    <p><CheckIcon /> You&rsquo;ll review everything before it&rsquo;s sent.</p>
-                    <button type="submit" className="button act-draft-button" disabled={busy || !question.trim()}>
-                      {busy ? "Preparing draft…" : "Review draft"}
-                    </button>
-                  </div>
-                </form>
-                {reply && <p className="act-reply">{reply}</p>}
-                {card && <ActionCard card={card} onChange={updated} />}
+                <div className="act-form-footer">
+                  <p><CheckIcon /> You&rsquo;ll review, and can edit, everything before it&rsquo;s sent.</p>
+                  <Link className="button act-draft-button" href="/chat?mode=act">
+                    Open Act in chat
+                  </Link>
+                </div>
               </section>
 
               <aside className="studio-panel act-accounts-panel" aria-labelledby="act-accounts">
@@ -316,7 +226,7 @@ export default function ActPage() {
               </aside>
             </div>
 
-            {recent.filter((r) => r.id !== card?.id).length > 0 && (
+            {recent.length > 0 && (
               <section className="studio-panel act-recent" aria-labelledby="act-recent">
                 <div className="studio-section-head">
                   <p className="act-step-label">History</p>
@@ -324,7 +234,6 @@ export default function ActPage() {
                 </div>
                 <div className="act-history-list">
                   {recent
-                    .filter((r) => r.id !== card?.id)
                     .map((r) => r.status === "proposed" || r.status === "executing" ? (
                       <ActionCard key={r.id} card={r} onChange={updated} />
                     ) : (
@@ -335,7 +244,6 @@ export default function ActPage() {
             )}
           </>
         ) : null}
-        {modelError && <ModelUnavailableDialog message={modelError} onClose={closeModelError} />}
       </main>
     </AppShell>
   );

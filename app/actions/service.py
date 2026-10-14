@@ -185,6 +185,7 @@ def propose(
     surface: dict | None = None,
     scope_workspace_id: str | None = None,
     tags: list[str] | None = None,
+    model: str | None = None,
 ) -> ActOutcome:
     """``surface`` says where the request came from (web, a Slack DM, a Slack
     channel) and is built by the caller from the session or the Slack event.
@@ -205,14 +206,17 @@ def propose(
     sources, passages = _context(question, org_id, viewer, embedder, vstore,
                                  scope_workspace_id, tags)
 
-    from ..llm.routed import default_model_only
+    from ..llm.routed import use_model
 
-    with default_model_only():
-        result = llm.generate_with_tools(
-            [{"role": "user", "content": build_act_prompt(question, passages)}],
-            tools=[a.tool for a in offered],
-            tool_choice="auto",
-        )
+    # The person's pick from the chat's model picker, validated by the route;
+    # None is the default model (Slack, or no pick). Set here, not by the
+    # caller, so a request never inherits another request's choice.
+    use_model(model, org_id=org_id)
+    result = llm.generate_with_tools(
+        [{"role": "user", "content": build_act_prompt(question, passages)}],
+        tools=[a.tool for a in offered],
+        tool_choice="auto",
+    )
     if not result.tool_calls:
         text = strip_links(result.text or "").strip()
         return ActOutcome(text or "Tell me what to do, for example: "

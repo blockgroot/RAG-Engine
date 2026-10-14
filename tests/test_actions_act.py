@@ -812,3 +812,18 @@ def test_act_mode_in_a_space_drafts_from_that_space_members_only(client, org, mo
     r = client.post("/act", json={"question": "file it", "workspace_id": space},
                     cookies=_cookies(org.admin))
     assert r.status_code == 200 and seen[0]["scope_workspace_id"] == space
+
+
+@requires_db
+def test_act_uses_the_picked_model_and_refuses_an_unknown_one(client, org, monkeypatch):
+    seen = []
+    for name in ("_llm", "_embedder", "_vstore"):
+        monkeypatch.setattr(f"app.api.actions.{name}", lambda: object())
+    monkeypatch.setattr(service, "propose",
+                        lambda q, **kw: seen.append(kw) or service.ActOutcome("noted"))
+    r = client.post("/act", json={"question": "file it", "model": "made-up/model"},
+                    cookies=_cookies(org.member))
+    assert r.status_code == 400 and seen == []
+    r = client.post("/act", json={"question": "file it", "model": "auto"},
+                    cookies=_cookies(org.member))
+    assert r.status_code == 200 and seen[0]["model"] == "auto"

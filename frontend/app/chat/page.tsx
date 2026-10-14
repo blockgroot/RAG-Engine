@@ -149,6 +149,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // a separate endpoint (/act): the reply is a draft card, nothing is sent
   // until the person approves it, and the turn is not saved as a chat answer.
   const [actMode, setActMode] = useState(false);
+  const [modelError, setModelError] = useState<string | null>(null);
   // Said once when turning Chart on moved the picker off a model that cannot
   // build charts, so the switch is never silent.
   const [modelNote, setModelNote] = useState<string | null>(null);
@@ -658,6 +659,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   /** Act mode: one draft for the person to check, edit and approve. */
   async function draftAction(question: string) {
     setInput("");
+    setModelError(null);
     setBusy(true);
     setMessages((prev) => [
       ...prev,
@@ -666,9 +668,15 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     ]);
     let reply: Message;
     try {
-      const out = await api.act(question, workspaceId);
+      const out = await api.act(question, workspaceId, model);
       reply = { role: "assistant", text: out.reply, act: out.action };
     } catch (err) {
+      if (err instanceof ApiError && err.status === 503) {
+        setModelError(err.message);
+        setMessages((prev) => prev.slice(0, -1));
+        setBusy(false);
+        return;
+      }
       reply = {
         role: "assistant",
         text: err instanceof ApiError ? err.message : "Something went wrong. Nothing was sent.",
@@ -755,6 +763,15 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // question here, once, as whoever opened it -- their own access decides
   // what the chart shows. Two steps so Chart mode (and a chart-capable model)
   // is in place before the question goes.
+  // "Open Act in chat" from the Act page: /chat?mode=act starts in Act mode.
+  const actLink = searchParams.get("mode") === "act" && !searchParams.get("q");
+  useEffect(() => {
+    if (!actLink || !me?.act_enabled) return;
+    toggleActMode(true);
+    router.replace(pathname);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actLink, me]);
+
   const linkQuestion = searchParams.get("q");
   const [pendingAsk, setPendingAsk] = useState<string | null>(null);
   useEffect(() => {
@@ -916,6 +933,18 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   return (
     <AppShell me={me} variant="app">
       <div className="chat-page">
+        {modelError && (
+          <aside className="act-model-toast" role="alert" aria-live="assertive">
+            <div className="act-model-toast-mark" aria-hidden="true">!</div>
+            <div className="act-model-toast-copy">
+              <strong>The model is busy</strong>
+              <span>{modelError}</span>
+            </div>
+            <button type="button" className="button button-sm" onClick={() => setModelError(null)}>
+              Okay
+            </button>
+          </aside>
+        )}
         {dragging && (
           <div className="chat-drop-overlay" aria-hidden="true">
             <div className="chat-drop-card">
@@ -1304,7 +1333,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             disabled={busy}
             autoFocus
           />
-          {models.length > 0 && !actMode && (
+          {models.length > 0 && (
             <>
               <label className="sr-only" htmlFor="model-select">
                 Model

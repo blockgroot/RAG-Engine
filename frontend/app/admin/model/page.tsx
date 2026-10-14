@@ -143,144 +143,132 @@ export default function AdminModelPage() {
           </section>
         )}
 
-        <div className="model-settings-layout">
-          <section className="studio-panel model-setup-panel" aria-labelledby="add-title">
-            <div className="studio-section-head">
-              <p className="model-section-label">{saved ? "Change connection" : "Setup"}</p>
+        <section className="studio-panel model-setup-panel" aria-labelledby="add-title">
+          <header className="model-setup-head">
+            <div>
+              <p className="model-section-label">{saved ? "Change connection" : "Model setup"}</p>
               <h2 id="add-title">{saved ? "Replace your model" : "Connect your model"}</h2>
+              <p>We verify the credentials before this model becomes available to your team.</p>
+            </div>
+            <span>3-step setup</span>
+          </header>
+
+          <form onSubmit={save} className="model-form">
+            <div className="field">
+              <label htmlFor="preset"><span aria-hidden>1</span> Provider</label>
+              <span className="model-select-wrap">
+                <select
+                  id="preset"
+                  className="input"
+                  value={preset}
+                  onChange={(e) => setPreset(e.target.value)}
+                  disabled={busy}
+                >
+                  {presets.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+              </span>
+            </div>
+
+            <div className="field">
+              <label htmlFor="model"><span aria-hidden>2</span> Model ID</label>
+              <input
+                id="model"
+                className="input"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                placeholder="For example, gpt-5"
+                disabled={busy}
+                required
+              />
               <p className="muted">
-                We test the provider, model name and key before saving anything.
+                Use the provider&rsquo;s exact ID.{" "}
+                {activePreset && (
+                  <a href={activePreset.models_url} target="_blank" rel="noreferrer">
+                    Browse model IDs
+                  </a>
+                )}
               </p>
             </div>
 
-            <form onSubmit={save} className="model-form">
-              <div className="field">
-                <label htmlFor="preset">Provider</label>
-                <span className="model-select-wrap">
-                  <select
-                    id="preset"
-                    className="input"
-                    value={preset}
-                    onChange={(e) => setPreset(e.target.value)}
-                    disabled={busy}
-                  >
-                    {presets.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.label}
-                      </option>
-                    ))}
-                  </select>
-                </span>
-              </div>
-
-              <div className="field">
-                <label htmlFor="model">Model ID</label>
-                <input
-                  id="model"
-                  className="input"
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  placeholder="For example, gpt-5"
-                  disabled={busy}
-                  required
-                />
-                <p className="muted">
-                  Enter the provider&rsquo;s exact model ID.{" "}
-                  {activePreset && (
-                    <a href={activePreset.models_url} target="_blank" rel="noreferrer">
-                      View model IDs
-                    </a>
-                  )}
-                </p>
-              </div>
-
-              <div className="field field-wide">
-                <label htmlFor="apiKey">API key</label>
-                <input
-                  id="apiKey"
-                  className="input"
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="Paste the full key"
-                  disabled={busy}
-                  required
-                  autoComplete="off"
-                />
-                <p className="muted">
-                  Encrypted before storage. After saving, only the final four characters remain visible.
-                </p>
-              </div>
-
-              <div className="model-form-actions">
-                <button
-                  className="button"
-                  type="submit"
-                  disabled={busy || !model.trim() || !apiKey.trim()}
-                >
-                  {busy ? "Testing connection…" : "Test and connect"}
-                </button>
-                <span className="muted">Nothing is saved if the test fails.</span>
-              </div>
-            </form>
-          </section>
-
-          <aside className="studio-panel model-usage-panel" aria-labelledby="usage-title">
-            <div className="studio-section-head">
-              <p className="model-section-label">Good to know</p>
-              <h2 id="usage-title">Before you connect</h2>
-              <p className="muted">Your key changes chat answers only.</p>
+            <div className="field field-wide">
+              <label htmlFor="apiKey"><span aria-hidden>3</span> API key</label>
+              <input
+                id="apiKey"
+                className="input"
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="Paste the full API key"
+                disabled={busy}
+                required
+                autoComplete="off"
+              />
+              <p className="muted">
+                Encrypted before storage. Only the final four characters remain visible after saving.
+              </p>
             </div>
-            <ul className="model-facts">
-              <li className="model-fact">
-                <span className="model-fact-mark model-fact-yes" aria-hidden>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                    <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </span>
-                <div>
-                  <strong>Used for chat answers</strong>
-                  <p>Members can select this model for any question.</p>
-                </div>
-              </li>
-              <li className="model-fact">
-                <span className="model-fact-mark model-fact-no" aria-hidden>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                    <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
-                  </svg>
-                </span>
-                <div>
-                  <strong>Not used for indexing</strong>
-                  <p>Document processing and quality checks continue on Handbook’s model.</p>
-                </div>
-              </li>
-              <li className="model-fact">
-                <span className="model-fact-mark model-fact-bill" aria-hidden>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                    <path d="M12 7v10M9.5 9.5a2.5 2.5 0 012.5-2 2.2 2.2 0 012.4 1.7M14.5 14.5a2.5 2.5 0 01-2.5 2 2.2 2.2 0 01-2.4-1.7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                    <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" />
-                  </svg>
-                </span>
-                <div>
-                  <strong>Billed by your provider</strong>
-                  <p>Set usage or spend limits in the provider’s account.</p>
-                </div>
-              </li>
-              <li className="model-fact">
-                <span className="model-fact-mark model-fact-back" aria-hidden>
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                    <path d="M4 12a8 8 0 108-8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                    <path d="M4 5v5h5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </span>
-                <div>
-                  <strong>Built-in fallback remains</strong>
-                  <p>Members can switch back if your key becomes unavailable.</p>
-                </div>
-              </li>
-            </ul>
-          </aside>
-        </div>
+
+            <div className="model-form-actions">
+              <div className="model-test-note">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <path d="m7 12 3 3 7-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.7" />
+                </svg>
+                <span>A short test runs first. Nothing is saved if it fails.</span>
+              </div>
+              <button
+                className="button"
+                type="submit"
+                disabled={busy || !model.trim() || !apiKey.trim()}
+              >
+                {busy ? "Testing connection…" : "Test and connect"}
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <section className="model-boundary" aria-labelledby="usage-title">
+          <header>
+            <p className="model-section-label">Data route</p>
+            <h2 id="usage-title">How your model is used</h2>
+            <p>Connecting a key changes one part of Handbook—not the whole system.</p>
+          </header>
+          <div className="model-boundary-routes">
+            <article>
+              <span className="model-route-icon" aria-hidden>
+                <svg viewBox="0 0 24 24" fill="none">
+                  <path d="M5 6h14v10H9l-4 3V6Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+                </svg>
+              </span>
+              <div>
+                <span>Chat answers</span>
+                <strong>Your selected model</strong>
+                <p>Uses your API key and is billed by your provider.</p>
+              </div>
+            </article>
+            <article>
+              <span className="model-route-icon model-route-icon-muted" aria-hidden>
+                <svg viewBox="0 0 24 24" fill="none">
+                  <path d="M6 4h9l3 3v13H6V4Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+                  <path d="M9 11h6M9 15h6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+                </svg>
+              </span>
+              <div>
+                <span>Indexing and quality checks</span>
+                <strong>Handbook’s model</strong>
+                <p>Your key is never used for document processing.</p>
+              </div>
+            </article>
+          </div>
+          <footer>
+            <strong>Built-in fallback stays available.</strong>
+            <span>If your key stops working, members can switch models and keep working.</span>
+          </footer>
+        </section>
 
       </main>
     </AppShell>

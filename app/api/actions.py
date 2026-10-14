@@ -177,10 +177,22 @@ def act_status(session: SessionClaims = Depends(get_session)):
     }
 
 
+def _selectable_model(org_id: str, model: str) -> bool:
+    from ..llm import catalog, org_model
+
+    if catalog.is_selectable(model):
+        return True
+    own = org_model.get_org_model_summary(org_id)
+    return bool(own and own["model"] == model)
+
+
 class ActRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     #: Act mode in a space's chat drafts from that space; a non-member is 403.
     workspace_id: uuid.UUID | None = None
+    #: The chat's model picker. Checked like chat's: a catalogued model or
+    #: this org's own, never an arbitrary id (it would spend our key).
+    model: str | None = Field(default=None, max_length=200)
 
 
 @router.post("/act")
@@ -192,6 +204,8 @@ def act(body: ActRequest, session: SessionClaims = Depends(get_session)):
     if user is None or not user.email or viewer.is_unrestricted or not viewer.email:
         # An asker we cannot name does not act -- never "unrestricted".
         raise HTTPException(status_code=403, detail="Sign in again to use Act.")
+    if body.model and not _selectable_model(session.org_id, body.model):
+        raise HTTPException(status_code=400, detail="Unknown model")
     workspace_id = str(body.workspace_id) if body.workspace_id else None
     if workspace_id is not None:
         try:
@@ -203,7 +217,7 @@ def act(body: ActRequest, session: SessionClaims = Depends(get_session)):
             body.question.strip(),
             org_id=session.org_id, user_id=session.user_id, email=user.email,
             viewer=viewer, llm=_llm(), embedder=_embedder(), vstore=_vstore(),
-            settings=settings, scope_workspace_id=workspace_id,
+            settings=settings, scope_workspace_id=workspace_id, model=body.model,
         )
     except LLMProviderError as exc:
         logger.warning("Act model unavailable: %s", exc)
