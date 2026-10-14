@@ -35,6 +35,14 @@ const CONNECT_ERROR: Record<string, string> = {
   account: "That Google account isn't your work account. Connect the one you sign in to Handbook with.",
 };
 
+function CheckIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20" fill="none">
+      <path d="m5 10 3 3 7-7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export default function ActPage() {
   const { me, loading } = useMe();
   const [status, setStatus] = useState<ActStatus | null>(null);
@@ -116,12 +124,27 @@ export default function ActPage() {
 
   return (
     <AppShell me={me}>
-      <main className="page-wide studio-page stack">
+      <main className="page-wide studio-page stack act-page">
         <PageHeader
           eyebrow="Act"
-          title="Ask Handbook to do it"
-          description="File an issue or leave a comment in your tools. Handbook drafts it, you check it, and it’s sent as you only when you approve."
+          title="Turn a request into action"
+          description="Tell Handbook what to do and where. You’ll review the exact draft before anything is sent."
         />
+
+        <ol className="act-steps" aria-label="How Act works">
+          <li>
+            <span>1</span>
+            <div><strong>Describe it</strong><small>Name the tool and target</small></div>
+          </li>
+          <li>
+            <span>2</span>
+            <div><strong>Review it</strong><small>Check the exact draft</small></div>
+          </li>
+          <li>
+            <span>3</span>
+            <div><strong>Approve it</strong><small>Nothing sends before this</small></div>
+          </li>
+        </ol>
 
         {error && (
           <div className="banner banner-warn" role="alert">
@@ -148,76 +171,86 @@ export default function ActPage() {
           </section>
         ) : status ? (
           <>
-            <section className="studio-panel" aria-labelledby="act-accounts">
-              <div className="studio-section-head">
-                <h2 id="act-accounts">Your accounts</h2>
-                <p className="muted">
-                  Handbook acts with your own account, so it can only do what you can, and
-                  your name is on what it sends. Disconnect any time.
-                </p>
-              </div>
-              <ul className="act-providers">
-                {shownProviders.map((p) => (
-                  <li key={p.provider} className="act-provider">
-                    <span className="act-provider-name">{PROVIDER_LABEL[p.provider] ?? p.provider}</span>
-                    {p.bot ? (
-                      <span className={`studio-chip${p.connected ? " studio-chip-ok" : ""}`}>
-                        {p.connected
-                          ? "Posts as the Handbook bot, naming you"
-                          : "Ask the Handbook bot to do something in Slack once, so it knows you"}
-                      </span>
-                    ) : !p.available && !p.connected ? (
-                      <span className="studio-chip">Not set up yet. Ask your admin.</span>
-                    ) : p.connected ? (
-                      <>
-                        <span className="studio-chip studio-chip-ok">Connected as {p.account}</span>
-                        <button type="button" className="button button-secondary" onClick={() => disconnect(p.provider)}>
-                          Disconnect
-                        </button>
-                      </>
-                    ) : (
-                      <a className="button" href={api.actConnectUrl(p.provider)}>
-                        {p.needs_reauth ? "Reconnect" : "Connect"}
-                      </a>
-                    )}
-                  </li>
-                ))}
-              </ul>
-              <p className="muted act-can-do">
-                You can ask me to: {status.actions.map((a) => a.label).join(" · ")}.
-              </p>
-            </section>
-
-            <section className="studio-panel" aria-labelledby="act-ask">
-              <form onSubmit={submit} className="stack">
-                <div className="field">
-                  <label id="act-ask" htmlFor="act-question">
-                    What should Handbook do?
-                  </label>
+            <div className="act-workspace">
+              <section className="studio-panel act-compose-panel" aria-labelledby="act-ask">
+                <div className="act-compose-heading">
+                  <p className="act-step-label">Your request</p>
+                  <h2 id="act-ask">What should Handbook do?</h2>
+                  <p className="muted">
+                    Name the tool and the exact team, repo, page, or channel. Handbook will never choose a destination for you.
+                  </p>
+                </div>
+                <form onSubmit={submit} className="act-form">
+                  <label className="sr-only" htmlFor="act-question">Describe the action</label>
                   <textarea
                     id="act-question"
                     className="input act-input"
-                    rows={3}
+                    rows={5}
                     maxLength={4000}
                     value={question}
                     onChange={(e) => setQuestion(e.target.value)}
-                    placeholder="File a Linear issue in Platform about the login timeout from yesterday’s #eng thread"
+                    placeholder={'For example: Create a Linear issue in Platform called "Fix scheduler retries" using yesterday’s #eng discussion.'}
                   />
+                  <div className="act-form-footer">
+                    <p><CheckIcon /> You&rsquo;ll review everything before it&rsquo;s sent.</p>
+                    <button type="submit" className="button act-draft-button" disabled={busy || !question.trim()}>
+                      {busy ? "Preparing draft…" : "Review draft"}
+                    </button>
+                  </div>
+                </form>
+                {reply && <p className="act-reply">{reply}</p>}
+                {card && <ActionCard card={card} onChange={updated} />}
+              </section>
+
+              <aside className="studio-panel act-accounts-panel" aria-labelledby="act-accounts">
+                <div className="studio-section-head">
+                  <p className="act-step-label">Before you start</p>
+                  <h2 id="act-accounts">Connected accounts</h2>
+                  <p className="muted">Actions use your access and appear under your identity.</p>
                 </div>
-                <div>
-                  <button type="submit" className="button" disabled={busy || !question.trim()}>
-                    {busy ? "Drafting…" : "Draft it"}
-                  </button>
-                </div>
-              </form>
-              {reply && <p className="act-reply">{reply}</p>}
-              {card && <ActionCard card={card} onChange={updated} />}
-            </section>
+                <ul className="act-providers">
+                  {shownProviders.map((p) => (
+                    <li key={p.provider} className="act-provider">
+                      <div className="act-provider-copy">
+                        <span className="act-provider-name">{PROVIDER_LABEL[p.provider] ?? p.provider}</span>
+                        {p.bot ? (
+                          <span className={p.connected ? "act-status-ready" : "act-status-note"}>
+                            {p.connected ? "Ready through the Handbook bot" : "Use Act in Slack once to link"}
+                          </span>
+                        ) : !p.available && !p.connected ? (
+                          <span className="act-status-note">Admin setup required</span>
+                        ) : p.connected ? (
+                          <span className="act-status-ready">Connected as {p.account}</span>
+                        ) : (
+                          <span className="act-status-note">{p.needs_reauth ? "Connection expired" : "Not connected"}</span>
+                        )}
+                      </div>
+                      {p.connected && !p.bot ? (
+                        <button type="button" className="act-text-button" onClick={() => disconnect(p.provider)}>
+                          Disconnect
+                        </button>
+                      ) : !p.bot && p.available ? (
+                        <a className="button button-secondary button-sm" href={api.actConnectUrl(p.provider)}>
+                          {p.needs_reauth ? "Reconnect" : "Connect"}
+                        </a>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+                <details className="act-capabilities">
+                  <summary>What can Handbook do?</summary>
+                  <ul>
+                    {status.actions.map((action) => <li key={action.name}>{action.label}</li>)}
+                  </ul>
+                </details>
+              </aside>
+            </div>
 
             {recent.filter((r) => r.id !== card?.id).length > 0 && (
-              <section className="studio-panel" aria-labelledby="act-recent">
+              <section className="studio-panel act-recent" aria-labelledby="act-recent">
                 <div className="studio-section-head">
-                  <h2 id="act-recent">Recent</h2>
+                  <p className="act-step-label">History</p>
+                  <h2 id="act-recent">Recent actions</h2>
                 </div>
                 <div className="stack">
                   {recent
