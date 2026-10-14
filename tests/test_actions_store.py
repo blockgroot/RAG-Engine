@@ -267,12 +267,11 @@ def test_a_space_can_switch_an_action_off_but_never_on(people, monkeypatch):
     assert "linear.create_issue" in policy.enabled_actions(org_a, None)
     assert "linear.create_issue" not in policy.enabled_actions(org_a, ws)
 
-    from app.config.settings import ActionsSettings
-
-    on = ActionsSettings(enabled=True)
-    assert policy.is_enabled(org_a, None, "linear.create_issue", settings=on)
-    assert not policy.is_enabled(org_a, None, "linear.create_issue",
-                                 settings=ActionsSettings(enabled=False))
+    # Every action waits on the company's "Allow Act" switch.
+    assert not policy.is_enabled(org_a, None, "linear.create_issue")
+    policy.set_policy(org_a, policy.ACT_KEY, True, updated_by=admin.id)
+    assert policy.is_enabled(org_a, None, "linear.create_issue")
+    assert not policy.is_enabled(org_a, ws, "linear.create_issue")
 
 
 @requires_db
@@ -280,7 +279,7 @@ def test_rate_cap_counts_sent_writes(people):
     from app.config.settings import ActionsSettings
 
     org_a, _org_b, _admin, member, _outsider = people
-    two = ActionsSettings(enabled=True, rate_per_hour=2)
+    two = ActionsSettings(rate_per_hour=2)
     for _ in range(2):
         assert policy.within_rate(org_a, member.id, settings=two)
         row = _create(org_a, member.id)
@@ -341,6 +340,5 @@ def test_removing_a_person_drops_their_token_and_keeps_the_log(people):
 @requires_db
 def test_nothing_is_offered_while_act_is_off(people, monkeypatch):
     org_a, _org_b, _admin, member, _outsider = people
-    monkeypatch.setenv("ACTIONS_ENABLED", "false")
-    policy.set_policy(org_a, "linear.create_issue", True)
+    policy.set_policy(org_a, "linear.create_issue", True)  # but Act never allowed
     assert build_actions(org_a, None, member.id) == []

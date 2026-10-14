@@ -151,12 +151,14 @@ def _only_askers_words(args: dict, question: str) -> bool:
 
 
 def offered_actions(
-    org_id: str, user_id: str, settings: ActionsSettings, slack_user: str | None = None
+    org_id: str, user_id: str, settings: ActionsSettings, slack_user: str | None = None,
+    workspace_id: str | None = None,
 ) -> tuple[list[Action], str | None]:
-    """The actions to offer, or why there are none, in the person's terms."""
-    if not settings.enabled:
-        return [], "Act is switched off for Handbook."
-    enabled = {n for n in policy.enabled_actions(org_id, None) if n in ACTIONS}
+    """The actions to offer, or why there are none, in the person's terms.
+    In a space, an action the space switched off is not offered."""
+    if not policy.act_on(org_id):
+        return [], "Your admin hasn't turned on Act yet."
+    enabled = {n for n in policy.enabled_actions(org_id, workspace_id) if n in ACTIONS}
     if not enabled:
         return [], "Your admin hasn't switched on any actions yet."
     providers = connected_providers(org_id, user_id) | slack_available(org_id, user_id, slack_user)
@@ -191,11 +193,12 @@ def propose(
     settings = settings or ActionsSettings.from_env()
     surface = dict(surface or {"kind": "web"})
     kind = surface.get("kind", "web")
-    if settings.enabled and not policy.surface_enabled(org_id, kind):
+    if policy.act_on(org_id) and not policy.surface_enabled(org_id, kind):
         return ActOutcome("Your admin hasn't turned on Act here. You can use it on Handbook's Act page.")
     if kind == "web":
         surface["slack_user"] = slack_user_for(org_id, user_id)
-    offered, why_not = offered_actions(org_id, user_id, settings, surface.get("slack_user"))
+    offered, why_not = offered_actions(org_id, user_id, settings, surface.get("slack_user"),
+                                       scope_workspace_id)
     if why_not:
         return ActOutcome(why_not)
 
@@ -278,8 +281,8 @@ def edit(
     Approve click, so it is asked for again on the edited text.
     """
     settings = settings or ActionsSettings.from_env()
-    if not settings.enabled:
-        raise ActionRejected("Act is switched off for Handbook.")
+    if not policy.act_on(org_id):
+        raise ActionRejected("Your admin has turned off Act.")
     row = store.get(org_id, user_id, action_id)
     if row is None:
         raise NotFoundError("No such action.")
@@ -306,13 +309,13 @@ def confirm(
     claim, every outcome is recorded and returned, never raised.
     """
     settings = settings or ActionsSettings.from_env()
-    if not settings.enabled:
-        raise ActionRejected("Act is switched off for Handbook.")
+    if not policy.act_on(org_id):
+        raise ActionRejected("Your admin has turned off Act.")
     row = store.get(org_id, user_id, action_id)
     if row is None:
         raise NotFoundError("No such action.")
     action = get_action(row.action)
-    if action is None or not policy.is_enabled(org_id, row.workspace_id, row.action, settings=settings):
+    if action is None or not policy.is_enabled(org_id, row.workspace_id, row.action):
         raise ActionRejected("Your admin has switched this action off.")
     if not policy.surface_enabled(org_id, row.surface):
         raise ActionRejected("Your admin has turned off Act here.")

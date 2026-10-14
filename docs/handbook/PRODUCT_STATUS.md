@@ -314,8 +314,9 @@ questions 9/10 both. Four high-level answers are not in the benchmark's document
 question (the cause of the remaining list misses), held back for its latency and cost.
 
 **Branch `feat/write-actions-plan` (14 Oct 2026, not merged): Act (writes into connected tools).**
-Plan: `docs/plans/2026-10-13-write-actions.md`; plain version: `plan.md`. Off unless
-`ACTIONS_ENABLED=true`, then off per action until an org admin switches it on (Admin › Actions).
+Plan: `docs/plans/2026-10-13-write-actions.md`; plain version: `plan.md`. Off until a
+company's admin allows Act (Admin › Actions › "Allow Act for your company"; no env switch), then off
+per action until they switch it on. Admins see the switches only, never what people drafted or sent.
 
 - **Act page (`/act`)**, separate from Ask: a focused request form makes the person name the tool
   and target, review the exact draft, then approve it. The write is sent **only when the person

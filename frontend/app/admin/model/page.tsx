@@ -97,17 +97,16 @@ export default function AdminModelPage() {
 
   return (
     <AppShell me={me} variant="admin">
-      <main className="page-wide studio-page stack">
+      <main className="page-wide studio-page stack model-admin-page">
         <PageHeader
           eyebrow="Company"
-          title="Model"
-          description="Bring your own API key so your company's chat answers run on a model you choose and pay for. Optional — the built-in models keep working either way."
-          scene="model"
+          title="Company model"
+          description="Connect one model for your team’s chat answers. This is optional; Handbook’s built-in models remain available."
           meta={
             saved ? (
-              <span className="studio-chip studio-chip-ok">{saved.preset_label} connected</span>
+              <span className="studio-chip studio-chip-ok">Connected to {saved.preset_label}</span>
             ) : (
-              <span className="studio-chip">No model yet</span>
+              <span className="studio-chip">Using built-in models</span>
             )
           }
         />
@@ -124,172 +123,164 @@ export default function AdminModelPage() {
         )}
 
         {saved && (
-          <section className="studio-panel" aria-labelledby="current-title">
-            <div className="studio-panel-glow" aria-hidden />
+          <section className="studio-panel model-current-panel" aria-labelledby="current-title">
             <div className="studio-section-head">
-              <h2 id="current-title">In use now</h2>
-              <p className="muted">
-                Everyone in your company can pick this in the chat model dropdown.
-              </p>
+              <p className="model-section-label">Current connection</p>
+              <h2 id="current-title">Available to your team</h2>
             </div>
             <div className="model-current">
-              <span className="model-current-name">{saved.model}</span>
-              <span className="muted">via {saved.preset_label}</span>
-              <span className="muted">&middot; key ending {saved.key_tail}</span>
-              <span className="muted">
-                {/* Past tense and dated on purpose: a snapshot from when it was
-                    saved, not a live health check. A green "Connected" badge
-                    would claim something nobody has verified since. */}
-                &middot; last checked{" "}
-                {saved.checked_at ? new Date(saved.checked_at).toLocaleDateString() : "—"}
+              <div className="model-current-identity">
+                <span className="model-current-name">{saved.model}</span>
+                <span>{saved.preset_label} · key ending {saved.key_tail}</span>
+              </div>
+              <span className="model-current-checked">
+                Last tested {saved.checked_at ? new Date(saved.checked_at).toLocaleDateString() : "—"}
               </span>
-              <button className="button" onClick={remove} disabled={busy}>
-                Remove
+              <button className="button button-secondary" onClick={remove} disabled={busy}>
+                Remove model
               </button>
             </div>
           </section>
         )}
 
-        <section className="studio-panel" aria-labelledby="add-title">
-          <div className="studio-panel-glow" aria-hidden />
-          <div className="studio-section-head">
-            <h2 id="add-title">{saved ? "Replace it" : "Add your model"}</h2>
-            <p className="muted">
-              We send one short test message before saving, so a typo never becomes a
-              broken option for your team.
-            </p>
-          </div>
+        <div className="model-settings-layout">
+          <section className="studio-panel model-setup-panel" aria-labelledby="add-title">
+            <div className="studio-section-head">
+              <p className="model-section-label">{saved ? "Change connection" : "Setup"}</p>
+              <h2 id="add-title">{saved ? "Replace your model" : "Connect your model"}</h2>
+              <p className="muted">
+                We test the provider, model name and key before saving anything.
+              </p>
+            </div>
 
-          <form onSubmit={save} className="model-form">
-            <div className="field">
-              <label htmlFor="preset">Provider</label>
-              <span className="model-select-wrap">
-                <select
-                  id="preset"
+            <form onSubmit={save} className="model-form">
+              <div className="field">
+                <label htmlFor="preset">Provider</label>
+                <span className="model-select-wrap">
+                  <select
+                    id="preset"
+                    className="input"
+                    value={preset}
+                    onChange={(e) => setPreset(e.target.value)}
+                    disabled={busy}
+                  >
+                    {presets.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.label}
+                      </option>
+                    ))}
+                  </select>
+                </span>
+              </div>
+
+              <div className="field">
+                <label htmlFor="model">Model ID</label>
+                <input
+                  id="model"
                   className="input"
-                  value={preset}
-                  onChange={(e) => setPreset(e.target.value)}
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                  placeholder="For example, gpt-5"
                   disabled={busy}
+                  required
+                />
+                <p className="muted">
+                  Enter the provider&rsquo;s exact model ID.{" "}
+                  {activePreset && (
+                    <a href={activePreset.models_url} target="_blank" rel="noreferrer">
+                      View model IDs
+                    </a>
+                  )}
+                </p>
+              </div>
+
+              <div className="field field-wide">
+                <label htmlFor="apiKey">API key</label>
+                <input
+                  id="apiKey"
+                  className="input"
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder="Paste the full key"
+                  disabled={busy}
+                  required
+                  autoComplete="off"
+                />
+                <p className="muted">
+                  Encrypted before storage. After saving, only the final four characters remain visible.
+                </p>
+              </div>
+
+              <div className="model-form-actions">
+                <button
+                  className="button"
+                  type="submit"
+                  disabled={busy || !model.trim() || !apiKey.trim()}
                 >
-                  {presets.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.label}
-                    </option>
-                  ))}
-                </select>
-              </span>
-            </div>
-
-            <div className="field">
-              <label htmlFor="model">Model name</label>
-              <input
-                id="model"
-                className="input"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                placeholder="gpt-5"
-                disabled={busy}
-                required
-              />
-              <p className="muted">
-                Must match the provider&rsquo;s exact id.{" "}
-                {activePreset && (
-                  <a href={activePreset.models_url} target="_blank" rel="noreferrer">
-                    See {activePreset.label}&rsquo;s model list
-                  </a>
-                )}
-              </p>
-            </div>
-
-            <div className="field field-wide">
-              <label htmlFor="apiKey">API key</label>
-              <input
-                id="apiKey"
-                className="input"
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="sk-…"
-                disabled={busy}
-                required
-                autoComplete="off"
-              />
-              <p className="muted">
-                Stored encrypted. You&rsquo;ll only ever see the last 4 characters
-                again &mdash; to change it, paste the whole key.
-              </p>
-            </div>
-
-            <div className="model-form-actions">
-              <button
-                className="button"
-                type="submit"
-                disabled={busy || !model.trim() || !apiKey.trim()}
-              >
-                {busy ? "Checking…" : "Test and save"}
-              </button>
-              <span className="muted">
-                One short test message, on your key. Nothing is saved if it fails.
-              </span>
-            </div>
-          </form>
-        </section>
-
-        <section className="studio-panel" aria-labelledby="usage-title">
-          <div className="studio-panel-glow" aria-hidden />
-          <div className="studio-section-head">
-            <h2 id="usage-title">What your key is used for</h2>
-            <p className="muted">Worth knowing before you paste a credential.</p>
-          </div>
-          <ul className="model-facts">
-            <li className="model-fact">
-              <span className="model-fact-mark model-fact-yes" aria-hidden>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                  <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </span>
-              <div>
-                <strong>Answering questions in chat</strong>
-                <p>For any member who picks your model from the dropdown.</p>
+                  {busy ? "Testing connection…" : "Test and connect"}
+                </button>
+                <span className="muted">Nothing is saved if the test fails.</span>
               </div>
-            </li>
-            <li className="model-fact">
-              <span className="model-fact-mark model-fact-no" aria-hidden>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                  <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
-                </svg>
-              </span>
-              <div>
-                <strong>Not indexing your documents</strong>
-                <p>Preparing your content and the internal answer-quality check keep running on our model.</p>
-              </div>
-            </li>
-            <li className="model-fact">
-              <span className="model-fact-mark model-fact-bill" aria-hidden>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                  <path d="M12 7v10M9.5 9.5a2.5 2.5 0 012.5-2 2.2 2.2 0 012.4 1.7M14.5 14.5a2.5 2.5 0 01-2.5 2 2.2 2.2 0 01-2.4-1.7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                  <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" />
-                </svg>
-              </span>
-              <div>
-                <strong>Billed to you</strong>
-                <p>Every member can select it, on every question. Set a spend limit with your provider.</p>
-              </div>
-            </li>
-            <li className="model-fact">
-              <span className="model-fact-mark model-fact-back" aria-hidden>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                  <path d="M4 12a8 8 0 108-8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                  <path d="M4 5v5h5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-              </span>
-              <div>
-                <strong>Never a dead end</strong>
-                <p>If your key stops working, members switch back to a built-in model themselves.</p>
-              </div>
-            </li>
-          </ul>
-        </section>
+            </form>
+          </section>
+
+          <aside className="studio-panel model-usage-panel" aria-labelledby="usage-title">
+            <div className="studio-section-head">
+              <p className="model-section-label">Good to know</p>
+              <h2 id="usage-title">Before you connect</h2>
+              <p className="muted">Your key changes chat answers only.</p>
+            </div>
+            <ul className="model-facts">
+              <li className="model-fact">
+                <span className="model-fact-mark model-fact-yes" aria-hidden>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                    <path d="M5 13l4 4L19 7" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </span>
+                <div>
+                  <strong>Used for chat answers</strong>
+                  <p>Members can select this model for any question.</p>
+                </div>
+              </li>
+              <li className="model-fact">
+                <span className="model-fact-mark model-fact-no" aria-hidden>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                    <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+                  </svg>
+                </span>
+                <div>
+                  <strong>Not used for indexing</strong>
+                  <p>Document processing and quality checks continue on Handbook’s model.</p>
+                </div>
+              </li>
+              <li className="model-fact">
+                <span className="model-fact-mark model-fact-bill" aria-hidden>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                    <path d="M12 7v10M9.5 9.5a2.5 2.5 0 012.5-2 2.2 2.2 0 012.4 1.7M14.5 14.5a2.5 2.5 0 01-2.5 2 2.2 2.2 0 01-2.4-1.7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" />
+                  </svg>
+                </span>
+                <div>
+                  <strong>Billed by your provider</strong>
+                  <p>Set usage or spend limits in the provider’s account.</p>
+                </div>
+              </li>
+              <li className="model-fact">
+                <span className="model-fact-mark model-fact-back" aria-hidden>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                    <path d="M4 12a8 8 0 108-8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                    <path d="M4 5v5h5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </span>
+                <div>
+                  <strong>Built-in fallback remains</strong>
+                  <p>Members can switch back if your key becomes unavailable.</p>
+                </div>
+              </li>
+            </ul>
+          </aside>
+        </div>
 
       </main>
     </AppShell>

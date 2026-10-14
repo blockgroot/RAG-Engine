@@ -6021,29 +6021,48 @@ a.people-card:hover { color: inherit; }
   }
 }
 
-/* ---------------------------------------------------------------------------
-   Company > Model — bring your own model.
-
-   The form was one narrow column in a full-width panel, so the right half sat
-   empty. It is now a two-column split whose right side carries a live preview
-   of the dropdown entry the team will actually see, which fills the space with
-   the one thing an admin cannot otherwise check before saving.
-
-   Inputs here tint toward the mint end of the accent ramp rather than sitting
-   on flat white — same tokens as the rest of the app, just used at a warmer
-   weight so a page that is mostly form does not read as a blank sheet.
---------------------------------------------------------------------------- */
-
-/* Two columns from 760px up. The panel is full-width now that the "your team
-   will see" preview is gone, and three stacked fields in a wide card read as
-   an unfinished page — but the key and the submit row must span, since a
-   40-character credential in a half-width box is unreadable. */
-.model-form { display: grid; gap: var(--space-3); }
+/* Company > Model: one setup task, with the consequences kept beside it. */
+.model-admin-page {
+  max-width: 1040px;
+  gap: 1rem;
+}
+.model-admin-page > .page-header { margin-bottom: 0.1rem; }
+.model-admin-page .page-header-copy { max-width: 42rem; }
+.model-settings-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 18rem;
+  align-items: start;
+  gap: 1rem;
+}
+.model-setup-panel,
+.model-usage-panel,
+.model-current-panel {
+  gap: 1.1rem;
+  padding: 1.35rem;
+  border-radius: 18px;
+  box-shadow: 0 8px 28px -24px rgba(16, 24, 40, 0.22);
+}
+.model-setup-panel { border-color: color-mix(in srgb, var(--accent) 20%, var(--border)); }
+.model-usage-panel {
+  padding: 1.2rem;
+  background: color-mix(in srgb, var(--surface) 78%, white);
+  box-shadow: none;
+}
+.model-section-label {
+  margin: 0;
+  color: var(--accent-strong);
+  font-size: 0.68rem;
+  font-weight: 750;
+  letter-spacing: 0.1em;
+  line-height: 1.3;
+  text-transform: uppercase;
+}
+.model-form { display: grid; gap: 1rem; }
 @media (min-width: 760px) {
   .model-form {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     align-items: start;
-    column-gap: var(--space-4);
+    column-gap: 1rem;
   }
   .model-form > .field-wide,
   .model-form > .model-form-actions { grid-column: 1 / -1; }
@@ -6051,18 +6070,20 @@ a.people-card:hover { color: inherit; }
 .model-form-actions {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: 0.85rem;
   flex-wrap: wrap;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
 }
+.model-form-actions .muted { font-size: 0.78rem; }
 
-/* Mint-tinted fields. Focus still uses the shared --accent/--accent-glow ring,
-   so keyboard focus is identical to every other input in the product. */
 .model-form .input {
-  background: linear-gradient(180deg, #ffffff, color-mix(in srgb, var(--accent-soft) 34%, #ffffff));
-  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+  min-height: 2.75rem;
+  background: #ffffff;
+  border-color: var(--border-strong);
 }
 .model-form .input:hover {
-  border-color: color-mix(in srgb, var(--accent) 42%, var(--border-strong));
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border-strong));
 }
 .model-form select.input {
   appearance: none;
@@ -6087,8 +6108,6 @@ a.people-card:hover { color: inherit; }
   pointer-events: none;
 }
 
-/* "What your key is used for" — four facts as cards, not a rule book.
-   Each carries a stance: yes / no / bill / fallback. */
 .model-facts {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -6097,12 +6116,13 @@ a.people-card:hover { color: inherit; }
   margin: 0;
   padding: 0;
 }
+.model-usage-panel .model-facts {
+  grid-template-columns: 1fr;
+  gap: 0;
+}
 @media (max-width: 720px) {
   .model-facts { grid-template-columns: minmax(0, 1fr); }
 }
-/* Rows, not cards. Four bordered boxes stacked two-up read as heavier than the
-   four short facts they carry; a hairline rule between rows is enough
-   separation and roughly halves the block's height. */
 .model-fact {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -6113,6 +6133,7 @@ a.people-card:hover { color: inherit; }
 }
 .model-facts > .model-fact:first-child,
 .model-facts > .model-fact:nth-child(2) { border-top: 0; }
+.model-usage-panel .model-facts > .model-fact:nth-child(2) { border-top: 1px solid var(--border); }
 @media (max-width: 720px) {
   .model-facts > .model-fact:nth-child(2) { border-top: 1px solid var(--border); }
 }
@@ -6131,15 +6152,28 @@ a.people-card:hover { color: inherit; }
 .model-fact-no   { background: linear-gradient(145deg, #98a2b3, #667085); }
 .model-fact-bill { background: linear-gradient(145deg, #f79009, #b54708); }
 .model-fact-back { background: linear-gradient(145deg, #5eead4, #0f766e); }
-.model-fact strong { display: block; font-size: 0.92rem; }
-.model-fact p { margin: 0.1rem 0 0; color: var(--ink-muted); font-size: 0.85rem; line-height: 1.45; }
+.model-fact strong { display: block; font-size: 0.84rem; }
+.model-fact p { margin: 0.1rem 0 0; color: var(--ink-muted); font-size: 0.75rem; line-height: 1.45; }
 
-/* Saved-state summary row. */
 .model-current {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 1rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border);
+}
+.model-current-identity {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem 0.75rem;
+  gap: 0.45rem 0.7rem;
+  min-width: 0;
+}
+.model-current-identity > span:last-child,
+.model-current-checked {
+  color: var(--ink-muted);
+  font-size: 0.78rem;
 }
 .model-current-name {
   font-family: var(--font-mono);
@@ -6149,6 +6183,20 @@ a.people-card:hover { color: inherit; }
   background: var(--accent-soft);
   color: var(--accent-strong);
   font-weight: 600;
+}
+@media (max-width: 900px) {
+  .model-settings-layout { grid-template-columns: 1fr; }
+  .model-usage-panel .model-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .model-usage-panel .model-facts > .model-fact:nth-child(2) { border-top: 0; }
+}
+@media (max-width: 640px) {
+  .model-current { grid-template-columns: 1fr; align-items: start; }
+  .model-current .button { justify-self: start; }
+  .model-usage-panel .model-facts { grid-template-columns: 1fr; }
+  .model-usage-panel .model-facts > .model-fact:nth-child(2) { border-top: 1px solid var(--border); }
+  .model-setup-panel,
+  .model-usage-panel,
+  .model-current-panel { padding: 1.1rem; }
 }
 
 /* ---------------------------------------------------------------------------
@@ -8336,6 +8384,10 @@ a.people-card:hover { color: inherit; }
 .act-card-edit-body { resize: vertical; min-height: 6rem; white-space: pre-wrap; }
 .act-card-fields dd:has(.act-card-edit-body) { max-height: none; overflow: visible; }
 .act-card-edited { margin: 0; font-size: 0.82rem; }
+/* Act mode in chat: the wrapper takes no box, so bubbles keep their own
+   alignment in .chat-log; the draft card sits under its reply. */
+.chat-turn { display: contents; }
+.chat-act-card { align-self: flex-start; width: min(100%, 44rem); }
 .act-card-exposure {
   display: grid;
   gap: 0.6rem;
@@ -8636,8 +8688,7 @@ a.people-card:hover { color: inherit; }
 }
 .action-safety-note strong { flex: none; color: var(--accent-strong); }
 .actions-permissions-panel,
-.actions-slack-panel,
-.actions-activity-panel {
+.actions-slack-panel {
   gap: 1.1rem;
   padding: 1.35rem;
   border-radius: 18px;
@@ -8761,53 +8812,9 @@ a.people-card:hover { color: inherit; }
   line-height: 1.5;
 }
 .actions-privacy-note strong { color: var(--ink); }
-.actions-empty {
-  display: grid;
-  gap: 0.2rem;
-  padding: 1.25rem;
-  border: 1px dashed var(--border-strong);
-  border-radius: 14px;
-  color: var(--ink-muted);
-  text-align: center;
-}
-.actions-empty strong { color: var(--ink); font-size: 0.9rem; }
-.actions-empty span { font-size: 0.8rem; }
-.actions-log-list { display: grid; }
-.actions-log-row {
-  display: grid;
-  grid-template-columns: minmax(12rem, 1.4fr) minmax(10rem, 1fr) auto;
-  align-items: center;
-  gap: 1rem;
-  min-height: 4.25rem;
-  padding: 0.7rem 0;
-  border-top: 1px solid var(--border);
-}
-.actions-log-main,
-.actions-log-meta,
-.actions-log-result { display: grid; gap: 0.16rem; min-width: 0; }
-.actions-log-main strong { font-size: 0.86rem; }
-.actions-log-main span,
-.actions-log-meta span,
-.actions-log-meta time {
-  overflow: hidden;
-  color: var(--ink-muted);
-  font-size: 0.74rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.actions-log-result { justify-items: end; font-size: 0.78rem; }
-.actions-log-result small { color: #b54708; }
-.actions-log-result > span,
-.actions-log-result > a { font-weight: 700; }
-.actions-log-result > span[data-status="succeeded"] { color: var(--provenance-policy); }
-.actions-log-result > span[data-status="failed"],
-.actions-log-result > span[data-status="unknown"] { color: var(--provenance-none); }
 
 @media (max-width: 900px) {
   .act-workspace { grid-template-columns: 1fr; }
-  .actions-log-row { grid-template-columns: minmax(0, 1fr) auto; }
-  .actions-log-meta { grid-column: 1; grid-row: 2; }
-  .actions-log-result { grid-column: 2; grid-row: 1 / 3; }
 }
 @media (max-width: 700px) {
   .actions-provider-grid,
@@ -8839,6 +8846,5 @@ a.people-card:hover { color: inherit; }
   .act-history-row > time { grid-column: 1; grid-row: 2; }
   .act-history-outcome { grid-column: 2; grid-row: 1 / 3; flex-direction: column; align-items: flex-end; gap: 0.15rem; }
   .actions-permissions-panel,
-  .actions-slack-panel,
-  .actions-activity-panel { padding: 1.05rem; }
+  .actions-slack-panel { padding: 1.05rem; }
 }

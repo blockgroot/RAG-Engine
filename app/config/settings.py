@@ -2133,8 +2133,8 @@ class LiveToolsSettings:
 class ActionsSettings:
     """Act mode: writes into connected tools (docs/plans/2026-10-13-write-actions.md).
 
-    OFF by default and a kill switch when on: with ``enabled`` false no action is
-    proposed or executed, whatever the org's ``action_policies`` say.
+    Whether a company uses Act at all is its admins' decision, stored as the
+    ``act`` row in ``action_policies`` (``actions.policy.act_on``), not here.
 
     ``ttl_seconds`` is how long an approval card stays valid; past it the stored
     proposal can no longer run, so an old tab cannot fire a stale write.
@@ -2142,7 +2142,6 @@ class ActionsSettings:
     "wider / unknown audience" warning into a refusal (plan §4.3a).
     """
 
-    enabled: bool = False
     ttl_seconds: int = 900
     rate_per_hour: int = 20
     block_wider: bool = False
@@ -2156,7 +2155,6 @@ class ActionsSettings:
     @classmethod
     def from_env(cls) -> "ActionsSettings":
         return cls(
-            enabled=env_bool("ACTIONS_ENABLED", False),
             ttl_seconds=max(60, int(os.getenv("ACTION_TTL_SECONDS", "900"))),
             rate_per_hour=max(1, int(os.getenv("ACTION_RATE_PER_HOUR", "20"))),
             block_wider=env_bool("ACTIONS_BLOCK_WIDER", False),

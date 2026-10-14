@@ -5,7 +5,8 @@ import Link from "next/link";
 import { usePathname, useParams, useRouter, useSearchParams } from "next/navigation";
 import { AppShell } from "@/components/AppShell";
 import { AskHeroArt } from "@/components/AskHeroArt";
-import { ChartIcon, ChatMessageView, DeepIcon, Message } from "@/components/ChatMessage";
+import { ActionCard } from "@/components/ActionCard";
+import { ActIcon, ChartIcon, ChatMessageView, DeepIcon, Message } from "@/components/ChatMessage";
 import { SpacePanel } from "@/components/SpacePanel";
 import { useMe } from "@/lib/useMe";
 import { streamChat } from "@/lib/sse";
@@ -144,6 +145,10 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // questions (a whole project, a summary, "list everything"). More tokens per
   // answer, no extra AI call. Never on together with Chart.
   const [deepMode, setDeepMode] = useState(false);
+  // Act: ask Handbook to DO something in a connected tool. A separate mode and
+  // a separate endpoint (/act): the reply is a draft card, nothing is sent
+  // until the person approves it, and the turn is not saved as a chat answer.
+  const [actMode, setActMode] = useState(false);
   // Said once when turning Chart on moved the picker off a model that cannot
   // build charts, so the switch is never silent.
   const [modelNote, setModelNote] = useState<string | null>(null);
@@ -650,9 +655,33 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     }
   }
 
+  /** Act mode: one draft for the person to check, edit and approve. */
+  async function draftAction(question: string) {
+    setInput("");
+    setBusy(true);
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", text: question },
+      { role: "assistant", text: "", streaming: true, steps: ["Drafting…"] },
+    ]);
+    let reply: Message;
+    try {
+      const out = await api.act(question, workspaceId);
+      reply = { role: "assistant", text: out.reply, act: out.action };
+    } catch (err) {
+      reply = {
+        role: "assistant",
+        text: err instanceof ApiError ? err.message : "Something went wrong. Nothing was sent.",
+      };
+    }
+    setMessages((prev) => (prev.length ? [...prev.slice(0, -1), reply] : [reply]));
+    setBusy(false);
+  }
+
   /** `mode` overrides the composer's, for "Try Deep analysis" under an answer. */
   async function ask(question: string, mode?: "deep") {
     if (!question || busy) return;
+    if (actMode && !mode) return draftAction(question);
     setInput("");
     setBusy(true);
 
@@ -823,12 +852,16 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     codeAvailable && "GitHub",
   ].filter(Boolean) as string[];
 
-  const emptyTitle = chartMode
+  const emptyTitle = actMode
+    ? "Ask Handbook to do it"
+    : chartMode
     ? "Create a chart"
     : deepMode
       ? "Deep analysis"
       : workspaceId ? "Ask this space" : "Ask your company";
-  const emptyCopy = chartMode
+  const emptyCopy = actMode
+    ? "File an issue, leave a comment, or post a message in your tools. Handbook drafts it, you check or edit it, and nothing is sent until you approve. It acts with your own accounts."
+    : chartMode
     ? "Charts count activity in your connected apps, figures in tables inside your documents, and files you upload here (Excel, CSV, PDF or Word). Describe what you want to see."
     : deepMode
       ? "Reads the most relevant documents in full. Best for broad questions: a whole project, a summary, or a list of everything. Uses more of your AI quota per answer."
@@ -837,8 +870,10 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       : workspaceId
         ? "Answers are drawn from the documents connected to this space. For a chart, choose + then Create a chart."
         : "Leave, benefits, remote work and more — answered from your connected documents.";
-  const starters = chartMode ? chartStarters : suggestedQuestions;
-  const composerPlaceholder = chartMode
+  const starters = actMode ? [] : chartMode ? chartStarters : suggestedQuestions;
+  const composerPlaceholder = actMode
+    ? "e.g. file a Linear issue in Platform about the login timeout"
+    : chartMode
     ? "Describe a chart, e.g. issues by priority"
     : deepMode
       ? "Ask a broad question, e.g. summarise the project"
@@ -849,7 +884,10 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
 
   function toggleChartMode(on: boolean) {
     setChartMode(on);
-    if (on) setDeepMode(false);
+    if (on) {
+      setDeepMode(false);
+      setActMode(false);
+    }
     setModelNote(null);
     const current = models.find((m) => m.id === model);
     if (on && current && current.charts === false) {
@@ -860,7 +898,19 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
 
   function toggleDeepMode(on: boolean) {
     setDeepMode(on);
-    if (on) toggleChartMode(false);
+    if (on) {
+      toggleChartMode(false);
+      setActMode(false);
+    }
+  }
+
+  function toggleActMode(on: boolean) {
+    setActMode(on);
+    if (on) {
+      setChartMode(false);
+      setDeepMode(false);
+      setModelNote(null);
+    }
   }
 
   return (
@@ -984,8 +1034,8 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
           ) : (
             <div className="chat-log" ref={logRef} aria-live="polite">
               {messages.map((m, i) => (
+                <div key={i} className="chat-turn">
                 <ChatMessageView
-                  key={i}
                   message={m}
                   conversationId={conversationId.current}
                   // The question this answer replied to is the message before
@@ -1001,6 +1051,17 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                     void ask(q, "deep");
                   }}
                 />
+                {m.act && (
+                  <div className="chat-act-card">
+                    <ActionCard
+                      card={m.act}
+                      onChange={(next) =>
+                        setMessages((prev) => prev.map((x, j) => (j === i ? { ...x, act: next } : x)))
+                      }
+                    />
+                  </div>
+                )}
+                </div>
               ))}
               <div ref={bottomRef} aria-hidden className="chat-scroll-anchor" />
             </div>
@@ -1148,6 +1209,25 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                   </span>
                   {deepMode && <CheckIcon />}
                 </button>
+                {me.act_enabled && (
+                  <button
+                    type="button"
+                    role="menuitemcheckbox"
+                    aria-checked={actMode}
+                    className="composer-menu-item"
+                    onClick={() => {
+                      setToolsOpen(false);
+                      toggleActMode(!actMode);
+                    }}
+                  >
+                    <ActIcon />
+                    <span className="composer-menu-text">
+                      <strong>Act</strong>
+                      <small>File an issue, comment or post, after you approve</small>
+                    </span>
+                    {actMode && <CheckIcon />}
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -1165,6 +1245,24 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
               >
                 {/* An icon, not the "×" character: a glyph sits on the text
                     baseline and drops below the chart icon beside it. */}
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
+                  <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+                </svg>
+              </button>
+            </span>
+          )}
+          {actMode && (
+            <span className="composer-mode-chip">
+              <ActIcon />
+              <span>Act</span>
+              <button
+                type="button"
+                className="composer-mode-chip-remove"
+                onClick={() => toggleActMode(false)}
+                disabled={busy}
+                aria-label="Turn off Act"
+                title="Turn off Act"
+              >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden>
                   <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
                 </svg>
@@ -1206,7 +1304,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             disabled={busy}
             autoFocus
           />
-          {models.length > 0 && (
+          {models.length > 0 && !actMode && (
             <>
               <label className="sr-only" htmlFor="model-select">
                 Model
@@ -1263,7 +1361,12 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
             )}
           </button>
         </form>
-        {(chartMode || modelNote) && (
+        {actMode ? (
+          <p className="muted chat-model-note" role="status">
+            Act drafts one action at a time and sends nothing until you approve. Drafts aren&rsquo;t saved
+            in this chat; find them under <Link href="/act">your accounts and recent actions</Link>.
+          </p>
+        ) : (chartMode || modelNote) && (
           <p className="muted chat-model-note" role="status">
             {modelNote ??
               "Chart mode only builds charts. Turn it off for a written answer."}

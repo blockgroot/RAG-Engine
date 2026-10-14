@@ -1,6 +1,7 @@
 """Which actions are switched on, and whether a person may send another write.
 
-Off unless an org admin switched the action on. A space can only switch an
+Act itself is off until an org admin allows it for the company (``act_on``);
+then each action is off unless an admin switched it on. A space can only switch an
 action OFF for itself: a space owner is an ordinary member of the org, and
 letting them turn on a write the org's admins left off would hand them a
 decision that is not theirs.
@@ -13,6 +14,15 @@ from datetime import datetime, timedelta, timezone
 from ..config.settings import ActionsSettings
 from ..db.connection import get_connection
 from . import store
+
+#: The company-wide "Allow Act" switch, stored as an ``action_policies`` row.
+ACT_KEY = "act"
+
+
+def act_on(org_id: str) -> bool:
+    """Has an admin allowed Act for this company? Off until they do."""
+    return ACT_KEY in enabled_actions(org_id, None)
+
 
 #: Where Act may be asked from besides the web page, each switched on apart.
 #: Stored as ``action_policies`` rows named ``surface:<kind>``.
@@ -50,10 +60,9 @@ def enabled_actions(org_id: str, workspace_id: str | None) -> set[str]:
     return {r[0] for r in rows}
 
 
-def is_enabled(org_id: str, workspace_id: str | None, action: str,
-               *, settings: ActionsSettings | None = None) -> bool:
-    settings = settings or ActionsSettings.from_env()
-    return settings.enabled and action in enabled_actions(org_id, workspace_id)
+def is_enabled(org_id: str, workspace_id: str | None, action: str) -> bool:
+    enabled = enabled_actions(org_id, workspace_id)
+    return ACT_KEY in enabled and action in enabled
 
 
 def set_policy(

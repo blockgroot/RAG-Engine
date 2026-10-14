@@ -47,7 +47,7 @@ from app.vectorstore.base import RetrievedChunk, Viewer
 
 from .conftest import requires_db
 
-ON = ActionsSettings(enabled=True)
+ON = ActionsSettings()
 
 
 # --------------------------------------------------------------------------
@@ -318,7 +318,6 @@ def test_no_github_action_can_touch_code():
 def _env(monkeypatch):
     monkeypatch.setenv("AUTH_ENCRYPTION_KEYS", Fernet.generate_key().decode())
     monkeypatch.setenv("AUTH_JWT_SECRET", "test-jwt-secret-do-not-use-in-prod")
-    monkeypatch.setenv("ACTIONS_ENABLED", "true")
 
 
 class OneCallLLM:
@@ -355,6 +354,7 @@ def org(store, org_cleanup, monkeypatch):
     admin = create_admin(f"act1-admin-{uuid.uuid4().hex[:8]}@example.com", org_id)
     member = invite_member(f"act1-m-{uuid.uuid4().hex[:8]}@example.com", org_id)
     save_user_connection(org_id, member.id, "linear", UserTokens("lin_tok", "u-1"))
+    policy.set_policy(org_id, policy.ACT_KEY, True, updated_by=admin.id)
     policy.set_policy(org_id, "linear.create_issue", True, updated_by=admin.id)
     return SimpleNamespace(id=org_id, admin=admin, member=member)
 
@@ -659,11 +659,35 @@ def test_only_admins_switch_actions_on(client, org):
     body = client.get("/admin/actions", cookies=_cookies(org.admin)).json()
     on = {a["name"] for a in body["catalogue"] if a["enabled"]}
     assert on == {"linear.create_issue", "linear.comment"}
+    # The switches only: what people drafted or sent is never listed here.
+    assert body["enabled"] is True and "log" not in body
+
+
+@requires_db
+def test_act_is_the_admins_decision_per_company(client, org, proposal):
+    """No env switch: an admin turns Act off and on for their company."""
+    assert client.put("/admin/actions/act", json={"enabled": False},
+                      cookies=_cookies(org.member)).status_code == 403
+    assert client.put("/admin/actions/act", json={"enabled": False},
+                      cookies=_cookies(org.admin)).status_code == 200
+    assert client.get("/me", cookies=_cookies(org.member)).json()["act_enabled"] is False
+    assert client.post("/act", json={"question": "file it"},
+                       cookies=_cookies(org.member)).status_code == 404
+    with pytest.raises(ActionRejected, match="turned off Act"):
+        service.confirm(org_id=org.id, user_id=org.member.id, action_id=proposal.id,
+                        shown_hash=proposal.payload_hash, acknowledged=False, settings=ON)
+    assert FakeAction.sent == []
+    # Turning it back on needs nothing else, and the waiting draft can still go.
+    client.put("/admin/actions/act", json={"enabled": True}, cookies=_cookies(org.admin))
+    assert client.get("/me", cookies=_cookies(org.member)).json()["act_enabled"] is True
+    row = service.confirm(org_id=org.id, user_id=org.member.id, action_id=proposal.id,
+                          shown_hash=proposal.payload_hash, acknowledged=False, settings=ON)
+    assert row.status == "succeeded"
 
 
 @requires_db
 def test_act_reports_a_busy_model_without_an_internal_error(client, org, monkeypatch):
-    monkeypatch.setattr("app.api.actions._require_on", lambda: ON)
+    monkeypatch.setattr("app.api.actions._require_on", lambda org_id: ON)
     monkeypatch.setattr("app.api.actions._llm", lambda: object())
     monkeypatch.setattr("app.api.actions._embedder", lambda: object())
     monkeypatch.setattr("app.api.actions._vstore", lambda: object())
@@ -768,3 +792,23 @@ def test_a_draft_in_the_askers_own_words_uses_no_sources(org, monkeypatch):
     llm = OneCallLLM("linear_create_issue", {"request_words": "file an issue", "team": "Platform",
                                              "title": "Smoke test", "body": "Reorg moves Platform."})
     assert _propose(org, question, llm, [secret]).action.exposure == "wider"
+
+
+@requires_db
+def test_act_mode_in_a_space_drafts_from_that_space_members_only(client, org, monkeypatch):
+    """Chat's Act mode sends the space it is in; only a member may draft there,
+    and the draft reads that space (``scope_workspace_id``)."""
+    from app.workspaces.store import create_workspace
+
+    space = create_workspace(org.id, "Platform team", org.admin.id)
+    seen = []
+    for name in ("_llm", "_embedder", "_vstore"):
+        monkeypatch.setattr(f"app.api.actions.{name}", lambda: object())
+    monkeypatch.setattr(service, "propose",
+                        lambda q, **kw: seen.append(kw) or service.ActOutcome("noted"))
+    r = client.post("/act", json={"question": "file it", "workspace_id": space},
+                    cookies=_cookies(org.member))
+    assert r.status_code == 403 and seen == []
+    r = client.post("/act", json={"question": "file it", "workspace_id": space},
+                    cookies=_cookies(org.admin))
+    assert r.status_code == 200 and seen[0]["scope_workspace_id"] == space

@@ -295,7 +295,6 @@ export interface AdminActions {
   catalogue: { name: string; label: string; provider: string; enabled: boolean }[];
   /** Slack DMs / Slack channels, each switched on apart. */
   surfaces: { name: string; label: string; enabled: boolean }[];
-  log: ActCard[];
 }
 
 export interface MemberRecord {
@@ -847,10 +846,11 @@ export const api = {
       { method: "PUT", body: JSON.stringify({ form_ids: formIds }) }
     ),
   actStatus: () => request<ActStatus>("/act/status"),
-  act: (question: string) =>
+  /** Draft one action. In a space's chat, ``workspaceId`` drafts from that space. */
+  act: (question: string, workspaceId?: string | null) =>
     request<{ reply: string; action: ActCard | null }>("/act", {
       method: "POST",
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, workspace_id: workspaceId ?? null }),
     }),
   confirmAction: (id: string, payloadHash: string, acknowledged: boolean) =>
     request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}/confirm`, {

@@ -1,13 +1,13 @@
 "use client";
 
 /**
- * Admin-only: which actions Handbook may take, and every one it has taken.
+ * Admin-only: whether the company uses Act, and which actions people may ask for.
  *
  * Everything starts off. Turning an action on lets people ASK for it; each
  * write still needs that person's own approval and their own connected
  * account, so this page never grants anyone more than they already have in
- * the tool. The log is the record: who asked, what was sent, where, and how
- * it ended.
+ * the tool. There is no log here on purpose: what a person drafted is theirs,
+ * and each tool records what was created, by whom.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -16,16 +16,6 @@ import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { useMe } from "@/lib/useMe";
 import { ApiError, api, type AdminActions } from "@/lib/api";
-
-const STATUS_LABEL: Record<string, string> = {
-  proposed: "Waiting",
-  executing: "Sending",
-  succeeded: "Done",
-  failed: "Failed",
-  unknown: "Unknown",
-  rejected: "Cancelled",
-  expired: "Expired",
-};
 
 const PROVIDERS = [
   ["linear", "Linear", "Issues and comments"],
@@ -36,7 +26,7 @@ const PROVIDERS = [
 ] as const;
 
 const SURFACE_COPY: Record<string, string> = {
-  "surface:slack_dm": "People can ask privately using “act …” in a DM with Handbook.",
+  "surface:slack_dm": "People can ask privately in a DM with Handbook.",
   "surface:slack_channel": "People can ask in a channel; any Slack post stays in that thread.",
 };
 
@@ -101,10 +91,26 @@ export default function AdminActionsPage() {
           </div>
         )}
 
-        {data && !data.enabled && (
-          <div className="banner" role="status">
-            Act is off for this installation. Turn on <code>ACTIONS_ENABLED</code> before configuring permissions.
-          </div>
+        {data && (
+          <section className="studio-panel" aria-labelledby="actions-allow">
+            <label className="action-surface">
+              <span>
+                <strong id="actions-allow">Allow Act for your company</strong>
+                <small>
+                  {data.enabled
+                    ? "People can ask Handbook to file issues, comment and post, using their own accounts, after they approve each one."
+                    : "Off: Handbook only reads. Turn this on, then choose the actions below."}
+                </small>
+              </span>
+              <input
+                type="checkbox"
+                checked={data.enabled}
+                disabled={busy === "act"}
+                onChange={(event) => toggle("act", event.target.checked)}
+                aria-label={data.enabled ? "Turn off Act for your company" : "Allow Act for your company"}
+              />
+            </label>
+          </section>
         )}
 
         {data && (
@@ -189,47 +195,6 @@ export default function AdminActionsPage() {
           </section>
         )}
 
-        {data && data.enabled && (
-          <section className="studio-panel actions-activity-panel" aria-labelledby="actions-log">
-            <div className="studio-section-head">
-              <h2 id="actions-log">Recent activity</h2>
-              <p className="muted">Requests and outcomes across your company.</p>
-            </div>
-            {data.log.length === 0 ? (
-              <div className="actions-empty">
-                <strong>No actions yet</strong>
-                <span>Completed, cancelled and failed requests will appear here.</span>
-              </div>
-            ) : (
-              <div className="actions-log-list">
-                {data.log.map((row) => (
-                  <article key={row.id} className="actions-log-row">
-                    <div className="actions-log-main">
-                      <strong>{row.label}</strong>
-                      <span>{row.target.name}</span>
-                    </div>
-                    <div className="actions-log-meta">
-                      <span>{row.user_email ?? "Removed user"}</span>
-                      <time dateTime={row.created_at}>{new Date(row.created_at).toLocaleString()}</time>
-                    </div>
-                    <div className="actions-log-result">
-                      {row.exposure === "wider" || row.exposure === "unknown" ? (
-                        <small>{row.acknowledged ? "Sharing acknowledged" : "Sharing review needed"}</small>
-                      ) : null}
-                      {row.result?.url && row.status === "succeeded" ? (
-                        <a href={row.result.url} target="_blank" rel="noreferrer">
-                          {STATUS_LABEL[row.status]}
-                        </a>
-                      ) : (
-                        <span data-status={row.status}>{STATUS_LABEL[row.status] ?? row.status}</span>
-                      )}
-                    </div>
-                  </article>
-                ))}
-              </div>
-            )}
-          </section>
-        )}
       </main>
     </AppShell>
   );

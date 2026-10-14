@@ -4,13 +4,18 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from ..config.settings import ActionsSettings
 from ..db.connection import get_connection
 from .deps import SessionClaims, get_session
 from .setup_status import content_setup_status
 
 router = APIRouter(tags=["me"])
 
+
+
+def _act_on(org_id: str) -> bool:
+    from ..actions.policy import act_on
+
+    return act_on(org_id)
 
 @router.get("/me")
 def me(session: SessionClaims = Depends(get_session)):
@@ -93,9 +98,9 @@ def me(session: SessionClaims = Depends(get_session)):
         # explicit there: a personal sub-workspace connection must not light up
         # the org-wide chat's Code tab.
         "github_connected": github_connected,
-        # Whether to show Act (writes into connected tools). The env switch
-        # only: no query, and the Act page itself says what is switched on.
-        "act_enabled": ActionsSettings.from_env().enabled,
+        # Whether to show Act (writes into connected tools): the company's
+        # admins allowed it. The Act page itself says what is switched on.
+        "act_enabled": _act_on(session.org_id),
         # Whether the chat UI should offer its "Slack" tab. Deliberately keyed on
         # ingested Slack *documents*, not on the connection existing: unlike
         # GitHub (live reads, answerable the moment it is linked) Slack is a
