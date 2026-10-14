@@ -12,13 +12,18 @@ from ..auth.user_connections import connected_providers
 from ..config.settings import ActionsSettings
 from . import policy
 from .base import Action
+from .drive import DriveCreateDoc
 from .github import GitHubComment, GitHubCreateIssue
 from .linear import LinearComment, LinearCreateIssue
+from .notion import NotionAppend, NotionComment, NotionCreatePage
 
 #: Every action that exists, by name. Nothing else can ever be proposed.
 ACTIONS: dict[str, type[Action]] = {
     cls.name: cls
-    for cls in (LinearCreateIssue, LinearComment, GitHubCreateIssue, GitHubComment)
+    for cls in (
+        LinearCreateIssue, LinearComment, GitHubCreateIssue, GitHubComment,
+        NotionComment, NotionAppend, NotionCreatePage, DriveCreateDoc,
+    )
 }
 
 

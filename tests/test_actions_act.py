@@ -564,6 +564,9 @@ def test_act_connect_binds_the_token_to_the_person_who_started_it(client, org, m
     from app.auth.base import OAuthTokens
     from app.config.settings import LinearSettings
 
+    from app.auth import save_connection
+
+    save_connection(org.id, "linear", OAuthTokens("org_tok", None, None, "linear-org-1", "Acme"))
     monkeypatch.setenv("LINEAR_CLIENT_ID", "cid")
     monkeypatch.setenv("LINEAR_CLIENT_SECRET", "secret")
     monkeypatch.setenv("LINEAR_REDIRECT_URI", "https://api.example.com/auth/linear/callback")
@@ -585,9 +588,10 @@ def test_act_connect_binds_the_token_to_the_person_who_started_it(client, org, m
     again = client.get(f"/auth/linear/callback?code=c&state={state}", follow_redirects=False)
     assert "connect_error=linear" in again.headers["location"]
     with get_connection() as conn:
-        n = conn.execute("SELECT count(*) FROM oauth_connections WHERE org_id = %s",
-                         (org.id,)).fetchone()[0]
-    assert n == 0
+        tokens = conn.execute(
+            "SELECT access_token_encrypted FROM oauth_connections WHERE org_id = %s",
+            (org.id,)).fetchall()
+    assert len(tokens) == 1  # only the company's own read connection
     assert LinearSettings  # imported for the env it reads
 
 

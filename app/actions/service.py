@@ -49,7 +49,7 @@ logger = logging.getLogger("actions")
 #: Passages shown to the model for drafting. Few, because every one of them is
 #: a source the exposure check must count.
 CONTEXT_HITS = 6
-PROVIDER_NAMES = {"linear": "Linear", "github": "GitHub"}
+PROVIDER_NAMES = {"linear": "Linear", "github": "GitHub", "notion": "Notion", "google": "Google Drive"}
 
 
 @dataclass(frozen=True)
@@ -190,7 +190,7 @@ def propose(
     name = PROVIDER_NAMES.get(action.provider, action.provider)
     try:
         token = fresh_user_token(org_id, user_id, action.provider)
-        ctx = ActionContext(org_id, None, user_id, email, question, token, tuple(sources))
+        ctx = ActionContext(org_id, None, user_id, email, question, token, tuple(sources), viewer)
         proposal = action.prepare(args, ctx)
     except OAuthReauthRequiredError:
         return ActOutcome(f"Reconnect your {name} account above, then ask again.")
@@ -199,7 +199,7 @@ def propose(
     except ActionError as exc:
         return ActOutcome(str(exc))
 
-    exposure = assess(sources, proposal.audience)
+    exposure = assess(sources, proposal.audience, asker=email)
     titles = ", ".join(exposure.private_titles)
     if exposure.verdict == PUBLIC:
         return ActOutcome(

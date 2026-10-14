@@ -316,11 +316,15 @@ Plan: `docs/plans/2026-10-13-write-actions.md`; plain version: `plan.md`. Off un
 - **Private content:** never sent to a public place (a public repo); a destination where some
   readers cannot see the private documents used needs a ticked acknowledgement
   (`ACTIONS_BLOCK_WIDER=true` refuses instead).
-- Every proposal and outcome is kept in `actions` (the admin log). Notion, Google Docs and Slack
-  are later phases.
+- **Notion** (comment, add to a page, create a page) through a separate "Handbook Actions"
+  connection, so the read connection stays read-only; **Google Docs** (a new Doc in the person's
+  own Drive, `drive.file` only). Every connected account must be the company's own workspace or
+  the person's work address.
+- Every proposal and outcome is kept in `actions` (the admin log). Slack is a later phase.
 
-Covered by `tests/test_actions_store.py` and `tests/test_actions_act.py`. Not yet tried against
-real Linear / GitHub accounts.
+Covered by `tests/test_actions_store.py`, `tests/test_actions_act.py` and
+`tests/test_actions_notion_drive.py`. Not yet tried against real accounts; Notion page writes need
+one live test to see whose name Notion records.
 
 ## 13. Testing & Verification
 

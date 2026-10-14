@@ -92,8 +92,11 @@ export default function AdminActionsPage() {
             <div className="studio-section-head">
               <h2 id="actions-catalogue">What people may ask for</h2>
               <p className="muted">
-                Create and comment only. Handbook cannot edit, close, delete, merge or push code.
-                GitHub writes also need your GitHub admin to accept the App&rsquo;s Issues write permission.
+                New issues, comments, pages and Docs, and text added to the end of a Notion page.
+                Handbook cannot change or delete what&rsquo;s already there, close, merge or push code.
+                GitHub writes need your GitHub admin to accept the App&rsquo;s Issues write
+                permission. Notion writes go through a separate &ldquo;Handbook Actions&rdquo;
+                connection, so the connection that reads your Notion stays read-only.
               </p>
             </div>
             <ul className="act-catalogue">

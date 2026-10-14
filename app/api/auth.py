@@ -461,7 +461,7 @@ def callback(
     from .actions import finish_act_connect, is_act_state
 
     if is_act_state(state):
-        return finish_act_connect(oauth_provider, code, state, settings)
+        return finish_act_connect(code, state, settings)
 
     if not code:
         if not is_github:

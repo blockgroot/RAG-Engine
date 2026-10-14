@@ -2129,6 +2129,12 @@ class ActionsSettings:
     ttl_seconds: int = 900
     rate_per_hour: int = 20
     block_wider: bool = False
+    # The SEPARATE "Handbook Actions" Notion connection. A Notion token always
+    # carries every capability of its connection, so writes cannot share the
+    # read connection without making the indexing token write-capable too.
+    notion_client_id: str | None = None
+    notion_client_secret: str | None = None
+    notion_redirect_uri: str | None = None
 
     @classmethod
     def from_env(cls) -> "ActionsSettings":
@@ -2137,6 +2143,9 @@ class ActionsSettings:
             ttl_seconds=max(60, int(os.getenv("ACTION_TTL_SECONDS", "900"))),
             rate_per_hour=max(1, int(os.getenv("ACTION_RATE_PER_HOUR", "20"))),
             block_wider=env_bool("ACTIONS_BLOCK_WIDER", False),
+            notion_client_id=os.getenv("NOTION_ACT_CLIENT_ID") or None,
+            notion_client_secret=os.getenv("NOTION_ACT_CLIENT_SECRET") or None,
+            notion_redirect_uri=os.getenv("NOTION_ACT_REDIRECT_URI") or None,
         )
 
 

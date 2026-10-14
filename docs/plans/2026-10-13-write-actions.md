@@ -1,6 +1,6 @@
 # Write Actions Plan
 
-> **Status (2026-10-14): Phases 0 and 1 BUILT** on `feat/write-actions-plan` (not merged). Off unless `ACTIONS_ENABLED=true`. Research sources are
+> **Status (2026-10-14): Phases 0, 1 and 2 BUILT** on `feat/write-actions-plan` (not merged). Off unless `ACTIONS_ENABLED=true`. Research sources are
 > listed in §10. Facts marked *(unverified)* were not confirmed in a primary doc.
 
 **Goal:** an employee can ask the assistant to *do* something in a connected tool:
@@ -426,8 +426,14 @@ Each phase ships behind `ACTIONS_ENABLED` and the org toggle. Per our test pract
   - No conversation storage: the Act page lists the person's recent actions from `actions` itself.
 - Tests: `tests/test_actions_act.py` (29), plus the Act prompt in `tests/test_untrusted_policy.py`.
 
-**Phase 2: Notion + Google Docs (create) on web chat**
-- `notion.add_comment`, `notion.append_to_page`, `notion.create_child_page`, `drive.create_doc`.
+**Phase 2: Notion + Google Docs on the web — BUILT (2026-10-14), live Notion test still to run**
+- Actions: `notion.comment`, `notion.append` (text added at the end of a page), `notion.create_page` (under a page), `drive.create_doc` (a new Doc in the person's own Drive).
+- Notion through the separate "Handbook Actions" connection (`NOTION_ACT_*`, `api/actions.py::_act_oauth`); the read connection is never used to write. A page is found by its link or an exact, unique title the asker wrote, among the pages they shared with Handbook Actions; a page Handbook indexed company-wide must be readable by the asker there; Notion's 403/404 says how to share the page. Texts are cut to Notion's 2,000 characters per text object and 100 blocks per call. Comments carry `display_name: user`; page and block writes say "via Handbook Actions, for you" on the card.
+- Google: the same client, `drive.file` only, `include_granted_scopes=false` (so the token never picks up a broader scope the person once granted as an admin). The Doc is uploaded as a Google Doc in one multipart request. Its audience is the asker alone.
+- **Every Act account must be the company's** (all four tools): the Linear or Notion workspace the company connected for reading, the person's own work address (or prior address) on Google, and for GitHub a repo in the company's installation. Otherwise company content could be written somewhere the company does not control. Linear now also requires the company's Linear connection to exist.
+- The asker is never counted as an outsider of their own sources (they may read one through a group or an old address their email is not literally in).
+- Tests: `tests/test_actions_notion_drive.py` (16).
+- **Still to do before Notion page writes are promised:** the live test in §5 Notion (attribution, can-comment-only user).
 
 **Phase 3: Slack**
 - The Slack user lookup reads `user_email_aliases` as well as `users.email`.

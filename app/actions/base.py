@@ -101,6 +101,9 @@ class ActionContext:
     question: str
     token: str
     sources: tuple[Source, ...] = ()
+    #: The asker's ``Viewer``: a target that is in our index must be one they
+    #: may read, whatever the tool itself would allow.
+    viewer: Any = None
 
 
 class Action(ABC):
@@ -116,6 +119,9 @@ class Action(ABC):
     label: ClassVar[str]
     tool: ClassVar[dict[str, Any]]
     destructive: ClassVar[bool] = False
+    #: Whose name the tool will show on the result, said on the card. "as you"
+    #: only where the tool records the person; a bot-recorded write says so.
+    attribution: ClassVar[str] = "as you"
 
     @abstractmethod
     def prepare(self, args: dict[str, Any], ctx: ActionContext) -> Proposal:

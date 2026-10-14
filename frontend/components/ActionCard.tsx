@@ -14,7 +14,12 @@ import { ApiError, api, type ActCard } from "@/lib/api";
  * ticks that they understand. Nothing here can change the payload.
  */
 
-const PROVIDER_LABEL: Record<string, string> = { linear: "Linear", github: "GitHub" };
+const PROVIDER_LABEL: Record<string, string> = {
+  linear: "Linear",
+  github: "GitHub",
+  notion: "Notion",
+  google: "Google Drive",
+};
 
 const STATUS_LINE: Record<ActCard["status"], string> = {
   proposed: "Waiting for your approval",
@@ -85,7 +90,7 @@ export function ActionCard({
       <header className="act-card-head">
         <span className="act-card-label">{card.label}</span>
         <span className="act-card-as">
-          as you, in {provider}
+          {card.attribution ?? "as you"}, in {provider}
         </span>
       </header>
 

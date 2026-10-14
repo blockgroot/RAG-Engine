@@ -35,7 +35,12 @@ class Exposure:
     outsiders: int | None = None
 
 
-def assess(sources: tuple[Source, ...] | list[Source], audience: Audience) -> Exposure:
+def assess(
+    sources: tuple[Source, ...] | list[Source], audience: Audience, *, asker: str | None = None
+) -> Exposure:
+    """``asker`` is never an outsider: every source was filtered for them, even
+    when they read it through a group or an old address their email is not
+    literally in. So a destination only the asker can read is ``narrower``."""
     private = [s for s in sources if not s.public]
     if not private:
         return Exposure(NONE)
@@ -52,8 +57,9 @@ def assess(sources: tuple[Source, ...] | list[Source], audience: Audience) -> Ex
         allowed &= {v.lower() for v in source.viewers}
     # A member whose email the tool would not give is someone we cannot vouch
     # for, so they count as an outsider rather than vanishing from the count.
-    named = {m.lower() for m in audience.members if m}
+    named = {m.lower() for m in audience.members if m} - {(asker or "").lower()}
     unnamed = sum(1 for m in audience.members if not m)
     outsiders = len(named - allowed) + unnamed
     verdict = WIDER if outsiders else NARROWER
-    return Exposure(verdict, titles, len(named) + unnamed, outsiders)
+    size = len({m.lower() for m in audience.members if m}) + unnamed
+    return Exposure(verdict, titles, size, outsiders)

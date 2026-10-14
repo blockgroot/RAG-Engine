@@ -19,10 +19,19 @@ import { PageHeader } from "@/components/PageHeader";
 import { useMe } from "@/lib/useMe";
 import { ApiError, api, type ActCard, type ActStatus } from "@/lib/api";
 
-const PROVIDER_LABEL: Record<string, string> = { linear: "Linear", github: "GitHub" };
+const PROVIDER_LABEL: Record<string, string> = {
+  linear: "Linear",
+  github: "GitHub",
+  notion: "Notion",
+  google: "Google Drive",
+};
 
+/** Why a connect was refused. Each is about keeping company content inside
+ *  the company: Handbook only writes into the company's own workspace. */
 const CONNECT_ERROR: Record<string, string> = {
-  workspace: "That Linear account is in a different Linear workspace from your company's.",
+  workspace:
+    "That account is in a different workspace from your company's. Connect the account you use for work.",
+  account: "That Google account isn't your work account. Connect the one you sign in to Handbook with.",
 };
 
 export default function ActPage() {
@@ -150,7 +159,9 @@ export default function ActPage() {
                 {shownProviders.map((p) => (
                   <li key={p.provider} className="act-provider">
                     <span className="act-provider-name">{PROVIDER_LABEL[p.provider] ?? p.provider}</span>
-                    {p.connected ? (
+                    {!p.available && !p.connected ? (
+                      <span className="studio-chip">Not set up yet. Ask your admin.</span>
+                    ) : p.connected ? (
                       <>
                         <span className="studio-chip studio-chip-ok">Connected as {p.account}</span>
                         <button type="button" className="button button-secondary" onClick={() => disconnect(p.provider)}>

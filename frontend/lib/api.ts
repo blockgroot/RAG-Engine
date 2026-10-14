@@ -244,6 +244,9 @@ export interface ActCard {
   action: string;
   label: string;
   provider: string | null;
+  /** Whose name the tool will show: "as you", or "via Handbook Actions, for you"
+   *  where the tool records its own bot (Notion pages). */
+  attribution: string | null;
   target: { kind: string; external_id: string; name: string; url: string | null };
   payload: { title?: string; body?: string };
   payload_hash: string;
@@ -268,6 +271,8 @@ export interface ActProvider {
   connected: boolean;
   needs_reauth: boolean;
   account: string | null;
+  /** False when this Handbook isn't set up to connect it (e.g. no Notion Act client). */
+  available: boolean;
 }
 
 export interface ActStatus {
