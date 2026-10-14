@@ -72,7 +72,7 @@ That is Willison's "lethal trifecta" and Meta's "Rule of Two" violated, and OWAS
    | Provider | Write identity | Scopes / permissions | Who it shows as |
    |---|---|---|---|
    | Linear | User OAuth, `actor=user` | `read,issues:create,comments:create` (never `write`/`admin`) | The person |
-   | GitHub | GitHub App **user-to-server** token (the "link" flow, kept instead of discarded) | App gains Issues: write, Pull requests: write. Contents: write only if "open a PR" ever ships | The person, with the App badge. Can do only what both the person and the App can do |
+   | GitHub | GitHub App **user-to-server** token, narrowed per write to one repo + `issues: write` | App gains **Issues: write only**. No Pull requests: write (it would allow approving, editing and closing PRs as the person; a PR comment is an issue comment). No Contents: write | The person, with the App badge. Can do only what both the person and the App can do |
    | Notion | Per-user **public OAuth** ("acts on behalf of the individual user who authorized them") | Insert content, Update content, Insert comments | Comments use `display_name: {type: "user"}`. Page edit attribution *(unverified)* |
    | Google | Per-user OAuth, **`drive.file`** only, added through incremental consent | `drive.file` (non-sensitive) | The person |
    | Slack | **The org's bot**, not a user token | Existing `chat:write` | The bot, with "on behalf of @person" in the message |
@@ -116,7 +116,7 @@ Each rule is enforced in code or by the provider, never only by the prompt.
 |---|---|
 | The model holds no token and makes no HTTP call. It only fills in one action's form | `Action.execute()` runs in the confirm endpoint, after approval, outside any model call |
 | A fixed list of actions; there is no "call any API" or MCP passthrough | `factory.build_actions` returns only classes in `app/actions/`. An unknown tool name is dropped |
-| Never push code, never touch `main` or any branch, never merge | The GitHub App gets **no `Contents: write`** and no `Pull requests` merge path, so GitHub itself refuses. No action class calls git refs, contents or merge endpoints |
+| Never push code, never touch `main` or any branch, never merge or approve | The GitHub App gets **no `Contents: write`** (merge, refs, commits and git push all require it) and **no `Pull requests: write`** (approve/edit/close). Each write token is narrowed to one repo and `issues: write`. No action class calls git refs, contents, pulls or merge endpoints |
 | No deletes, no closing, no changing sharing or permissions, no inviting people, no admin actions | Not in the catalogue. Write scopes are create/comment only (Linear `issues:create,comments:create`; never `write`/`admin`) |
 | One action per approval: no chaining, no loops, no follow-up writes from a write's result | One `generate_with_tools` call yields at most `tool_calls[0]`. `execute()` returns a result, never a new proposal |
 | Nothing runs without a person approving it now | Only `POST /actions/{id}/confirm` by the same user, before `expires_at`. No scheduler, digest or webhook path imports `execute` |
@@ -363,17 +363,23 @@ Phase 3. It needs an Interactivity Request URL (`POST /slack/interactivity`, sam
 - **Verified:** any workspace member may create issues in a **public** team without joining it; a **private** team's issues exist only for its members; guests see only their own teams. Linear documents no specific error for an inaccessible team, so `prepare()` resolves the team against the root `teams` query run with the asker's token ("public teams and private teams the user is a member of") and refuses anything else before sending.
 
 **GitHub.**
-- Add Issues: write and Pull requests: write to the App. Every installation owner must **approve the new permissions** on GitHub. Until they do, reads keep working and writes return 403, which we surface as "Ask your GitHub admin to accept the new permissions."
+- **One App, least privilege per token (decided 2026-10-14).** The App gains Issues: write only. Every installation owner must approve it; until they do, "the installation will continue to use the old permissions", reads keep working, and `company_repo` refuses with "Your GitHub admin hasn't accepted…" (read live from `GET /app/installations/{id}`).
+- **Reading tokens are read-only:** `mint_installation_token` asks for every granted permission at `read` (`workflows` has no read level and is left out), so the sync and live-read paths cannot write even though the App can. Fails closed: no grant read, no token.
+- **Each write is narrowed:** right before sending, the person's token is exchanged at `POST /applications/{client_id}/token/scoped` for one limited to the one repo and `issues: write` (`actions/github.py::scoped_token`). A refusal there means nothing is sent.
 - Store the user-to-server token from the link flow. It lasts 8 h with a 6-month refresh token; keep expiry on.
 - **A refresh token is single-use**: "Once you use a refresh token, that refresh token and the old user access token will no longer work." Refresh holds a row lock (`SELECT … FOR UPDATE` on the `user_connections` row) and saves the new pair in the same transaction, so two requests cannot both refresh and break the connection.
-- Commenting on a PR uses the issues comments endpoint and needs Pull requests: write.
+- Commenting on a PR uses the issues comments endpoint, which accepts Issues: write ("at least one of" Issues or Pull requests write).
 - "Open a PR" (Contents: write) is out of scope.
 
 **Notion.**
-- Per-user public OAuth ("Public connections act on behalf of the individual user who authorized them"). The person chooses pages in Notion's picker, so writes reach only pages they shared and can edit.
-- **Attribution, verified for comments:** by default a comment shows the connection's name; `display_name: {"type": "user"}` shows the person's. We always send `user`. **Pages and blocks: not documented.** Every sign (`/v1/users/me` is "your token's bot user", the token carries a `bot_id`) says edits are recorded as the integration. Phase 2 starts with one live write and reads `created_by`. Until then the card says "added via Handbook" for Notion page edits, never "as you". This is the first place we get a real per-person Notion check: a page they cannot access returns `object_not_found`, which we show as "you can't edit that page".
-- The org-wide read integration stays as it is. The Sources card wording about Notion permissions stays true for reads.
-- Notion Personal Access Tokens (May 2026) also act as their creator. Do not use them; pasting a token is worse UX and lacks a refresh path.
+- **A SEPARATE public connection, "Handbook Actions" (decided 2026-10-14).** Notion capabilities belong to the connection, not to an authorization: the authorize URL takes no scope, and "you receive an `access_token` with the capabilities your connection requested". Adding write to the read connection would give the admin's org-wide indexing token write over every page it was shared, and show write capabilities on every admin's consent screen. GitHub can narrow a token per request; Notion cannot, so the split must be two connections. It costs users nothing: each person connects Act separately anyway.
+  - "Handbook" (existing): read content only, connected by admins, unchanged.
+  - "Handbook Actions" (new): insert content, insert comments, read comments. Update content only if an edit action ever ships. Its own `NOTION_ACT_CLIENT_ID` / `_SECRET` / `_REDIRECT_URI`.
+- Per person: "Public connections act on behalf of the individual user who authorized them". The person picks the pages in Notion's picker, so writes reach only pages they shared.
+- **Attribution.** Comments: verified. We send `display_name: {"type": "user"}`, which shows the person's name. Pages and blocks: not documented; every sign (`/v1/users/me` is "your token's bot user", the token carries a `bot_id`) points to the connection's bot. The card says "added via Handbook Actions, for you" for page writes, never "as you", until a live test proves otherwise.
+- **Edit rights are not exposed by the API** (no permission field on a page). Whether a person with only "can comment" can write through the connection is not documented. So `prepare` also requires the target page to be visible to the asker in our index (`visibility_predicate`), and a 403 `restricted_resource` / 404 `object_not_found` is shown as "you can't edit that page".
+- **Live test before Phase 2 ships** (needs a test workspace): create a child page, append a block and post a comment as a can-comment-only user; record `created_by`, page history and whether Notion refused.
+- Rejected: Personal Access Tokens (Notion: "Don't use a PAT to authenticate a product used by many Notion users"; no OAuth, pasted tokens; owners-only by default on Business and Enterprise). Notion's hosted MCP server acts as the user, but server-side multi-tenant use and attribution are not confirmed and Enterprise admins can block unapproved clients. Worth a later test, not the plan.
 
 **Google.**
 - Separate per-user OAuth: `drive.file`, `access_type=offline`, `include_granted_scopes=true`.
@@ -382,6 +388,8 @@ Phase 3. It needs an Interactivity Request URL (`POST /slack/interactivity`, sam
 - Editing an existing file requires that the person picked it in Google Picker. That is Phase 4.
 
 **Slack.** No new scopes. Membership checks use `conversations.members`, which works only for channels the bot is in; a channel the bot isn't in is refused. Do not request `chat:write.public` or `chat:write.customize`.
+- The write design holds listed or unlisted: bot token, text naming the person ("DO clearly attribute app actions to a user"; "DON'T impersonate a user"), an ephemeral preview, and Approve checked against the stored requester (`user.id` and team), single-use, expiring within `response_url`'s 30 minutes.
+- **Found while researching, bigger than Act (2026-10-14):** Slack's API Terms say "You may not Commercially Distribute an Application ... unless you are authorised to do so under a separate agreement", which for most apps "simply means submitting to our Marketplace"; "Commercially Distribute" includes any app tied to a paid product. And since 29 May 2025, a NEW install of an unlisted commercial app gets `conversations.history` / `conversations.replies` at 1 request per minute and 15 messages, which breaks indexing for every new customer (existing installs are exempt per the current docs). A listing keeps indexing allowed as long as the Agent/Assistant UI is NOT enabled (its rule is "DON'T store any Slack data"); the review looks hard at `*:history` scopes, the 90-day free-plan limit, sentiment features and LLM disclosures. Decision pending with the product owner.
 
 ---
 
@@ -460,9 +468,9 @@ Each phase ships behind `ACTIONS_ENABLED` and the org toggle. Per our test pract
 
 ## 9. Open questions
 
-1. Is a Slack Marketplace listing planned? If so, our Slack *indexing* conflicts with the AI-app rule "DON'T store any Slack data" independently of writes. Worth deciding before Phase 3.
+1. Slack Marketplace listing: recommended (see §5 Slack: the API Terms and the new-install rate limit). Indexing stays allowed if the Agent/Assistant UI stays off. Pending.
 2. Should workspace owners be able to **enable** an action the org left off for their space, or only disable? The plan says only disable.
-3. GitHub: are we comfortable asking every installation to approve new write permissions, or should writes be a second, opt-in GitHub App?
+3. ~~GitHub: one App or two?~~ Decided 2026-10-14: one App with Issues: write only, read-only installation tokens, and a narrowed token per write (§5 GitHub).
 4. Retention: keep `actions` forever, or purge after N days like `live_tool_calls`? Payloads contain company text.
 
 ---

@@ -309,8 +309,9 @@ Plan: `docs/plans/2026-10-13-write-actions.md`; plain version: `plan.md`. Off un
   shown on a card, and sent **only when the person approves**, exactly as shown, once.
 - **Each person connects their own Linear / GitHub account**, so a write runs with their rights
   and shows their name. Linear: create issue, comment. GitHub: open issue, comment on issue or PR.
-  No edit, close, delete, merge or code push; the GitHub App needs Issues and Pull requests
-  **write** permissions, accepted by each installation's owner.
+  No edit, close, delete, merge or code push. The GitHub App needs **Issues: write** only (accepted
+  by each installation's owner); each write uses a token GitHub narrows to one repo, and Handbook's
+  own reading tokens are minted read-only.
 - **Targets only from the person's own words**; links and @-mentions only if they wrote them.
 - **Private content:** never sent to a public place (a public repo); a destination where some
   readers cannot see the private documents used needs a ticked acknowledgement

@@ -7,8 +7,13 @@ person AND the App may write. Two more limits are ours:
 * The repo must be in the company's own installation (``resolve_repo`` on the
   org-wide GitHub connection). A person's token can reach other accounts'
   repos; Act in this company writes only where this company connected.
-* The App is never given ``Contents: write``, and no action here touches git
-  refs, contents or merges, so nothing can push code to any branch.
+* Each write runs on a token GitHub narrows for that one write: the one repo,
+  ``issues: write`` and nothing else (``POST /applications/{client_id}/token/
+  scoped``). The App holds only Issues: write -- never Contents (push, refs,
+  merge) and never Pull requests (approve, edit, close): commenting on a pull
+  request is an issue comment, which Issues: write covers.
+* A new permission works only once each installation's owner approves it;
+  until then the action says so instead of failing at GitHub.
 
 Audience: a public repo is public, so private sources never go there. A
 private repo's readers are not something we can list with the person's token,
@@ -23,10 +28,14 @@ from typing import Any
 import httpx
 
 from ..auth.credentials import get_connection_config
+from ..auth.github_app import installation_permissions
+from ..config.settings import GitHubSettings
 from ..core.exceptions import (
+    ConfigurationError,
     ActionError,
     ActionOutcomeUnknown,
     ActionRejected,
+    OAuthError,
     OAuthReauthRequiredError,
     SourceError,
 )
@@ -87,14 +96,53 @@ def _call(method: str, path: str, token: str, *, json: dict | None = None) -> di
 
 
 def company_repo(org_id: str, name: str) -> str:
-    """``owner/name`` if the company's GitHub installation covers it, else refuse."""
-    scope = scope_from_config(get_connection_config(org_id, "github"))
+    """``owner/name`` if the company's installation covers it AND its owner has
+    approved Issues: write; otherwise refuse, saying which."""
+    config = get_connection_config(org_id, "github") or {}
     try:
-        return resolve_repo(scope, name)
+        full = resolve_repo(scope_from_config(config), name)
     except SourceError as exc:
         raise ActionRejected(
             f"{name!r} isn't a repository your company connected to Handbook."
         ) from exc
+    try:
+        granted = installation_permissions(str(config.get("installation_id") or ""))
+    except (OAuthError, ConfigurationError) as exc:
+        raise ActionError("Could not check Handbook's GitHub permissions.", cause=exc) from exc
+    if granted.get("issues") != "write":
+        raise ActionRejected(
+            "Your GitHub admin hasn't accepted Handbook's \u201cIssues: write\u201d "
+            "permission yet. Until they do, Handbook can only read GitHub."
+        )
+    return full
+
+
+def scoped_token(token: str, full: str, settings: GitHubSettings | None = None) -> str:
+    """The person's token, narrowed by GitHub to this repo and ``issues: write``.
+
+    Asked for right before each write and used for that write only, so even
+    this token can do nothing else. A failure here is before anything was
+    sent: the write is refused, never sent on the wider token.
+    """
+    settings = settings or GitHubSettings.from_env()
+    owner, repo = full.split("/", 1)
+    try:
+        response = httpx.post(
+            f"{API}/applications/{settings.client_id}/token/scoped",
+            auth=(settings.client_id or "", settings.client_secret or ""),
+            headers=_HEADERS,
+            json={"access_token": token, "target": owner, "repositories": [repo],
+                  "permissions": {"issues": "write"}},
+            timeout=_TIMEOUT,
+        )
+    except httpx.HTTPError as exc:
+        raise ActionError("Could not reach GitHub. Nothing was sent.", cause=exc) from exc
+    narrowed = (response.json() or {}).get("token") if response.status_code == 200 else None
+    if not narrowed:
+        if response.status_code in (401, 404):
+            raise OAuthReauthRequiredError("Reconnect your GitHub account.")
+        raise ActionError(f"GitHub would not narrow your token ({response.status_code}). Nothing was sent.")
+    return narrowed
 
 
 def _repo_audience(repo: dict) -> Audience:
@@ -142,7 +190,8 @@ class GitHubCreateIssue(Action):
         )
 
     def execute(self, key, target, payload, token) -> ActionResult:
-        made = _call("POST", f"/repos/{target['external_id']}/issues", token,
+        full = target["external_id"]
+        made = _call("POST", f"/repos/{full}/issues", scoped_token(token, full),
                      json={"title": payload["title"], "body": payload["body"]})
         if not made.get("number"):
             raise ActionError("GitHub did not open the issue.")
@@ -202,7 +251,7 @@ class GitHubComment(Action):
 
     def execute(self, key, target, payload, token) -> ActionResult:
         full, number = target["external_id"].rsplit("#", 1)
-        made = _call("POST", f"/repos/{full}/issues/{number}/comments", token,
+        made = _call("POST", f"/repos/{full}/issues/{number}/comments", scoped_token(token, full),
                      json={"body": payload["body"]})
         if not made.get("id"):
             raise ActionError("GitHub did not add the comment.")

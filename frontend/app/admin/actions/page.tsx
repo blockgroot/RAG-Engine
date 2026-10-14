@@ -93,8 +93,7 @@ export default function AdminActionsPage() {
               <h2 id="actions-catalogue">What people may ask for</h2>
               <p className="muted">
                 Create and comment only. Handbook cannot edit, close, delete, merge or push code.
-                GitHub writes also need your GitHub admin to accept the App&rsquo;s Issues and Pull
-                requests write permissions.
+                GitHub writes also need your GitHub admin to accept the App&rsquo;s Issues write permission.
               </p>
             </div>
             <ul className="act-catalogue">

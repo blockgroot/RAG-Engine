@@ -304,8 +304,12 @@ from a passage; written links and @-mentions only if the asker wrote them. Every
 passage shown to the model is a source for `exposure.assess`: private content
 never goes somewhere public (refused in code and by a CHECK), and a wider or
 unknown audience needs the stored tick. A timeout after sending is `unknown`,
-never retried. No action touches git refs, contents or merges, and the GitHub
-App gets no `Contents: write`. Nothing runs unattended.
+never retried. No action touches git refs, contents, pulls or merges; the GitHub
+App gets Issues: write only (no Contents, no Pull requests write), every
+installation token is minted READ-ONLY (`mint_installation_token`), and each
+write runs on a token narrowed to one repo + `issues: write` (`scoped_token`).
+Notion writes use a SEPARATE connection from the read one: a Notion token always
+carries its connection's every capability. Nothing runs unattended.
 
 **Also hold.** GitHub embeds nothing. A live read runs after the gate, at most two
 items, and withholds the indexed copy only on not-found or permission. The "live" chip is shown only for a

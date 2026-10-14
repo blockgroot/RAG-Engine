@@ -47,8 +47,8 @@ personal token, Linear, GitHub, Notion or Google itself refuses when you lack th
 | Tool | Writes as | Permissions requested |
 |---|---|---|
 | Linear | You | Create issues, create comments (never `write`/`admin`) |
-| GitHub | You (with the App badge) | Issues: write, Pull requests: write. **No `Contents: write`, so nothing can push code** |
-| Notion | You | Insert content, update content, insert comments; only on pages you shared and can edit |
+| GitHub | You (with the App badge) | Issues: write only, and each write gets a token GitHub narrows to that one repo. **No `Contents: write` (no push, branch or merge) and no `Pull requests: write` (no PR approve, edit or close)**. Handbook's own reading tokens are made read-only |
+| Notion | You for comments; pages likely show "Handbook Actions" (to be tested) | A **separate** "Handbook Actions" connection that can only add content and comments. The existing read connection stays read-only, because a Notion token always carries everything its connection can do |
 | Google | You | `drive.file` only: new docs, plus files you pick. No paid yearly security assessment (CASA) |
 | Slack | The org's bot, saying "on behalf of @you" | Existing `chat:write`. Slack forbids apps posting as a person. Posts only where both the bot and you are members |
 

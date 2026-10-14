@@ -32,7 +32,7 @@ from app.auth import create_admin, create_session_token
 from app.auth.user_connections import UserTokens, get_user_token, save_user_connection
 from app.auth.users import invite_member
 from app.config.settings import ActionsSettings
-from app.core.exceptions import ActionOutcomeUnknown, ActionRejected, NotFoundError
+from app.core.exceptions import ActionError, ActionOutcomeUnknown, ActionRejected, NotFoundError
 from app.db import get_connection
 from app.llm.base import ChatResult, ToolCall
 from app.vectorstore.base import RetrievedChunk, Viewer
@@ -199,10 +199,13 @@ def company_github(monkeypatch):
     config = {"installation_id": "1", "account_login": "acme", "repository_selection": "selected",
               "repos": [{"full_name": "acme/handbook"}, {"full_name": "acme/site"}]}
     monkeypatch.setattr(github, "get_connection_config", lambda org, provider: config)
+    grant = {"issues": "write", "metadata": "read", "contents": "read"}
+    monkeypatch.setattr(github, "installation_permissions", lambda inst: grant)
+    monkeypatch.setattr(github, "scoped_token", lambda token, full: f"scoped:{full}:{token}")
     calls = []
 
     def fake_call(method, path, token, *, json=None):
-        calls.append((method, path, json))
+        calls.append((method, path, json, token))
         if path == "/repos/acme/handbook":
             return {"private": True, "has_issues": True, "html_url": "https://github.com/acme/handbook"}
         if path == "/repos/acme/site":
@@ -242,7 +245,51 @@ def test_github_comment_on_a_pull_request(company_github):
     assert "pull request" in proposal.target.name
     made = action.execute("k", proposal.target.as_dict(), proposal.payload, "tok")
     assert made.external_id == "99"
-    assert company_github[-1] == ("POST", "/repos/acme/handbook/issues/12/comments", {"body": "LGTM"})
+    # Sent on the token GitHub narrowed to this one repo, never the person's own.
+    assert company_github[-1] == ("POST", "/repos/acme/handbook/issues/12/comments",
+                                  {"body": "LGTM"}, "scoped:acme/handbook:tok")
+
+
+def test_github_writes_wait_for_the_admin_to_approve(company_github, monkeypatch):
+    monkeypatch.setattr(github, "installation_permissions", lambda inst: {"issues": "read"})
+    with pytest.raises(ActionRejected, match="hasn.t accepted"):
+        github.GitHubCreateIssue().prepare(
+            {"repo": "acme/handbook", "title": "t", "body": ""},
+            _ctx("open an issue in acme/handbook"))
+
+
+def test_the_write_token_is_narrowed_to_one_repo_and_issues(monkeypatch):
+    from app.config.settings import GitHubSettings
+
+    seen = {}
+
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"token": "ghu_narrow"}
+
+    def fake_post(url, auth=None, headers=None, json=None, timeout=None):
+        seen.update(url=url, auth=auth, json=json)
+        return Resp()
+
+    monkeypatch.setattr(github.httpx, "post", fake_post)
+    settings = GitHubSettings(client_id="Iv1.x", client_secret="s")
+    assert github.scoped_token("ghu_wide", "acme/handbook", settings) == "ghu_narrow"
+    assert seen["url"].endswith("/applications/Iv1.x/token/scoped")
+    assert seen["auth"] == ("Iv1.x", "s")
+    assert seen["json"] == {"access_token": "ghu_wide", "target": "acme", "repositories": ["handbook"],
+                            "permissions": {"issues": "write"}}
+
+    class Refused(Resp):
+        status_code = 422
+
+        def json(self):
+            return {}
+
+    monkeypatch.setattr(github.httpx, "post", lambda *a, **k: Refused())
+    with pytest.raises(ActionError, match="Nothing was sent"):
+        github.scoped_token("ghu_wide", "acme/handbook", settings)
 
 
 def test_no_github_action_can_touch_code():
@@ -250,7 +297,7 @@ def test_no_github_action_can_touch_code():
     import inspect
 
     source = inspect.getsource(github)
-    for forbidden in ("/git/", "/contents", "/merge", "/pulls"):
+    for forbidden in ("/git/", "/contents", "/merge", "/pulls", "pull_requests"):
         assert forbidden not in source
 
 
