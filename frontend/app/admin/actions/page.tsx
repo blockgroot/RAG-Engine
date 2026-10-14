@@ -27,6 +27,19 @@ const STATUS_LABEL: Record<string, string> = {
   expired: "Expired",
 };
 
+const PROVIDERS = [
+  ["linear", "Linear", "Issues and comments"],
+  ["github", "GitHub", "Issues and pull-request comments"],
+  ["notion", "Notion", "Pages, page content and comments"],
+  ["google", "Google Drive", "New documents in a person’s Drive"],
+  ["slack", "Slack", "Messages from the Handbook bot"],
+] as const;
+
+const SURFACE_COPY: Record<string, string> = {
+  "surface:slack_dm": "People can ask privately using “act …” in a DM with Handbook.",
+  "surface:slack_channel": "People can ask in a channel; any Slack post stays in that thread.",
+};
+
 export default function AdminActionsPage() {
   const { me, loading } = useMe({ requireAdmin: true });
   const [data, setData] = useState<AdminActions | null>(null);
@@ -66,13 +79,20 @@ export default function AdminActionsPage() {
     }
   }
 
+  const providerGroups = PROVIDERS.map(([key, label, description]) => ({
+    key,
+    label,
+    description,
+    actions: data?.catalogue.filter((action) => action.provider === key) ?? [],
+  })).filter((group) => group.actions.length > 0);
+
   return (
     <AppShell me={me} variant="admin">
-      <main className="page-wide studio-page stack">
+      <main className="page-wide studio-page stack actions-admin-page">
         <PageHeader
           eyebrow="Company"
-          title="Actions"
-          description="Choose what people may ask Handbook to do in your tools. Every write is shown to the person first, sent only when they approve, and sent with their own account."
+          title="Action permissions"
+          description="Choose where Handbook may write. These settings allow requests—not automatic changes."
         />
 
         {error && (
@@ -83,115 +103,129 @@ export default function AdminActionsPage() {
 
         {data && !data.enabled && (
           <div className="banner" role="status">
-            Act is switched off for this Handbook installation (<code>ACTIONS_ENABLED</code>).
+            Act is off for this installation. Turn on <code>ACTIONS_ENABLED</code> before configuring permissions.
           </div>
         )}
 
         {data && (
-          <section className="studio-panel" aria-labelledby="actions-catalogue">
+          <div className="action-safety-note" role="note">
+            <strong>People stay in control.</strong>
+            <span>Every draft is reviewed and approved by the person who requested it, using their own connected account.</span>
+          </div>
+        )}
+
+        {data && (
+          <section className="studio-panel actions-permissions-panel" aria-labelledby="actions-catalogue">
             <div className="studio-section-head">
-              <h2 id="actions-catalogue">What people may ask for</h2>
+              <h2 id="actions-catalogue">Allowed actions</h2>
               <p className="muted">
-                New issues, comments, pages and Docs, and text added to the end of a Notion page.
-                Handbook cannot change or delete what&rsquo;s already there, close, merge or push code.
-                GitHub writes need your GitHub admin to accept the App&rsquo;s Issues write
-                permission. Notion writes go through a separate &ldquo;Handbook Actions&rdquo;
-                connection, so the connection that reads your Notion stays read-only.
+                Turn on only the changes people should be able to request. Everything starts off.
               </p>
             </div>
-            <ul className="act-catalogue">
-              {data.catalogue.map((a) => (
-                <li key={a.name} className="act-catalogue-row">
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={a.enabled}
-                      disabled={!data.enabled || busy === a.name}
-                      onChange={(e) => toggle(a.name, e.target.checked)}
-                    />{" "}
-                    {a.label}
-                  </label>
-                </li>
-              ))}
-            </ul>
-            <div className="studio-section-head">
-              <h3>Where people may ask</h3>
-              <p className="muted">
-                Always on Handbook&rsquo;s Act page. In Slack, people type <code>act</code> before
-                the request. In a DM the draft can use what that person can read; in a channel it
-                can use only that channel&rsquo;s own messages, the draft is shown only to the
-                person who asked, and a Slack post can only be a reply in that thread.
-              </p>
+            <div className="actions-provider-grid">
+              {providerGroups.map((group) => {
+                const enabled = group.actions.filter((action) => action.enabled).length;
+                return (
+                  <article key={group.key} className="actions-provider-group">
+                    <header>
+                      <div>
+                        <h3>{group.label}</h3>
+                        <p>{group.description}</p>
+                      </div>
+                      <span>{enabled}/{group.actions.length} on</span>
+                    </header>
+                    <ul>
+                      {group.actions.map((action) => (
+                        <li key={action.name}>
+                          <label className="action-toggle">
+                            <span>{action.label.replace(/^.*?:\s*/, "")}</span>
+                            <input
+                              type="checkbox"
+                              checked={action.enabled}
+                              disabled={!data.enabled || busy === action.name}
+                              onChange={(event) => toggle(action.name, event.target.checked)}
+                              aria-label={`${action.enabled ? "Disable" : "Enable"} ${action.label}`}
+                            />
+                          </label>
+                        </li>
+                      ))}
+                    </ul>
+                  </article>
+                );
+              })}
             </div>
-            <ul className="act-catalogue">
-              {data.surfaces.map((a) => (
-                <li key={a.name} className="act-catalogue-row">
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={a.enabled}
-                      disabled={!data.enabled || busy === a.name}
-                      onChange={(e) => toggle(a.name, e.target.checked)}
-                    />{" "}
-                    {a.label}
-                  </label>
-                </li>
+          </section>
+        )}
+
+        {data && (
+          <section className="studio-panel actions-slack-panel" aria-labelledby="actions-surfaces">
+            <div className="studio-section-head">
+              <h2 id="actions-surfaces">Act in Slack</h2>
+              <p className="muted">The Act page is always available. Choose whether requests may also start in Slack.</p>
+            </div>
+            <div className="actions-surface-list">
+              {data.surfaces.map((surface) => (
+                <label key={surface.name} className="action-surface">
+                  <span>
+                    <strong>{surface.label.replace(/^Allow Act from /, "")}</strong>
+                    <small>{SURFACE_COPY[surface.name]}</small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={surface.enabled}
+                    disabled={!data.enabled || busy === surface.name}
+                    onChange={(event) => toggle(surface.name, event.target.checked)}
+                    aria-label={`${surface.enabled ? "Disable" : "Enable"} ${surface.label}`}
+                  />
+                </label>
               ))}
-            </ul>
-            <p className="muted">
+            </div>
+            <p className="actions-privacy-note">
+              <strong>Private content stays protected.</strong>{" "}
               {data.block_wider
-                ? "Drafts that would show private documents to people who can't see them are refused."
-                : "Drafts that would show private documents to people who can't see them need the person to tick an acknowledgement. Private content is never sent anywhere public."}
+                ? "A draft is refused when its destination may include people who cannot see its private sources."
+                : "A person must acknowledge wider sharing before approval. Private content is never sent to a public destination."}
             </p>
           </section>
         )}
 
         {data && data.enabled && (
-          <section className="studio-panel" aria-labelledby="actions-log">
+          <section className="studio-panel actions-activity-panel" aria-labelledby="actions-log">
             <div className="studio-section-head">
-              <h2 id="actions-log">Log</h2>
-              <p className="muted">The last 100 actions anyone asked for, newest first.</p>
+              <h2 id="actions-log">Recent activity</h2>
+              <p className="muted">Requests and outcomes across your company.</p>
             </div>
             {data.log.length === 0 ? (
-              <p className="muted">Nothing yet.</p>
+              <div className="actions-empty">
+                <strong>No actions yet</strong>
+                <span>Completed, cancelled and failed requests will appear here.</span>
+              </div>
             ) : (
-              <div className="act-log-wrap">
-                <table className="act-log">
-                  <thead>
-                    <tr>
-                      <th>When</th>
-                      <th>Who</th>
-                      <th>What</th>
-                      <th>Where</th>
-                      <th>Private content</th>
-                      <th>Result</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.log.map((r) => (
-                      <tr key={r.id}>
-                        <td>{new Date(r.created_at).toLocaleString()}</td>
-                        <td>{r.user_email ?? "(removed)"}</td>
-                        <td>{r.label}</td>
-                        <td>{r.target.name}</td>
-                        <td>
-                          {r.exposure === "wider" || r.exposure === "unknown"
-                            ? `${r.exposure}${r.acknowledged ? ", acknowledged" : ""}`
-                            : "—"}
-                        </td>
-                        <td>
-                          {r.result?.url && r.status === "succeeded" ? (
-                            <a href={r.result.url} target="_blank" rel="noreferrer">
-                              {STATUS_LABEL[r.status]}
-                            </a>
-                          ) : (
-                            STATUS_LABEL[r.status] ?? r.status
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="actions-log-list">
+                {data.log.map((row) => (
+                  <article key={row.id} className="actions-log-row">
+                    <div className="actions-log-main">
+                      <strong>{row.label}</strong>
+                      <span>{row.target.name}</span>
+                    </div>
+                    <div className="actions-log-meta">
+                      <span>{row.user_email ?? "Removed user"}</span>
+                      <time dateTime={row.created_at}>{new Date(row.created_at).toLocaleString()}</time>
+                    </div>
+                    <div className="actions-log-result">
+                      {row.exposure === "wider" || row.exposure === "unknown" ? (
+                        <small>{row.acknowledged ? "Sharing acknowledged" : "Sharing review needed"}</small>
+                      ) : null}
+                      {row.result?.url && row.status === "succeeded" ? (
+                        <a href={row.result.url} target="_blank" rel="noreferrer">
+                          {STATUS_LABEL[row.status]}
+                        </a>
+                      ) : (
+                        <span data-status={row.status}>{STATUS_LABEL[row.status] ?? row.status}</span>
+                      )}
+                    </div>
+                  </article>
+                ))}
               </div>
             )}
           </section>

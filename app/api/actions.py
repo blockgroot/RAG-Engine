@@ -46,6 +46,7 @@ from ..core.exceptions import (
     ActionError,
     ActionExpired,
     ConfigurationError,
+    LLMProviderError,
     NotFoundError,
     OAuthError,
     OAuthReauthRequiredError,
@@ -183,12 +184,22 @@ def act(body: ActRequest, session: SessionClaims = Depends(get_session)):
     if user is None or not user.email or viewer.is_unrestricted or not viewer.email:
         # An asker we cannot name does not act -- never "unrestricted".
         raise HTTPException(status_code=403, detail="Sign in again to use Act.")
-    outcome = service.propose(
-        body.question.strip(),
-        org_id=session.org_id, user_id=session.user_id, email=user.email,
-        viewer=viewer, llm=_llm(), embedder=_embedder(), vstore=_vstore(),
-        settings=settings,
-    )
+    try:
+        outcome = service.propose(
+            body.question.strip(),
+            org_id=session.org_id, user_id=session.user_id, email=user.email,
+            viewer=viewer, llm=_llm(), embedder=_embedder(), vstore=_vstore(),
+            settings=settings,
+        )
+    except LLMProviderError as exc:
+        logger.warning("Act model unavailable: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "The model is temporarily unavailable or experiencing high demand. "
+                "Nothing was sent. Please try again in a few minutes."
+            ),
+        ) from exc
     return {
         "reply": outcome.reply,
         "action": _card(outcome.action, outcome.exposure) if outcome.action else None,

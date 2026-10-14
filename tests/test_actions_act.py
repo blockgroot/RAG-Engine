@@ -32,7 +32,13 @@ from app.auth import create_admin, create_session_token
 from app.auth.user_connections import UserTokens, get_user_token, save_user_connection
 from app.auth.users import invite_member
 from app.config.settings import ActionsSettings
-from app.core.exceptions import ActionError, ActionOutcomeUnknown, ActionRejected, NotFoundError
+from app.core.exceptions import (
+    ActionError,
+    ActionOutcomeUnknown,
+    ActionRejected,
+    LLMProviderError,
+    NotFoundError,
+)
 from app.db import get_connection
 from app.llm.base import ChatResult, ToolCall
 from app.vectorstore.base import RetrievedChunk, Viewer
@@ -549,6 +555,29 @@ def test_only_admins_switch_actions_on(client, org):
     body = client.get("/admin/actions", cookies=_cookies(org.admin)).json()
     on = {a["name"] for a in body["catalogue"] if a["enabled"]}
     assert on == {"linear.create_issue", "linear.comment"}
+
+
+@requires_db
+def test_act_reports_a_busy_model_without_an_internal_error(client, org, monkeypatch):
+    monkeypatch.setattr("app.api.actions._require_on", lambda: ON)
+    monkeypatch.setattr("app.api.actions._llm", lambda: object())
+    monkeypatch.setattr("app.api.actions._embedder", lambda: object())
+    monkeypatch.setattr("app.api.actions._vstore", lambda: object())
+
+    def unavailable(*args, **kwargs):
+        raise LLMProviderError("503: model is experiencing high demand")
+
+    monkeypatch.setattr(service, "propose", unavailable)
+    response = client.post(
+        "/act",
+        json={"question": "file an issue in Platform"},
+        cookies=_cookies(org.member),
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "The model is temporarily unavailable or experiencing high demand. "
+        "Nothing was sent. Please try again in a few minutes."
+    )
 
 
 @requires_db

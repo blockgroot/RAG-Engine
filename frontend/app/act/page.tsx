@@ -128,23 +128,8 @@ export default function ActPage() {
         <PageHeader
           eyebrow="Act"
           title="Turn a request into action"
-          description="Tell Handbook what to do and where. You’ll review the exact draft before anything is sent."
+          description="Name the tool and destination. Handbook prepares a draft; nothing is sent until you review and approve it."
         />
-
-        <ol className="act-steps" aria-label="How Act works">
-          <li>
-            <span>1</span>
-            <div><strong>Describe it</strong><small>Name the tool and target</small></div>
-          </li>
-          <li>
-            <span>2</span>
-            <div><strong>Review it</strong><small>Check the exact draft</small></div>
-          </li>
-          <li>
-            <span>3</span>
-            <div><strong>Approve it</strong><small>Nothing sends before this</small></div>
-          </li>
-        </ol>
 
         {error && (
           <div className="banner banner-warn" role="alert">
@@ -204,9 +189,9 @@ export default function ActPage() {
 
               <aside className="studio-panel act-accounts-panel" aria-labelledby="act-accounts">
                 <div className="studio-section-head">
-                  <p className="act-step-label">Before you start</p>
-                  <h2 id="act-accounts">Connected accounts</h2>
-                  <p className="muted">Actions use your access and appear under your identity.</p>
+                  <p className="act-step-label">Your access</p>
+                  <h2 id="act-accounts">Accounts</h2>
+                  <p className="muted">Connect a tool before asking Handbook to write there.</p>
                 </div>
                 <ul className="act-providers">
                   {shownProviders.map((p) => (
@@ -237,12 +222,6 @@ export default function ActPage() {
                     </li>
                   ))}
                 </ul>
-                <details className="act-capabilities">
-                  <summary>What can Handbook do?</summary>
-                  <ul>
-                    {status.actions.map((action) => <li key={action.name}>{action.label}</li>)}
-                  </ul>
-                </details>
               </aside>
             </div>
 
