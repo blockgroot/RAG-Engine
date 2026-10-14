@@ -35,11 +35,48 @@ const CONNECT_ERROR: Record<string, string> = {
   account: "That Google account isn't your work account. Connect the one you sign in to Handbook with.",
 };
 
+const HISTORY_STATUS: Record<ActCard["status"], string> = {
+  proposed: "Waiting",
+  executing: "Sending",
+  succeeded: "Done",
+  failed: "Failed",
+  unknown: "Check tool",
+  rejected: "Cancelled",
+  expired: "Expired",
+};
+
 function CheckIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 20 20" fill="none">
       <path d="m5 10 3 3 7-7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
+  );
+}
+
+function ActionHistoryRow({ action }: { action: ActCard }) {
+  const provider = PROVIDER_LABEL[action.provider ?? ""] ?? action.provider ?? "tool";
+  return (
+    <article className="act-history-row">
+      <div className="act-history-copy">
+        <strong>{action.label}</strong>
+        <span>{action.payload.title || action.target.name}</span>
+      </div>
+      <time dateTime={action.created_at}>
+        {new Date(action.created_at).toLocaleDateString(undefined, {
+          day: "numeric",
+          month: "short",
+          year: "numeric",
+        })}
+      </time>
+      <div className="act-history-outcome">
+        <span data-status={action.status}>{HISTORY_STATUS[action.status]}</span>
+        {action.status === "succeeded" && action.result?.url ? (
+          <a href={action.result.url} target="_blank" rel="noreferrer">
+            Open in {provider}
+          </a>
+        ) : null}
+      </div>
+    </article>
   );
 }
 
@@ -285,11 +322,13 @@ export default function ActPage() {
                   <p className="act-step-label">History</p>
                   <h2 id="act-recent">Recent actions</h2>
                 </div>
-                <div className="stack">
+                <div className="act-history-list">
                   {recent
                     .filter((r) => r.id !== card?.id)
-                    .map((r) => (
+                    .map((r) => r.status === "proposed" || r.status === "executing" ? (
                       <ActionCard key={r.id} card={r} onChange={updated} />
+                    ) : (
+                      <ActionHistoryRow key={r.id} action={r} />
                     ))}
                 </div>
               </section>

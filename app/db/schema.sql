@@ -1438,3 +1438,6 @@ CREATE INDEX IF NOT EXISTS idx_actions_proposed_expiry
 ALTER TABLE actions DROP CONSTRAINT IF EXISTS actions_surface_check;
 ALTER TABLE actions ADD CONSTRAINT actions_surface_check
     CHECK (surface IN ('web', 'slack_dm', 'slack_channel'));
+-- Editable drafts: the model's draft as first proposed, kept on the first
+-- edit so the log shows both what the model wrote and what was approved.
+ALTER TABLE actions ADD COLUMN IF NOT EXISTS original_payload JSONB;

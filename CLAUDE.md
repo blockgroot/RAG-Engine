@@ -298,7 +298,10 @@ the Slack bot import nothing from it. The model only fills in one action's form:
 a write runs only from `confirm`, by the person who proposed it, before
 `expires_at`, with the STORED payload (`payload_hash` compared, `store.claim` is
 the one conditional UPDATE), and every outcome is recorded in `actions`. A write
-uses the asker's own `user_connections` token, never `oauth_connections`. A
+uses the asker's own `user_connections` token, never `oauth_connections`. The
+asker may edit a pending draft's words, never its target (`Action.edit`): the
+edit replaces the stored payload under the same guards as `claim`, counts as
+their own words, and keeps the sources and exposure (the tick is asked again). A
 target is taken only from the asker's own words (`draft.require_named`), never
 from a passage; written links and @-mentions only if the asker wrote them. Every
 passage shown to the model is a source for `exposure.assess`: private content

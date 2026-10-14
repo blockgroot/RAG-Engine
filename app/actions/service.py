@@ -261,6 +261,35 @@ def propose(
     return ActOutcome("Here's what I'll do. Check it, then approve.", row, exposure)
 
 
+def edit(
+    *,
+    org_id: str,
+    user_id: str,
+    action_id: str,
+    shown_hash: str,
+    fields: dict,
+    settings: ActionsSettings | None = None,
+) -> ActionRow:
+    """Replace a pending draft's words with the person's own.
+
+    Only drafted text changes (``Action.edit``); where it goes, the sources
+    and the exposure verdict stay, because code cannot tell whether an edit
+    still carries private content. The acknowledgement is given with the
+    Approve click, so it is asked for again on the edited text.
+    """
+    settings = settings or ActionsSettings.from_env()
+    if not settings.enabled:
+        raise ActionRejected("Act is switched off for Handbook.")
+    row = store.get(org_id, user_id, action_id)
+    if row is None:
+        raise NotFoundError("No such action.")
+    action = get_action(row.action)
+    if action is None:
+        raise ActionRejected("This action is no longer available.")
+    return store.update_payload(org_id, user_id, action_id, shown_hash=shown_hash,
+                                payload=action.edit(row.payload, fields))
+
+
 def confirm(
     *,
     org_id: str,

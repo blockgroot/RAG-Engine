@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import uuid
 from functools import lru_cache
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
@@ -114,6 +115,10 @@ def _card(row: ActionRow, exposure: Exposure | None = None) -> dict:
         "provider": cls.provider if cls else None,
         "target": row.target,
         "payload": row.payload,
+        # The drafted words as the person reads and edits them (a Slack post
+        # without the line naming who asked), and whether they edited them.
+        "draft": cls().editable(row.payload) if cls else {},
+        "edited": row.original_payload is not None,
         "payload_hash": row.payload_hash,
         "status": row.status,
         "exposure": row.exposure,
@@ -230,6 +235,33 @@ def confirm(action_id: str, body: ConfirmRequest, session: SessionClaims = Depen
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ActionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"action": _card(row)}
+
+
+class EditRequest(BaseModel):
+    payload_hash: str = Field(min_length=64, max_length=64)
+    #: Drafted words only; ``Action.edit`` refuses any other field.
+    fields: dict[str, Annotated[str, Field(max_length=20000)]] = Field(max_length=2)
+
+
+@router.patch("/act/actions/{action_id}")
+def edit(action_id: str, body: EditRequest, session: SessionClaims = Depends(get_session)):
+    """Save the person's edit of a pending draft; returns the new card and hash."""
+    settings = _require_on()
+    try:
+        row = service.edit(
+            org_id=session.org_id, user_id=session.user_id,
+            action_id=_action_id(action_id), shown_hash=body.payload_hash,
+            fields=body.fields, settings=settings,
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail="No such action.") from exc
+    except ActionExpired as exc:
+        raise HTTPException(status_code=410, detail=str(exc)) from exc
+    except ActionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ActionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"action": _card(row)}
 
 
