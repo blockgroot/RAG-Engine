@@ -1393,7 +1393,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
         {actMode ? (
           <p className="muted chat-model-note" role="status">
             Act drafts one action at a time and sends nothing until you approve. Drafts aren&rsquo;t saved
-            in this chat; find them under <Link href="/act">your accounts and recent actions</Link>.
+            in this chat; find them under <Link href="/account#act">Account → Act</Link>.
           </p>
         ) : (chartMode || modelNote) && (
           <p className="muted chat-model-note" role="status">

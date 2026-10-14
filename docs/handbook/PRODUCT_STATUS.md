@@ -306,10 +306,10 @@ Plan: `docs/plans/2026-10-13-write-actions.md`; plain version: `plan.md`. Off un
 company's admin allows Act (Admin › Actions › "Allow Act for your company"; no env switch), then off
 per action until they switch it on. Admins see the switches only, never what people drafted or sent.
 
-- **Act page (`/act`)**, separate from Ask: a focused request form makes the person name the tool
-  and target, review the exact draft, then approve it. The write is sent **only when the person
-  approves**, exactly as shown, once; account readiness stays visible beside the request. A busy
-  model returns a clear try-again message (and confirms nothing was sent), never an internal error.
+- **Act is a chat mode** (+ then Act, with the model picker): the person names the tool and target,
+  reviews (and can edit) the exact draft, then approves it. The write is sent **only when the person
+  approves**, exactly as shown, once. Their Act accounts and history are a section of the Account
+  page (`/account#act`; `/act` redirects there). The admin page is Admin › Actions.
 - **Each person connects their own Linear / GitHub account**, so a write runs with their rights
   and shows their name. Linear: create issue, comment. GitHub: open issue, comment on issue or PR.
   No edit, close, delete, merge or code push. The GitHub App needs **Issues: write** only (accepted

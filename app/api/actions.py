@@ -68,7 +68,9 @@ ACT_PROVIDERS = {
     "notion": "notion_act", "google": "google_act",
 }
 ACT_STATES = {v: k for k, v in ACT_PROVIDERS.items()}
-_PAGE = "/act"
+#: Where a person lands after connecting an account for Act: its section on
+#: the Account page.
+_PAGE = "/account"
 
 
 @lru_cache(maxsize=1)
@@ -403,7 +405,7 @@ def finish_act_connect(code: str | None, state: str, settings: ApiSettings) -> R
     provider = ACT_STATES.get(_peek_provider(state) or "", "")
 
     def back(query: str) -> RedirectResponse:
-        return RedirectResponse(url=f"{base}{_PAGE}?{query}")
+        return RedirectResponse(url=f"{base}{_PAGE}?{query}#act")
 
     try:
         org_id, user_id = consume_link_state(state, provider=ACT_PROVIDERS.get(provider, "?"))
