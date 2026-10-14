@@ -45,14 +45,6 @@ const HISTORY_STATUS: Record<ActCard["status"], string> = {
   expired: "Expired",
 };
 
-function CheckIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20" fill="none">
-      <path d="m5 10 3 3 7-7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
 function ActionHistoryRow({ action }: { action: ActCard }) {
   const provider = PROVIDER_LABEL[action.provider ?? ""] ?? action.provider ?? "tool";
   return (
@@ -142,7 +134,12 @@ export default function ActPage() {
         <PageHeader
           eyebrow="Act"
           title="Your accounts and actions"
-          description="Connect the tools Handbook may write to for you, and see what you've asked it to do. Requests are made in the chat."
+          description="The accounts Handbook writes with for you, and what you've asked it to do."
+          actions={
+            <Link className="button" href="/chat?mode=act">
+              Open Act in chat
+            </Link>
+          }
         />
 
         {error && (
@@ -170,24 +167,6 @@ export default function ActPage() {
           </section>
         ) : status ? (
           <>
-            <div className="act-workspace">
-              <section className="studio-panel act-compose-panel" aria-labelledby="act-ask">
-                <div className="act-compose-heading">
-                  <p className="act-step-label">Ask</p>
-                  <h2 id="act-ask">Ask Handbook to do it, in the chat</h2>
-                  <p className="muted">
-                    Open the chat, choose + then Act, and describe what to do: the tool and the exact team,
-                    repo, page or channel. You can pick the model there. Handbook never chooses a destination for you.
-                  </p>
-                </div>
-                <div className="act-form-footer">
-                  <p><CheckIcon /> You&rsquo;ll review, and can edit, everything before it&rsquo;s sent.</p>
-                  <Link className="button act-draft-button" href="/chat?mode=act">
-                    Open Act in chat
-                  </Link>
-                </div>
-              </section>
-
               <aside className="studio-panel act-accounts-panel" aria-labelledby="act-accounts">
                 <div className="studio-section-head">
                   <p className="act-step-label">Your access</p>
@@ -224,7 +203,6 @@ export default function ActPage() {
                   ))}
                 </ul>
               </aside>
-            </div>
 
             {recent.length > 0 && (
               <section className="studio-panel act-recent" aria-labelledby="act-recent">
