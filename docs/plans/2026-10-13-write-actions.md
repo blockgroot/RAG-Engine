@@ -1,6 +1,6 @@
 # Write Actions Plan
 
-> **Status (2026-10-14): Phases 0–3 BUILT** on `feat/write-actions-plan` (not merged). Off unless `ACTIONS_ENABLED=true`. Research sources are
+> **Status (2026-10-14): Phases 0–3 BUILT** on `feat/write-actions-plan` (not merged). Off until a company's admin allows Act (no env switch, decided 2026-10-14). Research sources are
 > listed in §10. Facts marked *(unverified)* were not confirmed in a primary doc.
 
 **Goal:** an employee can ask the assistant to *do* something in a connected tool:
@@ -88,7 +88,7 @@ That is Willison's "lethal trifecta" and Meta's "Rule of Two" violated, and OWAS
 3. **Every interactive write is confirmed, every time.** There is no "always allow" in v1. Background writes (schedulers, digests) are out of scope: a write never runs without a person present.
 
 4. **Default off, at three levels:**
-   - env `ACTIONS_ENABLED` (kill switch)
+   - the company's admin allows Act at all (the `act` row in `action_policies`, `policy.act_on`; no env switch, decided 2026-10-14)
    - org admin enables each action
    - a workspace owner may switch actions **off** for their space, never on beyond the org's setting
 
@@ -165,7 +165,6 @@ class Action(ABC):
 Exceptions are `ActionError(ProviderError)`, with subclasses `ActionRejected`, `ActionExpired`, `ActionConflict` and `ActionOutcomeUnknown`. Each takes `cause=` and uses `raise ... from`.
 
 Config is a frozen dataclass `ActionsSettings.from_env()` in `settings.py`:
-- `ACTIONS_ENABLED=false`
 - `ACTION_TTL_SECONDS=900`
 - `ACTION_RATE_PER_HOUR=20`
 - per-provider write scopes
@@ -395,7 +394,7 @@ Phase 3. It needs an Interactivity Request URL (`POST /slack/interactivity`, sam
 
 ## 6. Phases
 
-Each phase ships behind `ACTIONS_ENABLED` and the org toggle. Per our test practice, each phase runs **only its own new test file**.
+Each phase ships behind the org's "Allow Act" switch and the per-action toggles. Per our test practice, each phase runs **only its own new test file**.
 
 **Phase 0: groundwork (no user-visible change)**
 - Add `user_connections`, `actions`, `action_policies`.
@@ -437,7 +436,7 @@ Each phase ships behind `ACTIONS_ENABLED` and the org toggle. Per our test pract
 
 **Phase 3: Slack — BUILT (2026-10-14)**
 - **`slack.post_message`** (`actions/slack.py`): the company's bot token, never a person's (`token_for`); the text opens with "<@asker> asked Handbook to post this" and the draft is escaped like every bot reply, so a drafted `<!channel>` or `<url|text>` is inert. From a channel: only a reply in the same thread. Elsewhere: a channel the asker named, the bot is already in, and the asker belongs to (`conversations.members`, bounded; a cut list is "can't check"). A public channel is a public destination; a private one's audience is its members' emails (≤500, else unknown).
-- **Act from Slack, in plain words** (`api/slack_act.py::slack_request`): `@Handbook create a Linear issue in Platform about this thread` in a channel, the same words in a DM. One small model check (`build_intent_prompt`) says whether the message ASKS for an action and quotes the words that do; the verdict is kept only when the quote is in the message. A question, an unreadable reply or a failed check is answered exactly as before. The check runs only where that Slack surface is switched on. `act <request>` still forces a draft without the check; with `ACTIONS_ENABLED` off, both are just questions. This replaced an explicit-`act`-only rule after looking at @Linear and @Jira (both plain words); safety rests on the approval, the quote check and the named target, not on a keyword. Every action works from Slack, not only Slack posting.
+- **Act from Slack, in plain words** (`api/slack_act.py::slack_request`): `@Handbook create a Linear issue in Platform about this thread` in a channel, the same words in a DM. One small model check (`build_intent_prompt`) says whether the message ASKS for an action and quotes the words that do; the verdict is kept only when the quote is in the message. A question, an unreadable reply or a failed check is answered exactly as before. The check runs only where that Slack surface is switched on. `act <request>` still forces a draft without the check; with Act not allowed for the company, both are just questions. This replaced an explicit-`act`-only rule after looking at @Linear and @Jira (both plain words); safety rests on the approval, the quote check and the named target, not on a keyword. Every action works from Slack, not only Slack posting.
 - **Each place is its own permission decision:**
   - DM: drafts from company-wide content as the PERSON (`viewer_for_person`); the card is a DM message.
   - Channel (public or private): drafts from THAT channel only, as the room (`Viewer(public_only=True, channels=(channel,))` + the channel tag), exactly like a channel answer, so the asker's private documents never reach a room. The card is ephemeral (only the asker sees it), falling back to the app DM.
@@ -479,6 +478,8 @@ Each phase ships behind `ACTIONS_ENABLED` and the org toggle. Per our test pract
 - **A separate audit table.** The `actions` row already holds who, what, the payload hash, the decision and the outcome. A second table would drift from it.
 
 ---
+
+- **No admin log (decided 2026-10-14).** Admin › Actions holds the switches only. What a person drafted, its sources and drafts never sent are theirs (their Act page); each tool already records who created what. `actions` rows stay as the approval queue and each person's own history.
 
 ## 9. Open questions
 

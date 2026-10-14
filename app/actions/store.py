@@ -159,7 +159,7 @@ def claim(
     if r:
         return _row(r)
 
-    row = _why_not(org_id, user_id, action_id, shown_hash)
+    _why_not(org_id, user_id, action_id, shown_hash)
     raise ActionConflict(
         "This shares private content with people who can't see it. "
         "Tick the acknowledgement to approve."
@@ -273,7 +273,7 @@ def executed_since(org_id: str, user_id: str, since: datetime) -> int:
 
 
 def list_for_org(org_id: str, *, user_id: str | None = None, limit: int = 50) -> list[ActionRow]:
-    """Recent actions for the admin log, newest first, optionally one person's."""
+    """Recent actions, newest first, optionally one person's (their Act page)."""
     limit = max(1, min(limit, 200))
     with get_connection() as conn:
         rows = conn.execute(

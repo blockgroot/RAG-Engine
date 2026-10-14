@@ -391,22 +391,21 @@ export function AppShell({
                     <span className="rail-link-hint">Gaps, charts, data health</span>
                   </span>
                 </Link>
-                {me?.act_enabled && (
-                  <Link
-                    href="/admin/actions"
-                    className="rail-link"
-                    data-active={pathname.startsWith("/admin/actions") ? "true" : "false"}
-                    aria-current={pathname.startsWith("/admin/actions") ? "page" : undefined}
-                  >
-                    <span className="rail-ico">
-                      <IconAct />
-                    </span>
-                    <span className="rail-link-copy">
-                      <span className="rail-link-title">Actions</span>
-                      <span className="rail-link-hint">What Handbook may do</span>
-                    </span>
-                  </Link>
-                )}
+                {/* Always shown to admins: this is where they turn Act on. */}
+                <Link
+                  href="/admin/actions"
+                  className="rail-link"
+                  data-active={pathname.startsWith("/admin/actions") ? "true" : "false"}
+                  aria-current={pathname.startsWith("/admin/actions") ? "page" : undefined}
+                >
+                  <span className="rail-ico">
+                    <IconAct />
+                  </span>
+                  <span className="rail-link-copy">
+                    <span className="rail-link-title">Actions</span>
+                    <span className="rail-link-hint">What Handbook may do</span>
+                  </span>
+                </Link>
               </>
             )}
           </nav>

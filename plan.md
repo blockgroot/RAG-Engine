@@ -140,5 +140,5 @@ v1 only creates new things and adds comments. It never edits, deletes or touches
 1. Can workspace owners switch Act on for their space if the org left it off, or only switch it off?
 2. Should GitHub writes go in the existing App (every installation must re-approve the new
    permissions) or a separate opt-in App?
-3. How long do we keep the action log? It contains company text.
+3. How long do we keep each person's action history (their own drafts and results)? Admins see no log.
 4. Is a Slack Marketplace listing planned? It affects step 3.

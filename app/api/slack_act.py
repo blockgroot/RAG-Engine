@@ -41,7 +41,7 @@ from ..actions.exposure import NEEDS_ACK
 from ..actions.store import ActionRow
 from ..auth.credentials import get_live_connection_token
 from ..auth.users import get_member_by_address
-from ..config.settings import ActionsSettings, SlackSettings
+from ..config.settings import SlackSettings
 from ..core.exceptions import (
     ActionConflict,
     ActionError,
@@ -132,9 +132,16 @@ def asks_to_act(text: str, *, llm=None) -> bool:
 def slack_request(text: str, *, org_id: str, is_dm: bool, llm=None) -> str | None:
     """The request to draft from this message, or ``None`` to answer it.
 
-    ``act …`` is always a request. Plain words are one only where an admin
+    Nothing is a request until an admin allowed Act for the company. Then
+    ``act …`` is always one. Plain words are one only where an admin
     switched Act on for this surface, so nobody pays for the check otherwise.
     """
+    try:
+        if not policy.act_on(org_id):
+            return None
+    except Exception:  # noqa: BLE001 - an unreadable switch is "off": answer, never write
+        logger.warning("slack.act: could not read the Act switch", exc_info=True)
+        return None
     explicit = act_request(text)
     if explicit is not None:
         return explicit
@@ -396,7 +403,7 @@ async def slack_interactivity(
     from .slack_events import _verify
 
     secret = SlackSettings.from_env().signing_secret
-    if not secret or not ActionsSettings.from_env().enabled:
+    if not secret:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     body = await request.body()
     if not _verify(body, x_slack_request_timestamp, x_slack_signature, secret):

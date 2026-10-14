@@ -295,7 +295,6 @@ export interface AdminActions {
   catalogue: { name: string; label: string; provider: string; enabled: boolean }[];
   /** Slack DMs / Slack channels, each switched on apart. */
   surfaces: { name: string; label: string; enabled: boolean }[];
-  log: ActCard[];
 }
 
 export interface MemberRecord {

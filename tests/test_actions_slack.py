@@ -89,6 +89,7 @@ def test_plain_words_count_only_with_a_quote_from_the_message(reply, wanted):
 def test_plain_words_need_the_surface_switched_on(monkeypatch):
     model = _Model('{"act": true, "request_words": "create a Linear issue"}')
     on = {"slack_channel": False, "slack_dm": True}
+    monkeypatch.setattr(slack_act.policy, "act_on", lambda org: True)
     monkeypatch.setattr(slack_act.policy, "surface_enabled", lambda org, kind: on[kind])
     text = "<@U0BOT> create a Linear issue in <#C1|eng> about this"
     assert slack_act.slack_request(text, org_id="o", is_dm=False, llm=model) is None
@@ -102,7 +103,7 @@ def test_plain_words_need_the_surface_switched_on(monkeypatch):
 
 def _handle_env(monkeypatch, *, acts_on=True):
     seen = {"answer": [], "act": []}
-    monkeypatch.setenv("ACTIONS_ENABLED", "true" if acts_on else "false")
+    monkeypatch.setattr(slack_act.policy, "act_on", lambda org_id: acts_on)
     monkeypatch.setattr(slack_events, "_org_for_team", lambda team: ("org-1", None))
     monkeypatch.setattr(slack_events, "get_live_connection_token", lambda *a, **k: "xoxb")
     monkeypatch.setattr(slack_events, "_slack_email", lambda t, u: "a@b.com")
@@ -402,7 +403,6 @@ def test_the_click_route_checks_slacks_signature(monkeypatch):
     from app.api.main import create_app
 
     monkeypatch.setenv("SLACK_SIGNING_SECRET", "shh")
-    monkeypatch.setenv("ACTIONS_ENABLED", "true")
     decided = []
     monkeypatch.setattr(slack_act, "decide", lambda payload, act: decided.append(act))
     client = TestClient(create_app())
@@ -432,6 +432,7 @@ def org(store, org_cleanup, monkeypatch):
     org_id = store.create_organization(f"Act3 {uuid.uuid4().hex[:8]}")
     org_cleanup.append(org_id)
     admin = create_admin(f"act3-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    policy.set_policy(org_id, policy.ACT_KEY, True)
     policy.set_policy(org_id, "linear.create_issue", True)
     return SimpleNamespace(id=org_id, admin=admin)
 
@@ -442,7 +443,7 @@ def test_each_slack_surface_has_its_own_switch(org):
         return service.propose(
             "file an issue", org_id=org.id, user_id=org.admin.id, email=org.admin.email,
             viewer=Viewer(email=org.admin.email), llm=None, embedder=None, vstore=None,
-            settings=ActionsSettings(enabled=True), surface={"kind": kind, "slack_user": "U1"},
+            settings=ActionsSettings(), surface={"kind": kind, "slack_user": "U1"},
         ).reply
 
     assert "hasn't turned on Act here" in ask("slack_dm")

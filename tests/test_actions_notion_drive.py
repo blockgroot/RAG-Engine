@@ -207,7 +207,6 @@ def test_the_doc_is_uploaded_as_a_google_doc(monkeypatch):
 def _env(monkeypatch):
     monkeypatch.setenv("AUTH_ENCRYPTION_KEYS", Fernet.generate_key().decode())
     monkeypatch.setenv("AUTH_JWT_SECRET", "test-jwt-secret-do-not-use-in-prod")
-    monkeypatch.setenv("ACTIONS_ENABLED", "true")
     monkeypatch.setenv("NOTION_CLIENT_ID", "read-cid")
     monkeypatch.setenv("NOTION_CLIENT_SECRET", "read-secret")
     monkeypatch.setenv("NOTION_REDIRECT_URI", "https://api.example.com/auth/notion/callback")
@@ -224,6 +223,9 @@ def org(store, org_cleanup):
     org_id = store.create_organization(f"Act2 {uuid.uuid4().hex[:8]}")
     org_cleanup.append(org_id)
     admin = create_admin(f"act2-{uuid.uuid4().hex[:8]}@example.com", org_id)
+    from app.actions import policy
+
+    policy.set_policy(org_id, policy.ACT_KEY, True)
     return SimpleNamespace(id=org_id, admin=admin)
 
 

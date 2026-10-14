@@ -56,7 +56,7 @@ from ..sources.google_groups import viewer_for_person
 from ..jobs.autosync import request_sync_external
 from ..vectorstore.base import Viewer
 from ..chartrender import build_chart_renderer
-from ..config.settings import ActionsSettings, SlackSettings
+from ..config.settings import SlackSettings
 from ..core.exceptions import ProviderError
 from ..insights.resolve import spec_to_dict
 from ..db.connection import get_connection
@@ -584,16 +584,15 @@ def _handle(event: dict, team_id: str) -> None:
 
     # Act: a message that ASKS for something to be done (plain words, checked
     # by `slack_request`) gets a draft to approve; anything else is answered
-    # exactly as before. Off entirely unless ACTIONS_ENABLED.
-    if ActionsSettings.from_env().enabled:
-        from .slack_act import handle_act, slack_request
+    # exactly as before. Off unless the company's admins allowed Act.
+    from .slack_act import handle_act, slack_request
 
-        request = slack_request(text, org_id=org_id, is_dm=is_dm)
-        if request is not None:
-            handle_act(request=request, org_id=org_id, token=token,
-                       token_workspace_id=token_workspace_id, user=user,
-                       slack_user=slack_user, channel=channel, thread_ts=thread_ts, is_dm=is_dm)
-            return
+    request = slack_request(text, org_id=org_id, is_dm=is_dm)
+    if request is not None:
+        handle_act(request=request, org_id=org_id, token=token,
+                   token_workspace_id=token_workspace_id, user=user,
+                   slack_user=slack_user, channel=channel, thread_ts=thread_ts, is_dm=is_dm)
+        return
 
     # THE SEPARATION OF CONCERNS, and it is a privacy boundary rather than a
     # convenience:

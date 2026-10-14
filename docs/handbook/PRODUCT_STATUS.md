@@ -302,8 +302,9 @@ Covered by `tests/test_doctables_text.py`, `tests/test_doctables_ingest.py`,
 `tests/test_slack_chart_upload.py`, `tests/test_chartrender.py`. Not yet walked through on staging.
 
 **Branch `feat/write-actions-plan` (14 Oct 2026, not merged): Act (writes into connected tools).**
-Plan: `docs/plans/2026-10-13-write-actions.md`; plain version: `plan.md`. Off unless
-`ACTIONS_ENABLED=true`, then off per action until an org admin switches it on (Admin › Actions).
+Plan: `docs/plans/2026-10-13-write-actions.md`; plain version: `plan.md`. Off until a
+company's admin allows Act (Admin › Actions › "Allow Act for your company"; no env switch), then off
+per action until they switch it on. Admins see the switches only, never what people drafted or sent.
 
 - **Act page (`/act`)**, separate from Ask: a focused request form makes the person name the tool
   and target, review the exact draft, then approve it. The write is sent **only when the person

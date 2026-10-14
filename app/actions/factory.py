@@ -1,15 +1,14 @@
 """Build the actions this person may be offered right now.
 
 The registry is the whole menu: an action that is not a class here cannot be
-proposed, whatever the model asks for. Offered means all three hold -- Act is
-on (``ACTIONS_ENABLED``), the org switched the action on and this space did
+proposed, whatever the model asks for. Offered means all three hold -- an admin
+allowed Act for the company, the org switched the action on and this space did
 not switch it off, and the person connected that tool themselves.
 """
 
 from __future__ import annotations
 
 from ..auth.user_connections import connected_providers
-from ..config.settings import ActionsSettings
 from . import policy
 from .base import Action
 from .drive import DriveCreateDoc
@@ -30,8 +29,7 @@ ACTIONS: dict[str, type[Action]] = {
 
 
 def build_actions(org_id: str, workspace_id: str | None, user_id: str) -> list[Action]:
-    settings = ActionsSettings.from_env()
-    if not settings.enabled:
+    if not policy.act_on(org_id):
         return []
     enabled = policy.enabled_actions(org_id, workspace_id)
     if not enabled:

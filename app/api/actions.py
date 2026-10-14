@@ -88,11 +88,11 @@ def _vstore():
     return build_vector_store()
 
 
-def _require_on() -> ActionsSettings:
-    settings = ActionsSettings.from_env()
-    if not settings.enabled:
+def _require_on(org_id: str) -> ActionsSettings:
+    """Act's routes exist for a company only once its admin allowed Act."""
+    if not policy.act_on(org_id):
         raise HTTPException(status_code=404, detail="Act is not switched on.")
-    return settings
+    return ActionsSettings.from_env()
 
 
 def _action_id(raw: str) -> str:
@@ -133,8 +133,7 @@ def _card(row: ActionRow, exposure: Exposure | None = None) -> dict:
 @router.get("/act/status")
 def act_status(session: SessionClaims = Depends(get_session)):
     """What this person can do: switched-on actions and their own connections."""
-    settings = ActionsSettings.from_env()
-    if not settings.enabled:
+    if not policy.act_on(session.org_id):
         return {"enabled": False, "actions": [], "connections": [], "providers": []}
     enabled = policy.enabled_actions(session.org_id, None)
     connections = {c.provider: c for c in list_user_connections(session.org_id, session.user_id)}
@@ -177,7 +176,7 @@ class ActRequest(BaseModel):
 
 @router.post("/act")
 def act(body: ActRequest, session: SessionClaims = Depends(get_session)):
-    settings = _require_on()
+    settings = _require_on(session.org_id)
     check_rate_limit(f"act:{session.user_id}")
     user = get_user(session.user_id)
     viewer = viewer_for(session)
@@ -213,7 +212,7 @@ class ConfirmRequest(BaseModel):
 
 @router.post("/act/actions/{action_id}/confirm")
 def confirm(action_id: str, body: ConfirmRequest, session: SessionClaims = Depends(get_session)):
-    settings = _require_on()
+    settings = _require_on(session.org_id)
     try:
         row = service.confirm(
             org_id=session.org_id, user_id=session.user_id,
@@ -235,7 +234,7 @@ def confirm(action_id: str, body: ConfirmRequest, session: SessionClaims = Depen
 
 @router.post("/act/actions/{action_id}/reject")
 def reject(action_id: str, session: SessionClaims = Depends(get_session)):
-    _require_on()
+    _require_on(session.org_id)
     store.reject(session.org_id, session.user_id, _action_id(action_id))
     row = store.get(session.org_id, session.user_id, _action_id(action_id))
     if row is None:
@@ -280,7 +279,7 @@ def _available(provider: str) -> bool:
 
 @router.get("/act/connect/{provider}")
 def connect(provider: str, session: SessionClaims = Depends(get_session)):
-    _require_on()
+    _require_on(session.org_id)
     if provider not in ACT_PROVIDERS:
         raise HTTPException(status_code=404, detail="Unknown provider")
     try:
@@ -433,21 +432,13 @@ def is_act_state(state: str | None) -> bool:
 
 
 @router.get("/admin/actions")
-def admin_actions(session: SessionClaims = Depends(require_admin), user: str | None = None):
+def admin_actions(session: SessionClaims = Depends(require_admin)):
+    """The company's switches. No log: what a person drafted or sent is theirs
+    (their Act page), and each tool already records what was created by whom."""
     settings = ActionsSettings.from_env()
-    enabled = policy.enabled_actions(session.org_id, None) if settings.enabled else set()
-    user = _action_id(user) if user else None
-    log = store.list_for_org(session.org_id, user_id=user, limit=100) if settings.enabled else []
-    emails = {}
-    ids = {r.user_id for r in log if r.user_id}
-    if ids:
-        with get_connection() as conn:
-            emails = dict(conn.execute(
-                "SELECT id::text, email FROM users WHERE org_id = %s::uuid AND id = ANY(%s::uuid[])",
-                (session.org_id, list(ids)),
-            ).fetchall())
+    enabled = policy.enabled_actions(session.org_id, None)
     return {
-        "enabled": settings.enabled,
+        "enabled": policy.ACT_KEY in enabled,
         "block_wider": settings.block_wider,
         "catalogue": [
             {"name": n, "label": a.label, "provider": a.provider, "enabled": n in enabled}
@@ -460,7 +451,6 @@ def admin_actions(session: SessionClaims = Depends(require_admin), user: str | N
              "enabled": policy.surface_key(kind) in enabled}
             for kind, label in policy.SURFACES.items()
         ],
-        "log": [{**_card(r), "user_email": emails.get(r.user_id)} for r in log],
     }
 
 
@@ -470,9 +460,9 @@ class PolicyRequest(BaseModel):
 
 @router.put("/admin/actions/{name}")
 def admin_set_action(name: str, body: PolicyRequest, session: SessionClaims = Depends(require_admin)):
-    _require_on()
+    """Switch Act itself (``act``), one action, or one Slack surface."""
     surfaces = {policy.surface_key(kind) for kind in policy.SURFACES}
-    if name not in ACTIONS and name not in surfaces:
+    if name not in ACTIONS and name not in surfaces and name != policy.ACT_KEY:
         raise HTTPException(status_code=404, detail="No such action")
     policy.set_policy(session.org_id, name, body.enabled, updated_by=session.user_id)
     return {"name": name, "enabled": body.enabled}
