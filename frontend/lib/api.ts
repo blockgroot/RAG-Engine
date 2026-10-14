@@ -229,10 +229,59 @@ export interface Me {
   ready_to_ask: boolean;
   policy_ready: boolean;
   github_connected: boolean;
+  /** Act (writes into connected tools) is switched on for Handbook. */
+  act_enabled?: boolean;
   slack_ready: boolean;
   linear_ready: boolean;
   notion_ready: boolean;
   drive_ready: boolean;
+}
+
+/** One proposed (or finished) write, as the Act page shows it. The payload
+ *  is exactly what will be sent; approving sends back its hash. */
+export interface ActCard {
+  id: string;
+  action: string;
+  label: string;
+  provider: string | null;
+  target: { kind: string; external_id: string; name: string; url: string | null };
+  payload: { title?: string; body?: string };
+  payload_hash: string;
+  status: "proposed" | "executing" | "succeeded" | "failed" | "unknown" | "rejected" | "expired";
+  /** none | narrower: nobody new sees private content. wider | unknown: the
+   *  person must tick the acknowledgement before Approve works. */
+  exposure: "none" | "narrower" | "wider" | "unknown";
+  acknowledged: boolean;
+  /** Titles of the private documents the draft drew on. */
+  sources: string[];
+  audience_size: number | null;
+  outsiders: number | null;
+  result: { external_id?: string; url?: string | null; error?: string } | null;
+  expires_at: string;
+  created_at: string;
+  user_email?: string | null;
+}
+
+export interface ActProvider {
+  provider: string;
+  needed: boolean;
+  connected: boolean;
+  needs_reauth: boolean;
+  account: string | null;
+}
+
+export interface ActStatus {
+  enabled: boolean;
+  actions: { name: string; label: string; provider: string }[];
+  providers: ActProvider[];
+  recent?: ActCard[];
+}
+
+export interface AdminActions {
+  enabled: boolean;
+  block_wider: boolean;
+  catalogue: { name: string; label: string; provider: string; enabled: boolean }[];
+  log: ActCard[];
 }
 
 export interface MemberRecord {
@@ -783,6 +832,30 @@ export const api = {
       `/workspaces/${workspaceId}/connections/${connectionId}/forms`,
       { method: "PUT", body: JSON.stringify({ form_ids: formIds }) }
     ),
+  actStatus: () => request<ActStatus>("/act/status"),
+  act: (question: string) =>
+    request<{ reply: string; action: ActCard | null }>("/act", {
+      method: "POST",
+      body: JSON.stringify({ question }),
+    }),
+  confirmAction: (id: string, payloadHash: string, acknowledged: boolean) =>
+    request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}/confirm`, {
+      method: "POST",
+      body: JSON.stringify({ payload_hash: payloadHash, acknowledged }),
+    }),
+  rejectAction: (id: string) =>
+    request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}/reject`, {
+      method: "POST",
+    }),
+  actConnectUrl: (provider: string) => `${API_BASE_URL}/act/connect/${provider}`,
+  disconnectActProvider: (provider: string) =>
+    request<{ deleted: boolean }>(`/act/connections/${provider}`, { method: "DELETE" }),
+  adminActions: () => request<AdminActions>("/admin/actions"),
+  setAdminAction: (name: string, enabled: boolean) =>
+    request<{ name: string; enabled: boolean }>(`/admin/actions/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    }),
   getOrgModel: () => request<{ model: OrgModel | null }>("/admin/llm-model"),
   listModelPresets: () =>
     request<{ presets: ModelPreset[] }>("/admin/llm-model/presets"),

@@ -280,12 +280,38 @@ class GitHubAppProvider(OAuthProvider):
         reason to exist. Works whether or not the App is installed anywhere:
         user-to-server tokens can always read ``/user``.
         """
+        return self._user(self._user_access_token(self._post_token_exchange(code)))
+
+    def exchange_user_code(self, code: str) -> tuple[OAuthTokens, str, str | None]:
+        """The person's own user-to-server token, KEPT, for Act mode.
+
+        Unlike ``identify_user`` this token has a reason to exist: the person
+        asked Handbook to act for them, and GitHub attributes what it does to
+        them. Returns ``(tokens, login, display_name)``; the token expires
+        after eight hours and carries a single-use refresh token.
+        """
         payload = self._post_token_exchange(code)
+        token = self._user_access_token(payload)
+        login, name = self._user(token)
+        tokens = OAuthTokens(
+            access_token=token,
+            refresh_token=payload.get("refresh_token"),
+            expires_at=compute_expires_at(payload.get("expires_in")),
+            external_workspace_id=login,
+            external_workspace_name=name,
+        )
+        return tokens, login, name
+
+    @staticmethod
+    def _user_access_token(payload: dict) -> str:
         token = payload.get("access_token")
         if not token:
             raise OAuthError(
                 f"GitHub OAuth exchange returned no access token: {payload.get('error') or payload}"
             )
+        return token
+
+    def _user(self, token: str) -> tuple[str, str | None]:
         try:
             response = httpx.get(
                 _USER_URL,

@@ -293,6 +293,20 @@ origin at `/api`; Next rewrites to FastAPI. Do not point `NEXT_PUBLIC_API_BASE_U
 at Render. `render.yaml` does not configure production Hand-Book. Supabase uses the
 session pooler (5432).
 
+**Act (writes).** `app/actions/`, its own page and routes; Ask, Chart, sync and
+the Slack bot import nothing from it. The model only fills in one action's form:
+a write runs only from `confirm`, by the person who proposed it, before
+`expires_at`, with the STORED payload (`payload_hash` compared, `store.claim` is
+the one conditional UPDATE), and every outcome is recorded in `actions`. A write
+uses the asker's own `user_connections` token, never `oauth_connections`. A
+target is taken only from the asker's own words (`draft.require_named`), never
+from a passage; written links and @-mentions only if the asker wrote them. Every
+passage shown to the model is a source for `exposure.assess`: private content
+never goes somewhere public (refused in code and by a CHECK), and a wider or
+unknown audience needs the stored tick. A timeout after sending is `unknown`,
+never retried. No action touches git refs, contents or merges, and the GitHub
+App gets no `Contents: write`. Nothing runs unattended.
+
 **Also hold.** GitHub embeds nothing. A live read runs after the gate, at most two
 items, and withholds the indexed copy only on not-found or permission. The "live" chip is shown only for a
 live read the answer cites (`api/chat.py::_shown_live`). Personal
@@ -320,6 +334,7 @@ app/insights/        charts: registry, query grammar, document-table picks
 app/doctables/       tables inside documents, kept as typed rows for charts
 app/graph/           knowledge graph
 app/livetools/       live re-reads
+app/actions/         Act: approved writes into connected tools
 app/memory/          chats and personal facts
 app/jobs/            ingest queue and automatic sync
 app/db/schema.sql    tables

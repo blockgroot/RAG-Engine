@@ -12,9 +12,14 @@ from ..auth.user_connections import connected_providers
 from ..config.settings import ActionsSettings
 from . import policy
 from .base import Action
+from .github import GitHubComment, GitHubCreateIssue
+from .linear import LinearComment, LinearCreateIssue
 
-#: Every action that exists, by name. Filled per provider as phases ship.
-ACTIONS: dict[str, type[Action]] = {}
+#: Every action that exists, by name. Nothing else can ever be proposed.
+ACTIONS: dict[str, type[Action]] = {
+    cls.name: cls
+    for cls in (LinearCreateIssue, LinearComment, GitHubCreateIssue, GitHubComment)
+}
 
 
 def build_actions(org_id: str, workspace_id: str | None, user_id: str) -> list[Action]:

@@ -46,6 +46,7 @@ class Source:
     title: str
     public: bool
     viewers: tuple[str, ...] = ()
+    uri: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {"document_id": self.document_id, "title": self.title,
@@ -112,6 +113,7 @@ class Action(ABC):
 
     name: ClassVar[str]
     provider: ClassVar[str]
+    label: ClassVar[str]
     tool: ClassVar[dict[str, Any]]
     destructive: ClassVar[bool] = False
 
@@ -123,9 +125,13 @@ class Action(ABC):
         """
 
     @abstractmethod
-    def execute(self, target: dict[str, Any], payload: dict[str, Any], token: str) -> ActionResult:
+    def execute(
+        self, key: str, target: dict[str, Any], payload: dict[str, Any], token: str
+    ) -> ActionResult:
         """Send the stored write once, with the asker's token.
 
+        ``key`` is the ``actions`` row id: a tool that accepts a client id
+        (Linear) gets it, so a repeated send cannot create a second object.
         Raises ``ActionOutcomeUnknown`` when the request was sent and no answer
         came back, ``ActionError`` when the tool refused it.
         """

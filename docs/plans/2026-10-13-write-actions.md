@@ -1,6 +1,6 @@
 # Write Actions Plan
 
-> **Status (2026-10-14): Phase 0 in progress** on `feat/write-actions-plan`. Research sources are
+> **Status (2026-10-14): Phases 0 and 1 BUILT** on `feat/write-actions-plan` (not merged). Off unless `ACTIONS_ENABLED=true`. Research sources are
 > listed in §10. Facts marked *(unverified)* were not confirmed in a primary doc.
 
 **Goal:** an employee can ask the assistant to *do* something in a connected tool:
@@ -404,15 +404,19 @@ Each phase ships behind `ACTIONS_ENABLED` and the org toggle. Per our test pract
   - Setting `oauth_connections.connected_by_user_id` touches the shared GitHub connect flow. It is a separate cleanup.
   - The Slack alias fix moves to Phase 3, where Slack approval needs it.
 
-**Phase 1: Linear + GitHub on web chat**
-- Per-user connect flows (Linear new; GitHub stops discarding the token).
-- Act mode toggle and `POST /act/stream` (Ask and Chart untouched); action agent with the `request_words` check; `prepare`/`execute` for `linear.create_issue`, `linear.add_comment`, `github.comment`, `github.create_issue`.
-- `proposed_action` on `done`; `POST /actions/{id}/confirm|reject`; `ActionCard`; Admin › Actions toggles and log.
-- Tests: `tests/test_actions_targets.py`, the injection suite:
-  - a retrieved passage naming another repo or team, or containing "post this to #general", never becomes a target
-  - links not in the asker's text are stripped
-  - a non-member's handle does not resolve
-  - a Viewer that can't see the source doc can't target it
+**Phase 1: Linear + GitHub on the web — BUILT (2026-10-14)**
+- Per-person connect: `GET /act/connect/{linear|github}`. The state is bound to the person (`linear_act` / `github_act`) and finished from the provider's existing callback (`api/actions.py::finish_act_connect`). Linear asks for `read,issues:create,comments:create`; a Linear account from another Linear workspace than the company's is refused. GitHub keeps the user-to-server token (`GitHubAppProvider.exchange_user_code`); the link flow still discards its token.
+- Refresh under a row lock (`user_connections.fresh_user_token`), because GitHub's refresh token is single-use.
+- **Act is its own page (`/act`), not a mode inside chat.** `POST /act` makes one model call (`actions/service.py::propose`); `POST /act/actions/{id}/confirm|reject`; `GET /act/status`; Admin › Actions (`/admin/actions`) with toggles and the log. Ask and Chart import nothing from `app/actions/`.
+- Actions: `linear.create_issue`, `linear.comment`, `github.create_issue`, `github.comment`.
+- Context: the same vector search, visibility predicate and 0.35 gate as Ask, org-wide only; a guard-flagged chunk is dropped whatever the guard's mode; each document's viewers are read again with the predicate.
+- **Changes from the design above, decided while building:**
+  - A target comes **only from the asker's own words** (`draft.require_named`), checked before any API call, then resolved with their token. Pickers and "the document I referred to" as a target are later work; until then nothing in a retrieved passage can choose a target.
+  - **Every passage shown to the model counts as a source** for the exposure check, used or not. Stricter than "what the draft used", which only the model could claim, and an injected model would lie.
+  - A **public Linear team**'s audience is every active member of the Linear workspace (`users`, ≤250, else unknown); a `restricted` team is unknown. A **private GitHub repo** is unknown; a public one is `public`, so private sources are refused there.
+  - Linear writes send the `actions` row id as Linear's client `id`.
+  - No conversation storage: the Act page lists the person's recent actions from `actions` itself.
+- Tests: `tests/test_actions_act.py` (29), plus the Act prompt in `tests/test_untrusted_policy.py`.
 
 **Phase 2: Notion + Google Docs (create) on web chat**
 - `notion.add_comment`, `notion.append_to_page`, `notion.create_child_page`, `drive.create_doc`.
