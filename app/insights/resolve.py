@@ -394,8 +394,11 @@ def prose_figures_unclear(titles: list[str], tables: list[str]) -> str:
     )
 
 
-#: Ask's question check is short: two booleans.
-ROUTE_MAX_TOKENS = 40
+#: Ask's question check is short: three small fields. The cap is not sized to
+#: them: Claude Haiku wraps the JSON in a ```json fence over several lines and
+#: ran past 40 tokens, and a reply cut before its "}" read as no verdict -- no
+#: live read, no chart hint, silently. The model stops at the end of the JSON.
+ROUTE_MAX_TOKENS = 200
 
 
 def _route_prompt(question: str, *, github: bool) -> str:

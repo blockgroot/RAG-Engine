@@ -565,6 +565,15 @@ def test_a_failed_question_check_is_a_document_question():
     assert (intent.kind, intent.needs_live) == ("qa", None)
 
 
+def test_a_fenced_multi_line_verdict_fits_the_question_checks_cap():
+    # Claude Haiku's reply shape: a ```json fence over several lines. It ran
+    # past a 40-token cap, and a verdict cut before its "}" was silently lost.
+    reply = '```json\n{\n  "code": false,\n  "chart": "count",\n  "live": true\n}\n```'
+    intent = resolve.classify_route("how many issues are open now?", github=True, llm=FakeLLM(reply))
+    assert (intent.chart_ask, intent.needs_live) == ("count", True)
+    assert resolve.ROUTE_MAX_TOKENS >= 4 * len(reply) // 3  # far more than ~1 token per 3 chars
+
+
 def test_the_question_check_carries_no_chart_catalogue():
     prompt = resolve._route_prompt("chart PRs", github=True)
     assert "metric" not in prompt and "TABLES" not in prompt
