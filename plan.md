@@ -109,8 +109,10 @@ the middle row into a block too (`ACTIONS_BLOCK_WIDER`).
 
 ## Act from Slack
 
-Type `act` before the request: `@Handbook act file a Linear issue in Platform about this thread`,
-or `act …` in a DM with the bot. Without `act`, the bot answers questions exactly as before.
+Ask in plain words: `@Handbook create a Linear issue in Platform about this thread`, or the same
+in a DM with the bot. A small check decides whether you asked for something to be done (the words
+that asked must really be in your message); a question is answered exactly as before. Starting with
+`act` forces a draft. Either way it is only a draft until you click Approve.
 
 | | DM with the bot | Private channel | Public channel |
 |---|---|---|---|
@@ -128,7 +130,7 @@ Only the person who asked can approve. Private content never goes to a public ch
 | 0 | Tables (`user_connections`, `action_policies`, `actions`), the Act package skeleton, logging | No |
 | 1 | Act mode in web chat: **Linear** (issue, comment), **GitHub** (issue, comment) | Yes, for orgs that enable it |
 | 2 | **Notion** (comment, add to page), **Google** (create a new Doc) | Yes |
-| 3 | **Slack**: posting (as the bot, naming you), and `act` from Slack DMs and channels with Approve buttons | Yes (built) |
+| 3 | **Slack**: posting (as the bot, naming you), and acting from Slack DMs and channels in plain words with Approve buttons | Yes (built) |
 | 4 | Later, each decided separately: editing existing content, changing issue status, undo | Not yet |
 
 v1 only creates new things and adds comments. It never edits, deletes or touches code.

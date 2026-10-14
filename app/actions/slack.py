@@ -147,8 +147,8 @@ class SlackPostMessage(Action):
         asker = surface.get("slack_user")
         if not asker:
             raise ActionRejected(
-                "Handbook doesn't know your Slack account yet. Send the Handbook bot an "
-                "`act` request in Slack once, then try again."
+                "Handbook doesn't know your Slack account yet. Ask the Handbook bot to "
+                "do something in Slack once, then try again."
             )
         named = (args.get("channel") or "").strip() if isinstance(args.get("channel"), str) else ""
         thread_ts = None

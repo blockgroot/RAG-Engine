@@ -1,8 +1,10 @@
 """Act mode, Phase 3: Slack (docs/plans/2026-10-13-write-actions.md).
 
 Pinned here:
-- only the explicit ``act`` command proposes a write; every other message is
-  answered exactly as before, and with Act off ``act`` is just a question;
+- a message that asks, in plain words, for something to be done proposes a
+  write only when the model's quote of the asking words is in the message and
+  the surface is on; ``act`` forces it; anything else is answered exactly as
+  before, and with Act off ``act`` is just a question;
 - a DM drafts from what the PERSON can read; a channel drafts from that
   channel only, as the room, and shows the card only to the asker;
 - the bot posts naming the asker; from a channel only into the same thread;
@@ -59,6 +61,45 @@ def test_only_the_act_command_is_a_write_request(text, request_text):
     assert slack_act.act_request(text) == request_text
 
 
+class _Model:
+    def __init__(self, reply):
+        self.reply, self.prompts = reply, []
+
+    def generate(self, prompt, **kw):
+        self.prompts.append(prompt)
+        if isinstance(self.reply, Exception):
+            raise self.reply
+        return self.reply
+
+
+@pytest.mark.parametrize("reply, wanted", [
+    ('{"act": true, "request_words": "create a Linear issue"}', True),
+    ('{"act": true, "request_words": "open a ticket"}', False),  # quote not in the message
+    ('{"act": true, "request_words": ""}', False),
+    ('{"act": "true", "request_words": "create a Linear issue"}', False),
+    ('{"act": false, "request_words": ""}', False),
+    ("sure!", False),
+    (RuntimeError("quota"), False),
+])
+def test_plain_words_count_only_with_a_quote_from_the_message(reply, wanted):
+    text = "create a Linear issue in Platform about the scheduler flow"
+    assert slack_act.asks_to_act(text, llm=_Model(reply)) is wanted
+
+
+def test_plain_words_need_the_surface_switched_on(monkeypatch):
+    model = _Model('{"act": true, "request_words": "create a Linear issue"}')
+    on = {"slack_channel": False, "slack_dm": True}
+    monkeypatch.setattr(slack_act.policy, "surface_enabled", lambda org, kind: on[kind])
+    text = "<@U0BOT> create a Linear issue in <#C1|eng> about this"
+    assert slack_act.slack_request(text, org_id="o", is_dm=False, llm=model) is None
+    assert model.prompts == []  # nobody pays for the check where Act is off
+    assert slack_act.slack_request(text, org_id="o", is_dm=True, llm=model) == \
+        "create a Linear issue in #eng about this"
+    # `act` needs no check at all
+    assert slack_act.slack_request("act file it", org_id="o", is_dm=False, llm=model) == "file it"
+    assert len(model.prompts) == 1
+
+
 def _handle_env(monkeypatch, *, acts_on=True):
     seen = {"answer": [], "act": []}
     monkeypatch.setenv("ACTIONS_ENABLED", "true" if acts_on else "false")
@@ -73,6 +114,8 @@ def _handle_env(monkeypatch, *, acts_on=True):
     monkeypatch.setattr(slack_events, "_answer",
                         lambda q, *a, **k: seen["answer"].append(q) or slack_events.SlackAnswer("ok"))
     monkeypatch.setattr(slack_act, "handle_act", lambda **kw: seen["act"].append(kw))
+    monkeypatch.setattr(slack_act.policy, "surface_enabled", lambda org, kind: True)
+    monkeypatch.setattr(slack_act, "asks_to_act", lambda text, llm=None: text.startswith("create"))
     return seen
 
 
@@ -84,6 +127,14 @@ def test_act_goes_to_act_and_nothing_else(monkeypatch):
     [call] = seen["act"]
     assert call["request"] == "file an issue in Platform"
     assert call["is_dm"] is False and call["thread_ts"] == "9.1" and call["slack_user"] == "U1"
+
+
+def test_plain_words_go_to_act(monkeypatch):
+    seen = _handle_env(monkeypatch)
+    slack_events._handle({"type": "app_mention", "channel": "C1", "user": "U1",
+                          "text": "<@U0BOT> create a Linear issue in Platform", "ts": "9.1"}, "T1")
+    assert seen["answer"] == []
+    assert seen["act"][0]["request"] == "create a Linear issue in Platform"
 
 
 def test_a_question_is_answered_as_before(monkeypatch):

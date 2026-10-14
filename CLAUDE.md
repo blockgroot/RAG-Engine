@@ -312,7 +312,9 @@ Notion writes use a SEPARATE connection from the read one: a Notion token always
 carries its connection's every capability. An Act account must be the company's
 (its Linear/Notion workspace, the person's own work address on Google, a repo in
 its GitHub installation), or company content leaves the company. From Slack only
-the explicit `act` command proposes (`slack_act.act_request`); a DM drafts as the
+a message that ASKS for an action proposes: a model check whose quote of the
+asking words must be in the message, only where that surface is on, or `act …`
+(`slack_act.slack_request`); a failed check is a question; a DM drafts as the
 person, a channel drafts from that channel only as the room (like a channel
 reply), its card is ephemeral, and a Slack post from a channel is a reply in that
 thread. Each Slack surface has its own admin switch. Nothing runs unattended.

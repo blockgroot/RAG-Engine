@@ -58,6 +58,7 @@ def _built_prompts() -> dict[str, str]:
         "memory_extract": __import__("app.memory.personal", fromlist=["x"]).build_extract_prompt(ATTACK, ()),
         "doctables_text": __import__("app.doctables.text_adapter", fromlist=["x"]).build_prompt("t", ATTACK),
         "act_decision": __import__("app.actions.service", fromlist=["x"]).build_act_prompt("q?", ATTACK),
+        "act_intent": __import__("app.api.slack_act", fromlist=["x"]).build_intent_prompt(ATTACK),
     }
 
 

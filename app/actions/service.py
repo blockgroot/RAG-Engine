@@ -150,7 +150,7 @@ def offered_actions(
     if not offered:
         needed = {ACTIONS[n].provider for n in enabled} - {"slack"}
         if not needed:
-            return [], "Send the Handbook bot an `act` request in Slack once, so it knows your Slack account."
+            return [], "Ask the Handbook bot to do something in Slack once, so it knows your Slack account."
         return [], f"Connect your {_names(needed)} account on Handbook's Act page to let it act for you."
     return offered, None
 

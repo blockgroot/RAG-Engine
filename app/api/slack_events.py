@@ -582,12 +582,13 @@ def _handle(event: dict, team_id: str) -> None:
         post_message(token, channel, _NO_ACCOUNT, thread_ts)
         return
 
-    # Act: only the explicit `act` command proposes a write; everything else is
-    # answered exactly as before. Off entirely unless ACTIONS_ENABLED.
+    # Act: a message that ASKS for something to be done (plain words, checked
+    # by `slack_request`) gets a draft to approve; anything else is answered
+    # exactly as before. Off entirely unless ACTIONS_ENABLED.
     if ActionsSettings.from_env().enabled:
-        from .slack_act import act_request, handle_act
+        from .slack_act import handle_act, slack_request
 
-        request = act_request(text)
+        request = slack_request(text, org_id=org_id, is_dm=is_dm)
         if request is not None:
             handle_act(request=request, org_id=org_id, token=token,
                        token_workspace_id=token_workspace_id, user=user,

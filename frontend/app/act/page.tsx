@@ -164,7 +164,7 @@ export default function ActPage() {
                       <span className={`studio-chip${p.connected ? " studio-chip-ok" : ""}`}>
                         {p.connected
                           ? "Posts as the Handbook bot, naming you"
-                          : "Send the Handbook bot an act request in Slack once, so it knows you"}
+                          : "Ask the Handbook bot to do something in Slack once, so it knows you"}
                       </span>
                     ) : !p.available && !p.connected ? (
                       <span className="studio-chip">Not set up yet. Ask your admin.</span>
