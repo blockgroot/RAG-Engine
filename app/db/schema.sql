@@ -1433,3 +1433,8 @@ CREATE INDEX IF NOT EXISTS idx_actions_org_time ON actions (org_id, created_at D
 CREATE INDEX IF NOT EXISTS idx_actions_user_status ON actions (org_id, user_id, status);
 CREATE INDEX IF NOT EXISTS idx_actions_proposed_expiry
     ON actions (expires_at) WHERE status = 'proposed';
+-- Act from Slack (Phase 3): where a proposal was made decides what it may read
+-- and where it may post, and an admin switches each Slack surface on apart.
+ALTER TABLE actions DROP CONSTRAINT IF EXISTS actions_surface_check;
+ALTER TABLE actions ADD CONSTRAINT actions_surface_check
+    CHECK (surface IN ('web', 'slack_dm', 'slack_channel'));

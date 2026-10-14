@@ -114,6 +114,30 @@ export default function AdminActionsPage() {
                 </li>
               ))}
             </ul>
+            <div className="studio-section-head">
+              <h3>Where people may ask</h3>
+              <p className="muted">
+                Always on Handbook&rsquo;s Act page. In Slack, people type <code>act</code> before
+                the request. In a DM the draft can use what that person can read; in a channel it
+                can use only that channel&rsquo;s own messages, the draft is shown only to the
+                person who asked, and a Slack post can only be a reply in that thread.
+              </p>
+            </div>
+            <ul className="act-catalogue">
+              {data.surfaces.map((a) => (
+                <li key={a.name} className="act-catalogue-row">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={a.enabled}
+                      disabled={!data.enabled || busy === a.name}
+                      onChange={(e) => toggle(a.name, e.target.checked)}
+                    />{" "}
+                    {a.label}
+                  </label>
+                </li>
+              ))}
+            </ul>
             <p className="muted">
               {data.block_wider
                 ? "Drafts that would show private documents to people who can't see them are refused."

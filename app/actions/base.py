@@ -104,6 +104,10 @@ class ActionContext:
     #: The asker's ``Viewer``: a target that is in our index must be one they
     #: may read, whatever the tool itself would allow.
     viewer: Any = None
+    #: Where the request was made: ``{"kind": "web" | "slack_dm" |
+    #: "slack_channel", "slack_user", "channel", "thread_ts"}``. From the
+    #: event or session, never from the model.
+    surface: dict | None = None
 
 
 class Action(ABC):
@@ -122,6 +126,12 @@ class Action(ABC):
     #: Whose name the tool will show on the result, said on the card. "as you"
     #: only where the tool records the person; a bot-recorded write says so.
     attribution: ClassVar[str] = "as you"
+
+    def token_for(self, org_id: str, user_id: str) -> str:
+        """The token this action writes with: the asker's own, refreshed."""
+        from ..auth.user_connections import fresh_user_token
+
+        return fresh_user_token(org_id, user_id, self.provider)
 
     @abstractmethod
     def prepare(self, args: dict[str, Any], ctx: ActionContext) -> Proposal:

@@ -320,10 +320,15 @@ Plan: `docs/plans/2026-10-13-write-actions.md`; plain version: `plan.md`. Off un
   connection, so the read connection stays read-only; **Google Docs** (a new Doc in the person's
   own Drive, `drive.file` only). Every connected account must be the company's own workspace or
   the person's work address.
-- Every proposal and outcome is kept in `actions` (the admin log). Slack is a later phase.
+- **Slack:** the bot posts "on behalf of @person" (never as them). From Slack, `act <request>`
+  works in a DM (drafts with the person's access) or a channel (drafts from that channel only;
+  the card is shown only to the asker; a Slack post can only be a reply in that thread). Each
+  Slack surface has its own admin switch. Needs Interactivity on, with Request URL
+  `/slack/interactivity`; no new Slack scopes.
+- Every proposal and outcome is kept in `actions` (the admin log).
 
-Covered by `tests/test_actions_store.py`, `tests/test_actions_act.py` and
-`tests/test_actions_notion_drive.py`. Not yet tried against real accounts; Notion page writes need
+Covered by `tests/test_actions_store.py`, `tests/test_actions_act.py`,
+`tests/test_actions_notion_drive.py` and `tests/test_actions_slack.py`. Not yet tried against real accounts; Notion page writes need
 one live test to see whose name Notion records.
 
 ## 13. Testing & Verification

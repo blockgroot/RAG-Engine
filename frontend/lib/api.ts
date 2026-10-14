@@ -273,6 +273,8 @@ export interface ActProvider {
   account: string | null;
   /** False when this Handbook isn't set up to connect it (e.g. no Notion Act client). */
   available: boolean;
+  /** Slack: nothing to connect; the Handbook bot posts, naming the person. */
+  bot?: boolean;
 }
 
 export interface ActStatus {
@@ -286,6 +288,8 @@ export interface AdminActions {
   enabled: boolean;
   block_wider: boolean;
   catalogue: { name: string; label: string; provider: string; enabled: boolean }[];
+  /** Slack DMs / Slack channels, each switched on apart. */
+  surfaces: { name: string; label: string; enabled: boolean }[];
   log: ActCard[];
 }
 

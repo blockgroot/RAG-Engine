@@ -311,8 +311,11 @@ write runs on a token narrowed to one repo + `issues: write` (`scoped_token`).
 Notion writes use a SEPARATE connection from the read one: a Notion token always
 carries its connection's every capability. An Act account must be the company's
 (its Linear/Notion workspace, the person's own work address on Google, a repo in
-its GitHub installation), or company content leaves the company. Nothing runs
-unattended.
+its GitHub installation), or company content leaves the company. From Slack only
+the explicit `act` command proposes (`slack_act.act_request`); a DM drafts as the
+person, a channel drafts from that channel only as the room (like a channel
+reply), its card is ephemeral, and a Slack post from a channel is a reply in that
+thread. Each Slack surface has its own admin switch. Nothing runs unattended.
 
 **Also hold.** GitHub embeds nothing. A live read runs after the gate, at most two
 items, and withholds the indexed copy only on not-found or permission. The "live" chip is shown only for a

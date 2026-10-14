@@ -107,6 +107,20 @@ the middle row into a block too (`ACTIONS_BLOCK_WIDER`).
 - A workspace owner can switch actions off for their space.
 - Admin › Actions lists every action taken, with a filter by person.
 
+## Act from Slack
+
+Type `act` before the request: `@Handbook act file a Linear issue in Platform about this thread`,
+or `act …` in a DM with the bot. Without `act`, the bot answers questions exactly as before.
+
+| | DM with the bot | Private channel | Public channel |
+|---|---|---|---|
+| What the draft can use | Company-wide, with your access | Only that channel's own messages, as the room | Same |
+| Who sees the draft | You (it's your DM) | Only you (a private card) | Only you |
+| Posting to Slack | Any channel you and the bot are both in | Only a reply in that thread | Same |
+| Admin switch | "Allow Act from Slack DMs" | "Allow Act from Slack channels" | Same |
+
+Only the person who asked can approve. Private content never goes to a public channel.
+
 ## Order of work
 
 | Step | What ships | Visible? |
@@ -114,7 +128,7 @@ the middle row into a block too (`ACTIONS_BLOCK_WIDER`).
 | 0 | Tables (`user_connections`, `action_policies`, `actions`), the Act package skeleton, logging | No |
 | 1 | Act mode in web chat: **Linear** (issue, comment), **GitHub** (issue, comment) | Yes, for orgs that enable it |
 | 2 | **Notion** (comment, add to page), **Google** (create a new Doc) | Yes |
-| 3 | **Slack** posting, and Approve buttons inside Slack | Yes |
+| 3 | **Slack**: posting (as the bot, naming you), and `act` from Slack DMs and channels with Approve buttons | Yes (built) |
 | 4 | Later, each decided separately: editing existing content, changing issue status, undo | Not yet |
 
 v1 only creates new things and adds comments. It never edits, deletes or touches code.

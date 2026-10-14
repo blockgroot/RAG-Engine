@@ -1,6 +1,6 @@
 # Write Actions Plan
 
-> **Status (2026-10-14): Phases 0, 1 and 2 BUILT** on `feat/write-actions-plan` (not merged). Off unless `ACTIONS_ENABLED=true`. Research sources are
+> **Status (2026-10-14): Phases 0–3 BUILT** on `feat/write-actions-plan` (not merged). Off unless `ACTIONS_ENABLED=true`. Research sources are
 > listed in §10. Facts marked *(unverified)* were not confirmed in a primary doc.
 
 **Goal:** an employee can ask the assistant to *do* something in a connected tool:
@@ -435,10 +435,18 @@ Each phase ships behind `ACTIONS_ENABLED` and the org toggle. Per our test pract
 - Tests: `tests/test_actions_notion_drive.py` (16).
 - **Still to do before Notion page writes are promised:** the live test in §5 Notion (attribution, can-comment-only user).
 
-**Phase 3: Slack**
-- The Slack user lookup reads `user_email_aliases` as well as `users.email`.
-- `slack.post_message` (bot, membership-checked, names the asker).
-- `/slack/interactivity`; ephemeral approval in Slack for every Phase 1–2 action.
+**Phase 3: Slack — BUILT (2026-10-14)**
+- **`slack.post_message`** (`actions/slack.py`): the company's bot token, never a person's (`token_for`); the text opens with "<@asker> asked Handbook to post this" and the draft is escaped like every bot reply, so a drafted `<!channel>` or `<url|text>` is inert. From a channel: only a reply in the same thread. Elsewhere: a channel the asker named, the bot is already in, and the asker belongs to (`conversations.members`, bounded; a cut list is "can't check"). A public channel is a public destination; a private one's audience is its members' emails (≤500, else unknown).
+- **Act from Slack, explicit command only** (`api/slack_act.py`): `@Handbook act <request>` in a channel, `act <request>` in a DM. Anything else is answered exactly as before; with `ACTIONS_ENABLED` off, `act` is just a question. Every action works from Slack, not only Slack posting.
+- **Each place is its own permission decision:**
+  - DM: drafts from company-wide content as the PERSON (`viewer_for_person`); the card is a DM message.
+  - Channel (public or private): drafts from THAT channel only, as the room (`Viewer(public_only=True, channels=(channel,))` + the channel tag), exactly like a channel answer, so the asker's private documents never reach a room. The card is ephemeral (only the asker sees it), falling back to the app DM.
+  - Each surface has its own admin switch (`policy.SURFACES`, stored as `surface:slack_dm` / `surface:slack_channel` in `action_policies`), off by default and re-checked at approval. `actions.surface` records which.
+  - Only the company's org-wide Slack connection can act; a space's Slack connection says so.
+- **The click** (`POST /slack/interactivity`): signature-checked like `/slack/events`, acknowledged at once, decided in the background. The clicker's Slack account is resolved to a Handbook person and must be the proposer (`store.get` by org + user), the payload hash travels in the button, the tick travels in `state.values`, and the outcome replaces the card through `response_url`. A missing tick keeps the card.
+- Slack users are found by their current or a prior work address (`users.get_member_by_address`), for answers too. An `act` request records the person's Slack account, so the web Act page can post to Slack for them.
+- No new Slack scopes. Setup: Interactivity on, Request URL `https://<api-host>/slack/interactivity`.
+- Tests: `tests/test_actions_slack.py` (28).
 
 **Phase 4: later, each its own decision**
 - Edit a Drive file chosen in Picker.

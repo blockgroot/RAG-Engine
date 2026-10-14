@@ -24,6 +24,7 @@ const PROVIDER_LABEL: Record<string, string> = {
   github: "GitHub",
   notion: "Notion",
   google: "Google Drive",
+  slack: "Slack",
 };
 
 /** Why a connect was refused. Each is about keeping company content inside
@@ -159,7 +160,13 @@ export default function ActPage() {
                 {shownProviders.map((p) => (
                   <li key={p.provider} className="act-provider">
                     <span className="act-provider-name">{PROVIDER_LABEL[p.provider] ?? p.provider}</span>
-                    {!p.available && !p.connected ? (
+                    {p.bot ? (
+                      <span className={`studio-chip${p.connected ? " studio-chip-ok" : ""}`}>
+                        {p.connected
+                          ? "Posts as the Handbook bot, naming you"
+                          : "Send the Handbook bot an act request in Slack once, so it knows you"}
+                      </span>
+                    ) : !p.available && !p.connected ? (
                       <span className="studio-chip">Not set up yet. Ask your admin.</span>
                     ) : p.connected ? (
                       <>

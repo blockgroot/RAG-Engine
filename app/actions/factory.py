@@ -16,6 +16,7 @@ from .drive import DriveCreateDoc
 from .github import GitHubComment, GitHubCreateIssue
 from .linear import LinearComment, LinearCreateIssue
 from .notion import NotionAppend, NotionComment, NotionCreatePage
+from .slack import SlackPostMessage
 
 #: Every action that exists, by name. Nothing else can ever be proposed.
 ACTIONS: dict[str, type[Action]] = {
@@ -23,6 +24,7 @@ ACTIONS: dict[str, type[Action]] = {
     for cls in (
         LinearCreateIssue, LinearComment, GitHubCreateIssue, GitHubComment,
         NotionComment, NotionAppend, NotionCreatePage, DriveCreateDoc,
+        SlackPostMessage,
     )
 }
 
@@ -34,11 +36,39 @@ def build_actions(org_id: str, workspace_id: str | None, user_id: str) -> list[A
     enabled = policy.enabled_actions(org_id, workspace_id)
     if not enabled:
         return []
-    providers = connected_providers(org_id, user_id)
+    providers = connected_providers(org_id, user_id) | slack_available(org_id, user_id)
     return [
         cls() for name, cls in ACTIONS.items()
         if name in enabled and cls.provider in providers
     ]
+
+
+def slack_available(org_id: str, user_id: str, slack_user: str | None = None) -> set[str]:
+    """``{"slack"}`` when the bot can post for this person: the company has an
+    org-wide Slack connection and we know the person's Slack account (from the
+    event, or an identity Handbook already linked)."""
+    from ..db.connection import get_connection
+
+    with get_connection() as conn:
+        connected = conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM oauth_connections WHERE org_id = %s::uuid "
+            "AND provider = 'slack' AND workspace_id IS NULL AND NOT needs_reauth)",
+            (org_id,),
+        ).fetchone()[0]
+    return {"slack"} if connected and (slack_user or slack_user_for(org_id, user_id)) else set()
+
+
+def slack_user_for(org_id: str, user_id: str) -> str | None:
+    """The person's Slack user id, as Handbook linked it."""
+    from ..db.connection import get_connection
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT external_id FROM person_identities WHERE org_id = %s::uuid "
+            "AND provider = 'slack' AND user_id = %s::uuid ORDER BY last_seen DESC LIMIT 1",
+            (org_id, user_id),
+        ).fetchone()
+    return row[0] if row else None
 
 
 def get_action(name: str) -> Action | None:

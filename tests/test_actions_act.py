@@ -463,6 +463,11 @@ class FakeAction:
     sent: list = []
     raises: Exception | None = None
 
+    def token_for(self, org_id, user_id):
+        from app.auth.user_connections import fresh_user_token
+
+        return fresh_user_token(org_id, user_id, self.provider)
+
     def execute(self, key, target, payload, token):
         FakeAction.sent.append((key, target, payload, token))
         if FakeAction.raises:

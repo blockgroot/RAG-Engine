@@ -148,6 +148,16 @@ def act_status(session: SessionClaims = Depends(get_session)):
             "account": conn.external_user_name or conn.external_user_id if conn else None,
             "available": _available(provider),
         })
+    if any(a.provider == "slack" for n, a in ACTIONS.items() if n in enabled):
+        # No personal Slack account to connect: the bot posts, naming the
+        # person. It only needs to know who they are in Slack.
+        from ..actions.factory import slack_available
+
+        providers.append({
+            "provider": "slack", "needed": True, "bot": True,
+            "connected": bool(slack_available(session.org_id, session.user_id)),
+            "needs_reauth": False, "account": None, "available": True,
+        })
     return {
         "enabled": True,
         "actions": [
@@ -432,6 +442,13 @@ def admin_actions(session: SessionClaims = Depends(require_admin), user: str | N
             {"name": n, "label": a.label, "provider": a.provider, "enabled": n in enabled}
             for n, a in ACTIONS.items()
         ],
+        # Where Act may be asked from besides the web page: each Slack surface
+        # is its own switch, because each is its own permission decision.
+        "surfaces": [
+            {"name": policy.surface_key(kind), "label": label,
+             "enabled": policy.surface_key(kind) in enabled}
+            for kind, label in policy.SURFACES.items()
+        ],
         "log": [{**_card(r), "user_email": emails.get(r.user_id)} for r in log],
     }
 
@@ -443,7 +460,8 @@ class PolicyRequest(BaseModel):
 @router.put("/admin/actions/{name}")
 def admin_set_action(name: str, body: PolicyRequest, session: SessionClaims = Depends(require_admin)):
     _require_on()
-    if name not in ACTIONS:
+    surfaces = {policy.surface_key(kind) for kind in policy.SURFACES}
+    if name not in ACTIONS and name not in surfaces:
         raise HTTPException(status_code=404, detail="No such action")
     policy.set_policy(session.org_id, name, body.enabled, updated_by=session.user_id)
     return {"name": name, "enabled": body.enabled}

@@ -19,6 +19,7 @@ const PROVIDER_LABEL: Record<string, string> = {
   github: "GitHub",
   notion: "Notion",
   google: "Google Drive",
+  slack: "Slack",
 };
 
 const STATUS_LINE: Record<ActCard["status"], string> = {

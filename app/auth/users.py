@@ -43,6 +43,35 @@ def get_user_by_email(email: str) -> User | None:
     return _row_to_user(row) if row else None
 
 
+def get_member_by_address(email: str, org_id: str) -> User | None:
+    """The member of ``org_id`` who signs in with ``email`` or once did.
+
+    For identities that arrive as an address from another tool (a Slack
+    profile): a person whose login changed is still the same person. A prior
+    address someone ELSE now signs in with is theirs, so it matches nobody
+    here (the same rule as ``email_change.aliases_for``).
+    """
+    address = (email or "").strip().lower()
+    if not address:
+        return None
+    with get_connection() as conn:
+        row = conn.execute(
+            f"SELECT {_SELECT_COLUMNS} FROM users WHERE email = %s AND org_id = %s::uuid",
+            (address, org_id),
+        ).fetchone()
+        if row is None:
+            row = conn.execute(
+                f"""
+                SELECT {", ".join("u." + c.strip() for c in _SELECT_COLUMNS.split(","))}
+                  FROM user_email_aliases a JOIN users u ON u.id = a.user_id
+                 WHERE a.email = %s AND u.org_id = %s::uuid
+                   AND NOT EXISTS (SELECT 1 FROM users o WHERE lower(o.email) = a.email)
+                """,
+                (address, org_id),
+            ).fetchone()
+    return _row_to_user(row) if row else None
+
+
 def get_user(user_id: str) -> User | None:
     with get_connection() as conn:
         row = conn.execute(

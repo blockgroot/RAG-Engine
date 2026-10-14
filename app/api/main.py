@@ -37,6 +37,7 @@ from . import admin as admin_router
 from . import internal as internal_router
 from . import account as account_router
 from . import actions as actions_router
+from . import slack_act as slack_act_router
 from . import notifications as notifications_router
 from . import llm_model as llm_model_router
 from . import auth as auth_router
@@ -232,6 +233,7 @@ def create_app() -> FastAPI:
     app.include_router(notifications_router.router)
     app.include_router(account_router.router)
     app.include_router(actions_router.router)
+    app.include_router(slack_act_router.router)
     app.include_router(slack_events_router.router)
     app.include_router(webhooks_router.router)
 

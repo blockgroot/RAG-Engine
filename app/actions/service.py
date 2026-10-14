@@ -21,7 +21,6 @@ from dataclasses import dataclass
 
 from ..auth.user_connections import (
     connected_providers,
-    fresh_user_token,
     mark_user_needs_reauth,
 )
 from ..config.settings import ActionsSettings, GuardSettings, RagSettings
@@ -41,7 +40,7 @@ from . import policy, store
 from .base import Action, ActionContext, Source
 from .draft import asked_in
 from .exposure import NEEDS_ACK, PUBLIC, Exposure, assess
-from .factory import ACTIONS, get_action
+from .factory import ACTIONS, get_action, slack_available, slack_user_for
 from .store import ActionRow
 
 logger = logging.getLogger("actions")
@@ -49,7 +48,8 @@ logger = logging.getLogger("actions")
 #: Passages shown to the model for drafting. Few, because every one of them is
 #: a source the exposure check must count.
 CONTEXT_HITS = 6
-PROVIDER_NAMES = {"linear": "Linear", "github": "GitHub", "notion": "Notion", "google": "Google Drive"}
+PROVIDER_NAMES = {"linear": "Linear", "github": "GitHub", "notion": "Notion",
+                  "google": "Google Drive", "slack": "Slack"}
 
 
 @dataclass(frozen=True)
@@ -89,16 +89,23 @@ def _names(providers) -> str:
     return " or ".join(PROVIDER_NAMES.get(p, p) for p in sorted(providers))
 
 
-def _context(question: str, org_id: str, viewer, embedder, vstore) -> tuple[list[Source], str]:
-    """Company-wide passages this person may read, above the gate, unflagged.
+def _context(
+    question: str, org_id: str, viewer, embedder, vstore,
+    workspace_id: str | None = None, tags: list[str] | None = None,
+) -> tuple[list[Source], str]:
+    """Passages this viewer may read in this scope, above the gate, unflagged.
 
+    The web and a Slack DM read company-wide as the asker. A Slack CHANNEL
+    passes that channel's tag and the room's viewer, exactly like a channel
+    reply, so a draft made in a room can only use what the room can read.
     Same predicate, same 0.35 gate as Ask; a chunk the injection guard flagged
     is dropped whatever the guard's mode, because here text can turn into a
     write. Each document's viewers are read again with the visibility
     predicate, so a source is exactly as visible as Ask would make it.
     """
     vec = embedder.embed([question])[0]
-    hits = vstore.query(org_id, vec, top_k=CONTEXT_HITS, workspace_id=None, viewer=viewer)
+    hits = vstore.query(org_id, vec, top_k=CONTEXT_HITS, workspace_id=workspace_id,
+                        tags=tags, viewer=viewer)
     gate = RagSettings.from_env().similarity_threshold
     guard = GuardSettings.from_env()
     hits = [
@@ -112,9 +119,10 @@ def _context(question: str, org_id: str, viewer, embedder, vstore) -> tuple[list
     with get_connection() as conn:
         rows = conn.execute(
             "SELECT d.id::text, d.title, d.doc_is_public, d.doc_viewers, d.source_uri "
-            "FROM documents d WHERE d.org_id = %s::uuid AND d.workspace_id IS NULL "
+            "FROM documents d WHERE d.org_id = %s::uuid "
+            "AND d.workspace_id IS NOT DISTINCT FROM %s::uuid "
             f"AND d.id = ANY(%s::uuid[]){clause}",
-            (org_id, list({h.document_id for h in hits}), *params),
+            (org_id, workspace_id, list({h.document_id for h in hits}), *params),
         ).fetchall()
     docs = {
         r[0]: Source(r[0], r[1], bool(r[2]), tuple(v.lower() for v in (r[3] or ())),
@@ -128,18 +136,22 @@ def _context(question: str, org_id: str, viewer, embedder, vstore) -> tuple[list
     return list({h.document_id: docs[h.document_id] for h in kept}.values()), passages
 
 
-def offered_actions(org_id: str, user_id: str, settings: ActionsSettings) -> tuple[list[Action], str | None]:
+def offered_actions(
+    org_id: str, user_id: str, settings: ActionsSettings, slack_user: str | None = None
+) -> tuple[list[Action], str | None]:
     """The actions to offer, or why there are none, in the person's terms."""
     if not settings.enabled:
         return [], "Act is switched off for Handbook."
     enabled = {n for n in policy.enabled_actions(org_id, None) if n in ACTIONS}
     if not enabled:
         return [], "Your admin hasn't switched on any actions yet."
-    providers = connected_providers(org_id, user_id)
+    providers = connected_providers(org_id, user_id) | slack_available(org_id, user_id, slack_user)
     offered = [ACTIONS[n]() for n in ACTIONS if n in enabled and ACTIONS[n].provider in providers]
     if not offered:
-        needed = {ACTIONS[n].provider for n in enabled}
-        return [], f"Connect your {_names(needed)} account above to let Handbook act for you."
+        needed = {ACTIONS[n].provider for n in enabled} - {"slack"}
+        if not needed:
+            return [], "Send the Handbook bot an `act` request in Slack once, so it knows your Slack account."
+        return [], f"Connect your {_names(needed)} account on Handbook's Act page to let it act for you."
     return offered, None
 
 
@@ -154,13 +166,27 @@ def propose(
     embedder,
     vstore,
     settings: ActionsSettings | None = None,
+    surface: dict | None = None,
+    scope_workspace_id: str | None = None,
+    tags: list[str] | None = None,
 ) -> ActOutcome:
+    """``surface`` says where the request came from (web, a Slack DM, a Slack
+    channel) and is built by the caller from the session or the Slack event.
+    ``viewer``, ``scope_workspace_id`` and ``tags`` say what the draft may
+    read there; the caller decides them per surface."""
     settings = settings or ActionsSettings.from_env()
-    offered, why_not = offered_actions(org_id, user_id, settings)
+    surface = dict(surface or {"kind": "web"})
+    kind = surface.get("kind", "web")
+    if settings.enabled and not policy.surface_enabled(org_id, kind):
+        return ActOutcome("Your admin hasn't turned on Act here. You can use it on Handbook's Act page.")
+    if kind == "web":
+        surface["slack_user"] = slack_user_for(org_id, user_id)
+    offered, why_not = offered_actions(org_id, user_id, settings, surface.get("slack_user"))
     if why_not:
         return ActOutcome(why_not)
 
-    sources, passages = _context(question, org_id, viewer, embedder, vstore)
+    sources, passages = _context(question, org_id, viewer, embedder, vstore,
+                                 scope_workspace_id, tags)
 
     from ..llm.routed import default_model_only
 
@@ -189,13 +215,14 @@ def propose(
 
     name = PROVIDER_NAMES.get(action.provider, action.provider)
     try:
-        token = fresh_user_token(org_id, user_id, action.provider)
-        ctx = ActionContext(org_id, None, user_id, email, question, token, tuple(sources), viewer)
+        token = action.token_for(org_id, user_id)
+        ctx = ActionContext(org_id, scope_workspace_id, user_id, email, question, token,
+                            tuple(sources), viewer, surface)
         proposal = action.prepare(args, ctx)
     except OAuthReauthRequiredError:
-        return ActOutcome(f"Reconnect your {name} account above, then ask again.")
+        return ActOutcome(f"Reconnect your {name} account on Handbook's Act page, then ask again.")
     except ConfigurationError:
-        return ActOutcome(f"Connect your {name} account above to let Handbook act for you.")
+        return ActOutcome(f"Connect your {name} account on Handbook's Act page to let it act for you.")
     except ActionError as exc:
         return ActOutcome(str(exc))
 
@@ -211,8 +238,8 @@ def propose(
             f"I won't do that: people there can't see the private documents it uses ({titles})."
         )
     row = store.create(
-        org_id=org_id, workspace_id=None, user_id=user_id, conversation_id=None,
-        surface="web", proposal=proposal, sources=sources,
+        org_id=org_id, workspace_id=scope_workspace_id, user_id=user_id, conversation_id=None,
+        surface=kind, proposal=proposal, sources=sources,
         exposure=exposure.verdict, ttl_seconds=settings.ttl_seconds,
     )
     return ActOutcome("Here's what I'll do. Check it, then approve.", row, exposure)
@@ -242,9 +269,11 @@ def confirm(
     action = get_action(row.action)
     if action is None or not policy.is_enabled(org_id, row.workspace_id, row.action, settings=settings):
         raise ActionRejected("Your admin has switched this action off.")
+    if not policy.surface_enabled(org_id, row.surface):
+        raise ActionRejected("Your admin has turned off Act here.")
     if not policy.within_rate(org_id, user_id, settings=settings):
         raise ActionRejected("You've reached the hourly limit for actions. Try again later.")
-    token = fresh_user_token(org_id, user_id, action.provider)
+    token = action.token_for(org_id, user_id)
 
     claimed = store.claim(org_id, user_id, action_id, shown_hash=shown_hash,
                           acknowledged=acknowledged)

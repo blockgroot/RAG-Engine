@@ -14,6 +14,22 @@ from ..config.settings import ActionsSettings
 from ..db.connection import get_connection
 from . import store
 
+#: Where Act may be asked from besides the web page, each switched on apart.
+#: Stored as ``action_policies`` rows named ``surface:<kind>``.
+SURFACES = {
+    "slack_dm": "Allow Act from Slack DMs",
+    "slack_channel": "Allow Act from Slack channels (replies stay in the thread)",
+}
+
+
+def surface_key(kind: str) -> str:
+    return f"surface:{kind}"
+
+
+def surface_enabled(org_id: str, kind: str) -> bool:
+    """The web page needs no switch; a Slack surface needs its own."""
+    return kind == "web" or surface_key(kind) in enabled_actions(org_id, None)
+
 
 def enabled_actions(org_id: str, workspace_id: str | None) -> set[str]:
     """Actions on for the org and not switched off for this space."""
