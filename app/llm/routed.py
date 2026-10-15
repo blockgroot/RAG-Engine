@@ -117,6 +117,8 @@ _PRESET_EXTRA_BODY: dict[str, dict] = {
     # over the OpenAI-compatible endpoint that hidden reasoning fills the cap
     # (production, 9 Oct: the chart classifier's 200 tokens all spent thinking,
     # empty reply). Verified live: disabled, the same prompt answers in 61 tokens.
+    # A model that wants another form (Sonnet 5.5 names "between_tools") gets
+    # what it names, learned from its 400 (``OpenAICompatProvider._repair_extras``).
     "anthropic": {"thinking": {"type": "disabled"}},
     # Gemini Flash thinks by default, and thinking tokens are billed and
     # counted as output: the same cap problem as Claude above. "minimal" is the
@@ -136,11 +138,14 @@ _PRESET_EXTRA_BODY: dict[str, dict] = {
 #: from a wrong model id. Google too: a Gemini model that does not think
 #: (Gemma) may reject ``reasoning_effort``, and is then sent without it.
 #:
+#: Anthropic too: its thinking-off is a workaround, and a Claude model that
+#: wants another form says so in its 400.
+#:
 #: OpenRouter is deliberately ABSENT: its extras carry
 #: ``data_collection: "deny"``, and a retry without them would put the tenant's
 #: retrieved private chunks in front of a provider that may train on them. That
 #: request must fail.
-_PRESET_EXTRA_OPTIONAL = frozenset({"nvidia", "google"})
+_PRESET_EXTRA_OPTIONAL = frozenset({"nvidia", "google", "anthropic"})
 
 
 def preset_extra_body(preset_id: str) -> tuple[dict | None, bool]:

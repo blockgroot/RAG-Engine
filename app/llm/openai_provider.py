@@ -75,6 +75,36 @@ def _retry_after_seconds(exc: Exception) -> float | None:
     return None
 
 
+#: What each (base_url, model) turned out to accept of our optional extras,
+#: learned from its own 400s (``_repair_extras``). Clients are built per
+#: request, so this lives for the process, not the client: one rejection buys
+#: the answer for every later request to that model.
+#: Keyed on our extras too: what a model taught us about one set of fields
+#: never applies to a different set (OpenRouter's required privacy fields).
+_LEARNED_EXTRAS: dict[tuple[str | None, str, str], dict | None] = {}
+
+
+def _learned_key(base_url: str | None, model: str, extras: dict | None) -> tuple[str | None, str, str]:
+    import json
+
+    return (base_url, model, json.dumps(extras, sort_keys=True, default=str))
+
+
+def _value_named(message: str, field: str):
+    """The JSON value an error message gives for ``field`` (``"field": {...}``),
+    or None. Endpoints that refuse a setting often say what they take instead."""
+    import json
+
+    match = re.search(rf'"{re.escape(field)}"\s*:\s*', message)
+    if not match:
+        return None
+    try:
+        value, _ = json.JSONDecoder().raw_decode(message[match.end():])
+    except ValueError:
+        return None
+    return value
+
+
 class OpenAICompatProvider(LLMProvider):
     """Chat provider backed by the OpenAI client against any compatible endpoint.
 
@@ -110,6 +140,11 @@ class OpenAICompatProvider(LLMProvider):
         #: than an account-level setting, so a training provider can never be
         #: routed to for one tenant's content.
         self._extra_body = dict(extra_body) if extra_body else None
+        #: The extras as configured, before anything a model taught us.
+        self._configured_extras = self._extra_body
+        if self._extra_body:
+            self._extra_body = _LEARNED_EXTRAS.get(
+                _learned_key(base_url, model, self._extra_body), self._extra_body)
         #: May ``extra_body`` be DROPPED if the endpoint rejects the request?
         #:
         #: True only where the extras are a per-vendor WORKAROUND. NVIDIA NIM
@@ -158,32 +193,62 @@ class OpenAICompatProvider(LLMProvider):
         }
 
     def _create(self, kwargs: dict):
-        """One request, retried WITHOUT optional extras if the endpoint 400s.
+        """One request, retried with optional extras adjusted if the endpoint 400s.
 
         Both call sites go through here rather than each handling it, because
         the failure is per-endpoint, not per-call: an endpoint that rejects our
         extra fields rejects them on the probe, on chat and on a tool call
         alike, and fixing it in one place is the only version that cannot drift.
 
-        The drop is STICKY (``self._extra_body = None``) so one 400 buys the
-        knowledge for the life of this client instead of paying a rejected
-        request on every question. Logged at warning, because a silently
-        modified request is how a provider quirk becomes folklore.
+        The repair is STICKY (``_LEARNED_EXTRAS``) so one 400 buys the
+        knowledge for the process instead of paying a rejected request on
+        every question. Logged at warning, because a silently modified request
+        is how a provider quirk becomes folklore.
         """
         try:
             return self._client.chat.completions.create(**self._with_extras(kwargs))
         except BadRequestError as exc:
-            if not (self._extra_body and self._extra_body_optional):
+            fixed = self._repair_extras(exc)
+            if fixed is False:
                 raise
-            logger.warning(
-                "%s rejected our optional request fields (%s): %s — retrying "
-                "without them, and not sending them again for this model.",
-                self.base_url or "the endpoint",
-                ", ".join(sorted(self._extra_body)),
-                exc,
-            )
-            self._extra_body = None
-            return self._client.chat.completions.create(**kwargs)
+            # Kept only if the retry works: a 400 that was not about our
+            # fields (a prompt too long) must not cost them for good.
+            response = self._client.chat.completions.create(
+                **({**kwargs, "extra_body": {**fixed, **kwargs.get("extra_body", {})}} if fixed else kwargs))
+            logger.warning("%s / %s: our request fields %s did not work; using %s from now on.",
+                           self.base_url or "the endpoint", self.model,
+                           ", ".join(sorted(self._extra_body or {})), fixed or "none of them")
+            self._extra_body = fixed
+            _LEARNED_EXTRAS[_learned_key(self.base_url, self.model, self._configured_extras)] = fixed
+            return response
+
+    def _repair_extras(self, exc: Exception):
+        """What to send instead of our OPTIONAL extras after this 400, or
+        ``False`` when they are required (OpenRouter's ``data_collection:
+        "deny"`` must fail, never be dropped) or there are none.
+
+        No model or vendor is named here. Our extras are per-vendor workarounds
+        (thinking or reasoning off, a template switch); a model may want another
+        form, or none. For each field of ours the error names: the value it says
+        to send instead (Sonnet 5.5 names ``"thinking": {"type":
+        "between_tools"}``), else that field dropped. A 400 naming none of our
+        fields: try without them. ``_create`` keeps the answer only if the
+        retry works, then remembers it per (base_url, model) for the process.
+        """
+        if not (self._extra_body and self._extra_body_optional):
+            return False
+        message = str(exc)
+        named = [f for f in self._extra_body if re.search(rf"\b{re.escape(f)}\b", message)]
+        if not named:
+            return None
+        fixed = dict(self._extra_body)
+        for field in named:
+            value = _value_named(message, field)
+            if value is not None and value != fixed[field]:
+                fixed[field] = value
+            else:
+                fixed.pop(field)
+        return fixed or None
 
     def generate(self, prompt: str, *, max_tokens: int | None = None) -> str:
         self.last_truncated = False

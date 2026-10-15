@@ -140,7 +140,14 @@ export function NotificationBell() {
               onClick={() => setOpen(false)}
               aria-label="Close notifications"
             >
-              ×
+              <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                <path
+                  d="m5.5 5.5 9 9m0-9-9 9"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                />
+              </svg>
             </button>
           </div>
           {items.length === 0 ? (
