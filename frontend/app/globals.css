@@ -809,7 +809,7 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 
 .chat-composer {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 0.55rem;
   background: color-mix(in srgb, var(--surface) 96%, white);
   border: 1px solid var(--border);
@@ -8078,12 +8078,15 @@ a.people-card:hover { color: inherit; }
   color: var(--ink-muted);
 }
 .bell-close-btn {
-  display: inline-grid;
-  place-items: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 1.35rem;
   height: 1.35rem;
+  padding: 0;
   border-radius: 50%;
   border: none;
+  appearance: none;
   background: var(--surface-muted);
   color: var(--ink-muted);
   cursor: pointer;
@@ -8091,6 +8094,7 @@ a.people-card:hover { color: inherit; }
 }
 .bell-close-btn svg {
   display: block;
+  flex: none;
   width: 0.85rem;
   height: 0.85rem;
 }

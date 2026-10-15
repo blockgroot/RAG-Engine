@@ -1100,3 +1100,125 @@ def test_only_the_asker_can_ask_for_changes_and_only_while_pending(org, proposal
     store.reject(org.id, org.member.id, proposal.id)
     with pytest.raises(ActionConflict, match="already rejected"):
         _revise(org, proposal, "shorter", '{"title": "x"}')
+
+
+class RecordingEmbedder(FakeEmbedder):
+    def __init__(self):
+        self.texts = []
+
+    def embed(self, texts):
+        self.texts += texts
+        return super().embed(texts)
+
+
+@requires_db
+def test_the_search_is_for_the_words_naming_the_content_not_the_whole_request(org, monkeypatch):
+    """Staging: the full request ranked an Atlas page above the Slack message it named."""
+    monkeypatch.setattr(linear, "gql", FakeLinear([PLATFORM], members=[{"email": org.member.email}]))
+    question = ('Create a Linear issue in Platform titled "Audit mixing" from the Slack message '
+                "about mixing cases in LLM systems, as a checklist")
+    embedder = RecordingEmbedder()
+    llm = OneCallLLM("linear_create_issue", {
+        "request_words": "Create a Linear issue", "team": "Platform", "title": "Audit mixing",
+        "document_words": "the Slack message about mixing cases in LLM systems", "body": "b"})
+    service.propose(question, org_id=org.id, user_id=org.member.id, email=org.member.email,
+                    viewer=Viewer(email=org.member.email), llm=llm, embedder=embedder,
+                    vstore=CountingStore([_doc(org.id, "#rag-updates", public=True,
+                                               content="mixing happens in these cases")]),
+                    settings=ON)
+    assert embedder.texts == ["the Slack message about mixing cases in LLM systems"]
+
+
+# --------------------------------------------------------------------------
+# Act finds documents the way Ask does
+# --------------------------------------------------------------------------
+
+
+def test_retrieve_passages_is_asks_search_with_its_gate():
+    from types import SimpleNamespace as NS
+
+    from app.rag.pipeline import RagPipeline
+
+    calls = []
+
+    class Retriever:
+        def retrieve(self, org_id, query, vec, **kw):
+            calls.append((query, kw.get("extra_queries")[0][0], kw.get("rerank_query")))
+            hit = RetrievedChunk(content="mixing", score=0.6, document_id="d", chunk_index=0,
+                                 org_id=org_id)
+            return NS(hits=[hit], gate_score=0.6)
+
+    me = NS(_normalize_for_retrieval=lambda q, org: q.lower(), _embedder=FakeEmbedder(),
+            _retriever=Retriever(), _gate_miss=lambda hits, gate: gate is None or gate < 0.35)
+    out = RagPipeline.retrieve_passages(me, "Create an issue FROM the Slack message", "o",
+                                        about="the Slack MESSAGE")
+    assert [h.content for h in out] == ["mixing"]
+    # The request and the words naming the content are both searched; the
+    # reranker orders by the content words.
+    assert calls == [("create an issue from the slack message", "the slack message", "the slack message")]
+
+    me._retriever = None
+    me._retrieve_once = lambda *a, **kw: ([], 0.2, None)
+    assert RagPipeline.retrieve_passages(me, "anything", "o") == []   # under the gate
+
+
+def test_ask_search_routes_on_the_words_naming_the_content(monkeypatch):
+    import app.agent.routing as routing
+    from app.api import actions as act_api
+    from app.api import deps
+
+    routed, searched = [], []
+
+    def agent(name):
+        pipe = type("P", (), {"retrieve_passages": lambda self, q, org, **kw: searched.append((name, kw)) or []})
+        return lambda: type("A", (), {"pipeline": pipe()})()
+
+    for name, getter in (("slack", "get_slack_agent"), ("linear", "get_linear_agent"),
+                         ("notion", "get_notion_agent"), ("google", "get_drive_agent"),
+                         ("policy", "get_policy_agent"), ("workspace", "get_workspace_agent")):
+        monkeypatch.setattr(deps, getter, agent(name))
+    answer = {"key": "slack"}
+
+    def choose(text, org_id, **kw):
+        routed.append(text)
+        if answer["key"] is None:
+            raise RuntimeError("routing down")
+        return SimpleNamespace(agent_key=answer["key"])
+
+    monkeypatch.setattr(routing, "choose_agent", choose)
+    search = act_api.ask_search("u1")
+    q = "Create a Linear issue from the Slack message about mixing"
+    search(q, "the Slack message about mixing", org_id="o")
+    assert routed == ["the Slack message about mixing"] and searched[-1][0] == "slack"
+    assert searched[-1][1]["about"] == "the Slack message about mixing"
+
+    search(q, None, org_id="o", tags=["slack:channel:C1"])          # a channel: that channel only
+    assert len(routed) == 1 and searched[-1][0] == "slack"
+    answer["key"] = "github"                                          # holds no passages
+    search(q, "x", org_id="o")
+    assert searched[-1][0] == "policy"
+    search(q, "x", org_id="o", workspace_id="w1")
+    assert searched[-1][0] == "workspace"
+    answer["key"] = None                                              # routing failed
+    search(q, "x", org_id="o")
+    assert searched[-1][0] == "policy"
+
+
+@requires_db
+def test_propose_hands_the_request_and_the_content_words_to_the_search(org, monkeypatch):
+    monkeypatch.setattr(linear, "gql", FakeLinear([PLATFORM], members=[{"email": org.member.email}]))
+    seen = []
+
+    def search(question, about, *, org_id, workspace_id=None, tags=None, viewer=None):
+        seen.append((question, about, org_id))
+        return [_doc(org.id, "#rag-updates", public=True, content="mixing happens in these cases")]
+
+    question = "Create a Linear issue in Platform from the Slack message about mixing cases"
+    llm = OneCallLLM("linear_create_issue", {
+        "request_words": "Create a Linear issue", "team": "Platform", "title": "Audit mixing",
+        "document_words": "the Slack message about mixing cases", "body": "b"})
+    out = service.propose(question, org_id=org.id, user_id=org.member.id, email=org.member.email,
+                          viewer=Viewer(email=org.member.email), llm=llm, embedder=FakeEmbedder(),
+                          vstore=CountingStore([]), settings=ON, search=search)
+    assert seen == [(question, "the Slack message about mixing cases", org.id)]
+    assert "mixing happens" in llm.prompts[-1] and out.action.sources[0]["title"] == "#rag-updates"

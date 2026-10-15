@@ -100,6 +100,39 @@ def _vstore():
     return build_vector_store()
 
 
+def ask_search(user_id: str):
+    """How Act finds documents: Ask's own retrieval, never a search of its own.
+
+    Routing is Ask's (``choose_agent``: a tool the words name, else the best
+    match by meaning), run on the words that name the content: "create a
+    Linear issue from the Slack message about X" names Linear as where it
+    GOES and Slack as where it IS. Then that agent's pipeline searches as Ask
+    does (``RagPipeline.retrieve_passages``). A Slack channel's draft stays in
+    that channel, read by the room, like a channel reply. GitHub and Charts
+    hold no passages, so they fall back to the company-wide (or space) search.
+    """
+    from ..agent.routing import choose_agent
+    from . import deps
+
+    per_source = {"slack": deps.get_slack_agent, "linear": deps.get_linear_agent,
+                  "notion": deps.get_notion_agent, "google": deps.get_drive_agent}
+
+    def search(question, about, *, org_id, workspace_id=None, tags=None, viewer=None):
+        key = "slack" if tags else None
+        if key is None:
+            try:
+                key = choose_agent(about or question, org_id, workspace_id=workspace_id,
+                                   viewer=viewer, user_id=user_id).agent_key
+            except Exception:  # noqa: BLE001 - routing is a narrowing, never a requirement
+                logger.warning("Act routing failed; searching everything", exc_info=True)
+        getter = per_source.get(key) or (
+            deps.get_workspace_agent if workspace_id else deps.get_policy_agent)
+        return getter().pipeline.retrieve_passages(
+            question, org_id, about=about, workspace_id=workspace_id, tags=tags, viewer=viewer)
+
+    return search
+
+
 def _require_on(org_id: str) -> ActionsSettings:
     """Act's routes exist for a company only once its admin allowed Act."""
     if not policy.act_on(org_id):
@@ -227,6 +260,7 @@ def act(body: ActRequest, session: SessionClaims = Depends(get_session)):
             org_id=session.org_id, user_id=session.user_id, email=user.email,
             viewer=viewer, llm=_llm(), embedder=_embedder(), vstore=_vstore(),
             settings=settings, scope_workspace_id=workspace_id, model=body.model,
+            search=ask_search(session.user_id),
         )
     except LLMProviderError as exc:
         logger.warning("Act model unavailable: %s", exc)

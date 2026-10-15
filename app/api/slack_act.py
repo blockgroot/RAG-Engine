@@ -296,13 +296,13 @@ def handle_act(*, request: str, org_id: str, token: str, token_workspace_id: str
 
         read_context = lambda: thread_context(token, channel, thread_ts)  # noqa: E731
     try:
-        from .actions import _embedder, _llm, _vstore
+        from .actions import _embedder, _llm, _vstore, ask_search
 
         outcome = service.propose(
             request, org_id=org_id, user_id=user.id, email=user.email, viewer=viewer,
             llm=_llm(), embedder=_embedder(), vstore=_vstore(),
             surface=surface, scope_workspace_id=workspace_id, tags=tags,
-            read_context=read_context,
+            read_context=read_context, search=ask_search(user.id),
         )
     except Exception:  # noqa: BLE001 - a failed draft must still reply
         logger.exception("slack.act propose failed")
