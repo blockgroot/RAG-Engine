@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 import numpy as np
 
 from ..config.settings import (
+    DEFAULT_MAX_CHUNK_CHARS,
     AttachmentSettings,
     AuditSettings,
     DecomposeSettings,
@@ -2347,8 +2348,17 @@ class RagPipeline:
             return None
 
         # Recompute embeddings for the handful of previous chunks (cheap, local,
-        # deterministic) rather than storing 1024-dim vectors in the DB.
-        prev_vecs = self._embedder.embed([r.content for r in prev])
+        # deterministic) rather than storing 1024-dim vectors in the DB. A
+        # remembered chunk is the block the answer read, neighbours joined, and
+        # a Deep block ran past the embedding model's 8,194-token limit: the
+        # 400 failed the whole follow-up answer. A chunk-sized slice is enough
+        # to judge similarity, and reuse is a shortcut, so any failure here
+        # retrieves fresh instead.
+        try:
+            prev_vecs = self._embedder.embed([r.content[:DEFAULT_MAX_CHUNK_CHARS] for r in prev])
+        except Exception:  # noqa: BLE001 - a shortcut must never cost an answer
+            logger.warning("reuse check skipped: could not embed the previous turn's chunks", exc_info=True)
+            return None
         sims = [self._cosine(query_vec, v) for v in prev_vecs]
         best = max(sims)
         if best < self._reuse_settings.threshold:

@@ -160,3 +160,49 @@ def test_reuse_threshold_separates_same_fact_from_new_topic_on_real_embeddings(e
     assert new_sim < threshold, (
         f"new-topic follow-up should retrieve fresh (sim {new_sim:.3f} < {threshold})"
     )
+
+
+class _LongInputRejectingEmbedder(KeywordEmbedder):
+    """Rejects an over-long input the way Jina does (400, 8,194-token limit)."""
+
+    def embed(self, texts):
+        if any(len(t) > 4000 for t in texts):
+            raise RuntimeError("Input text exceeds the model's maximum of 8194 tokens")
+        return super().embed(texts)
+
+
+def test_a_long_remembered_block_does_not_fail_the_follow_up():
+    # A Deep answer remembers neighbour-joined blocks; embedding one whole for the
+    # next turn's reuse check failed the follow-up answer in production.
+    llm = RecordingLLM(rewrite="How many paid annual leave days do we get?")
+    store = RecordingVectorStore(ORG, content="leave: full-time employees get 25 days. " + "x" * 30_000)
+    memory = InMemoryConversationStore()
+    pipe = _pipeline(llm, store, memory)
+    pipe._embedder = _LongInputRejectingEmbedder()
+    cid = memory.create_conversation(ORG)
+
+    pipe.answer("How many annual leave days do we get?", ORG, conversation_id=cid)
+    r2 = pipe.answer("repeat that?", ORG, conversation_id=cid)
+    assert r2.answer  # answered, not "Chat provider failure"
+
+
+def test_a_failed_reuse_check_retrieves_fresh():
+    llm = RecordingLLM(rewrite="How many paid annual leave days do we get?")
+    store = RecordingVectorStore(ORG, content="leave: full-time employees get 25 days")
+    memory = InMemoryConversationStore()
+    pipe = _pipeline(llm, store, memory)
+    cid = memory.create_conversation(ORG)
+    pipe.answer("How many annual leave days do we get?", ORG, conversation_id=cid)
+
+    real = pipe._embedder.embed
+    calls = []
+
+    def flaky(texts):
+        calls.append(texts)
+        if len(calls) == 2:  # the reuse check's embed, after the question's own
+            raise RuntimeError("embedding API down")
+        return real(texts)
+
+    pipe._embedder.embed = flaky
+    r2 = pipe.answer("repeat that?", ORG, conversation_id=cid)
+    assert r2.retrieval_reused is False and store.query_calls == 2
