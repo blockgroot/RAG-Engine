@@ -158,6 +158,8 @@ def offered_actions(
     In a space, an action the space switched off is not offered."""
     if not policy.act_on(org_id):
         return [], "Your admin hasn't turned on Act yet."
+    if workspace_id is not None and not policy.act_on(org_id, workspace_id):
+        return [], "Act isn't turned on in this space. The space's owner can turn it on in the space's settings."
     enabled = {n for n in policy.enabled_actions(org_id, workspace_id) if n in ACTIONS}
     if not enabled:
         return [], "Your admin hasn't switched on any actions yet."

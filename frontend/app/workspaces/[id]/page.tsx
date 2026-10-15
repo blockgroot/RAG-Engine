@@ -7,6 +7,7 @@ import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { ConnectionCard } from "@/components/ConnectionCard";
 import { FormsCard } from "@/components/FormsCard";
+import { SpaceActPanel } from "@/components/SpaceActPanel";
 import { useMe } from "@/lib/useMe";
 import {
   api,
@@ -768,6 +769,8 @@ function WorkspaceDetailPageInner() {
             </div>
           </section>
         )}
+
+        {isOwner && workspaceId && <SpaceActPanel workspaceId={workspaceId} />}
 
         {isOwner && (
           <section className="studio-panel" aria-labelledby="delete-space-title">

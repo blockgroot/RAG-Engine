@@ -1,10 +1,14 @@
 """Which actions are switched on, and whether a person may send another write.
 
 Act itself is off until an org admin allows it for the company (``act_on``);
-then each action is off unless an admin switched it on. A space can only switch an
-action OFF for itself: a space owner is an ordinary member of the org, and
-letting them turn on a write the org's admins left off would hand them a
-decision that is not theirs.
+then each action is off unless an admin switched it on. The admin also picks
+how spaces get Act (``company_mode``): "on" everywhere, where a space owner may
+switch it OFF for their space, or "spaces", where it is off in every space
+until its owner switches it ON. Either way a space only narrows what the
+company allows: a space owner is an ordinary member of the org, and letting
+them turn on a write the org's admins left off would hand them a decision
+that is not theirs. Company-wide use (the chat outside a space, Slack DMs)
+follows the company switch alone.
 """
 
 from __future__ import annotations
@@ -16,12 +20,45 @@ from ..db.connection import get_connection
 from . import store
 
 #: The company-wide "Allow Act" switch, stored as an ``action_policies`` row.
+#: In a space, a row with this name and that ``workspace_id`` is the owner's
+#: own switch for the space.
 ACT_KEY = "act"
+#: On with "Allow Act": spaces start OFF and their owners opt in.
+SPACES_DECIDE_KEY = "act:spaces"
 
 
-def act_on(org_id: str) -> bool:
-    """Has an admin allowed Act for this company? Off until they do."""
-    return ACT_KEY in enabled_actions(org_id, None)
+def _act_rows(org_id: str, workspace_id: str | None) -> dict[tuple[str, str | None], bool]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT action, workspace_id::text, enabled FROM action_policies "
+            "WHERE org_id = %s::uuid AND action = ANY(%s) "
+            "AND (workspace_id IS NULL OR workspace_id = %s::uuid)",
+            (org_id, [ACT_KEY, SPACES_DECIDE_KEY], workspace_id),
+        ).fetchall()
+    return {(r[0], r[1]): bool(r[2]) for r in rows}
+
+
+def company_mode(org_id: str) -> str:
+    """``off``, ``on`` (every space, owners may opt out) or ``spaces`` (owners opt in)."""
+    rows = _act_rows(org_id, None)
+    if not rows.get((ACT_KEY, None)):
+        return "off"
+    return "spaces" if rows.get((SPACES_DECIDE_KEY, None)) else "on"
+
+
+def act_on(org_id: str, workspace_id: str | None = None) -> bool:
+    """May Act be used here? Company-wide: the admin's switch. In a space: also
+    the space owner's switch, which is off until set when spaces decide, and
+    on until set otherwise."""
+    rows = _act_rows(org_id, workspace_id)
+    if not rows.get((ACT_KEY, None)):
+        return False
+    if workspace_id is None:
+        return True
+    space = rows.get((ACT_KEY, workspace_id))
+    if rows.get((SPACES_DECIDE_KEY, None)):
+        return space is True
+    return space is not False
 
 
 #: Where Act may be asked from besides the web page, each switched on apart.
@@ -61,8 +98,7 @@ def enabled_actions(org_id: str, workspace_id: str | None) -> set[str]:
 
 
 def is_enabled(org_id: str, workspace_id: str | None, action: str) -> bool:
-    enabled = enabled_actions(org_id, workspace_id)
-    return ACT_KEY in enabled and action in enabled
+    return act_on(org_id, workspace_id) and action in enabled_actions(org_id, workspace_id)
 
 
 def set_policy(
@@ -75,8 +111,10 @@ def set_policy(
 ) -> None:
     """Switch an action on or off for the org (``workspace_id`` None) or a space.
 
-    A space row that says ``enabled`` is stored but changes nothing: only the
-    org's row can switch an action on (``enabled_actions``).
+    A space row that says ``enabled`` is stored but changes nothing for an
+    action: only the org's row can switch one on (``enabled_actions``). The
+    one exception is the space's own ``act`` row, the owner's opt-in when
+    spaces decide (``act_on``).
     """
     conflict = (
         "ON CONFLICT (org_id, action) WHERE workspace_id IS NULL"

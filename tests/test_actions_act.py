@@ -863,3 +863,24 @@ def test_act_uses_the_picked_model_and_refuses_an_unknown_one(client, org, monke
     r = client.post("/act", json={"question": "file it", "model": "auto"},
                     cookies=_cookies(org.member))
     assert r.status_code == 200 and seen[0]["model"] == "auto"
+
+
+@requires_db
+def test_only_a_space_owner_switches_act_for_their_space(client, org):
+    from app.workspaces.store import create_workspace, invite_member as invite_to_space
+
+    space = create_workspace(org.id, "Team room", org.admin.id)
+    invite_to_space(space, org.id, org.admin.id, org.member.email)
+    r = client.put(f"/act/spaces/{space}", json={"enabled": False}, cookies=_cookies(org.member))
+    assert r.status_code == 403
+    r = client.put(f"/act/spaces/{space}", json={"enabled": False}, cookies=_cookies(org.admin))
+    assert r.status_code == 200 and r.json()["enabled"] is False
+    seen = client.get(f"/act/spaces/{space}", cookies=_cookies(org.member)).json()
+    assert seen == {"company": "on", "enabled": False, "can_change": False}
+    # A draft in that space is refused in plain words, before any model call.
+    offered, why = service.offered_actions(org.id, org.member.id, ON, workspace_id=space)
+    assert offered == [] and "isn't turned on in this space" in why
+    # With Act off for the company, a space has nothing to turn on.
+    client.put("/admin/actions/act", json={"enabled": False}, cookies=_cookies(org.admin))
+    r = client.put(f"/act/spaces/{space}", json={"enabled": True}, cookies=_cookies(org.admin))
+    assert r.status_code == 409

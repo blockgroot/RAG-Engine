@@ -289,8 +289,16 @@ export interface ActStatus {
   recent?: ActCard[];
 }
 
+export interface SpaceAct {
+  company: "off" | "on" | "spaces";
+  enabled: boolean;
+  can_change: boolean;
+}
+
 export interface AdminActions {
   enabled: boolean;
+  /** Spaces start with Act off and their owners opt in. */
+  spaces_decide: boolean;
   block_wider: boolean;
   catalogue: { name: string; label: string; provider: string; enabled: boolean }[];
   /** Slack DMs / Slack channels, each switched on apart. */
@@ -867,6 +875,15 @@ export const api = {
     request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}`, {
       method: "PATCH",
       body: JSON.stringify({ payload_hash: payloadHash, fields }),
+    }),
+  /** Act in one space: whether it works there, and whether this person (its
+   *  owner) may change it. Only within what the company allows. */
+  spaceAct: (workspaceId: string) =>
+    request<SpaceAct>(`/act/spaces/${encodeURIComponent(workspaceId)}`),
+  setSpaceAct: (workspaceId: string, enabled: boolean) =>
+    request<SpaceAct>(`/act/spaces/${encodeURIComponent(workspaceId)}`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
     }),
   rejectAction: (id: string) =>
     request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}/reject`, {

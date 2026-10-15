@@ -327,7 +327,10 @@ person, a channel drafts from that channel only as the room (like a channel
 reply), its card is ephemeral, and a Slack post from a channel is a reply in that
 thread. Each Slack surface has its own admin switch. Nothing runs unattended.
 Whether a company uses Act is its admins' switch (`policy.act_on`, the `act`
-row), never an env var; reading it fails closed. Admins see switches only,
+row), never an env var; reading it fails closed. In a space it also takes the
+owner's own `act` row (`act_on(org, ws)`): off until set when the admin chose
+"each space decides" (`act:spaces`), on until set otherwise. A space only
+narrows; company-wide use follows the company switch alone. Admins see switches only,
 never what a person drafted or sent.
 
 **Also hold.** GitHub embeds nothing. A live read runs after the gate, at most two
