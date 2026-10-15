@@ -117,6 +117,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   const { me, loading, refresh } = useMe({ enforceSetupFlow: !workspaceId });
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
+  const askInputRef = useRef<HTMLTextAreaElement>(null);
   const [busy, setBusy] = useState(false);
   const conversationId = useRef<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
@@ -301,6 +302,14 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       block: "end",
     });
   }, [messages, busy]);
+
+  useEffect(() => {
+    const field = askInputRef.current;
+    if (!field) return;
+    field.style.height = "auto";
+    field.style.height = `${Math.min(field.scrollHeight, 160)}px`;
+    field.style.overflowY = field.scrollHeight > 160 ? "auto" : "hidden";
+  }, [input]);
 
   useEffect(() => {
     if (!me) return;
@@ -1338,12 +1347,26 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
               </button>
             </span>
           )}
-          <input
+          <textarea
+            ref={askInputRef}
             id="ask-input"
             className="chat-composer-input"
+            rows={1}
             placeholder={composerPlaceholder}
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (
+                e.key === "Enter" &&
+                !e.shiftKey &&
+                !e.nativeEvent.isComposing
+              ) {
+                e.preventDefault();
+                if (!busy && !uploading && input.trim()) {
+                  e.currentTarget.form?.requestSubmit();
+                }
+              }
+            }}
             // A file copied in Finder/Explorer and pasted here attaches it;
             // pasted TEXT is left to the input as usual.
             onPaste={(e) => {

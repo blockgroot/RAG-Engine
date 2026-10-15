@@ -752,7 +752,7 @@ def test_claude_as_the_default_model_is_sent_with_thinking_off():
     assert claude._extra_body == {"thinking": {"type": "disabled"}}
     gemini = adapters.build_provider(
         adapters.resolve("google", base_url=None, model="gemini-3.1-flash-lite", api_key="k"), timeout=5)
-    assert gemini._extra_body is None
+    assert gemini._extra_body == {"reasoning_effort": "minimal"}  # think minimally, as below
 
 
 def test_gemini_is_asked_to_think_minimally_and_may_drop_it():

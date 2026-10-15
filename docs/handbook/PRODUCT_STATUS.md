@@ -120,8 +120,12 @@ rights, §11) or on an open pull request (§12).
   rows behind a bar. GitHub charts are still for the whole space, not filtered to the repos
   one person can open.
 - **Knowledge-gap management.** Every unanswered question is recorded automatically (web and
-  Slack). Admins see the most-asked ones and how many different people asked. A question
-  withheld for access reasons is not counted as a gap.
+  Slack) and grouped with others that ask the same thing in other words (embeddings pick
+  candidates, the background model decides). When 3 different people can't get an answer on
+  one topic in 14 days, or 2 mark its answers wrong, the bell tells whoever can fix it: the
+  admin for company-wide questions, the space's owner for that space's. The alert opens the
+  topic; there is no sidebar page. Counts only, never who asked. A question withheld for
+  access reasons is not counted as a gap, and charts Handbook couldn't draw are not shown.
 - **Feedback.** Thumbs up/down on every web answer; a thumbs-down asks why: incorrect, out of
   date, or unhelpful.
 - **Web and tools.** One web search for external topics when company documents don't answer.

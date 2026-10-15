@@ -809,7 +809,7 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 
 .chat-composer {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 0.55rem;
   background: color-mix(in srgb, var(--surface) 96%, white);
   border: 1px solid var(--border);
@@ -826,13 +826,17 @@ tr:hover td { background: color-mix(in srgb, var(--accent-soft) 45%, transparent
 .chat-composer-input {
   flex: 1;
   min-width: 0;
+  max-height: 10rem;
   border: none;
   outline: none;
   background: transparent;
   font-family: inherit;
   font-size: 1.02rem;
+  line-height: 1.45;
   color: var(--ink);
   padding: 0.6rem 0;
+  resize: none;
+  overflow-x: hidden;
 }
 .chat-composer-send {
   flex: none;
@@ -2323,7 +2327,7 @@ table .role-chip.role-admin,
 
 .chat-composer {
   position: relative;
-  border-radius: 999px;
+  border-radius: 24px;
   padding: 0.5rem 0.5rem 0.5rem 0.55rem;
   background: rgba(255,255,255,0.92);
   backdrop-filter: blur(14px);
@@ -8081,13 +8085,16 @@ a.people-card:hover { color: inherit; }
   background: var(--surface-muted);
   color: var(--ink-muted);
   cursor: pointer;
-  font-size: 0.95rem;
-  line-height: 1;
   transition: background 0.15s var(--ease), color 0.15s var(--ease);
 }
+.bell-close-btn svg {
+  display: block;
+  width: 0.85rem;
+  height: 0.85rem;
+}
 .bell-close-btn:hover {
-  background: var(--border);
-  color: var(--ink);
+  background: #fee4e2;
+  color: #b42318;
 }
 .bell-empty {
   margin: 0;
@@ -8446,9 +8453,9 @@ a.people-card:hover { color: inherit; }
 .act-model-toast {
   position: fixed;
   z-index: 100;
-  top: 1.25rem;
+  top: 50%;
   left: 50%;
-  transform: translateX(-50%);
+  transform: translate(-50%, -50%);
   display: flex;
   align-items: center;
   gap: 0.8rem;
@@ -8458,7 +8465,17 @@ a.people-card:hover { color: inherit; }
   border-radius: 14px;
   background: var(--surface-elevated);
   box-shadow: 0 14px 36px -20px rgba(16, 24, 40, 0.32);
-  animation: rise-in 0.2s var(--ease) both;
+  animation: act-toast-in 0.2s var(--ease) both;
+}
+@keyframes act-toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 8px)) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
 }
 .act-model-toast-mark {
   display: grid;
