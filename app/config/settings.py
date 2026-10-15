@@ -483,8 +483,8 @@ class RagSettings:
     deep_top_docs: int = 3
     deep_neighbor_chunks: int = 8
     deep_max_context_chars: int = 30000
-    # How many passages a Deep read may take when the evidence is spread over
-    # several documents. A company-wide question ("what are our revenue
+    # Deep's "extra effort" only (the two below): how many passages it may take
+    # when the evidence is spread over several documents. A company-wide question ("what are our revenue
     # streams?") is answered by a sentence in each of many documents; ten
     # passages, three of them read in depth, held half its facts.
     deep_wide_max_hits: int = 20
@@ -492,19 +492,24 @@ class RagSettings:
     # items does not fit 700 tokens, and a cut-off list reads as the whole list.
     deep_max_answer_tokens: int = 2000
 
-    def deep(self) -> "RagSettings":
+    def deep(self, *, extra: bool = False) -> "RagSettings":
         """These settings with the deep read on, one budget for ranked and wide reads.
 
         A bigger pool (80) was tried for breadth and found no more of the
         right documents on the Benchmark 2 retest, so Deep keeps the normal
-        search. A spread-out question may take ``deep_wide_max_hits``
-        passages from it, one per document first (`retrieval._spread`).
+        search. With ``extra`` (Deep's extra effort) a spread-out question may
+        take ``deep_wide_max_hits`` passages from it, one per document first
+        (`retrieval._spread`), and the answer may run to ``deep_max_answer_tokens``.
         """
+        if extra:
+            self = replace(
+                self,
+                wide_max_hits=max(self.wide_max_hits, self.deep_wide_max_hits),
+                max_answer_tokens=(None if self.max_answer_tokens is None
+                                   else max(self.max_answer_tokens, self.deep_max_answer_tokens)),
+            )
         return replace(
             self,
-            wide_max_hits=max(self.wide_max_hits, self.deep_wide_max_hits),
-            max_answer_tokens=(None if self.max_answer_tokens is None
-                               else max(self.max_answer_tokens, self.deep_max_answer_tokens)),
             neighbor_top_docs=self.deep_top_docs,
             neighbor_chunks=self.deep_neighbor_chunks,
             max_context_chars=self.deep_max_context_chars,

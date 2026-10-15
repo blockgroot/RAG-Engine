@@ -312,6 +312,10 @@ same questions: high-level facts 50% -> 70%; list/count questions' facts 53% -> 
 questions 9/10 both. Four high-level answers are not in the benchmark's documents at all, so
 "I don't know" stays the right answer there. Not done: a separate search per part of a
 question (the cause of the remaining list misses), held back for its latency and cost.
+Now opt-in (`fix/small-fixes`): all of the above runs only when the asker turns on **Extra
+effort** under Deep analysis (chat `mode: "deep_extra"`). Plain Deep reads the top documents in
+depth as before, and normal Ask no longer gets the assemble rule, so neither pays for breadth
+it did not ask for.
 
 ## 13. Testing & Verification
 

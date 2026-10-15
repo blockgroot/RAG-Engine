@@ -27,7 +27,7 @@ from dataclasses import dataclass, replace
 from ..config.settings import GraphSettings, RagSettings, RetrievalSettings
 from ..reranker.base import Reranker
 from ..vectorstore.base import DateRange, RetrievedChunk, VectorStore, Viewer
-from .deep import deep_read_on
+from .deep import extra_effort_on
 
 logger = logging.getLogger(__name__)
 #: Beside `rag.query_signals`: one line per question the graph list ran for,
@@ -174,8 +174,8 @@ class HybridRetriever:
         # the right documents for many-document questions, simple questions
         # unchanged). The reranker scores every candidate either way; the
         # selection still returns at most ``ranked_max_hits``.
-        # Deep analysis may read more documents when the evidence is spread out.
-        rag = self._rag_settings.deep() if deep_read_on() else self._rag_settings
+        # Deep's extra effort may read more documents when the evidence is spread out.
+        rag = self._rag_settings.deep(extra=True) if extra_effort_on() else self._rag_settings
         keep = len(pool_candidates)
         if self._reranker is not None and self._settings.rerank_enabled:
             reranked = self._rerank(rerank_q, pool_candidates, keep)

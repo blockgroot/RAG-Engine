@@ -144,6 +144,9 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // questions (a whole project, a summary, "list everything"). More tokens per
   // answer, no extra AI call. Never on together with Chart.
   const [deepMode, setDeepMode] = useState(false);
+  // Deep's opt-in for company-wide and list questions: reads many documents as
+  // well as deeply, and answers longer. Costs more, so it is off unless chosen.
+  const [extraEffort, setExtraEffort] = useState(false);
   // Said once when turning Chart on moved the picker off a model that cannot
   // build charts, so the switch is never silent.
   const [modelNote, setModelNote] = useState<string | null>(null);
@@ -717,7 +720,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
       // No agent pinned: the backend measures which source fits the question.
       undefined,
       model,
-      mode ?? (chartMode ? "chart" : deepMode ? "deep" : undefined),
+      mode ?? (chartMode ? "chart" : deepMode ? (extraEffort ? "deep_extra" : "deep") : undefined),
     );
 
   }
@@ -861,6 +864,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   function toggleDeepMode(on: boolean) {
     setDeepMode(on);
     if (on) toggleChartMode(false);
+    else setExtraEffort(false);
   }
 
   return (
@@ -1148,6 +1152,25 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                   </span>
                   {deepMode && <CheckIcon />}
                 </button>
+                {deepMode && (
+                  <button
+                    type="button"
+                    role="menuitemcheckbox"
+                    aria-checked={extraEffort}
+                    className="composer-menu-item"
+                    onClick={() => {
+                      setToolsOpen(false);
+                      setExtraEffort(!extraEffort);
+                    }}
+                  >
+                    <DeepIcon />
+                    <span className="composer-menu-text">
+                      <strong>Extra effort</strong>
+                      <small>Also reads across many documents, for company-wide and list questions. Uses more tokens</small>
+                    </span>
+                    {extraEffort && <CheckIcon />}
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -1174,7 +1197,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
           {deepMode && (
             <span className="composer-mode-chip">
               <DeepIcon />
-              <span>Deep</span>
+              <span>{extraEffort ? "Deep · Extra effort" : "Deep"}</span>
               <button
                 type="button"
                 className="composer-mode-chip-remove"

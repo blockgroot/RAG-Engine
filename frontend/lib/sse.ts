@@ -88,8 +88,10 @@ export async function streamChat(
   agent?: "policy" | "github" | "slack" | "linear" | "notion" | "google",
   model?: string | null,
   /** "chart" = Chart mode: the answer is a chart or a plain refusal.
-   *  "deep" = Deep analysis: the top documents are read more fully. */
-  mode?: "chart" | "deep",
+   *  "deep" = Deep analysis: the top documents are read more fully.
+   *  "deep_extra" = Deep analysis with extra effort: many documents as well,
+   *  for company-wide and list questions, at more tokens. */
+  mode?: "chart" | "deep" | "deep_extra",
 ): Promise<void> {
   let response: Response;
   try {

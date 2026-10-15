@@ -340,6 +340,20 @@ def test_neighbours_never_push_another_document_out_of_the_budget():
     assert "a" * 400 in out[0].content  # and they still read deeper where room allowed
 
 
+def test_plain_deep_reads_in_depth_only_extra_effort_reads_wide():
+    from app.rag.pipeline import extra_effort_on, reset_deep_read, use_deep_read
+
+    pipe = _pipeline(NeighbourStore({}), neighbors=1)
+    pipe._settings = replace(pipe._settings, wide_max_hits=10, max_answer_tokens=700)
+    token = use_deep_read(True)
+    try:
+        assert not extra_effort_on()
+        assert pipe._read_settings().wide_max_hits == 10  # Deep alone: no wide read
+        assert pipe._read_settings().max_answer_tokens == 700
+    finally:
+        reset_deep_read(token)
+
+
 def test_a_wide_deep_read_keeps_every_document_and_deepens_only_with_room_left():
     from app.rag.pipeline import reset_deep_read, use_deep_read
 
@@ -349,7 +363,7 @@ def test_a_wide_deep_read_keeps_every_document_and_deepens_only_with_room_left()
     pipe = _pipeline(store, neighbors=1)
     pipe._settings = replace(pipe._settings, deep_max_context_chars=2000, wide_doc_ratio=0.3, wide_max_hits=10)
     hits = [_hit(d, 1, d.upper() + " piece") for d in "abcdefg"]
-    token = use_deep_read(True)
+    token = use_deep_read(True, extra=True)
     try:
         assert pipe._read_settings().wide_max_hits == 20  # Deep may read more documents
         assert pipe._read_settings().max_answer_tokens == 2000  # and answer a whole list

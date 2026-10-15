@@ -89,7 +89,7 @@ from .context_assemble import assemble_context_texts, describe_hit
 from .decompose import looks_compound, parse_sub_questions
 from .scope_intent import OVERVIEW, classify_scope_intent
 from . import progress
-from .deep import deep_read_on, reset_deep_read, use_deep_read  # noqa: F401 -- re-exported
+from .deep import deep_read_on, extra_effort_on, reset_deep_read, use_deep_read  # noqa: F401 -- re-exported
 from .query_cache import QueryAnswerCache
 from .request_budget import RequestBudget
 from .summary_fold import schedule_summary_fold, wait_for_conversation_fold
@@ -1134,7 +1134,7 @@ class RagPipeline:
 
     def _read_settings(self) -> RagSettings:
         """How much to read: the deep read in Deep analysis mode, else as configured."""
-        return self._settings.deep() if deep_read_on() else self._settings
+        return self._settings.deep(extra=extra_effort_on()) if deep_read_on() else self._settings
 
     def _with_neighbors(
         self,
@@ -1199,15 +1199,15 @@ class RagPipeline:
         # Neighbours only fill room left after EVERY selected hit's own piece,
         # so they never push another document out of the budget (RCA, 9 Oct: a
         # short read lost a right document to the top hits' neighbours). A
-        # narrow deep read is already sized by the budget; a WIDE one is not:
-        # three documents read in depth filled it and the prefix cut every
-        # other document, so a company-wide question saw 2-3 documents and
-        # half its facts. Breadth first there, depth with what is left.
+        # narrow deep read is already sized by the budget; a WIDE one (extra
+        # effort) is not: three documents read in depth filled it and the
+        # prefix cut every other document, so a company-wide question saw 2-3
+        # documents and half its facts. Breadth first there, depth with what is left.
         hit_keys = {(h.document_id, h.chunk_index) for h in hits}
         room = (
             rag.context_chars_for(len(hits))
             - sum(len(h.content) + _PROVENANCE_CHARS for h in hits)
-            if top_docs <= 0 or len(hits) > rag.top_k else None
+            if top_docs <= 0 or (extra_effort_on() and len(hits) > rag.top_k) else None
         )
         joined: list[RetrievedChunk] = []
         for h in top:
@@ -1921,9 +1921,9 @@ class RagPipeline:
             focus_rule=self._settings.focus_rule,
             partial_rule=self._settings.partial_rule,
             conflict_rule=self._settings.conflict_rule,
-            assemble_rule=self._settings.assemble_rule,
+            assemble_rule=self._settings.assemble_rule and extra_effort_on(),
         )
-        answer_cap = self._read_settings().max_answer_tokens  # Deep may answer longer
+        answer_cap = self._read_settings().max_answer_tokens  # extra effort may answer longer
         raw = self._generate_text(
             STAGE_GENERATE,
             prompt,
