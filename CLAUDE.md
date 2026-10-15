@@ -328,8 +328,7 @@ reply), its card is ephemeral, and a Slack post from a channel is a reply in tha
 thread. Each Slack surface has its own admin switch. Nothing runs unattended.
 Whether a company uses Act is its admins' switch (`policy.act_on`, the `act`
 row), never an env var; reading it fails closed. In a space it also takes the
-owner's own `act` row (`act_on(org, ws)`): off until set when the admin chose
-"each space decides" (`act:spaces`), on until set otherwise. A space only
+owner's own `act` row (`act_on(org, ws)`): on until the owner turns it off. A space only
 narrows; company-wide use follows the company switch alone. Admins see switches only,
 never what a person drafted or sent.
 

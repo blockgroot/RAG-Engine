@@ -290,15 +290,13 @@ export interface ActStatus {
 }
 
 export interface SpaceAct {
-  company: "off" | "on" | "spaces";
+  company: "off" | "on";
   enabled: boolean;
   can_change: boolean;
 }
 
 export interface AdminActions {
   enabled: boolean;
-  /** Spaces start with Act off and their owners opt in. */
-  spaces_decide: boolean;
   block_wider: boolean;
   catalogue: { name: string; label: string; provider: string; enabled: boolean }[];
   /** Slack DMs / Slack channels, each switched on apart. */

@@ -91,7 +91,7 @@ That is Willison's "lethal trifecta" and Meta's "Rule of Two" violated, and OWAS
    - the company's admin allows Act at all (the `act` row in `action_policies`, `policy.act_on`; no env switch, decided 2026-10-14)
    - org admin enables each action
    - a workspace owner may switch actions **off** for their space, never on beyond the org's setting
-   - the admin picks how spaces get Act (`policy.company_mode`, decided 2026-10-15): Off, On in every space (an owner may turn it off for their space), or Each space decides (off in every space until its owner turns it on, Space → "Allow Act in this space"). A space owner's `act` row only narrows; company-wide use (chat outside a space, Slack DMs) follows the company switch alone.
+   - with Act on for the company it is on in every space, and a space's owner may turn it off for their space (Space → "Allow Act in this space"). A third "each space decides" mode (off until the owner opts in) was built on 2026-10-15 and removed the same day: the owner's off switch covers it with one fewer choice. A space owner's `act` row only narrows; company-wide use (chat outside a space, Slack DMs) follows the company switch alone.
 
 5. **Create and comment only in v1.** No edit-in-place of someone else's content, no delete, no close, no merge. Each later action is its own decision.
 

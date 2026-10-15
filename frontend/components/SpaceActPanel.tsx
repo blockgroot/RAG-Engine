@@ -53,9 +53,7 @@ export function SpaceActPanel({ workspaceId }: { workspaceId: string }) {
               ? "Your admin has turned Act off for the company (Admin › Actions). You can switch it on here once they allow it."
               : state.enabled
               ? "Members can ask Handbook to file issues, comment and post from this space, using their own accounts, after they approve each one."
-              : state.company === "spaces"
-                ? "Off until you turn it on. Your admin lets each space decide."
-                : "Off for this space. Your admin allows Act; you turned it off here."}
+              : "Off for this space. Your admin allows Act; you turned it off here."}
           </small>
         </span>
         <input

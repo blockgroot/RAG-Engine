@@ -304,9 +304,8 @@ Covered by `tests/test_doctables_text.py`, `tests/test_doctables_ingest.py`,
 **Branch `feat/write-actions-plan` (14 Oct 2026, not merged): Act (writes into connected tools).**
 Plan: `docs/plans/2026-10-13-write-actions.md`; plain version: `plan.md`. Off until a
 company's admin allows Act (Admin › Actions › "Allow Act for your company"; no env switch), then off
-per action until they switch it on. The admin also picks how spaces get it: on in every space (an
-owner may turn it off for theirs) or each space decides (off until the space's owner turns it on in
-the space's settings). A space can only narrow what the company allows. Admins see the switches only, never what people drafted or sent.
+per action until they switch it on. With Act on, it is on in every space too; a space's owner may turn
+it off for theirs in the space's settings. A space can only narrow what the company allows. Admins see the switches only, never what people drafted or sent.
 
 - **Act is a chat mode** (+ then Act, with the model picker): the person names the tool and target,
   reviews (and can edit) the exact draft, then approves it. The write is sent **only when the person

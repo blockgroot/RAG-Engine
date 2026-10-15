@@ -1,11 +1,9 @@
 """Which actions are switched on, and whether a person may send another write.
 
 Act itself is off until an org admin allows it for the company (``act_on``);
-then each action is off unless an admin switched it on. The admin also picks
-how spaces get Act (``company_mode``): "on" everywhere, where a space owner may
-switch it OFF for their space, or "spaces", where it is off in every space
-until its owner switches it ON. Either way a space only narrows what the
-company allows: a space owner is an ordinary member of the org, and letting
+then each action is off unless an admin switched it on. With Act on, it is on
+in every space too, and a space's owner may switch it OFF for their space. A
+space only narrows what the company allows: a space owner is an ordinary member of the org, and letting
 them turn on a write the org's admins left off would hand them a decision
 that is not theirs. Company-wide use (the chat outside a space, Slack DMs)
 follows the company switch alone.
@@ -23,42 +21,22 @@ from . import store
 #: In a space, a row with this name and that ``workspace_id`` is the owner's
 #: own switch for the space.
 ACT_KEY = "act"
-#: On with "Allow Act": spaces start OFF and their owners opt in.
-SPACES_DECIDE_KEY = "act:spaces"
-
-
-def _act_rows(org_id: str, workspace_id: str | None) -> dict[tuple[str, str | None], bool]:
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT action, workspace_id::text, enabled FROM action_policies "
-            "WHERE org_id = %s::uuid AND action = ANY(%s) "
-            "AND (workspace_id IS NULL OR workspace_id = %s::uuid)",
-            (org_id, [ACT_KEY, SPACES_DECIDE_KEY], workspace_id),
-        ).fetchall()
-    return {(r[0], r[1]): bool(r[2]) for r in rows}
-
-
-def company_mode(org_id: str) -> str:
-    """``off``, ``on`` (every space, owners may opt out) or ``spaces`` (owners opt in)."""
-    rows = _act_rows(org_id, None)
-    if not rows.get((ACT_KEY, None)):
-        return "off"
-    return "spaces" if rows.get((SPACES_DECIDE_KEY, None)) else "on"
 
 
 def act_on(org_id: str, workspace_id: str | None = None) -> bool:
     """May Act be used here? Company-wide: the admin's switch. In a space: also
-    the space owner's switch, which is off until set when spaces decide, and
-    on until set otherwise."""
-    rows = _act_rows(org_id, workspace_id)
-    if not rows.get((ACT_KEY, None)):
+    not switched off by the space's owner."""
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT workspace_id::text, enabled FROM action_policies "
+            "WHERE org_id = %s::uuid AND action = %s "
+            "AND (workspace_id IS NULL OR workspace_id = %s::uuid)",
+            (org_id, ACT_KEY, workspace_id),
+        ).fetchall()
+    found = {r[0]: bool(r[1]) for r in rows}
+    if not found.get(None):
         return False
-    if workspace_id is None:
-        return True
-    space = rows.get((ACT_KEY, workspace_id))
-    if rows.get((SPACES_DECIDE_KEY, None)):
-        return space is True
-    return space is not False
+    return workspace_id is None or found.get(workspace_id) is not False
 
 
 #: Where Act may be asked from besides the web page, each switched on apart.
