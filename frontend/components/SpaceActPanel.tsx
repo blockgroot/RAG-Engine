@@ -1,8 +1,9 @@
 "use client";
 
 /**
- * A space owner's Act switch. Only narrows what the company allows: hidden
- * while the company has Act off, and the owner's only choice is whether
+ * A space owner's Act switch. Only narrows what the company allows: shown but
+ * locked while the company has Act off (so the owner can find it and knows
+ * why), and the owner's only choice is whether
  * people may use Act in this space. What each person may then do in a tool is
  * still their own account's access there.
  */
@@ -20,7 +21,8 @@ export function SpaceActPanel({ workspaceId }: { workspaceId: string }) {
     api.spaceAct(workspaceId).then(setState).catch(() => setState(null));
   }, [workspaceId]);
 
-  if (!state || !state.can_change) return null;
+  if (!state) return null;
+  const companyOff = state.company === "off";
 
   async function change(enabled: boolean) {
     setBusy(true);
@@ -36,11 +38,20 @@ export function SpaceActPanel({ workspaceId }: { workspaceId: string }) {
 
   return (
     <section className="studio-panel stack" aria-labelledby="space-act-title">
+      <div className="studio-section-head">
+        <h2 id="space-act-title">Act in this space</h2>
+        <p className="muted">
+          Whether members may ask Handbook to make changes in their tools from this space. Each
+          change still runs on the member&rsquo;s own account and waits for their approval.
+        </p>
+      </div>
       <label className="action-surface">
         <span>
-          <strong id="space-act-title">Allow Act in this space</strong>
+          <strong>Allow Act in this space</strong>
           <small>
-            {state.enabled
+            {companyOff
+              ? "Your admin has turned Act off for the company (Admin › Actions). You can switch it on here once they allow it."
+              : state.enabled
               ? "Members can ask Handbook to file issues, comment and post from this space, using their own accounts, after they approve each one."
               : state.company === "spaces"
                 ? "Off until you turn it on. Your admin lets each space decide."
@@ -50,7 +61,7 @@ export function SpaceActPanel({ workspaceId }: { workspaceId: string }) {
         <input
           type="checkbox"
           checked={state.enabled}
-          disabled={busy}
+          disabled={busy || !state.can_change}
           onChange={(e) => void change(e.target.checked)}
           aria-label={state.enabled ? "Turn off Act in this space" : "Allow Act in this space"}
         />
