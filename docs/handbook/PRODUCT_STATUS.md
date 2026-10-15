@@ -78,8 +78,8 @@ rights, §11) or on an open pull request (§12).
 | Spaces | Private sub-workspaces; members see only their space's content | Live | `tests/test_workspaces.py`, `tests/test_isolation.py` | — |
 | Ask in Slack | Channel answers in a thread from that channel only; DMs answer as the person; charts as PNG images | Live | `tests/test_slack_bot.py`, `tests/test_slack_chart_upload.py` | No thumbs in Slack (gaps are still logged); Slack charts are static images |
 | Scheduled reports | Daily/weekly/monthly, saved in-app, email notification | Live | `tests/test_scheduler_*.py`; emails verified live (30 Sep) | Reports describe current content, not diffs |
-| Feedback and gaps | Thumbs with reasons; refusals and refused charts logged automatically; figure-reading health; Feedback in the admin sidebar | Live | `tests/test_feedback.py` | Grouping is exact text, not by meaning |
-| Needs-attention bell | Expired or unscoped connections, shown to whoever can fix them | Live | `tests/test_notifications.py` | — |
+| Feedback and gaps | Thumbs with reasons; refusals logged automatically; grouped by meaning into topics; company topics open from a bell alert (`/admin/feedback`, not in the sidebar), a space's on its page for its owner | Live 15 Oct | `tests/test_feedback.py`, `tests/test_gap_topics.py` | Grouping: embeddings pick candidates (similarity 0.40+), the background model decides; checked on a made-up set, not yet on real questions |
+| Needs-attention bell | Expired or unscoped connections, and topics 3+ people couldn't get answered (or 2+ marked wrong) in 14 days, shown to whoever can fix them | Live (gap alerts: 15 Oct) | `tests/test_notifications.py`, `tests/test_gap_topics.py` | — |
 | Knowledge graph | Who worked on what across tools; one answer can span tools | Live | `tests/test_graph_*.py` | — |
 | Live tool reads | Re-reads a Linear issue, Drive file or Notion page when the question is about current state | Live | `tests/test_live_tools.py`; Notion and Drive verified on staging | Slack reader kept off (Slack's rate tier) |
 | Personal memory | Remembers a few facts a person states; Undo; manage on `/account` | Live | `tests/test_personal_memory.py` | Web chat only; no memory-free private chat mode |
@@ -136,8 +136,12 @@ rights, §11) or on an open pull request (§12).
   the axis; percentages are averaged, never summed. Each chart names its measure and unit and
   says what a bar counts. Charts follow the same access rules as answers.
 - **Knowledge-gap management.** Every unanswered question is recorded automatically (web and
-  Slack). Admins see the most-asked ones and how many different people asked. A question
-  withheld for access reasons is not counted as a gap.
+  Slack) and grouped with others that ask the same thing in other words (embeddings pick
+  candidates, the background model decides). When 3 different people can't get an answer on
+  one topic in 14 days, or 2 mark its answers wrong, the bell tells whoever can fix it: the
+  admin for company-wide questions, the space's owner for that space's. The alert opens the
+  topic; there is no sidebar page. Counts only, never who asked. A question withheld for
+  access reasons is not counted as a gap, and charts Handbook couldn't draw are not shown.
 - **Feedback.** Thumbs up/down on every web answer; a thumbs-down asks why: incorrect, out of
   date, or unhelpful.
 - **Web and tools.** One web search for external topics when company documents don't answer.
@@ -312,6 +316,41 @@ same questions: high-level facts 50% -> 70%; list/count questions' facts 53% -> 
 questions 9/10 both. Four high-level answers are not in the benchmark's documents at all, so
 "I don't know" stays the right answer there. Not done: a separate search per part of a
 question (the cause of the remaining list misses), held back for its latency and cost.
+
+**Branch `feat/write-actions-plan` (14 Oct 2026, not merged): Act (writes into connected tools).**
+Plan: `docs/plans/2026-10-13-write-actions.md`; plain version: `plan.md`. Off until a
+company's admin allows Act (Admin › Actions › "Allow Act for your company"; no env switch), then off
+per action until they switch it on. With Act on, it is on in every space too; a space's owner may turn
+it off for theirs in the space's settings. A space can only narrow what the company allows. Admins see the switches only, never what people drafted or sent.
+
+- **Act is a chat mode** (+ then Act, with the model picker): the person names the tool and target,
+  reviews (and can edit) the exact draft, then approves it. The write is sent **only when the person
+  approves**, exactly as shown, once. Their Act accounts and history are a section of the Account
+  page (`/account#act`; `/act` redirects there). The admin page is Admin › Actions.
+- **Each person connects their own Linear / GitHub account**, so a write runs with their rights
+  and shows their name. Linear: create issue, comment. GitHub: open issue, comment on issue or PR.
+  No edit, close, delete, merge or code push. The GitHub App needs **Issues: write** only (accepted
+  by each installation's owner); each write uses a token GitHub narrows to one repo, and Handbook's
+  own reading tokens are minted read-only.
+- **Targets only from the person's own words**; links and @-mentions only if they wrote them.
+- **Private content:** never sent to a public place (a public repo); a destination where some
+  readers cannot see the private documents used needs a ticked acknowledgement
+  (`ACTIONS_BLOCK_WIDER=true` refuses instead).
+- **Notion** (comment, add to a page, create a page) through a separate "Handbook Actions"
+  connection, so the read connection stays read-only; **Google Docs** (a new Doc in the person's
+  own Drive, `drive.file` only). Every connected account must be the company's own workspace or
+  the person's work address.
+- **Slack:** the bot posts "on behalf of @person" (never as them). From Slack, `act <request>`
+  works in a DM (drafts with the person's access) or a channel (drafts from that channel only;
+  the card is shown only to the asker; a Slack post can only be a reply in that thread). Each
+  Slack surface has its own admin switch. Needs Interactivity on, with Request URL
+  `/slack/interactivity`; no new Slack scopes.
+- Every proposal and outcome is kept in `actions`. Admin › Actions groups switches by tool,
+  separates the two Slack surfaces, and shows the audit trail as plain activity rows.
+
+Covered by `tests/test_actions_store.py`, `tests/test_actions_act.py`,
+`tests/test_actions_notion_drive.py` and `tests/test_actions_slack.py`. Not yet tried against real accounts; Notion page writes need
+one live test to see whose name Notion records.
 
 ## 13. Testing & Verification
 

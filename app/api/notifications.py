@@ -26,6 +26,8 @@ from fastapi import APIRouter, Depends
 
 from ..auth.credentials import list_connections, sanitize_reauth_reason
 from ..config.settings import GuardSettings
+from ..feedback import assign_topics_soon, list_topics
+from ..feedback.topics import WINDOW_DAYS
 from ..guard.flagged import MAX_LISTED, flagged_documents
 from ..auth.session import SessionClaims
 from ..jobs.autosync import SCOPE_KEYS
@@ -56,7 +58,8 @@ def _label(provider: str) -> str:
     return _PROVIDER_NAMES.get(provider, provider.title())
 
 
-def _items_in(org_id: str, workspace_id: str | None, scope: str, href: str) -> list[dict]:
+def _items_in(org_id: str, workspace_id: str | None, scope: str, href: str,
+              feedback_href: str) -> list[dict]:
     """Attention items for one scope the caller administers."""
     items: list[dict] = []
     for conn in list_connections(org_id, workspace_id):
@@ -100,7 +103,41 @@ def _items_in(org_id: str, workspace_id: str | None, scope: str, href: str) -> l
                     "href": href,
                 }
             )
-    return items + _flagged_items(org_id, workspace_id, scope, href)
+    return items + _flagged_items(org_id, workspace_id, scope, href) + _gap_items(
+        org_id, workspace_id, scope, feedback_href
+    )
+
+
+def _gap_items(org_id: str, workspace_id: str | None, scope: str, href: str) -> list[dict]:
+    """Topics enough different people could not get answered. Never fails the bell."""
+    try:
+        topics = [t for t in list_topics(org_id, workspace_id) if t.alerting]
+    except Exception:  # noqa: BLE001 - a missing item, never a broken bell
+        return []
+    items = []
+    for t in topics:
+        wrong = t.wrong_people > t.missing_people
+        people = t.wrong_people if wrong else t.missing_people
+        items.append({
+            "kind": "gap",
+            "severity": "medium",
+            "provider": "",
+            "scope": scope,
+            # Counts only, never who asked.
+            "title": (
+                f"{people} people marked answers about \u201c{t.label}\u201d wrong"
+                if wrong else
+                f"{people} people couldn\u2019t get an answer about \u201c{t.label}\u201d"
+            ),
+            "detail": (
+                f"In the last {WINDOW_DAYS} days. The document behind it may be out of date."
+                if wrong else
+                f"In the last {WINDOW_DAYS} days. Add a document about it, or connect where it lives."
+            ),
+            "action": "See the questions",
+            "href": f"{href}#topic-{t.id}",
+        })
+    return items
 
 
 def _flagged_items(org_id: str, workspace_id: str | None, scope: str, href: str) -> list[dict]:
@@ -139,15 +176,15 @@ def _flagged_items(org_id: str, workspace_id: str | None, scope: str, href: str)
 def list_notifications(session: SessionClaims = Depends(get_session)):
     """Everything wrong that this caller can fix, highest severity first."""
     items: list[dict] = []
+    owned = [s for s in list_my_workspaces(session.org_id, session.user_id) if s.role == "owner"]
+    if session.role == "admin" or owned:
+        assign_topics_soon(session.org_id)
     if session.role == "admin":
-        items += _items_in(session.org_id, None, "Company", "/admin/connections")
-    for space in list_my_workspaces(session.org_id, session.user_id):
-        # A member cannot reconnect a space's sources (the space page disables
-        # every control for them), so telling them one is broken is noise.
-        if space.role != "owner":
-            continue
-        items += _items_in(
-            session.org_id, space.id, space.name, f"/workspaces/{space.id}"
-        )
+        items += _items_in(session.org_id, None, "Company", "/admin/connections", "/admin/feedback")
+    # A member cannot reconnect a space's sources (the space page disables
+    # every control for them), so telling them one is broken is noise.
+    for space in owned:
+        href = f"/workspaces/{space.id}"
+        items += _items_in(session.org_id, space.id, space.name, href, href)
     items.sort(key=lambda i: 0 if i["severity"] == "high" else 1)
     return {"items": items, "count": len(items)}

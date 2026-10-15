@@ -70,5 +70,31 @@ def refresh_installation_scope(
     # Merge rather than overwrite: a future provider-specific key added to this
     # config by another feature shouldn't be dropped by a scope refresh.
     merged = {**config, **scope_to_config(scope)}
+    url = _settings_url(installation_id)
+    if url:
+        merged["manage_url"] = url
     set_connection_config(org_id, PROVIDER, merged, workspace_id=workspace_id)
     return scope
+
+
+def with_manage_url(org_id: str, workspace_id: str | None, config: dict | None) -> dict | None:
+    """The config with GitHub's own settings page for the installation
+    (``manage_url``), read once from GitHub and kept. A connection made before
+    it was stored gets it the first time its card is shown."""
+    if not config or config.get("manage_url") or not config.get("installation_id"):
+        return config
+    url = _settings_url(str(config["installation_id"]))
+    if not url:
+        return config
+    merged = {**config, "manage_url": url}
+    set_connection_config(org_id, PROVIDER, merged, workspace_id=workspace_id)
+    return merged
+
+
+def _settings_url(installation_id: str) -> str | None:
+    from ..auth.github_app import installation_settings_url
+
+    try:
+        return installation_settings_url(installation_id)
+    except Exception:  # noqa: BLE001 - only a link on a card; never fail a refresh over it
+        return None

@@ -55,7 +55,10 @@ class GoogleOAuthProvider(OAuthProvider):
             )
         self._settings = settings
 
-    def authorize_url(self, state: str) -> str:
+    def authorize_url(self, state: str, *, include_granted: bool = True) -> str:
+        """``include_granted=False`` keeps a token to exactly the requested
+        scopes: Act's per-person ``drive.file`` token must not pick up a
+        broader scope the same person once granted this client as an admin."""
         params = {
             "client_id": self._settings.client_id,
             "redirect_uri": self._settings.redirect_uri,
@@ -63,7 +66,7 @@ class GoogleOAuthProvider(OAuthProvider):
             "scope": self._settings.scopes,
             "access_type": "offline",
             "prompt": "consent",
-            "include_granted_scopes": "true",
+            "include_granted_scopes": "true" if include_granted else "false",
             "state": state,
         }
         return f"{_AUTHORIZE_URL}?{urlencode(params)}"

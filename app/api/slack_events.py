@@ -51,7 +51,7 @@ from ..feedback import record_gap
 from ..guard.live import watch_question
 from ..rag.cite import strip_citations
 from ..auth.credentials import get_live_connection_token
-from ..auth.users import get_user_by_email
+from ..auth.users import get_member_by_address
 from ..sources.google_groups import viewer_for_person
 from ..jobs.autosync import request_sync_external
 from ..vectorstore.base import Viewer
@@ -592,9 +592,24 @@ def _handle(event: dict, team_id: str) -> None:
         return
 
     email = _slack_email(token, slack_user)
-    user = get_user_by_email(email) if email else None
-    if user is None or user.org_id != org_id:
+    # By the person's current OR prior address: someone whose login changed is
+    # still the same person, with the same access (`get_member_by_address`).
+    user = get_member_by_address(email, org_id) if email else None
+    if user is None:
         post_message(token, channel, _NO_ACCOUNT, thread_ts)
+        return
+
+    # Act: a message that ASKS for something to be done (plain words, checked
+    # by `slack_request`) gets a draft to approve; anything else is answered
+    # exactly as before. Off unless the company's admins allowed Act.
+    from .slack_act import handle_act, slack_request
+
+    request = slack_request(text, org_id=org_id, is_dm=is_dm)
+    if request is not None:
+        handle_act(request=request, org_id=org_id, token=token,
+                   token_workspace_id=token_workspace_id, user=user,
+                   slack_user=slack_user, channel=channel, thread_ts=thread_ts, is_dm=is_dm,
+                   in_thread=bool(event.get("thread_ts")))
         return
 
     # THE SEPARATION OF CONCERNS, and it is a privacy boundary rather than a

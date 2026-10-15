@@ -2130,6 +2130,41 @@ class LiveToolsSettings:
 
 
 @dataclass(frozen=True)
+class ActionsSettings:
+    """Act mode: writes into connected tools (docs/plans/2026-10-13-write-actions.md).
+
+    Whether a company uses Act at all is its admins' decision, stored as the
+    ``act`` row in ``action_policies`` (``actions.policy.act_on``), not here.
+
+    ``ttl_seconds`` is how long an approval card stays valid; past it the stored
+    proposal can no longer run, so an old tab cannot fire a stale write.
+    ``rate_per_hour`` caps executed writes per person. ``block_wider`` turns the
+    "wider / unknown audience" warning into a refusal (plan §4.3a).
+    """
+
+    ttl_seconds: int = 900
+    rate_per_hour: int = 20
+    block_wider: bool = False
+    # The SEPARATE "Handbook Actions" Notion connection. A Notion token always
+    # carries every capability of its connection, so writes cannot share the
+    # read connection without making the indexing token write-capable too.
+    notion_client_id: str | None = None
+    notion_client_secret: str | None = None
+    notion_redirect_uri: str | None = None
+
+    @classmethod
+    def from_env(cls) -> "ActionsSettings":
+        return cls(
+            ttl_seconds=max(60, int(os.getenv("ACTION_TTL_SECONDS", "900"))),
+            rate_per_hour=max(1, int(os.getenv("ACTION_RATE_PER_HOUR", "20"))),
+            block_wider=env_bool("ACTIONS_BLOCK_WIDER", False),
+            notion_client_id=os.getenv("NOTION_ACT_CLIENT_ID") or None,
+            notion_client_secret=os.getenv("NOTION_ACT_CLIENT_SECRET") or None,
+            notion_redirect_uri=os.getenv("NOTION_ACT_REDIRECT_URI") or None,
+        )
+
+
+@dataclass(frozen=True)
 class PersonalMemorySettings:
     """Personal memory, the Second Brain's "who is asking" layer.
 

@@ -106,18 +106,83 @@ class InstallationToken:
     expires_at: datetime | None
 
 
+#: GitHub permissions that have no ``read`` level ("Can be one of: write").
+#: Reading never needs them, so a read-only token simply leaves them out.
+_NO_READ_LEVEL = frozenset({"workflows"})
+
+
+def installation_permissions(
+    installation_id: str, settings: GitHubSettings | None = None
+) -> dict[str, str]:
+    """What the installation's owner has granted the App, e.g. ``{"issues": "write"}``.
+
+    Read from GitHub each time, never cached here: a newly requested
+    permission takes effect only once the owner approves it, and Act asks this
+    to tell "not approved yet" from "approved".
+    """
+    permissions = _installation(installation_id, settings).get("permissions") or {}
+    return {str(k): str(v) for k, v in permissions.items()}
+
+
+def installation_settings_url(
+    installation_id: str, settings: GitHubSettings | None = None
+) -> str | None:
+    """GitHub's own settings page for this installation, as GitHub gives it.
+
+    Built by hand it was always ``/settings/installations/<id>``, which is a
+    404 for an installation on an ORGANIZATION (that page lives under
+    ``/organizations/<org>/settings/installations/<id>``).
+    """
+    url = str(_installation(installation_id, settings).get("html_url") or "")
+    return url if url.startswith("https://github.com/") else None
+
+
+def _installation(installation_id: str, settings: GitHubSettings | None = None) -> dict:
+    """``GET /app/installations/<id>``, as the App."""
+    settings = settings or GitHubSettings.from_env()
+    app_jwt = build_app_jwt(client_id=settings.client_id, private_key_pem=settings.private_key)
+    try:
+        response = httpx.get(
+            f"{GITHUB_API_BASE}/app/installations/{installation_id}",
+            headers=github_headers(app_jwt),
+            timeout=_TIMEOUT,
+        )
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise OAuthError(
+            f"GitHub installation lookup failed for installation {installation_id}: {exc}",
+            cause=exc,
+        ) from exc
+    return response.json() or {}
+
+
+def read_only(permissions: dict[str, str]) -> dict[str, str]:
+    """Every granted permission at ``read``, and nothing that cannot be read."""
+    return {
+        name: "read"
+        for name, level in permissions.items()
+        if level in ("read", "write", "admin") and name not in _NO_READ_LEVEL
+    }
+
+
 def mint_installation_token(
     installation_id: str, settings: GitHubSettings | None = None
 ) -> InstallationToken:
-    """Exchange an App JWT for a 1-hour installation access token.
+    """Exchange an App JWT for a 1-hour, READ-ONLY installation access token.
 
-    The returned token carries whatever repositories and permissions the admin
-    granted on GitHub's install screen — we deliberately do not narrow it with
-    the ``repositories``/``permissions`` body parameters, because the
-    installation *is* the tenant's declared scope and re-declaring it here
-    would let our copy drift from GitHub's authoritative one.
+    Repositories are not narrowed: the installation *is* the tenant's declared
+    scope, and re-declaring it here would let our copy drift from GitHub's.
+    Permissions ARE narrowed, to ``read`` on everything the owner granted:
+    the App may also hold write permissions for Act, which writes only with a
+    person's own token, so a token minted for reading and syncing must never
+    be able to write ("cannot be granted permissions that the app was not
+    granted" -- asking read of a write grant only lowers it). Fails closed:
+    if the grant cannot be read, no token is minted.
     """
     settings = settings or GitHubSettings.from_env()
+    permissions = read_only(installation_permissions(installation_id, settings))
+    if not permissions:
+        raise OAuthError(f"GitHub installation {installation_id} grants no readable permissions")
     app_jwt = build_app_jwt(
         client_id=settings.client_id, private_key_pem=settings.private_key
     )
@@ -125,6 +190,7 @@ def mint_installation_token(
         response = httpx.post(
             f"{GITHUB_API_BASE}/app/installations/{installation_id}/access_tokens",
             headers=github_headers(app_jwt),
+            json={"permissions": permissions},
             timeout=_TIMEOUT,
         )
         response.raise_for_status()

@@ -87,6 +87,10 @@ function manageExternalHref(
   connection: ConnectionRecord
 ): string | null {
   if (provider === "github") {
+    // GitHub's own link for the installation (organization or personal
+    // account); the hand-built one below is only right for a personal one.
+    const url = connection.source_config?.manage_url;
+    if (url) return url;
     const id = connection.source_config?.installation_id;
     return id ? githubInstallSettingsUrl(id) : null;
   }
@@ -118,13 +122,19 @@ const ACCESS_NOTE: Record<Provider, string> = {
     "Everyone here can get answers from every page shared with this connection: Notion doesn't tell apps who else a page is shared with.",
 };
 
-function manageExternalLabel(): string {
-  return "Manage";
+/** GitHub's install page opens only for the account the App is installed on
+ * (a 404 for anyone else), so the button names that account. */
+function manageExternalLabel(provider: Provider, connection: ConnectionRecord): string {
+  const login = connection.source_config?.account_login;
+  return provider === "github" && login ? `Manage as ${login}` : "Manage";
 }
 
-function manageExternalTitle(provider: Provider): string {
+function manageExternalTitle(provider: Provider, connection: ConnectionRecord): string {
   if (provider === "github") {
-    return "Open GitHub to add or remove repositories for this install";
+    const login = connection.source_config?.account_login;
+    return login
+      ? `Open GitHub to add or remove repositories. Sign in to GitHub as ${login} first, or GitHub shows "page not found".`
+      : "Open GitHub to add or remove repositories for this install";
   }
   if (provider === "google") {
     return "Open the linked Drive folder to add or remove files inside it";
@@ -352,9 +362,9 @@ export function ConnectionCard({
               href={manageHref}
               target="_blank"
               rel="noreferrer"
-              title={manageExternalTitle(provider)}
+              title={manageExternalTitle(provider, connection)}
             >
-              {manageExternalLabel()}
+              {manageExternalLabel(provider, connection)}
             </a>
           )}
           {provider === "google" &&

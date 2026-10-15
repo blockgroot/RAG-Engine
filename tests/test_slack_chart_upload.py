@@ -72,7 +72,7 @@ def _run_handle(monkeypatch, upload_status):
     monkeypatch.setattr(slack_events, "_org_for_team", lambda team: ("org-1", None))
     monkeypatch.setattr(slack_events, "get_live_connection_token", lambda *a, **k: "tok")
     monkeypatch.setattr(slack_events, "_slack_email", lambda t, u: "a@b.com")
-    monkeypatch.setattr(slack_events, "get_user_by_email", lambda email: type(
+    monkeypatch.setattr(slack_events, "get_member_by_address", lambda email, org_id: type(
         "U", (), {"id": "u1", "org_id": "org-1", "email": "a@b.com"})())
     monkeypatch.setattr(slack_events, "_scope_for_channel", lambda *a: None)
     monkeypatch.setattr(slack_events, "viewer_for_person", lambda *a: None)
