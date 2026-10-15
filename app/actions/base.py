@@ -144,10 +144,14 @@ class Action(ABC):
         """The drafted words as the person reads and edits them."""
         return {k: payload[k] for k in self.editable_fields if k in payload}
 
-    def edit(self, payload: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
-        """The stored payload with the person's edit applied, cleaned like a
-        draft. The edit is the person's own writing, so its links and
-        @-mentions are theirs; everything else in the payload is kept."""
+    def edit(self, payload: dict[str, Any], fields: dict[str, Any], *,
+             asked: str | None = None) -> dict[str, Any]:
+        """The stored payload with the edit applied, cleaned like a draft.
+
+        A person's own edit is their writing, so its links and @-mentions are
+        theirs (``asked`` None). A model's rewrite passes ``asked``: the words
+        that may supply links and mentions (the draft they saw and their
+        instruction), so a rewrite cannot add one. Everything else is kept."""
         current = self.editable(payload)
         if not fields or set(fields) - set(current):
             raise ActionRejected(
@@ -156,7 +160,8 @@ class Action(ABC):
         new = dict(payload)
         for key, value in fields.items():
             text = value if isinstance(value, str) else ""
-            new[key] = clean_title(text) if key == "title" else clean_body(text, text, ())
+            new[key] = clean_title(text) if key == "title" else clean_body(
+                text, text if asked is None else asked, ())
         if "title" not in new and not new.get("body"):
             raise ActionRejected("The draft is empty.")
         return new

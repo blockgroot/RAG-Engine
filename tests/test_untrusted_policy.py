@@ -59,6 +59,7 @@ def _built_prompts() -> dict[str, str]:
         "doctables_text": __import__("app.doctables.text_adapter", fromlist=["x"]).build_prompt("t", ATTACK),
         "act_decision": __import__("app.actions.service", fromlist=["x"]).build_act_prompt("q?", ATTACK),
         "act_intent": __import__("app.api.slack_act", fromlist=["x"]).build_intent_prompt(ATTACK),
+        "act_revise": __import__("app.actions.service", fromlist=["x"]).build_revise_prompt({"body": ATTACK}, "shorter"),
         "gap_topic": __import__("app.feedback.topics", fromlist=["x"]).build_prompt(ATTACK, [ATTACK]),
     }
 

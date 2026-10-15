@@ -1105,6 +1105,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                   <div className="chat-act-card">
                     <ActionCard
                       card={m.act}
+                      model={model}
                       onChange={(next) =>
                         setMessages((prev) => prev.map((x, j) => (j === i ? { ...x, act: next } : x)))
                       }

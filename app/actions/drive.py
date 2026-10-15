@@ -26,7 +26,7 @@ from ..core.exceptions import (
     OAuthReauthRequiredError,
 )
 from .base import Action, ActionContext, ActionResult, ActionTarget, Audience, Proposal
-from .draft import clean_body, clean_title
+from .draft import clean_body, clean_title, without_title_heading
 
 #: The one Google scope Act asks a person for.
 DRIVE_FILE = "https://www.googleapis.com/auth/drive.file"
@@ -65,10 +65,11 @@ class DriveCreateDoc(Action):
         body = clean_body(args.get("body"), ctx.question, [s.uri for s in ctx.sources if s.uri])
         if not body:
             raise ActionRejected("The draft is empty.")
+        title = clean_title(args.get("title"))
         return Proposal(
             action=self.name,
             target=ActionTarget("google_drive", "my-drive", "Your Google Drive (only you can see it)"),
-            payload={"title": clean_title(args.get("title")), "body": body},
+            payload={"title": title, "body": without_title_heading(body, title)},
             audience=Audience(members=()),  # nobody but the asker
         )
 
@@ -78,7 +79,9 @@ class DriveCreateDoc(Action):
         content = (
             f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n"
             f"{json.dumps(metadata)}\r\n"
-            f"--{boundary}\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n"
+            # Markdown, which Google converts into Doc headings, lists and
+            # bold; as text/plain the Doc showed the asterisks and hashes.
+            f"--{boundary}\r\nContent-Type: text/markdown; charset=UTF-8\r\n\r\n"
             f"{payload['body']}\r\n--{boundary}--\r\n"
         ).encode()
         try:

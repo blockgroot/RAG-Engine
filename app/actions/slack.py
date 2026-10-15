@@ -23,7 +23,7 @@ import httpx
 
 from ..auth.credentials import get_live_connection_token
 from ..core.exceptions import ActionError, ActionOutcomeUnknown, ActionRejected
-from .base import Action, ActionContext, ActionResult, ActionTarget, Audience, Proposal
+from .base import Action, ActionContext, ActionResult, ActionTarget, Audience, Proposal, Source
 from .draft import clean_body, require_named
 
 API = "https://slack.com/api"
@@ -33,6 +33,8 @@ _TIMEOUT = 15.0
 MAX_PAGES = 10
 #: Members whose emails are read for an audience. Larger rooms are unknown.
 MEMBER_LIMIT = 500
+#: Messages read from the thread a request was asked in.
+THREAD_LIMIT = 50
 _NO_UNFURL = {"unfurl_links": False, "unfurl_media": False}
 
 
@@ -98,6 +100,54 @@ def _is_bot(users: list[dict], member_id: str) -> bool:
                for u in users)
 
 
+def thread_context(token: str, channel_id: str, thread_ts: str) -> tuple[list[Source], str]:
+    """The thread a request was asked in, read live, as ``(sources, passages)``.
+
+    Searching the channel for "about this thread" matched whatever else was
+    discussed there, and a thread started minutes ago is not synced at all. So
+    a request made inside a thread drafts from THAT thread: at most
+    ``THREAD_LIMIT`` messages, the bot's own left out, and a cut-off said so.
+    It is one source, as visible as its channel: public, or its members
+    (unknown members count as nobody, so every reader is an outsider).
+    Nothing readable is ``([], "")``.
+    """
+    from ..security.untrusted import scrub_untrusted_text
+
+    try:
+        body = _get(token, "conversations.replies",
+                    {"channel": channel_id, "ts": thread_ts, "limit": THREAD_LIMIT})
+        channel = _get(token, "conversations.info", {"channel": channel_id}).get("channel") or {}
+    except ActionError:
+        return [], ""
+    lines = [scrub_untrusted_text(m.get("text") or "").strip()
+             for m in (body.get("messages") or [])[:THREAD_LIMIT]
+             if not m.get("bot_id") and m.get("subtype") != "bot_message"]
+    lines = [line for line in lines if line]
+    if not lines:
+        return [], ""
+    if body.get("has_more"):
+        lines.append(f"(Only the first {THREAD_LIMIT} messages of this thread were read.)")
+    audience = channel_audience(token, channel)
+    try:
+        link = _get(token, "chat.getPermalink",
+                    {"channel": channel_id, "message_ts": thread_ts}).get("permalink")
+    except ActionError:
+        link = None
+    title = f"#{channel.get('name') or channel_id} thread"
+    source = Source(f"slack-thread:{channel_id}:{thread_ts}", title, audience.public,
+                    tuple(m.lower() for m in (audience.members or ()) if m), link)
+    return [source], f"[{title}]\n" + "\n".join(lines)
+
+
+def _mrkdwn(text: str) -> str:
+    """The draft as Slack formatting, escaped first: the bot's own answer
+    formatter, so ``**bold**`` and ``# Heading`` read as Slack shows them and a
+    drafted ``<!channel>`` or ``<url|text>`` still arrives as inert text."""
+    from ..api.slack_events import _to_slack_mrkdwn  # local: api imports this module
+
+    return _to_slack_mrkdwn(text)
+
+
 def escape(text: str) -> str:
     """Slack's own escaping, so nothing in a draft becomes a ping or a link label."""
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -150,17 +200,18 @@ class SlackPostMessage(Action):
     def editable(self, payload: dict[str, Any]) -> dict[str, str]:
         return {"body": unescape(payload.get("text", "").partition("\n")[2])}
 
-    def edit(self, payload: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
+    def edit(self, payload: dict[str, Any], fields: dict[str, Any], *,
+             asked: str | None = None) -> dict[str, Any]:
         if set(fields) != {"body"}:
             raise ActionRejected(
                 "Only the message can be edited. To post somewhere else, cancel and ask again."
             )
         text = fields["body"] if isinstance(fields["body"], str) else ""
-        body = clean_body(text, text, ())
+        body = clean_body(text, text if asked is None else asked, ())
         if not body:
             raise ActionRejected("The draft is empty.")
         lead = payload.get("text", "").partition("\n")[0]
-        return {**payload, "text": f"{lead}\n{escape(body)}"}
+        return {**payload, "text": f"{lead}\n{_mrkdwn(body)}"}
 
     def token_for(self, org_id: str, user_id: str) -> str:
         """The company's bot token: Slack lets an app post, never a person."""
@@ -199,7 +250,7 @@ class SlackPostMessage(Action):
         return Proposal(
             action=self.name,
             target=ActionTarget("slack_channel", channel["id"], where),
-            payload={"text": f"<@{asker}> asked Handbook to post this:\n{escape(body)}",
+            payload={"text": f"<@{asker}> asked Handbook to post this:\n{_mrkdwn(body)}",
                      "thread_ts": thread_ts},
             audience=channel_audience(ctx.token, channel, members),
         )

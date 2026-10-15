@@ -76,3 +76,12 @@ def clean_body(text: str | None, question: str, source_uris: list[str] | tuple[s
     if len(body) > BODY_LIMIT:
         body = body[: BODY_LIMIT - len(TRIMMED)].rstrip() + TRIMMED
     return body
+
+
+def without_title_heading(body: str, title: str) -> str:
+    """Drop a first heading that only repeats the page's title: Notion shows
+    the title already, and the model often writes it again."""
+    first, _, rest = body.lstrip().partition("\n")
+    if re.sub(r"^#+\s*", "", first).strip().casefold() == title.strip().casefold() and first.startswith("#"):
+        return rest.lstrip("\n")
+    return body

@@ -14,7 +14,11 @@ import { ApiError, api, type ActCard } from "@/lib/api";
  * ticks that they understand. Edit sends the person's own words to the
  * server, which stores them and returns a new fingerprint; Approve stays off
  * while an edit is unsaved, so only what was saved and shown can be sent.
- * Where it goes is never editable: cancel and ask again for that.
+ * "Ask for changes" sends an instruction instead ("make it shorter", "add
+ * the steps to reproduce"): the model rewrites the words, the server saves
+ * them like an edit, and only links and @-mentions already on the card or in
+ * the instruction survive. Where it goes is never editable: cancel and ask
+ * again for that.
  */
 
 const PROVIDER_LABEL: Record<string, string> = {
@@ -47,15 +51,19 @@ function shortLabel(title: string): string {
 export function ActionCard({
   card,
   onChange,
+  model,
 }: {
   card: ActCard;
   onChange: (next: ActCard) => void;
+  /** The chat's model pick, used for "Ask for changes". */
+  model?: string | null;
 }) {
   const [now, setNow] = useState(() => Date.now());
   const [ack, setAck] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ title?: string; body?: string } | null>(null);
+  const [asking, setAsking] = useState<string | null>(null);
 
   const pending = card.status === "proposed";
   useEffect(() => {
@@ -103,6 +111,23 @@ export function ActionCard({
       onChange(action);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not save your edit. Nothing was sent.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revise() {
+    const instruction = asking?.trim();
+    if (!instruction) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const { action } = await api.reviseAction(card.id, card.payload_hash, instruction, model);
+      setAsking(null);
+      setAck(false);
+      onChange(action);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not rework it. Your draft is unchanged.");
     } finally {
       setBusy(false);
     }
@@ -223,7 +248,34 @@ export function ActionCard({
         </div>
       )}
 
-      {pending && !expired && editing ? (
+      {pending && !expired && asking !== null ? (
+        <div className="act-card-actions">
+          <input
+            className="input act-card-ask"
+            aria-label="What should change?"
+            placeholder="e.g. make it shorter, add steps to reproduce"
+            maxLength={1000}
+            value={asking}
+            autoFocus
+            onChange={(e) => setAsking(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void revise();
+              if (e.key === "Escape") setAsking(null);
+            }}
+          />
+          <button type="button" className="button" onClick={revise} disabled={busy || !asking.trim()}>
+            {busy ? "Reworking…" : "Rework"}
+          </button>
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={() => setAsking(null)}
+            disabled={busy}
+          >
+            Never mind
+          </button>
+        </div>
+      ) : pending && !expired && editing ? (
         <div className="act-card-actions">
           <button type="button" className="button" onClick={saveEdit} disabled={busy}>
             {busy ? "Saving…" : "Save changes"}
@@ -255,6 +307,14 @@ export function ActionCard({
             disabled={busy}
           >
             Edit
+          </button>
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={() => setAsking("")}
+            disabled={busy}
+          >
+            Ask for changes
           </button>
           <button type="button" className="button button-secondary" onClick={cancel} disabled={busy}>
             Cancel
