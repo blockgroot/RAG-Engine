@@ -95,20 +95,6 @@ function IconModel() {
   );
 }
 
-function IconFeedback() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path
-        d="M5 5.5h14a1.5 1.5 0 0 1 1.5 1.5v8a1.5 1.5 0 0 1-1.5 1.5H10l-4.5 3.5V16.5H5A1.5 1.5 0 0 1 3.5 15V7A1.5 1.5 0 0 1 5 5.5Z"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinejoin="round"
-      />
-      <path d="M8 10h8M8 13h5" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 function IconPeople() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -358,20 +344,6 @@ export function AppShell({
                   <span className="rail-link-copy">
                     <span className="rail-link-title">People</span>
                     <span className="rail-link-hint">Grow the team</span>
-                  </span>
-                </Link>
-                <Link
-                  href="/admin/feedback"
-                  className="rail-link"
-                  data-active={pathname.startsWith("/admin/feedback") ? "true" : "false"}
-                  aria-current={pathname.startsWith("/admin/feedback") ? "page" : undefined}
-                >
-                  <span className="rail-ico">
-                    <IconFeedback />
-                  </span>
-                  <span className="rail-link-copy">
-                    <span className="rail-link-title">Feedback</span>
-                    <span className="rail-link-hint">What people couldn&rsquo;t find</span>
                   </span>
                 </Link>
                 {/* Always shown to admins: this is where they turn Act on. */}

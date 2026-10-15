@@ -8570,63 +8570,102 @@ a.people-card:hover { color: inherit; }
 .act-card-error { margin: 0; color: var(--provenance-none); font-size: 0.9rem; }
 /* Act on the Account page: one section, heading and "Open Act in chat"
    side by side, then the accounts and the history. */
+.act-panel {
+  gap: 1.5rem;
+  padding: clamp(1.25rem, 2.5vw, 1.75rem);
+}
 .act-panel-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+.act-panel-head .studio-section-head { gap: 0.3rem; }
+.act-panel-head .studio-section-head p { max-width: 42rem; }
+.act-panel-head .button {
+  flex: none;
+  min-height: 2.5rem;
+  padding-inline: 1rem;
+}
+.account-act-accounts {
+  display: grid;
+  gap: 0.75rem;
+}
+.account-act-section-head {
+  display: flex;
+  align-items: baseline;
   justify-content: space-between;
   gap: 1rem;
 }
-.act-panel-head .button { flex: none; }
+.account-act-section-head h3 {
+  font-size: 0.95rem;
+}
+.account-act-section-head p {
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+}
 .act-providers {
   list-style: none;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
-  column-gap: 1.5rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
   margin: 0;
   padding: 0;
 }
 .act-provider {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 0.75rem;
-  min-height: 3.55rem;
-  padding: 0.65rem 0;
-  border-top: 1px solid var(--border);
+  min-width: 0;
+  min-height: 5.25rem;
+  padding: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
 }
 .act-provider-copy {
   display: grid;
-  gap: 0.12rem;
+  gap: 0.28rem;
   min-width: 0;
 }
-.act-provider-name { font-size: 0.88rem; font-weight: 700; }
+.act-provider-name {
+  color: var(--ink);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
 .act-status-ready,
 .act-status-note {
   overflow: hidden;
-  font-size: 0.72rem;
-  line-height: 1.35;
+  font-size: 0.73rem;
+  line-height: 1.45;
   text-overflow: ellipsis;
 }
 .act-status-ready { color: var(--provenance-policy); }
 .act-status-note { color: var(--ink-muted); }
 .act-provider .button-sm {
-  min-height: 2.75rem;
+  min-height: 2.25rem;
   padding: 0.4rem 0.72rem;
   font-size: 0.76rem;
 }
 .act-text-button {
   flex: 0 0 auto;
-  min-height: 2.75rem;
-  padding: 0.35rem 0.15rem;
-  border: 0;
-  background: transparent;
+  min-height: 2rem;
+  padding: 0.3rem 0.45rem;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: none;
   color: var(--ink-muted);
   cursor: pointer;
-  font-size: 0.72rem;
-  text-decoration: underline;
-  text-underline-offset: 0.2em;
+  font-size: 0.7rem;
 }
-.act-text-button:hover { color: var(--accent-strong); }
+.act-text-button:hover {
+  border-color: var(--border);
+  background: var(--surface-elevated);
+  color: var(--accent-strong);
+}
 .act-recent { display: grid; gap: 0.6rem; }
 .act-recent-title { margin: 0; font-size: 0.95rem; }
 .act-history-list {
@@ -8685,14 +8724,22 @@ a.people-card:hover { color: inherit; }
 /* Account page action history: separate the action, destination and outcome
    so repeated entries stay easy to scan. */
 .account-actions {
-  gap: 0.75rem;
-  margin-top: 0.25rem;
+  gap: 0;
+  overflow: hidden;
+  margin-top: 0.1rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-elevated);
 }
 .account-actions-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 1rem;
+  min-height: 4.25rem;
+  padding: 0.9rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
 }
 .account-actions-head p {
   color: var(--ink-muted);
@@ -8700,17 +8747,18 @@ a.people-card:hover { color: inherit; }
 }
 .account-actions-list {
   display: grid;
-  border-top: 1px solid var(--border);
+  padding: 0 1rem;
 }
 .account-action-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(11rem, auto);
+  grid-template-columns: minmax(0, 1fr) 6.5rem 16.5rem;
   align-items: center;
-  gap: 1.25rem;
-  min-height: 4.5rem;
-  padding: 0.75rem 0;
+  gap: 1rem;
+  min-height: 4.75rem;
+  padding: 0.8rem 0;
   border-bottom: 1px solid var(--border);
 }
+.account-action-row:last-child { border-bottom: 0; }
 .account-action-copy {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -8746,17 +8794,21 @@ a.people-card:hover { color: inherit; }
 .account-action-date {
   color: var(--ink-muted);
   font-size: 0.74rem;
+  text-align: center;
   white-space: nowrap;
 }
 .account-action-outcome {
-  display: flex;
+  display: grid;
+  grid-template-columns: 4.75rem 11rem;
   align-items: center;
-  justify-content: flex-end;
-  gap: 0.65rem;
+  justify-content: end;
+  gap: 0.5rem;
 }
 .account-action-status {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  justify-self: stretch;
   min-height: 1.65rem;
   padding: 0.2rem 0.55rem;
   border-radius: 999px;
@@ -8779,6 +8831,7 @@ a.people-card:hover { color: inherit; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: 11rem;
   gap: 0.3rem;
   min-height: 2rem;
   padding: 0.35rem 0.65rem;
@@ -8988,25 +9041,48 @@ a.people-card:hover { color: inherit; }
 }
 .actions-privacy-note strong { color: var(--ink); }
 
+@media (max-width: 900px) {
+  .act-providers { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .account-action-row {
+    grid-template-columns: minmax(0, 1fr) 5.75rem 16.5rem;
+    gap: 0.75rem;
+  }
+}
 @media (max-width: 700px) {
   .actions-provider-grid,
   .actions-surface-list { grid-template-columns: 1fr; }
   .action-safety-note { align-items: flex-start; flex-direction: column; gap: 0.15rem; }
+  .account-act-section-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
   .account-actions-head {
     align-items: flex-start;
     flex-direction: column;
     gap: 0.2rem;
   }
   .account-action-row {
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 0.55rem 0.75rem;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.55rem;
+    padding: 0.9rem 0;
   }
-  .account-action-copy { grid-column: 1 / -1; }
-  .account-action-date { grid-column: 1; grid-row: 2; }
-  .account-action-outcome { grid-column: 2; grid-row: 2; }
+  .account-action-copy,
+  .account-action-date,
+  .account-action-outcome {
+    grid-column: 1;
+    grid-row: auto;
+  }
+  .account-action-date { text-align: left; }
+  .account-action-outcome { justify-content: start; }
 }
 @media (max-width: 600px) {
-  .act-panel-head { flex-direction: column; }
+  .act-panel-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .act-panel-head .button { align-self: flex-start; }
+  .act-providers { grid-template-columns: 1fr; }
   .act-history-row {
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 0.35rem 0.75rem;
