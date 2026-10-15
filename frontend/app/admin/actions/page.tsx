@@ -25,6 +25,22 @@ const PROVIDERS = [
   ["slack", "Slack", "Messages from the Handbook bot"],
 ] as const;
 
+type Mode = "off" | "on" | "spaces";
+
+const MODES: { value: Mode; label: string; hint: string }[] = [
+  { value: "off", label: "Off", hint: "Handbook only reads." },
+  {
+    value: "on",
+    label: "On in every space",
+    hint: "On company-wide and in every space. A space's owner can turn it off for their space.",
+  },
+  {
+    value: "spaces",
+    label: "Each space decides",
+    hint: "On company-wide. In a space it stays off until that space's owner turns it on.",
+  },
+];
+
 const SURFACE_COPY: Record<string, string> = {
   "surface:slack_dm": "People can ask privately in a DM with Handbook.",
   "surface:slack_channel": "People can ask in a channel; any Slack post stays in that thread.",
@@ -69,6 +85,23 @@ export default function AdminActionsPage() {
     }
   }
 
+  const mode: Mode = !data?.enabled ? "off" : data.spaces_decide ? "spaces" : "on";
+
+  async function setMode(next: Mode) {
+    setBusy("act");
+    setError(null);
+    try {
+      // "Each space decides" is Act on, with spaces starting off.
+      if (next !== "off") await api.setAdminAction("act:spaces", next === "spaces");
+      await api.setAdminAction("act", next !== "off");
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not change that.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   const providerGroups = PROVIDERS.map(([key, label, description]) => ({
     key,
     label,
@@ -92,24 +125,32 @@ export default function AdminActionsPage() {
         )}
 
         {data && (
-          <section className="studio-panel" aria-labelledby="actions-allow">
-            <label className="action-surface">
-              <span>
-                <strong id="actions-allow">Allow Act for your company</strong>
-                <small>
-                  {data.enabled
-                    ? "People can ask Handbook to file issues, comment and post, using their own accounts, after they approve each one."
-                    : "Off: Handbook only reads. Turn this on, then choose the actions below."}
-                </small>
-              </span>
-              <input
-                type="checkbox"
-                checked={data.enabled}
-                disabled={busy === "act"}
-                onChange={(event) => toggle("act", event.target.checked)}
-                aria-label={data.enabled ? "Turn off Act for your company" : "Allow Act for your company"}
-              />
-            </label>
+          <section className="studio-panel stack" aria-labelledby="actions-allow">
+            <div className="studio-section-head">
+              <h2 id="actions-allow">Act for your company</h2>
+              <p className="muted">
+                People ask Handbook to file issues, comment and post, using their own accounts, and
+                approve each one. Space owners can only narrow what you allow here.
+              </p>
+            </div>
+            <div className="act-mode-options" role="radiogroup" aria-label="Act for your company">
+              {MODES.map((m) => (
+                <label key={m.value} className="act-mode-option" data-checked={mode === m.value}>
+                  <input
+                    type="radio"
+                    name="act-mode"
+                    value={m.value}
+                    checked={mode === m.value}
+                    disabled={busy === "act"}
+                    onChange={() => setMode(m.value)}
+                  />
+                  <span>
+                    <strong>{m.label}</strong>
+                    <small>{m.hint}</small>
+                  </span>
+                </label>
+              ))}
+            </div>
           </section>
         )}
 

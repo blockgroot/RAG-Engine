@@ -29,7 +29,7 @@ ACTIONS: dict[str, type[Action]] = {
 
 
 def build_actions(org_id: str, workspace_id: str | None, user_id: str) -> list[Action]:
-    if not policy.act_on(org_id):
+    if not policy.act_on(org_id, workspace_id):
         return []
     enabled = policy.enabled_actions(org_id, workspace_id)
     if not enabled:

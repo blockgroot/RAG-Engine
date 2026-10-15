@@ -56,7 +56,14 @@ from ..core.exceptions import (
 from ..db.connection import get_connection
 from ..security.rate_limit import check_rate_limit
 from ..workspaces import assert_member
-from .deps import SessionClaims, get_session, require_admin, viewer_for
+from .deps import (
+    SessionClaims,
+    get_session,
+    get_workspace_role,
+    require_admin,
+    require_workspace_owner,
+    viewer_for,
+)
 
 logger = logging.getLogger("actions")
 
@@ -497,6 +504,9 @@ def admin_actions(session: SessionClaims = Depends(require_admin)):
     enabled = policy.enabled_actions(session.org_id, None)
     return {
         "enabled": policy.ACT_KEY in enabled,
+        # How spaces get Act: on everywhere (owners may opt out) or each
+        # space's owner opts in.
+        "spaces_decide": policy.SPACES_DECIDE_KEY in enabled,
         "block_wider": settings.block_wider,
         "catalogue": [
             {"name": n, "label": a.label, "provider": a.provider, "enabled": n in enabled}
@@ -520,7 +530,37 @@ class PolicyRequest(BaseModel):
 def admin_set_action(name: str, body: PolicyRequest, session: SessionClaims = Depends(require_admin)):
     """Switch Act itself (``act``), one action, or one Slack surface."""
     surfaces = {policy.surface_key(kind) for kind in policy.SURFACES}
-    if name not in ACTIONS and name not in surfaces and name != policy.ACT_KEY:
+    if name not in ACTIONS and name not in surfaces and name not in (
+            policy.ACT_KEY, policy.SPACES_DECIDE_KEY):
         raise HTTPException(status_code=404, detail="No such action")
     policy.set_policy(session.org_id, name, body.enabled, updated_by=session.user_id)
     return {"name": name, "enabled": body.enabled}
+
+
+# -- A space's own switch ------------------------------------------------------
+
+
+@router.get("/act/spaces/{workspace_id}")
+def space_act(workspace_id: str, session: SessionClaims = Depends(get_session),
+              role: str = Depends(get_workspace_role)):
+    """Whether Act works in this space, for its members (the chat asks), and
+    what its owner may change: only within what the company allows."""
+    mode = policy.company_mode(session.org_id)
+    return {
+        "company": mode,
+        "enabled": policy.act_on(session.org_id, workspace_id),
+        "can_change": role == "owner" and mode != "off",
+    }
+
+
+@router.put("/act/spaces/{workspace_id}")
+def set_space_act(workspace_id: str, body: PolicyRequest,
+                  session: SessionClaims = Depends(get_session),
+                  _owner: str = Depends(require_workspace_owner)):
+    """The space owner's switch. Narrows, never widens: with Act off for the
+    company there is nothing to turn on."""
+    if policy.company_mode(session.org_id) == "off":
+        raise HTTPException(status_code=409, detail="Your admin hasn't turned on Act for the company.")
+    policy.set_policy(session.org_id, policy.ACT_KEY, body.enabled,
+                      workspace_id=workspace_id, updated_by=session.user_id)
+    return space_act(workspace_id, session, "owner")

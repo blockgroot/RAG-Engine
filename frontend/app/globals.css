@@ -8526,6 +8526,7 @@ a.people-card:hover { color: inherit; }
 .act-card-edit-body { resize: vertical; min-height: 6rem; white-space: pre-wrap; }
 .act-card-fields dd:has(.act-card-edit-body) { max-height: none; overflow: visible; }
 .act-card-edited { margin: 0; font-size: 0.82rem; }
+.act-card-note { margin: 0; font-size: 0.82rem; }
 /* Act mode in chat: the wrapper takes no box, so bubbles keep their own
    alignment in .chat-log; the draft card sits under its reply. */
 .chat-turn { display: contents; }
@@ -8747,6 +8748,32 @@ a.people-card:hover { color: inherit; }
 }
 .actions-provider-group li + li { border-top: 1px solid var(--border); }
 .action-toggle,
+.act-mode-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+.act-mode-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.act-mode-option[data-checked="true"] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent-soft) 30%, var(--surface));
+}
+.act-mode-option input { margin-top: 0.2rem; accent-color: var(--accent); }
+.act-mode-option > span { display: grid; gap: 0.22rem; }
+.act-mode-option strong { font-size: 0.88rem; }
+.act-mode-option small { color: var(--ink-muted); font-size: 0.74rem; line-height: 1.4; }
+@media (max-width: 700px) {
+  .act-mode-options { grid-template-columns: 1fr; }
+}
 .action-surface {
   display: flex;
   align-items: center;

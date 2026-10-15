@@ -149,6 +149,9 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // a separate endpoint (/act): the reply is a draft card, nothing is sent
   // until the person approves it, and the turn is not saved as a chat answer.
   const [actMode, setActMode] = useState(false);
+  // In a space, Act also needs that space's own switch (its owner's choice,
+  // within what the company allows). Company-wide, the company switch alone.
+  const [spaceActOn, setSpaceActOn] = useState(true);
   const [modelError, setModelError] = useState<string | null>(null);
   // Said once when turning Chart on moved the picker off a model that cannot
   // build charts, so the switch is never silent.
@@ -763,10 +766,28 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
   // question here, once, as whoever opened it -- their own access decides
   // what the chart shows. Two steps so Chart mode (and a chart-capable model)
   // is in place before the question goes.
+  useEffect(() => {
+    if (!workspaceId || !me?.act_enabled) {
+      setSpaceActOn(true);
+      return;
+    }
+    let live = true;
+    api
+      .spaceAct(workspaceId)
+      .then((s) => live && setSpaceActOn(s.enabled))
+      .catch(() => live && setSpaceActOn(false));
+    return () => {
+      live = false;
+    };
+  }, [workspaceId, me?.act_enabled]);
+  useEffect(() => {
+    if (!spaceActOn) setActMode(false);
+  }, [spaceActOn]);
+
   // "Open Act in chat" from the Act page: /chat?mode=act starts in Act mode.
   const actLink = searchParams.get("mode") === "act" && !searchParams.get("q");
   useEffect(() => {
-    if (!actLink || !me?.act_enabled) return;
+    if (!actLink || !me?.act_enabled || !spaceActOn) return;
     toggleActMode(true);
     router.replace(pathname);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1238,7 +1259,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                   </span>
                   {deepMode && <CheckIcon />}
                 </button>
-                {me.act_enabled && (
+                {me.act_enabled && spaceActOn && (
                   <button
                     type="button"
                     role="menuitemcheckbox"

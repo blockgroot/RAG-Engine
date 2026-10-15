@@ -91,6 +91,7 @@ That is Willison's "lethal trifecta" and Meta's "Rule of Two" violated, and OWAS
    - the company's admin allows Act at all (the `act` row in `action_policies`, `policy.act_on`; no env switch, decided 2026-10-14)
    - org admin enables each action
    - a workspace owner may switch actions **off** for their space, never on beyond the org's setting
+   - the admin picks how spaces get Act (`policy.company_mode`, decided 2026-10-15): Off, On in every space (an owner may turn it off for their space), or Each space decides (off in every space until its owner turns it on, Space → "Allow Act in this space"). A space owner's `act` row only narrows; company-wide use (chat outside a space, Slack DMs) follows the company switch alone.
 
 5. **Create and comment only in v1.** No edit-in-place of someone else's content, no delete, no close, no merge. Each later action is its own decision.
 
@@ -480,6 +481,8 @@ Each phase ships behind the org's "Allow Act" switch and the per-action toggles.
 ---
 
 - **No admin log (decided 2026-10-14).** Admin › Actions holds the switches only. What a person drafted, its sources and drafts never sent are theirs (their Act page); each tool already records who created what. `actions` rows stay as the approval queue and each person's own history.
+
+- **Permission before the draft (decided 2026-10-15).** One model call, then code checks with the person's own token before any card: GitHub reads their access level on the repo (`permissions`: read/triage/write/maintain/admin) and refuses a locked issue below write; Linear lists only teams their token can file in. Notion has no API for a person's access on a page, so its card says the write needs comment (or edit) access and Notion's refusal is named per kind of write. Two model calls (target first, text second) were rejected: the same messages, twice the wait.
 
 ## 9. Open questions
 

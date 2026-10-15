@@ -210,22 +210,34 @@ def company_github(monkeypatch):
     grant = {"issues": "write", "metadata": "read", "contents": "read"}
     monkeypatch.setattr(github, "installation_permissions", lambda inst: grant)
     monkeypatch.setattr(github, "scoped_token", lambda token, full: f"scoped:{full}:{token}")
-    calls = []
+    class Calls(list):
+        access: dict
+
+    calls = Calls()
+    # The PERSON's access, as GitHub reports it on the repo read with their token.
+    access = {"pull": True, "triage": False, "push": False, "maintain": False, "admin": False}
 
     def fake_call(method, path, token, *, json=None):
         calls.append((method, path, json, token))
         if path == "/repos/acme/handbook":
-            return {"private": True, "has_issues": True, "html_url": "https://github.com/acme/handbook"}
+            return {"private": True, "has_issues": True, "html_url": "https://github.com/acme/handbook",
+                    "permissions": access}
         if path == "/repos/acme/site":
             return {"private": False, "has_issues": True, "html_url": "https://github.com/acme/site"}
         if path.endswith("/issues/12"):
             return {"title": "Fix login", "html_url": "https://github.com/acme/handbook/pull/12",
                     "pull_request": {}}
+        if path.endswith("/issues/13"):
+            return {"title": "Old thread", "locked": True,
+                    "html_url": "https://github.com/acme/handbook/issues/13"}
+        if path == "/repos/acme/secret":
+            raise ActionRejected("GitHub refused")
         if method == "POST" and path.endswith("/comments"):
             return {"id": 99, "html_url": "https://github.com/acme/handbook/pull/12#c99"}
         raise AssertionError(path)
 
     monkeypatch.setattr(github, "_call", fake_call)
+    calls.access = access
     return calls
 
 
@@ -256,6 +268,30 @@ def test_github_comment_on_a_pull_request(company_github):
     # Sent on the token GitHub narrowed to this one repo, never the person's own.
     assert company_github[-1] == ("POST", "/repos/acme/handbook/issues/12/comments",
                                   {"body": "LGTM"}, "scoped:acme/handbook:tok")
+
+
+def test_github_checks_the_persons_own_access_before_any_draft(company_github, monkeypatch):
+    comment = github.GitHubComment()
+    # Read access: a locked issue takes comments only from people who can write.
+    with pytest.raises(ActionRejected, match="locked.*read access"):
+        comment.prepare({"issue": "handbook#13", "body": "x"}, _ctx("comment on handbook#13: x"))
+    company_github.access["push"] = True
+    assert comment.prepare({"issue": "handbook#13", "body": "x"},
+                           _ctx("comment on handbook#13: x")).target.external_id == "acme/handbook#13"
+    # No access at all: no issue can be opened.
+    for level in company_github.access:
+        company_github.access[level] = False
+    with pytest.raises(ActionRejected, match="no access to acme/handbook"):
+        github.GitHubCreateIssue().prepare(
+            {"repo": "acme/handbook", "title": "t", "body": "b"}, _ctx("open an issue in acme/handbook"))
+
+
+def test_a_repo_the_person_cannot_open_is_said_so(company_github, monkeypatch):
+    config = github.get_connection_config("o", "github")
+    config["repos"].append({"full_name": "acme/secret"})
+    with pytest.raises(ActionRejected, match="can't open acme/secret"):
+        github.GitHubCreateIssue().prepare(
+            {"repo": "acme/secret", "title": "t", "body": "b"}, _ctx("open an issue in acme/secret"))
 
 
 def test_github_writes_wait_for_the_admin_to_approve(company_github, monkeypatch):
@@ -827,3 +863,24 @@ def test_act_uses_the_picked_model_and_refuses_an_unknown_one(client, org, monke
     r = client.post("/act", json={"question": "file it", "model": "auto"},
                     cookies=_cookies(org.member))
     assert r.status_code == 200 and seen[0]["model"] == "auto"
+
+
+@requires_db
+def test_only_a_space_owner_switches_act_for_their_space(client, org):
+    from app.workspaces.store import create_workspace, invite_member as invite_to_space
+
+    space = create_workspace(org.id, "Team room", org.admin.id)
+    invite_to_space(space, org.id, org.admin.id, org.member.email)
+    r = client.put(f"/act/spaces/{space}", json={"enabled": False}, cookies=_cookies(org.member))
+    assert r.status_code == 403
+    r = client.put(f"/act/spaces/{space}", json={"enabled": False}, cookies=_cookies(org.admin))
+    assert r.status_code == 200 and r.json()["enabled"] is False
+    seen = client.get(f"/act/spaces/{space}", cookies=_cookies(org.member)).json()
+    assert seen == {"company": "on", "enabled": False, "can_change": False}
+    # A draft in that space is refused in plain words, before any model call.
+    offered, why = service.offered_actions(org.id, org.member.id, ON, workspace_id=space)
+    assert offered == [] and "isn't turned on in this space" in why
+    # With Act off for the company, a space has nothing to turn on.
+    client.put("/admin/actions/act", json={"enabled": False}, cookies=_cookies(org.admin))
+    r = client.put(f"/act/spaces/{space}", json={"enabled": True}, cookies=_cookies(org.admin))
+    assert r.status_code == 409

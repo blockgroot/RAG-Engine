@@ -80,8 +80,8 @@ def _call(method: str, path: str, token: str, *, json: dict | None = None) -> di
     if response.status_code in (403, 404):
         # 404 is "not found or not accessible", never "doesn't exist".
         raise ActionRejected(
-            "GitHub refused: you may not have access there, or your admin has not "
-            "accepted the App's write permissions yet."
+            "GitHub refused: your account may not be allowed to do that there, or the "
+            "GitHub App's \"Issues: write\" permission hasn't been accepted yet."
         )
     if response.status_code == 410:
         raise ActionRejected("Issues are turned off for that repository.")
@@ -93,6 +93,32 @@ def _call(method: str, path: str, token: str, *, json: dict | None = None) -> di
         if write:
             raise ActionOutcomeUnknown("GitHub's answer was unreadable.", cause=exc) from exc
         raise ActionError("GitHub's answer was unreadable.", cause=exc) from exc
+
+
+#: GitHub's access levels, lowest first, as ``permissions`` on a repo read
+#: with the person's own token.
+_LEVELS = ("pull", "triage", "push", "maintain", "admin")
+_LEVEL_WORDS = {"pull": "read", "triage": "triage", "push": "write",
+                "maintain": "maintain", "admin": "admin"}
+
+
+def _your_repo(full: str, token: str) -> dict:
+    """The repo as the PERSON sees it. A 404 here is their account not being
+    able to open it, said in those terms rather than as a generic refusal."""
+    try:
+        return _call("GET", f"/repos/{full}", token)
+    except ActionRejected as exc:
+        raise ActionRejected(
+            f"Your GitHub account can't open {full}. Ask for access to the repository, "
+            "or reconnect the GitHub account you use for work."
+        ) from exc
+
+
+def _level(repo: dict) -> str | None:
+    """The person's highest access to ``repo``, or None when GitHub did not say."""
+    granted = repo.get("permissions") or {}
+    held = [lvl for lvl in _LEVELS if granted.get(lvl)]
+    return held[-1] if held else None
 
 
 def company_repo(org_id: str, name: str) -> str:
@@ -176,9 +202,14 @@ class GitHubCreateIssue(Action):
 
     def prepare(self, args: dict[str, Any], ctx: ActionContext) -> Proposal:
         full = company_repo(ctx.org_id, require_named(args.get("repo"), ctx.question, "repository"))
-        repo = _call("GET", f"/repos/{full}", ctx.token)
+        repo = _your_repo(full, ctx.token)
         if repo.get("has_issues") is False:
-            raise ActionRejected("Issues are turned off for that repository.")
+            raise ActionRejected(f"Issues are turned off for {full}.")
+        # Anyone who can read a repo may open an issue in it; GitHub lists
+        # "pull" for exactly that. Checked here so a refusal comes before any
+        # draft, not as a failed send.
+        if repo.get("permissions") is not None and _level(repo) is None:
+            raise ActionRejected(f"Your GitHub account has no access to {full}, so it can't open issues there.")
         return Proposal(
             action=self.name,
             target=ActionTarget("github_repo", full, full, repo.get("html_url")),
@@ -232,9 +263,20 @@ class GitHubComment(Action):
             raise ActionRejected("Name it like owner/repo#123 or paste its GitHub address.")
         full = company_repo(ctx.org_id, match.group("repo"))
         number = int(match.group("number"))
-        repo = _call("GET", f"/repos/{full}", ctx.token)
-        issue = _call("GET", f"/repos/{full}/issues/{number}", ctx.token)
+        repo = _your_repo(full, ctx.token)
+        try:
+            issue = _call("GET", f"/repos/{full}/issues/{number}", ctx.token)
+        except ActionRejected as exc:
+            raise ActionRejected(f"There's no #{number} in {full} that your account can see.") from exc
         kind = "pull request" if "pull_request" in issue else "issue"
+        # A locked conversation takes comments only from people with write
+        # access or more; GitHub would refuse the send, so say so up front.
+        level = _level(repo)
+        if issue.get("locked") and level not in ("push", "maintain", "admin"):
+            have = f"your account has {_LEVEL_WORDS[level]} access" if level else "your account can't write there"
+            raise ActionRejected(
+                f"{full}#{number} is locked: only people with write access can comment, and {have}."
+            )
         body = clean_body(args.get("body"), ctx.question, _uris(ctx))
         if not body:
             raise ActionRejected("The draft is empty.")

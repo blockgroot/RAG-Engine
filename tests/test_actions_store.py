@@ -342,3 +342,42 @@ def test_nothing_is_offered_while_act_is_off(people, monkeypatch):
     org_a, _org_b, _admin, member, _outsider = people
     policy.set_policy(org_a, "linear.create_issue", True)  # but Act never allowed
     assert build_actions(org_a, None, member.id) == []
+
+
+@requires_db
+def test_spaces_get_act_by_the_companys_mode_and_their_owners_switch(people):
+    org_a, _org_b, admin, member, _outsider = people
+    ws = str(uuid.uuid4())
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO workspaces (id, org_id, name, created_by) VALUES (%s, %s, 'Mine', %s)",
+            (ws, org_a, member.id),
+        )
+    # Off for the company: nothing anywhere, whatever a space says.
+    policy.set_policy(org_a, policy.ACT_KEY, True, workspace_id=ws)
+    assert policy.company_mode(org_a) == "off"
+    assert not policy.act_on(org_a) and not policy.act_on(org_a, ws)
+
+    # On in every space: a space has it until its owner turns it off.
+    policy.set_policy(org_a, policy.ACT_KEY, False, workspace_id=ws)
+    policy.set_policy(org_a, policy.ACT_KEY, True, updated_by=admin.id)
+    assert policy.company_mode(org_a) == "on"
+    assert policy.act_on(org_a) and not policy.act_on(org_a, ws)
+    policy.set_policy(org_a, policy.ACT_KEY, True, workspace_id=ws)
+    assert policy.act_on(org_a, ws)
+
+    # Each space decides: off in a space until its owner turns it on.
+    policy.set_policy(org_a, policy.SPACES_DECIDE_KEY, True, updated_by=admin.id)
+    other = str(uuid.uuid4())
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO workspaces (id, org_id, name, created_by) VALUES (%s, %s, 'Other', %s)",
+            (other, org_a, member.id),
+        )
+    assert policy.company_mode(org_a) == "spaces"
+    assert policy.act_on(org_a)                      # company-wide still on
+    assert policy.act_on(org_a, ws)                  # this owner opted in
+    assert not policy.act_on(org_a, other)           # this one has not
+    policy.set_policy(org_a, "linear.create_issue", True, updated_by=admin.id)
+    assert not policy.is_enabled(org_a, other, "linear.create_issue")
+    assert policy.is_enabled(org_a, ws, "linear.create_issue")

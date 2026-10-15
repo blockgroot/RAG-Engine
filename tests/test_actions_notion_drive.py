@@ -51,7 +51,7 @@ class FakeNotion:
         self.results = results
         self.calls = []
 
-    def __call__(self, method, path, token, *, json=None):
+    def __call__(self, method, path, token, *, json=None, refused=None):
         self.calls.append((method, path, json))
         if path == "/search":
             return {"results": self.results}
@@ -156,6 +156,24 @@ def test_a_refused_page_says_how_to_share_it(monkeypatch):
         notion._call("GET", f"/pages/{PAGE_ID}", "tok")
 
 
+def test_a_notion_refusal_says_which_access_was_missing(monkeypatch):
+    """Notion can't be asked in advance, so its refusal is said per kind of write."""
+    class Resp:
+        status_code = 403
+
+        def json(self):
+            return {"code": "restricted_resource"}
+
+    monkeypatch.setattr(notion.httpx, "request", lambda *a, **k: Resp())
+    target = {"external_id": DASHED, "url": "https://www.notion.so/x"}
+    with pytest.raises(ActionRejected, match="can only view this page"):
+        notion.NotionComment().execute("k", target, {"body": "hi"}, "tok")
+    with pytest.raises(ActionRejected, match="can't edit this page"):
+        notion.NotionAppend().execute("k", target, {"body": "hi"}, "tok")
+    with pytest.raises(ActionRejected, match="can't edit this page"):
+        notion.NotionCreatePage().execute("k", target, {"title": "t", "body": "b"}, "tok")
+
+
 # --------------------------------------------------------------------------
 # Google Docs (API faked)
 # --------------------------------------------------------------------------
@@ -238,7 +256,7 @@ def test_an_indexed_page_the_asker_cannot_read_is_refused(org, monkeypatch):
             (org.id, DASHED, ["ceo@x.com"]),
         )
     monkeypatch.setattr(notion, "_call", FakeNotion([_page("Board minutes")]))
-    with pytest.raises(ActionRejected, match="can't edit"):
+    with pytest.raises(ActionRejected, match="can't open that page in Handbook"):
         notion.NotionComment().prepare(
             {"page": "Board minutes", "body": "b"},
             _ctx("comment on Board minutes", org=org.id, viewer=Viewer(email="a@x.com")))
