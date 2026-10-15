@@ -1,6 +1,6 @@
 # Handbook: Current Features and Status
 
-*As of 6 October 2026 · code at* `main`
+*As of 13 October 2026 · code at* `main`
 
 Handbook is an AI assistant that answers employees' questions from their company's own tools:
 Notion, Google Drive, Slack, Linear and GitHub. Every answer names its source. When the answer
@@ -21,8 +21,8 @@ tool already lets them see.
 | 6   | Second Brain: knowledge graph                     | Live                                                                                                                      | `app/graph/`                                               |
 | 7   | Second Brain: live tool reads                     | Live                                                                                                                      | `app/livetools/`                                           |
 | 8   | Second Brain: personal memory                     | Live                                                                                                                      | `app/memory/personal.py`                                   |
-| 9   | Charts in Ask                                     | Live                                                                                                                      | `app/insights/`, `frontend/components/Chart.tsx`           |
-| 10  | Open-ended charts                                 | In progress (PR #45)                                                                                                      | branch `feat/open-ended-charts`                            |
+| 9   | Charts from tool activity                         | Live                                                                                                                      | `app/insights/`, `frontend/components/charts/`             |
+| 10  | Charts from documents and uploaded files          | Live                                                                                                                      | `app/doctables/`, `app/insights/tables.py`                 |
 | 11  | Ask in Slack                                      | Live                                                                                                                      | `app/api/slack_events.py`                                  |
 | 12  | Scheduled reports                                 | Live                                                                                                                      | `app/schedulers/`                                          |
 | 13  | File uploads                                      | Live                                                                                                                      | `app/attachments/`                                         |
@@ -171,35 +171,57 @@ works in web chat only.
 
 **Code:** `app/memory/personal.py`
 
-## 9. Charts in Ask
+## 9. Charts from tool activity
 
 **Status: Live**
 
-Ask for a chart in the same box, for example "chart commits by author" or "pie of Linear issues by
-state". Every number comes from counted data in the database. The AI never produces a number.
-Hovering a bar shows the items behind it, and charts can be pinned. Charts follow access rules.
-Survey sentiment is visible to owners only.
+Turn on **Chart mode** beside the message box and ask, for example "commits per week by author"
+or "Linear issues by state". The AI only fills in a request (what to count, how to split it, which
+period, which shape); code checks it and SQL counts the stored rows. **The AI never produces a
+number.** If the request can't be checked, the chart is refused with the reason, never guessed.
 
-**Limitation:** only a fixed list of metrics can be charted until PR #45 is merged.
+- **What can be charted:** 12 activity measures (Notion and Drive changes, GitHub commits, pull
+  requests and reviews, Linear issues and cycle time, Slack conversations, Forms sentiment), plus
+  any simple field a tool returns (labels, priority, state), found per space, not from a fixed list.
+- **Shapes:** bar, horizontal bar, stacked bar, line, area, stacked area, pie, donut and heatmap,
+  depending on whether there is a time axis and how many splits are asked for.
+- **On screen:** drawn with ECharts. Hover shows the items behind a bar; each chart has a table
+  view, PNG and CSV download, and can be pinned. The title names the measure and unit, and a line
+  under it says what each bar counts.
+- **Access:** a chart counts only documents the asker can open. GitHub is read fresh when a chart
+  asks for it.
 
-**Code:** `app/insights/` (registry, store, resolve, facts), `frontend/components/Chart.tsx`
+**Limitation:** GitHub charts are for the whole space, not filtered to the repos one person can open.
 
-## 10. Open-ended charts
+**Code:** `app/insights/` (registry, query, resolve, store), `app/agent/insights_agent.py`,
+`frontend/components/charts/`
 
-**Status: In progress (PR #45, under review)**
+## 10. Charts from documents and uploaded files
 
-- **Any combination of splits.** Ask for things like "pull requests merged per repository, split
-by person".
-- **More fields to chart.** Chart extra fields the tools already return, such as labels.
-- **Tables inside documents.** Chart a table inside a document, such as a sales table in a Doc.
-- **Files you upload.** In Chart mode, chart a file attached to the chat: each Excel sheet, a
-  CSV, Word tables, tables a PDF page draws, or figures written in a file's sentences (read once
-  by AI and checked against the quote). Only the uploader, in that chat, can chart it; removing
-  the file removes its tables. Starter questions come from the file's own columns.
+**Status: Live**
 
-The rule stays the same: the AI never produces a number.
+The same Chart mode charts figures that sit inside documents.
 
-**Code:** branch `feat/open-ended-charts`
+- **Tables in documents.** Tables in Notion pages, Notion inline databases, Google Docs, Sheets and
+  Word files are saved as rows when the page syncs (`doc_tables`, `doc_table_rows`), with no AI.
+  A chart picks the table that best matches the question; the table's first column is its axis,
+  rows keep the document's order, and percentages are averaged, never added up.
+- **Figures written in paragraphs.** When a page with at least three figures syncs, the AI reads
+  the whole page section by section and lists each figure with its measure, unit, period and label.
+  Code builds the tables from that list and keeps a figure only when its sentence is in the page
+  and the number matches its label. Nothing is hard-coded to particular words, units or
+  languages. A page whose read fails is retried by later syncs and shown to admins on the
+  Feedback page.
+- **When nothing is saved.** Chart mode reads the page the asker named, or the closest one or two
+  pages, live before saying there is no table.
+- **Uploaded files.** Excel sheets, CSV, Word tables and PDF tables are read when the file is
+  attached, with no AI. Figures in a file's sentences are read once, in Chart mode. Only the
+  uploader, in that chat, can chart the file; removing it removes its tables.
+
+Updates are automatic: a webhook or the hourly sync re-reads an edited page. A document table is
+exactly as visible as its document.
+
+**Code:** `app/doctables/` (table and text adapters, store, uploads), `app/insights/tables.py`
 
 ## 11. Ask in Slack
 
@@ -213,9 +235,15 @@ documents never reach a shared room.
 - **Direct messages.** Answers use everything the person can see and name the source and space.
 - **While searching.** The bot shows "Searching…" and edits it into the answer.
 
+- **Charts.** A chart question gets a PNG image of the chart (Slack can't run interactive
+charts), with an **Open interactive chart** link that asks the same question in the web app, under
+the clicker's own access. A DM charts what the person can open; a channel charts only that
+channel, and its link opens the channel's space. Needs the `files:write` scope; without it the
+numbers are written as text.
+
 Unanswered questions are logged here too, but Slack has no thumbs.
 
-**Code:** `app/api/slack_events.py`
+**Code:** `app/api/slack_events.py`, `app/chartrender/`
 
 ## 12. Scheduled reports
 
@@ -235,7 +263,7 @@ rather than changes.
 Attach PDF, Word, Excel (.xlsx), CSV, TSV, text, Markdown or JSON files to a chat. Files are stored privately in
 Cloudinary and answered together with company documents, so "is this bill claimable?" reads the
 bill and the expense policy. Each file gets its own result: one bad file doesn't block the
-others.
+others. In Chart mode a file's tables and figures can be charted (see §10).
 
 **Limitations:** no images, and no reusable file library.
 
@@ -406,7 +434,6 @@ chart access, email change, and instant updates from all four tools.
 
 ## What's next
 
-1. Merge open-ended charts (PR #45).
-2. Add new connectors (Confluence and Jira first), a deep research mode, and action tools that
+1. Add new connectors (Confluence and Jira first), a deep research mode, and action tools that
   create issues or post updates after confirmation.
 

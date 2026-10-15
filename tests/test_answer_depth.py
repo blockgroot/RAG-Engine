@@ -219,6 +219,12 @@ def test_partial_and_conflict_rules_are_off_by_default_and_numbered_after_focus(
     assert full.index("8. If CONTEXT blocks disagree") < full.index("\nCONTEXT:\n<<<")
     only_partial = build_grounded_prompt("q?", ["ctx"], FALLBACK, partial_rule=True)
     assert "6. If CONTEXT answers only part" in only_partial
+    assert "as a whole" not in full
+    all_on = build_grounded_prompt("q?", ["ctx"], FALLBACK, focus_rule=True, partial_rule=True,
+                                   conflict_rule=True, assemble_rule=True)
+    assert "9. If the QUESTION asks about the company" in all_on
+    assert "how many there are" in all_on and "even beyond rule 5" in all_on  # lists are complete
+    assert all_on.index("9. If the QUESTION") < all_on.index("\nCONTEXT:\n<<<")
 
 
 
@@ -332,6 +338,28 @@ def test_neighbours_never_push_another_document_out_of_the_budget():
     assert [h.document_id for h in out] == ["a", "b", "c"]
     assert total <= 1000  # everything selected fits; neighbours took only the room left
     assert "a" * 400 in out[0].content  # and they still read deeper where room allowed
+
+
+def test_a_wide_deep_read_keeps_every_document_and_deepens_only_with_room_left():
+    from app.rag.pipeline import reset_deep_read, use_deep_read
+
+    # A company-wide question: seven documents each hold a piece. Reading the top
+    # three in depth used to fill the deep budget and cut the other four.
+    store = NeighbourStore({("a", i): "a" * 400 for i in range(10)})
+    pipe = _pipeline(store, neighbors=1)
+    pipe._settings = replace(pipe._settings, deep_max_context_chars=2000, wide_doc_ratio=0.3, wide_max_hits=10)
+    hits = [_hit(d, 1, d.upper() + " piece") for d in "abcdefg"]
+    token = use_deep_read(True)
+    try:
+        assert pipe._read_settings().wide_max_hits == 20  # Deep may read more documents
+        assert pipe._read_settings().max_answer_tokens == 2000  # and answer a whole list
+        out = pipe._with_neighbors(hits, ORG, workspace_id=None, viewer=None)
+    finally:
+        reset_deep_read(token)
+
+    assert [h.document_id for h in out] == list("abcdefg")
+    assert sum(len(h.content) + 120 for h in out) <= 2000  # all fit the budget's prefix
+    assert "a" * 400 in out[0].content  # depth still taken where room was left
 
 
 def test_a_broad_read_includes_partly_relevant_documents_a_narrow_one_never_does():

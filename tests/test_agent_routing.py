@@ -736,6 +736,31 @@ def test_a_named_page_with_figures_beats_an_activity_metric(monkeypatch):
     assert decision.chart_spec.table_id == "t-page"
 
 
+def test_a_named_page_in_another_space_is_never_charted_from_other_pages(monkeypatch):
+    """Production: "salary by team from the Hiring plan 2026" asked company-
+    wide (the plan is in a space) read Atlas and a Linear issue instead."""
+    from types import SimpleNamespace
+
+    from app.doctables.store import DocumentPlace
+    from app.insights.resolve import AskIntent
+
+    _stub(monkeypatch, connected={"google", "notion"})
+    monkeypatch.setattr("app.insights.resolve.classify_question",
+                        lambda q, **k: AskIntent("refuse", message="no",
+                                                 named_document="Hiring plan 2026"))
+    monkeypatch.setattr("app.doctables.store.list_tables", lambda **k: [])
+    monkeypatch.setattr("app.agent.routing._live_fetch_named_tables", lambda *a, **k: None)
+    monkeypatch.setattr("app.agent.routing._chart_from_prose",
+                        lambda *a, **k: pytest.fail("read pages nobody named"))
+    monkeypatch.setattr("app.doctables.store.document_places", lambda **k: [
+        DocumentPlace(title="Hiring plan 2026", workspace_name="Finance", has_table=True)])
+    decision = routing.choose_agent(
+        "Show total salary by team from the Hiring plan 2026", ORG, chart_mode=True,
+        viewer=SimpleNamespace(is_unrestricted=False, acl=lambda: ["a@b.c"]),
+    )
+    assert "Finance" in decision.chart_refusal
+
+
 def test_a_named_page_with_no_table_here_is_said_plainly(monkeypatch):
     """The quarterly budget page was not among the tables offered, and the
     reply blamed themes in text instead of saying the page is not here."""

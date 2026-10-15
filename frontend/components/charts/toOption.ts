@@ -685,7 +685,16 @@ export function toOption(p: ChartProps, theme: ChartTheme = DEFAULT_THEME): ECha
     ...base,
     legend: legend(m.series.length > 1),
     grid: { left: 8, right: 16, top: m.combo ? 36 : 24, bottom: (m.series.length > 1 ? 28 : 0) + (zoom ? 40 : 8), containLabel: true },
-    xAxis: { type: "category", data: m.labels, boundaryGap: m.shape === "bar" || m.combo, ...axisStyle },
+    xAxis: {
+      type: "category", data: m.labels, boundaryGap: m.shape === "bar" || m.combo, ...axisStyle,
+      // A few long category names ("Associate Systems Analyst / Business
+      // Development ...") were hidden as overlapping, leaving bars unnamed.
+      // Every one is shown, cut to its share of the width; the tooltip has it whole.
+      ...(!m.timeAxis && m.labels.length <= 12
+        ? { axisLabel: { ...axisStyle.axisLabel, hideOverlap: false, interval: 0,
+                         width: Math.max(56, Math.floor(720 / m.labels.length) - 12), overflow: "truncate" as const } }
+        : {}),
+    },
     yAxis,
     dataZoom: zoom
       ? [{ type: "slider", xAxisIndex: 0, bottom: m.series.length > 1 ? 28 : 4, startValue: m.buckets.length - ZOOM_AFTER, endValue: m.buckets.length - 1 }, { type: "inside", xAxisIndex: 0 }]

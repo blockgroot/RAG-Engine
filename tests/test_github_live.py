@@ -465,3 +465,9 @@ def test_the_page_walk_is_bounded_and_says_so(monkeypatch):
     assert len(calls) == MAX_PULL_REQUEST_PAGES
     assert page.items == ()
     assert page.truncated is True  # there may be merges further back
+
+
+def test_an_empty_repository_has_no_commits_rather_than_failing(monkeypatch):
+    """GitHub answers a repository with no commits yet with a 409."""
+    reader, _ = _reader(monkeypatch, [{"status": 409}])
+    assert reader.list_commits("acme-inc/handbook") == []

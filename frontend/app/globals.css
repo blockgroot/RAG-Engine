@@ -2298,6 +2298,8 @@ table .role-chip.role-admin,
 .suggested-chip:nth-child(2) { animation-delay: 0.24s; }
 .suggested-chip:nth-child(3) { animation-delay: 0.3s; }
 .suggested-chip:nth-child(4) { animation-delay: 0.36s; }
+.suggested-chip:nth-child(5) { animation-delay: 0.42s; }
+.suggested-chip:nth-child(6) { animation-delay: 0.48s; }
 @keyframes chip-in {
   from { opacity: 0; transform: translateY(10px) scale(0.96); }
   to { opacity: 1; transform: translateY(0) scale(1); }

@@ -1165,6 +1165,14 @@ def _chart_mode_route(
 
             return RoutingDecision(INSIGHTS_KEY, "chart-refuse",
                                    chart_refusal=prose_figures_missing([read]))
+        else:
+            # The page they named is not here (another space, or not shared
+            # with them). Say where it is; never read OTHER pages that merely
+            # share words with the question -- that charted "Hiring plan 2026"
+            # from Atlas and a Linear issue.
+            gap = _document_gap(question, intent, tables, org_id, workspace_id, viewer, user_id)
+            if gap:
+                return RoutingDecision(INSIGHTS_KEY, "chart-refuse", chart_refusal=gap)
     prose = _chart_from_prose(
         question, intent, org_id, workspace_id, viewer, providers,
         read_providers=only or (["slack"] if channel_tag else None), tag=channel_tag,

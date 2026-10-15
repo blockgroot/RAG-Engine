@@ -13,7 +13,7 @@
 
 The product is a **multi-tenant retrieval-augmented generation (RAG) platform** for company question-and-answer.
 
-Each tenant connects **Notion, Google Drive, Slack, Linear and GitHub**. Employees ask in the web app or in Slack and receive answers **grounded in that tenant’s own material**, limited to what they may open in the source tool. GitHub is answered from live API reads and is not embedded. Charts count recorded activity in SQL. Current product status is `docs/handbook/PRODUCT_STATUS.md`.
+Each tenant connects **Notion, Google Drive, Slack, Linear and GitHub**. Employees ask in the web app or in Slack and receive answers **grounded in that tenant’s own material**, limited to what they may open in the source tool. GitHub is answered from live API reads and is not embedded. Charts add up stored rows in SQL: recorded tool activity, and tables and paragraph figures read from documents and uploads. Current product status is `docs/handbook/PRODUCT_STATUS.md`.
 
 The intended deployment is a **self-hosted Docker image** that an enterprise can run inside its own infrastructure. Default components are therefore local, inexpensive, and keep policy text off third-party embedding APIs unless remote inference is explicitly configured.
 
@@ -58,6 +58,7 @@ Components that violated (1) or (3) for a modest quality gain were rejected. The
 | Web fallback | DuckDuckGo via tool-calling; labelled output | No API key. Restricted to named external entities. |
 | Content sources | Notion, Drive, Slack, Linear (indexed); GitHub live; Forms labels only | Sharing from Drive, Slack, Linear and GitHub is applied in the query. Notion is per space. |
 | API and interface | FastAPI and Next.js 15 | Organisation identity is taken only from the signed session cookie. |
+| Charts | Model fills a spec; SQL adds up stored rows; ECharts on the web, matplotlib PNG in Slack | The model never emits a number. Tables in documents and uploads are read without AI (openpyxl, pdfplumber); figures in paragraphs are listed by the background model and checked against their quotes. |
 | Evaluation | Golden path checks, retrieval rank, optional RAGAS | Continuous integration remains fast; LLM-as-judge runs on a slower cadence. |
 
 ---
