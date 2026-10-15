@@ -258,10 +258,18 @@ go to providers that don't collect data.
 **Status: Live**
 
 Every web answer has thumbs up or down. A thumbs-down asks for a reason: incorrect, out of date,
-or unhelpful. Every unanswered question is recorded automatically, from both web and Slack. Admins
-see the most-asked missing topics and how many different people asked, on `/admin/feedback`.
+or unhelpful. Every unanswered question is recorded automatically, from both web and Slack, and grouped
+with others that ask the same thing in different words. When 3 different people can't get an
+answer on one topic in 14 days, or 2 mark its answers wrong, the bell tells whoever can fix it:
+the admin for company-wide questions, the space's owner for questions asked in that space.
+The alert opens the topic: how people asked it, whether anything came close, and the answer
+marked wrong. "Mark as handled" hides it until it is asked again. Who asked is never shown.
+Charts Handbook couldn't draw are not listed here; they are for us to improve.
 
-**Limitation:** questions are grouped by exact wording, not by meaning.
+Grouping uses the background model to decide whether two questions ask for the same thing;
+embeddings only narrow which topics it compares against.
+
+**Limitation:** grouping has been checked on a made-up set of questions, not yet on real ones.
 
 **Code:** `app/feedback/`
 

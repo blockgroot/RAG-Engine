@@ -8682,6 +8682,120 @@ a.people-card:hover { color: inherit; }
 }
 .act-history-outcome a:hover { text-decoration: underline; text-underline-offset: 0.18em; }
 
+/* Account page action history: separate the action, destination and outcome
+   so repeated entries stay easy to scan. */
+.account-actions {
+  gap: 0.75rem;
+  margin-top: 0.25rem;
+}
+.account-actions-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.account-actions-head p {
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+}
+.account-actions-list {
+  display: grid;
+  border-top: 1px solid var(--border);
+}
+.account-action-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(11rem, auto);
+  align-items: center;
+  gap: 1.25rem;
+  min-height: 4.5rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.account-action-copy {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.18rem 0.55rem;
+  min-width: 0;
+}
+.account-action-provider {
+  padding: 0.14rem 0.42rem;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--ink-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+.account-action-copy strong {
+  overflow: hidden;
+  font-size: 0.86rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-action-target {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: var(--ink-muted);
+  font-size: 0.76rem;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.account-action-date {
+  color: var(--ink-muted);
+  font-size: 0.74rem;
+  white-space: nowrap;
+}
+.account-action-outcome {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.65rem;
+}
+.account-action-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.65rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--ink-muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.account-action-status[data-status="succeeded"] {
+  background: color-mix(in srgb, var(--accent-soft) 48%, white);
+  color: var(--provenance-policy);
+}
+.account-action-status[data-status="failed"],
+.account-action-status[data-status="unknown"] {
+  background: #fff4ed;
+  color: var(--provenance-none);
+}
+.account-action-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  min-height: 2rem;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  color: var(--accent-strong);
+  font-size: 0.73rem;
+  font-weight: 650;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.account-action-link:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 26%, white);
+  color: var(--accent-strong);
+}
+
 /* Actions admin: permissions read as a small control surface, not a legal
    document. The switches are grouped by destination and the audit trail is
    readable without a six-column table. */
@@ -8878,6 +8992,18 @@ a.people-card:hover { color: inherit; }
   .actions-provider-grid,
   .actions-surface-list { grid-template-columns: 1fr; }
   .action-safety-note { align-items: flex-start; flex-direction: column; gap: 0.15rem; }
+  .account-actions-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  .account-action-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.55rem 0.75rem;
+  }
+  .account-action-copy { grid-column: 1 / -1; }
+  .account-action-date { grid-column: 1; grid-row: 2; }
+  .account-action-outcome { grid-column: 2; grid-row: 2; }
 }
 @media (max-width: 600px) {
   .act-panel-head { flex-direction: column; }

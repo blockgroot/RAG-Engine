@@ -371,7 +371,7 @@ export function AppShell({
                   </span>
                   <span className="rail-link-copy">
                     <span className="rail-link-title">Feedback</span>
-                    <span className="rail-link-hint">Gaps, charts, data health</span>
+                    <span className="rail-link-hint">What people couldn&rsquo;t find</span>
                   </span>
                 </Link>
                 {/* Always shown to admins: this is where they turn Act on. */}

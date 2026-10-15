@@ -58,60 +58,25 @@ export const FEEDBACK_REASONS = [
 
 export type FeedbackReason = (typeof FEEDBACK_REASONS)[number]["value"];
 
-export interface FeedbackGap {
-  question: string;
-  /** DISTINCT people, not repeats — one person asking five times is one. */
-  asked_by: number;
-  refusals: number;
-  downvotes: number;
-  /** null = retrieval matched nothing at all; a number = something was close
-   *  but under the confidence gate. Different fixes. */
-  best_gate_score: number | null;
-  last_asked: string;
-}
-
-/** A chart someone asked for and did not get. `why` is the latest refusal's
- *  heading: connect a source, record a field, or add a live read. */
-export interface FeedbackChartGap {
-  question: string;
-  asked_by: number;
-  times: number;
-  why: string;
-  last_asked: string;
-}
-
-export interface FeedbackDownvote {
+/** Questions people couldn't get answered, grouped by meaning. Counts only,
+ *  never who asked. */
+export interface GapTopic {
   id: string;
-  question: string;
-  answer: string | null;
-  agent: string | null;
-  reason: FeedbackReason | null;
-  comment: string | null;
-  created_at: string;
-}
-
-export interface FigureHealth {
-  pages_with_figures: number;
-  tables: number;
-  no_figures: number;
-  /** Unusable model reply; read again by a later sync. */
-  retrying: number;
-  /** Unusable `max_tries` times; left until the page changes. */
-  gave_up: number;
-  waiting: number;
-  max_tries: number;
-  problems: { title: string; provider: string; tries: number; last_try: string }[];
-}
-
-export interface FeedbackSummary {
-  days: number;
-  /** Null when it could not be read; absent from an older server. */
-  figures?: FigureHealth | null;
-  counts: { up: number; down: number; refusals: number };
-  gaps: FeedbackGap[];
-  /** Absent from a server older than this list. */
-  chart_gaps?: FeedbackChartGap[];
-  downvoted: FeedbackDownvote[];
+  /** The first question asked on this topic, in the asker's own words. */
+  label: string;
+  /** Enough different people hit it for the bell to say so. */
+  alerting: boolean;
+  missing_people: number;
+  wrong_people: number;
+  questions: string[];
+  /** Null: nothing came close (the document is missing). A number: something
+   *  related exists but was too weak a match. */
+  best_score: number | null;
+  wrong_answer: string | null;
+  wrong_reason: string | null;
+  wrong_comment: string | null;
+  surfaces: string[];
+  last_asked: string;
 }
 
 export interface ConversationSummary {
@@ -726,7 +691,7 @@ export type ConnectorFreshness = {
 };
 
 export type Notification = {
-  kind: "reauth" | "scope" | "injection";
+  kind: "reauth" | "scope" | "injection" | "gap";
   severity: "high" | "medium";
   provider: string;
   scope: string;
@@ -1020,8 +985,17 @@ export const api = {
 
   clearMemory: () => request<{ deleted: number }>("/account/memory", { method: "DELETE" }),
 
-  feedbackSummary: (days = 30) =>
-    request<FeedbackSummary>(`/admin/feedback?days=${days}`),
+  /** Company-wide topics (admin), or one space's (its owner). */
+  gapTopics: (workspaceId?: string | null) =>
+    request<{ topics: GapTopic[] }>(
+      workspaceId ? `/workspaces/${encodeURIComponent(workspaceId)}/feedback` : "/admin/feedback",
+    ),
+
+  markTopicHandled: (topicId: string, workspaceId?: string | null) =>
+    request<{ id: string; handled: boolean }>(
+      `${workspaceId ? `/workspaces/${encodeURIComponent(workspaceId)}/feedback` : "/admin/feedback"}/topics/${encodeURIComponent(topicId)}/handled`,
+      { method: "POST" },
+    ),
 
   uploadAttachments: async (
     conversationId: string,
