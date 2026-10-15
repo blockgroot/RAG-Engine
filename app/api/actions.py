@@ -101,16 +101,21 @@ def _vstore():
 
 
 def ask_search(user_id: str):
-    """How Act finds documents: Ask's own retrieval, never a search of its own.
+    """How Act finds content: Ask's own reading, never a search of its own.
 
     Routing is Ask's (``choose_agent``: a tool the words name, else the best
     match by meaning), run on the words that name the content: "create a
     Linear issue from the Slack message about X" names Linear as where it
-    GOES and Slack as where it IS. Then that agent's pipeline searches as Ask
-    does (``RagPipeline.retrieve_passages``). A Slack channel's draft stays in
-    that channel, read by the room, like a channel reply. GitHub and Charts
-    hold no passages, so they fall back to the company-wide (or space) search.
+    GOES and Slack as where it IS. An indexed tool (Notion, Drive, Slack,
+    Linear, or a space's or the company's documents) is searched by that
+    agent's pipeline as Ask does (``RagPipeline.retrieve_passages``). GitHub
+    is read live by Ask's GitHub agent (``read_evidence``), limited to the
+    repositories the asker can open. A Slack channel's draft stays in that
+    channel, read by the room, like a channel reply. Charts hold no passages,
+    so they fall back to the company-wide (or space) search.
     """
+    from ..actions.base import Source
+    from ..actions.service import indexed_context
     from ..agent.routing import choose_agent
     from . import deps
 
@@ -118,17 +123,29 @@ def ask_search(user_id: str):
                   "notion": deps.get_notion_agent, "google": deps.get_drive_agent}
 
     def search(question, about, *, org_id, workspace_id=None, tags=None, viewer=None):
+        text = about or question
         key = "slack" if tags else None
         if key is None:
             try:
-                key = choose_agent(about or question, org_id, workspace_id=workspace_id,
+                key = choose_agent(text, org_id, workspace_id=workspace_id,
                                    viewer=viewer, user_id=user_id).agent_key
             except Exception:  # noqa: BLE001 - routing is a narrowing, never a requirement
                 logger.warning("Act routing failed; searching everything", exc_info=True)
+        if key in ("github", "github_live"):
+            read = deps.get_github_agent().read_evidence(
+                text, org_id, workspace_id=workspace_id, viewer=viewer)
+            if read is not None:
+                repo, evidence, public, url = read
+                # A private repository's readers are not known here, so nobody
+                # counts as able to see it: any audience gets the tick.
+                return [Source(f"github:{repo}", f"GitHub {repo}", public, (), url)], (
+                    f"[GitHub {repo}]\n{evidence}")
+            key = None
         getter = per_source.get(key) or (
             deps.get_workspace_agent if workspace_id else deps.get_policy_agent)
-        return getter().pipeline.retrieve_passages(
+        hits = getter().pipeline.retrieve_passages(
             question, org_id, about=about, workspace_id=workspace_id, tags=tags, viewer=viewer)
+        return indexed_context(hits, org_id, viewer, workspace_id)
 
     return search
 

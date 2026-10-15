@@ -319,9 +319,11 @@ target is taken only from the asker's own words (`draft.require_named`), never
 from a passage; written links and @-mentions only if the asker wrote them.
 Passages are shown only when the request asks to draft from company content
 (`document_words`, quoted from the request); otherwise the model sees the
-request alone. They are found by Ask's own retrieval (`api.actions.ask_search`:
-Ask's routing on the words naming the content, then `retrieve_passages`),
-never a search of Act's own. Asked inside a Slack channel thread, that thread is read live
+request alone. They are found by Ask's own reading (`api.actions.ask_search`:
+Ask's routing on the words naming the content, then that agent's
+`retrieve_passages`, or GitHub's live `read_evidence` over the repos the asker
+can open), never a search of Act's own. A private repo's readers are unknown,
+so any audience needs the tick. Asked inside a Slack channel thread, that thread is read live
 (`slack.thread_context`), never a search of the channel. Every
 passage shown to the model is a source for `exposure.assess`: private content
 never goes somewhere public (refused in code and by a CHECK), and a wider or

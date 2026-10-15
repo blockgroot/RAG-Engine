@@ -155,41 +155,17 @@ def _names(providers) -> str:
     return " or ".join(PROVIDER_NAMES.get(p, p) for p in sorted(providers))
 
 
-def store_search(embedder, vstore):
-    """A search straight against the store: one meaning-only query for the
-    words naming the content, each hit held to the 0.35 gate. Only for a
-    caller with no Ask pipeline (tests); the app passes ``ask_search``."""
-
-    def search(question, about, *, org_id, workspace_id=None, tags=None, viewer=None):
-        vec = embedder.embed([about or question])[0]
-        hits = vstore.query(org_id, vec, top_k=CONTEXT_HITS, workspace_id=workspace_id,
-                            tags=tags, viewer=viewer)
-        gate = RagSettings.from_env().similarity_threshold
-        return [h for h in hits if h.score is not None and h.score >= gate]
-
-    return search
-
-
-def _context(
-    question: str, about: str | None, org_id: str, viewer, search,
-    workspace_id: str | None = None, tags: list[str] | None = None,
+def indexed_context(
+    hits: list, org_id: str, viewer, workspace_id: str | None = None,
 ) -> tuple[list[Source], str]:
-    """Passages this viewer may read in this scope, found the way Ask finds
-    them, unflagged, at most ``CONTEXT_HITS``.
+    """Search hits from indexed documents as ``(sources, passages)``: unflagged,
+    at most ``CONTEXT_HITS``, and only documents this viewer may read.
 
-    ``search`` is Ask's own retrieval (``ask_search`` in the API: its routing
-    to the tool the request names, spelling fix, keyword + meaning search,
-    rerank and 0.35 gate), so a request needs no exact name to find what it
-    means. The web and a Slack DM read company-wide as the asker. A Slack
-    CHANNEL passes that channel's tag and the room's viewer, exactly like a
-    channel reply, so a draft made in a room can only use what the room can
-    read. A chunk the injection guard flagged is dropped whatever the guard's
-    mode, because here text can turn into a write. Each document's viewers
-    are read again with the visibility predicate, so a source is exactly as
-    visible as Ask would make it.
+    A chunk the injection guard flagged is dropped whatever the guard's mode,
+    because here text can turn into a write. Each document's viewers are read
+    again with the visibility predicate, so a source is exactly as visible as
+    Ask would make it.
     """
-    hits = search(question, about, org_id=org_id, workspace_id=workspace_id, tags=tags,
-                  viewer=viewer)
     guard = GuardSettings.from_env()
     hits = [h for h in hits
             if h.injection_score is None or h.injection_score < guard.threshold][:CONTEXT_HITS]
@@ -214,6 +190,27 @@ def _context(
         f"[{docs[h.document_id].title}]\n{scrub_untrusted_text(h.content)}" for h in kept
     )
     return list({h.document_id: docs[h.document_id] for h in kept}.values()), passages
+
+
+def store_search(embedder, vstore):
+    """A search straight against the store: one meaning-only query for the
+    words naming the content, each hit held to the 0.35 gate. Only for a
+    caller with no Ask pipeline (tests); the app passes ``api.actions.ask_search``.
+
+    Every search returns ``(sources, passages)``. The web and a Slack DM read
+    company-wide as the asker; a Slack CHANNEL passes that channel's tag and
+    the room's viewer, exactly like a channel reply.
+    """
+
+    def search(question, about, *, org_id, workspace_id=None, tags=None, viewer=None):
+        vec = embedder.embed([about or question])[0]
+        hits = vstore.query(org_id, vec, top_k=CONTEXT_HITS, workspace_id=workspace_id,
+                            tags=tags, viewer=viewer)
+        gate = RagSettings.from_env().similarity_threshold
+        hits = [h for h in hits if h.score is not None and h.score >= gate]
+        return indexed_context(hits, org_id, viewer, workspace_id)
+
+    return search
 
 
 def _only_askers_words(args: dict, question: str) -> bool:
@@ -274,8 +271,9 @@ def propose(
     read there; the caller decides them per surface. ``read_context`` replaces
     the search when the caller knows exactly what the request is about (a
     Slack thread it was asked in); it returns ``(sources, passages)``.
-    ``search`` is how documents are found (Ask's retrieval; ``store_search``
-    over ``vstore`` when not given)."""
+    ``search`` finds the content as ``(sources, passages)`` (Ask's retrieval,
+    ``api.actions.ask_search``; ``store_search`` over ``vstore`` when not
+    given)."""
     settings = settings or ActionsSettings.from_env()
     surface = dict(surface or {"kind": "web"})
     kind = surface.get("kind", "web")
@@ -307,8 +305,9 @@ def propose(
         # unrelated Atlas page above the Slack message the request meant.
         about = args["document_words"].strip()
         find = search or store_search(embedder, vstore)
-        sources, passages = (read_context or (lambda: _context(
-            question, about, org_id, viewer, find, scope_workspace_id, tags)))()
+        sources, passages = (read_context or (lambda: find(
+            question, about, org_id=org_id, workspace_id=scope_workspace_id, tags=tags,
+            viewer=viewer)))()
         if not passages:
             return ActOutcome("I couldn't find anything you can see to draft that from. "
                               "Say what it should contain, or name where it's discussed.")

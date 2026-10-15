@@ -160,13 +160,9 @@ Slack and Linear data.
 fully covered.
 - **The main AI model isn't the only recipient.** The search service and the safety
 checks also send text out. Covering only the main model does half the job.
-- **Provider "store nothing" agreements** need approval from OpenAI or Anthropic. By
-default OpenAI keeps request logs for 30 days for abuse checks, and Microsoft's Azure
+- **Provider "store nothing" agreements** need approval from OpenAI or Anthropic. By  
+default OpenAI keeps request logs for 30 days for abuse checks, and Microsoft's Azure  
 version does the same unless that's switched off with their approval.
-- **The European regulator's guidance on this is still a draft**, as far as we could
-confirm.
-
-
 
 ## Decisions needed
 

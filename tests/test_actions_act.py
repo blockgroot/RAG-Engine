@@ -1162,46 +1162,97 @@ def test_retrieve_passages_is_asks_search_with_its_gate():
     assert RagPipeline.retrieve_passages(me, "anything", "o") == []   # under the gate
 
 
-def test_ask_search_routes_on_the_words_naming_the_content(monkeypatch):
+@pytest.fixture
+def act_search(monkeypatch):
+    """``ask_search`` with every Ask agent faked: which one was searched, and
+    what the router was shown."""
     import app.agent.routing as routing
     from app.api import actions as act_api
     from app.api import deps
 
-    routed, searched = [], []
+    seen = SimpleNamespace(routed=[], searched=[], key="slack", github=None)
 
     def agent(name):
-        pipe = type("P", (), {"retrieve_passages": lambda self, q, org, **kw: searched.append((name, kw)) or []})
-        return lambda: type("A", (), {"pipeline": pipe()})()
+        def retrieve(self, q, org, **kw):
+            seen.searched.append((name, kw))
+            return []
+        return lambda: type("A", (), {"pipeline": type("P", (), {"retrieve_passages": retrieve})()})()
 
     for name, getter in (("slack", "get_slack_agent"), ("linear", "get_linear_agent"),
                          ("notion", "get_notion_agent"), ("google", "get_drive_agent"),
                          ("policy", "get_policy_agent"), ("workspace", "get_workspace_agent")):
         monkeypatch.setattr(deps, getter, agent(name))
-    answer = {"key": "slack"}
+    monkeypatch.setattr(deps, "get_github_agent", lambda: type("G", (), {
+        "read_evidence": lambda self, text, org_id, **kw: (
+            seen.searched.append(("github", kw)) or seen.github)})())
 
     def choose(text, org_id, **kw):
-        routed.append(text)
-        if answer["key"] is None:
+        seen.routed.append(text)
+        if seen.key is None:
             raise RuntimeError("routing down")
-        return SimpleNamespace(agent_key=answer["key"])
+        return SimpleNamespace(agent_key=seen.key)
 
     monkeypatch.setattr(routing, "choose_agent", choose)
-    search = act_api.ask_search("u1")
-    q = "Create a Linear issue from the Slack message about mixing"
-    search(q, "the Slack message about mixing", org_id="o")
-    assert routed == ["the Slack message about mixing"] and searched[-1][0] == "slack"
-    assert searched[-1][1]["about"] == "the Slack message about mixing"
+    seen.search = act_api.ask_search("u1")
+    return seen
 
-    search(q, None, org_id="o", tags=["slack:channel:C1"])          # a channel: that channel only
-    assert len(routed) == 1 and searched[-1][0] == "slack"
-    answer["key"] = "github"                                          # holds no passages
-    search(q, "x", org_id="o")
-    assert searched[-1][0] == "policy"
-    search(q, "x", org_id="o", workspace_id="w1")
-    assert searched[-1][0] == "workspace"
-    answer["key"] = None                                              # routing failed
-    search(q, "x", org_id="o")
-    assert searched[-1][0] == "policy"
+
+@pytest.mark.parametrize("key", ["slack", "linear", "notion", "google"])
+def test_every_indexed_connector_is_searched_by_its_own_ask_agent(act_search, key):
+    act_search.key = key
+    act_search.search("Create a GitHub issue from the discussion about mixing",
+                      "the discussion about mixing", org_id="o")
+    assert act_search.routed == ["the discussion about mixing"]   # the content words, not "GitHub"
+    assert act_search.searched == [(key, {"about": "the discussion about mixing",
+                                          "workspace_id": None, "tags": None, "viewer": None})]
+
+
+def test_a_channel_space_or_chart_routes_like_ask(act_search):
+    act_search.search("q", None, org_id="o", tags=["slack:channel:C1"])   # that channel only
+    assert act_search.routed == [] and act_search.searched[-1][0] == "slack"
+    act_search.key = "insights"                                          # charts hold no passages
+    act_search.search("q", "x", org_id="o")
+    assert act_search.searched[-1][0] == "policy"
+    act_search.search("q", "x", org_id="o", workspace_id="w1")
+    assert act_search.searched[-1][0] == "workspace"
+    act_search.key = None                                                 # routing failed
+    act_search.search("q", "x", org_id="o")
+    assert act_search.searched[-1][0] == "policy"
+
+
+def test_github_is_read_live_and_a_private_repo_counts_as_private(act_search):
+    act_search.key = "github"
+    act_search.github = ("18-sana/rag-engine", "PR #12 adds the export job", False,
+                         "https://github.com/18-sana/rag-engine/pull/12")
+    sources, passages = act_search.search("q", "PR 12 in rag-engine", org_id="o")
+    assert passages == "[GitHub 18-sana/rag-engine]\nPR #12 adds the export job"
+    [src] = sources
+    assert (src.title, src.public, src.viewers, src.uri) == (
+        "GitHub 18-sana/rag-engine", False, (), "https://github.com/18-sana/rag-engine/pull/12")
+    act_search.github = None                       # nothing readable: the general search
+    act_search.search("q", "x", org_id="o")
+    assert [n for n, _ in act_search.searched[-2:]] == ["github", "policy"]
+
+
+def test_read_evidence_is_the_github_answer_without_the_answer(monkeypatch):
+    from app.agent.base import Citation
+    from app.agent.github_agent import GitHubAgent
+    from app.githublive.repos import RepoRef
+
+    repos = [RepoRef(full_name="18-sana/rag-engine", private=False),
+             RepoRef(full_name="18-sana/secret", private=None)]
+    reader = SimpleNamespace(list_repos=lambda: repos)
+    monkeypatch.setattr("app.agent.github_agent.restrict", lambda r, org, viewer: r)
+    monkeypatch.setattr("app.agent.github_agent.restricted_message", lambda r: None)
+    agent = GitHubAgent(llm=None, reader_builder=lambda org, ws: reader, fallback_response="no")
+    for repo, public in (("rag-engine", True), ("secret", False)):
+        monkeypatch.setattr(agent, "_decide_tool", lambda q, r, repo=repo: ("get_readme", {"repo": repo}))
+        monkeypatch.setattr(agent, "_run_tool", lambda rd, d, known_repos=None: (
+            "README text", [Citation(content="c", reference="r", url="https://github.com/x")]))
+        assert agent.read_evidence("what is it", "o") == (
+            f"18-sana/{repo}", "README text", public, "https://github.com/x")
+    monkeypatch.setattr(agent, "_decide_tool", lambda q, r: None)
+    assert agent.read_evidence("hello", "o") is None
 
 
 @requires_db
@@ -1211,7 +1262,9 @@ def test_propose_hands_the_request_and_the_content_words_to_the_search(org, monk
 
     def search(question, about, *, org_id, workspace_id=None, tags=None, viewer=None):
         seen.append((question, about, org_id))
-        return [_doc(org.id, "#rag-updates", public=True, content="mixing happens in these cases")]
+        return service.indexed_context(
+            [_doc(org.id, "#rag-updates", public=True, content="mixing happens in these cases")],
+            org_id, viewer, workspace_id)
 
     question = "Create a Linear issue in Platform from the Slack message about mixing cases"
     llm = OneCallLLM("linear_create_issue", {
