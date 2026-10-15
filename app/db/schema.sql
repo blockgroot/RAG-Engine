@@ -1201,6 +1201,27 @@ CREATE INDEX IF NOT EXISTS idx_feedback_org_recent
 CREATE INDEX IF NOT EXISTS idx_feedback_org_question
     ON feedback_and_gaps (org_id, normalized_question);
 
+-- Unanswered and marked-wrong questions grouped by MEANING
+-- (`app/feedback/topics.py`): "how do I claim expenses" and "reimbursement
+-- process" are one missing document. A topic is its first question and that
+-- question's embedding; later questions join the nearest topic in the same
+-- scope above a similarity cut-off. `handled_at` is the admin's or space
+-- owner's "handled": only questions asked after it count again.
+CREATE TABLE IF NOT EXISTS gap_topics (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    org_id       UUID NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+    workspace_id UUID REFERENCES workspaces (id) ON DELETE CASCADE,
+    label        TEXT NOT NULL,
+    embedding    vector(1024) NOT NULL,
+    handled_at   TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_gap_topics_scope ON gap_topics (org_id, workspace_id);
+
+ALTER TABLE feedback_and_gaps
+    ADD COLUMN IF NOT EXISTS topic_id UUID REFERENCES gap_topics (id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_feedback_topic ON feedback_and_gaps (topic_id);
+
 -- Attachment bytes and extracted text moved OUT of Postgres into an object
 -- store (Cloudinary), the shape Onyx's `FileStore` uses: the store holds the
 -- original upload AND a companion plaintext asset, while this row keeps only

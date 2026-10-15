@@ -2,35 +2,22 @@
 
 A refusal is logged without anybody asking; a thumb is logged when somebody
 does. See the `feedback_and_gaps` block in `app/db/schema.sql` for why both
-live in one table.
+live in one table. ``topics`` groups them by meaning for the people who can
+fix them.
 """
 
-from .store import (
-    MAX_ROWS,
-    RATING_REASONS,
-    ChartGapRow,
-    GapRow,
-    RatedRow,
-    list_chart_gaps,
-    list_downvoted,
-    list_gaps,
-    normalize_question,
-    rating_counts,
-    record_gap,
-    record_rating,
-)
+from .store import CHART_AGENT, RATING_REASONS, normalize_question, record_gap, record_rating
+from .topics import Topic, assign_topics, assign_topics_soon, list_topics, mark_handled
 
 __all__ = [
-    "ChartGapRow",
-    "GapRow",
-    "MAX_ROWS",
+    "CHART_AGENT",
     "RATING_REASONS",
-    "RatedRow",
-    "list_chart_gaps",
-    "list_downvoted",
-    "list_gaps",
+    "Topic",
+    "assign_topics",
+    "assign_topics_soon",
+    "list_topics",
+    "mark_handled",
     "normalize_question",
-    "rating_counts",
     "record_gap",
     "record_rating",
 ]

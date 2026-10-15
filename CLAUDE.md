@@ -212,8 +212,8 @@ similarity and the any-word keyword match Ask uses, on the chunk text or the
 title (`tables.document_similarity`); the gate never removes one (a table-heavy
 page embeds as numbers). A one-time data fix goes
 in `schema.sql` behind a `schema_marks` row, never as a bare UPDATE.
-A refused chart is a CHART gap (`feedback.list_chart_gaps`, with the refusal's
-heading as why), never on the documentation-gap list; a reply in
+A refused chart is recorded with `agent = insights` for us and never grouped
+into a gap topic an admin sees; a reply in
 `routing.NOT_CHART_GAPS` (wanted words, model can't chart, Chart mode off) is
 neither. Chart-mode starters come from the scope's metrics and discovered fields
 (`GET /chat/chart-starters`), never page copy.
@@ -256,8 +256,8 @@ column in it is context for every figure there. A year is four bare digits
 the column name when the column shares it, else onto the row's measure label,
 never summed across units. A percentage column (its cells' `%`) is averaged by default and a sum of it is refused (`tables._default_measure`). A reply that is not valid JSON keeps every complete fact
 (`salvage_facts`); one with none is `UnreadableReply`, retried by later syncs
-(`MAX_UNREADABLE_READS`), never "no figures"; the admin feedback page shows it
-(`store.figure_health`). A table chart with no breakdown uses the table's first
+(`MAX_UNREADABLE_READS`), never "no figures"; `store.figure_health` counts it
+for us, not for admins. A table chart with no breakdown uses the table's first
 column; the asker's period word makes that column the axis and a column the
 question names by its header the series (`resolve._table_period_axis`). A 429 at ingest leaves the document unchecked so a
 later sync's backfill reads it. A figure another measure governs is dropped,
@@ -330,10 +330,18 @@ reply), its card is ephemeral, and a Slack post from a channel is a reply in tha
 thread. Each Slack surface has its own admin switch. Nothing runs unattended.
 Whether a company uses Act is its admins' switch (`policy.act_on`, the `act`
 row), never an env var; reading it fails closed. In a space it also takes the
-owner's own `act` row (`act_on(org, ws)`): off until set when the admin chose
-"each space decides" (`act:spaces`), on until set otherwise. A space only
+owner's own `act` row (`act_on(org, ws)`): on until the owner turns it off. A space only
 narrows; company-wide use follows the company switch alone. Admins see switches only,
 never what a person drafted or sent.
+
+**Gaps.** What people could not get answered reaches the person who can fix it,
+grouped by meaning (`feedback/topics.py`): company-wide topics the admin, a
+space's topics its OWNER only (a non-member gets 403). Embeddings only pick
+candidate topics (paraphrases and different subjects overlap in cosine); the
+background model names the same one or none, and code keeps only a number it
+offered, else a new topic. Grouping runs in the background when they open the
+bell or the page, never on the answer path. Counts are distinct
+people, never names. Chart refusals and figure failures are ours, never shown.
 
 **Also hold.** GitHub embeds nothing. A live read runs after the gate, at most two
 items, and withholds the indexed copy only on not-found or permission. The "live" chip is shown only for a

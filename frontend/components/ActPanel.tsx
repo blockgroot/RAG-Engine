@@ -46,24 +46,36 @@ const HISTORY_STATUS: Record<ActCard["status"], string> = {
 function ActionHistoryRow({ action }: { action: ActCard }) {
   const provider =
     PROVIDER_LABEL[action.provider ?? ""] ?? action.provider ?? "tool";
+  const actionName = action.label.replace(/^.*?:\s*/, "");
   return (
-    <article className="act-history-row">
-      <div className="act-history-copy">
-        <strong>{action.label}</strong>
-        <span>{action.payload.title || action.target.name}</span>
+    <article className="account-action-row">
+      <div className="account-action-copy">
+        <span className="account-action-provider">{provider}</span>
+        <strong>{actionName}</strong>
+        <span className="account-action-target">
+          {action.payload.title || action.target.name}
+        </span>
       </div>
-      <time dateTime={action.created_at}>
+      <time className="account-action-date" dateTime={action.created_at}>
         {new Date(action.created_at).toLocaleDateString(undefined, {
           day: "numeric",
           month: "short",
           year: "numeric",
         })}
       </time>
-      <div className="act-history-outcome">
-        <span data-status={action.status}>{HISTORY_STATUS[action.status]}</span>
+      <div className="account-action-outcome">
+        <span className="account-action-status" data-status={action.status}>
+          {HISTORY_STATUS[action.status]}
+        </span>
         {action.status === "succeeded" && action.result?.url ? (
-          <a href={action.result.url} target="_blank" rel="noreferrer">
+          <a
+            className="account-action-link"
+            href={action.result.url}
+            target="_blank"
+            rel="noreferrer"
+          >
             Open in {provider}
+            <span aria-hidden="true">↗</span>
           </a>
         ) : null}
       </div>
@@ -221,9 +233,12 @@ export function ActPanel() {
           </ul>
 
           {recent.length > 0 && (
-            <div className="act-recent">
-              <h3 className="act-recent-title">Recent actions</h3>
-              <div className="act-history-list">
+            <div className="act-recent account-actions">
+              <div className="account-actions-head">
+                <h3 className="act-recent-title">Recent actions</h3>
+                <p>What Handbook prepared or sent for you.</p>
+              </div>
+              <div className="account-actions-list">
                 {recent.map((r) =>
                   r.status === "proposed" || r.status === "executing" ? (
                     <ActionCard key={r.id} card={r} onChange={updated} />

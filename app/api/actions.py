@@ -504,9 +504,6 @@ def admin_actions(session: SessionClaims = Depends(require_admin)):
     enabled = policy.enabled_actions(session.org_id, None)
     return {
         "enabled": policy.ACT_KEY in enabled,
-        # How spaces get Act: on everywhere (owners may opt out) or each
-        # space's owner opts in.
-        "spaces_decide": policy.SPACES_DECIDE_KEY in enabled,
         "block_wider": settings.block_wider,
         "catalogue": [
             {"name": n, "label": a.label, "provider": a.provider, "enabled": n in enabled}
@@ -530,8 +527,7 @@ class PolicyRequest(BaseModel):
 def admin_set_action(name: str, body: PolicyRequest, session: SessionClaims = Depends(require_admin)):
     """Switch Act itself (``act``), one action, or one Slack surface."""
     surfaces = {policy.surface_key(kind) for kind in policy.SURFACES}
-    if name not in ACTIONS and name not in surfaces and name not in (
-            policy.ACT_KEY, policy.SPACES_DECIDE_KEY):
+    if name not in ACTIONS and name not in surfaces and name != policy.ACT_KEY:
         raise HTTPException(status_code=404, detail="No such action")
     policy.set_policy(session.org_id, name, body.enabled, updated_by=session.user_id)
     return {"name": name, "enabled": body.enabled}
@@ -545,11 +541,11 @@ def space_act(workspace_id: str, session: SessionClaims = Depends(get_session),
               role: str = Depends(get_workspace_role)):
     """Whether Act works in this space, for its members (the chat asks), and
     what its owner may change: only within what the company allows."""
-    mode = policy.company_mode(session.org_id)
+    company = policy.act_on(session.org_id)
     return {
-        "company": mode,
+        "company": "on" if company else "off",
         "enabled": policy.act_on(session.org_id, workspace_id),
-        "can_change": role == "owner" and mode != "off",
+        "can_change": role == "owner" and company,
     }
 
 
@@ -559,7 +555,7 @@ def set_space_act(workspace_id: str, body: PolicyRequest,
                   _owner: str = Depends(require_workspace_owner)):
     """The space owner's switch. Narrows, never widens: with Act off for the
     company there is nothing to turn on."""
-    if policy.company_mode(session.org_id) == "off":
+    if not policy.act_on(session.org_id):
         raise HTTPException(status_code=409, detail="Your admin hasn't turned on Act for the company.")
     policy.set_policy(session.org_id, policy.ACT_KEY, body.enabled,
                       workspace_id=workspace_id, updated_by=session.user_id)

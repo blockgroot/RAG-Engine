@@ -7,6 +7,7 @@ import { AppShell } from "@/components/AppShell";
 import { PageHeader } from "@/components/PageHeader";
 import { ConnectionCard } from "@/components/ConnectionCard";
 import { FormsCard } from "@/components/FormsCard";
+import { GapTopics } from "@/components/GapTopics";
 import { SpaceActPanel } from "@/components/SpaceActPanel";
 import { useMe } from "@/lib/useMe";
 import {
@@ -769,6 +770,8 @@ function WorkspaceDetailPageInner() {
             </div>
           </section>
         )}
+
+        {isOwner && workspaceId && <GapTopics workspaceId={workspaceId} />}
 
         {isOwner && workspaceId && <SpaceActPanel workspaceId={workspaceId} />}
 

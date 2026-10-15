@@ -25,19 +25,14 @@ const PROVIDERS = [
   ["slack", "Slack", "Messages from the Handbook bot"],
 ] as const;
 
-type Mode = "off" | "on" | "spaces";
+type Mode = "off" | "on";
 
 const MODES: { value: Mode; label: string; hint: string }[] = [
   { value: "off", label: "Off", hint: "Handbook only reads." },
   {
     value: "on",
-    label: "On in every space",
+    label: "On",
     hint: "On company-wide and in every space. A space's owner can turn it off for their space.",
-  },
-  {
-    value: "spaces",
-    label: "Each space decides",
-    hint: "On company-wide. In a space it stays off until that space's owner turns it on.",
   },
 ];
 
@@ -85,14 +80,12 @@ export default function AdminActionsPage() {
     }
   }
 
-  const mode: Mode = !data?.enabled ? "off" : data.spaces_decide ? "spaces" : "on";
+  const mode: Mode = data?.enabled ? "on" : "off";
 
   async function setMode(next: Mode) {
     setBusy("act");
     setError(null);
     try {
-      // "Each space decides" is Act on, with spaces starting off.
-      if (next !== "off") await api.setAdminAction("act:spaces", next === "spaces");
       await api.setAdminAction("act", next !== "off");
       await load();
     } catch (err) {

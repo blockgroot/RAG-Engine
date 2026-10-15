@@ -78,8 +78,8 @@ rights, §11) or on an open pull request (§12).
 | Spaces | Private sub-workspaces; members see only their space's content | Live | `tests/test_workspaces.py`, `tests/test_isolation.py` | — |
 | Ask in Slack | Channel answers in a thread from that channel only; DMs answer as the person; charts as PNG images | Live | `tests/test_slack_bot.py`, `tests/test_slack_chart_upload.py` | No thumbs in Slack (gaps are still logged); Slack charts are static images |
 | Scheduled reports | Daily/weekly/monthly, saved in-app, email notification | Live | `tests/test_scheduler_*.py`; emails verified live (30 Sep) | Reports describe current content, not diffs |
-| Feedback and gaps | Thumbs with reasons; refusals and refused charts logged automatically; figure-reading health; Feedback in the admin sidebar | Live | `tests/test_feedback.py` | Grouping is exact text, not by meaning |
-| Needs-attention bell | Expired or unscoped connections, shown to whoever can fix them | Live | `tests/test_notifications.py` | — |
+| Feedback and gaps | Thumbs with reasons; refusals logged automatically; grouped by meaning into topics; company topics on **Feedback** in the admin sidebar (`/admin/feedback`), a space's on its page for its owner | On staging 15 Oct | `tests/test_feedback.py`, `tests/test_gap_topics.py` | Grouping: embeddings pick candidates (similarity 0.40+), the background model decides; checked on a made-up set, not yet on real questions |
+| Needs-attention bell | Expired or unscoped connections, and topics 3+ people couldn't get answered (or 2+ marked wrong) in 14 days, shown to whoever can fix them | Live (gap alerts: staging 15 Oct) | `tests/test_notifications.py`, `tests/test_gap_topics.py` | — |
 | Knowledge graph | Who worked on what across tools; one answer can span tools | Live | `tests/test_graph_*.py` | — |
 | Live tool reads | Re-reads a Linear issue, Drive file or Notion page when the question is about current state | Live | `tests/test_live_tools.py`; Notion and Drive verified on staging | Slack reader kept off (Slack's rate tier) |
 | Personal memory | Remembers a few facts a person states; Undo; manage on `/account` | Live | `tests/test_personal_memory.py` | Web chat only; no memory-free private chat mode |
@@ -316,9 +316,8 @@ question (the cause of the remaining list misses), held back for its latency and
 **Branch `feat/write-actions-plan` (14 Oct 2026, not merged): Act (writes into connected tools).**
 Plan: `docs/plans/2026-10-13-write-actions.md`; plain version: `plan.md`. Off until a
 company's admin allows Act (Admin › Actions › "Allow Act for your company"; no env switch), then off
-per action until they switch it on. The admin also picks how spaces get it: on in every space (an
-owner may turn it off for theirs) or each space decides (off until the space's owner turns it on in
-the space's settings). A space can only narrow what the company allows. Admins see the switches only, never what people drafted or sent.
+per action until they switch it on. With Act on, it is on in every space too; a space's owner may turn
+it off for theirs in the space's settings. A space can only narrow what the company allows. Admins see the switches only, never what people drafted or sent.
 
 - **Act is a chat mode** (+ then Act, with the model picker): the person names the tool and target,
   reviews (and can edit) the exact draft, then approves it. The write is sent **only when the person
