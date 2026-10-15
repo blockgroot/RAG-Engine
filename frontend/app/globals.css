@@ -8305,6 +8305,42 @@ a.people-card:hover { color: inherit; }
   opacity: 0.72;
 }
 
+/* With a mode selected, keep the prompt on its own row. Otherwise the chip
+   steals horizontal space from the text and the controls no longer align. */
+@media (min-width: 641px) {
+  .chat-composer:has(.composer-mode-chip) {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    align-items: center;
+    column-gap: 0.55rem;
+    row-gap: 0.25rem;
+    padding: 0.5rem;
+  }
+  .chat-composer:has(.composer-mode-chip) .chat-composer-input {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    width: 100%;
+    padding: 0.45rem 0.55rem 0.3rem;
+  }
+  .chat-composer:has(.composer-mode-chip) .composer-tools {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .chat-composer:has(.composer-mode-chip) .composer-mode-chip {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: start;
+  }
+  .chat-composer:has(.composer-mode-chip) .composer-model-wrap {
+    grid-column: 3;
+    grid-row: 2;
+  }
+  .chat-composer:has(.composer-mode-chip) .chat-composer-send {
+    grid-column: 4;
+    grid-row: 2;
+  }
+}
+
 /* —— Ask composer on phones ——
    One row could not hold the text field, the + menu, the Chart chip, the
    model picker and Send: the field shrank to a few letters. Phones get the
