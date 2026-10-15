@@ -117,6 +117,7 @@ _PRESET_EXTRA_BODY: dict[str, dict] = {
     # over the OpenAI-compatible endpoint that hidden reasoning fills the cap
     # (production, 9 Oct: the chart classifier's 200 tokens all spent thinking,
     # empty reply). Verified live: disabled, the same prompt answers in 61 tokens.
+    # Other Claude families take a different value: `_CLAUDE_THINKING_OFF`.
     "anthropic": {"thinking": {"type": "disabled"}},
     # Gemini Flash thinks by default, and thinking tokens are billed and
     # counted as output: the same cap problem as Claude above. "minimal" is the
@@ -140,17 +141,33 @@ _PRESET_EXTRA_BODY: dict[str, dict] = {
 #: ``data_collection: "deny"``, and a retry without them would put the tenant's
 #: retrieved private chunks in front of a provider that may train on them. That
 #: request must fail.
-_PRESET_EXTRA_OPTIONAL = frozenset({"nvidia", "google"})
+_PRESET_EXTRA_OPTIONAL = frozenset({"nvidia", "google", "anthropic"})
+
+#: "Thinking off" is spelled per Claude family, and the wrong spelling is a 400
+#: on every call (verified live, 15 Oct): Sonnet 5.5 rejects `disabled` and asks
+#: for `between_tools`; Opus 5.5 rejects `disabled` and, over the
+#: OpenAI-compatible endpoint, `adaptive` too; sent nothing it answers directly.
+#: A family not listed gets Haiku's value, which is optional: a model that
+#: rejects it is asked again without it rather than failing.
+_CLAUDE_THINKING_OFF: dict[str, dict | None] = {
+    "sonnet": {"thinking": {"type": "between_tools"}},
+    "opus": None,
+}
 
 
-def preset_extra_body(preset_id: str) -> tuple[dict | None, bool]:
-    """``(extra_body, may_be_dropped)`` for one BYO preset.
+def preset_extra_body(preset_id: str, model: str | None = None) -> tuple[dict | None, bool]:
+    """``(extra_body, may_be_dropped)`` for one BYO preset and model.
 
     One function so the admin probe and chat cannot disagree about what we send
     a provider — a probe that tests a different request than production is how
     "it tested fine and then failed in chat" happens.
     """
-    return _PRESET_EXTRA_BODY.get(preset_id), preset_id in _PRESET_EXTRA_OPTIONAL
+    body = _PRESET_EXTRA_BODY.get(preset_id)
+    if preset_id == "anthropic" and model:
+        family = next((f for f in _CLAUDE_THINKING_OFF if f in model.lower()), None)
+        if family is not None:
+            body = _CLAUDE_THINKING_OFF[family]
+    return body, preset_id in _PRESET_EXTRA_OPTIONAL
 
 
 def use_model(model_id: str | None, org_id: str | None = None) -> None:
@@ -342,7 +359,7 @@ class RoutedLLMProvider(LLMProvider):
         if client is not None:
             return client
 
-        extra_body, extra_optional = preset_extra_body(org.preset)
+        extra_body, extra_optional = preset_extra_body(org.preset, org.model)
         client = OpenAICompatProvider(
             model=org.model,
             api_key=org.api_key,
