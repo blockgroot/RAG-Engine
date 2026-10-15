@@ -834,6 +834,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ payload_hash: payloadHash, acknowledged }),
     }),
+  /** Ask the model to rework a pending draft's words; where it goes never changes. */
+  reviseAction: (id: string, payloadHash: string, instruction: string, model?: string | null) =>
+    request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}/revise`, {
+      method: "POST",
+      body: JSON.stringify({
+        payload_hash: payloadHash,
+        instruction,
+        model: model && model !== "auto" ? model : null,
+      }),
+    }),
   editAction: (id: string, payloadHash: string, fields: { title?: string; body?: string }) =>
     request<{ action: ActCard }>(`/act/actions/${encodeURIComponent(id)}`, {
       method: "PATCH",

@@ -8545,6 +8545,7 @@ a.people-card:hover { color: inherit; }
 .act-card-ack { display: flex; gap: 0.5rem; align-items: flex-start; font-weight: 600; cursor: pointer; }
 .act-card-ack input { margin-top: 0.2rem; }
 .act-card-actions { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; }
+.act-card-ask { flex: 1 1 16rem; min-width: 0; }
 .act-card-timer { font-size: 0.85rem; }
 .act-card-status { display: flex; flex-wrap: wrap; gap: 0.7rem; align-items: center; margin: 0; }
 .act-card-result-link {

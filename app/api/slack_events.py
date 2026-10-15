@@ -591,7 +591,8 @@ def _handle(event: dict, team_id: str) -> None:
     if request is not None:
         handle_act(request=request, org_id=org_id, token=token,
                    token_workspace_id=token_workspace_id, user=user,
-                   slack_user=slack_user, channel=channel, thread_ts=thread_ts, is_dm=is_dm)
+                   slack_user=slack_user, channel=channel, thread_ts=thread_ts, is_dm=is_dm,
+                   in_thread=bool(event.get("thread_ts")))
         return
 
     # THE SEPARATION OF CONCERNS, and it is a privacy boundary rather than a

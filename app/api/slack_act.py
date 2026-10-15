@@ -259,8 +259,12 @@ def card_blocks(row: ActionRow, *, audience_size: int | None, outsiders: int | N
 
 
 def handle_act(*, request: str, org_id: str, token: str, token_workspace_id: str | None,
-               user, slack_user: str, channel: str, thread_ts: str | None, is_dm: bool) -> None:
-    """Propose one write for a Slack ``act`` command and show the card. Never raises."""
+               user, slack_user: str, channel: str, thread_ts: str | None, is_dm: bool,
+               in_thread: bool = False) -> None:
+    """Propose one write for a Slack ``act`` command and show the card. Never raises.
+
+    Asked inside a channel THREAD, a draft that refers to it reads that thread
+    live (``thread_context``), never a search of the channel."""
     say = lambda text, blocks=None: _say(  # noqa: E731
         token, channel=channel, user=slack_user, thread_ts=thread_ts, is_dm=is_dm,
         text=text, blocks=blocks)
@@ -286,6 +290,11 @@ def handle_act(*, request: str, org_id: str, token: str, token_workspace_id: str
         tags = [tag]
         surface = {"kind": "slack_channel", "slack_user": slack_user, "channel": channel,
                    "thread_ts": thread_ts}
+    read_context = None
+    if not is_dm and in_thread and thread_ts:
+        from ..actions.slack import thread_context
+
+        read_context = lambda: thread_context(token, channel, thread_ts)  # noqa: E731
     try:
         from .actions import _embedder, _llm, _vstore
 
@@ -293,6 +302,7 @@ def handle_act(*, request: str, org_id: str, token: str, token_workspace_id: str
             request, org_id=org_id, user_id=user.id, email=user.email, viewer=viewer,
             llm=_llm(), embedder=_embedder(), vstore=_vstore(),
             surface=surface, scope_workspace_id=workspace_id, tags=tags,
+            read_context=read_context,
         )
     except Exception:  # noqa: BLE001 - a failed draft must still reply
         logger.exception("slack.act propose failed")

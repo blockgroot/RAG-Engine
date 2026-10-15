@@ -302,13 +302,20 @@ the one conditional UPDATE), and every outcome is recorded in `actions`. A write
 uses the asker's own `user_connections` token, never `oauth_connections`. The
 asker may edit a pending draft's words, never its target (`Action.edit`): the
 edit replaces the stored payload under the same guards as `claim`, counts as
-their own words, and keeps the sources and exposure (the tick is asked again). What the
+their own words, and keeps the sources and exposure (the tick is asked again). "Ask for
+changes" (`service.revise`) is the same edit written by the model from their
+instruction: the draft is fenced as data, and a link or @-mention survives only
+if the draft they saw or their instruction had it. What the
 person may do there is checked with THEIR token before any card, where the tool
 can say (GitHub: their access level, a locked issue; Linear: only teams their
 token lists); Notion cannot be asked, so its card says the access a write needs
 and its refusal names it (view only, can't edit). A
 target is taken only from the asker's own words (`draft.require_named`), never
-from a passage; written links and @-mentions only if the asker wrote them. Every
+from a passage; written links and @-mentions only if the asker wrote them.
+Passages are shown only when the request asks to draft from company content
+(`document_words`, quoted from the request); otherwise the model sees the
+request alone. Asked inside a Slack channel thread, that thread is read live
+(`slack.thread_context`), never a search of the channel. Every
 passage shown to the model is a source for `exposure.assess`: private content
 never goes somewhere public (refused in code and by a CHECK), and a wider or
 unknown audience needs the stored tick. A timeout after sending is `unknown`,

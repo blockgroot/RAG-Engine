@@ -297,6 +297,40 @@ def edit(action_id: str, body: EditRequest, session: SessionClaims = Depends(get
     return {"action": _card(row)}
 
 
+class ReviseRequest(BaseModel):
+    payload_hash: str = Field(min_length=64, max_length=64)
+    instruction: str = Field(min_length=1, max_length=1000)
+    model: str | None = Field(default=None, max_length=200)
+
+
+@router.post("/act/actions/{action_id}/revise")
+def revise(action_id: str, body: ReviseRequest, session: SessionClaims = Depends(get_session)):
+    """Rework a pending draft's words as the person asks; returns the new card."""
+    _require_on(session.org_id)
+    check_rate_limit(f"act:{session.user_id}")
+    if body.model and not _selectable_model(session.org_id, body.model):
+        raise HTTPException(status_code=400, detail="Unknown model")
+    try:
+        row = service.revise(
+            org_id=session.org_id, user_id=session.user_id,
+            action_id=_action_id(action_id), shown_hash=body.payload_hash,
+            instruction=body.instruction, llm=_llm(), model=body.model,
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail="No such action.") from exc
+    except ActionExpired as exc:
+        raise HTTPException(status_code=410, detail=str(exc)) from exc
+    except ActionConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except LLMProviderError as exc:
+        raise HTTPException(status_code=503, detail=(
+            "The model is busy right now. Your draft is unchanged; try again, or edit it yourself."
+        )) from exc
+    except ActionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"action": _card(row)}
+
+
 @router.post("/act/actions/{action_id}/reject")
 def reject(action_id: str, session: SessionClaims = Depends(get_session)):
     _require_on(session.org_id)

@@ -35,7 +35,7 @@ from ..core.exceptions import (
 from ..db.connection import get_connection
 from ..security.visibility import viewer_clause
 from .base import Action, ActionContext, ActionResult, ActionTarget, Audience, Proposal
-from .draft import clean_body, clean_title, require_named
+from .draft import clean_body, clean_title, require_named, without_title_heading
 
 API = "https://api.notion.com/v1"
 VERSION = "2026-03-11"
@@ -165,16 +165,114 @@ def rich_text(text: str) -> list[dict]:
     ] or [{"type": "text", "text": {"content": ""}}]
 
 
-def paragraphs(body: str) -> list[dict]:
-    """The body as paragraph blocks, one per blank-line-separated paragraph,
-    never more than Notion takes in one call (the overflow joins the last)."""
-    parts = [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()]
-    if len(parts) > BLOCK_LIMIT:
-        parts = parts[: BLOCK_LIMIT - 1] + ["\n\n".join(parts[BLOCK_LIMIT - 1:])]
-    return [
-        {"object": "block", "type": "paragraph", "paragraph": {"rich_text": rich_text(p)}}
-        for p in parts
-    ]
+#: Inline Markdown the model writes: a link, **bold**, `code`, *italic*/_italic_.
+_INLINE = re.compile(
+    r"\[(?P<label>[^\]\n]+)\]\((?P<url>https?://[^\s)]+)\)"
+    r"|\*\*(?P<bold>[^*\n]+)\*\*"
+    r"|`(?P<code>[^`\n]+)`"
+    r"|(?<![\w*])\*(?P<star>[^*\n]+)\*(?![\w*])"
+    r"|(?<![\w_])_(?P<under>[^_\n]+)_(?![\w_])"
+)
+
+
+def styled(text: str) -> list[dict]:
+    """Inline Markdown as Notion rich text, so ``**Purpose:**`` arrives bold
+    rather than with its asterisks. A link keeps only an http(s) address, and
+    the body already lost every link the asker did not write (``clean_body``)."""
+    out: list[dict] = []
+
+    def add(chunk: str, **style) -> None:
+        for i in range(0, len(chunk), TEXT_LIMIT):
+            part = {"type": "text", "text": {"content": chunk[i:i + TEXT_LIMIT]}}
+            if style.get("url"):
+                part["text"]["link"] = {"url": style.pop("url")}
+            if style:
+                part["annotations"] = style
+            out.append(part)
+
+    at = 0
+    for m in _INLINE.finditer(text):
+        if m.start() > at:
+            add(text[at:m.start()])
+        if m.group("label"):
+            add(m.group("label"), url=m.group("url"))
+        elif m.group("bold"):
+            add(m.group("bold"), bold=True)
+        elif m.group("code"):
+            add(m.group("code"), code=True)
+        else:
+            add(m.group("star") or m.group("under"), italic=True)
+        at = m.end()
+    if at < len(text):
+        add(text[at:])
+    return out or [{"type": "text", "text": {"content": ""}}]
+
+
+def _block(kind: str, text: str, **extra) -> dict:
+    return {"object": "block", "type": kind, kind: {"rich_text": styled(text), **extra}}
+
+
+_LINE_KINDS = (
+    (re.compile(r"^#\s+(.*)"), "heading_1", {}),
+    (re.compile(r"^##\s+(.*)"), "heading_2", {}),
+    (re.compile(r"^#{3,6}\s+(.*)"), "heading_3", {}),
+    (re.compile(r"^[-*+]\s+\[([ xX])\]\s+(.*)"), "to_do", {}),
+    (re.compile(r"^[-*+]\s+(.*)"), "bulleted_list_item", {}),
+    (re.compile(r"^\d{1,3}[.)]\s+(.*)"), "numbered_list_item", {}),
+    (re.compile(r"^>\s?(.*)"), "quote", {}),
+)
+
+
+def blocks(body: str) -> list[dict]:
+    """The body's Markdown as Notion blocks: headings, bullet, numbered and
+    check lists, quotes, code fences and paragraphs. Never more than Notion
+    takes in one call: the overflow joins the last block as plain text."""
+    out: list[dict] = []
+    para: list[str] = []
+    lines = body.splitlines()
+
+    def flush() -> None:
+        if para:
+            out.append(_block("paragraph", "\n".join(para)))
+            para.clear()
+
+    i = 0
+    while i < len(lines):
+        line = lines[i].rstrip()
+        if line.lstrip().startswith("```"):
+            flush()
+            code = []
+            i += 1
+            while i < len(lines) and not lines[i].lstrip().startswith("```"):
+                code.append(lines[i])
+                i += 1
+            out.append({"object": "block", "type": "code",
+                        "code": {"rich_text": rich_text("\n".join(code)), "language": "plain text"}})
+            i += 1
+            continue
+        if not line.strip():
+            flush()
+            i += 1
+            continue
+        stripped = line.strip()
+        for pattern, kind, _ in _LINE_KINDS:
+            m = pattern.match(stripped)
+            if m:
+                flush()
+                if kind == "to_do":
+                    out.append(_block(kind, m.group(2), checked=m.group(1) in "xX"))
+                else:
+                    out.append(_block(kind, m.group(1)))
+                break
+        else:
+            para.append(line)
+        i += 1
+    flush()
+    if len(out) > BLOCK_LIMIT:
+        rest = "\n".join("".join(t["text"]["content"] for t in b[b["type"]]["rich_text"])
+                         for b in out[BLOCK_LIMIT - 1:])
+        out = out[: BLOCK_LIMIT - 1] + [_block("paragraph", rest)]
+    return out
 
 
 def _uris(ctx: ActionContext) -> list[str]:
@@ -211,7 +309,7 @@ class NotionComment(Action):
     def execute(self, key, target, payload, token) -> ActionResult:
         made = _call("POST", "/comments", token, json={
             "parent": {"page_id": target["external_id"]},
-            "rich_text": rich_text(payload["body"]),
+            "rich_text": styled(payload["body"]),
             "display_name": {"type": "user"},
         }, refused=_CANT_COMMENT)
         if not made.get("id"):
@@ -234,7 +332,7 @@ class NotionAppend(Action):
 
     def execute(self, key, target, payload, token) -> ActionResult:
         made = _call("PATCH", f"/blocks/{target['external_id']}/children", token,
-                     json={"children": paragraphs(payload["body"])}, refused=_CANT_EDIT)
+                     json={"children": blocks(payload["body"])}, refused=_CANT_EDIT)
         if not made.get("results"):
             raise ActionError("Notion did not add the text.")
         return ActionResult(target["external_id"], target.get("url"))
@@ -255,16 +353,17 @@ class NotionCreatePage(Action):
 
     def prepare(self, args, ctx) -> Proposal:
         page = resolve_page(require_named(args.get("parent"), ctx.question, "Notion page"), ctx)
+        title = clean_title(args.get("title"))
         return Proposal(self.name, _target(page), {
-            "title": clean_title(args.get("title")),
-            "body": clean_body(args.get("body"), ctx.question, _uris(ctx)),
+            "title": title,
+            "body": without_title_heading(clean_body(args.get("body"), ctx.question, _uris(ctx)), title),
         }, Audience(members=None))
 
     def execute(self, key, target, payload, token) -> ActionResult:
         made = _call("POST", "/pages", token, json={
             "parent": {"page_id": target["external_id"]},
             "properties": {"title": {"title": rich_text(payload["title"])}},
-            "children": paragraphs(payload["body"]),
+            "children": blocks(payload["body"]),
         }, refused=_CANT_EDIT)
         if not made.get("id"):
             raise ActionError("Notion did not create the page.")
