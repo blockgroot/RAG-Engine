@@ -181,56 +181,62 @@ export function ActPanel() {
         </p>
       ) : status ? (
         <>
-          <ul className="act-providers">
-            {shownProviders.map((p) => (
-              <li key={p.provider} className="act-provider">
-                <div className="act-provider-copy">
-                  <span className="act-provider-name">
-                    {PROVIDER_LABEL[p.provider] ?? p.provider}
-                  </span>
-                  {p.bot ? (
-                    <span
-                      className={
-                        p.connected ? "act-status-ready" : "act-status-note"
-                      }
+          <div className="account-act-accounts">
+            <div className="account-act-section-head">
+              <h3>Connected accounts</h3>
+              <p>Actions are sent using your identity in each tool.</p>
+            </div>
+            <ul className="act-providers">
+              {shownProviders.map((p) => (
+                <li key={p.provider} className="act-provider">
+                  <div className="act-provider-copy">
+                    <span className="act-provider-name">
+                      {PROVIDER_LABEL[p.provider] ?? p.provider}
+                    </span>
+                    {p.bot ? (
+                      <span
+                        className={
+                          p.connected ? "act-status-ready" : "act-status-note"
+                        }
+                      >
+                        {p.connected
+                          ? "Ready through the Handbook bot"
+                          : "Use Act in Slack once to link"}
+                      </span>
+                    ) : !p.available && !p.connected ? (
+                      <span className="act-status-note">
+                        Admin setup required
+                      </span>
+                    ) : p.connected ? (
+                      <span className="act-status-ready">
+                        Connected as {p.account}
+                      </span>
+                    ) : (
+                      <span className="act-status-note">
+                        {p.needs_reauth ? "Connection expired" : "Not connected"}
+                      </span>
+                    )}
+                  </div>
+                  {p.connected && !p.bot ? (
+                    <button
+                      type="button"
+                      className="act-text-button"
+                      onClick={() => disconnect(p.provider)}
                     >
-                      {p.connected
-                        ? "Ready through the Handbook bot"
-                        : "Use Act in Slack once to link"}
-                    </span>
-                  ) : !p.available && !p.connected ? (
-                    <span className="act-status-note">
-                      Admin setup required
-                    </span>
-                  ) : p.connected ? (
-                    <span className="act-status-ready">
-                      Connected as {p.account}
-                    </span>
-                  ) : (
-                    <span className="act-status-note">
-                      {p.needs_reauth ? "Connection expired" : "Not connected"}
-                    </span>
-                  )}
-                </div>
-                {p.connected && !p.bot ? (
-                  <button
-                    type="button"
-                    className="act-text-button"
-                    onClick={() => disconnect(p.provider)}
-                  >
-                    Disconnect
-                  </button>
-                ) : !p.bot && p.available ? (
-                  <a
-                    className="button button-secondary button-sm"
-                    href={api.actConnectUrl(p.provider)}
-                  >
-                    {p.needs_reauth ? "Reconnect" : "Connect"}
-                  </a>
-                ) : null}
-              </li>
-            ))}
-          </ul>
+                      Disconnect
+                    </button>
+                  ) : !p.bot && p.available ? (
+                    <a
+                      className="button button-secondary button-sm"
+                      href={api.actConnectUrl(p.provider)}
+                    >
+                      {p.needs_reauth ? "Reconnect" : "Connect"}
+                    </a>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </div>
 
           {recent.length > 0 && (
             <div className="act-recent account-actions">
