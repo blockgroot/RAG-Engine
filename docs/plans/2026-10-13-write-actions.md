@@ -481,6 +481,8 @@ Each phase ships behind the org's "Allow Act" switch and the per-action toggles.
 
 - **No admin log (decided 2026-10-14).** Admin › Actions holds the switches only. What a person drafted, its sources and drafts never sent are theirs (their Act page); each tool already records who created what. `actions` rows stay as the approval queue and each person's own history.
 
+- **Permission before the draft (decided 2026-10-15).** One model call, then code checks with the person's own token before any card: GitHub reads their access level on the repo (`permissions`: read/triage/write/maintain/admin) and refuses a locked issue below write; Linear lists only teams their token can file in. Notion has no API for a person's access on a page, so its card says the write needs comment (or edit) access and Notion's refusal is named per kind of write. Two model calls (target first, text second) were rejected: the same messages, twice the wait.
+
 ## 9. Open questions
 
 1. Slack Marketplace listing: recommended (see §5 Slack: the API Terms and the new-install rate limit). Indexing stays allowed if the Agent/Assistant UI stays off. Pending.

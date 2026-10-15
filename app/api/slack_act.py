@@ -223,6 +223,11 @@ def card_blocks(row: ActionRow, *, audience_size: int | None, outsiders: int | N
         for i in range(0, max(len(value), 1), _SECTION_LIMIT):
             blocks.append({"type": "section", "text": {
                 "type": "plain_text", "text": (f"{title}: " if i == 0 else "") + (value[i:i + _SECTION_LIMIT] or "(empty)")}})
+    if row.action.startswith("notion."):
+        need = "comment on" if row.action == "notion.comment" else "edit"
+        blocks.append({"type": "context", "elements": [{"type": "plain_text", "text":
+            f"Notion doesn't let apps check your access first. This works only if you can "
+            f"{need} this page in Notion."}]})
     private = [_short(s.get("title") or "") for s in row.sources if not s.get("public")]
     if row.exposure in NEEDS_ACK:
         warn = f"This draft may include private content only some people can see, from {'; '.join(private)}. "

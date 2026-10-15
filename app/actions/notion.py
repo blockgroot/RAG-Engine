@@ -11,9 +11,11 @@ person's name. A page or block written through a public connection is very
 likely recorded under the connection's bot (Notion documents no other
 outcome), so those cards say "via Handbook Actions" instead of "as you".
 
-Notion has no API for "may this person edit this page", so two checks stand
-in for it: a page Handbook has indexed company-wide must be one the asker may
-read there, and Notion's own 403/404 is shown as "you can't edit that page".
+Notion has no API for "may this person view, comment on or edit this page",
+so nothing can be checked before the draft: a page Handbook indexed
+company-wide must be one the asker may read there, the card says the write
+needs that access, and Notion's own refusal is said per kind of write (can
+only view, so no comment; can't edit, so no added text or new page).
 Its readers cannot be listed, so the audience is always unknown.
 """
 
@@ -42,9 +44,19 @@ _TIMEOUT = 15.0
 TEXT_LIMIT = 2000
 BLOCK_LIMIT = 100
 _PAGE_ID = re.compile(r"([0-9a-f]{32})(?:[/?#]|$)|([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})")
-_NOT_EDITABLE = (
-    "You can't edit that page through Handbook Actions. Check you can edit it, "
-    "and that it's shared with Handbook Actions (the page's ••• menu → Connections)."
+#: Notion cannot be asked what a person may do on a page, so these are said
+#: when Notion itself refuses: on finding the page, and on each kind of write.
+_CANT_OPEN = (
+    "Handbook can't open that page. Share it with Handbook Actions (the page's ••• menu "
+    "→ Connections) and check you can open it in Notion."
+)
+_CANT_COMMENT = (
+    "Notion refused the comment: your account can only view this page. Ask the page's "
+    "owner for comment access, then try again."
+)
+_CANT_EDIT = (
+    "Notion refused: your account can't edit this page (you may only be able to view or "
+    "comment). Ask the page's owner for edit access, then try again."
 )
 
 _REQUEST_WORDS = {
@@ -60,7 +72,8 @@ _PAGE_ARG = {
 }
 
 
-def _call(method: str, path: str, token: str, *, json: dict | None = None) -> dict:
+def _call(method: str, path: str, token: str, *, json: dict | None = None,
+          refused: str = _CANT_OPEN) -> dict:
     write = method != "GET" and path != "/search"
     try:
         response = httpx.request(
@@ -76,7 +89,7 @@ def _call(method: str, path: str, token: str, *, json: dict | None = None) -> di
     if write and response.status_code >= 500:
         raise ActionOutcomeUnknown(f"Notion answered {response.status_code}.")
     if response.status_code in (403, 404):
-        raise ActionRejected(_NOT_EDITABLE)
+        raise ActionRejected(refused)
     if response.status_code == 429:
         raise ActionError("Notion is busy. Try again in a minute.")
     if response.status_code >= 400:
@@ -112,7 +125,7 @@ def _check_indexed_visibility(page_id: str, ctx: ActionContext) -> None:
         ).fetchone()
     indexed_and_visible = rows[0] if rows else None
     if indexed_and_visible is False:
-        raise ActionRejected(_NOT_EDITABLE)
+        raise ActionRejected("You can't open that page in Handbook, so Handbook won't write to it for you.")
 
 
 def resolve_page(name: str, ctx: ActionContext) -> dict:
@@ -200,7 +213,7 @@ class NotionComment(Action):
             "parent": {"page_id": target["external_id"]},
             "rich_text": rich_text(payload["body"]),
             "display_name": {"type": "user"},
-        })
+        }, refused=_CANT_COMMENT)
         if not made.get("id"):
             raise ActionError("Notion did not add the comment.")
         return ActionResult(made["id"], target.get("url"))
@@ -221,7 +234,7 @@ class NotionAppend(Action):
 
     def execute(self, key, target, payload, token) -> ActionResult:
         made = _call("PATCH", f"/blocks/{target['external_id']}/children", token,
-                     json={"children": paragraphs(payload["body"])})
+                     json={"children": paragraphs(payload["body"])}, refused=_CANT_EDIT)
         if not made.get("results"):
             raise ActionError("Notion did not add the text.")
         return ActionResult(target["external_id"], target.get("url"))
@@ -252,7 +265,7 @@ class NotionCreatePage(Action):
             "parent": {"page_id": target["external_id"]},
             "properties": {"title": {"title": rich_text(payload["title"])}},
             "children": paragraphs(payload["body"]),
-        })
+        }, refused=_CANT_EDIT)
         if not made.get("id"):
             raise ActionError("Notion did not create the page.")
         return ActionResult(made["id"], made.get("url"))

@@ -302,7 +302,11 @@ the one conditional UPDATE), and every outcome is recorded in `actions`. A write
 uses the asker's own `user_connections` token, never `oauth_connections`. The
 asker may edit a pending draft's words, never its target (`Action.edit`): the
 edit replaces the stored payload under the same guards as `claim`, counts as
-their own words, and keeps the sources and exposure (the tick is asked again). A
+their own words, and keeps the sources and exposure (the tick is asked again). What the
+person may do there is checked with THEIR token before any card, where the tool
+can say (GitHub: their access level, a locked issue; Linear: only teams their
+token lists); Notion cannot be asked, so its card says the access a write needs
+and its refusal names it (view only, can't edit). A
 target is taken only from the asker's own words (`draft.require_named`), never
 from a passage; written links and @-mentions only if the asker wrote them. Every
 passage shown to the model is a source for `exposure.assess`: private content

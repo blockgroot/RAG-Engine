@@ -190,6 +190,14 @@ export function ActionCard({
         )}
       </dl>
       {card.edited && !editing && <p className="muted act-card-edited">Edited by you</p>}
+      {card.provider === "notion" && pending && (
+        // Notion can't be asked in advance what someone may do on a page, so
+        // the card says what the write needs; Notion refuses it otherwise.
+        <p className="muted act-card-note">
+          Notion doesn&rsquo;t let apps check your access first. This works only if you can{" "}
+          {card.action === "notion.comment" ? "comment on" : "edit"} this page in Notion.
+        </p>
+      )}
 
       {needsAck && pending && (
         <div className="act-card-exposure" role="alert">
