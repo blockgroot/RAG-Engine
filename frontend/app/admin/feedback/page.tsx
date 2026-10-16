@@ -9,7 +9,7 @@ import { useMe } from "@/lib/useMe";
  * What people asked company-wide and could not get answered, grouped by
  * meaning. Only what an admin can fix: a missing or outdated document. Chart
  * refusals and figure-reading failures are ours and are not shown here. A
- * space's topics go to that space's owner, on the space page.
+ * space's topics go to that space's owner, at /workspaces/<id>/feedback.
  *
  * Not in the sidebar: an admin arrives from a bell alert, which names the
  * topic. The page exists so that alert can show how people asked it.

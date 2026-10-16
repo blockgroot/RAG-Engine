@@ -114,8 +114,10 @@ def _topic(t: Topic) -> dict:
 
 
 def _topics(org_id: str, workspace_id: str | None) -> dict:
+    """Only topics past the alert threshold: the page is where the bell's
+    notification leads, so it shows what notified, never one person's miss."""
     assign_topics_soon(org_id)
-    return {"topics": [_topic(t) for t in list_topics(org_id, workspace_id)]}
+    return {"topics": [_topic(t) for t in list_topics(org_id, workspace_id) if t.alerting]}
 
 
 def _handled(org_id: str, workspace_id: str | None, topic_id: str) -> dict:

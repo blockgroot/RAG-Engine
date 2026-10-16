@@ -265,6 +265,9 @@ def test_the_bell_tells_the_admin_and_the_space_owner_only_their_own(client, org
     a, b, c = org.people
     space = create_workspace(org.id, "Finance", a.id)                 # a owns it
     invite_to_space(space, org.id, a.id, b.email)
+    _ask(org.id, a, "How do I claim travel expenses?", workspace_id=space)
+    # One person's miss notifies nobody, so the page the bell opens shows nothing.
+    assert client.get(f"/workspaces/{space}/feedback", cookies=_cookies(a)).json()["topics"] == []
     for who, q in ((a, "How do I claim travel expenses?"), (b, "expense claim form?"),
                    (c, "where is the expense policy")):
         _ask(org.id, who, q)
@@ -277,7 +280,7 @@ def test_the_bell_tells_the_admin_and_the_space_owner_only_their_own(client, org
 
     owner_bell = client.get("/notifications", cookies=_cookies(a)).json()["items"]
     [mine] = [i for i in owner_bell if i["kind"] == "gap"]
-    assert mine["scope"] == "Finance" and mine["href"].startswith(f"/workspaces/{space}#topic-")
+    assert mine["scope"] == "Finance" and mine["href"].startswith(f"/workspaces/{space}/feedback#topic-")
     member_bell = client.get("/notifications", cookies=_cookies(b)).json()["items"]
     assert not [i for i in member_bell if i["kind"] == "gap"]
 

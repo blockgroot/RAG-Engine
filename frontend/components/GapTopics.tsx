@@ -69,9 +69,8 @@ export function GapTopics({ workspaceId }: { workspaceId?: string | null }) {
       <div className="studio-section-head">
         <h2 id="gap-topics-title">What people couldn&rsquo;t get answered</h2>
         <p className="muted">
-          Questions from the last 14 days, grouped by what they ask about. You get a notification
-          when 3 different people can&rsquo;t get an answer on one topic, or 2 mark its answers
-          wrong.
+          Topics from the last 14 days where 3 different people couldn&rsquo;t get an answer, or 2
+          marked its answers wrong. You get a notification when one appears.
         </p>
       </div>
 
@@ -84,7 +83,7 @@ export function GapTopics({ workspaceId }: { workspaceId?: string | null }) {
       {!topics ? (
         !error && <p className="muted">Loading…</p>
       ) : topics.length === 0 ? (
-        <p className="muted">Nothing went unanswered in the last 14 days.</p>
+        <p className="muted">Nothing has reached that point in the last 14 days.</p>
       ) : (
         <ul className="gap-list">
           {topics.map((t) => (

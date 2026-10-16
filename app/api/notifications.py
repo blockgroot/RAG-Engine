@@ -185,6 +185,6 @@ def list_notifications(session: SessionClaims = Depends(get_session)):
     # every control for them), so telling them one is broken is noise.
     for space in owned:
         href = f"/workspaces/{space.id}"
-        items += _items_in(session.org_id, space.id, space.name, href, href)
+        items += _items_in(session.org_id, space.id, space.name, href, f"{href}/feedback")
     items.sort(key=lambda i: 0 if i["severity"] == "high" else 1)
     return {"items": items, "count": len(items)}
