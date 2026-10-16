@@ -681,7 +681,12 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
     let reply: Message;
     try {
       const out = await api.act(question, workspaceId, model);
-      reply = { role: "assistant", text: out.reply, act: out.action };
+      // `actions` is every draft; an older server sends only `action`.
+      reply = {
+        role: "assistant",
+        text: out.reply,
+        acts: out.actions?.length ? out.actions : out.action ? [out.action] : null,
+      };
     } catch (err) {
       if (err instanceof ApiError && err.status === 503) {
         setModelError(err.message);
@@ -1110,17 +1115,23 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
                     void ask(q, "deep");
                   }}
                 />
-                {m.act && (
-                  <div className="chat-act-card">
+                {m.acts?.map((card) => (
+                  <div className="chat-act-card" key={card.id}>
                     <ActionCard
-                      card={m.act}
+                      card={card}
                       model={model}
                       onChange={(next) =>
-                        setMessages((prev) => prev.map((x, j) => (j === i ? { ...x, act: next } : x)))
+                        setMessages((prev) =>
+                          prev.map((x, j) =>
+                            j === i
+                              ? { ...x, acts: x.acts?.map((c) => (c.id === next.id ? next : c)) }
+                              : x,
+                          ),
+                        )
                       }
                     />
                   </div>
-                )}
+                ))}
                 </div>
               ))}
               <div ref={bottomRef} aria-hidden className="chat-scroll-anchor" />
@@ -1437,7 +1448,7 @@ function ChatPageInner({ workspaceId }: { workspaceId: string | null }) {
         </form>
         {actMode ? (
           <p className="muted chat-model-note" role="status">
-            Act drafts one action at a time and sends nothing until you approve. Drafts aren&rsquo;t saved
+            Act drafts up to three actions per request and sends nothing until you approve each one. Drafts aren&rsquo;t saved
             in this chat; find them under <Link href="/account#act">Account → Act</Link>.
           </p>
         ) : (chartMode || modelNote) && (

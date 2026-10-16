@@ -13,6 +13,7 @@ started it.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import uuid
 from functools import lru_cache
@@ -104,50 +105,107 @@ def ask_search(user_id: str):
     """How Act finds content: Ask's own reading, never a search of its own.
 
     Routing is Ask's (``choose_agent``: a tool the words name, else the best
-    match by meaning), run on the words that name the content: "create a
-    Linear issue from the Slack message about X" names Linear as where it
-    GOES and Slack as where it IS. An indexed tool (Notion, Drive, Slack,
-    Linear, or a space's or the company's documents) is searched by that
-    agent's pipeline as Ask does (``RagPipeline.retrieve_passages``). GitHub
-    is read live by Ask's GitHub agent (``read_evidence``), limited to the
-    repositories the asker can open. A Slack channel's draft stays in that
-    channel, read by the room, like a channel reply. Charts hold no passages,
-    so they fall back to the company-wide (or space) search.
+    match by meaning, with the knowledge graph's plan when it is on), run on
+    the words that name the content: "create a Linear issue from the Slack
+    message about X" names Linear as where it GOES and Slack as where it IS.
+
+    Several tools named ("the Slack discussion and the Notion spec") are each
+    read, as the chat's connected answer reads exactly the tools a question
+    names; the passages are interleaved so every tool gets its share. With the
+    graph on, its plan is used exactly as the chat uses it, so linked
+    documents from other tools come in too, walked as this viewer.
+
+    An indexed tool is searched by that agent's pipeline as Ask does
+    (``RagPipeline.retrieve_passages``); GitHub is read live by Ask's GitHub
+    agent (``read_evidence``), limited to the repositories the asker can open.
+    A Slack channel's draft stays in that channel, read by the room, like a
+    channel reply. Charts hold no passages, so they fall back to the
+    company-wide (or space) search.
     """
     from ..actions.base import Source
     from ..actions.service import indexed_context
-    from ..agent.routing import choose_agent
-    from . import deps
+    from ..agent.routing import choose_agent, named_providers
+    from ..config.settings import GraphSettings
+    from ..graph import plan as graph_plan
+    from . import chat, deps
 
     per_source = {"slack": deps.get_slack_agent, "linear": deps.get_linear_agent,
                   "notion": deps.get_notion_agent, "google": deps.get_drive_agent}
 
+    def general(workspace_id):
+        return deps.get_workspace_agent if workspace_id else deps.get_policy_agent
+
+    def read_github(text, org_id, workspace_id, viewer):
+        read = deps.get_github_agent().read_evidence(
+            text, org_id, workspace_id=workspace_id, viewer=viewer)
+        if read is None:
+            return None
+        repo, evidence, public, url = read
+        # A private repository's readers are not known here, so nobody counts
+        # as able to see it: any audience gets the tick.
+        return Source(f"github:{repo}", f"GitHub {repo}", public, (), url), (
+            f"[GitHub {repo}]\n{evidence}")
+
     def search(question, about, *, org_id, workspace_id=None, tags=None, viewer=None):
         text = about or question
-        key = "slack" if tags else None
-        if key is None:
-            try:
-                key = choose_agent(text, org_id, workspace_id=workspace_id,
-                                   viewer=viewer, user_id=user_id).agent_key
-            except Exception:  # noqa: BLE001 - routing is a narrowing, never a requirement
-                logger.warning("Act routing failed; searching everything", exc_info=True)
-        if key in ("github", "github_live"):
-            read = deps.get_github_agent().read_evidence(
-                text, org_id, workspace_id=workspace_id, viewer=viewer)
-            if read is not None:
-                repo, evidence, public, url = read
-                # A private repository's readers are not known here, so nobody
-                # counts as able to see it: any audience gets the tick.
-                return [Source(f"github:{repo}", f"GitHub {repo}", public, (), url)], (
-                    f"[GitHub {repo}]\n{evidence}")
+        if tags:  # a Slack channel: that channel only, as the room
+            hits = per_source["slack"]().pipeline.retrieve_passages(
+                question, org_id, about=about, workspace_id=workspace_id, tags=tags, viewer=viewer)
+            return indexed_context(hits, org_id, viewer, workspace_id)
+
+        try:
+            plan = graph_plan.build_plan(org_id, workspace_id, text, viewer)
+        except Exception:  # noqa: BLE001 - the graph may only ever add
+            plan = None
+        try:
+            key = choose_agent(text, org_id, workspace_id=workspace_id, graph_plan=plan,
+                               viewer=viewer, user_id=user_id).agent_key
+        except Exception:  # noqa: BLE001 - routing is a narrowing, never a requirement
+            logger.warning("Act routing failed; searching everything", exc_info=True)
             key = None
-        getter = per_source.get(key) or (
-            deps.get_workspace_agent if workspace_id else deps.get_policy_agent)
-        hits = getter().pipeline.retrieve_passages(
-            question, org_id, about=about, workspace_id=workspace_id, tags=tags, viewer=viewer)
-        return indexed_context(hits, org_id, viewer, workspace_id)
+        named = set(chat._named_connected_tools(text, org_id, workspace_id))
+        named |= named_providers(text, ("github",))
+        tools = sorted(named) if len(named) > 1 else [key]
+        if plan is not None and GraphSettings.from_env().connected_enabled:
+            connected = graph_plan.connected_tools(plan, key, named & set(per_source))
+            if connected:
+                plan = plan.connected(connected, search=connected - {key})
+
+        sources, texts, per_tool = [], [], []
+        token = graph_plan.use_plan(plan)
+        try:
+            for tool in tools:
+                if tool in ("github", "github_live"):
+                    read = read_github(text, org_id, workspace_id, viewer)
+                    if read is not None:
+                        sources.append(read[0])
+                        texts.append(read[1])
+                        continue
+                    if len(tools) > 1:
+                        continue          # named alongside others: nothing readable here
+                getter = per_source.get(tool) or general(workspace_id)
+                per_tool.append(getter().pipeline.retrieve_passages(
+                    question, org_id, about=about, workspace_id=workspace_id, viewer=viewer))
+        finally:
+            graph_plan.reset_plan(token)
+        indexed_sources, indexed_text = indexed_context(
+            _interleave(per_tool), org_id, viewer, workspace_id)
+        return sources + indexed_sources, "\n\n".join(t for t in [*texts, indexed_text] if t)
 
     return search
+
+
+def _interleave(lists: list[list]) -> list:
+    """One hit from each tool in turn, each passage once, so a cap on the total
+    still leaves every named tool its share."""
+    out, seen = [], set()
+    for row in itertools.zip_longest(*lists):
+        for hit in row:
+            key = None if hit is None else (hit.document_id, hit.chunk_index)
+            if hit is not None and key not in seen:
+                seen.add(key)
+                out.append(hit)
+    return out
 
 
 def _require_on(org_id: str) -> ActionsSettings:
@@ -291,6 +349,8 @@ def act(body: ActRequest, session: SessionClaims = Depends(get_session)):
     return {
         "reply": outcome.reply,
         "action": _card(outcome.action, outcome.exposure) if outcome.action else None,
+        # Every draft this request made, each approved on its own.
+        "actions": [_card(row, exposure) for row, exposure in outcome.drafts],
     }
 
 

@@ -23,7 +23,8 @@ export interface Message {
   /** Who answered, for an answer loaded from history. */
   meta?: TurnMeta;
   /** Act mode: the draft to approve. Shown by the page, never stored as a turn. */
-  act?: ActCard | null;
+  /** Act drafts from one request, each approved on its own. */
+  acts?: ActCard[] | null;
 }
 
 /**

@@ -300,7 +300,9 @@ session pooler (5432).
 
 **Act (writes).** `app/actions/` and its own routes (UI: the chat's Act mode,
 Account → Act, Admin › Actions); Ask, Chart, sync and
-the Slack bot import nothing from it. The model only fills in one action's form:
+the Slack bot import nothing from it. The model only fills in action forms (at
+most `service.MAX_ACTIONS` per request, each its own card, checked and approved
+on its own; a refused one never stops the rest and is said):
 a write runs only from `confirm`, by the person who proposed it, before
 `expires_at`, with the STORED payload (`payload_hash` compared, `store.claim` is
 the one conditional UPDATE), and every outcome is recorded in `actions`. A write
@@ -322,7 +324,9 @@ Passages are shown only when the request asks to draft from company content
 request alone. They are found by Ask's own reading (`api.actions.ask_search`:
 Ask's routing on the words naming the content, then that agent's
 `retrieve_passages`, or GitHub's live `read_evidence` over the repos the asker
-can open), never a search of Act's own. A private repo's readers are unknown,
+can open), never a search of Act's own. Several tools the words name are each
+read, interleaved so each gets its share; the graph plan, when on, is built
+once and used as the chat uses it. A private repo's readers are unknown,
 so any audience needs the tick. Asked inside a Slack channel thread, that thread is read live
 (`slack.thread_context`), never a search of the channel. Every
 passage shown to the model is a source for `exposure.assess`: private content

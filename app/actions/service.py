@@ -65,13 +65,22 @@ PROVIDER_NAMES = {"linear": "Linear", "github": "GitHub", "notion": "Notion",
                   "google": "Google Drive", "slack": "Slack"}
 
 
+#: Drafts one request may make ("an issue in Linear and in GitHub"). Each is
+#: its own card, approved on its own; a cap keeps one sentence from fanning out.
+MAX_ACTIONS = 3
+
+
 @dataclass(frozen=True)
 class ActOutcome:
-    """What the Act page shows: a sentence, and a card when there is a proposal."""
+    """What the Act page shows: a sentence, and a card per proposal.
+
+    ``action``/``exposure`` are the first draft (one-card callers);
+    ``drafts`` is every ``(row, exposure)`` the request made."""
 
     reply: str
     action: ActionRow | None = None
     exposure: Exposure | None = None
+    drafts: tuple = ()
 
 
 #: Added to every action's form: the asker's words that ask to draft from
@@ -87,8 +96,8 @@ DOCUMENT_WORDS = {
 
 
 def _ask(llm, question: str, passages: str | None, tools: list[dict], offered: list[Action]):
-    """One model call: ``(action, args)`` when it filled in a form the asker
-    asked for, else the reply to show."""
+    """One model call: the ``(action, args)`` forms it filled in that the asker
+    asked for (at most ``MAX_ACTIONS``), else the reply to show."""
     result = llm.generate_with_tools(
         [{"role": "user", "content": build_act_prompt(question, passages)}],
         tools=tools,
@@ -98,18 +107,23 @@ def _ask(llm, question: str, passages: str | None, tools: list[dict], offered: l
         text = strip_links(result.text or "").strip()
         return ActOutcome(text or "Tell me what to do, for example: "
                           "“File a Linear issue in Platform about the login timeout.”")
-    call = result.tool_calls[0]
-    action = next((a for a in offered if a.tool["function"]["name"] == call.name), None)
-    if action is None:
-        return ActOutcome("I can't do that here.")
-    try:
-        args = json.loads(call.arguments or "{}")
-    except json.JSONDecodeError:
-        return ActOutcome("Sorry, I lost track of that. Say it again?")
-    if not isinstance(args, dict) or not asked_in(args.get("request_words"), question):
-        return ActOutcome("I only act when you ask me to do something directly, "
+    picked, why = [], None
+    for call in result.tool_calls[:MAX_ACTIONS]:
+        action = next((a for a in offered if a.tool["function"]["name"] == call.name), None)
+        if action is None:
+            why = why or "I can't do that here."
+            continue
+        try:
+            args = json.loads(call.arguments or "{}")
+        except json.JSONDecodeError:
+            why = why or "Sorry, I lost track of that. Say it again?"
+            continue
+        if not isinstance(args, dict) or not asked_in(args.get("request_words"), question):
+            why = why or ("I only act when you ask me to do something directly, "
                           "for example “file an issue in Platform about …”.")
-    return action, args
+            continue
+        picked.append((action, args))
+    return picked or ActOutcome(why or "I can't do that here.")
 
 
 def _with_document_words(tool: dict) -> dict:
@@ -129,10 +143,12 @@ def build_act_prompt(question: str, passages: str | None) -> str:
         if passages is None else ""
     )
     return (
-        "You help an employee do ONE thing in a work tool, using only the tools "
-        "you are given.\n"
+        "You help an employee act in their work tools, using only the tools you "
+        "are given.\n"
         "- Call a tool only when the QUESTION itself asks for that action. Copy "
         "the words that ask for it into request_words, exactly as written.\n"
+        f"- One call per action the QUESTION asks for, at most {MAX_ACTIONS}: \"an "
+        "issue in Linear and in GitHub\" is two calls. Each is approved on its own.\n"
         "- If the QUESTION asks something, or asks for something no tool does, "
         "call no tool and reply in one or two sentences saying what you can do.\n"
         "- Take every target (team, repository, issue) from the QUESTION exactly "
@@ -186,10 +202,18 @@ def indexed_context(
         for r in rows
     }
     kept = [h for h in hits if h.document_id in docs]
+    # Each passage names its tool, so a draft from several tools can say which
+    # one a point came from instead of blending them.
     passages = "\n\n".join(
-        f"[{docs[h.document_id].title}]\n{scrub_untrusted_text(h.content)}" for h in kept
+        f"[{_tool_label(h)}{docs[h.document_id].title}]\n{scrub_untrusted_text(h.content)}"
+        for h in kept
     )
     return list({h.document_id: docs[h.document_id] for h in kept}.values()), passages
+
+
+def _tool_label(hit) -> str:
+    name = PROVIDER_NAMES.get(hit.source_provider or "")
+    return f"{name} · " if name else ""
 
 
 def store_search(embedder, vstore):
@@ -296,14 +320,14 @@ def propose(
     picked = _ask(llm, question, None, tools, offered)
     if isinstance(picked, ActOutcome):
         return picked
-    action, args = picked
     sources: list[Source] = []
-    if asked_in(args.get("document_words"), question):
+    about = next((a["document_words"].strip() for _, a in picked
+                  if asked_in(a.get("document_words"), question)), None)
+    if about:
         # Found the way Ask finds it, from the whole request, with the words
         # that name the content searched alongside and ordering the results:
         # the action words ("create an issue … titled … checklist") ranked an
         # unrelated Atlas page above the Slack message the request meant.
-        about = args["document_words"].strip()
         find = search or store_search(embedder, vstore)
         sources, passages = (read_context or (lambda: find(
             question, about, org_id=org_id, workspace_id=scope_workspace_id, tags=tags,
@@ -314,8 +338,30 @@ def propose(
         picked = _ask(llm, question, passages, tools, offered)
         if isinstance(picked, ActOutcome):
             return picked
-        action, args = picked
 
+    drafts, refusals = [], []
+    for action, args in picked:
+        made = _draft(action, args, question=question, sources=sources, org_id=org_id,
+                      user_id=user_id, email=email, viewer=viewer, surface=surface,
+                      kind=kind, scope_workspace_id=scope_workspace_id, settings=settings)
+        if isinstance(made, str):
+            refusals.append(made)
+        else:
+            drafts.append(made)
+    if not drafts:
+        return ActOutcome(" ".join(dict.fromkeys(refusals)))
+    reply = ("Here's what I'll do. Check it, then approve." if len(drafts) == 1 else
+             f"Here are {len(drafts)} drafts. Each is sent only when you approve it.")
+    if refusals:
+        reply += " " + " ".join(dict.fromkeys(refusals))
+    return ActOutcome(reply, drafts[0][0], drafts[0][1], tuple(drafts))
+
+
+def _draft(action, args, *, question, sources, org_id, user_id, email, viewer, surface, kind,
+           scope_workspace_id, settings):
+    """One form into one stored proposal, ``(row, exposure)``; or why not, in
+    the person's terms. Each draft is checked on its own: its target, the
+    person's access there, and who would newly see private content."""
     if _only_askers_words(args, question):
         sources = []
     name = PROVIDER_NAMES.get(action.provider, action.provider)
@@ -325,29 +371,25 @@ def propose(
                             tuple(sources), viewer, surface)
         proposal = action.prepare(args, ctx)
     except OAuthReauthRequiredError:
-        return ActOutcome(f"Reconnect your {name} account on Handbook's Act page, then ask again.")
+        return f"Reconnect your {name} account on Handbook's Act page, then ask again."
     except ConfigurationError:
-        return ActOutcome(f"Connect your {name} account on Handbook's Act page to let it act for you.")
+        return f"Connect your {name} account on Handbook's Act page to let it act for you."
     except ActionError as exc:
-        return ActOutcome(str(exc))
+        return str(exc)
 
     exposure = assess(sources, proposal.audience, asker=email)
     titles = ", ".join(exposure.private_titles)
     if exposure.verdict == PUBLIC:
-        return ActOutcome(
-            f"I won't do that: it would put content from private documents ({titles}) "
-            "somewhere public. Pick a private destination, or ask without them."
-        )
+        return (f"I won't do that: it would put content from private documents ({titles}) "
+                "somewhere public. Pick a private destination, or ask without them.")
     if settings.block_wider and exposure.verdict in NEEDS_ACK:
-        return ActOutcome(
-            f"I won't do that: people there can't see the private documents it uses ({titles})."
-        )
+        return f"I won't do that: people there can't see the private documents it uses ({titles})."
     row = store.create(
         org_id=org_id, workspace_id=scope_workspace_id, user_id=user_id, conversation_id=None,
         surface=kind, proposal=proposal, sources=sources,
         exposure=exposure.verdict, ttl_seconds=settings.ttl_seconds,
     )
-    return ActOutcome("Here's what I'll do. Check it, then approve.", row, exposure)
+    return row, exposure
 
 
 def edit(

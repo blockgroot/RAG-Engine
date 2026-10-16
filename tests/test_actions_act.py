@@ -1204,7 +1204,7 @@ def test_every_indexed_connector_is_searched_by_its_own_ask_agent(act_search, ke
                       "the discussion about mixing", org_id="o")
     assert act_search.routed == ["the discussion about mixing"]   # the content words, not "GitHub"
     assert act_search.searched == [(key, {"about": "the discussion about mixing",
-                                          "workspace_id": None, "tags": None, "viewer": None})]
+                                          "workspace_id": None, "viewer": None})]
 
 
 def test_a_channel_space_or_chart_routes_like_ask(act_search):
@@ -1275,3 +1275,109 @@ def test_propose_hands_the_request_and_the_content_words_to_the_search(org, monk
                           vstore=CountingStore([]), settings=ON, search=search)
     assert seen == [(question, "the Slack message about mixing cases", org.id)]
     assert "mixing happens" in llm.prompts[-1] and out.action.sources[0]["title"] == "#rag-updates"
+
+
+# --------------------------------------------------------------------------
+# Several tools read, several drafts made, from one request
+# --------------------------------------------------------------------------
+
+
+def test_every_tool_the_content_words_name_is_read_and_each_gets_a_share(act_search, monkeypatch):
+    import app.api.chat as chat
+
+    monkeypatch.setattr(chat, "_named_connected_tools", lambda text, org, ws: {"slack", "notion"})
+    act_search.search("Create a Linear issue from the Slack thread and the Notion spec",
+                      "the Slack thread and the Notion spec", org_id="o")
+    assert sorted(n for n, _ in act_search.searched) == ["notion", "slack"]
+
+    from app.api.actions import _interleave
+    a = [SimpleNamespace(document_id="s", chunk_index=i) for i in range(5)]
+    b = [SimpleNamespace(document_id="n", chunk_index=i) for i in range(2)]
+    merged = _interleave([a, b, [a[0]]])
+    assert [(h.document_id, h.chunk_index) for h in merged[:4]] == [("s", 0), ("n", 0), ("s", 1), ("n", 1)]
+    assert len(merged) == 7                                  # a passage found twice is kept once
+
+
+@requires_db
+def test_each_passage_names_the_tool_it_came_from(org):
+    from dataclasses import replace
+    slack = replace(_doc(org.id, "#rag-updates", public=True), source_provider="slack")
+    notion = replace(_doc(org.id, "Export spec", public=True), source_provider="notion")
+    _, passages = service.indexed_context([slack, notion], org.id, Viewer(email=org.member.email))
+    assert "[Slack · #rag-updates]" in passages and "[Notion · Export spec]" in passages
+
+
+def test_github_named_with_another_tool_is_read_live_beside_it(act_search, monkeypatch):
+    import app.api.chat as chat
+
+    monkeypatch.setattr(chat, "_named_connected_tools", lambda text, org, ws: {"slack"})
+    act_search.github = ("18-sana/rag-engine", "PR #12 adds the export job", True, None)
+    sources, passages = act_search.search(
+        "q", "the Slack thread and the GitHub pull requests in rag-engine", org_id="o")
+    assert sorted(n for n, _ in act_search.searched) == ["github", "slack"]
+    assert passages.startswith("[GitHub 18-sana/rag-engine]") and sources[0].public is True
+
+
+def test_the_graph_plan_is_built_once_and_used_like_the_chat(act_search, monkeypatch):
+    import app.agent.routing as routing
+    from app.graph import plan as graph_plan
+
+    plan = SimpleNamespace(connected=lambda tools, search=frozenset(): plan)
+    monkeypatch.setattr(graph_plan, "build_plan", lambda org, ws, text, viewer: plan)
+    given, during = [], []
+    monkeypatch.setattr(routing, "choose_agent", lambda text, org, **kw: (
+        given.append(kw.get("graph_plan")) or SimpleNamespace(agent_key="notion")))
+    from app.api import deps
+    monkeypatch.setattr(deps, "get_notion_agent", lambda: type("A", (), {"pipeline": type("P", (), {
+        "retrieve_passages": lambda self, q, org, **kw: during.append(graph_plan.current_plan()) or []})()})())
+    from app.api import actions as act_api
+    act_api.ask_search("u1")("q", "the spec", org_id="o")
+    assert given == [plan] and during == [plan]               # routing and retrieval read the plan
+    assert graph_plan.current_plan() is None                  # and it is not left behind
+
+
+class ManyCallsLLM(OneCallLLM):
+    def __init__(self, calls):
+        super().__init__()
+        self.calls = calls
+
+    def generate_with_tools(self, messages, tools=None, tool_choice=None, timeout=None):
+        self.prompts.append(messages[0]["content"])
+        return ChatResult(text=None, tool_calls=[
+            ToolCall(f"c{i}", name, json.dumps(args)) for i, (name, args) in enumerate(self.calls)])
+
+
+@requires_db
+def test_one_request_can_make_several_drafts_each_approved_alone(org, monkeypatch):
+    monkeypatch.setattr(linear, "gql", FakeLinear([PLATFORM, PUBLIC_TEAM],
+                                                  members=[{"email": org.member.email}]))
+    question = "File an issue in Platform and in Engineering about the export timeout"
+    issue = lambda team: ("linear_create_issue", {"request_words": "File an issue", "team": team,
+                                                  "title": "Export timeout", "body": "b"})
+    out = _propose(org, question, ManyCallsLLM([issue("Platform"), issue("Engineering")]))
+    assert len(out.drafts) == 2 and "2 drafts" in out.reply
+    assert {row.target["name"] for row, _ in out.drafts} == {"Platform (PLA)", "Engineering (ENG)"}
+    assert len({row.id for row, _ in out.drafts}) == 2       # two cards, two approvals
+
+
+@requires_db
+def test_a_refused_draft_does_not_stop_the_others_and_is_said(org, monkeypatch):
+    monkeypatch.setattr(linear, "gql", FakeLinear([PLATFORM], members=[{"email": org.member.email}]))
+    question = "File an issue in Platform and in Narnia about the export timeout"
+    issue = lambda team: ("linear_create_issue", {"request_words": "File an issue", "team": team,
+                                                  "title": "Export timeout", "body": "b"})
+    out = _propose(org, question, ManyCallsLLM([issue("Platform"), issue("Narnia")]))
+    assert len(out.drafts) == 1 and out.action.target["name"] == "Platform (PLA)"
+    assert "Narnia" in out.reply
+
+
+@requires_db
+def test_never_more_drafts_than_the_cap_and_never_one_not_asked_for(org, monkeypatch):
+    monkeypatch.setattr(linear, "gql", FakeLinear([PLATFORM], members=[{"email": org.member.email}]))
+    question = "File an issue in Platform about the export timeout"
+    asked = ("linear_create_issue", {"request_words": "File an issue", "team": "Platform",
+                                     "title": "t", "body": "b"})
+    unasked = ("linear_create_issue", {"request_words": "also post it", "team": "Platform",
+                                       "title": "t", "body": "b"})
+    out = _propose(org, question, ManyCallsLLM([unasked] + [asked] * 5))
+    assert len(out.drafts) == service.MAX_ACTIONS - 1        # the unasked one used a slot, made nothing

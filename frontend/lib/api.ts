@@ -821,7 +821,7 @@ export const api = {
   actStatus: () => request<ActStatus>("/act/status"),
   /** Draft one action. In a space's chat, ``workspaceId`` drafts from that space. */
   act: (question: string, workspaceId?: string | null, model?: string | null) =>
-    request<{ reply: string; action: ActCard | null }>("/act", {
+    request<{ reply: string; action: ActCard | null; actions?: ActCard[] }>("/act", {
       method: "POST",
       body: JSON.stringify({
         question,

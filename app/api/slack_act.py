@@ -311,13 +311,15 @@ def handle_act(*, request: str, org_id: str, token: str, token_workspace_id: str
     if outcome.action is None:
         say(outcome.reply)
         return
-    exposure = outcome.exposure
-    say(
-        "Handbook drafted something for you to approve.",
-        card_blocks(outcome.action,
-                    audience_size=exposure.audience_size if exposure else None,
-                    outsiders=exposure.outsiders if exposure else None),
-    )
+    if len(outcome.drafts) > 1:
+        say(outcome.reply)
+    for row, exposure in outcome.drafts or ((outcome.action, outcome.exposure),):
+        say(
+            "Handbook drafted something for you to approve.",
+            card_blocks(row,
+                        audience_size=exposure.audience_size if exposure else None,
+                        outsiders=exposure.outsiders if exposure else None),
+        )
 
 
 def _remember_slack_account(org_id: str, slack_user: str, email: str) -> None:
