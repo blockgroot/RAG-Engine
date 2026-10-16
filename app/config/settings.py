@@ -468,6 +468,8 @@ class RagSettings:
     # add documents down to this share of the best score. 0 = same as
     # ``wide_doc_ratio``. 0.15 from calibrate_wide on the fixed search (RCA, 9 Oct).
     wide_include_ratio: float = 0.0
+    # Read wide even when only one document is strong (Deep's extra effort).
+    wide_always: bool = False
     # 0 = scale ``max_context_chars`` by wide_max_hits / top_k.
     wide_max_context_chars: int = 0
     # Answer the part CONTEXT covers and say what is missing, instead of the
@@ -483,28 +485,40 @@ class RagSettings:
     deep_top_docs: int = 3
     deep_neighbor_chunks: int = 8
     deep_max_context_chars: int = 30000
-    # How many passages a Deep read may take when the evidence is spread over
-    # several documents. A company-wide question ("what are our revenue
+    # Deep's "extra effort" only (the two below): how many passages it may take
+    # when the evidence is spread over several documents. A company-wide question ("what are our revenue
     # streams?") is answered by a sentence in each of many documents; ten
     # passages, three of them read in depth, held half its facts.
     deep_wide_max_hits: int = 20
     # Deep's answer may run longer than normal Ask's cap: a complete list of 30-40
     # items does not fit 700 tokens, and a cut-off list reads as the whole list.
     deep_max_answer_tokens: int = 2000
+    # Extra effort reads wide on EVERY question and adds documents down to this
+    # x the best score: Benchmark 4 (Sonnet) read 2-3 documents on 28 of 61 broad
+    # questions, because one strong match kept the read narrow, and a document
+    # answering one part of a question scores under the usual 0.15.
+    deep_wide_include_ratio: float = 0.05
 
-    def deep(self) -> "RagSettings":
+    def deep(self, *, extra: bool = False) -> "RagSettings":
         """These settings with the deep read on, one budget for ranked and wide reads.
 
         A bigger pool (80) was tried for breadth and found no more of the
         right documents on the Benchmark 2 retest, so Deep keeps the normal
-        search. A spread-out question may take ``deep_wide_max_hits``
-        passages from it, one per document first (`retrieval._spread`).
+        search. With ``extra`` (Deep's extra effort) a spread-out question may
+        take ``deep_wide_max_hits`` passages from it, one per document first
+        (`retrieval._spread`), and the answer may run to ``deep_max_answer_tokens``.
         """
+        if extra:
+            self = replace(
+                self,
+                wide_max_hits=max(self.wide_max_hits, self.deep_wide_max_hits),
+                wide_always=True,
+                wide_include_ratio=self.deep_wide_include_ratio,
+                max_answer_tokens=(None if self.max_answer_tokens is None
+                                   else max(self.max_answer_tokens, self.deep_max_answer_tokens)),
+            )
         return replace(
             self,
-            wide_max_hits=max(self.wide_max_hits, self.deep_wide_max_hits),
-            max_answer_tokens=(None if self.max_answer_tokens is None
-                               else max(self.max_answer_tokens, self.deep_max_answer_tokens)),
             neighbor_top_docs=self.deep_top_docs,
             neighbor_chunks=self.deep_neighbor_chunks,
             max_context_chars=self.deep_max_context_chars,
@@ -566,6 +580,7 @@ class RagSettings:
             deep_max_context_chars=int(os.getenv("RAG_DEEP_MAX_CONTEXT_CHARS") or 30000),
             deep_wide_max_hits=int(os.getenv("RAG_DEEP_WIDE_MAX_HITS") or 20),
             deep_max_answer_tokens=int(os.getenv("RAG_DEEP_MAX_ANSWER_TOKENS") or 2000),
+            deep_wide_include_ratio=float(os.getenv("RAG_DEEP_WIDE_INCLUDE_RATIO") or 0.05),
         )
 
 

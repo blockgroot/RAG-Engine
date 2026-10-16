@@ -393,6 +393,11 @@ class SlackAdapter(SourceAdapter):
         for channel_id in self._channel_ids:
             channel_access = self._access_for(channel_id)
             cursor = None
+            listed_before = len(refs)
+            # Why a channel listed nothing: "listed=0 stored=22" alone could not
+            # tell an empty channel from one whose every message was skipped.
+            seen = system = bot = short = 0
+            failed = False
             while True:
                 if len(refs) >= self._settings.max_documents_per_sync:
                     self.listing_complete = False
@@ -409,14 +414,21 @@ class SlackAdapter(SourceAdapter):
                     # must not read as "its threads were deleted".
                     logger.warning("slack: listing of %s stopped early", channel_id, exc_info=True)
                     self.listing_complete = False
+                    failed = True
                     break
                 for message in data.get("messages", []):
+                    seen += 1
                     ts = message.get("ts")
-                    if not ts or message.get("subtype") or self._is_bot_traffic(message):
+                    if not ts or message.get("subtype"):
+                        system += 1
+                        continue
+                    if self._is_bot_traffic(message):
+                        bot += 1
                         continue
                     reply_count = message.get("reply_count", 0)
                     text = (message.get("text") or "").strip()
                     if reply_count == 0 and len(text) < self._settings.min_thread_chars:
+                        short += 1
                         continue
                     last_ts = message.get("latest_reply") or ts
                     refs.append(
@@ -442,6 +454,12 @@ class SlackAdapter(SourceAdapter):
                 cursor = (data.get("response_metadata") or {}).get("next_cursor")
                 if not cursor:
                     break
+            if len(refs) == listed_before and not failed:
+                logger.warning(
+                    "slack: %s listed no threads: Slack returned %d messages in the last "
+                    "%d days (%d system, %d from or to the bot, %d too short)",
+                    channel_id, seen, self._settings.backfill_days, system, bot, short,
+                )
         return refs
 
     def channel_labels(self) -> list[str]:

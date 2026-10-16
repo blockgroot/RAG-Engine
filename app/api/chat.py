@@ -1359,6 +1359,7 @@ def _stream_answer(
     session: SessionClaims | None = None,
     chart_mode: bool = False,
     deep_mode: bool = False,
+    extra_effort: bool = False,
 ) -> Iterator[str]:
     # Who is asking, for the Second Brain's live reads (app/livetools). Whether
     # anything is read live is decided by LIVE_TOOLS_ENABLED and the gateway,
@@ -1376,7 +1377,7 @@ def _stream_answer(
     # read for new ones, alongside the answer rather than in front of it.
     facts, memory_turn = _start_personal_memory(question, org_id, conversation_id, session)
     facts_token = personal_memory.use_asker_facts(tuple((f.kind, f.text) for f in facts))
-    deep_token = use_deep_read(deep_mode)
+    deep_token = use_deep_read(deep_mode, extra=extra_effort)
     try:
         yield from _with_progress(lambda: _stream_answer_body(
             question, org_id, conversation_id, workspace_id, requested_agent,
@@ -1750,7 +1751,8 @@ def chat_stream(
             session=session,
             # Chat's Chart and Deep analysis toggles. Anything else is normal Ask.
             chart_mode=body.get("mode") == "chart",
-            deep_mode=body.get("mode") == "deep",
+            deep_mode=body.get("mode") in ("deep", "deep_extra"),
+            extra_effort=body.get("mode") == "deep_extra",
         ),
         media_type="text/event-stream",
     )

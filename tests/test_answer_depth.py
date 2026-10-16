@@ -340,6 +340,20 @@ def test_neighbours_never_push_another_document_out_of_the_budget():
     assert "a" * 400 in out[0].content  # and they still read deeper where room allowed
 
 
+def test_plain_deep_reads_in_depth_only_extra_effort_reads_wide():
+    from app.rag.pipeline import extra_effort_on, reset_deep_read, use_deep_read
+
+    pipe = _pipeline(NeighbourStore({}), neighbors=1)
+    pipe._settings = replace(pipe._settings, wide_max_hits=10, max_answer_tokens=700)
+    token = use_deep_read(True)
+    try:
+        assert not extra_effort_on()
+        assert pipe._read_settings().wide_max_hits == 10  # Deep alone: no wide read
+        assert pipe._read_settings().max_answer_tokens == 700
+    finally:
+        reset_deep_read(token)
+
+
 def test_a_wide_deep_read_keeps_every_document_and_deepens_only_with_room_left():
     from app.rag.pipeline import reset_deep_read, use_deep_read
 
@@ -349,7 +363,7 @@ def test_a_wide_deep_read_keeps_every_document_and_deepens_only_with_room_left()
     pipe = _pipeline(store, neighbors=1)
     pipe._settings = replace(pipe._settings, deep_max_context_chars=2000, wide_doc_ratio=0.3, wide_max_hits=10)
     hits = [_hit(d, 1, d.upper() + " piece") for d in "abcdefg"]
-    token = use_deep_read(True)
+    token = use_deep_read(True, extra=True)
     try:
         assert pipe._read_settings().wide_max_hits == 20  # Deep may read more documents
         assert pipe._read_settings().max_answer_tokens == 2000  # and answer a whole list
@@ -360,6 +374,15 @@ def test_a_wide_deep_read_keeps_every_document_and_deepens_only_with_room_left()
     assert [h.document_id for h in out] == list("abcdefg")
     assert sum(len(h.content) + 120 for h in out) <= 2000  # all fit the budget's prefix
     assert "a" * 400 in out[0].content  # depth still taken where room was left
+
+
+def test_extra_effort_reads_wide_even_with_one_strong_document():
+    from app.rag.retrieval import _spread
+
+    pool = [_scored("a", 0, 1.0), _scored("a", 1, 0.9), _scored("c", 0, 0.08), _scored("d", 0, 0.02)]
+    assert _spread(pool, 2, 10, 0.3, 1, 0.15, pool=pool) == pool[:2]  # narrow as usual
+    out = [h.document_id for h in _spread(pool, 2, 10, 0.3, 1, 0.05, pool=pool, always=True)]
+    assert out == ["a", "a", "c"]  # c (0.08) added; d (0.02) under the 0.05 floor
 
 
 def test_a_broad_read_includes_partly_relevant_documents_a_narrow_one_never_does():

@@ -26,9 +26,21 @@ graph does nothing without them — so the only real entry point is
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Callable, Iterator, TypedDict
 
-from langgraph.graph import END, START, StateGraph
+# langgraph's checkpoint serializer builds langchain_core's Reviver at import
+# without `allowed_objects`, which logged a deprecation warning on every start.
+# We compile the graph with no checkpointer, so nothing is ever deserialized
+# through it. A filter set beforehand does not hold (the import re-installs
+# LangChain's own "show" filters ahead of it), so the import's warnings are
+# caught and every one but that is raised again.
+with warnings.catch_warnings(record=True) as _caught:
+    warnings.simplefilter("always")
+    from langgraph.graph import END, START, StateGraph
+for _w in _caught:
+    if "`allowed_objects`" not in str(_w.message):
+        warnings.warn_explicit(_w.message, _w.category, _w.filename, _w.lineno)
 
 from ..vectorstore.base import Viewer
 from .base import AgentResponse
