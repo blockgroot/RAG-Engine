@@ -64,10 +64,10 @@ def test_queue_failure_never_breaks_the_caller(monkeypatch, calls):
     assert autosync.sync_now("org", "conn", provider="notion") is None
 
 
-def test_scoped_providers_are_the_ones_that_need_a_folder_or_channels():
+def test_scoped_providers_are_the_ones_that_need_a_folder_channels_or_teams():
     # Connect-time queueing skips these; their adapters raise without a scope,
     # so an eager job would only ever fail.
-    assert set(autosync.SCOPED_PROVIDERS) == {"google", "slack"}
+    assert set(autosync.SCOPED_PROVIDERS) == {"google", "slack", "linear"}
 
 
 # -- reconnect is not the same event as connect -----------------------------
@@ -113,13 +113,13 @@ def test_a_FIRST_google_connect_still_waits_for_the_folder(monkeypatch):
 
 
 def test_an_unscoped_provider_always_syncs_on_connect(monkeypatch):
-    """Linear/Notion need no scope, so they were never affected -- which is
-    exactly the asymmetry that surfaced the bug."""
+    """Notion needs no scope (pages are picked on Notion's own screen), so it
+    was never affected -- which is exactly the asymmetry that surfaced the bug."""
     from app.jobs import autosync
 
     queued: list[str] = []
     monkeypatch.setattr(autosync, "sync_now", lambda o, c, **k: queued.append(c) or "job-2")
-    assert autosync.sync_after_connect("org", "conn", provider="linear") == "job-2"
+    assert autosync.sync_after_connect("org", "conn", provider="notion") == "job-2"
     assert queued == ["conn"]
 
 
@@ -156,23 +156,22 @@ def test_the_scope_key_map_has_exactly_one_definition():
         ("google", True, True),
         ("slack", False, False),
         ("slack", True, True),
+        ("linear", False, False),
+        ("linear", True, True),
         # Unscoped: a token is the whole configuration, so connecting is always
-        # the request to index. These were never affected -- which is exactly
-        # the asymmetry that made the Drive bug visible ("Linear reindexed
-        # instantly, Drive sat silent").
+        # the request to index.
         ("notion", False, True),
-        ("linear", False, True),
     ],
 )
 def test_connect_sync_matrix(provider, scope_saved, should_sync, monkeypatch):
     """One table for every connector, so this cannot regress per-provider.
 
-    Notion and Linear take no scope at all (`NotionSource` needs only a token),
-    so they must never be gated on one; Drive and Slack must be gated on a
+    Notion takes no scope at all (`NotionSource` needs only a token), so it
+    must never be gated on one; Drive, Slack and Linear must be gated on a
     FIRST connect and must NOT be on a reconnect."""
     from app.jobs import autosync
 
-    config = {"folder_id": "F1", "channel_ids": ["C1"]} if scope_saved else None
+    config = {"folder_id": "F1", "channel_ids": ["C1"], "team_ids": ["T1"]} if scope_saved else None
     monkeypatch.setattr("app.auth.credentials.get_connection_config", lambda *a, **k: config)
     queued: list[str] = []
     monkeypatch.setattr(autosync, "sync_now", lambda o, c, **k: queued.append(c) or "job")

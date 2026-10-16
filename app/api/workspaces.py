@@ -66,11 +66,13 @@ from .connection_ops import (
     find_slack_channel_conflict,
     folder_id_changed,
     list_google_forms,
+    list_linear_teams,
     note_live_success,
     purge_provider_documents,
     raise_token_http,
     refresh_slack_channel_names,
     set_google_form_ids,
+    set_linear_teams,
     slack_channels_changed,
 )
 from .deps import SessionClaims, get_session, get_workspace_role, require_workspace_owner
@@ -520,6 +522,28 @@ def list_workspace_connection_slack_channels(
     return {"channels": channels}
 
 
+@router.get("/{workspace_id}/connections/{connection_id}/linear-teams")
+def list_workspace_connection_linear_teams(
+    workspace_id: str,
+    connection_id: str,
+    session: SessionClaims = Depends(get_session),
+    _role: str = Depends(require_workspace_owner),
+):
+    """Teams this space's Linear connection can see (the team picker)."""
+    conn = _owned_workspace_connection(session.org_id, workspace_id, connection_id)
+    if conn.provider != "linear":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Team listing is only supported for Linear (this connection is {conn.provider!r}).",
+        )
+    try:
+        return {"teams": list_linear_teams(session.org_id, workspace_id=workspace_id)}
+    except (SourceError, ConfigurationError, OAuthReauthRequiredError) as exc:
+        raise_token_http(
+            exc, org_id=session.org_id, provider=conn.provider, workspace_id=workspace_id
+        )
+
+
 def _connected_slack_channel(conn, channel_id: str):
     """404 unless ``channel_id`` is one this connection actually picked."""
     channel_ids = (conn.source_config or {}).get("channel_ids") or []
@@ -633,14 +657,17 @@ def put_connection_config(
     enforce.
     """
     conn = _owned_workspace_connection(session.org_id, workspace_id, connection_id)
-    if conn.provider not in ("google", "slack"):
+    if conn.provider not in ("google", "slack", "linear"):
         raise HTTPException(
             status_code=400,
             detail=(
                 "Ingestion scope configuration is only supported for Google "
-                f"Drive and Slack (this connection is {conn.provider!r})."
+                f"Drive, Slack and Linear (this connection is {conn.provider!r})."
             ),
         )
+    if conn.provider == "linear":
+        return set_linear_teams(session.org_id, connection_id, body.get("team_ids"),
+                                workspace_id=workspace_id)
 
     if conn.provider == "google":
         folder_url = bounded(

@@ -105,10 +105,52 @@ def test_factory_marks_a_directly_passed_token_as_oauth(monkeypatch):
     """A `token=` (from get_live_connection_token) is the OAuth-connected
     path — Linear needs a `Bearer` prefix for this token but not for a
     personal API key, so the factory must flag it correctly."""
-    adapter = build_source_adapter("linear", token="oauth-token-abc")
+    adapter = build_source_adapter("linear", token="oauth-token-abc", config={"team_ids": ["T1"]})
     assert isinstance(adapter, LinearAdapter)
     assert adapter._token == "oauth-token-abc"
     assert adapter._oauth is True
+
+
+def test_a_connection_reads_nothing_until_teams_are_picked():
+    with pytest.raises(ConfigurationError, match="no teams"):
+        build_source_adapter("linear", token="oauth-token-abc", config={})
+
+
+def test_only_the_picked_teams_are_listed_and_charted(monkeypatch):
+    sent = []
+
+    def fake_post(url, json, headers, timeout):
+        sent.append(json["variables"].get("filter"))
+        return _FakeResponse({"data": {"issues": {"nodes": [],
+                                                  "pageInfo": {"hasNextPage": False, "endCursor": None}}}})
+
+    monkeypatch.setattr("app.sources.linear.httpx.post", fake_post)
+    from datetime import datetime, timezone
+
+    LinearAdapter(token="t", oauth=True, team_ids=["T1", "T2"]).list_documents()
+    LinearAdapter(token="t", oauth=True, team_ids=["T1"]).fetch_recent_issues(
+        datetime(2026, 1, 1, tzinfo=timezone.utc))
+    LinearAdapter(token="t").list_documents()          # legacy env key: every team
+    assert sent[0] == {"team": {"id": {"in": ["T1", "T2"]}}}
+    assert sent[1]["team"] == {"id": {"in": ["T1"]}} and "updatedAt" in sent[1]
+    assert sent[2] is None
+
+
+def test_the_picker_lists_teams_and_saves_only_visible_ones(monkeypatch):
+    from app.sources.linear import validate_linear_teams
+
+    teams = [{"id": "T1", "key": "ENG", "name": "Engineering", "visibility": "public"},
+             {"id": "T2", "key": "SYV", "name": "Syvora", "visibility": "private"}]
+    monkeypatch.setattr("app.sources.linear.httpx.post", lambda url, json, headers, timeout: _FakeResponse(
+        {"data": {"teams": {"nodes": teams, "pageInfo": {"hasNextPage": False, "endCursor": None}}}}))
+    assert LinearAdapter(token="t", oauth=True).list_teams() == [
+        {"id": "T1", "key": "ENG", "name": "Engineering", "private": False},
+        {"id": "T2", "key": "SYV", "name": "Syvora", "private": True}]
+    assert validate_linear_teams("t", ["T2", "T2"]) == {"team_ids": ["T2"], "team_names": {"T2": "Syvora"}}
+    with pytest.raises(ConfigurationError, match="isn't visible"):
+        validate_linear_teams("t", ["T9"])
+    with pytest.raises(ConfigurationError, match="at least one"):
+        validate_linear_teams("t", [])
 
 
 def test_oauth_token_sends_bearer_prefix(monkeypatch):

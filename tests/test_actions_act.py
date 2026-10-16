@@ -206,7 +206,8 @@ def test_a_linear_comment_needs_an_identifier_the_asker_wrote(monkeypatch):
 def company_github(monkeypatch):
     config = {"installation_id": "1", "account_login": "acme", "repository_selection": "selected",
               "repos": [{"full_name": "acme/handbook"}, {"full_name": "acme/site"}]}
-    monkeypatch.setattr(github, "get_connection_config", lambda org, provider: config)
+    company_github_installs = [("acme", config)]
+    monkeypatch.setattr(github, "connected_anywhere", lambda org, provider: company_github_installs)
     grant = {"issues": "write", "metadata": "read", "contents": "read"}
     monkeypatch.setattr(github, "installation_permissions", lambda inst: grant)
     monkeypatch.setattr(github, "scoped_token", lambda token, full: f"scoped:{full}:{token}")
@@ -287,11 +288,26 @@ def test_github_checks_the_persons_own_access_before_any_draft(company_github, m
 
 
 def test_a_repo_the_person_cannot_open_is_said_so(company_github, monkeypatch):
-    config = github.get_connection_config("o", "github")
+    [(_ext, config)] = github.connected_anywhere("o", "github")
     config["repos"].append({"full_name": "acme/secret"})
     with pytest.raises(ActionRejected, match="can't open acme/secret"):
         github.GitHubCreateIssue().prepare(
             {"repo": "acme/secret", "title": "t", "body": "b"}, _ctx("open an issue in acme/secret"))
+
+
+def test_a_repo_in_a_spaces_installation_can_be_written_too(company_github, monkeypatch):
+    space = {"installation_id": "2", "account_login": "18-sana", "repository_selection": "selected",
+             "repos": [{"full_name": "18-sana/rag-engine"}]}
+    company = github.connected_anywhere("o", "github")[0]
+    asked = []
+    monkeypatch.setattr(github, "connected_anywhere", lambda org, provider: [company, ("18-sana", space)])
+    monkeypatch.setattr(github, "installation_permissions",
+                        lambda inst: asked.append(inst) or {"issues": "write"})
+    assert github.company_repo("o", "18-sana/rag-engine") == "18-sana/rag-engine"
+    assert asked == ["2"]                       # that installation's own approval
+    assert github.company_repo("o", "handbook") == "acme/handbook"   # company-wide first
+    with pytest.raises(ActionRejected, match="isn't a repository your company connected"):
+        github.company_repo("o", "someone-else/repo")
 
 
 def test_github_writes_wait_for_the_admin_to_approve(company_github, monkeypatch):

@@ -48,10 +48,12 @@ from .connection_ops import (
     find_slack_channel_conflict,
     folder_id_changed,
     list_google_forms,
+    list_linear_teams,
     note_live_success,
     purge_provider_documents,
     raise_token_http,
     set_google_form_ids,
+    set_linear_teams,
     slack_channels_changed,
 )
 from .deps import SessionClaims, require_admin
@@ -286,6 +288,23 @@ def list_connection_slack_channels(
     return {"channels": channels}
 
 
+@router.get("/connections/{connection_id}/linear-teams")
+def list_connection_linear_teams(
+    connection_id: str, session: SessionClaims = Depends(require_admin)
+):
+    """Teams this Linear connection can see (the team picker)."""
+    conn = _owned_connection(session.org_id, connection_id)
+    if conn.provider != "linear":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Team listing is only supported for Linear (this connection is {conn.provider!r}).",
+        )
+    try:
+        return {"teams": list_linear_teams(session.org_id)}
+    except (SourceError, ConfigurationError, OAuthReauthRequiredError) as exc:
+        raise_token_http(exc, org_id=session.org_id, provider=conn.provider)
+
+
 # -- Google Forms survey sentiment ------------------------------------------
 #
 # Two routes, GET and PUT, because a form is the one thing connecting Google
@@ -376,16 +395,20 @@ def put_connection_config(
     against what the bot can currently see, auto-joins any newly-picked
     PUBLIC channel (decision D7 — private channels have no auto-join API and
     still need a human `/invite`), then stores ``{channel_ids, channel_names}``.
+
+    Linear: ``{"team_ids": [...]}``, teams this connection can see.
     """
     conn = _owned_connection(session.org_id, connection_id)
-    if conn.provider not in ("google", "slack"):
+    if conn.provider not in ("google", "slack", "linear"):
         raise HTTPException(
             status_code=400,
             detail=(
                 "Ingestion scope configuration is only supported for Google "
-                f"Drive and Slack (this connection is {conn.provider!r})."
+                f"Drive, Slack and Linear (this connection is {conn.provider!r})."
             ),
         )
+    if conn.provider == "linear":
+        return set_linear_teams(session.org_id, connection_id, body.get("team_ids"))
 
     if conn.provider == "google":
         folder_url = bounded(

@@ -304,6 +304,22 @@ def test_notion_connects_through_the_act_connection_into_the_company_workspace(c
 
 
 @requires_db
+def test_a_notion_workspace_connected_only_in_a_space_counts_as_the_companys(client, org, monkeypatch):
+    from app.auth.notion_oauth import NotionOAuthProvider
+    from app.workspaces.store import create_workspace
+
+    space = create_workspace(org.id, "Design", org.admin.id)
+    save_connection(org.id, "notion", OAuthTokens("read_tok", None, None, "space-ws", "Design"),
+                    workspace_id=space)
+    _location, state = _start(client, org, "notion")
+    monkeypatch.setattr(NotionOAuthProvider, "exchange_code",
+                        lambda self, code: OAuthTokens("ntn_act", None, None, "space-ws", "Design"))
+    monkeypatch.setattr("app.api.actions._notion_owner", lambda token: ("nu-1", "Ada"))
+    done = client.get(f"/auth/notion/callback?code=c&state={state}", follow_redirects=False)
+    assert "connected=notion" in done.headers["location"]
+
+
+@requires_db
 def test_a_personal_notion_workspace_is_refused(client, org, monkeypatch):
     from app.auth.notion_oauth import NotionOAuthProvider
 

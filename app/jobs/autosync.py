@@ -356,13 +356,13 @@ def _stamp_attempted(connection_id: str) -> None:
 #: Providers whose ingestion needs a SCOPE the admin picks after connecting,
 #: and the ``source_config`` key that holds it. Their adapters raise without one
 #: (``GoogleDriveAdapter`` on an empty ``folder_id``, ``SlackAdapter`` on empty
-#: ``channel_ids``), so a FIRST connect is not yet the moment to ingest --
+#: ``channel_ids``, a connected ``LinearAdapter`` on empty ``team_ids``), so a FIRST connect is not yet the moment to ingest --
 #: saving the scope is, and that is where ``sync_now`` is called from instead.
 #:
 #: One dict rather than a set plus a hand-kept copy of the keys: `api/
 #: notifications.py` needed exactly this mapping to report "connected but
 #: indexing nothing", and two lists of the same fact drift.
-SCOPE_KEYS: dict[str, str] = {"google": "folder_id", "slack": "channel_ids"}
+SCOPE_KEYS: dict[str, str] = {"google": "folder_id", "slack": "channel_ids", "linear": "team_ids"}
 SCOPED_PROVIDERS = tuple(SCOPE_KEYS)
 
 

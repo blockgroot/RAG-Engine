@@ -511,15 +511,11 @@ def disconnect(provider: str, session: SessionClaims = Depends(get_session)):
     return {"deleted": delete_user_connection(session.org_id, session.user_id, provider)}
 
 
-def _company_workspace(org_id: str, provider: str) -> str | None:
-    """The tool workspace the company connected for reading, if any."""
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT external_workspace_id FROM oauth_connections "
-            "WHERE org_id = %s::uuid AND provider = %s AND workspace_id IS NULL",
-            (org_id, provider),
-        ).fetchone()
-    return row[0] if row else None
+def _company_workspaces(org_id: str, provider: str) -> set[str]:
+    """The tool workspaces the company connected, company-wide or in a space."""
+    from ..auth.credentials import connected_anywhere
+
+    return {ext for ext, _config in connected_anywhere(org_id, provider) if ext}
 
 
 def _notion_owner(token: str) -> tuple[str, str | None]:
@@ -547,8 +543,9 @@ def finish_act_connect(code: str | None, state: str, settings: ApiSettings) -> R
     """Complete "Connect your account for actions" from the provider's callback.
 
     The org and the PERSON come from the consumed state. The account must be
-    the COMPANY's: the Linear or Notion workspace the company connected for
-    reading, or the person's own work address on Google. Anything else would
+    the COMPANY's: a Linear, Notion or Slack workspace the company connected
+    for reading (company-wide or in any space), and on Google and Slack the
+    person's own work address. Anything else would
     let company content be written somewhere the company does not control.
     The code is exchanged with the Act client (``_act_oauth``), never the
     read connection's.
@@ -569,7 +566,7 @@ def finish_act_connect(code: str | None, state: str, settings: ApiSettings) -> R
             who = linear_viewer(tokens.access_token)
             # Only the company's own Linear: company content written into a
             # personal workspace would be content leaving the company.
-            if _company_workspace(org_id, "linear") != tokens.external_workspace_id:
+            if tokens.external_workspace_id not in _company_workspaces(org_id, "linear"):
                 return back("connect_error=linear&reason=workspace")
             user_tokens = UserTokens(
                 access_token=tokens.access_token, refresh_token=tokens.refresh_token,
@@ -580,7 +577,7 @@ def finish_act_connect(code: str | None, state: str, settings: ApiSettings) -> R
             )
         elif provider == "notion" and isinstance(oauth, NotionOAuthProvider):
             tokens = oauth.exchange_code(code)
-            if _company_workspace(org_id, "notion") != tokens.external_workspace_id:
+            if tokens.external_workspace_id not in _company_workspaces(org_id, "notion"):
                 return back("connect_error=notion&reason=workspace")
             person_id, person_name = _notion_owner(tokens.access_token)
             user_tokens = UserTokens(
@@ -599,9 +596,9 @@ def finish_act_connect(code: str | None, state: str, settings: ApiSettings) -> R
             )
         elif provider == "slack" and isinstance(oauth, SlackOAuthProvider):
             token, slack_user, team = oauth.exchange_user_code(code)
-            # The company's Slack wherever it connected one (company-wide or a
-            # space), and always the person's own work address in it.
-            teams = _slack_teams(org_id)
+            # Also the person's own work address: a company that connected no
+            # Slack anywhere still knows its people by email.
+            teams = _company_workspaces(org_id, "slack")
             if teams and team not in teams:
                 return back("connect_error=slack&reason=workspace")
             from .slack_events import _slack_email
@@ -631,17 +628,6 @@ def finish_act_connect(code: str | None, state: str, settings: ApiSettings) -> R
         logger.info("act: connect failed for %s: %s", provider or "?", exc)
         return back(f"connect_error={provider or 'unknown'}")
     return back(f"connected={provider}")
-
-
-def _slack_teams(org_id: str) -> set[str]:
-    """Every Slack team the company connected, company-wide or in a space."""
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT external_workspace_id FROM oauth_connections "
-            "WHERE org_id = %s::uuid AND provider = 'slack'",
-            (org_id,),
-        ).fetchall()
-    return {r[0] for r in rows if r[0]}
 
 
 def _is_own_address(org_id: str, user_id: str, email: str | None) -> bool:

@@ -307,6 +307,9 @@ export interface ConnectionSourceConfig {
   repos?: GitHubRepoRef[];
   channel_ids?: string[];
   channel_names?: Record<string, string>;
+  /** Linear: the teams this connection reads. */
+  team_ids?: string[];
+  team_names?: Record<string, string>;
   /** Google Forms allow-list for survey sentiment. Empty = read nothing. */
   form_ids?: string[];
   form_titles?: Record<string, string>;
@@ -317,6 +320,13 @@ export interface SlackChannel {
   name: string;
   is_private: boolean;
   is_member: boolean;
+}
+
+export interface LinearTeam {
+  id: string;
+  key: string;
+  name: string;
+  private: boolean;
 }
 
 export interface SlackChannelMember {
@@ -380,6 +390,7 @@ export interface ConnectionConfigResponse {
   config: ConnectionSourceConfig;
   folder_changed?: boolean;
   channels_changed?: boolean;
+  teams_changed?: boolean;
   documents_purged?: number;
   sharing?: SharingWarning | null;
 }
@@ -793,6 +804,20 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ channel_ids: channelIds }),
     }),
+  /** Linear teams for the picker; `workspaceId` reads that space's connection. */
+  listLinearTeams: (connectionId: string, workspaceId?: string) =>
+    request<{ teams: LinearTeam[] }>(
+      workspaceId
+        ? `/workspaces/${workspaceId}/connections/${connectionId}/linear-teams`
+        : `/admin/connections/${connectionId}/linear-teams`
+    ),
+  setLinearTeams: (connectionId: string, teamIds: string[], workspaceId?: string) =>
+    request<ConnectionConfigResponse>(
+      workspaceId
+        ? `/workspaces/${workspaceId}/connections/${connectionId}/config`
+        : `/admin/connections/${connectionId}/config`,
+      { method: "PUT", body: JSON.stringify({ team_ids: teamIds }) }
+    ),
   // Google Forms survey sentiment. `enabled` is the deployment flag
   // (GOOGLE_FORMS_ENABLED), reported rather than 404'd so the picker can say
   // "your deployment has not switched this on" instead of looking broken.

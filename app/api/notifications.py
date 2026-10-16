@@ -94,11 +94,10 @@ def _items_in(org_id: str, workspace_id: str | None, scope: str, href: str,
                     "provider": conn.provider,
                     "scope": scope,
                     "title": f"{name} is connected but indexing nothing",
-                    "detail": (
-                        "Pick a folder so its documents can answer questions."
-                        if conn.provider == "google"
-                        else "Pick the channels Handbook may read."
-                    ),
+                    "detail": {
+                        "google": "Pick a folder so its documents can answer questions.",
+                        "linear": "Pick the teams Handbook may read.",
+                    }.get(conn.provider, "Pick the channels Handbook may read."),
                     "action": "Choose what to read",
                     "href": href,
                 }

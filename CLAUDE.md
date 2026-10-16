@@ -120,8 +120,9 @@ docstring; a test reads that source.
 **Sync.** Every sync path takes an explicit provider. Disconnect uses
 `sources.factory.INDEXED_PROVIDERS`, not a hand-kept list. A Slack listing deletes
 only what it could have listed. Drive and GitHub 404 means "not found or not
-accessible", never "deleted". A connector that needs a folder or channel list must
-show its picker before anything is configured. `last_sync_at` is stamped on attempt.
+accessible", never "deleted". A connector that needs a folder, channel or team list must
+show its picker before anything is configured (`autosync.SCOPE_KEYS`; Linear's
+sign-in grants every team, so its teams are picked in Handbook). `last_sync_at` is stamped on attempt.
 `needs_reauth` rows are not retried. A host that cannot refresh must not flag the
 tenant's token (`ConfigurationError` re-raises).
 
@@ -340,8 +341,9 @@ installation token is minted READ-ONLY (`mint_installation_token`), and each
 write runs on a token narrowed to one repo + `issues: write` (`scoped_token`).
 Notion writes use a SEPARATE connection from the read one: a Notion token always
 carries its connection's every capability. An Act account must be the company's
-(its Linear/Notion workspace, the person's own work address on Google, a repo in
-its GitHub installation), or company content leaves the company. From Slack only
+(a Linear/Notion/Slack workspace or a repo in a GitHub installation it connected,
+company-wide OR in any space, `credentials.connected_anywhere`; the person's own
+work address on Google and Slack), or company content leaves the company. From Slack only
 a message that ASKS for an action proposes: a model check whose quote of the
 asking words must be in the message, only where that surface is on, or `act …`
 (`slack_act.slack_request`); a failed check is a question; a DM drafts as the

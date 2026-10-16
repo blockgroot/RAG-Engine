@@ -4,9 +4,10 @@ Both run on the asker's GitHub App user-to-server token, so GitHub attributes
 them to the person (with the App's badge) and allows them only where the
 person AND the App may write. Two more limits are ours:
 
-* The repo must be in the company's own installation (``resolve_repo`` on the
-  org-wide GitHub connection). A person's token can reach other accounts'
-  repos; Act in this company writes only where this company connected.
+* The repo must be in one of the company's own installations (``resolve_repo``
+  on its GitHub connections, company-wide first, then each space's). A
+  person's token can reach other accounts' repos; Act in this company writes
+  only where this company connected.
 * Each write runs on a token GitHub narrows for that one write: the one repo,
   ``issues: write`` and nothing else (``POST /applications/{client_id}/token/
   scoped``). The App holds only Issues: write -- never Contents (push, refs,
@@ -27,7 +28,7 @@ from typing import Any
 
 import httpx
 
-from ..auth.credentials import get_connection_config
+from ..auth.credentials import connected_anywhere
 from ..auth.github_app import installation_permissions
 from ..config.settings import GitHubSettings
 from ..core.exceptions import (
@@ -122,15 +123,18 @@ def _level(repo: dict) -> str | None:
 
 
 def company_repo(org_id: str, name: str) -> str:
-    """``owner/name`` if the company's installation covers it AND its owner has
-    approved Issues: write; otherwise refuse, saying which."""
-    config = get_connection_config(org_id, "github") or {}
-    try:
-        full = resolve_repo(scope_from_config(config), name)
-    except SourceError as exc:
-        raise ActionRejected(
-            f"{name!r} isn't a repository your company connected to Handbook."
-        ) from exc
+    """``owner/name`` if one of the company's installations (company-wide or
+    a space's) covers it AND that installation's owner has approved Issues:
+    write; otherwise refuse, saying which. Company-wide is tried first, so a
+    bare name both cover means the company's."""
+    for _ext, config in connected_anywhere(org_id, "github"):
+        try:
+            full = resolve_repo(scope_from_config(config), name)
+            break
+        except SourceError:
+            continue
+    else:
+        raise ActionRejected(f"{name!r} isn't a repository your company connected to Handbook.")
     try:
         granted = installation_permissions(str(config.get("installation_id") or ""))
     except (OAuthError, ConfigurationError) as exc:
